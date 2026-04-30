@@ -58,7 +58,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
     |> changeset(attrs)
     |> unique_constraint(:id, name: :sympp_access_grants_id_unique_index)
     |> unique_constraint(:secret_hash, name: :sympp_access_grants_secret_hash_unique_index)
-    |> foreign_key_constraint(:work_package_id, name: :sympp_access_grants_work_package_id_fkey)
   end
 
   @spec claim_changeset(t(), map()) :: Ecto.Changeset.t()
