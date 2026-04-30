@@ -2,7 +2,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
   use ExUnit.Case, async: false
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
   alias SymphonyElixir.SymphonyPlusPlus.Policies.Templates
@@ -10,8 +12,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
-
-  @architect %{grant_role: "architect", capabilities: ["architect:lifecycle.transition"]}
 
   setup_all do
     database_path = WorkPackageFactory.database_path()
@@ -50,7 +50,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
   test "invalid transitions fail", %{repo: repo} do
     assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix"))
 
-    assert {:error, :invalid_transition} = Service.transition(repo, package.id, "merged", @architect)
+    assert {:error, :invalid_transition} = Service.transition(repo, package.id, "merged", architect_actor!(repo, package))
     assert {:ok, fetched} = Repository.get(repo, package.id)
     assert fetched.status == "created"
   end
@@ -133,7 +133,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
   test "does not allow created to merged", %{repo: repo} do
     assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix"))
 
-    assert {:error, :invalid_transition} = Service.transition(repo, package.id, "merged", @architect)
+    assert {:error, :invalid_transition} = Service.transition(repo, package.id, "merged", architect_actor!(repo, package))
   end
 
   test "does not allow worker to advance phase state", %{repo: repo} do
@@ -150,7 +150,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     assert {:error, :worker_cannot_advance_phase_state} =
              Service.transition(repo, package.id, "merging_into_phase", worker_actor!(repo, package))
 
-    assert {:ok, package} = Service.transition(repo, package.id, "merging_into_phase", @architect)
+    assert {:ok, package} = Service.transition(repo, package.id, "merging_into_phase", architect_actor!(repo, package))
     assert package.status == "merging_into_phase"
   end
 
@@ -165,19 +165,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
                )
              )
 
-    assert {:error, :invalid_transition} = Service.transition(repo, package.id, "merged", @architect)
+    assert {:error, :invalid_transition} = Service.transition(repo, package.id, "merged", architect_actor!(repo, package))
   end
 
   test "standalone merged remains a known terminal lifecycle status", %{repo: repo} do
     assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix", status: "merged"))
 
-    assert {:error, :invalid_transition} = Service.transition(repo, package.id, "closed", @architect)
+    assert {:error, :invalid_transition} = Service.transition(repo, package.id, "closed", architect_actor!(repo, package))
   end
 
   test "transition rejects phase child corrupted to standalone merged status", %{repo: repo} do
     package = insert_raw_package!(repo, kind: "phase_child", status: "merged", parent_id: "phase-1")
 
-    assert {:error, :unknown_lifecycle_status} = Service.transition(repo, package.id, "closed", @architect)
+    assert {:error, :unknown_lifecycle_status} = Service.transition(repo, package.id, "closed", architect_actor!(repo, package))
   end
 
   test "transition requires explicit lifecycle capability", %{repo: repo} do
@@ -256,8 +256,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
                )
              )
 
-    assert {:error, :missing_lifecycle_capability} =
+    assert {:error, :actor_scope_mismatch} =
              Service.transition(repo, package.id, "merging_into_phase", %{
+               grant_role: "architect",
                capabilities: ["architect:lifecycle.transition"]
              })
   end
@@ -288,7 +289,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
   test "transition rejects cross-kind persisted lifecycle statuses", %{repo: repo} do
     package = insert_raw_package!(repo, kind: "hotfix", status: "ready_for_architect_merge")
 
-    assert {:error, :unknown_lifecycle_status} = Service.transition(repo, package.id, "merging_into_phase", @architect)
+    assert {:error, :unknown_lifecycle_status} =
+             Service.transition(repo, package.id, "merging_into_phase", architect_actor!(repo, package))
   end
 
   test "status updates are conditional on the validated current status", %{repo: repo} do
@@ -335,6 +337,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
   defp worker_actor!(repo, package) do
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+
+    Map.from_struct(assignment)
+  end
+
+  defp architect_actor!(repo, package) do
+    now = DateTime.utc_now(:microsecond)
+    work_key = WorkKey.generate()
+
+    assert {:ok, _grant} =
+             AccessGrantRepository.create(repo, %{
+               work_package_id: package.id,
+               display_key: work_key.display_key,
+               secret_hash: WorkKey.secret_hash(work_key.secret),
+               grant_role: "architect",
+               capabilities: ["architect:lifecycle.transition"],
+               expires_at: DateTime.add(now, 3_600, :second)
+             })
+
+    assert {:ok, assignment} =
+             AccessGrantRepository.claim(repo, work_key.secret, %{claimed_by: "architect-1"}, now)
 
     Map.from_struct(assignment)
   end
