@@ -36,8 +36,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
     "merged_into_phase" => [],
     "blocked" => ["planning", "implementing", "abandoned"],
     "abandoned" => [],
-    "closed" => [],
-    "merged" => []
+    "closed" => []
   }
 
   @architect_only_statuses ["merging_into_phase", "merged_into_phase", "merged", "closed"]

@@ -168,6 +168,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     assert {:error, :invalid_transition} = Service.transition(repo, package.id, "merged", @architect)
   end
 
+  test "transition rejects phase child corrupted to standalone merged status", %{repo: repo} do
+    package = insert_raw_package!(repo, kind: "phase_child", status: "merged", parent_id: "phase-1")
+
+    assert {:error, :unknown_lifecycle_status} = Service.transition(repo, package.id, "closed", @architect)
+  end
+
   test "transition requires explicit lifecycle capability", %{repo: repo} do
     assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix"))
 
