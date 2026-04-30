@@ -96,7 +96,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     assert assignment.work_package_id == work_package.id
     assert assignment.display_key == minted.work_key.display_key
     assert assignment.grant_role == "worker"
-    assert assignment.capabilities == ["worker:claim"]
+    assert assignment.capabilities == ["worker:claim", "worker:lifecycle.transition"]
     assert assignment.claimed_by == "worker-1"
     refute inspect(assignment) =~ minted.work_key.secret
   end

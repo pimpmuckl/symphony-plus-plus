@@ -7,7 +7,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
 
   @default_lifetime_seconds 86_400
-  @default_worker_capabilities ["worker:claim"]
+  @default_worker_capabilities ["worker:claim", "worker:lifecycle.transition"]
 
   @type minted_grant :: %{grant: AccessGrant.t(), work_key: WorkKey.t()}
   @type error :: Repository.error()

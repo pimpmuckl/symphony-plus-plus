@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
   use ExUnit.Case, async: false
 
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service
   alias SymphonyElixir.SymphonyPlusPlus.Policies.Templates
   alias SymphonyElixir.SymphonyPlusPlus.Repo
@@ -23,6 +25,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
   end
 
   setup %{repo: repo} do
+    repo.delete_all(AccessGrant)
     repo.delete_all(WorkPackage)
     :ok
   end
@@ -152,6 +155,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
 
     assert {:error, :missing_lifecycle_capability} =
              Service.transition(repo, package.id, "ready_for_worker", %{grant_role: "worker", capabilities: ["worker:claim"]})
+  end
+
+  test "default claimed worker assignment can drive lifecycle transition", %{repo: repo} do
+    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+
+    assert {:ok, transitioned} = Service.transition(repo, package.id, "ready_for_worker", Map.from_struct(assignment))
+    assert transitioned.status == "ready_for_worker"
   end
 
   test "transition rejects malformed capability payloads without crashing", %{repo: repo} do
