@@ -1,0 +1,779 @@
+work_packages:
+  - id: SYMPP-P0-001
+    phase: 'Phase 0 — Baseline fork'
+    title: 'Upstream fork baseline and local run'
+    kind: setup
+    owner_role: worker
+    dependencies: []
+    summary: 'Fork or clone upstream Symphony, run the reference implementation setup/build, and document the exact baseline without adding Symphony++ features.'
+    acceptance_criteria:
+      - 'Existing upstream build/test status is known and documented.'
+      - 'A human can reproduce the local setup from SETUP_NOTES.md.'
+      - 'No Symphony++ implementation code is added in this package.'
+      - 'Repository has a clean baseline branch/commit for later comparison.'
+    tests:
+      unit:
+        - 'No new unit tests required unless setup scripts are changed.'
+      integration_e2e:
+        - 'Run the existing upstream test/build command and record exact result.'
+        - 'Run the upstream orchestrator command if credentials/config permit, or document missing credentials.'
+      negative_regression:
+        - 'Do not hide or patch upstream failures without explaining them.'
+        - 'Do not introduce broad refactors.'
+  - id: SYMPP-P0-002
+    phase: 'Phase 0 — Baseline fork'
+    title: 'Repository map and extension seam analysis'
+    kind: analysis
+    owner_role: worker
+    dependencies: ["SYMPP-P0-001"]
+    summary: 'Map the upstream repository structure and identify the lowest-risk seams for WorkPackage ledger, tracker adapter, MCP server, dashboard, and GitHub sync.'
+    acceptance_criteria:
+      - 'REPO_EXTENSION_MAP.md exists and names concrete files/modules for each extension seam.'
+      - 'The plan preserves existing Linear behavior.'
+      - 'The analysis identifies risks and test strategy per seam.'
+      - 'Architecture agent can use the map to assign Phase 1 work.'
+    tests:
+      unit:
+        - 'None unless helper introspection scripts are added.'
+      integration_e2e:
+        - 'Verify named modules/files exist in the current fork.'
+        - 'Cross-check map against build/test output from P0-001.'
+      negative_regression:
+        - 'Do not implement the seams in this package.'
+        - 'Do not rename upstream modules.'
+  - id: SYMPP-P0-003
+    phase: 'Phase 0 — Baseline fork'
+    title: 'Symphony++ planning assets and repo conventions'
+    kind: docs
+    owner_role: worker
+    dependencies: ["SYMPP-P0-001"]
+    summary: 'Install this planning package into the fork and add non-invasive repo conventions for worker PRs, without changing runtime behavior.'
+    acceptance_criteria:
+      - 'Planning assets are committed in a predictable location.'
+      - 'AGENTS/conventions document describes work package PR expectations.'
+      - 'No runtime behavior changes.'
+      - 'Architecture agent has a stable source of package specs.'
+    tests:
+      unit:
+        - 'None.'
+      integration_e2e:
+        - 'Run existing build/tests to verify docs-only package did not affect runtime.'
+      negative_regression:
+        - 'Do not replace upstream WORKFLOW.md yet.'
+        - 'Do not add unfinished runtime config as active default.'
+  - id: SYMPP-P1-001
+    phase: 'Phase 1 — Core ledger'
+    title: 'WorkPackage ledger schema and repository API'
+    kind: core
+    owner_role: worker
+    dependencies: ["SYMPP-P0-002"]
+    summary: 'Add persistent WorkPackage storage and a small repository/service API for creating, reading, updating, and listing work packages.'
+    acceptance_criteria:
+      - 'Standalone WorkPackage can be created and fetched.'
+      - 'Invalid kind/status is rejected.'
+      - 'Parentless standalone work packages are supported.'
+      - 'Existing Symphony behavior still passes tests.'
+    tests:
+      unit:
+        - 'Create/get/update/list WorkPackage.'
+        - 'Validation rejects invalid kind/status.'
+        - 'Parent ID optional for standalone work.'
+        - 'Timestamps set on create/update.'
+      integration_e2e:
+        - 'Run existing Symphony tests.'
+        - 'Add persistence migration test or equivalent.'
+        - 'If using Ecto, migration rolls forward cleanly in test database.'
+      negative_regression:
+        - 'Do not add grants yet.'
+        - 'Do not dispatch WorkPackages through Symphony yet.'
+  - id: SYMPP-P1-002
+    phase: 'Phase 1 — Core ledger'
+    title: 'AccessGrant and WorkKey service'
+    kind: security
+    owner_role: worker
+    dependencies: ["SYMPP-P1-001"]
+    summary: 'Implement scoped grants and high-entropy one-time work keys for workers and architects.'
+    acceptance_criteria:
+      - 'Worker grant can be minted for one WorkPackage.'
+      - 'Claiming valid secret returns scoped assignment.'
+      - 'Expired/revoked/invalid secrets are rejected.'
+      - 'Raw secret is not stored.'
+      - 'Raw secret is returned only at mint time.'
+    tests:
+      unit:
+        - 'Secret generation length/entropy shape.'
+        - 'Secret hash stored; raw secret absent from persistence.'
+        - 'Valid claim succeeds.'
+        - 'Expired claim fails.'
+        - 'Revoked claim fails.'
+        - 'Invalid claim fails.'
+        - 'Double claim follows explicit policy and is tested.'
+      integration_e2e:
+        - 'Create WorkPackage then mint and claim AccessGrant.'
+        - 'Check logs/test output for no raw secret if feasible.'
+      negative_regression:
+        - 'Four-character display key alone must not authenticate.'
+        - 'Worker grant cannot contain architect capabilities.'
+  - id: SYMPP-P1-003
+    phase: 'Phase 1 — Core ledger'
+    title: 'Lifecycle state machine and policy templates'
+    kind: core
+    owner_role: worker
+    dependencies: ["SYMPP-P1-001", "SYMPP-P1-002"]
+    summary: 'Add server-side lifecycle validation and policy templates for quick-fix, hotfix, phase-child, and investigation packages.'
+    acceptance_criteria:
+      - 'Invalid transitions are rejected.'
+      - 'Policy templates expand into constraints/readiness requirements.'
+      - 'Standalone hotfix and phase-child have different terminal readiness states.'
+      - 'Worker cannot mark merged through lifecycle API.'
+    tests:
+      unit:
+        - 'Allowed transitions pass.'
+        - 'Invalid transitions fail.'
+        - 'quick_fix/hotfix/phase_child/investigation templates expand correctly.'
+        - 'Worker capability cannot transition to merged.'
+      integration_e2e:
+        - 'Create hotfix and drive status through happy path to ready_for_human_merge.'
+        - 'Create phase child and drive to ready_for_architect_merge.'
+      negative_regression:
+        - 'Do not allow created -> merged.'
+        - 'Do not allow worker to advance phase state.'
+  - id: SYMPP-P1-004
+    phase: 'Phase 1 — Core ledger'
+    title: 'Virtual planning file renderers'
+    kind: core
+    owner_role: worker
+    dependencies: ["SYMPP-P1-001"]
+    summary: 'Render context.md, task_plan.md, findings.md, progress.md, acceptance.md, review_suite.md, and handoff.md from canonical state.'
+    acceptance_criteria:
+      - 'A new WorkPackage renders all required virtual files.'
+      - 'Plan nodes render as checklists.'
+      - 'Findings/progress are append-only in rendered order.'
+      - 'Acceptance criteria render clearly.'
+      - 'No local planning files are required as source of truth.'
+    tests:
+      unit:
+        - 'Render empty context/task_plan/findings/progress.'
+        - 'Render plan with done/pending/skipped nodes.'
+        - 'Render findings sorted by created time.'
+        - 'Render progress timeline sorted by created time.'
+        - 'Markdown output is stable enough for snapshot tests.'
+      integration_e2e:
+        - 'Create package, add plan/finding/progress, render all virtual files.'
+        - 'Verify renderer works for hotfix and phase-child policy templates.'
+      negative_regression:
+        - 'Do not let renderer mutate state.'
+        - 'Do not treat generated markdown exports as authoritative writes.'
+  - id: SYMPP-P1-005
+    phase: 'Phase 1 — Core ledger'
+    title: 'Audit event ledger and idempotency keys'
+    kind: core
+    owner_role: worker
+    dependencies: ["SYMPP-P1-001", "SYMPP-P1-002"]
+    summary: 'Add append-only audit/progress events and idempotency handling for agent writes.'
+    acceptance_criteria:
+      - 'Repeated append with same idempotency key does not duplicate events.'
+      - 'Events include actor identity where available.'
+      - 'Timeline can be rendered for dashboard/API.'
+      - 'Secrets are redacted in event payloads.'
+    tests:
+      unit:
+        - 'Idempotent append same key.'
+        - 'Different keys append separate events.'
+        - 'Actor/grant recorded.'
+        - 'Redaction helper removes known secret fields.'
+      integration_e2e:
+        - 'Claim grant, append progress with idempotency, verify one event.'
+        - 'Render progress.md from event ledger.'
+      negative_regression:
+        - 'No raw claim secret in event payload.'
+        - 'No unauthenticated event append.'
+  - id: SYMPP-P2-001
+    phase: 'Phase 2 — Symphony adapter'
+    title: '`tracker.kind: Symphony_pp` adapter'
+    kind: adapter
+    owner_role: worker
+    dependencies: ["SYMPP-P1-001", "SYMPP-P1-003", "SYMPP-P1-004"]
+    summary: 'Expose Symphony++ WorkPackages as normalized Symphony issues so the existing orchestrator can dispatch them.'
+    acceptance_criteria:
+      - 'Symphony++ packages appear as dispatchable issues.'
+      - 'Terminal/blocked packages are filtered or represented according to config.'
+      - 'Existing Linear tests pass.'
+      - 'Adapter is covered by tests.'
+    tests:
+      unit:
+        - 'Map WorkPackage to issue.'
+        - 'Filter by active states.'
+        - 'Exclude terminal states.'
+        - 'Preserve labels/priority/blockers if represented.'
+      integration_e2e:
+        - 'Run orchestrator polling against test Symphony++ packages.'
+        - 'Run existing Linear adapter tests if present.'
+      negative_regression:
+        - 'Do not remove Linear config.'
+        - 'Do not hard-code Kraken-specific fields.'
+  - id: SYMPP-P2-002
+    phase: 'Phase 2 — Symphony adapter'
+    title: 'Symphony++ workflow config and dispatch filters'
+    kind: adapter
+    owner_role: worker
+    dependencies: ["SYMPP-P2-001"]
+    summary: 'Add workflow-frontmatter support and filters for Symphony++ work package dispatch.'
+    acceptance_criteria:
+      - 'A custom WORKFLOW.Symphony_pp.md can select `Symphony_pp` tracker kind.'
+      - 'Invalid config fails early with useful error.'
+      - 'Dispatch filters prevent out-of-scope packages from running.'
+      - 'Documentation explains how to run with custom workflow.'
+    tests:
+      unit:
+        - 'Parse valid config.'
+        - 'Reject invalid tracker kind or missing required fields.'
+        - 'Filter by state/kind/repo when configured.'
+      integration_e2e:
+        - 'Run dry/poll mode with sample config if supported.'
+        - 'Existing default WORKFLOW.md still works.'
+      negative_regression:
+        - 'Do not silently fall back to Linear when Symphony_pp config is invalid.'
+        - 'Do not dispatch all packages when filters are missing unless documented.'
+  - id: SYMPP-P2-003
+    phase: 'Phase 2 — Symphony adapter'
+    title: 'AgentRun binding and orchestrator reconciliation'
+    kind: adapter
+    owner_role: worker
+    dependencies: ["SYMPP-P1-002", "SYMPP-P2-001"]
+    summary: 'Bind dispatched Symphony worker runs to Symphony++ AgentRun records and reconcile state on retries/stops.'
+    acceptance_criteria:
+      - 'Dispatched package has AgentRun record.'
+      - 'Retry/stop updates AgentRun status.'
+      - 'Duplicate dispatch is prevented or explicitly controlled.'
+      - 'Dashboard/API can later use AgentRun state.'
+    tests:
+      unit:
+        - 'Create AgentRun.'
+        - 'Update heartbeat/status.'
+        - 'Prevent duplicate active run.'
+        - 'Bind to grant if claim flow already known.'
+      integration_e2e:
+        - 'Simulate dispatch then stop/retry.'
+        - 'Verify WorkPackage state remains consistent.'
+      negative_regression:
+        - 'Do not orphan active AgentRun on failed claim.'
+        - 'Do not allow two active workers to mutate same package by accident.'
+  - id: SYMPP-P3-001
+    phase: 'Phase 3 — Agent interface'
+    title: 'MCP server scaffold'
+    kind: mcp
+    owner_role: worker
+    dependencies: ["SYMPP-P1-002", "SYMPP-P1-004"]
+    summary: 'Create the Symphony++ MCP server process and expose basic health, resource, and auth wiring.'
+    acceptance_criteria:
+      - 'MCP server starts locally.'
+      - 'Server can reach test ledger.'
+      - 'Auth/session injection path is designed.'
+      - 'No package data is exposed without grant/session.'
+    tests:
+      unit:
+        - 'Server config parsing.'
+        - 'Health/version response.'
+        - 'Auth missing -> denial.'
+      integration_e2e:
+        - 'Start MCP server in test mode and call basic tool/resource.'
+        - 'Verify no unauthenticated work package listing.'
+      negative_regression:
+        - 'Do not expose admin APIs to worker MCP by default.'
+        - 'Do not log bearer tokens/secrets.'
+  - id: SYMPP-P3-002
+    phase: 'Phase 3 — Agent interface'
+    title: 'Worker MCP tools and resources'
+    kind: mcp
+    owner_role: worker
+    dependencies: ["SYMPP-P3-001", "SYMPP-P1-004", "SYMPP-P1-005"]
+    summary: 'Implement scoped worker MCP tools/resources for claim, virtual planning files, progress, findings, PR attachment, blockers, and readiness.'
+    acceptance_criteria:
+      - 'Worker can complete basic state lifecycle for own package.'
+      - 'Worker cannot read or mutate sibling package.'
+      - 'mark_ready enforces gates.'
+      - 'All writes are actor/grant scoped and idempotent where appropriate.'
+    tests:
+      unit:
+        - 'Each tool success path.'
+        - 'Each tool denial path.'
+        - 'mark_ready fails without required artifacts.'
+        - 'request_scope_expansion records request but does not approve.'
+      integration_e2e:
+        - 'Claim key then read resources and append updates.'
+        - 'Create two packages; verify worker A cannot access worker B.'
+        - 'Attach PR and attempt readiness.'
+      negative_regression:
+        - 'Worker cannot mark merged.'
+        - 'Worker cannot mint grants.'
+        - 'Worker cannot list all packages.'
+  - id: SYMPP-P3-003
+    phase: 'Phase 3 — Agent interface'
+    title: 'Architect MCP tools'
+    kind: mcp
+    owner_role: worker
+    dependencies: ["SYMPP-P3-001", "SYMPP-P1-002"]
+    summary: 'Prepare architect-facing MCP tool surface, with implementation limited to safe stubs or Phase 7-ready foundations if phase entities are not yet available.'
+    acceptance_criteria:
+      - 'Architect tool contract is documented and test-covered.'
+      - 'Worker grants are denied architect tools.'
+      - 'Unimplemented Phase 7 tools fail explicitly, not silently.'
+      - 'No phase delegation behavior is prematurely wired.'
+    tests:
+      unit:
+        - 'Worker denied architect tool.'
+        - 'Invalid/insufficient grant denied.'
+        - 'Contract schema validates inputs.'
+      integration_e2e:
+        - 'Call read-only architect tool with architect grant if a container scope exists.'
+        - 'Verify Phase 7 tools return explicit error if not implemented.'
+      negative_regression:
+        - 'Do not let architect mint child grants before Phase 7 rules exist.'
+        - 'Do not grant architect tools through worker session.'
+  - id: SYMPP-P3-004
+    phase: 'Phase 3 — Agent interface'
+    title: 'Codex Skill package and workflow prompts'
+    kind: skill
+    owner_role: worker
+    dependencies: ["SYMPP-P3-002"]
+    summary: 'Add the Symphony++ Codex Skill and repo workflow templates that teach workers to use MCP-backed virtual planning files.'
+    acceptance_criteria:
+      - 'Skill metadata contains name and description.'
+      - 'Skill instructions match MCP tool names.'
+      - 'Worker prompt template is ready to paste.'
+      - 'No contradiction with permission model.'
+    tests:
+      unit:
+        - 'If repository supports linting skill files, run it.'
+        - 'Check file existence and required metadata.'
+      integration_e2e:
+        - 'Manual dry run: agent prompt can identify skill and intended MCP tools.'
+        - 'Run existing tests to verify docs/skill do not break runtime.'
+      negative_regression:
+        - 'Do not include raw secrets in examples.'
+        - 'Do not tell workers to use broad Linear/GitHub state directly for Symphony++ permissions.'
+  - id: SYMPP-P3-005
+    phase: 'Phase 3 — Agent interface'
+    title: 'Codex hooks and guardrail nudges'
+    kind: hooks
+    owner_role: worker
+    dependencies: ["SYMPP-P3-004"]
+    summary: 'Add optional Codex hook templates to remind agents of assignment scope, progress updates, and handoff requirements.'
+    acceptance_criteria:
+      - 'Hook templates are documented and optional.'
+      - 'Hooks never contain grant secrets.'
+      - 'Hooks do not block legitimate work unpredictably.'
+      - 'Permission model still lives server-side.'
+    tests:
+      unit:
+        - 'Script lint/unit tests if scripts are added.'
+        - 'Redaction tests for hook output if applicable.'
+      integration_e2e:
+        - 'Manual hook dry run if Codex hooks enabled.'
+        - 'Verify no runtime dependency on hooks for server permission checks.'
+      negative_regression:
+        - 'Do not make hooks required for MCP authorization.'
+        - 'Do not parse private chain-of-thought or transcripts for security decisions.'
+  - id: SYMPP-P4-001
+    phase: 'Phase 4 — Quick work'
+    title: 'Standalone create-work CLI/API'
+    kind: product
+    owner_role: worker
+    dependencies: ["SYMPP-P1-002", "SYMPP-P1-003", "SYMPP-P1-004"]
+    summary: 'Add human-facing CLI/API to create one standalone WorkPackage and mint a worker key without any phase or architect setup.'
+    acceptance_criteria:
+      - 'Human can create standalone work in one command/request.'
+      - 'Returned output includes WorkPackage ID and one-time worker key/secret.'
+      - 'Created package has no required parent phase.'
+      - 'Initial task_plan/context/acceptance render correctly.'
+    tests:
+      unit:
+        - 'Parse valid create-work request.'
+        - 'Reject missing repo/base/title.'
+        - 'Apply default policy by kind.'
+        - 'Mint grant exactly once.'
+      integration_e2e:
+        - 'Create hotfix package then claim with worker MCP.'
+        - 'Create quick_fix package then render virtual files.'
+      negative_regression:
+        - 'Do not require architect/phase for standalone work.'
+        - 'Do not print raw secret again after creation.'
+  - id: SYMPP-P4-002
+    phase: 'Phase 4 — Quick work'
+    title: 'Quick-fix, hotfix, and investigation policy templates'
+    kind: product
+    owner_role: worker
+    dependencies: ["SYMPP-P1-003", "SYMPP-P4-001"]
+    summary: 'Finalize lightweight policy templates so small work stays agile while still gated.'
+    acceptance_criteria:
+      - 'quick_fix can complete with light planning.'
+      - 'hotfix has stricter expiry/review requirements.'
+      - 'investigation does not require PR but requires recommendation artifact.'
+      - 'Templates are covered by lifecycle tests.'
+    tests:
+      unit:
+        - 'Template defaults match docs.'
+        - 'Hotfix expires sooner than quick_fix.'
+        - 'Investigation readiness does not require PR.'
+        - 'Hotfix readiness requires PR/review evidence.'
+      integration_e2e:
+        - 'Create package of each template and drive valid lifecycle.'
+        - 'Attempt invalid lifecycle for each template.'
+      negative_regression:
+        - 'Do not force phase-child planning depth on hotfixes.'
+        - 'Do not allow hotfix to mark merged by worker.'
+  - id: SYMPP-P4-003
+    phase: 'Phase 4 — Quick work'
+    title: 'End-to-end standalone hotfix scenario'
+    kind: e2e
+    owner_role: worker
+    dependencies: ["SYMPP-P3-002", "SYMPP-P4-001", "SYMPP-P4-002"]
+    summary: 'Implement the primary MVP regression scenario from hotfix creation through worker claim, virtual-file updates, PR attachment, and readiness.'
+    acceptance_criteria:
+      - 'E2E test passes in CI or documented local test profile.'
+      - 'The scenario proves no phase is needed.'
+      - 'mark_ready fails before required evidence and passes after evidence.'
+      - 'Sibling access denial is included.'
+    tests:
+      unit:
+        - 'Covered by component tests from dependencies.'
+      integration_e2e:
+        - 'Full scenario script/test.'
+        - 'Run against test database and MCP server/test client.'
+      negative_regression:
+        - 'Attempt mark_ready before PR/evidence.'
+        - 'Attempt read sibling package.'
+        - 'Attempt reuse claimed secret if policy forbids.'
+  - id: SYMPP-P5-001
+    phase: 'Phase 5 — Dashboard'
+    title: 'Dashboard API endpoints'
+    kind: dashboard
+    owner_role: worker
+    dependencies: ["SYMPP-P1-004", "SYMPP-P1-005", "SYMPP-P2-003"]
+    summary: 'Add read-oriented API endpoints for board, work package detail, timeline, artifacts, blockers, grants, and agent runs.'
+    acceptance_criteria:
+      - 'Dashboard API returns useful state for standalone packages.'
+      - 'Raw secrets are never returned.'
+      - 'Timeline includes progress/finding/status events.'
+      - 'API tests cover redaction.'
+    tests:
+      unit:
+        - 'Serialize package card.'
+        - 'Serialize detail.'
+        - 'Redact secrets.'
+        - 'Group by status.'
+      integration_e2e:
+        - 'Create package with events/artifacts and fetch board/detail.'
+        - 'Verify worker-scoped API cannot fetch global board unless allowed.'
+      negative_regression:
+        - 'Do not expose raw secret hashes unless explicitly safe.'
+        - 'Do not add mutating controls in this package.'
+  - id: SYMPP-P5-002
+    phase: 'Phase 5 — Dashboard'
+    title: 'Dashboard board UI'
+    kind: dashboard
+    owner_role: worker
+    dependencies: ["SYMPP-P5-001"]
+    summary: 'Build the first human-facing board UI with status columns and compact work-package cards.'
+    acceptance_criteria:
+      - 'Human can see active packages by status.'
+      - 'Cards show enough information to detect stalled or blocked work.'
+      - 'No raw secrets are displayed.'
+      - 'Read-only UI does not alter state.'
+    tests:
+      unit:
+        - 'Component/render tests if UI framework supports them.'
+        - 'Formatting helpers tested.'
+      integration_e2e:
+        - 'Fetch board API and render packages.'
+        - 'Verify empty board state.'
+      negative_regression:
+        - 'Do not add merge/revoke controls yet.'
+        - 'Do not require GitHub sync to render basic cards.'
+  - id: SYMPP-P5-003
+    phase: 'Phase 5 — Dashboard'
+    title: 'Work package detail UI and timeline'
+    kind: dashboard
+    owner_role: worker
+    dependencies: ["SYMPP-P5-001"]
+    summary: 'Build detail view that shows virtual planning files, findings, progress timeline, artifacts, PR state, grants, and agent runs.'
+    acceptance_criteria:
+      - 'Human can inspect a package without reading transcripts.'
+      - 'Virtual planning file state is visible.'
+      - 'Timeline is chronological.'
+      - 'Sensitive fields are redacted.'
+    tests:
+      unit:
+        - 'Render helpers for timeline and plan status.'
+        - 'Redaction helper if UI-side.'
+      integration_e2e:
+        - 'Create test package with plan/finding/progress/artifact and render detail.'
+        - 'Verify missing data states.'
+      negative_regression:
+        - 'Do not expose raw secrets.'
+        - 'Do not allow worker-scoped viewer to see sibling details.'
+  - id: SYMPP-P5-004
+    phase: 'Phase 5 — Dashboard'
+    title: 'Runtime observability and alerts'
+    kind: dashboard
+    owner_role: worker
+    dependencies: ["SYMPP-P2-003", "SYMPP-P5-001"]
+    summary: 'Add runtime view and basic alert indicators for stale agents, blockers, scope drift, missing readiness evidence, and failed runs.'
+    acceptance_criteria:
+      - 'Human can see active worker runs and stale state.'
+      - 'Blocked packages are obvious.'
+      - 'Ready-but-missing-evidence packages are flagged.'
+      - 'Runtime view does not control or mutate runs yet.'
+    tests:
+      unit:
+        - 'Stale calculation.'
+        - 'Alert indicator calculation.'
+        - 'Missing evidence calculation.'
+      integration_e2e:
+        - 'Create stale/fresh runs and verify API/UI state.'
+        - 'Create blocked package and verify board indicator.'
+      negative_regression:
+        - 'Do not page/notify externally yet unless explicitly configured.'
+        - 'Do not expose secrets in runtime logs.'
+  - id: SYMPP-P6-001
+    phase: 'Phase 6 — GitHub/review integration'
+    title: 'GitHub PR attachment and sync'
+    kind: integration
+    owner_role: worker
+    dependencies: ["SYMPP-P4-003", "SYMPP-P5-001"]
+    summary: 'Attach and synchronize GitHub PR metadata, including branch, head SHA, changed files, CI/check summary, review state, and merge state.'
+    acceptance_criteria:
+      - 'Attached PR metadata is stored and visible.'
+      - 'Head SHA changes are detected.'
+      - 'CI/review/merge state can be fetched in test/dry mode.'
+      - 'Readiness gates can depend on current PR state.'
+    tests:
+      unit:
+        - 'Parse PR URL.'
+        - 'Map GitHub metadata to artifact/state.'
+        - 'Detect stale artifact head SHA.'
+        - 'Handle API errors.'
+      integration_e2e:
+        - 'Attach test/mock PR and sync metadata.'
+        - 'Verify dashboard detail shows PR state.'
+        - 'Existing readiness fails when PR state is missing/stale.'
+      negative_regression:
+        - 'Do not require GitHub sync for investigation packages.'
+        - 'Do not expose GitHub tokens.'
+  - id: SYMPP-P6-002
+    phase: 'Phase 6 — GitHub/review integration'
+    title: 'Review-suite artifact contract'
+    kind: integration
+    owner_role: worker
+    dependencies: ["SYMPP-P4-003"]
+    summary: 'Define and enforce review-suite artifacts keyed to work package and PR head SHA.'
+    acceptance_criteria:
+      - 'Review-suite result can be attached and validated.'
+      - 'Artifact includes work_package_id and head_sha.'
+      - 'mark_ready fails if required artifact missing or stale.'
+      - 'Dashboard/API shows review-suite status.'
+    tests:
+      unit:
+        - 'Validate passing artifact.'
+        - 'Reject missing head_sha.'
+        - 'Reject wrong work_package_id.'
+        - 'Reject stale artifact for current PR head.'
+      integration_e2e:
+        - 'Attach PR, attach review result for matching SHA, mark ready.'
+        - 'Attach review result for old SHA, mark_ready fails.'
+      negative_regression:
+        - 'Do not accept arbitrary unvalidated JSON as passing evidence.'
+        - 'Do not let worker bypass required review suite.'
+  - id: SYMPP-P6-003
+    phase: 'Phase 6 — GitHub/review integration'
+    title: 'Changed-file scope guard and readiness gates'
+    kind: security
+    owner_role: worker
+    dependencies: ["SYMPP-P6-001", "SYMPP-P6-002", "SYMPP-P1-003"]
+    summary: 'Enforce changed-file/base-branch/scope guard and combine readiness gates across plan, blockers, PR, CI, review suite, and scope.'
+    acceptance_criteria:
+      - 'Out-of-scope changed files block readiness.'
+      - 'Wrong base branch blocks readiness.'
+      - 'Missing CI/review artifacts block readiness when required.'
+      - 'Approved scope expansion permits new files.'
+      - 'Readiness reasons are visible.'
+    tests:
+      unit:
+        - 'Glob matching.'
+        - 'Wrong base branch fails.'
+        - 'Out-of-scope file fails.'
+        - 'Approved expansion passes.'
+        - 'Active blocker fails.'
+        - 'Incomplete required plan fails.'
+      integration_e2e:
+        - 'Attach PR with changed files; mark_ready fails/passes based on scope.'
+        - 'Approve scope expansion and re-evaluate readiness.'
+      negative_regression:
+        - 'Worker cannot approve own expansion.'
+        - 'Scope guard cannot be disabled by worker.'
+  - id: SYMPP-P7-001
+    phase: 'Phase 7 — Phase/architect delegation'
+    title: 'Phase entity and architect grants'
+    kind: delegation
+    owner_role: worker
+    dependencies: ["SYMPP-P1-002", "SYMPP-P1-003"]
+    summary: 'Add Phase/container entity and architect-scoped grants that can manage child packages but not arbitrary global state.'
+    acceptance_criteria:
+      - 'Phase can be created and read.'
+      - 'Architect grant can access its phase.'
+      - 'Architect grant cannot access unrelated phase.'
+      - 'Worker grant cannot access phase board.'
+    tests:
+      unit:
+        - 'Create phase.'
+        - 'Architect reads own phase.'
+        - 'Architect denied other phase.'
+        - 'Worker denied phase board.'
+      integration_e2e:
+        - 'Create phase, mint architect grant, claim/read phase board.'
+        - 'Run existing standalone hotfix flow to ensure no phase dependency introduced.'
+      negative_regression:
+        - 'Do not require standalone packages to have phase.'
+        - 'Do not give architect global admin by default.'
+  - id: SYMPP-P7-002
+    phase: 'Phase 7 — Phase/architect delegation'
+    title: 'Child work creation and worker-key minting'
+    kind: delegation
+    owner_role: worker
+    dependencies: ["SYMPP-P7-001", "SYMPP-P3-003"]
+    summary: 'Allow a phase architect to create child WorkPackages and mint narrower worker grants for them.'
+    acceptance_criteria:
+      - 'Architect can create child package in own phase.'
+      - 'Architect can mint worker key for child package.'
+      - 'Child grant is narrower than architect grant.'
+      - 'Out-of-phase child creation is rejected.'
+      - 'Standalone flow remains unaffected.'
+    tests:
+      unit:
+        - 'Create valid child.'
+        - 'Reject child outside phase.'
+        - 'Mint child worker grant.'
+        - 'Reject broader child grant.'
+        - 'Worker cannot mint child grant.'
+      integration_e2e:
+        - 'Architect creates child, worker claims child, worker sees only child package.'
+        - 'Architect sees child status.'
+      negative_regression:
+        - 'Architect cannot mint child against main if phase targets beta branch unless allowed.'
+        - 'Worker cannot see sibling child packages.'
+  - id: SYMPP-P7-003
+    phase: 'Phase 7 — Phase/architect delegation'
+    title: 'Architect approval and merge-to-phase workflow'
+    kind: delegation
+    owner_role: worker
+    dependencies: ["SYMPP-P7-002", "SYMPP-P6-003"]
+    summary: 'Implement the phase-child readiness path where workers mark ready for architect, architect approves and records merge into phase.'
+    acceptance_criteria:
+      - 'Worker can mark child ready for architect when gates pass.'
+      - 'Architect can approve child ready state.'
+      - 'Architect can record merge artifact/status.'
+      - 'Phase progress reflects merged child count.'
+      - 'Human can inspect the phase summary.'
+    tests:
+      unit:
+        - 'Phase-child readiness state.'
+        - 'Architect approval allowed.'
+        - 'Worker approval denied.'
+        - 'Merge record validation.'
+        - 'Phase progress calculation.'
+      integration_e2e:
+        - 'Create phase child, attach PR/review, mark ready, approve, record merge.'
+        - 'Verify dashboard/API phase board updates.'
+      negative_regression:
+        - 'Worker cannot mark merged_into_phase.'
+        - 'Architect cannot approve child with failed gates unless explicit override with rationale.'
+  - id: SYMPP-P8-001
+    phase: 'Phase 8 — Hardening and pilot'
+    title: 'Full integration test harness'
+    kind: hardening
+    owner_role: worker
+    dependencies: ["SYMPP-P4-003", "SYMPP-P6-003", "SYMPP-P7-003"]
+    summary: 'Build a durable integration test harness covering standalone, MCP, GitHub/review gates, and architect delegation flows.'
+    acceptance_criteria:
+      - 'One command runs core Symphony++ integration suite or documented profile.'
+      - 'Standalone hotfix scenario passes.'
+      - 'Phase architect scenario passes.'
+      - 'Security denial scenarios pass.'
+      - 'CI feasibility documented.'
+    tests:
+      unit:
+        - 'Covered by existing unit suites.'
+      integration_e2e:
+        - 'Run full E2E test profile.'
+        - 'Verify fake GitHub/review services behave deterministically.'
+      negative_regression:
+        - 'Do not require real production credentials for default tests.'
+        - 'Do not make tests flaky due to network.'
+  - id: SYMPP-P8-002
+    phase: 'Phase 8 — Hardening and pilot'
+    title: 'Security hardening and audit review'
+    kind: security
+    owner_role: worker
+    dependencies: ["SYMPP-P6-003", "SYMPP-P7-002"]
+    summary: 'Perform focused security hardening on secrets, permissions, redaction, grants, scope expansion, and audit trails.'
+    acceptance_criteria:
+      - 'No raw grant secrets in logs/tests/API.'
+      - 'Every MCP/API mutating action checks grant capability.'
+      - 'Revocation/override/scope approval are auditable.'
+      - 'Residual risks document exists.'
+    tests:
+      unit:
+        - 'Redaction tests.'
+        - 'Capability check tests per endpoint/tool.'
+        - 'Revocation audit event.'
+        - 'Override audit event.'
+      integration_e2e:
+        - 'Attempt common unauthorized actions across API/MCP.'
+        - 'Run full test suite with secret-grep if feasible.'
+      negative_regression:
+        - 'Do not rely on prompt wording for security.'
+        - 'Do not leave admin endpoints unauthenticated.'
+  - id: SYMPP-P8-003
+    phase: 'Phase 8 — Hardening and pilot'
+    title: 'Kraken pilot migration playbook'
+    kind: pilot
+    owner_role: architect
+    dependencies: ["SYMPP-P8-001", "SYMPP-P8-002"]
+    summary: 'Prepare a low-risk Kraken pilot plan using Symphony++ without migrating the entire active rewrite at once.'
+    acceptance_criteria:
+      - 'Pilot plan identifies concrete packages/branches.'
+      - 'Rollback plan exists.'
+      - 'Success metrics are measurable.'
+      - 'Human can run pilot without reading system internals.'
+    tests:
+      unit:
+        - 'None.'
+      integration_e2e:
+        - 'Dry-run creation of pilot packages in test/staging if available.'
+        - 'Validate prompts with architect agent in non-production branch.'
+      negative_regression:
+        - 'Do not migrate active Kraken rewrite phase before mini-pilot succeeds.'
+        - 'Do not allow automated production merge in pilot.'
+  - id: SYMPP-P8-004
+    phase: 'Phase 8 — Hardening and pilot'
+    title: 'Documentation, release readiness, and operator training'
+    kind: docs
+    owner_role: worker
+    dependencies: ["SYMPP-P8-001", "SYMPP-P8-002"]
+    summary: 'Finalize documentation for operators, architects, workers, reviewers, setup, troubleshooting, and release gates.'
+    acceptance_criteria:
+      - 'Docs cover standalone and phase-based flows.'
+      - 'A new operator can create a hotfix package from docs.'
+      - 'Reviewer checklist exists.'
+      - 'Known limitations are explicit.'
+      - 'Release gate checklist exists.'
+    tests:
+      unit:
+        - 'Docs link checker if available.'
+      integration_e2e:
+        - 'Have an agent follow docs in dry run or test repo.'
+        - 'Run existing tests to verify no docs-only breakage.'
+      negative_regression:
+        - 'Do not claim production readiness beyond proven scope.'
+        - 'Do not omit security limitations.'

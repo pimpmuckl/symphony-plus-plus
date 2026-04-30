@@ -1,0 +1,33 @@
+# Readiness Gates
+
+A WorkPackage can be marked ready only when all gates required by its policy template pass.
+
+## Common gates
+
+- WorkPackage status is eligible for readiness.
+- No active blocker remains.
+- Required plan nodes are complete or skipped with rationale.
+- Acceptance criteria have evidence.
+- Required PR exists.
+- Required review-suite artifact exists and matches current head SHA.
+- Required CI/check status is green.
+- Changed files are within allowed scope.
+- Base branch matches package constraints.
+
+## Phase-child additional gates
+
+- Parent phase is active.
+- Child package belongs to the phase.
+- Architect approval is required after worker readiness.
+
+## Hotfix additional gates
+
+- Grant has not expired or package has been reauthorized.
+- Human merge is required.
+- Hotfix review-suite profile passes.
+
+## Investigation additional gates
+
+- Recommendation artifact exists.
+- Findings are summarized.
+- PR is not required unless package explicitly asks for one.

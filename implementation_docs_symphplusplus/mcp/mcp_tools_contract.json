@@ -1,0 +1,70 @@
+{
+  "worker_tools": [
+    {
+      "name": "claim_work_key",
+      "purpose": "Claim a one-time work key/secret and bind it to the current agent run."
+    },
+    {
+      "name": "get_current_assignment",
+      "purpose": "Return the scoped assignment for the bound grant."
+    },
+    {
+      "name": "read_context",
+      "purpose": "Read context.md for the current work package."
+    },
+    {
+      "name": "read_task_plan",
+      "purpose": "Read task_plan.md for the current work package."
+    },
+    {
+      "name": "update_task_plan",
+      "purpose": "Patch the plan with optimistic concurrency."
+    },
+    {
+      "name": "append_finding",
+      "purpose": "Append a finding to the current work package."
+    },
+    {
+      "name": "append_progress",
+      "purpose": "Append a progress event to the current work package."
+    },
+    {
+      "name": "set_status",
+      "purpose": "Request a valid state transition."
+    },
+    {
+      "name": "report_blocker",
+      "purpose": "Record an active blocker."
+    },
+    {
+      "name": "request_scope_expansion",
+      "purpose": "Request broader scope; does not approve it."
+    },
+    {
+      "name": "attach_branch",
+      "purpose": "Attach branch metadata."
+    },
+    {
+      "name": "attach_pr",
+      "purpose": "Attach PR metadata."
+    },
+    {
+      "name": "submit_review_package",
+      "purpose": "Attach summary/tests/artifacts for review."
+    },
+    {
+      "name": "mark_ready",
+      "purpose": "Move to ready state only if gates pass."
+    }
+  ],
+  "resources": [
+    "sympp://assignment/current",
+    "sympp://work-packages/{id}/context.md",
+    "sympp://work-packages/{id}/task_plan.md",
+    "sympp://work-packages/{id}/findings.md",
+    "sympp://work-packages/{id}/progress.md",
+    "sympp://work-packages/{id}/acceptance.md",
+    "sympp://work-packages/{id}/review_suite.md",
+    "sympp://work-packages/{id}/handoff.md"
+  ]
+}
