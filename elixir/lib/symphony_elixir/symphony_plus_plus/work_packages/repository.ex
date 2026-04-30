@@ -7,7 +7,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
   import Ecto.Query, only: [from: 2]
 
   @type repo :: module()
-  @type error :: :not_found | :id_already_exists | :stale_status | {:migration_failed, term()} | Changeset.t()
+  @type error ::
+          :not_found
+          | :id_already_exists
+          | :invalid_status
+          | :stale_status
+          | {:migration_failed, term()}
+          | Changeset.t()
 
   @spec migrate(repo()) :: :ok | {:error, error()}
   def migrate(repo) when is_atom(repo) do
@@ -59,6 +65,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
   @spec update_status(repo(), String.t(), String.t(), String.t()) :: {:ok, WorkPackage.t()} | {:error, error()}
   def update_status(repo, id, current_status, next_status)
       when is_atom(repo) and is_binary(id) and is_binary(current_status) and is_binary(next_status) do
+    with :ok <- validate_status(current_status),
+         :ok <- validate_status(next_status) do
+      update_valid_status(repo, id, current_status, next_status)
+    end
+  end
+
+  defp update_valid_status(repo, id, current_status, next_status) do
     now = DateTime.utc_now(:microsecond)
 
     repo.transaction(fn ->
@@ -73,6 +86,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
     |> case do
       {:ok, work_package} -> {:ok, work_package}
       {:error, error} -> error
+    end
+  end
+
+  defp validate_status(status) do
+    if status in WorkPackage.statuses() do
+      :ok
+    else
+      {:error, :invalid_status}
     end
   end
 

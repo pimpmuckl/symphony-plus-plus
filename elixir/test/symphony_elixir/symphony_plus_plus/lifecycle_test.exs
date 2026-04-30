@@ -235,6 +235,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     assert fetched.status == "ci_waiting"
   end
 
+  test "conditional status update rejects unknown statuses before writing", %{repo: repo} do
+    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix", status: "reviewing"))
+
+    assert {:error, :invalid_status} = Repository.update_status(repo, package.id, "reviewing", "definitely_done")
+    assert {:ok, fetched} = Repository.get(repo, package.id)
+    assert fetched.status == "reviewing"
+  end
+
   defp insert_raw_package!(repo, attrs) do
     now = DateTime.utc_now(:microsecond)
     attrs = WorkPackageFactory.attrs(attrs)
