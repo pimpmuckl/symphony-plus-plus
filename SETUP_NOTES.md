@@ -151,10 +151,22 @@ skipped because `LINEAR_API_KEY` was not present.
 
 ## Next Local Setup Step
 
-Install `mise` and `make` on the target host, then rerun:
+For the PowerShell host profiled above, install `mise` and `make`, then rerun:
 
 ```powershell
 cd C:\Users\jonat\.codex\worktrees\symphony-plus-plus-SYMPP-P0-001\elixir
+mise trust
+mise install
+mise exec -- mix setup
+mise exec -- mix build
+make all
+```
+
+For the WSL fallback profiled above, `/usr/bin/make` is already present. Install
+the Elixir toolchain with `mise`, then rerun:
+
+```bash
+cd /mnt/c/Users/jonat/.codex/worktrees/symphony-plus-plus-SYMPP-P0-001/elixir
 mise trust
 mise install
 mise exec -- mix setup
