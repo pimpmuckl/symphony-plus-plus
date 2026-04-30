@@ -10,7 +10,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
 
-  @worker %{grant_role: "worker", capabilities: ["worker:lifecycle.transition"]}
   @architect %{grant_role: "architect", capabilities: ["architect:lifecycle.transition"]}
 
   setup_all do
@@ -42,7 +41,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
           "ci_waiting",
           "ready_for_human_merge"
         ] do
-      assert {:ok, package} = Service.transition(repo, package.id, status, @worker)
+      assert {:ok, package} = Service.transition(repo, package.id, status, worker_actor(package))
       assert package.status == status
     end
   end
@@ -99,19 +98,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
   test "worker capability cannot transition to merged", %{repo: repo} do
     assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix", status: "ready_for_human_merge"))
 
-    assert {:error, :worker_cannot_mark_merged} = Service.transition(repo, package.id, "merged", @worker)
+    assert {:error, :worker_cannot_mark_merged} = Service.transition(repo, package.id, "merged", worker_actor(package))
   end
 
   test "hotfix happy path reaches ready for human merge", %{repo: repo} do
     assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix"))
 
-    assert {:ok, package} = Service.transition(repo, package.id, "ready_for_worker", @worker)
-    assert {:ok, package} = Service.transition(repo, package.id, "claimed", @worker)
-    assert {:ok, package} = Service.transition(repo, package.id, "planning", @worker)
-    assert {:ok, package} = Service.transition(repo, package.id, "implementing", @worker)
-    assert {:ok, package} = Service.transition(repo, package.id, "reviewing", @worker)
-    assert {:ok, package} = Service.transition(repo, package.id, "ci_waiting", @worker)
-    assert {:ok, package} = Service.transition(repo, package.id, "ready_for_human_merge", @worker)
+    assert {:ok, package} = Service.transition(repo, package.id, "ready_for_worker", worker_actor(package))
+    assert {:ok, package} = Service.transition(repo, package.id, "claimed", worker_actor(package))
+    assert {:ok, package} = Service.transition(repo, package.id, "planning", worker_actor(package))
+    assert {:ok, package} = Service.transition(repo, package.id, "implementing", worker_actor(package))
+    assert {:ok, package} = Service.transition(repo, package.id, "reviewing", worker_actor(package))
+    assert {:ok, package} = Service.transition(repo, package.id, "ci_waiting", worker_actor(package))
+    assert {:ok, package} = Service.transition(repo, package.id, "ready_for_human_merge", worker_actor(package))
 
     assert package.status == "ready_for_human_merge"
   end
@@ -119,13 +118,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
   test "phase child happy path reaches ready for architect merge", %{repo: repo} do
     assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "phase_child", parent_id: "phase-1"))
 
-    assert {:ok, package} = Service.transition(repo, package.id, "ready_for_worker", @worker)
-    assert {:ok, package} = Service.transition(repo, package.id, "claimed", @worker)
-    assert {:ok, package} = Service.transition(repo, package.id, "planning", @worker)
-    assert {:ok, package} = Service.transition(repo, package.id, "implementing", @worker)
-    assert {:ok, package} = Service.transition(repo, package.id, "reviewing", @worker)
-    assert {:ok, package} = Service.transition(repo, package.id, "ci_waiting", @worker)
-    assert {:ok, package} = Service.transition(repo, package.id, "ready_for_architect_merge", @worker)
+    assert {:ok, package} = Service.transition(repo, package.id, "ready_for_worker", worker_actor(package))
+    assert {:ok, package} = Service.transition(repo, package.id, "claimed", worker_actor(package))
+    assert {:ok, package} = Service.transition(repo, package.id, "planning", worker_actor(package))
+    assert {:ok, package} = Service.transition(repo, package.id, "implementing", worker_actor(package))
+    assert {:ok, package} = Service.transition(repo, package.id, "reviewing", worker_actor(package))
+    assert {:ok, package} = Service.transition(repo, package.id, "ci_waiting", worker_actor(package))
+    assert {:ok, package} = Service.transition(repo, package.id, "ready_for_architect_merge", worker_actor(package))
 
     assert package.status == "ready_for_architect_merge"
   end
@@ -148,7 +147,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
              )
 
     assert {:error, :worker_cannot_advance_phase_state} =
-             Service.transition(repo, package.id, "merging_into_phase", @worker)
+             Service.transition(repo, package.id, "merging_into_phase", worker_actor(package))
 
     assert {:ok, package} = Service.transition(repo, package.id, "merging_into_phase", @architect)
     assert package.status == "merging_into_phase"
@@ -196,6 +195,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     assert transitioned.status == "ready_for_worker"
   end
 
+  test "worker assignment cannot transition a sibling work package", %{repo: repo} do
+    assert {:ok, first} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix", title: "First"))
+    assert {:ok, second} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix", title: "Second"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, first.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+
+    assert {:error, :actor_scope_mismatch} =
+             Service.transition(repo, second.id, "ready_for_worker", Map.from_struct(assignment))
+
+    assert {:ok, fetched} = Repository.get(repo, second.id)
+    assert fetched.status == "created"
+  end
+
   test "transition rejects malformed capability payloads without crashing", %{repo: repo} do
     assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix"))
 
@@ -209,13 +221,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
   test "transition rejects unsupported lifecycle kinds", %{repo: repo} do
     package = insert_raw_package!(repo, kind: "standard_pr", status: "created")
 
-    assert {:error, :unsupported_work_package_kind} = Service.transition(repo, package.id, "ready_for_worker", @worker)
+    assert {:error, :unsupported_work_package_kind} = Service.transition(repo, package.id, "ready_for_worker", worker_actor(package))
   end
 
   test "transition rejects unknown persisted lifecycle statuses", %{repo: repo} do
     package = insert_raw_package!(repo, kind: "hotfix", status: "legacy_status")
 
-    assert {:error, :unknown_lifecycle_status} = Service.transition(repo, package.id, "ready_for_worker", @worker)
+    assert {:error, :unknown_lifecycle_status} = Service.transition(repo, package.id, "ready_for_worker", worker_actor(package))
   end
 
   test "transition rejects cross-kind persisted lifecycle statuses", %{repo: repo} do
@@ -263,5 +275,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
       inserted_at: now,
       updated_at: now
     })
+  end
+
+  defp worker_actor(package) do
+    %{grant_role: "worker", capabilities: ["worker:lifecycle.transition"], work_package_id: package.id}
   end
 end

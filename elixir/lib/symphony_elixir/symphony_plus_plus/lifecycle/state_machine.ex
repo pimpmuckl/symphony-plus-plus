@@ -48,6 +48,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
           | :unsupported_work_package_kind
           | :worker_cannot_mark_merged
           | :worker_cannot_advance_phase_state
+          | :actor_scope_mismatch
           | :missing_lifecycle_capability
 
   @spec validate_transition(WorkPackage.t(), String.t(), actor()) :: :ok | {:error, error()}
@@ -98,10 +99,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
     end
   end
 
-  defp validate_actor(%WorkPackage{}, _next_status, actor) do
+  defp validate_actor(%WorkPackage{} = work_package, _next_status, actor) do
     case role(actor) do
       "architect" -> require_capability(actor, @architect_capability)
-      "worker" -> require_capability(actor, @worker_capability)
+      "worker" -> validate_worker_actor(work_package, actor)
       _role -> {:error, :missing_lifecycle_capability}
     end
   end
@@ -133,6 +134,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
       :ok
     else
       {:error, :missing_lifecycle_capability}
+    end
+  end
+
+  defp validate_worker_actor(%WorkPackage{} = work_package, actor) do
+    with :ok <- require_capability(actor, @worker_capability) do
+      require_worker_scope(work_package, actor)
+    end
+  end
+
+  defp require_worker_scope(%WorkPackage{} = work_package, actor) do
+    case Map.get(actor, :work_package_id) || Map.get(actor, "work_package_id") do
+      work_package_id when work_package_id == work_package.id -> :ok
+      _work_package_id -> {:error, :actor_scope_mismatch}
     end
   end
 
