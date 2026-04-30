@@ -222,6 +222,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
              })
   end
 
+  test "worker grant payload cannot forge architect role", %{repo: repo} do
+    assert {:ok, package} =
+             Repository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 kind: "phase_child",
+                 parent_id: "phase-1",
+                 status: "ready_for_architect_merge"
+               )
+             )
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+
+    forged_actor =
+      assignment
+      |> Map.from_struct()
+      |> Map.merge(%{grant_role: "architect", capabilities: ["architect:lifecycle.transition"]})
+
+    assert {:error, :worker_cannot_advance_phase_state} =
+             Service.transition(repo, package.id, "merging_into_phase", forged_actor)
+  end
+
   test "state machine rejects malformed capability payloads without crashing", %{repo: repo} do
     assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix"))
 

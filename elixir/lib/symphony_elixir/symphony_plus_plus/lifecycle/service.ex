@@ -39,21 +39,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service do
   end
 
   defp verified_actor(repo, %WorkPackage{} = work_package, actor) do
-    case role(actor) do
-      "worker" -> verified_worker_actor(repo, work_package, actor)
-      _role -> {:ok, actor}
+    case grant_id(actor) do
+      grant_id when is_binary(grant_id) -> verified_grant_actor(repo, work_package, grant_id)
+      _missing_grant_id -> verified_grantless_actor(actor)
     end
   end
 
-  defp verified_worker_actor(repo, %WorkPackage{} = work_package, actor) do
-    with grant_id when is_binary(grant_id) <- Map.get(actor, :grant_id) || Map.get(actor, "grant_id"),
-         {:ok, grant} <- AccessGrantRepository.get(repo, grant_id),
+  defp verified_grant_actor(repo, %WorkPackage{} = work_package, grant_id) do
+    with {:ok, grant} <- AccessGrantRepository.get(repo, grant_id),
          :ok <- validate_worker_grant(work_package, grant) do
       {:ok, %{grant_role: grant.grant_role, capabilities: grant.capabilities, work_package_id: grant.work_package_id}}
+    end
+  end
+
+  defp verified_grantless_actor(actor) do
+    if role(actor) == "worker" do
+      {:error, :actor_scope_mismatch}
     else
-      nil -> {:error, :actor_scope_mismatch}
-      {:error, _reason} = error -> error
-      _grant_id -> {:error, :actor_scope_mismatch}
+      {:ok, actor}
     end
   end
 
@@ -67,6 +70,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service do
       true -> :ok
     end
   end
+
+  defp grant_id(actor), do: Map.get(actor, :grant_id) || Map.get(actor, "grant_id")
 
   defp role(actor), do: Map.get(actor, :grant_role) || Map.get(actor, "grant_role") || Map.get(actor, :role) || Map.get(actor, "role")
 end
