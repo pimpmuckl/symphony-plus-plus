@@ -149,24 +149,108 @@ runtime orchestrator smoke checks executed in this environment because the local
 host is missing the required Elixir toolchain. Live Linear checks were also
 skipped because `LINEAR_API_KEY` was not present.
 
-## Next Local Setup Step
+## Post-Install Validation Refresh
 
-For the PowerShell host profiled above, install `mise` and `make`, then rerun:
+Date: 2026-04-30.
+
+After installing Erlang/Elixir/Chocolatey tooling on the same Windows host,
+the upstream baseline was rerun from the merged `symphony-plus-plus/beta`
+state. This refresh preserves the original missing-tooling baseline above and
+adds the current host evidence after installation.
+
+Validated successfully in `elixir/`:
+
+```text
+mise trust
+Result: passed.
+
+mise exec -- elixir --version
+Result: passed; Erlang/OTP 28 and Elixir 1.19.5 were available.
+
+mise exec -- mix --version
+Result: passed; Mix 1.19.5 was available.
+
+mise exec -- mix setup
+Result: passed.
+
+mise exec -- mix build
+Result: passed; generated bin/symphony.
+Note: Phoenix LiveView emitted a Windows symlink permission warning (:eperm),
+but the build completed successfully.
+```
+
+Raw `make -C elixir all` still failed in the current PowerShell process because
+Make invoked plain `mix`, and that process `PATH` did not include Chocolatey's
+Elixir bin directory. For the current session, prepending the Chocolatey Elixir
+bin directory remediated raw command discovery:
 
 ```powershell
-cd C:\Users\jonat\.codex\worktrees\symphony-plus-plus-SYMPP-P0-001\elixir
+$env:PATH = "C:\ProgramData\chocolatey\lib\elixir\tools\bin;$env:PATH"
+where.exe elixir
+where.exe mix
+where.exe iex
+```
+
+After that current-session fix, raw `elixir`, `mix`, and `iex` resolved. This
+PATH note is only for raw command discovery after an out-of-band Chocolatey
+install. Keep the canonical validation flow on the pinned `mise exec` commands
+below; do not use a global Chocolatey PATH entry as a substitute for the
+`elixir/mise.toml` toolchain.
+
+The full upstream gate advanced past setup/build/format/lint and reached tests
+when run through `mise`:
+
+```text
+mise exec -- make all
+Result: failed in coverage/tests after setup, build, format, and lint.
+Observed: 230 tests, 57 failures, 2 skipped.
+Coverage: 95.39%, below the configured 100% threshold.
+```
+
+Failure clusters on this Windows host included path canonicalization/root
+containment, symlink permission behavior, fake SSH/binary interception, shell
+hook execution through `sh -lc`, specs-check expectations, and workspace
+cleanup/path assertions.
+
+This means Phase 0 now has upstream baseline evidence that `mise exec` setup and
+build work on the post-install Windows host. The full gate reaches the upstream
+test/coverage phase but is not green on this host.
+
+## Next Local Setup Step
+
+For a fresh PowerShell host with no tooling, install `mise` and `make` first.
+Let `mise install` provide the pinned Elixir/Erlang toolchain, then rerun:
+
+```powershell
+cd <repo-root>\elixir
 mise trust
 mise install
 mise exec -- mix setup
 mise exec -- mix build
-make all
+mise exec -- make all
 ```
+
+If the current PowerShell process must resolve raw Elixir commands immediately
+after a Chocolatey Elixir install, first apply the session-local `PATH`
+remediation:
+
+```powershell
+$env:PATH = "C:\ProgramData\chocolatey\lib\elixir\tools\bin;$env:PATH"
+where.exe elixir
+where.exe mix
+where.exe iex
+```
+
+A new login shell or persistent user/system `PATH` update may still be required
+after Chocolatey installs for future PowerShell processes to resolve those raw
+commands without manual session patching. That PATH update is not part of the
+pinned upstream validation flow above.
 
 For the WSL fallback profiled above, `/usr/bin/make` is already present. Install
 the Elixir toolchain with `mise`, then rerun:
 
 ```bash
-cd /mnt/c/Users/jonat/.codex/worktrees/symphony-plus-plus-SYMPP-P0-001/elixir
+cd <repo-root>/elixir
 mise trust
 mise install
 mise exec -- mix setup
@@ -178,9 +262,9 @@ With a valid `LINEAR_API_KEY`, run live validation only when disposable Linear
 resources and a real Codex app-server session are acceptable:
 
 ```powershell
-cd C:\Users\jonat\.codex\worktrees\symphony-plus-plus-SYMPP-P0-001\elixir
+cd <repo-root>\elixir
 $env:LINEAR_API_KEY = "<redacted>"
-make e2e
+mise exec -- make e2e
 ```
 
 Keep token values out of logs, docs, PR text, and commits.
