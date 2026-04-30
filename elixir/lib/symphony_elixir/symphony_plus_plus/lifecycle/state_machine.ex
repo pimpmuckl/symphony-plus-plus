@@ -33,7 +33,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
     "ci_waiting" => ["ready_for_architect_merge", "reviewing", "blocked", "abandoned"],
     "ready_for_architect_merge" => ["merging_into_phase", "closed"],
     "merging_into_phase" => ["merged_into_phase", "blocked"],
-    "merged_into_phase" => ["merged"],
+    "merged_into_phase" => [],
     "blocked" => ["planning", "implementing", "abandoned"],
     "abandoned" => [],
     "closed" => [],

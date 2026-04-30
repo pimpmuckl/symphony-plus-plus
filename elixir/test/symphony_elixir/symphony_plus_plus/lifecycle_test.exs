@@ -57,21 +57,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
 
   test "policy templates expand into deterministic constraints and readiness requirements" do
     assert {:ok, quick_fix} = Templates.expand("quick_fix")
+    assert quick_fix.constraints.expiry_seconds == 86_400
     assert quick_fix.constraints.planning_depth == "brief"
     assert quick_fix.constraints.terminal_readiness_status == "ready_for_human_merge"
     assert "review_t1_green" in quick_fix.readiness_requirements
 
     assert {:ok, hotfix} = Templates.expand("hotfix")
-    assert hotfix.constraints.expiry_seconds == 86_400
+    assert hotfix.constraints.expiry_seconds == 21_600
     assert hotfix.review_suite.required == ["review_t1", "review_t2"]
     assert hotfix.constraints.terminal_readiness_status == "ready_for_human_merge"
+    assert hotfix.constraints.expiry_seconds < quick_fix.constraints.expiry_seconds
 
     assert {:ok, phase_child} = Templates.expand("phase_child")
+    assert phase_child.constraints.expiry_seconds == 172_800
     assert phase_child.constraints.planning_depth == "package"
     assert phase_child.constraints.terminal_readiness_status == "ready_for_architect_merge"
     assert "architect_ready" in phase_child.readiness_requirements
 
     assert {:ok, investigation} = Templates.expand("investigation")
+    assert investigation.constraints.expiry_seconds == 43_200
     assert investigation.constraints.planning_depth == "findings"
     assert investigation.required_gates == ["findings_documented", "scope_recommendation"]
   end
@@ -148,6 +152,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
 
     assert {:ok, package} = Service.transition(repo, package.id, "merging_into_phase", @architect)
     assert package.status == "merging_into_phase"
+  end
+
+  test "phase child merged into phase is terminal", %{repo: repo} do
+    assert {:ok, package} =
+             Repository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 kind: "phase_child",
+                 parent_id: "phase-1",
+                 status: "merged_into_phase"
+               )
+             )
+
+    assert {:error, :invalid_transition} = Service.transition(repo, package.id, "merged", @architect)
   end
 
   test "transition requires explicit lifecycle capability", %{repo: repo} do

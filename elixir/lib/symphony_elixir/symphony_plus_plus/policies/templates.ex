@@ -5,7 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
     "quick_fix" => %{
       template: "quick_fix",
       constraints: %{
-        expiry_seconds: 21_600,
+        expiry_seconds: 86_400,
         planning_depth: "brief",
         terminal_readiness_status: "ready_for_human_merge"
       },
@@ -16,7 +16,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
     "hotfix" => %{
       template: "hotfix",
       constraints: %{
-        expiry_seconds: 86_400,
+        expiry_seconds: 21_600,
         planning_depth: "incident",
         terminal_readiness_status: "ready_for_human_merge"
       },
@@ -27,7 +27,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
     "phase_child" => %{
       template: "phase_child",
       constraints: %{
-        expiry_seconds: 604_800,
+        expiry_seconds: 172_800,
         planning_depth: "package",
         terminal_readiness_status: "ready_for_architect_merge"
       },
@@ -44,7 +44,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
     "investigation" => %{
       template: "investigation",
       constraints: %{
-        expiry_seconds: 172_800,
+        expiry_seconds: 43_200,
         planning_depth: "findings",
         terminal_readiness_status: "ready_for_human_merge"
       },
