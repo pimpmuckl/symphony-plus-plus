@@ -153,4 +153,59 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     assert {:error, :missing_lifecycle_capability} =
              Service.transition(repo, package.id, "ready_for_worker", %{grant_role: "worker", capabilities: ["worker:claim"]})
   end
+
+  test "transition rejects malformed capability payloads without crashing", %{repo: repo} do
+    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix"))
+
+    assert {:error, :missing_lifecycle_capability} =
+             Service.transition(repo, package.id, "ready_for_worker", %{
+               grant_role: "worker",
+               capabilities: "worker:lifecycle.transition"
+             })
+  end
+
+  test "transition rejects unsupported lifecycle kinds", %{repo: repo} do
+    package = insert_raw_package!(repo, kind: "standard_pr", status: "created")
+
+    assert {:error, :unsupported_work_package_kind} = Service.transition(repo, package.id, "ready_for_worker", @worker)
+  end
+
+  test "transition rejects unknown persisted lifecycle statuses", %{repo: repo} do
+    package = insert_raw_package!(repo, kind: "hotfix", status: "legacy_status")
+
+    assert {:error, :unknown_lifecycle_status} = Service.transition(repo, package.id, "ready_for_worker", @worker)
+  end
+
+  test "status updates are conditional on the validated current status", %{repo: repo} do
+    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix", status: "reviewing"))
+
+    assert {:ok, updated} = Repository.update_status(repo, package.id, "reviewing", "ci_waiting")
+    assert updated.status == "ci_waiting"
+
+    assert {:error, :stale_status} = Repository.update_status(repo, package.id, "reviewing", "implementing")
+    assert {:ok, fetched} = Repository.get(repo, package.id)
+    assert fetched.status == "ci_waiting"
+  end
+
+  defp insert_raw_package!(repo, attrs) do
+    now = DateTime.utc_now(:microsecond)
+    attrs = WorkPackageFactory.attrs(attrs)
+
+    repo.insert!(%WorkPackage{
+      id: "raw-#{System.unique_integer([:positive])}",
+      kind: attrs.kind,
+      title: attrs.title,
+      repo: attrs.repo,
+      base_branch: attrs.base_branch,
+      branch_pattern: attrs.branch_pattern,
+      product_description: attrs.product_description,
+      engineering_scope: attrs.engineering_scope,
+      acceptance_criteria: attrs.acceptance_criteria,
+      status: attrs.status,
+      parent_id: attrs.parent_id,
+      owner_id: attrs.owner_id,
+      inserted_at: now,
+      updated_at: now
+    })
+  end
 end

@@ -5,6 +5,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
 
   @worker_capability "worker:lifecycle.transition"
   @architect_capability "architect:lifecycle.transition"
+  @standalone_kinds ["quick_fix", "hotfix", "investigation"]
+  @phase_child_kind "phase_child"
 
   @standalone_transitions %{
     "created" => ["ready_for_worker", "blocked", "abandoned"],
@@ -43,6 +45,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
   @type actor :: %{optional(atom() | String.t()) => term()}
   @type error ::
           :invalid_transition
+          | :unknown_lifecycle_status
+          | :unsupported_work_package_kind
           | :worker_cannot_mark_merged
           | :worker_cannot_advance_phase_state
           | :missing_lifecycle_capability
@@ -50,25 +54,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
   @spec validate_transition(WorkPackage.t(), String.t(), actor()) :: :ok | {:error, error()}
   def validate_transition(%WorkPackage{} = work_package, next_status, actor)
       when is_binary(next_status) and is_map(actor) do
-    case validate_allowed_transition(work_package, next_status) do
-      :ok -> validate_actor(work_package, next_status, actor)
+    case validate_lifecycle_shape(work_package, next_status) do
+      :ok -> validate_allowed_transition(work_package, next_status, actor)
       {:error, _reason} = error -> error
     end
   end
 
   @spec terminal_readiness_status(WorkPackage.t()) :: String.t()
-  def terminal_readiness_status(%WorkPackage{kind: "phase_child"}), do: "ready_for_architect_merge"
+  def terminal_readiness_status(%WorkPackage{kind: @phase_child_kind}), do: "ready_for_architect_merge"
   def terminal_readiness_status(%WorkPackage{}), do: "ready_for_human_merge"
 
-  defp validate_allowed_transition(%WorkPackage{} = work_package, next_status) do
-    work_package
-    |> transitions()
-    |> Map.get(work_package.status, [])
-    |> Enum.member?(next_status)
-    |> then(fn
+  defp validate_lifecycle_shape(%WorkPackage{} = work_package, next_status) do
+    cond do
+      not lifecycle_kind?(work_package.kind) -> {:error, :unsupported_work_package_kind}
+      work_package.status not in WorkPackage.statuses() -> {:error, :unknown_lifecycle_status}
+      next_status not in WorkPackage.statuses() -> {:error, :unknown_lifecycle_status}
       true -> :ok
-      false -> {:error, :invalid_transition}
-    end)
+    end
+  end
+
+  defp validate_allowed_transition(%WorkPackage{} = work_package, next_status, actor) do
+    if allowed_transition?(work_package, next_status) do
+      validate_actor(work_package, next_status, actor)
+    else
+      {:error, :invalid_transition}
+    end
   end
 
   defp validate_actor(%WorkPackage{}, next_status, actor) when next_status in ["merged", "merged_into_phase"] do
@@ -79,7 +89,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
     end
   end
 
-  defp validate_actor(%WorkPackage{kind: "phase_child"}, next_status, actor)
+  defp validate_actor(%WorkPackage{kind: @phase_child_kind}, next_status, actor)
        when next_status in @architect_only_statuses do
     if role(actor) == "worker" do
       {:error, :worker_cannot_advance_phase_state}
@@ -96,7 +106,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
     end
   end
 
-  defp transitions(%WorkPackage{kind: "phase_child"}), do: @phase_child_transitions
+  defp allowed_transition?(%WorkPackage{} = work_package, next_status) do
+    work_package
+    |> transitions()
+    |> Map.fetch!(work_package.status)
+    |> Enum.member?(next_status)
+  end
+
+  defp lifecycle_kind?(@phase_child_kind), do: true
+  defp lifecycle_kind?(kind), do: kind in @standalone_kinds
+
+  defp transitions(%WorkPackage{kind: @phase_child_kind}), do: @phase_child_transitions
   defp transitions(%WorkPackage{}), do: @standalone_transitions
 
   defp require_capability(actor, capability) do
@@ -109,5 +129,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
 
   defp role(actor), do: Map.get(actor, :grant_role) || Map.get(actor, "grant_role") || Map.get(actor, :role) || Map.get(actor, "role")
 
-  defp capabilities(actor), do: Map.get(actor, :capabilities) || Map.get(actor, "capabilities") || []
+  defp capabilities(actor) do
+    case Map.get(actor, :capabilities) || Map.get(actor, "capabilities") do
+      capabilities when is_list(capabilities) -> capabilities
+      _capabilities -> []
+    end
+  end
 end

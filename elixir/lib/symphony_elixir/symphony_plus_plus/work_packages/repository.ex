@@ -7,7 +7,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
   import Ecto.Query, only: [from: 2]
 
   @type repo :: module()
-  @type error :: :not_found | :id_already_exists | {:migration_failed, term()} | Changeset.t()
+  @type error :: :not_found | :id_already_exists | :stale_status | {:migration_failed, term()} | Changeset.t()
 
   @spec migrate(repo()) :: :ok | {:error, error()}
   def migrate(repo) when is_atom(repo) do
@@ -56,6 +56,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
     end
   end
 
+  @spec update_status(repo(), String.t(), String.t(), String.t()) :: {:ok, WorkPackage.t()} | {:error, error()}
+  def update_status(repo, id, current_status, next_status)
+      when is_atom(repo) and is_binary(id) and is_binary(current_status) and is_binary(next_status) do
+    now = DateTime.utc_now(:microsecond)
+
+    query =
+      from(work_package in WorkPackage,
+        where: work_package.id == ^id and work_package.status == ^current_status
+      )
+
+    case repo.update_all(query, set: [status: next_status, updated_at: now]) do
+      {1, _rows} -> get(repo, id)
+      {0, _rows} -> stale_status_error(repo, id)
+    end
+  end
+
   defp normalize_insert_result({:ok, work_package}), do: {:ok, work_package}
 
   defp normalize_insert_result({:error, %Changeset{} = changeset}) do
@@ -71,6 +87,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
       {:id, {_message, options}} -> Keyword.get(options, :constraint) == :unique
       _error -> false
     end)
+  end
+
+  defp stale_status_error(repo, id) do
+    case get(repo, id) do
+      {:ok, _work_package} -> {:error, :stale_status}
+      {:error, :not_found} = error -> error
+    end
   end
 
   defp migrations_path do

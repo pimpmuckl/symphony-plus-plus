@@ -18,7 +18,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service do
     with {:ok, work_package} <- Repository.get(repo, work_package_id),
          :ok <- StateMachine.validate_transition(work_package, next_status, actor) do
       # SYMPP-P1-005 owns durable transition event recording; keep this hook narrow.
-      Repository.update(repo, work_package_id, %{status: next_status})
+      Repository.update_status(repo, work_package_id, work_package.status, next_status)
     end
   end
 
