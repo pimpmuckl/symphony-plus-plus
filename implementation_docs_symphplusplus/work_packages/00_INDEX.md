@@ -10,7 +10,7 @@ Use this as the architecture agent's queue. Dependencies must be merged before d
 |---|---|---|---|---|
 | [SYMPP-P0-001](SYMPP-P0-001_upstream-fork-baseline-and-local-run.md) | Upstream fork baseline and local run | setup | worker | none |
 | [SYMPP-P0-002](SYMPP-P0-002_repository-map-and-extension-seam-analysis.md) | Repository map and extension seam analysis | analysis | worker | SYMPP-P0-001 |
-| [SYMPP-P0-003](SYMPP-P0-003_Symphony-planning-assets-and-repo-conventions.md) | Symphony++ planning assets and repo conventions | docs | worker | SYMPP-P0-001 |
+| [SYMPP-P0-003](SYMPP-P0-003_symfony-planning-assets-and-repo-conventions.md) | Symphony++ planning assets and repo conventions | docs | worker | SYMPP-P0-001 |
 
 ### Phase 1 — Core ledger
 
@@ -26,8 +26,8 @@ Use this as the architecture agent's queue. Dependencies must be merged before d
 
 | ID | Title | Kind | Owner | Dependencies |
 |---|---|---|---|---|
-| [SYMPP-P2-001](SYMPP-P2-001_tracker-kind-Symphony-pp-adapter.md) | `tracker.kind: Symphony_pp` adapter | adapter | worker | SYMPP-P1-001, SYMPP-P1-003, SYMPP-P1-004 |
-| [SYMPP-P2-002](SYMPP-P2-002_Symphony-workflow-config-and-dispatch-filters.md) | Symphony++ workflow config and dispatch filters | adapter | worker | SYMPP-P2-001 |
+| [SYMPP-P2-001](SYMPP-P2-001_tracker-kind-symfony-pp-adapter.md) | `tracker.kind: Symphony_pp` adapter | adapter | worker | SYMPP-P1-001, SYMPP-P1-003, SYMPP-P1-004 |
+| [SYMPP-P2-002](SYMPP-P2-002_symfony-workflow-config-and-dispatch-filters.md) | Symphony++ workflow config and dispatch filters | adapter | worker | SYMPP-P2-001 |
 | [SYMPP-P2-003](SYMPP-P2-003_agentrun-binding-and-orchestrator-reconciliation.md) | AgentRun binding and orchestrator reconciliation | adapter | worker | SYMPP-P1-002, SYMPP-P2-001 |
 
 ### Phase 3 — Agent interface
@@ -81,4 +81,3 @@ Use this as the architecture agent's queue. Dependencies must be merged before d
 | [SYMPP-P8-002](SYMPP-P8-002_security-hardening-and-audit-review.md) | Security hardening and audit review | security | worker | SYMPP-P6-003, SYMPP-P7-002 |
 | [SYMPP-P8-003](SYMPP-P8-003_kraken-pilot-migration-playbook.md) | Kraken pilot migration playbook | pilot | architect | SYMPP-P8-001, SYMPP-P8-002 |
 | [SYMPP-P8-004](SYMPP-P8-004_documentation-release-readiness-and-operator-training.md) | Documentation, release readiness, and operator training | docs | worker | SYMPP-P8-001, SYMPP-P8-002 |
-
