@@ -176,6 +176,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     assert {:error, :unknown_lifecycle_status} = Service.transition(repo, package.id, "ready_for_worker", @worker)
   end
 
+  test "transition rejects cross-kind persisted lifecycle statuses", %{repo: repo} do
+    package = insert_raw_package!(repo, kind: "hotfix", status: "ready_for_architect_merge")
+
+    assert {:error, :unknown_lifecycle_status} = Service.transition(repo, package.id, "merging_into_phase", @architect)
+  end
+
   test "status updates are conditional on the validated current status", %{repo: repo} do
     assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix", status: "reviewing"))
 

@@ -69,6 +69,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
       not lifecycle_kind?(work_package.kind) -> {:error, :unsupported_work_package_kind}
       work_package.status not in WorkPackage.statuses() -> {:error, :unknown_lifecycle_status}
       next_status not in WorkPackage.statuses() -> {:error, :unknown_lifecycle_status}
+      not current_status_supported?(work_package) -> {:error, :unknown_lifecycle_status}
       true -> :ok
     end
   end
@@ -109,8 +110,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
   defp allowed_transition?(%WorkPackage{} = work_package, next_status) do
     work_package
     |> transitions()
-    |> Map.fetch!(work_package.status)
-    |> Enum.member?(next_status)
+    |> Map.fetch(work_package.status)
+    |> case do
+      {:ok, allowed_statuses} -> Enum.member?(allowed_statuses, next_status)
+      :error -> false
+    end
+  end
+
+  defp current_status_supported?(%WorkPackage{} = work_package) do
+    work_package
+    |> transitions()
+    |> Map.has_key?(work_package.status)
   end
 
   defp lifecycle_kind?(@phase_child_kind), do: true

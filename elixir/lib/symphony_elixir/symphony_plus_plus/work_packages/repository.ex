@@ -61,14 +61,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
       when is_atom(repo) and is_binary(id) and is_binary(current_status) and is_binary(next_status) do
     now = DateTime.utc_now(:microsecond)
 
-    query =
-      from(work_package in WorkPackage,
-        where: work_package.id == ^id and work_package.status == ^current_status
-      )
-
-    case repo.update_all(query, set: [status: next_status, updated_at: now]) do
-      {1, _rows} -> get(repo, id)
-      {0, _rows} -> stale_status_error(repo, id)
+    repo.transaction(fn ->
+      id
+      |> status_update_query(current_status)
+      |> repo.update_all(set: [status: next_status, updated_at: now])
+      |> case do
+        {1, _rows} -> repo.get!(WorkPackage, id)
+        {0, _rows} -> repo.rollback(stale_status_error(repo, id))
+      end
+    end)
+    |> case do
+      {:ok, work_package} -> {:ok, work_package}
+      {:error, error} -> error
     end
   end
 
@@ -94,6 +98,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
       {:ok, _work_package} -> {:error, :stale_status}
       {:error, :not_found} = error -> error
     end
+  end
+
+  defp status_update_query(id, current_status) do
+    from(work_package in WorkPackage,
+      where: work_package.id == ^id and work_package.status == ^current_status
+    )
   end
 
   defp migrations_path do
