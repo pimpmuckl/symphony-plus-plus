@@ -15,6 +15,13 @@
 - Use the matching file in `implementation_docs_symphplusplus/work_packages/` as the source of truth for package scope, acceptance criteria, and test plan.
 - Keep `implementation_docs_symphplusplus/templates/WORKFLOW.symfony_pp.md` as a draft template until a later package wires Symphony++ runtime behavior.
 
+## Worker Prompt Conventions
+
+- Keep worker prompts short and outcome-first: state the package goal, success criteria, constraints, available evidence, and required final output.
+- For tool-heavy work, use brief preambles before tool calls so the operator can see the next step and why it matters.
+- Include explicit dependency checks, missing-evidence behavior, validation loops, stopping conditions, and safety checks before external side effects.
+- Avoid process-heavy prompt stacks or verbose formatting unless the extra structure improves comprehension.
+
 ## Runtime Boundary
 
 - Preserve upstream Symphony and Linear behavior unless the assigned package explicitly changes it.
