@@ -50,6 +50,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
     attrs =
       attrs
       |> normalize_keys()
+      |> Map.drop(["claimed_at", "claimed_by", "revoked_at", "inserted_at", "updated_at"])
       |> put_new_value("id", stable_id())
       |> put_new_value("grant_role", "worker")
       |> put_new_value("capabilities", [])
@@ -68,9 +69,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
   end
 
   @spec revoke_changeset(t(), DateTime.t()) :: Ecto.Changeset.t()
+  def revoke_changeset(%__MODULE__{revoked_at: %DateTime{}} = access_grant, %DateTime{}) do
+    change(access_grant)
+  end
+
   def revoke_changeset(%__MODULE__{} = access_grant, %DateTime{} = revoked_at) do
     access_grant
-    |> change(revoked_at: DateTime.truncate(revoked_at, :microsecond))
+    |> change(revoked_at: utc_datetime_usec(revoked_at))
   end
 
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
@@ -137,5 +142,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
 
   defp stable_id do
     "ag_" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+  end
+
+  defp utc_datetime_usec(%DateTime{} = datetime) do
+    datetime = DateTime.truncate(datetime, :microsecond)
+    %{datetime | microsecond: {elem(datetime.microsecond, 0), 6}}
   end
 end

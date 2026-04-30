@@ -62,6 +62,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     refute inspect(work_key) =~ work_key.secret
   end
 
+  test "create ignores terminal lifecycle fields", %{repo: repo} do
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
+    work_key = WorkKey.generate()
+    timestamp = ~U[2026-04-30 10:00:00Z]
+
+    assert {:ok, grant} =
+             Repository.create(repo, %{
+               work_package_id: work_package.id,
+               display_key: work_key.display_key,
+               secret_hash: WorkKey.secret_hash(work_key.secret),
+               grant_role: "worker",
+               capabilities: ["worker:claim"],
+               expires_at: DateTime.add(timestamp, 60, :second),
+               claimed_at: timestamp,
+               claimed_by: "worker-1",
+               revoked_at: timestamp
+             })
+
+    assert grant.claimed_at == nil
+    assert grant.claimed_by == nil
+    assert grant.revoked_at == nil
+  end
+
   test "claiming a valid secret returns a scoped assignment without returning the raw secret", %{repo: repo} do
     assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-P1-002"))
     assert {:ok, minted} = Service.mint_worker_grant(repo, work_package.id)
@@ -123,6 +146,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     assert {:ok, %AccessGrant{revoked_at: %DateTime{}}} = Service.revoke(repo, minted.grant.id)
 
     assert {:error, :revoked} = Service.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+  end
+
+  test "revoke is idempotent and preserves the first revocation timestamp", %{repo: repo} do
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
+    assert {:ok, minted} = Service.mint_worker_grant(repo, work_package.id)
+    first_revoked_at = ~U[2026-04-30 10:00:00Z]
+    later_revoked_at = ~U[2026-04-30 11:00:00Z]
+
+    assert {:ok, first_revoke} = Service.revoke(repo, minted.grant.id, now: first_revoked_at)
+    assert {:ok, second_revoke} = Service.revoke(repo, minted.grant.id, now: later_revoked_at)
+
+    assert DateTime.compare(first_revoke.revoked_at, first_revoked_at) == :eq
+    assert second_revoke.revoked_at == first_revoke.revoked_at
   end
 
   test "invalid secrets reject claims", %{repo: repo} do
