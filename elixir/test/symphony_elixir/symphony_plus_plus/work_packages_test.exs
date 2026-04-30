@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Service
@@ -109,6 +110,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
 
   test "migration is idempotent", %{repo: repo} do
     assert :ok = Repository.migrate(repo)
+  end
+
+  test "migration marks id as not null", %{repo: repo} do
+    %{rows: rows} = SQL.query!(repo, "PRAGMA table_info(sympp_work_packages)")
+
+    assert [_cid, "id", _type, 1, _default, _primary_key] = Enum.find(rows, &(Enum.at(&1, 1) == "id"))
   end
 
   defp errors_on(changeset) do

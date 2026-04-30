@@ -3,7 +3,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo.Migrations.CreateSymppWorkPackage
 
   def change do
     create table(:sympp_work_packages, primary_key: false) do
-      add(:id, :text, primary_key: true)
+      add(:id, :text, primary_key: true, null: false)
       add(:kind, :text, null: false)
       add(:title, :text, null: false)
       add(:repo, :text, null: false)
