@@ -9,6 +9,8 @@ Target branch: `agent/<WORK_PACKAGE_ID>/<short-slug>`
 
 Read the work-package spec and implement only that scope.
 
+Keep this prompt outcome-first: success means satisfying the package acceptance criteria, preserving stated constraints, validating the result, and reporting final evidence. If dependency or source evidence is missing, stop and ask the architecture agent instead of guessing.
+
 Before coding:
 
 1. Inspect the repository state.
@@ -33,3 +35,5 @@ Before PR:
    - tests run,
    - risks/follow-ups.
 4. Stop and request scope expansion if the work requires broader changes.
+
+Use brief preambles before tool-heavy steps, and perform action-safety checks before external side effects such as pushing branches, opening PRs, creating Linear state, or touching production-like resources.
