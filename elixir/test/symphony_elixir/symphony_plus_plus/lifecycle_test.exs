@@ -1,0 +1,156 @@
+defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
+  use ExUnit.Case, async: false
+
+  alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service
+  alias SymphonyElixir.SymphonyPlusPlus.Policies.Templates
+  alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.WorkPackageFactory
+
+  @worker %{grant_role: "worker", capabilities: ["worker:lifecycle.transition"]}
+  @architect %{grant_role: "architect", capabilities: ["architect:lifecycle.transition"]}
+
+  setup_all do
+    database_path = WorkPackageFactory.database_path()
+
+    start_supervised!({Repo, database: database_path, pool_size: 1})
+    assert :ok = Repository.migrate(Repo)
+
+    on_exit(fn -> File.rm(database_path) end)
+
+    {:ok, repo: Repo}
+  end
+
+  setup %{repo: repo} do
+    repo.delete_all(WorkPackage)
+    :ok
+  end
+
+  test "allowed standalone transitions pass", %{repo: repo} do
+    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix"))
+
+    for status <- [
+          "ready_for_worker",
+          "claimed",
+          "planning",
+          "implementing",
+          "reviewing",
+          "ci_waiting",
+          "ready_for_human_merge"
+        ] do
+      assert {:ok, package} = Service.transition(repo, package.id, status, @worker)
+      assert package.status == status
+    end
+  end
+
+  test "invalid transitions fail", %{repo: repo} do
+    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix"))
+
+    assert {:error, :invalid_transition} = Service.transition(repo, package.id, "merged", @architect)
+    assert {:ok, fetched} = Repository.get(repo, package.id)
+    assert fetched.status == "created"
+  end
+
+  test "policy templates expand into deterministic constraints and readiness requirements" do
+    assert {:ok, quick_fix} = Templates.expand("quick_fix")
+    assert quick_fix.constraints.planning_depth == "brief"
+    assert quick_fix.constraints.terminal_readiness_status == "ready_for_human_merge"
+    assert "review_t1_green" in quick_fix.readiness_requirements
+
+    assert {:ok, hotfix} = Templates.expand("hotfix")
+    assert hotfix.constraints.expiry_seconds == 86_400
+    assert hotfix.review_suite.required == ["review_t1", "review_t2"]
+    assert hotfix.constraints.terminal_readiness_status == "ready_for_human_merge"
+
+    assert {:ok, phase_child} = Templates.expand("phase_child")
+    assert phase_child.constraints.planning_depth == "package"
+    assert phase_child.constraints.terminal_readiness_status == "ready_for_architect_merge"
+    assert "architect_ready" in phase_child.readiness_requirements
+
+    assert {:ok, investigation} = Templates.expand("investigation")
+    assert investigation.constraints.planning_depth == "findings"
+    assert investigation.required_gates == ["findings_documented", "scope_recommendation"]
+  end
+
+  test "policy can be computed from a persisted work package", %{repo: repo} do
+    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "phase_child", parent_id: "phase-1"))
+
+    assert {:ok, policy} = Service.policy_for(repo, package.id)
+    assert policy.template == "phase_child"
+    assert policy.constraints.terminal_readiness_status == "ready_for_architect_merge"
+  end
+
+  test "standalone hotfix and phase child have different terminal readiness states" do
+    assert {:ok, hotfix_policy} = Templates.expand("hotfix")
+    assert {:ok, phase_child_policy} = Templates.expand("phase_child")
+
+    assert hotfix_policy.constraints.terminal_readiness_status == "ready_for_human_merge"
+    assert phase_child_policy.constraints.terminal_readiness_status == "ready_for_architect_merge"
+  end
+
+  test "worker capability cannot transition to merged", %{repo: repo} do
+    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix", status: "ready_for_human_merge"))
+
+    assert {:error, :worker_cannot_mark_merged} = Service.transition(repo, package.id, "merged", @worker)
+  end
+
+  test "hotfix happy path reaches ready for human merge", %{repo: repo} do
+    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix"))
+
+    assert {:ok, package} = Service.transition(repo, package.id, "ready_for_worker", @worker)
+    assert {:ok, package} = Service.transition(repo, package.id, "claimed", @worker)
+    assert {:ok, package} = Service.transition(repo, package.id, "planning", @worker)
+    assert {:ok, package} = Service.transition(repo, package.id, "implementing", @worker)
+    assert {:ok, package} = Service.transition(repo, package.id, "reviewing", @worker)
+    assert {:ok, package} = Service.transition(repo, package.id, "ci_waiting", @worker)
+    assert {:ok, package} = Service.transition(repo, package.id, "ready_for_human_merge", @worker)
+
+    assert package.status == "ready_for_human_merge"
+  end
+
+  test "phase child happy path reaches ready for architect merge", %{repo: repo} do
+    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "phase_child", parent_id: "phase-1"))
+
+    assert {:ok, package} = Service.transition(repo, package.id, "ready_for_worker", @worker)
+    assert {:ok, package} = Service.transition(repo, package.id, "claimed", @worker)
+    assert {:ok, package} = Service.transition(repo, package.id, "planning", @worker)
+    assert {:ok, package} = Service.transition(repo, package.id, "implementing", @worker)
+    assert {:ok, package} = Service.transition(repo, package.id, "reviewing", @worker)
+    assert {:ok, package} = Service.transition(repo, package.id, "ci_waiting", @worker)
+    assert {:ok, package} = Service.transition(repo, package.id, "ready_for_architect_merge", @worker)
+
+    assert package.status == "ready_for_architect_merge"
+  end
+
+  test "does not allow created to merged", %{repo: repo} do
+    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix"))
+
+    assert {:error, :invalid_transition} = Service.transition(repo, package.id, "merged", @architect)
+  end
+
+  test "does not allow worker to advance phase state", %{repo: repo} do
+    assert {:ok, package} =
+             Repository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 kind: "phase_child",
+                 parent_id: "phase-1",
+                 status: "ready_for_architect_merge"
+               )
+             )
+
+    assert {:error, :worker_cannot_advance_phase_state} =
+             Service.transition(repo, package.id, "merging_into_phase", @worker)
+
+    assert {:ok, package} = Service.transition(repo, package.id, "merging_into_phase", @architect)
+    assert package.status == "merging_into_phase"
+  end
+
+  test "transition requires explicit lifecycle capability", %{repo: repo} do
+    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix"))
+
+    assert {:error, :missing_lifecycle_capability} =
+             Service.transition(repo, package.id, "ready_for_worker", %{grant_role: "worker", capabilities: ["worker:claim"]})
+  end
+end
