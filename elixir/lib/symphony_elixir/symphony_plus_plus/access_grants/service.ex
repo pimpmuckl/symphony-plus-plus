@@ -41,7 +41,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service do
     opts = normalize_options(opts)
     now = option(opts, :now, DateTime.utc_now(:microsecond))
 
-    Repository.claim(repo, secret, %{claimed_by: option(opts, :claimed_by, "unknown")}, now)
+    Repository.claim(repo, secret, %{claimed_by: option(opts, :claimed_by, nil)}, now)
   end
 
   @spec revoke(Repository.repo(), String.t(), keyword() | map()) :: {:ok, AccessGrant.t()} | {:error, error()}
