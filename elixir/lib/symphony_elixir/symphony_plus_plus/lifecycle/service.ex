@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service do
   @moduledoc false
 
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
   alias SymphonyElixir.SymphonyPlusPlus.Policies.Templates
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository
@@ -8,7 +10,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service do
 
   @type error ::
           Repository.error()
+          | AccessGrantRepository.error()
           | StateMachine.error()
+          | :actor_scope_mismatch
           | :unknown_policy_template
 
   @spec transition(Repository.repo(), String.t(), String.t(), StateMachine.actor()) ::
@@ -16,6 +20,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service do
   def transition(repo, work_package_id, next_status, actor)
       when is_atom(repo) and is_binary(work_package_id) and is_binary(next_status) and is_map(actor) do
     with {:ok, work_package} <- Repository.get(repo, work_package_id),
+         {:ok, actor} <- verified_actor(repo, work_package, actor),
          :ok <- StateMachine.validate_transition(work_package, next_status, actor) do
       # SYMPP-P1-005 owns durable transition event recording; keep this hook narrow.
       Repository.update_status(repo, work_package_id, work_package.status, next_status)
@@ -32,4 +37,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service do
       policy_for(work_package)
     end
   end
+
+  defp verified_actor(repo, %WorkPackage{} = work_package, actor) do
+    case role(actor) do
+      "worker" -> verified_worker_actor(repo, work_package, actor)
+      _role -> {:ok, actor}
+    end
+  end
+
+  defp verified_worker_actor(repo, %WorkPackage{} = work_package, actor) do
+    with grant_id when is_binary(grant_id) <- Map.get(actor, :grant_id) || Map.get(actor, "grant_id"),
+         {:ok, grant} <- AccessGrantRepository.get(repo, grant_id),
+         :ok <- validate_worker_grant(work_package, grant) do
+      {:ok, %{grant_role: grant.grant_role, capabilities: grant.capabilities, work_package_id: grant.work_package_id}}
+    else
+      nil -> {:error, :actor_scope_mismatch}
+      {:error, _reason} = error -> error
+      _grant_id -> {:error, :actor_scope_mismatch}
+    end
+  end
+
+  defp validate_worker_grant(%WorkPackage{} = work_package, %AccessGrant{} = grant) do
+    cond do
+      grant.grant_role != "worker" -> {:error, :actor_scope_mismatch}
+      grant.work_package_id != work_package.id -> {:error, :actor_scope_mismatch}
+      is_nil(grant.claimed_at) -> {:error, :actor_scope_mismatch}
+      not is_nil(grant.revoked_at) -> {:error, :actor_scope_mismatch}
+      DateTime.compare(grant.expires_at, DateTime.utc_now(:microsecond)) != :gt -> {:error, :actor_scope_mismatch}
+      true -> :ok
+    end
+  end
+
+  defp role(actor), do: Map.get(actor, :grant_role) || Map.get(actor, "grant_role") || Map.get(actor, :role) || Map.get(actor, "role")
 end
