@@ -17,6 +17,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
           | :expired
           | :id_already_exists
           | :invalid_secret
+          | :missing_claim_identity
           | :not_found
           | :revoked
           | {:constraint_failed, String.t()}
@@ -69,7 +70,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
          {:ok, access_grant} <- find_by_secret_hash(repo, secret_hash),
          true <- secure_equal?(secret_hash, access_grant.secret_hash),
          :ok <- claimable?(access_grant, normalized_now),
-         {:ok, claimed} <- persist_claim(repo, access_grant, attrs, normalized_now) do
+         {:ok, claimed_by} <- claimed_by(attrs),
+         {:ok, claimed} <- persist_claim(repo, access_grant, claimed_by, normalized_now) do
       {:ok, assignment(claimed)}
     else
       false -> {:error, :invalid_secret}
@@ -113,9 +115,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     end
   end
 
-  defp persist_claim(repo, access_grant, attrs, now) do
-    claimed_by = Map.get(attrs, :claimed_by) || Map.get(attrs, "claimed_by")
-
+  defp persist_claim(repo, access_grant, claimed_by, now) do
     query =
       from(grant in AccessGrant,
         where:
@@ -135,6 +135,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
         :ok -> {:error, :already_claimed}
         {:error, _reason} = error -> error
       end
+    end
+  end
+
+  defp claimed_by(attrs) do
+    case Map.get(attrs, :claimed_by) || Map.get(attrs, "claimed_by") do
+      claimed_by when is_binary(claimed_by) ->
+        if String.trim(claimed_by) == "" do
+          {:error, :missing_claim_identity}
+        else
+          {:ok, claimed_by}
+        end
+
+      _claimed_by ->
+        {:error, :missing_claim_identity}
     end
   end
 

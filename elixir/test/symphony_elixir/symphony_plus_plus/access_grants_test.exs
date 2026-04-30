@@ -78,6 +78,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     refute inspect(assignment) =~ minted.work_key.secret
   end
 
+  test "repository claims require a nonblank worker identity", %{repo: repo} do
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
+    assert {:ok, minted} = Service.mint_worker_grant(repo, work_package.id)
+
+    assert {:error, :missing_claim_identity} =
+             Repository.claim(repo, minted.work_key.secret, %{}, DateTime.utc_now(:microsecond))
+
+    assert {:error, :missing_claim_identity} =
+             Repository.claim(repo, minted.work_key.secret, %{claimed_by: "   "}, DateTime.utc_now(:microsecond))
+
+    assert {:ok, persisted} = Repository.get(repo, minted.grant.id)
+    assert persisted.claimed_at == nil
+    assert persisted.claimed_by == nil
+  end
+
   test "expired grants reject claims", %{repo: repo} do
     assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
     now = ~U[2026-04-30 10:00:00Z]
