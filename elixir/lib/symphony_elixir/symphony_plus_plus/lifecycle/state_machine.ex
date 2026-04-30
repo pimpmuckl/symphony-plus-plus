@@ -83,19 +83,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
   end
 
   defp validate_actor(%WorkPackage{}, next_status, actor) when next_status in ["merged", "merged_into_phase"] do
-    if role(actor) == "worker" do
-      {:error, :worker_cannot_mark_merged}
-    else
-      require_capability(actor, @architect_capability)
+    case role(actor) do
+      "worker" -> {:error, :worker_cannot_mark_merged}
+      "architect" -> require_capability(actor, @architect_capability)
+      _role -> {:error, :missing_lifecycle_capability}
     end
   end
 
   defp validate_actor(%WorkPackage{kind: @phase_child_kind}, next_status, actor)
        when next_status in @architect_only_statuses do
-    if role(actor) == "worker" do
-      {:error, :worker_cannot_advance_phase_state}
-    else
-      require_capability(actor, @architect_capability)
+    case role(actor) do
+      "worker" -> {:error, :worker_cannot_advance_phase_state}
+      "architect" -> require_capability(actor, @architect_capability)
+      _role -> {:error, :missing_lifecycle_capability}
     end
   end
 

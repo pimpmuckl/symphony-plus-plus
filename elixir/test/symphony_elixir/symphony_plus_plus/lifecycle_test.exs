@@ -245,6 +245,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
              Service.transition(repo, package.id, "merging_into_phase", forged_actor)
   end
 
+  test "grantless actor cannot self-assert architect capability", %{repo: repo} do
+    assert {:ok, package} =
+             Repository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 kind: "phase_child",
+                 parent_id: "phase-1",
+                 status: "ready_for_architect_merge"
+               )
+             )
+
+    assert {:error, :missing_lifecycle_capability} =
+             Service.transition(repo, package.id, "merging_into_phase", %{
+               capabilities: ["architect:lifecycle.transition"]
+             })
+  end
+
   test "state machine rejects malformed capability payloads without crashing", %{repo: repo} do
     assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix"))
 
