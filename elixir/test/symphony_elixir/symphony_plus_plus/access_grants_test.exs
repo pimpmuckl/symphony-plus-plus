@@ -16,7 +16,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
   setup_all do
     database_path = WorkPackageFactory.database_path()
 
-    start_supervised!({Repo, database: database_path, pool_size: 1})
+    start_supervised!({Repo, database: database_path, pool_size: 5})
     assert :ok = Repository.migrate(Repo)
 
     on_exit(fn -> File.rm(database_path) end)
@@ -114,6 +114,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     assert {:error, :already_claimed} = Service.claim(repo, minted.work_key.secret, claimed_by: "worker-2")
   end
 
+  test "concurrent claims allow only one worker to claim the grant", %{repo: repo} do
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
+    assert {:ok, minted} = Service.mint_worker_grant(repo, work_package.id)
+
+    results =
+      1..8
+      |> Task.async_stream(
+        fn index ->
+          Service.claim(repo, minted.work_key.secret, claimed_by: "worker-#{index}")
+        end,
+        max_concurrency: 8,
+        timeout: 5_000
+      )
+      |> Enum.map(fn {:ok, result} -> result end)
+
+    assert 1 == Enum.count(results, &match?({:ok, %Assignment{}}, &1))
+    assert 7 == Enum.count(results, &match?({:error, :already_claimed}, &1))
+  end
+
   test "four-character display key alone cannot authenticate", %{repo: repo} do
     assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
     assert {:ok, minted} = Service.mint_worker_grant(repo, work_package.id)
@@ -128,6 +147,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
              Service.mint_worker_grant(repo, work_package.id, capabilities: ["worker:claim", "architect:merge"])
 
     assert "worker grants cannot include architect capabilities" in errors_on(changeset).capabilities
+  end
+
+  test "non-id constraint failures are not reported as duplicate ids", %{repo: repo} do
+    work_key = WorkKey.generate()
+
+    assert {:error, {:constraint_failed, "foreign_key"}} =
+             Repository.create(repo, %{
+               work_package_id: "missing-work-package",
+               display_key: work_key.display_key,
+               secret_hash: WorkKey.secret_hash(work_key.secret),
+               grant_role: "worker",
+               capabilities: ["worker:claim"],
+               expires_at: DateTime.add(DateTime.utc_now(:microsecond), 60, :second)
+             })
   end
 
   test "raw secret is returned only at mint time and not emitted in logs", %{repo: repo} do

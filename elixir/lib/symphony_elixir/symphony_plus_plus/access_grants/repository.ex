@@ -19,6 +19,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
           | :invalid_secret
           | :not_found
           | :revoked
+          | {:constraint_failed, String.t()}
           | {:migration_failed, term()}
           | Changeset.t()
 
@@ -37,7 +38,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     |> repo.insert()
     |> normalize_insert_result()
   rescue
-    _error in Ecto.ConstraintError -> {:error, :id_already_exists}
+    error in Ecto.ConstraintError -> normalize_constraint_error(error)
   end
 
   @spec get(repo(), String.t()) :: {:ok, AccessGrant.t()} | {:error, error()}
@@ -113,14 +114,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
   end
 
   defp persist_claim(repo, access_grant, attrs, now) do
-    claim_attrs = %{
-      claimed_at: now,
-      claimed_by: Map.get(attrs, :claimed_by) || Map.get(attrs, "claimed_by")
-    }
+    claimed_by = Map.get(attrs, :claimed_by) || Map.get(attrs, "claimed_by")
 
-    access_grant
-    |> AccessGrant.claim_changeset(claim_attrs)
-    |> repo.update()
+    query =
+      from(grant in AccessGrant,
+        where:
+          grant.id == ^access_grant.id and is_nil(grant.claimed_at) and is_nil(grant.revoked_at) and
+            grant.expires_at > ^now
+      )
+
+    case repo.update_all(query, set: [claimed_at: now, claimed_by: claimed_by, updated_at: now]) do
+      {1, _rows} -> get(repo, access_grant.id)
+      {0, _rows} -> reload_claim_error(repo, access_grant.id, now)
+    end
+  end
+
+  defp reload_claim_error(repo, grant_id, now) do
+    with {:ok, access_grant} <- get(repo, grant_id) do
+      case claimable?(access_grant, now) do
+        :ok -> {:error, :already_claimed}
+        {:error, _reason} = error -> error
+      end
+    end
   end
 
   defp assignment(%AccessGrant{} = access_grant) do
@@ -162,6 +177,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
       {:id, {_message, options}} -> Keyword.get(options, :constraint) == :unique
       _error -> false
     end)
+  end
+
+  defp normalize_constraint_error(%Ecto.ConstraintError{constraint: "sympp_access_grants_id_unique_index"}) do
+    {:error, :id_already_exists}
+  end
+
+  defp normalize_constraint_error(%Ecto.ConstraintError{constraint: constraint}) when is_binary(constraint) do
+    {:error, {:constraint_failed, constraint}}
+  end
+
+  defp normalize_constraint_error(%Ecto.ConstraintError{type: type}) do
+    {:error, {:constraint_failed, Atom.to_string(type)}}
   end
 
   defp migrations_path do
