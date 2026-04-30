@@ -112,10 +112,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
     assert :ok = Repository.migrate(repo)
   end
 
-  test "migration marks id as not null", %{repo: repo} do
+  test "migration marks id as primary key", %{repo: repo} do
     %{rows: rows} = SQL.query!(repo, "PRAGMA table_info(sympp_work_packages)")
 
-    assert [_cid, "id", _type, 1, _default, _primary_key] = Enum.find(rows, &(Enum.at(&1, 1) == "id"))
+    assert [_cid, "id", _type, _not_null, _default, 1] = Enum.find(rows, &(Enum.at(&1, 1) == "id"))
   end
 
   defp errors_on(changeset) do
