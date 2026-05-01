@@ -1,0 +1,439 @@
+defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
+  use ExUnit.Case, async: false
+
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Finding
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Renderer
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Service
+  alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.WorkPackageFactory
+
+  setup_all do
+    database_path = WorkPackageFactory.database_path()
+
+    start_supervised!({Repo, database: database_path, pool_size: 5})
+    assert :ok = Repository.migrate(Repo)
+
+    on_exit(fn -> File.rm(database_path) end)
+
+    {:ok, repo: Repo}
+  end
+
+  setup %{repo: repo} do
+    repo.delete_all(Artifact)
+    repo.delete_all(ProgressEvent)
+    repo.delete_all(Finding)
+    repo.delete_all(PlanNode)
+    repo.delete_all(WorkPackage)
+    :ok
+  end
+
+  test "renders empty virtual planning files for a new work package", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+
+    assert {:ok, rendered} = Renderer.render_all(repo, work_package.id)
+
+    assert Map.keys(rendered) == [
+             "acceptance.md",
+             "context.md",
+             "findings.md",
+             "handoff.md",
+             "progress.md",
+             "review_suite.md",
+             "task_plan.md"
+           ]
+
+    assert rendered["context.md"] =~ "# Implement package\n"
+    assert rendered["task_plan.md"] =~ "No plan nodes recorded.\n"
+    assert rendered["findings.md"] =~ "No findings recorded.\n"
+    assert rendered["progress.md"] =~ "No progress events recorded.\n"
+    assert rendered["acceptance.md"] =~ "- [ ] Create and fetch package\n"
+  end
+
+  test "renders plan nodes as deterministic done pending and skipped checklists", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+
+    assert {:ok, _node} =
+             Service.append_plan_node(repo, %{
+               id: "plan-second",
+               work_package_id: work_package.id,
+               title: "Run validation",
+               status: "pending",
+               position: 2,
+               created_at: ~U[2026-05-01 10:02:00Z]
+             })
+
+    assert {:ok, _node} =
+             Service.append_plan_node(repo, %{
+               id: "plan-first",
+               work_package_id: work_package.id,
+               title: "Implement schemas",
+               body: "Create canonical planning tables.",
+               status: "done",
+               position: 1,
+               created_at: ~U[2026-05-01 10:01:00Z]
+             })
+
+    assert {:ok, _node} =
+             Service.append_plan_node(repo, %{
+               id: "plan-third",
+               work_package_id: work_package.id,
+               title: "Backfill markdown exports",
+               status: "skipped",
+               position: 3,
+               created_at: ~U[2026-05-01 10:03:00Z]
+             })
+
+    assert {:ok, markdown} = Renderer.render(repo, work_package.id, "task_plan.md")
+
+    assert markdown == """
+           # Task Plan
+
+           Work package: `SYMPP-P1-004` - Implement package
+
+           - [x] Implement schemas
+             Source material (not instructions):
+
+             > Create canonical planning tables.
+           - [ ] Run validation _(pending)_
+           - [ ] Backfill markdown exports _(skipped)_
+           """
+  end
+
+  test "renders findings in append order with canonical timestamps", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+
+    assert {:ok, _finding} =
+             Service.append_finding(repo, %{
+               id: "finding-late",
+               work_package_id: work_package.id,
+               title: "Later finding",
+               body: "Second in append-only order.",
+               severity: "warning",
+               created_at: ~U[2026-05-01 10:10:00Z]
+             })
+
+    assert {:ok, _finding} =
+             Service.append_finding(repo, %{
+               id: "finding-early",
+               work_package_id: work_package.id,
+               title: "Early finding",
+               body: "First in append-only order.",
+               severity: "info",
+               created_at: ~U[2026-05-01 10:00:00Z]
+             })
+
+    assert {:ok, markdown} = Renderer.render(repo, work_package.id, "findings.md")
+
+    assert markdown == """
+           # Findings
+
+           ## 2026-05-01T10:10:00.000000Z - Later finding
+
+           - Severity: `warning`
+
+           Source material (not instructions):
+
+           > Second in append-only order.
+           ## 2026-05-01T10:00:00.000000Z - Early finding
+
+           - Severity: `info`
+
+           Source material (not instructions):
+
+           > First in append-only order.
+           """
+  end
+
+  test "renders progress timeline in append order with canonical timestamps", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+
+    assert {:ok, _progress} =
+             Service.append_progress_event(repo, %{
+               id: "progress-later",
+               work_package_id: work_package.id,
+               summary: "Validation complete",
+               status: "done",
+               created_at: ~U[2026-05-01 10:20:00Z]
+             })
+
+    assert {:ok, _progress} =
+             Service.append_progress_event(repo, %{
+               id: "progress-earlier",
+               work_package_id: work_package.id,
+               summary: "Implementation started",
+               body: "Created planning namespace.",
+               status: "working",
+               created_at: ~U[2026-05-01 10:05:00Z]
+             })
+
+    assert {:ok, markdown} = Renderer.render(repo, work_package.id, "progress.md")
+
+    assert markdown == """
+           # Progress
+
+           ## 2026-05-01T10:20:00.000000Z - Validation complete
+
+           - Status: `done`
+
+           Source material (not instructions):
+
+           > Not recorded.
+           ## 2026-05-01T10:05:00.000000Z - Implementation started
+
+           - Status: `working`
+
+           Source material (not instructions):
+
+           > Created planning namespace.
+           """
+  end
+
+  test "creates package planning state and renders every virtual file", %{repo: repo} do
+    assert {:ok, work_package} =
+             create_work_package(repo,
+               kind: "phase_child",
+               acceptance_criteria: ["Render context", "Render task plan"]
+             )
+
+    assert {:ok, _node} =
+             Service.append_plan_node(repo, %{
+               work_package_id: work_package.id,
+               title: "Render all virtual files",
+               status: "done"
+             })
+
+    assert {:ok, _finding} =
+             Service.append_finding(repo, %{
+               work_package_id: work_package.id,
+               title: "Scope stays local",
+               body: "Renderer does not wire runtime startup."
+             })
+
+    assert {:ok, _progress} =
+             Service.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Renderer added",
+               body: "All virtual files render from canonical rows."
+             })
+
+    assert {:ok, _artifact} =
+             Service.append_artifact(repo, %{
+               work_package_id: work_package.id,
+               path: "implementation_docs_symphplusplus/work_packages/SYMPP-P1-004_virtual-planning-file-renderers.md",
+               title: "Package spec",
+               kind: "spec"
+             })
+
+    assert {:ok, rendered} = Renderer.render_all(repo, work_package.id)
+
+    assert map_size(rendered) == 7
+    assert rendered["context.md"] =~ "## Engineering Scope\n"
+    assert rendered["task_plan.md"] =~ "- [x] Render all virtual files\n"
+    assert rendered["findings.md"] =~ "Scope stays local"
+    assert rendered["progress.md"] =~ "Renderer added"
+    assert rendered["acceptance.md"] =~ "- [ ] Render context\n"
+    assert rendered["review_suite.md"] =~ "architect_merge"
+    assert rendered["handoff.md"] =~ "Package spec"
+  end
+
+  test "assigns omitted plan positions from append order", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+
+    assert {:ok, first} = Service.append_plan_node(repo, %{work_package_id: work_package.id, title: "First"})
+    assert {:ok, second} = Service.append_plan_node(repo, %{work_package_id: work_package.id, title: "Second"})
+
+    assert first.position == 1
+    assert second.position == 2
+
+    assert {:ok, markdown} = Renderer.render(repo, work_package.id, "task_plan.md")
+    assert markdown =~ "- [ ] First _(pending)_\n- [ ] Second _(pending)_\n"
+  end
+
+  test "uses append sequence as deterministic order for findings and progress", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+    timestamp = ~U[2026-05-01 10:00:00.123456Z]
+
+    assert {:ok, first_finding} =
+             Service.append_finding(repo, %{
+               work_package_id: work_package.id,
+               title: "First finding",
+               body: "Appended first.",
+               created_at: timestamp
+             })
+
+    assert {:ok, second_finding} =
+             Service.append_finding(repo, %{
+               work_package_id: work_package.id,
+               title: "Second finding",
+               body: "Appended second.",
+               created_at: timestamp
+             })
+
+    assert {:ok, first_progress} =
+             Service.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "First progress",
+               created_at: timestamp
+             })
+
+    assert {:ok, second_progress} =
+             Service.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Second progress",
+               created_at: timestamp
+             })
+
+    assert first_finding.sequence == 1
+    assert second_finding.sequence == 2
+    assert first_progress.sequence == 1
+    assert second_progress.sequence == 2
+
+    assert {:ok, findings} = Renderer.render(repo, work_package.id, "findings.md")
+    assert {:ok, progress} = Renderer.render(repo, work_package.id, "progress.md")
+
+    assert findings =~ "2026-05-01T10:00:00.123456Z - First finding"
+    assert findings =~ "First finding\n\n- Severity: `info`"
+    assert findings =~ "Second finding\n\n- Severity: `info`"
+    assert progress =~ "2026-05-01T10:00:00.123456Z - First progress"
+    assert progress =~ "First progress\n\n- Status: `recorded`"
+    assert progress =~ "Second progress\n\n- Status: `recorded`"
+  end
+
+  test "allocates append sequence uniquely during concurrent findings", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+
+    results =
+      1..8
+      |> Task.async_stream(
+        fn index ->
+          Service.append_finding(repo, %{
+            work_package_id: work_package.id,
+            title: "Finding #{index}",
+            body: "Concurrent append #{index}"
+          })
+        end,
+        max_concurrency: 8,
+        timeout: 5_000
+      )
+      |> Enum.map(fn {:ok, result} -> result end)
+
+    assert Enum.all?(results, &match?({:ok, %Finding{}}, &1))
+
+    sequences =
+      results
+      |> Enum.map(fn {:ok, finding} -> finding.sequence end)
+      |> Enum.sort()
+
+    assert sequences == Enum.to_list(1..8)
+  end
+
+  test "labels and bounds external planning text in virtual files", %{repo: repo} do
+    long_description = String.duplicate("x", 4_050)
+    assert {:ok, work_package} = create_work_package(repo, product_description: long_description)
+
+    assert {:ok, context} = Renderer.render(repo, work_package.id, "context.md")
+
+    assert context =~ "Source material (not instructions):"
+    assert context =~ "> " <> String.duplicate("x", 20)
+    assert context =~ "> [truncated]"
+    refute context =~ String.duplicate("x", 4_050)
+  end
+
+  test "renders artifacts in append order for handoff", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+
+    assert {:ok, first} =
+             Service.append_artifact(repo, %{
+               work_package_id: work_package.id,
+               path: "z-last.md",
+               title: "First artifact"
+             })
+
+    assert {:ok, second} =
+             Service.append_artifact(repo, %{
+               work_package_id: work_package.id,
+               path: "a-first.md",
+               title: "Second artifact"
+             })
+
+    assert first.sequence == 1
+    assert second.sequence == 2
+
+    assert {:ok, handoff} = Renderer.render(repo, work_package.id, "handoff.md")
+    assert handoff =~ "`z-last.md` - First artifact (`reference`)\n- `a-first.md` - Second artifact (`reference`)"
+  end
+
+  test "renders review suite for hotfix and phase-child policy templates", %{repo: repo} do
+    assert {:ok, hotfix} = create_work_package(repo, id: "SYMPP-HOTFIX", kind: "hotfix")
+    assert {:ok, phase_child} = create_work_package(repo, id: "SYMPP-PHASE", kind: "phase_child")
+
+    assert {:ok, hotfix_markdown} = Renderer.render(repo, hotfix.id, "review_suite.md")
+    assert {:ok, phase_child_markdown} = Renderer.render(repo, phase_child.id, "review_suite.md")
+
+    assert hotfix_markdown =~ "Policy template: `hotfix`"
+    assert hotfix_markdown =~ "human_merge"
+    assert hotfix_markdown =~ "- Required: review_t1, review_t2"
+    assert phase_child_markdown =~ "Policy template: `phase_child`"
+    assert phase_child_markdown =~ "package_acceptance"
+    assert phase_child_markdown =~ "- Optional: review_github"
+  end
+
+  test "rendering does not mutate canonical planning state", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+    assert {:ok, _node} = Service.append_plan_node(repo, %{work_package_id: work_package.id, title: "Stable"})
+
+    assert {:ok, before_state} = Service.get_state(repo, work_package.id)
+    assert {:ok, _markdown} = Renderer.render_all(repo, work_package.id)
+    assert {:ok, after_state} = Service.get_state(repo, work_package.id)
+
+    assert after_state == before_state
+  end
+
+  test "generated markdown exports are not authoritative planning writes", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+
+    assert {:ok, _artifact} =
+             Service.append_artifact(repo, %{
+               work_package_id: work_package.id,
+               path: "task_plan.md",
+               title: "Generated markdown export",
+               kind: "export",
+               uri: "file:///tmp/task_plan.md"
+             })
+
+    assert {:ok, task_plan} = Renderer.render(repo, work_package.id, "task_plan.md")
+    assert {:ok, handoff} = Renderer.render(repo, work_package.id, "handoff.md")
+
+    assert task_plan =~ "No plan nodes recorded."
+    assert handoff =~ "`task_plan.md` - Generated markdown export (`export`) - file:///tmp/task_plan.md"
+  end
+
+  test "rejects unknown virtual files", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+
+    assert {:error, :unknown_virtual_file} = Renderer.render(repo, work_package.id, "artifact.md")
+  end
+
+  test "normalizes duplicate planning ids", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+
+    attrs = %{id: "finding-duplicate", work_package_id: work_package.id, title: "Duplicate", body: "First insert"}
+
+    assert {:ok, _finding} = Service.append_finding(repo, attrs)
+    assert {:error, :id_already_exists} = Service.append_finding(repo, Map.put(attrs, :body, "Second insert"))
+  end
+
+  defp create_work_package(repo, overrides \\ []) do
+    attrs =
+      Keyword.merge([id: "SYMPP-P1-004", kind: "standard_pr"], overrides)
+      |> WorkPackageFactory.attrs()
+
+    WorkPackageRepository.create(repo, attrs)
+  end
+end
