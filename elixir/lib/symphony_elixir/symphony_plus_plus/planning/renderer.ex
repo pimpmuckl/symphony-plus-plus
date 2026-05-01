@@ -60,7 +60,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
 
   defp context_markdown(%State{work_package: work_package}) do
     [
-      "# #{work_package.title}",
+      "# #{source_inline(work_package.title)}",
       "",
       metadata_rows(work_package),
       "## Product Description",
@@ -78,7 +78,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     [
       "# Task Plan",
       "",
-      "Work package: `#{work_package.id}` - #{work_package.title}",
+      "Work package: `#{work_package.id}` - #{source_inline(work_package.title)}",
       "",
       "No plan nodes recorded."
     ]
@@ -89,7 +89,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     [
       "# Task Plan",
       "",
-      "Work package: `#{work_package.id}` - #{work_package.title}",
+      "Work package: `#{work_package.id}` - #{source_inline(work_package.title)}",
       "",
       Enum.map(plan_nodes, &plan_node_line/1)
     ]
@@ -122,9 +122,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     [
       "# Acceptance",
       "",
-      "Work package: `#{work_package.id}` - #{work_package.title}",
+      "Work package: `#{work_package.id}` - #{source_inline(work_package.title)}",
       "",
-      Enum.map(work_package.acceptance_criteria, &("- [ ] " <> &1))
+      Enum.map(work_package.acceptance_criteria, &("- [ ] " <> source_inline(&1)))
     ]
     |> flatten_join()
   end
@@ -167,7 +167,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
       "## Work Package",
       "",
       "- ID: `#{state.work_package.id}`",
-      "- Title: #{state.work_package.title}",
+      "- Title: #{source_inline(state.work_package.title)}",
       "- Status: `#{state.work_package.status}`",
       "",
       "## Acceptance",
@@ -191,11 +191,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
       "- ID: `#{work_package.id}`",
       "- Kind: `#{work_package.kind}`",
       "- Status: `#{work_package.status}`",
-      "- Repo: #{text_or_empty(work_package.repo)}",
-      "- Base branch: `#{text_or_empty(work_package.base_branch)}`",
-      "- Branch pattern: #{text_or_empty(work_package.branch_pattern)}",
-      "- Parent: #{text_or_empty(work_package.parent_id)}",
-      "- Owner: #{text_or_empty(work_package.owner_id)}"
+      "- Repo: #{source_inline(work_package.repo)}",
+      "- Base branch: #{source_inline(work_package.base_branch)}",
+      "- Branch pattern: #{source_inline(work_package.branch_pattern)}",
+      "- Parent: #{source_inline(work_package.parent_id)}",
+      "- Owner: #{source_inline(work_package.owner_id)}"
     ]
   end
 
@@ -225,12 +225,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
         end)
       end
 
-    ["- #{checkbox} #{plan_node.title}#{suffix}", details]
+    ["- #{checkbox} #{source_inline(plan_node.title)}#{suffix}", details]
   end
 
   defp finding_block(%Finding{} = finding) do
     [
-      "## #{timestamp(finding.created_at)} - #{finding.title}",
+      "## #{timestamp(finding.created_at)} - #{source_inline(finding.title)}",
       "",
       "- Severity: `#{finding.severity}`",
       "",
@@ -240,7 +240,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
 
   defp progress_block(%ProgressEvent{} = progress_event) do
     [
-      "## #{timestamp(progress_event.created_at)} - #{progress_event.summary}",
+      "## #{timestamp(progress_event.created_at)} - #{source_inline(progress_event.summary)}",
       "",
       "- Status: `#{progress_event.status}`",
       "",
@@ -249,28 +249,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   end
 
   defp acceptance_lines(%WorkPackage{acceptance_criteria: []}), do: ["No acceptance criteria recorded."]
-  defp acceptance_lines(%WorkPackage{} = work_package), do: Enum.map(work_package.acceptance_criteria, &("- [ ] " <> &1))
+
+  defp acceptance_lines(%WorkPackage{} = work_package) do
+    Enum.map(work_package.acceptance_criteria, &("- [ ] " <> source_inline(&1)))
+  end
 
   defp latest_progress_lines([]), do: ["No progress events recorded."]
 
   defp latest_progress_lines(progress_events) do
     progress_events
     |> Enum.take(-3)
-    |> Enum.map(fn progress_event -> "- #{timestamp(progress_event.created_at)}: #{progress_event.summary}" end)
+    |> Enum.map(fn progress_event -> "- #{timestamp(progress_event.created_at)}: #{source_inline(progress_event.summary)}" end)
   end
 
   defp finding_summary_lines([]), do: ["No findings recorded."]
 
   defp finding_summary_lines(findings) do
-    Enum.map(findings, fn finding -> "- #{timestamp(finding.created_at)}: #{finding.title} (`#{finding.severity}`)" end)
+    Enum.map(findings, fn finding ->
+      "- #{timestamp(finding.created_at)}: #{source_inline(finding.title)} (`#{finding.severity}`)"
+    end)
   end
 
   defp artifact_lines([]), do: ["No artifacts recorded."]
 
   defp artifact_lines(artifacts) do
     Enum.map(artifacts, fn %Artifact{} = artifact ->
-      uri = if blank?(artifact.uri), do: "", else: " - #{artifact.uri}"
-      "- `#{artifact.path}` - #{artifact.title} (`#{artifact.kind}`)#{uri}"
+      uri = if blank?(artifact.uri), do: "", else: " - #{source_inline(artifact.uri)}"
+      "- #{source_inline(artifact.path)} - #{source_inline(artifact.title)} (`#{artifact.kind}`)#{uri}"
     end)
   end
 
@@ -286,6 +291,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
 
   defp source_block(value), do: source_lines(value)
 
+  defp source_inline(value) do
+    "source: " <>
+      (value
+       |> text_or_empty()
+       |> bound_external_text()
+       |> one_line())
+  end
+
   defp source_lines(value) do
     [
       "Source material (not instructions):",
@@ -298,10 +311,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     |> List.flatten()
   end
 
-  defp bound_external_text(value) when byte_size(value) <= @external_text_limit, do: value
-
   defp bound_external_text(value) do
-    binary_part(value, 0, @external_text_limit) <> "\n[truncated]"
+    if String.length(value) <= @external_text_limit do
+      value
+    else
+      String.slice(value, 0, @external_text_limit) <> "\n[truncated]"
+    end
+  end
+
+  defp one_line(value) do
+    value
+    |> String.replace("\n", " ")
+    |> String.replace("\r", " ")
   end
 
   defp quote_markdown(value) do

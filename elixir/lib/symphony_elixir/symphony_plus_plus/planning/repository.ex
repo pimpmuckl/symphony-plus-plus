@@ -248,7 +248,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
 
   defp append_order_constraint?(constraint) when is_binary(constraint) do
     String.contains?(constraint, "_work_package_position_unique_index") or
-      String.contains?(constraint, "_work_package_sequence_unique_index")
+      String.contains?(constraint, "_work_package_sequence_unique_index") or
+      sqlite_append_order_constraint?(constraint)
+  end
+
+  defp sqlite_append_order_constraint?(constraint) do
+    String.contains?(constraint, "UNIQUE constraint failed:") and
+      (String.contains?(constraint, ".sequence") or String.contains?(constraint, ".position"))
   end
 
   defp normalize_exqlite_error(error) do
