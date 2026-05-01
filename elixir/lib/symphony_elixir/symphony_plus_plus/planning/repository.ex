@@ -320,7 +320,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   end
 
   defp append_retry_attempts do
-    Application.get_env(:symphony_elixir, :sympp_planning_append_retry_attempts, @default_append_retry_attempts)
+    :symphony_elixir
+    |> Application.get_env(:sympp_planning_append_retry_attempts, @default_append_retry_attempts)
+    |> max(0)
   end
 
   defp maybe_put_next_value(attrs, repo, schema, field, true) do

@@ -389,7 +389,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
   test "preserves database busy when append retries are exhausted" do
     previous_attempts = Application.get_env(:symphony_elixir, :sympp_planning_append_retry_attempts)
-    Application.put_env(:symphony_elixir, :sympp_planning_append_retry_attempts, 0)
+    Application.put_env(:symphony_elixir, :sympp_planning_append_retry_attempts, -1)
 
     on_exit(fn ->
       if is_nil(previous_attempts) do
@@ -405,7 +405,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
   test "preserves database busy when state read retries are exhausted" do
     previous_attempts = Application.get_env(:symphony_elixir, :sympp_planning_append_retry_attempts)
-    Application.put_env(:symphony_elixir, :sympp_planning_append_retry_attempts, 0)
+    Application.put_env(:symphony_elixir, :sympp_planning_append_retry_attempts, -1)
 
     on_exit(fn ->
       if is_nil(previous_attempts) do
