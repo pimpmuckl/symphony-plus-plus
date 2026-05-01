@@ -37,17 +37,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
 
   @spec append_finding(repo(), map()) :: {:ok, Finding.t()} | {:error, error()}
   def append_finding(repo, attrs) when is_atom(repo) and is_map(attrs) do
-    insert_with_allocated_value(repo, attrs, Finding, :sequence, &Finding.create_changeset/1)
+    insert_with_allocated_value(repo, drop_ordering(attrs, :sequence), Finding, :sequence, &Finding.create_changeset/1)
   end
 
   @spec append_progress_event(repo(), map()) :: {:ok, ProgressEvent.t()} | {:error, error()}
   def append_progress_event(repo, attrs) when is_atom(repo) and is_map(attrs) do
-    insert_with_allocated_value(repo, attrs, ProgressEvent, :sequence, &ProgressEvent.create_changeset/1)
+    insert_with_allocated_value(
+      repo,
+      drop_ordering(attrs, :sequence),
+      ProgressEvent,
+      :sequence,
+      &ProgressEvent.create_changeset/1
+    )
   end
 
   @spec append_artifact(repo(), map()) :: {:ok, Artifact.t()} | {:error, error()}
   def append_artifact(repo, attrs) when is_atom(repo) and is_map(attrs) do
-    insert_with_allocated_value(repo, attrs, Artifact, :sequence, &Artifact.create_changeset/1)
+    insert_with_allocated_value(
+      repo,
+      drop_ordering(attrs, :sequence),
+      Artifact,
+      :sequence,
+      &Artifact.create_changeset/1
+    )
   end
 
   @spec list_plan_nodes(repo(), String.t()) :: {:ok, [PlanNode.t()]}
@@ -104,6 +116,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
 
   @spec get_state(repo(), String.t()) :: {:ok, State.t()} | {:error, error()}
   def get_state(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
+    repo.transaction(fn ->
+      case load_state(repo, work_package_id) do
+        {:ok, state} -> state
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp load_state(repo, work_package_id) do
     with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
          {:ok, plan_nodes} <- list_plan_nodes(repo, work_package_id),
          {:ok, findings} <- list_findings(repo, work_package_id),
@@ -145,6 +166,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
         {:error, reason} -> repo.rollback(reason)
       end
     end)
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   defp handle_insert_result({:ok, row}, _repo, _attrs, _schema, _field, _changeset_fun, _auto_allocate?, _attempts_left) do
@@ -276,6 +299,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
 
   defp normalize_keys(attrs) when is_map(attrs) do
     Map.new(attrs, fn {key, value} -> {normalize_key(key), value} end)
+  end
+
+  defp drop_ordering(attrs, field) do
+    attrs
+    |> normalize_keys()
+    |> Map.drop([Atom.to_string(field)])
   end
 
   defp normalize_key(key) when is_atom(key), do: Atom.to_string(key)

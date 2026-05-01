@@ -38,7 +38,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
     assert {:ok, rendered} = Renderer.render_all(repo, work_package.id)
 
-    assert Map.keys(rendered) == [
+    assert Enum.sort(Map.keys(rendered)) == [
              "acceptance.md",
              "context.md",
              "findings.md",
@@ -331,6 +331,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
       |> Enum.sort()
 
     assert sequences == Enum.to_list(1..8)
+  end
+
+  test "append APIs own sequence assignment for append-only rows", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+
+    assert {:ok, first} =
+             Service.append_finding(repo, %{
+               work_package_id: work_package.id,
+               title: "Caller sequence ignored",
+               body: "First",
+               sequence: 999
+             })
+
+    assert {:ok, second} =
+             Service.append_finding(repo, %{
+               work_package_id: work_package.id,
+               title: "Next append",
+               body: "Second",
+               sequence: 1
+             })
+
+    assert first.sequence == 1
+    assert second.sequence == 2
   end
 
   test "allocates append sequence uniquely during concurrent artifacts", %{repo: repo} do
