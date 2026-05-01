@@ -278,9 +278,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   defp finding_summary_lines([]), do: ["No findings recorded."]
 
   defp finding_summary_lines(findings) do
-    Enum.map(findings, fn finding ->
-      "- #{timestamp(finding.created_at)}: #{source_inline(finding.title)} (`#{finding.severity}`)"
-    end)
+    {rendered_findings, omitted_count} = capped_items(findings)
+
+    [
+      omission_notice(omitted_count, "older findings"),
+      Enum.map(rendered_findings, fn finding ->
+        "- #{timestamp(finding.created_at)}: #{source_inline(finding.title)} (`#{finding.severity}`)"
+      end)
+    ]
   end
 
   defp artifact_lines([]), do: ["No artifacts recorded."]
