@@ -11,6 +11,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.State
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
 
+  @append_retry_attempts 200
+
   @type repo :: module()
   @type planning_record :: PlanNode.t() | Finding.t() | ProgressEvent.t() | Artifact.t()
   @type error ::
@@ -122,6 +124,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
         {:error, reason} -> repo.rollback(reason)
       end
     end)
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   defp load_state(repo, work_package_id) do
@@ -146,7 +150,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
     string_field = Atom.to_string(field)
     auto_allocate? = Map.get(normalized_attrs, string_field) in [nil, ""]
 
-    do_insert_with_allocated_value(repo, normalized_attrs, schema, field, changeset_fun, auto_allocate?, 20)
+    do_insert_with_allocated_value(
+      repo,
+      normalized_attrs,
+      schema,
+      field,
+      changeset_fun,
+      auto_allocate?,
+      @append_retry_attempts
+    )
   end
 
   defp do_insert_with_allocated_value(repo, attrs, schema, field, changeset_fun, auto_allocate?, attempts_left) do
@@ -202,8 +214,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   defp retry_or_conflict(_repo, _attrs, _schema, _field, _changeset_fun, 0), do: {:error, :sequence_conflict}
 
   defp retry_or_conflict(repo, attrs, schema, field, changeset_fun, attempts_left) do
-    Process.sleep(10)
+    Process.sleep(retry_delay_ms(attempts_left))
     do_insert_with_allocated_value(repo, attrs, schema, field, changeset_fun, true, attempts_left - 1)
+  end
+
+  defp retry_delay_ms(attempts_left) do
+    used_attempts = @append_retry_attempts - attempts_left
+    min(100, 5 + used_attempts * 5)
   end
 
   defp maybe_put_next_value(attrs, repo, schema, field, true) do

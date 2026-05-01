@@ -406,6 +406,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert context =~ "> [truncated]"
   end
 
+  test "caps rendered append-only history with an omission notice", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+
+    for index <- 1..105 do
+      assert {:ok, _finding} =
+               Service.append_finding(repo, %{
+                 work_package_id: work_package.id,
+                 title: "Finding #{index}",
+                 body: "Body #{index}"
+               })
+    end
+
+    assert {:ok, findings} = Renderer.render(repo, work_package.id, "findings.md")
+
+    assert findings =~ "_5 older findings omitted from this virtual file._"
+    refute findings =~ "source: Finding 1\n\n- Severity"
+    assert findings =~ "source: Finding 6"
+    assert findings =~ "source: Finding 105"
+  end
+
   test "renders artifacts in append order for handoff", %{repo: repo} do
     assert {:ok, work_package} = create_work_package(repo)
 

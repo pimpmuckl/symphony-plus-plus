@@ -21,6 +21,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   ]
 
   @external_text_limit 4_000
+  @render_item_limit 100
 
   @type error :: Repository.error() | :unknown_virtual_file
 
@@ -86,12 +87,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   end
 
   defp task_plan_markdown(%State{work_package: work_package, plan_nodes: plan_nodes}) do
+    {rendered_nodes, omitted_count} = capped_items(plan_nodes)
+
     [
       "# Task Plan",
       "",
       "Work package: `#{work_package.id}` - #{source_inline(work_package.title)}",
       "",
-      Enum.map(plan_nodes, &plan_node_line/1)
+      omission_notice(omitted_count, "older plan nodes"),
+      Enum.map(rendered_nodes, &plan_node_line/1)
     ]
     |> flatten_join()
   end
@@ -101,7 +105,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   end
 
   defp findings_markdown(%State{findings: findings}) do
-    ["# Findings", "", Enum.map(findings, &finding_block/1)]
+    {rendered_findings, omitted_count} = capped_items(findings)
+
+    ["# Findings", "", omission_notice(omitted_count, "older findings"), Enum.map(rendered_findings, &finding_block/1)]
     |> flatten_join()
   end
 
@@ -110,7 +116,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   end
 
   defp progress_markdown(%State{progress_events: progress_events}) do
-    ["# Progress", "", Enum.map(progress_events, &progress_block/1)]
+    {rendered_progress, omitted_count} = capped_items(progress_events)
+
+    ["# Progress", "", omission_notice(omitted_count, "older progress events"), Enum.map(rendered_progress, &progress_block/1)]
     |> flatten_join()
   end
 
@@ -124,7 +132,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
       "",
       "Work package: `#{work_package.id}` - #{source_inline(work_package.title)}",
       "",
-      Enum.map(work_package.acceptance_criteria, &("- [ ] " <> source_inline(&1)))
+      acceptance_lines(work_package)
     ]
     |> flatten_join()
   end
@@ -251,7 +259,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   defp acceptance_lines(%WorkPackage{acceptance_criteria: []}), do: ["No acceptance criteria recorded."]
 
   defp acceptance_lines(%WorkPackage{} = work_package) do
-    Enum.map(work_package.acceptance_criteria, &("- [ ] " <> source_inline(&1)))
+    {rendered_criteria, omitted_count} = capped_items(work_package.acceptance_criteria)
+
+    [
+      omission_notice(omitted_count, "older acceptance criteria"),
+      Enum.map(rendered_criteria, &("- [ ] " <> source_inline(&1)))
+    ]
   end
 
   defp latest_progress_lines([]), do: ["No progress events recorded."]
@@ -273,10 +286,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   defp artifact_lines([]), do: ["No artifacts recorded."]
 
   defp artifact_lines(artifacts) do
-    Enum.map(artifacts, fn %Artifact{} = artifact ->
-      uri = if blank?(artifact.uri), do: "", else: " - #{source_inline(artifact.uri)}"
-      "- #{source_inline(artifact.path)} - #{source_inline(artifact.title)} (`#{artifact.kind}`)#{uri}"
-    end)
+    {rendered_artifacts, omitted_count} = capped_items(artifacts)
+
+    [
+      omission_notice(omitted_count, "older artifacts"),
+      Enum.map(rendered_artifacts, fn %Artifact{} = artifact ->
+        uri = if blank?(artifact.uri), do: "", else: " - #{source_inline(artifact.uri)}"
+        "- #{source_inline(artifact.path)} - #{source_inline(artifact.title)} (`#{artifact.kind}`)#{uri}"
+      end)
+    ]
   end
 
   defp list_or_empty([]), do: ["None."]
@@ -284,6 +302,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
 
   defp inline_list([]), do: "none"
   defp inline_list(values), do: Enum.join(values, ", ")
+
+  defp capped_items(items) do
+    item_count = length(items)
+
+    if item_count > @render_item_limit do
+      {Enum.take(items, -@render_item_limit), item_count - @render_item_limit}
+    else
+      {items, 0}
+    end
+  end
+
+  defp omission_notice(0, _label), do: []
+  defp omission_notice(count, label), do: ["_#{count} #{label} omitted from this virtual file._", ""]
 
   defp timestamp(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
 
