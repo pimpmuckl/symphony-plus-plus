@@ -333,6 +333,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert sequences == Enum.to_list(1..8)
   end
 
+  test "allocates append sequence uniquely during concurrent artifacts", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+
+    results =
+      1..8
+      |> Task.async_stream(
+        fn index ->
+          Service.append_artifact(repo, %{
+            work_package_id: work_package.id,
+            path: "artifact-#{index}.md",
+            title: "Artifact #{index}"
+          })
+        end,
+        max_concurrency: 8,
+        timeout: 5_000
+      )
+      |> Enum.map(fn {:ok, result} -> result end)
+
+    assert Enum.all?(results, &match?({:ok, %Artifact{}}, &1))
+
+    sequences =
+      results
+      |> Enum.map(fn {:ok, artifact} -> artifact.sequence end)
+      |> Enum.sort()
+
+    assert sequences == Enum.to_list(1..8)
+  end
+
   test "labels and bounds external planning text in virtual files", %{repo: repo} do
     long_description = String.duplicate("x", 4_050)
     assert {:ok, work_package} = create_work_package(repo, product_description: long_description)

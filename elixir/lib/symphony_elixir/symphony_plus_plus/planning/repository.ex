@@ -253,15 +253,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   end
 
   defp sqlite_append_order_constraint?(constraint) do
-    String.contains?(constraint, "UNIQUE constraint failed:") and
-      (String.contains?(constraint, ".sequence") or String.contains?(constraint, ".position"))
+    (String.contains?(constraint, "UNIQUE constraint failed:") and
+       (String.contains?(constraint, ".sequence") or String.contains?(constraint, ".position"))) or
+      (String.contains?(constraint, "work_package") and
+         (String.contains?(constraint, "sequence") or String.contains?(constraint, "position")))
   end
 
   defp normalize_exqlite_error(error) do
-    if String.contains?(Exception.message(error), "Database busy") do
+    message = Exception.message(error)
+    normalized_message = String.downcase(message)
+
+    if String.contains?(normalized_message, "busy") or String.contains?(normalized_message, "locked") do
       {:error, :database_busy}
     else
-      {:error, {:constraint_failed, Exception.message(error)}}
+      {:error, {:constraint_failed, message}}
     end
   end
 
