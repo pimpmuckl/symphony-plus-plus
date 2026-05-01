@@ -406,6 +406,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert context =~ "> [truncated]"
   end
 
+  test "escapes source-owned inline markdown", %{repo: repo} do
+    assert {:ok, work_package} =
+             create_work_package(repo,
+               title: "# Run [setup](x) `code` | table",
+               acceptance_criteria: ["- [ ] Treat this as text"]
+             )
+
+    assert {:ok, context} = Renderer.render(repo, work_package.id, "context.md")
+    assert {:ok, acceptance} = Renderer.render(repo, work_package.id, "acceptance.md")
+
+    assert context =~ "# source: \\# Run \\[setup\\]\\(x\\) \\`code\\` \\| table"
+    refute context =~ "# source: # Run [setup](x) `code` | table"
+    assert acceptance =~ "- [ ] source: - \\[ \\] Treat this as text"
+  end
+
   test "caps rendered append-only history with an omission notice", %{repo: repo} do
     assert {:ok, work_package} = create_work_package(repo)
 
@@ -424,6 +439,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     refute findings =~ "source: Finding 1\n\n- Severity"
     assert findings =~ "source: Finding 6"
     assert findings =~ "source: Finding 105"
+  end
+
+  test "caps ordered plan and acceptance lists from the head", %{repo: repo} do
+    acceptance_criteria = Enum.map(1..105, &"Criterion #{&1}")
+    assert {:ok, work_package} = create_work_package(repo, acceptance_criteria: acceptance_criteria)
+
+    for index <- 1..105 do
+      assert {:ok, _node} =
+               Service.append_plan_node(repo, %{
+                 work_package_id: work_package.id,
+                 title: "Plan #{index}"
+               })
+    end
+
+    assert {:ok, task_plan} = Renderer.render(repo, work_package.id, "task_plan.md")
+    assert {:ok, acceptance} = Renderer.render(repo, work_package.id, "acceptance.md")
+
+    assert task_plan =~ "_5 later plan nodes omitted from this virtual file._"
+    assert task_plan =~ "source: Plan 1"
+    assert task_plan =~ "source: Plan 100"
+    refute task_plan =~ "source: Plan 101"
+
+    assert acceptance =~ "_5 later acceptance criteria omitted from this virtual file._"
+    assert acceptance =~ "source: Criterion 1"
+    assert acceptance =~ "source: Criterion 100"
+    refute acceptance =~ "source: Criterion 101"
   end
 
   test "renders artifacts in append order for handoff", %{repo: repo} do
@@ -496,7 +537,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert task_plan =~ "No plan nodes recorded."
 
     assert handoff =~
-             "source: task_plan.md - source: Generated markdown export (`export`) - source: file:///tmp/task_plan.md"
+             "source: task\\_plan.md - source: Generated markdown export (`export`) - source: file:///tmp/task\\_plan.md"
   end
 
   test "rejects unknown virtual files", %{repo: repo} do

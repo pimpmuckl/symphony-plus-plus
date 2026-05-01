@@ -87,14 +87,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   end
 
   defp task_plan_markdown(%State{work_package: work_package, plan_nodes: plan_nodes}) do
-    {rendered_nodes, omitted_count} = capped_items(plan_nodes)
+    {rendered_nodes, omitted_count} = capped_head_items(plan_nodes)
 
     [
       "# Task Plan",
       "",
       "Work package: `#{work_package.id}` - #{source_inline(work_package.title)}",
       "",
-      omission_notice(omitted_count, "older plan nodes"),
+      omission_notice(omitted_count, "later plan nodes"),
       Enum.map(rendered_nodes, &plan_node_line/1)
     ]
     |> flatten_join()
@@ -105,7 +105,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   end
 
   defp findings_markdown(%State{findings: findings}) do
-    {rendered_findings, omitted_count} = capped_items(findings)
+    {rendered_findings, omitted_count} = capped_tail_items(findings)
 
     ["# Findings", "", omission_notice(omitted_count, "older findings"), Enum.map(rendered_findings, &finding_block/1)]
     |> flatten_join()
@@ -116,7 +116,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   end
 
   defp progress_markdown(%State{progress_events: progress_events}) do
-    {rendered_progress, omitted_count} = capped_items(progress_events)
+    {rendered_progress, omitted_count} = capped_tail_items(progress_events)
 
     ["# Progress", "", omission_notice(omitted_count, "older progress events"), Enum.map(rendered_progress, &progress_block/1)]
     |> flatten_join()
@@ -259,10 +259,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   defp acceptance_lines(%WorkPackage{acceptance_criteria: []}), do: ["No acceptance criteria recorded."]
 
   defp acceptance_lines(%WorkPackage{} = work_package) do
-    {rendered_criteria, omitted_count} = capped_items(work_package.acceptance_criteria)
+    {rendered_criteria, omitted_count} = capped_head_items(work_package.acceptance_criteria)
 
     [
-      omission_notice(omitted_count, "older acceptance criteria"),
+      omission_notice(omitted_count, "later acceptance criteria"),
       Enum.map(rendered_criteria, &("- [ ] " <> source_inline(&1)))
     ]
   end
@@ -278,7 +278,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   defp finding_summary_lines([]), do: ["No findings recorded."]
 
   defp finding_summary_lines(findings) do
-    {rendered_findings, omitted_count} = capped_items(findings)
+    {rendered_findings, omitted_count} = capped_tail_items(findings)
 
     [
       omission_notice(omitted_count, "older findings"),
@@ -291,7 +291,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   defp artifact_lines([]), do: ["No artifacts recorded."]
 
   defp artifact_lines(artifacts) do
-    {rendered_artifacts, omitted_count} = capped_items(artifacts)
+    {rendered_artifacts, omitted_count} = capped_tail_items(artifacts)
 
     [
       omission_notice(omitted_count, "older artifacts"),
@@ -308,7 +308,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   defp inline_list([]), do: "none"
   defp inline_list(values), do: Enum.join(values, ", ")
 
-  defp capped_items(items) do
+  defp capped_head_items(items) do
+    item_count = length(items)
+
+    if item_count > @render_item_limit do
+      {Enum.take(items, @render_item_limit), item_count - @render_item_limit}
+    else
+      {items, 0}
+    end
+  end
+
+  defp capped_tail_items(items) do
     item_count = length(items)
 
     if item_count > @render_item_limit do
@@ -332,7 +342,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
       (value
        |> text_or_empty()
        |> bound_external_text()
-       |> one_line())
+       |> one_line()
+       |> escape_inline_markdown())
   end
 
   defp source_lines(value) do
@@ -359,6 +370,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     value
     |> String.replace("\n", " ")
     |> String.replace("\r", " ")
+  end
+
+  defp escape_inline_markdown(value) do
+    value
+    |> String.graphemes()
+    |> Enum.map_join(fn
+      "\\" -> "\\\\"
+      "`" -> "\\`"
+      "*" -> "\\*"
+      "_" -> "\\_"
+      "[" -> "\\["
+      "]" -> "\\]"
+      "(" -> "\\("
+      ")" -> "\\)"
+      "#" -> "\\#"
+      "!" -> "\\!"
+      "|" -> "\\|"
+      "<" -> "\\<"
+      ">" -> "\\>"
+      character -> character
+    end)
   end
 
   defp quote_markdown(value) do
