@@ -229,7 +229,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
         plan_node.body
         |> source_lines()
         |> Enum.map(fn
-          "" -> ""
+          "" -> "  "
           line -> "  " <> line
         end)
       end
@@ -432,7 +432,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   defp truncate_rendered_file(markdown, :tail) do
     markdown
     |> String.slice(-@render_file_limit, @render_file_limit)
-    |> truncate_from_line_boundary()
+    |> truncate_from_section_boundary()
   end
 
   defp truncate_rendered_file(markdown, _strategy), do: String.slice(markdown, 0, @render_file_limit)
@@ -450,6 +450,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     case :binary.matches(markdown, "\n") do
       [] -> markdown
       matches -> binary_part(markdown, 0, elem(List.last(matches), 0))
+    end
+  end
+
+  defp truncate_from_section_boundary(markdown) do
+    case Regex.run(~r/\n## /, markdown, return: :index) do
+      [{index, _length}] -> binary_part(markdown, index + 1, byte_size(markdown) - index - 1)
+      nil -> truncate_from_line_boundary(markdown)
     end
   end
 

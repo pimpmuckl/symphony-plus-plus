@@ -406,6 +406,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
     |> repo.update()
     |> normalize_update_result()
   rescue
+    _error in Ecto.StaleEntryError -> {:error, :not_found}
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 

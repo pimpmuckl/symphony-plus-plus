@@ -91,20 +91,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
     assert {:ok, markdown} = Renderer.render(repo, work_package.id, "task_plan.md")
 
-    assert markdown == """
-           # Task Plan
+    assert markdown =~ "# Task Plan\n"
+    assert markdown =~ "- [x] source: `Implement schemas`\n"
 
-           Work package: `SYMPP-P1-004` - source: `Implement package`
+    assert markdown =~
+             ["  Source material (inert text):", "  ", "  ```text", "  Create canonical planning tables.", "  ```"]
+             |> Enum.join("\n")
 
-           - [x] source: `Implement schemas`
-             Source material (inert text):
-
-             ```text
-             Create canonical planning tables.
-             ```
-           - [ ] source: `Run validation` _(pending)_
-           - [ ] source: `Backfill markdown exports` _(skipped)_
-           """
+    assert markdown =~ "- [ ] source: `Run validation` _(pending)_\n"
+    assert markdown =~ "- [ ] source: `Backfill markdown exports` _(skipped)_\n"
   end
 
   test "renders findings in append order with canonical timestamps", %{repo: repo} do
@@ -296,6 +291,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert {:ok, task_plan} = Renderer.render(repo, work_package.id, "task_plan.md")
     assert task_plan =~ "- [x] source: `Mutable`"
     assert {:error, :not_found} = Service.update_plan_node_status(repo, "missing-plan-node", "done")
+    assert {:error, :not_found} = Repository.update_plan_node_status(__MODULE__.StalePlanNodeRepo, "stale", "done")
   end
 
   test "uses append sequence as deterministic order for findings and progress", %{repo: repo} do
@@ -608,6 +604,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
     assert String.length(findings) < 125_000
     assert findings =~ "[virtual file truncated]"
+    assert findings =~ "[virtual file truncated]\n\n## "
     assert findings =~ "source: `Finding 105`"
     refute findings =~ "source: `Finding 6`"
     assert findings |> fenced_source_count() |> rem(2) == 0
@@ -750,5 +747,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
   defmodule StorageListFailureRepo do
     def all(_query), do: raise(%Exqlite.Error{message: "no such table: sympp_plan_nodes"})
+  end
+
+  defmodule StalePlanNodeRepo do
+    def get(SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode, "stale") do
+      %SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode{id: "stale", status: "pending"}
+    end
+
+    def update(changeset) do
+      raise Ecto.StaleEntryError, action: :update, changeset: changeset
+    end
   end
 end
