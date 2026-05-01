@@ -286,6 +286,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert second.position == 2
   end
 
+  test "updates plan node status through an explicit mutation API", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+    assert {:ok, plan_node} = Service.append_plan_node(repo, %{work_package_id: work_package.id, title: "Mutable"})
+
+    assert {:ok, updated} = Service.update_plan_node_status(repo, plan_node.id, "done")
+    assert updated.status == "done"
+
+    assert {:ok, task_plan} = Renderer.render(repo, work_package.id, "task_plan.md")
+    assert task_plan =~ "- [x] source: `Mutable`"
+    assert {:error, :not_found} = Service.update_plan_node_status(repo, "missing-plan-node", "done")
+  end
+
   test "uses append sequence as deterministic order for findings and progress", %{repo: repo} do
     assert {:ok, work_package} = create_work_package(repo)
     timestamp = ~U[2026-05-01 10:00:00.123456Z]
@@ -540,8 +552,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert findings =~ "source: `Finding 105`"
 
     assert {:ok, state} = Service.get_state(repo, work_package.id)
-    assert length(state.findings) == 100
-    assert state.findings_omitted_count == 5
+    assert length(state.findings) == 105
+    assert state.findings_omitted_count == 0
+  end
+
+  test "canonical state is not silently render-capped", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+
+    for index <- 1..105 do
+      assert {:ok, _node} =
+               Service.append_plan_node(repo, %{
+                 work_package_id: work_package.id,
+                 title: "Plan #{index}"
+               })
+    end
+
+    assert {:ok, state} = Service.get_state(repo, work_package.id)
+    assert length(state.plan_nodes) == 105
+    assert state.plan_nodes_omitted_count == 0
+  end
+
+  test "public list helpers normalize sqlite storage failures" do
+    assert {:error, {:storage_failed, message}} = Repository.list_plan_nodes(__MODULE__.StorageListFailureRepo, "SYMPP-P1-004")
+    assert message =~ "no such table"
+
+    assert {:error, {:storage_failed, _message}} =
+             Repository.list_findings(__MODULE__.StorageListFailureRepo, "SYMPP-P1-004")
+
+    assert {:error, {:storage_failed, _message}} =
+             Repository.list_progress_events(__MODULE__.StorageListFailureRepo, "SYMPP-P1-004")
+
+    assert {:error, {:storage_failed, _message}} =
+             Repository.list_artifacts(__MODULE__.StorageListFailureRepo, "SYMPP-P1-004")
   end
 
   test "caps aggregate rendered virtual file size", %{repo: repo} do
@@ -697,5 +739,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
   defmodule StorageFailureRepo do
     def transaction(_fun), do: raise(%Exqlite.Error{message: "no such table: sympp_plan_nodes"})
+  end
+
+  defmodule StorageListFailureRepo do
+    def all(_query), do: raise(%Exqlite.Error{message: "no such table: sympp_plan_nodes"})
   end
 end

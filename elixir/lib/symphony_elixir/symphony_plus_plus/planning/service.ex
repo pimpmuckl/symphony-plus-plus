@@ -22,6 +22,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Service do
   @spec append_artifact(Repository.repo(), map()) :: {:ok, Artifact.t()} | {:error, error()}
   def append_artifact(repo, attrs), do: Repository.append_artifact(repo, attrs)
 
+  @spec update_plan_node_status(Repository.repo(), String.t(), String.t()) :: {:ok, PlanNode.t()} | {:error, error()}
+  def update_plan_node_status(repo, plan_node_id, status), do: Repository.update_plan_node_status(repo, plan_node_id, status)
+
   @spec get_state(Repository.repo(), String.t()) :: {:ok, State.t()} | {:error, error()}
   def get_state(repo, work_package_id), do: Repository.get_state(repo, work_package_id)
 end

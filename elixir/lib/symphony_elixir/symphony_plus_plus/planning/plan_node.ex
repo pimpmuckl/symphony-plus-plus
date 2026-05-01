@@ -54,6 +54,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode do
     |> foreign_key_constraint(:work_package_id)
   end
 
+  @spec status_changeset(t(), map()) :: Ecto.Changeset.t()
+  def status_changeset(%__MODULE__{} = plan_node, attrs) do
+    plan_node
+    |> cast(normalize_keys(attrs), [:status])
+    |> validate_required([:status])
+    |> validate_inclusion(:status, @statuses)
+  end
+
   defp normalize_keys(attrs) when is_map(attrs) do
     Map.new(attrs, fn {key, value} -> {normalize_key(key), value} end)
   end

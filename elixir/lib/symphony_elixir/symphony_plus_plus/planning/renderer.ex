@@ -32,14 +32,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   @spec render(Repository.repo(), String.t(), String.t()) :: {:ok, String.t()} | {:error, error()}
   def render(repo, work_package_id, file_name)
       when is_atom(repo) and is_binary(work_package_id) and is_binary(file_name) do
-    with {:ok, state} <- Repository.get_state(repo, work_package_id) do
+    with {:ok, state} <- Repository.get_render_state(repo, work_package_id) do
       render_state(state, file_name)
     end
   end
 
   @spec render_all(Repository.repo(), String.t()) :: {:ok, %{String.t() => String.t()}} | {:error, error()}
   def render_all(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
-    with {:ok, state} <- Repository.get_state(repo, work_package_id) do
+    with {:ok, state} <- Repository.get_render_state(repo, work_package_id) do
       rendered =
         Map.new(@virtual_files, fn file_name ->
           {:ok, markdown} = render_state(state, file_name)

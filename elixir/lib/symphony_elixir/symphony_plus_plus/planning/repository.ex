@@ -73,93 +73,123 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
     )
   end
 
-  @spec list_plan_nodes(repo(), String.t()) :: {:ok, [PlanNode.t()]}
+  @spec update_plan_node_status(repo(), String.t(), String.t()) :: {:ok, PlanNode.t()} | {:error, error()}
+  def update_plan_node_status(repo, plan_node_id, status)
+      when is_atom(repo) and is_binary(plan_node_id) and is_binary(status) do
+    case repo.get(PlanNode, plan_node_id) do
+      nil ->
+        {:error, :not_found}
+
+      %PlanNode{} = plan_node ->
+        plan_node
+        |> PlanNode.status_changeset(%{status: status})
+        |> update(repo)
+    end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  @spec list_plan_nodes(repo(), String.t()) :: {:ok, [PlanNode.t()]} | {:error, error()}
   def list_plan_nodes(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
-    rows =
-      repo.all(
-        from(plan_node in PlanNode,
-          where: plan_node.work_package_id == ^work_package_id,
-          order_by: [asc: plan_node.position, asc: plan_node.created_at, asc: plan_node.id]
-        )
+    safe_all(repo, fn ->
+      from(plan_node in PlanNode,
+        where: plan_node.work_package_id == ^work_package_id,
+        order_by: [asc: plan_node.position, asc: plan_node.created_at, asc: plan_node.id]
       )
-
-    {:ok, rows}
+    end)
   end
 
-  @spec list_findings(repo(), String.t()) :: {:ok, [Finding.t()]}
+  @spec list_findings(repo(), String.t()) :: {:ok, [Finding.t()]} | {:error, error()}
   def list_findings(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
-    rows =
-      repo.all(
-        from(finding in Finding,
-          where: finding.work_package_id == ^work_package_id,
-          order_by: [asc: finding.sequence, asc: finding.id]
-        )
+    safe_all(repo, fn ->
+      from(finding in Finding,
+        where: finding.work_package_id == ^work_package_id,
+        order_by: [asc: finding.sequence, asc: finding.id]
       )
-
-    {:ok, rows}
+    end)
   end
 
-  @spec list_progress_events(repo(), String.t()) :: {:ok, [ProgressEvent.t()]}
+  @spec list_progress_events(repo(), String.t()) :: {:ok, [ProgressEvent.t()]} | {:error, error()}
   def list_progress_events(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
-    rows =
-      repo.all(
-        from(progress_event in ProgressEvent,
-          where: progress_event.work_package_id == ^work_package_id,
-          order_by: [asc: progress_event.sequence, asc: progress_event.id]
-        )
+    safe_all(repo, fn ->
+      from(progress_event in ProgressEvent,
+        where: progress_event.work_package_id == ^work_package_id,
+        order_by: [asc: progress_event.sequence, asc: progress_event.id]
       )
-
-    {:ok, rows}
+    end)
   end
 
-  @spec list_artifacts(repo(), String.t()) :: {:ok, [Artifact.t()]}
+  @spec list_artifacts(repo(), String.t()) :: {:ok, [Artifact.t()]} | {:error, error()}
   def list_artifacts(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
-    rows =
-      repo.all(
-        from(artifact in Artifact,
-          where: artifact.work_package_id == ^work_package_id,
-          order_by: [asc: artifact.sequence, asc: artifact.id]
-        )
+    safe_all(repo, fn ->
+      from(artifact in Artifact,
+        where: artifact.work_package_id == ^work_package_id,
+        order_by: [asc: artifact.sequence, asc: artifact.id]
       )
-
-    {:ok, rows}
+    end)
   end
 
   @spec get_state(repo(), String.t()) :: {:ok, State.t()} | {:error, error()}
   def get_state(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
-    do_get_state(repo, work_package_id, state_read_retry_attempts())
+    do_get_state(repo, work_package_id, :full, state_read_retry_attempts())
   end
 
-  defp do_get_state(repo, work_package_id, attempts_left) do
+  @spec get_render_state(repo(), String.t()) :: {:ok, State.t()} | {:error, error()}
+  def get_render_state(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
+    do_get_state(repo, work_package_id, :bounded, state_read_retry_attempts())
+  end
+
+  defp do_get_state(repo, work_package_id, mode, attempts_left) do
     repo.transaction(fn ->
-      case load_state(repo, work_package_id) do
+      case load_state(repo, work_package_id, mode) do
         {:ok, state} -> state
         {:error, reason} -> repo.rollback(reason)
       end
     end)
-    |> retry_get_state(repo, work_package_id, attempts_left)
+    |> retry_get_state(repo, work_package_id, mode, attempts_left)
   rescue
     error in Exqlite.Error ->
       error
       |> normalize_exqlite_error()
-      |> retry_get_state(repo, work_package_id, attempts_left)
+      |> retry_get_state(repo, work_package_id, mode, attempts_left)
   end
 
-  defp retry_get_state({:error, :database_busy}, _repo, _work_package_id, 0), do: {:error, :database_busy}
+  defp retry_get_state({:error, :database_busy}, _repo, _work_package_id, _mode, 0), do: {:error, :database_busy}
 
-  defp retry_get_state({:error, :database_busy}, repo, work_package_id, attempts_left) do
+  defp retry_get_state({:error, :database_busy}, repo, work_package_id, mode, attempts_left) do
     Process.sleep(retry_delay_ms(attempts_left, state_read_retry_attempts()))
-    do_get_state(repo, work_package_id, attempts_left - 1)
+    do_get_state(repo, work_package_id, mode, attempts_left - 1)
   end
 
-  defp retry_get_state(result, _repo, _work_package_id, _attempts_left), do: result
+  defp retry_get_state(result, _repo, _work_package_id, _mode, _attempts_left), do: result
 
-  defp load_state(repo, work_package_id) do
+  defp load_state(repo, work_package_id, :full) do
     with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
-         {plan_nodes, plan_nodes_omitted_count} <- list_plan_nodes_for_state(repo, work_package_id),
-         {findings, findings_omitted_count} <- list_findings_for_state(repo, work_package_id),
-         {progress_events, progress_events_omitted_count} <- list_progress_events_for_state(repo, work_package_id),
-         {artifacts, artifacts_omitted_count} <- list_artifacts_for_state(repo, work_package_id) do
+         {:ok, plan_nodes} <- list_plan_nodes(repo, work_package_id),
+         {:ok, findings} <- list_findings(repo, work_package_id),
+         {:ok, progress_events} <- list_progress_events(repo, work_package_id),
+         {:ok, artifacts} <- list_artifacts(repo, work_package_id) do
+      {:ok,
+       %State{
+         work_package: work_package,
+         plan_nodes: plan_nodes,
+         findings: findings,
+         progress_events: progress_events,
+         artifacts: artifacts,
+         plan_nodes_omitted_count: 0,
+         findings_omitted_count: 0,
+         progress_events_omitted_count: 0,
+         artifacts_omitted_count: 0
+       }}
+    end
+  end
+
+  defp load_state(repo, work_package_id, :bounded) do
+    with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
+         {plan_nodes, plan_nodes_omitted_count} <- list_plan_nodes_for_render(repo, work_package_id),
+         {findings, findings_omitted_count} <- list_findings_for_render(repo, work_package_id),
+         {progress_events, progress_events_omitted_count} <- list_progress_events_for_render(repo, work_package_id),
+         {artifacts, artifacts_omitted_count} <- list_artifacts_for_render(repo, work_package_id) do
       {:ok,
        %State{
          work_package: work_package,
@@ -175,7 +205,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
     end
   end
 
-  defp list_plan_nodes_for_state(repo, work_package_id) do
+  defp list_plan_nodes_for_render(repo, work_package_id) do
     rows =
       repo.all(
         from(plan_node in PlanNode,
@@ -188,7 +218,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
     {rows, omitted_count(repo, PlanNode, work_package_id, rows)}
   end
 
-  defp list_findings_for_state(repo, work_package_id) do
+  defp list_findings_for_render(repo, work_package_id) do
     rows =
       repo.all(
         from(finding in Finding,
@@ -202,7 +232,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
     {rows, omitted_count(repo, Finding, work_package_id, rows)}
   end
 
-  defp list_progress_events_for_state(repo, work_package_id) do
+  defp list_progress_events_for_render(repo, work_package_id) do
     rows =
       repo.all(
         from(progress_event in ProgressEvent,
@@ -216,7 +246,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
     {rows, omitted_count(repo, ProgressEvent, work_package_id, rows)}
   end
 
-  defp list_artifacts_for_state(repo, work_package_id) do
+  defp list_artifacts_for_render(repo, work_package_id) do
     rows =
       repo.all(
         from(artifact in Artifact,
@@ -228,6 +258,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
       |> Enum.reverse()
 
     {rows, omitted_count(repo, Artifact, work_package_id, rows)}
+  end
+
+  defp safe_all(repo, query_fun) do
+    {:ok, repo.all(query_fun.())}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   defp omitted_count(repo, schema, work_package_id, loaded_rows) do
@@ -364,6 +400,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
     error in Ecto.ConstraintError -> normalize_constraint_error(error)
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
+
+  defp update(changeset, repo) do
+    changeset
+    |> repo.update()
+    |> normalize_update_result()
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp normalize_update_result({:ok, row}), do: {:ok, row}
+  defp normalize_update_result({:error, %Changeset{} = changeset}), do: {:error, changeset}
 
   defp normalize_insert_result({:ok, row}), do: {:ok, row}
 
