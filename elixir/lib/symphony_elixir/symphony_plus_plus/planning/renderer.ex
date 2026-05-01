@@ -109,7 +109,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     {rendered_findings, omitted_count} = capped_tail_items(findings, state.findings_omitted_count)
 
     ["# Findings", "", omission_notice(omitted_count, "older findings"), Enum.map(rendered_findings, &finding_block/1)]
-    |> flatten_join()
+    |> flatten_join(:tail)
   end
 
   defp progress_markdown(%State{progress_events: []}) do
@@ -120,7 +120,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     {rendered_progress, omitted_count} = capped_tail_items(progress_events, state.progress_events_omitted_count)
 
     ["# Progress", "", omission_notice(omitted_count, "older progress events"), Enum.map(rendered_progress, &progress_block/1)]
-    |> flatten_join()
+    |> flatten_join(:tail)
   end
 
   defp acceptance_markdown(%State{work_package: %WorkPackage{acceptance_criteria: []}}) do
@@ -192,7 +192,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
       "",
       artifact_lines(state)
     ]
-    |> flatten_join()
+    |> flatten_join(:tail)
   end
 
   defp metadata_rows(%WorkPackage{} = work_package) do
@@ -309,29 +309,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   defp inline_list([]), do: "none"
   defp inline_list(values), do: Enum.join(values, ", ")
 
-  defp capped_head_items(items, nil) do
+  defp capped_head_items(items, omitted_count) do
     item_count = length(items)
+    omitted_count = omitted_count || 0
 
     if item_count > @render_item_limit do
-      {Enum.take(items, @render_item_limit), item_count - @render_item_limit}
+      {Enum.take(items, @render_item_limit), omitted_count + item_count - @render_item_limit}
     else
-      {items, 0}
+      {items, omitted_count}
     end
   end
 
-  defp capped_head_items(items, omitted_count), do: {items, omitted_count}
-
-  defp capped_tail_items(items, nil) do
+  defp capped_tail_items(items, omitted_count) do
     item_count = length(items)
+    omitted_count = omitted_count || 0
 
     if item_count > @render_item_limit do
-      {Enum.take(items, -@render_item_limit), item_count - @render_item_limit}
+      {Enum.take(items, -@render_item_limit), omitted_count + item_count - @render_item_limit}
     else
-      {items, 0}
+      {items, omitted_count}
     end
   end
-
-  defp capped_tail_items(items, omitted_count), do: {items, omitted_count}
 
   defp omission_notice(0, _label), do: []
   defp omission_notice(count, label), do: ["_#{count} #{label} omitted from this virtual file._", ""]
@@ -411,25 +409,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   defp blank?(value) when is_binary(value), do: String.trim(value) == ""
   defp blank?(_value), do: true
 
-  defp flatten_join(parts) do
+  defp flatten_join(parts, truncation_strategy \\ :head) do
     parts
     |> List.flatten()
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
     |> Kernel.<>("\n")
-    |> bound_rendered_file()
+    |> bound_rendered_file(truncation_strategy)
   end
 
-  defp bound_rendered_file(markdown) do
+  defp bound_rendered_file(markdown, truncation_strategy) do
     if String.length(markdown) <= @render_file_limit do
       markdown
     else
       markdown
-      |> String.slice(0, @render_file_limit)
+      |> truncate_rendered_file(truncation_strategy)
       |> close_truncated_markdown()
-      |> Kernel.<>("\n\n[virtual file truncated]\n")
+      |> add_truncation_notice(truncation_strategy)
     end
   end
+
+  defp truncate_rendered_file(markdown, :tail) do
+    markdown
+    |> String.slice(-@render_file_limit, @render_file_limit)
+    |> truncate_from_line_boundary()
+  end
+
+  defp truncate_rendered_file(markdown, _strategy), do: String.slice(markdown, 0, @render_file_limit)
+
+  defp add_truncation_notice(markdown, :tail), do: "[virtual file truncated]\n\n" <> markdown
+  defp add_truncation_notice(markdown, _strategy), do: markdown <> "\n\n[virtual file truncated]\n"
 
   defp close_truncated_markdown(markdown) do
     markdown
@@ -441,6 +450,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     case :binary.matches(markdown, "\n") do
       [] -> markdown
       matches -> binary_part(markdown, 0, elem(List.last(matches), 0))
+    end
+  end
+
+  defp truncate_from_line_boundary(markdown) do
+    case :binary.match(markdown, "\n") do
+      :nomatch -> markdown
+      {index, 1} -> binary_part(markdown, index + 1, byte_size(markdown) - index - 1)
     end
   end
 

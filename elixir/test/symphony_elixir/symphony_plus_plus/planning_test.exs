@@ -554,6 +554,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert {:ok, state} = Service.get_state(repo, work_package.id)
     assert length(state.findings) == 105
     assert state.findings_omitted_count == 0
+
+    assert {:ok, rendered_from_full_state} = Renderer.render_state(state, "findings.md")
+    assert rendered_from_full_state =~ "_5 older findings omitted from this virtual file._"
+    refute rendered_from_full_state =~ "source: `Finding 1`\n\n- Severity"
+    assert rendered_from_full_state =~ "source: `Finding 105`"
   end
 
   test "canonical state is not silently render-capped", %{repo: repo} do
@@ -603,6 +608,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
     assert String.length(findings) < 125_000
     assert findings =~ "[virtual file truncated]"
+    assert findings =~ "source: `Finding 105`"
+    refute findings =~ "source: `Finding 6`"
     assert findings |> fenced_source_count() |> rem(2) == 0
   end
 
