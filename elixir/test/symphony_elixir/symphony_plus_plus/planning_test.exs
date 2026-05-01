@@ -553,6 +553,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
     assert String.length(findings) < 125_000
     assert findings =~ "[virtual file truncated]"
+    assert findings |> fenced_source_count() |> rem(2) == 0
   end
 
   test "caps ordered plan and acceptance lists from the head", %{repo: repo} do
@@ -679,6 +680,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
   defp restore_retry_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
   defp restore_retry_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
+
+  defp fenced_source_count(markdown), do: length(Regex.scan(~r/^```(?:text)?$/m, markdown))
 
   defmodule BusyPlanningRepo do
     def transaction(_fun), do: {:error, :database_busy}

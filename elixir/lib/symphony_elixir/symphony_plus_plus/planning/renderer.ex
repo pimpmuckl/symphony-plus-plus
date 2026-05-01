@@ -419,7 +419,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     if String.length(markdown) <= @render_file_limit do
       markdown
     else
-      String.slice(markdown, 0, @render_file_limit) <> "\n\n[virtual file truncated]\n"
+      markdown
+      |> String.slice(0, @render_file_limit)
+      |> close_truncated_markdown()
+      |> Kernel.<>("\n\n[virtual file truncated]\n")
     end
+  end
+
+  defp close_truncated_markdown(markdown) do
+    markdown
+    |> truncate_to_line_boundary()
+    |> close_open_fence()
+  end
+
+  defp truncate_to_line_boundary(markdown) do
+    case :binary.matches(markdown, "\n") do
+      [] -> markdown
+      matches -> binary_part(markdown, 0, elem(List.last(matches), 0))
+    end
+  end
+
+  defp close_open_fence(markdown) do
+    case open_fence(markdown) do
+      nil -> markdown
+      {indent, fence} -> markdown <> "\n" <> indent <> fence
+    end
+  end
+
+  defp open_fence(markdown) do
+    markdown
+    |> String.split("\n", trim: false)
+    |> Enum.reduce(nil, fn line, open ->
+      case Regex.run(~r/^(\s*)(`{3,})(?:text)?\s*$/, line) do
+        [_, indent, fence] when is_nil(open) -> {indent, fence}
+        [_, _indent, fence] -> close_matching_fence(open, fence)
+        nil -> open
+      end
+    end)
+  end
+
+  defp close_matching_fence({_indent, open_fence} = open, fence) do
+    if String.length(fence) >= String.length(open_fence), do: nil, else: open
   end
 end
