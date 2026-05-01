@@ -4,6 +4,7 @@ defmodule SymphonyElixir.Config do
   """
 
   alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.SymphonyPlusPlus.TrackerStates
   alias SymphonyElixir.Workflow
 
   @default_prompt_template """
@@ -119,7 +120,7 @@ defmodule SymphonyElixir.Config do
       is_nil(settings.tracker.kind) ->
         {:error, :missing_tracker_kind}
 
-      settings.tracker.kind not in ["linear", "memory"] ->
+      settings.tracker.kind not in (["linear", "memory"] ++ TrackerStates.tracker_kinds()) ->
         {:error, {:unsupported_tracker_kind, settings.tracker.kind}}
 
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
@@ -127,6 +128,80 @@ defmodule SymphonyElixir.Config do
 
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
         {:error, :missing_linear_project_slug}
+
+      TrackerStates.tracker_kind?(settings.tracker.kind) ->
+        validate_symphony_plus_plus_tracker(settings.tracker)
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_symphony_plus_plus_tracker(tracker) do
+    with :ok <- validate_symphony_plus_plus_tracker_secrets(tracker),
+         :ok <- validate_symphony_plus_plus_tracker_assignee(tracker) do
+      validate_symphony_plus_plus_tracker_states(tracker)
+    end
+  end
+
+  defp validate_symphony_plus_plus_tracker_assignee(%{assignee: assignee}) when is_binary(assignee) do
+    if String.trim(assignee) == "" do
+      {:error, :missing_symphony_plus_plus_assignee}
+    else
+      :ok
+    end
+  end
+
+  defp validate_symphony_plus_plus_tracker_assignee(_tracker), do: {:error, :missing_symphony_plus_plus_assignee}
+
+  defp validate_symphony_plus_plus_tracker_secrets(tracker) do
+    secret_placeholders =
+      [tracker.api_key, tracker.assignee]
+      |> Enum.filter(&secret_placeholder?/1)
+
+    case secret_placeholders do
+      [] -> :ok
+      _ -> {:error, {:unsupported_symphony_plus_plus_secret_placeholders, secret_placeholders}}
+    end
+  end
+
+  defp secret_placeholder?("$" <> rest), do: String.trim(rest) != ""
+  defp secret_placeholder?(_value), do: false
+
+  defp validate_symphony_plus_plus_tracker_states(tracker) do
+    terminal_states = TrackerStates.terminal_state_names(nil) |> MapSet.new()
+    tracker_active_states = TrackerStates.active_state_names(nil) |> MapSet.new()
+    valid_states = MapSet.union(tracker_active_states, terminal_states)
+
+    invalid_states =
+      (tracker.active_states ++ tracker.terminal_states)
+      |> Enum.reject(&MapSet.member?(valid_states, &1))
+
+    invalid_active_states =
+      tracker.active_states
+      |> Enum.reject(&MapSet.member?(tracker_active_states, &1))
+
+    invalid_terminal_states =
+      tracker.terminal_states
+      |> Enum.reject(&MapSet.member?(terminal_states, &1))
+
+    overlapping_states =
+      tracker.active_states
+      |> Enum.filter(&(&1 in tracker.terminal_states))
+      |> Enum.uniq()
+
+    cond do
+      invalid_states != [] ->
+        {:error, {:unsupported_symphony_plus_plus_tracker_states, Enum.uniq(invalid_states)}}
+
+      overlapping_states != [] ->
+        {:error, {:overlapping_symphony_plus_plus_tracker_states, overlapping_states}}
+
+      invalid_active_states != [] ->
+        {:error, {:unsupported_symphony_plus_plus_active_states, Enum.uniq(invalid_active_states)}}
+
+      invalid_terminal_states != [] ->
+        {:error, {:unsupported_symphony_plus_plus_terminal_states, Enum.uniq(invalid_terminal_states)}}
 
       true ->
         :ok

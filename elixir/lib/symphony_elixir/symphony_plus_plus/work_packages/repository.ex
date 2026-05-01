@@ -127,7 +127,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
     )
   end
 
-  defp migrations_path do
+  @doc false
+  @spec migrations_path() :: Path.t()
+  def migrations_path do
     Application.app_dir(:symphony_elixir, "priv/symphony_plus_plus/repo/migrations")
   end
 end

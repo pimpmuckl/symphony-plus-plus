@@ -5,7 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
 
   @worker_capability "worker:lifecycle.transition"
   @architect_capability "architect:lifecycle.transition"
-  @standalone_kinds ["quick_fix", "hotfix", "investigation"]
+  @standalone_kinds ["quick_fix", "hotfix", "investigation", "adapter"]
   @phase_child_kind "phase_child"
 
   @standalone_transitions %{
@@ -63,6 +63,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
   @spec terminal_readiness_status(WorkPackage.t()) :: String.t()
   def terminal_readiness_status(%WorkPackage{kind: @phase_child_kind}), do: "ready_for_architect_merge"
   def terminal_readiness_status(%WorkPackage{}), do: "ready_for_human_merge"
+
+  @spec supported_kind?(term()) :: boolean()
+  def supported_kind?(@phase_child_kind), do: true
+  def supported_kind?(kind), do: kind in @standalone_kinds
 
   defp validate_lifecycle_shape(%WorkPackage{} = work_package, next_status) do
     cond do
@@ -123,8 +127,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
     |> Map.has_key?(work_package.status)
   end
 
-  defp lifecycle_kind?(@phase_child_kind), do: true
-  defp lifecycle_kind?(kind), do: kind in @standalone_kinds
+  defp lifecycle_kind?(kind), do: supported_kind?(kind)
 
   defp transitions(%WorkPackage{kind: @phase_child_kind}), do: @phase_child_transitions
   defp transitions(%WorkPackage{}), do: @standalone_transitions

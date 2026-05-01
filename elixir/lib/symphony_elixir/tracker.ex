@@ -4,6 +4,7 @@ defmodule SymphonyElixir.Tracker do
   """
 
   alias SymphonyElixir.Config
+  alias SymphonyElixir.SymphonyPlusPlus.TrackerStates
 
   @callback fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
   @callback fetch_issues_by_states([String.t()]) :: {:ok, [term()]} | {:error, term()}
@@ -40,7 +41,15 @@ defmodule SymphonyElixir.Tracker do
   def adapter do
     case Config.settings!().tracker.kind do
       "memory" -> SymphonyElixir.Tracker.Memory
-      _ -> SymphonyElixir.Linear.Adapter
+      kind -> adapter_for_kind(kind)
+    end
+  end
+
+  defp adapter_for_kind(kind) do
+    if TrackerStates.tracker_kind?(kind) do
+      SymphonyElixir.SymphonyPlusPlus.TrackerAdapter
+    else
+      SymphonyElixir.Linear.Adapter
     end
   end
 end
