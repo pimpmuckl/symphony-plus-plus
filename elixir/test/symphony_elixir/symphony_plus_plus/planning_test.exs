@@ -356,6 +356,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert second.sequence == 2
   end
 
+  test "preserves database busy when append retries are exhausted" do
+    previous_attempts = Application.get_env(:symphony_elixir, :sympp_planning_append_retry_attempts)
+    Application.put_env(:symphony_elixir, :sympp_planning_append_retry_attempts, 0)
+
+    on_exit(fn ->
+      if is_nil(previous_attempts) do
+        Application.delete_env(:symphony_elixir, :sympp_planning_append_retry_attempts)
+      else
+        Application.put_env(:symphony_elixir, :sympp_planning_append_retry_attempts, previous_attempts)
+      end
+    end)
+
+    assert {:error, :database_busy} =
+             Repository.append_finding(__MODULE__.BusyPlanningRepo, %{work_package_id: "SYMPP-P1-004", title: "Locked"})
+  end
+
   test "allocates append sequence uniquely during concurrent artifacts", %{repo: repo} do
     assert {:ok, work_package} = create_work_package(repo)
 
@@ -561,5 +577,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
       |> WorkPackageFactory.attrs()
 
     WorkPackageRepository.create(repo, attrs)
+  end
+
+  defmodule BusyPlanningRepo do
+    def transaction(_fun), do: {:error, :database_busy}
   end
 end

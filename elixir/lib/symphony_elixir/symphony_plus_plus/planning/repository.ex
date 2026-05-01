@@ -11,7 +11,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.State
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
 
-  @append_retry_attempts 200
+  @default_append_retry_attempts 200
 
   @type repo :: module()
   @type planning_record :: PlanNode.t() | Finding.t() | ProgressEvent.t() | Artifact.t()
@@ -157,7 +157,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
       field,
       changeset_fun,
       auto_allocate?,
-      @append_retry_attempts
+      append_retry_attempts()
     )
   end
 
@@ -197,30 +197,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
          attempts_left
        ) do
     if append_order_constraint?(constraint) do
-      retry_or_conflict(repo, attrs, schema, field, changeset_fun, attempts_left)
+      retry_or_error(repo, attrs, schema, field, changeset_fun, attempts_left, :sequence_conflict)
     else
       {:error, {:constraint_failed, constraint}}
     end
   end
 
   defp handle_insert_result({:error, :database_busy}, repo, attrs, schema, field, changeset_fun, true, attempts_left) do
-    retry_or_conflict(repo, attrs, schema, field, changeset_fun, attempts_left)
+    retry_or_error(repo, attrs, schema, field, changeset_fun, attempts_left, :database_busy)
   end
 
   defp handle_insert_result({:error, reason}, _repo, _attrs, _schema, _field, _changeset_fun, _auto_allocate?, _attempts_left) do
     {:error, reason}
   end
 
-  defp retry_or_conflict(_repo, _attrs, _schema, _field, _changeset_fun, 0), do: {:error, :sequence_conflict}
+  defp retry_or_error(_repo, _attrs, _schema, _field, _changeset_fun, 0, terminal_error), do: {:error, terminal_error}
 
-  defp retry_or_conflict(repo, attrs, schema, field, changeset_fun, attempts_left) do
+  defp retry_or_error(repo, attrs, schema, field, changeset_fun, attempts_left, _terminal_error) do
     Process.sleep(retry_delay_ms(attempts_left))
     do_insert_with_allocated_value(repo, attrs, schema, field, changeset_fun, true, attempts_left - 1)
   end
 
   defp retry_delay_ms(attempts_left) do
-    used_attempts = @append_retry_attempts - attempts_left
+    used_attempts = append_retry_attempts() - attempts_left
     min(100, 5 + used_attempts * 5)
+  end
+
+  defp append_retry_attempts do
+    Application.get_env(:symphony_elixir, :sympp_planning_append_retry_attempts, @default_append_retry_attempts)
   end
 
   defp maybe_put_next_value(attrs, repo, schema, field, true) do
