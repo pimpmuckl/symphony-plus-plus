@@ -148,7 +148,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   defp retry_get_state({:error, :database_busy}, _repo, _work_package_id, 0), do: {:error, :database_busy}
 
   defp retry_get_state({:error, :database_busy}, repo, work_package_id, attempts_left) do
-    Process.sleep(retry_delay_ms(attempts_left))
+    Process.sleep(retry_delay_ms(attempts_left, state_read_retry_attempts()))
     do_get_state(repo, work_package_id, attempts_left - 1)
   end
 
@@ -311,12 +311,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   defp retry_or_error(_repo, _attrs, _schema, _field, _changeset_fun, 0, terminal_error), do: {:error, terminal_error}
 
   defp retry_or_error(repo, attrs, schema, field, changeset_fun, attempts_left, _terminal_error) do
-    Process.sleep(retry_delay_ms(attempts_left))
+    Process.sleep(retry_delay_ms(attempts_left, append_retry_attempts()))
     do_insert_with_allocated_value(repo, attrs, schema, field, changeset_fun, true, attempts_left - 1)
   end
 
-  defp retry_delay_ms(attempts_left) do
-    used_attempts = append_retry_attempts() - attempts_left
+  defp retry_delay_ms(attempts_left, total_attempts) do
+    used_attempts = max(total_attempts - attempts_left, 0)
     min(100, 5 + used_attempts * 5)
   end
 

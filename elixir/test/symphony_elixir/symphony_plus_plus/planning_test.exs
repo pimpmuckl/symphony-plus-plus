@@ -418,6 +418,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert {:error, :database_busy} = Repository.get_state(__MODULE__.BusyPlanningRepo, "SYMPP-P1-004")
   end
 
+  test "state read retry delay is independent from append retry attempts" do
+    previous_append_attempts = Application.get_env(:symphony_elixir, :sympp_planning_append_retry_attempts)
+    previous_read_attempts = Application.get_env(:symphony_elixir, :sympp_planning_state_read_retry_attempts)
+
+    Application.put_env(:symphony_elixir, :sympp_planning_append_retry_attempts, 0)
+    Application.put_env(:symphony_elixir, :sympp_planning_state_read_retry_attempts, 1)
+
+    on_exit(fn ->
+      restore_retry_env(:sympp_planning_append_retry_attempts, previous_append_attempts)
+      restore_retry_env(:sympp_planning_state_read_retry_attempts, previous_read_attempts)
+    end)
+
+    assert {:error, :database_busy} = Repository.get_state(__MODULE__.BusyPlanningRepo, "SYMPP-P1-004")
+  end
+
   test "reports non-busy sqlite errors as storage failures" do
     assert {:error, {:storage_failed, message}} = Repository.get_state(__MODULE__.StorageFailureRepo, "SYMPP-P1-004")
     assert message =~ "no such table"
@@ -661,6 +676,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
     WorkPackageRepository.create(repo, attrs)
   end
+
+  defp restore_retry_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
+  defp restore_retry_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 
   defmodule BusyPlanningRepo do
     def transaction(_fun), do: {:error, :database_busy}
