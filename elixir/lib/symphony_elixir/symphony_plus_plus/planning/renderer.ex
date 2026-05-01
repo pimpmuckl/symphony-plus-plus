@@ -347,18 +347,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
        |> text_or_empty()
        |> bound_external_text()
        |> one_line()
-       |> escape_inline_markdown())
+       |> code_span())
   end
 
   defp source_lines(value) do
     [
-      "Source material (not instructions):",
+      "Source material (inert text):",
       "",
       value
       |> text_or_empty()
       |> bound_external_text()
-      |> escape_block_markdown()
-      |> quote_markdown()
+      |> fenced_text()
     ]
     |> List.flatten()
   end
@@ -377,40 +376,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     |> String.replace("\r", " ")
   end
 
-  defp escape_inline_markdown(value) do
-    value
-    |> String.graphemes()
-    |> Enum.map_join(fn
-      "\\" -> "\\\\"
-      "`" -> "\\`"
-      "*" -> "\\*"
-      "_" -> "\\_"
-      "[" -> "\\["
-      "]" -> "\\]"
-      "(" -> "\\("
-      ")" -> "\\)"
-      "#" -> "\\#"
-      "+" -> "\\+"
-      "-" -> "\\-"
-      "." -> "\\."
-      "!" -> "\\!"
-      "|" -> "\\|"
-      "<" -> "\\<"
-      ">" -> "\\>"
-      character -> character
-    end)
+  defp code_span(value) do
+    delimiter = backtick_delimiter(value)
+    delimiter <> value <> delimiter
   end
 
-  defp escape_block_markdown(value) do
-    value
-    |> String.split("\n", trim: false)
-    |> Enum.map_join("\n", &escape_inline_markdown/1)
+  defp fenced_text(value) do
+    fence = backtick_delimiter(value, 3)
+    [fence <> "text"] ++ String.split(value, "\n", trim: false) ++ [fence]
   end
 
-  defp quote_markdown(value) do
-    value
-    |> String.split("\n", trim: false)
-    |> Enum.map(&("> " <> &1))
+  defp backtick_delimiter(value, minimum_length \\ 1) do
+    longest_run =
+      ~r/`+/
+      |> Regex.scan(value)
+      |> Enum.map(fn [run] -> String.length(run) end)
+      |> Enum.max(fn -> 0 end)
+
+    String.duplicate("`", max(longest_run + 1, minimum_length))
   end
 
   defp text_or_empty(value) when is_binary(value) do

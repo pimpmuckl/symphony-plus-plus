@@ -23,6 +23,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
           | :sequence_conflict
           | {:constraint_failed, String.t()}
           | {:migration_failed, term()}
+          | {:storage_failed, String.t()}
           | Changeset.t()
 
   @spec migrate(repo()) :: :ok | {:error, error()}
@@ -125,15 +126,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
 
   @spec get_state(repo(), String.t()) :: {:ok, State.t()} | {:error, error()}
   def get_state(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
+    do_get_state(repo, work_package_id, append_retry_attempts())
+  end
+
+  defp do_get_state(repo, work_package_id, attempts_left) do
     repo.transaction(fn ->
       case load_state(repo, work_package_id) do
         {:ok, state} -> state
         {:error, reason} -> repo.rollback(reason)
       end
     end)
+    |> retry_get_state(repo, work_package_id, attempts_left)
   rescue
-    error in Exqlite.Error -> normalize_exqlite_error(error)
+    error in Exqlite.Error ->
+      error
+      |> normalize_exqlite_error()
+      |> retry_get_state(repo, work_package_id, attempts_left)
   end
+
+  defp retry_get_state({:error, :database_busy}, _repo, _work_package_id, 0), do: {:error, :database_busy}
+
+  defp retry_get_state({:error, :database_busy}, repo, work_package_id, attempts_left) do
+    Process.sleep(retry_delay_ms(attempts_left))
+    do_get_state(repo, work_package_id, attempts_left - 1)
+  end
+
+  defp retry_get_state(result, _repo, _work_package_id, _attempts_left), do: result
 
   defp load_state(repo, work_package_id) do
     with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
@@ -388,7 +406,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
     if String.contains?(normalized_message, "busy") or String.contains?(normalized_message, "locked") do
       {:error, :database_busy}
     else
-      {:error, {:constraint_failed, message}}
+      {:error, {:storage_failed, message}}
     end
   end
 

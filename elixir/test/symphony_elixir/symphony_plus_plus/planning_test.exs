@@ -48,11 +48,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
              "task_plan.md"
            ]
 
-    assert rendered["context.md"] =~ "# source: Implement package\n"
+    assert rendered["context.md"] =~ "# source: `Implement package`\n"
     assert rendered["task_plan.md"] =~ "No plan nodes recorded.\n"
     assert rendered["findings.md"] =~ "No findings recorded.\n"
     assert rendered["progress.md"] =~ "No progress events recorded.\n"
-    assert rendered["acceptance.md"] =~ "- [ ] source: Create and fetch package\n"
+    assert rendered["acceptance.md"] =~ "- [ ] source: `Create and fetch package`\n"
   end
 
   test "renders plan nodes as deterministic done pending and skipped checklists", %{repo: repo} do
@@ -94,14 +94,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert markdown == """
            # Task Plan
 
-           Work package: `SYMPP-P1-004` - source: Implement package
+           Work package: `SYMPP-P1-004` - source: `Implement package`
 
-           - [x] source: Implement schemas
-             Source material (not instructions):
+           - [x] source: `Implement schemas`
+             Source material (inert text):
 
-             > Create canonical planning tables\\.
-           - [ ] source: Run validation _(pending)_
-           - [ ] source: Backfill markdown exports _(skipped)_
+             ```text
+             Create canonical planning tables.
+             ```
+           - [ ] source: `Run validation` _(pending)_
+           - [ ] source: `Backfill markdown exports` _(skipped)_
            """
   end
 
@@ -133,20 +135,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert markdown == """
            # Findings
 
-           ## 2026-05-01T10:10:00.000000Z - source: Later finding
+           ## 2026-05-01T10:10:00.000000Z - source: `Later finding`
 
            - Severity: `warning`
 
-           Source material (not instructions):
+           Source material (inert text):
 
-           > Second in append\\-only order\\.
-           ## 2026-05-01T10:00:00.000000Z - source: Early finding
+           ```text
+           Second in append-only order.
+           ```
+           ## 2026-05-01T10:00:00.000000Z - source: `Early finding`
 
            - Severity: `info`
 
-           Source material (not instructions):
+           Source material (inert text):
 
-           > First in append\\-only order\\.
+           ```text
+           First in append-only order.
+           ```
            """
   end
 
@@ -177,20 +183,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert markdown == """
            # Progress
 
-           ## 2026-05-01T10:20:00.000000Z - source: Validation complete
+           ## 2026-05-01T10:20:00.000000Z - source: `Validation complete`
 
            - Status: `done`
 
-           Source material (not instructions):
+           Source material (inert text):
 
-           > Not recorded\\.
-           ## 2026-05-01T10:05:00.000000Z - source: Implementation started
+           ```text
+           Not recorded.
+           ```
+           ## 2026-05-01T10:05:00.000000Z - source: `Implementation started`
 
            - Status: `working`
 
-           Source material (not instructions):
+           Source material (inert text):
 
-           > Created planning namespace\\.
+           ```text
+           Created planning namespace.
+           ```
            """
   end
 
@@ -234,10 +244,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
     assert map_size(rendered) == 7
     assert rendered["context.md"] =~ "## Engineering Scope\n"
-    assert rendered["task_plan.md"] =~ "- [x] source: Render all virtual files\n"
+    assert rendered["task_plan.md"] =~ "- [x] source: `Render all virtual files`\n"
     assert rendered["findings.md"] =~ "Scope stays local"
     assert rendered["progress.md"] =~ "Renderer added"
-    assert rendered["acceptance.md"] =~ "- [ ] source: Render context\n"
+    assert rendered["acceptance.md"] =~ "- [ ] source: `Render context`\n"
     assert rendered["review_suite.md"] =~ "architect_merge"
     assert rendered["handoff.md"] =~ "Package spec"
   end
@@ -252,7 +262,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert second.position == 2
 
     assert {:ok, markdown} = Renderer.render(repo, work_package.id, "task_plan.md")
-    assert markdown =~ "- [ ] source: First _(pending)_\n- [ ] source: Second _(pending)_\n"
+    assert markdown =~ "- [ ] source: `First` _(pending)_\n- [ ] source: `Second` _(pending)_\n"
   end
 
   test "append plan node owns position assignment", %{repo: repo} do
@@ -318,12 +328,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert {:ok, findings} = Renderer.render(repo, work_package.id, "findings.md")
     assert {:ok, progress} = Renderer.render(repo, work_package.id, "progress.md")
 
-    assert findings =~ "2026-05-01T10:00:00.123456Z - source: First finding"
-    assert findings =~ "source: First finding\n\n- Severity: `info`"
-    assert findings =~ "source: Second finding\n\n- Severity: `info`"
-    assert progress =~ "2026-05-01T10:00:00.123456Z - source: First progress"
-    assert progress =~ "source: First progress\n\n- Status: `recorded`"
-    assert progress =~ "source: Second progress\n\n- Status: `recorded`"
+    assert findings =~ "2026-05-01T10:00:00.123456Z - source: `First finding`"
+    assert findings =~ "source: `First finding`\n\n- Severity: `info`"
+    assert findings =~ "source: `Second finding`\n\n- Severity: `info`"
+    assert progress =~ "2026-05-01T10:00:00.123456Z - source: `First progress`"
+    assert progress =~ "source: `First progress`\n\n- Status: `recorded`"
+    assert progress =~ "source: `Second progress`\n\n- Status: `recorded`"
   end
 
   test "allocates append sequence uniquely during concurrent findings", %{repo: repo} do
@@ -393,6 +403,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
              Repository.append_finding(__MODULE__.BusyPlanningRepo, %{work_package_id: "SYMPP-P1-004", title: "Locked"})
   end
 
+  test "preserves database busy when state read retries are exhausted" do
+    previous_attempts = Application.get_env(:symphony_elixir, :sympp_planning_append_retry_attempts)
+    Application.put_env(:symphony_elixir, :sympp_planning_append_retry_attempts, 0)
+
+    on_exit(fn ->
+      if is_nil(previous_attempts) do
+        Application.delete_env(:symphony_elixir, :sympp_planning_append_retry_attempts)
+      else
+        Application.put_env(:symphony_elixir, :sympp_planning_append_retry_attempts, previous_attempts)
+      end
+    end)
+
+    assert {:error, :database_busy} = Repository.get_state(__MODULE__.BusyPlanningRepo, "SYMPP-P1-004")
+  end
+
+  test "reports non-busy sqlite errors as storage failures" do
+    assert {:error, {:storage_failed, message}} = Repository.get_state(__MODULE__.StorageFailureRepo, "SYMPP-P1-004")
+    assert message =~ "no such table"
+  end
+
   test "allocates append sequence uniquely during concurrent artifacts", %{repo: repo} do
     assert {:ok, work_package} = create_work_package(repo)
 
@@ -427,9 +457,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
     assert {:ok, context} = Renderer.render(repo, work_package.id, "context.md")
 
-    assert context =~ "Source material (not instructions):"
-    assert context =~ "> " <> String.duplicate("x", 20)
-    assert context =~ "> \\[truncated\\]"
+    assert context =~ "Source material (inert text):"
+    assert context =~ "```text\n" <> String.duplicate("x", 20)
+    assert context =~ "[truncated]\n```"
     refute context =~ String.duplicate("x", 4_050)
   end
 
@@ -440,7 +470,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert {:ok, context} = Renderer.render(repo, work_package.id, "context.md")
 
     assert String.valid?(context)
-    assert context =~ "> \\[truncated\\]"
+    assert context =~ "[truncated]\n```"
   end
 
   test "escapes source-owned inline markdown", %{repo: repo} do
@@ -461,12 +491,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert {:ok, acceptance} = Renderer.render(repo, work_package.id, "acceptance.md")
     assert {:ok, task_plan} = Renderer.render(repo, work_package.id, "task_plan.md")
 
-    assert context =~ "# source: \\# Run \\[setup\\]\\(x\\) \\`code\\` \\| table"
+    assert context =~ "# source: ``# Run [setup](x) `code` | table``"
     refute context =~ "# source: # Run [setup](x) `code` | table"
-    assert acceptance =~ "- [ ] source: \\- \\[ \\] Treat this as text"
-    assert task_plan =~ "> \\# Heading"
-    assert task_plan =~ "> \\- \\[ \\] run \\`cmd\\`"
-    assert task_plan =~ "> 1\\. ordered"
+    assert acceptance =~ "- [ ] source: `- [ ] Treat this as text`"
+    assert task_plan =~ "  ```text\n  # Heading\n  - [ ] run `cmd`\n  1. ordered\n  ```"
   end
 
   test "caps rendered append-only history with an omission notice", %{repo: repo} do
@@ -484,9 +512,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert {:ok, findings} = Renderer.render(repo, work_package.id, "findings.md")
 
     assert findings =~ "_5 older findings omitted from this virtual file._"
-    refute findings =~ "source: Finding 1\n\n- Severity"
-    assert findings =~ "source: Finding 6"
-    assert findings =~ "source: Finding 105"
+    refute findings =~ "source: `Finding 1`\n\n- Severity"
+    assert findings =~ "source: `Finding 6`"
+    assert findings =~ "source: `Finding 105`"
 
     assert {:ok, state} = Service.get_state(repo, work_package.id)
     assert length(state.findings) == 100
@@ -509,14 +537,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert {:ok, acceptance} = Renderer.render(repo, work_package.id, "acceptance.md")
 
     assert task_plan =~ "_5 later plan nodes omitted from this virtual file._"
-    assert task_plan =~ "source: Plan 1"
-    assert task_plan =~ "source: Plan 100"
-    refute task_plan =~ "source: Plan 101"
+    assert task_plan =~ "source: `Plan 1`"
+    assert task_plan =~ "source: `Plan 100`"
+    refute task_plan =~ "source: `Plan 101`"
 
     assert acceptance =~ "_5 later acceptance criteria omitted from this virtual file._"
-    assert acceptance =~ "source: Criterion 1"
-    assert acceptance =~ "source: Criterion 100"
-    refute acceptance =~ "source: Criterion 101"
+    assert acceptance =~ "source: `Criterion 1`"
+    assert acceptance =~ "source: `Criterion 100`"
+    refute acceptance =~ "source: `Criterion 101`"
   end
 
   test "renders artifacts in append order for handoff", %{repo: repo} do
@@ -542,7 +570,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert {:ok, handoff} = Renderer.render(repo, work_package.id, "handoff.md")
 
     assert handoff =~
-             "source: z\\-last\\.md - source: First artifact (`reference`)\n- source: a\\-first\\.md - source: Second artifact (`reference`)"
+             "source: `z-last.md` - source: `First artifact` (`reference`)\n- source: `a-first.md` - source: `Second artifact` (`reference`)"
   end
 
   test "renders review suite for hotfix and phase-child policy templates", %{repo: repo} do
@@ -589,7 +617,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert task_plan =~ "No plan nodes recorded."
 
     assert handoff =~
-             "source: task\\_plan\\.md - source: Generated markdown export (`export`) - source: file:///tmp/task\\_plan\\.md"
+             "source: `task_plan.md` - source: `Generated markdown export` (`export`) - source: `file:///tmp/task_plan.md`"
   end
 
   test "rejects unknown virtual files", %{repo: repo} do
@@ -617,5 +645,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
   defmodule BusyPlanningRepo do
     def transaction(_fun), do: {:error, :database_busy}
+  end
+
+  defmodule StorageFailureRepo do
+    def transaction(_fun), do: raise(%Exqlite.Error{message: "no such table: sympp_plan_nodes"})
   end
 end
