@@ -21,6 +21,6 @@ defmodule SymphonyElixir.WorkPackageFactory do
 
   @spec database_path() :: Path.t()
   def database_path do
-    Path.join(System.tmp_dir!(), "sympp-work-packages-#{System.unique_integer([:positive])}.sqlite3")
+    Path.join(System.tmp_dir!(), "sympp-work-packages-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}.sqlite3")
   end
 end

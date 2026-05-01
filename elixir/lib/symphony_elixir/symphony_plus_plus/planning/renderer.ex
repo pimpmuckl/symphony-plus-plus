@@ -252,9 +252,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
       "## #{timestamp(progress_event.created_at)} - #{source_inline(progress_event.summary)}",
       "",
       "- Status: `#{progress_event.status}`",
+      actor_line(progress_event),
       "",
       source_block(progress_event.body)
     ]
+  end
+
+  defp actor_line(%ProgressEvent{actor_id: actor_id, actor_type: actor_type}) do
+    if blank?(actor_id) do
+      []
+    else
+      "- Actor: #{source_inline(actor_id)} (#{source_inline(actor_type || "unknown")})"
+    end
   end
 
   defp acceptance_lines(%WorkPackage{acceptance_criteria: []}), do: ["No acceptance criteria recorded."]
