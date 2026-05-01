@@ -512,6 +512,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert task_plan =~ "  ```text\n  # Heading\n  - [ ] run `cmd`\n  1. ordered\n  ```"
   end
 
+  test "preserves literal edge backticks in inline source text", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo, title: "`cmd`")
+
+    assert {:ok, context} = Renderer.render(repo, work_package.id, "context.md")
+
+    assert context =~ "# source: `` `cmd` ``"
+  end
+
   test "caps rendered append-only history with an omission notice", %{repo: repo} do
     assert {:ok, work_package} = create_work_package(repo)
 

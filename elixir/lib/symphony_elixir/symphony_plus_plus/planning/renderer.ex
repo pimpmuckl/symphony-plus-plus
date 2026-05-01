@@ -379,7 +379,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
 
   defp code_span(value) do
     delimiter = backtick_delimiter(value)
-    delimiter <> value <> delimiter
+
+    if String.starts_with?(value, "`") or String.ends_with?(value, "`") do
+      delimiter <> " " <> value <> " " <> delimiter
+    else
+      delimiter <> value <> delimiter
+    end
   end
 
   defp fenced_text(value) do
