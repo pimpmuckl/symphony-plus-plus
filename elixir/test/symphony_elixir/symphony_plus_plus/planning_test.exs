@@ -404,14 +404,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
   end
 
   test "preserves database busy when state read retries are exhausted" do
-    previous_attempts = Application.get_env(:symphony_elixir, :sympp_planning_append_retry_attempts)
-    Application.put_env(:symphony_elixir, :sympp_planning_append_retry_attempts, -1)
+    previous_attempts = Application.get_env(:symphony_elixir, :sympp_planning_state_read_retry_attempts)
+    Application.put_env(:symphony_elixir, :sympp_planning_state_read_retry_attempts, -1)
 
     on_exit(fn ->
       if is_nil(previous_attempts) do
-        Application.delete_env(:symphony_elixir, :sympp_planning_append_retry_attempts)
+        Application.delete_env(:symphony_elixir, :sympp_planning_state_read_retry_attempts)
       else
-        Application.put_env(:symphony_elixir, :sympp_planning_append_retry_attempts, previous_attempts)
+        Application.put_env(:symphony_elixir, :sympp_planning_state_read_retry_attempts, previous_attempts)
       end
     end)
 
@@ -519,6 +519,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert {:ok, state} = Service.get_state(repo, work_package.id)
     assert length(state.findings) == 100
     assert state.findings_omitted_count == 5
+  end
+
+  test "caps aggregate rendered virtual file size", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+    large_body = String.duplicate("x", 4_050)
+
+    for index <- 1..105 do
+      assert {:ok, _finding} =
+               Service.append_finding(repo, %{
+                 work_package_id: work_package.id,
+                 title: "Finding #{index}",
+                 body: large_body
+               })
+    end
+
+    assert {:ok, findings} = Renderer.render(repo, work_package.id, "findings.md")
+
+    assert String.length(findings) < 125_000
+    assert findings =~ "[virtual file truncated]"
   end
 
   test "caps ordered plan and acceptance lists from the head", %{repo: repo} do

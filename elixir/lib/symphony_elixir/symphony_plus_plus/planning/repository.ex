@@ -12,6 +12,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
 
   @default_append_retry_attempts 200
+  @default_state_read_retry_attempts 50
   @state_item_limit 100
 
   @type repo :: module()
@@ -126,7 +127,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
 
   @spec get_state(repo(), String.t()) :: {:ok, State.t()} | {:error, error()}
   def get_state(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
-    do_get_state(repo, work_package_id, append_retry_attempts())
+    do_get_state(repo, work_package_id, state_read_retry_attempts())
   end
 
   defp do_get_state(repo, work_package_id, attempts_left) do
@@ -322,6 +323,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   defp append_retry_attempts do
     :symphony_elixir
     |> Application.get_env(:sympp_planning_append_retry_attempts, @default_append_retry_attempts)
+    |> max(0)
+  end
+
+  defp state_read_retry_attempts do
+    :symphony_elixir
+    |> Application.get_env(:sympp_planning_state_read_retry_attempts, @default_state_read_retry_attempts)
     |> max(0)
   end
 

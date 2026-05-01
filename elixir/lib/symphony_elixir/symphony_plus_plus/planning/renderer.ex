@@ -21,6 +21,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   ]
 
   @external_text_limit 4_000
+  @render_file_limit 120_000
   @render_item_limit 100
 
   @type error :: Repository.error() | :unknown_virtual_file
@@ -411,5 +412,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
     |> Kernel.<>("\n")
+    |> bound_rendered_file()
+  end
+
+  defp bound_rendered_file(markdown) do
+    if String.length(markdown) <= @render_file_limit do
+      markdown
+    else
+      String.slice(markdown, 0, @render_file_limit) <> "\n\n[virtual file truncated]\n"
+    end
   end
 end
