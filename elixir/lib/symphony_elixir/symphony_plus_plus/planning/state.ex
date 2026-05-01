@@ -12,12 +12,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.State do
           plan_nodes: [PlanNode.t()],
           findings: [Finding.t()],
           progress_events: [ProgressEvent.t()],
-          artifacts: [Artifact.t()]
+          artifacts: [Artifact.t()],
+          plan_nodes_omitted_count: non_neg_integer() | nil,
+          findings_omitted_count: non_neg_integer() | nil,
+          progress_events_omitted_count: non_neg_integer() | nil,
+          artifacts_omitted_count: non_neg_integer() | nil
         }
 
   defstruct work_package: nil,
             plan_nodes: [],
             findings: [],
             progress_events: [],
-            artifacts: []
+            artifacts: [],
+            plan_nodes_omitted_count: nil,
+            findings_omitted_count: nil,
+            progress_events_omitted_count: nil,
+            artifacts_omitted_count: nil
 end

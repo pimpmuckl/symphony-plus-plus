@@ -86,8 +86,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     |> flatten_join()
   end
 
-  defp task_plan_markdown(%State{work_package: work_package, plan_nodes: plan_nodes}) do
-    {rendered_nodes, omitted_count} = capped_head_items(plan_nodes)
+  defp task_plan_markdown(%State{work_package: work_package, plan_nodes: plan_nodes} = state) do
+    {rendered_nodes, omitted_count} = capped_head_items(plan_nodes, state.plan_nodes_omitted_count)
 
     [
       "# Task Plan",
@@ -104,8 +104,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     flatten_join(["# Findings", "", "No findings recorded."])
   end
 
-  defp findings_markdown(%State{findings: findings}) do
-    {rendered_findings, omitted_count} = capped_tail_items(findings)
+  defp findings_markdown(%State{findings: findings} = state) do
+    {rendered_findings, omitted_count} = capped_tail_items(findings, state.findings_omitted_count)
 
     ["# Findings", "", omission_notice(omitted_count, "older findings"), Enum.map(rendered_findings, &finding_block/1)]
     |> flatten_join()
@@ -115,8 +115,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     flatten_join(["# Progress", "", "No progress events recorded."])
   end
 
-  defp progress_markdown(%State{progress_events: progress_events}) do
-    {rendered_progress, omitted_count} = capped_tail_items(progress_events)
+  defp progress_markdown(%State{progress_events: progress_events} = state) do
+    {rendered_progress, omitted_count} = capped_tail_items(progress_events, state.progress_events_omitted_count)
 
     ["# Progress", "", omission_notice(omitted_count, "older progress events"), Enum.map(rendered_progress, &progress_block/1)]
     |> flatten_join()
@@ -186,10 +186,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
       latest_progress_lines(state.progress_events),
       "## Findings",
       "",
-      finding_summary_lines(state.findings),
+      finding_summary_lines(state),
       "## Artifacts",
       "",
-      artifact_lines(state.artifacts)
+      artifact_lines(state)
     ]
     |> flatten_join()
   end
@@ -259,7 +259,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   defp acceptance_lines(%WorkPackage{acceptance_criteria: []}), do: ["No acceptance criteria recorded."]
 
   defp acceptance_lines(%WorkPackage{} = work_package) do
-    {rendered_criteria, omitted_count} = capped_head_items(work_package.acceptance_criteria)
+    {rendered_criteria, omitted_count} = capped_head_items(work_package.acceptance_criteria, nil)
 
     [
       omission_notice(omitted_count, "later acceptance criteria"),
@@ -275,10 +275,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     |> Enum.map(fn progress_event -> "- #{timestamp(progress_event.created_at)}: #{source_inline(progress_event.summary)}" end)
   end
 
-  defp finding_summary_lines([]), do: ["No findings recorded."]
+  defp finding_summary_lines(%State{findings: []}), do: ["No findings recorded."]
 
-  defp finding_summary_lines(findings) do
-    {rendered_findings, omitted_count} = capped_tail_items(findings)
+  defp finding_summary_lines(%State{findings: findings} = state) do
+    {rendered_findings, omitted_count} = capped_tail_items(findings, state.findings_omitted_count)
 
     [
       omission_notice(omitted_count, "older findings"),
@@ -288,10 +288,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     ]
   end
 
-  defp artifact_lines([]), do: ["No artifacts recorded."]
+  defp artifact_lines(%State{artifacts: []}), do: ["No artifacts recorded."]
 
-  defp artifact_lines(artifacts) do
-    {rendered_artifacts, omitted_count} = capped_tail_items(artifacts)
+  defp artifact_lines(%State{artifacts: artifacts} = state) do
+    {rendered_artifacts, omitted_count} = capped_tail_items(artifacts, state.artifacts_omitted_count)
 
     [
       omission_notice(omitted_count, "older artifacts"),
@@ -308,7 +308,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   defp inline_list([]), do: "none"
   defp inline_list(values), do: Enum.join(values, ", ")
 
-  defp capped_head_items(items) do
+  defp capped_head_items(items, nil) do
     item_count = length(items)
 
     if item_count > @render_item_limit do
@@ -318,7 +318,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     end
   end
 
-  defp capped_tail_items(items) do
+  defp capped_head_items(items, omitted_count), do: {items, omitted_count}
+
+  defp capped_tail_items(items, nil) do
     item_count = length(items)
 
     if item_count > @render_item_limit do
@@ -327,6 +329,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
       {items, 0}
     end
   end
+
+  defp capped_tail_items(items, omitted_count), do: {items, omitted_count}
 
   defp omission_notice(0, _label), do: []
   defp omission_notice(count, label), do: ["_#{count} #{label} omitted from this virtual file._", ""]
@@ -353,6 +357,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
       value
       |> text_or_empty()
       |> bound_external_text()
+      |> escape_block_markdown()
       |> quote_markdown()
     ]
     |> List.flatten()
@@ -385,12 +390,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
       "(" -> "\\("
       ")" -> "\\)"
       "#" -> "\\#"
+      "+" -> "\\+"
+      "-" -> "\\-"
+      "." -> "\\."
       "!" -> "\\!"
       "|" -> "\\|"
       "<" -> "\\<"
       ">" -> "\\>"
       character -> character
     end)
+  end
+
+  defp escape_block_markdown(value) do
+    value
+    |> String.split("\n", trim: false)
+    |> Enum.map_join("\n", &escape_inline_markdown/1)
   end
 
   defp quote_markdown(value) do

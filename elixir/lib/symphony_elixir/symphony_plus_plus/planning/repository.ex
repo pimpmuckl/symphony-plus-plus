@@ -12,6 +12,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
 
   @default_append_retry_attempts 200
+  @state_item_limit 100
 
   @type repo :: module()
   @type planning_record :: PlanNode.t() | Finding.t() | ProgressEvent.t() | Artifact.t()
@@ -34,7 +35,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
 
   @spec append_plan_node(repo(), map()) :: {:ok, PlanNode.t()} | {:error, error()}
   def append_plan_node(repo, attrs) when is_atom(repo) and is_map(attrs) do
-    insert_with_allocated_value(repo, attrs, PlanNode, :position, &PlanNode.create_changeset/1)
+    insert_with_allocated_value(
+      repo,
+      drop_ordering(attrs, :position),
+      PlanNode,
+      :position,
+      &PlanNode.create_changeset/1
+    )
   end
 
   @spec append_finding(repo(), map()) :: {:ok, Finding.t()} | {:error, error()}
@@ -130,19 +137,90 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
 
   defp load_state(repo, work_package_id) do
     with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
-         {:ok, plan_nodes} <- list_plan_nodes(repo, work_package_id),
-         {:ok, findings} <- list_findings(repo, work_package_id),
-         {:ok, progress_events} <- list_progress_events(repo, work_package_id),
-         {:ok, artifacts} <- list_artifacts(repo, work_package_id) do
+         {plan_nodes, plan_nodes_omitted_count} <- list_plan_nodes_for_state(repo, work_package_id),
+         {findings, findings_omitted_count} <- list_findings_for_state(repo, work_package_id),
+         {progress_events, progress_events_omitted_count} <- list_progress_events_for_state(repo, work_package_id),
+         {artifacts, artifacts_omitted_count} <- list_artifacts_for_state(repo, work_package_id) do
       {:ok,
        %State{
          work_package: work_package,
          plan_nodes: plan_nodes,
          findings: findings,
          progress_events: progress_events,
-         artifacts: artifacts
+         artifacts: artifacts,
+         plan_nodes_omitted_count: plan_nodes_omitted_count,
+         findings_omitted_count: findings_omitted_count,
+         progress_events_omitted_count: progress_events_omitted_count,
+         artifacts_omitted_count: artifacts_omitted_count
        }}
     end
+  end
+
+  defp list_plan_nodes_for_state(repo, work_package_id) do
+    rows =
+      repo.all(
+        from(plan_node in PlanNode,
+          where: plan_node.work_package_id == ^work_package_id,
+          order_by: [asc: plan_node.position, asc: plan_node.created_at, asc: plan_node.id],
+          limit: @state_item_limit
+        )
+      )
+
+    {rows, omitted_count(repo, PlanNode, work_package_id, rows)}
+  end
+
+  defp list_findings_for_state(repo, work_package_id) do
+    rows =
+      repo.all(
+        from(finding in Finding,
+          where: finding.work_package_id == ^work_package_id,
+          order_by: [desc: finding.sequence, desc: finding.id],
+          limit: @state_item_limit
+        )
+      )
+      |> Enum.reverse()
+
+    {rows, omitted_count(repo, Finding, work_package_id, rows)}
+  end
+
+  defp list_progress_events_for_state(repo, work_package_id) do
+    rows =
+      repo.all(
+        from(progress_event in ProgressEvent,
+          where: progress_event.work_package_id == ^work_package_id,
+          order_by: [desc: progress_event.sequence, desc: progress_event.id],
+          limit: @state_item_limit
+        )
+      )
+      |> Enum.reverse()
+
+    {rows, omitted_count(repo, ProgressEvent, work_package_id, rows)}
+  end
+
+  defp list_artifacts_for_state(repo, work_package_id) do
+    rows =
+      repo.all(
+        from(artifact in Artifact,
+          where: artifact.work_package_id == ^work_package_id,
+          order_by: [desc: artifact.sequence, desc: artifact.id],
+          limit: @state_item_limit
+        )
+      )
+      |> Enum.reverse()
+
+    {rows, omitted_count(repo, Artifact, work_package_id, rows)}
+  end
+
+  defp omitted_count(repo, schema, work_package_id, loaded_rows) do
+    total =
+      repo.one(
+        from(row in schema,
+          where: row.work_package_id == ^work_package_id,
+          select: count(row.id)
+        )
+      )
+
+    max((total || 0) - length(loaded_rows), 0)
   end
 
   defp insert_with_allocated_value(repo, attrs, schema, field, changeset_fun) do

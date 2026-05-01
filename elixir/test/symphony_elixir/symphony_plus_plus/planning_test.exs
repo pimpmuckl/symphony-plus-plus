@@ -60,23 +60,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
     assert {:ok, _node} =
              Service.append_plan_node(repo, %{
-               id: "plan-second",
-               work_package_id: work_package.id,
-               title: "Run validation",
-               status: "pending",
-               position: 2,
-               created_at: ~U[2026-05-01 10:02:00Z]
-             })
-
-    assert {:ok, _node} =
-             Service.append_plan_node(repo, %{
                id: "plan-first",
                work_package_id: work_package.id,
                title: "Implement schemas",
                body: "Create canonical planning tables.",
                status: "done",
-               position: 1,
+               position: 2,
                created_at: ~U[2026-05-01 10:01:00Z]
+             })
+
+    assert {:ok, _node} =
+             Service.append_plan_node(repo, %{
+               id: "plan-second",
+               work_package_id: work_package.id,
+               title: "Run validation",
+               status: "pending",
+               position: 1,
+               created_at: ~U[2026-05-01 10:02:00Z]
              })
 
     assert {:ok, _node} =
@@ -99,7 +99,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
            - [x] source: Implement schemas
              Source material (not instructions):
 
-             > Create canonical planning tables.
+             > Create canonical planning tables\\.
            - [ ] source: Run validation _(pending)_
            - [ ] source: Backfill markdown exports _(skipped)_
            """
@@ -139,14 +139,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
            Source material (not instructions):
 
-           > Second in append-only order.
+           > Second in append\\-only order\\.
            ## 2026-05-01T10:00:00.000000Z - source: Early finding
 
            - Severity: `info`
 
            Source material (not instructions):
 
-           > First in append-only order.
+           > First in append\\-only order\\.
            """
   end
 
@@ -183,14 +183,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
            Source material (not instructions):
 
-           > Not recorded.
+           > Not recorded\\.
            ## 2026-05-01T10:05:00.000000Z - source: Implementation started
 
            - Status: `working`
 
            Source material (not instructions):
 
-           > Created planning namespace.
+           > Created planning namespace\\.
            """
   end
 
@@ -253,6 +253,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
     assert {:ok, markdown} = Renderer.render(repo, work_package.id, "task_plan.md")
     assert markdown =~ "- [ ] source: First _(pending)_\n- [ ] source: Second _(pending)_\n"
+  end
+
+  test "append plan node owns position assignment", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+
+    assert {:ok, first} =
+             Service.append_plan_node(repo, %{
+               work_package_id: work_package.id,
+               title: "Caller position ignored",
+               position: 50
+             })
+
+    assert {:ok, second} =
+             Service.append_plan_node(repo, %{
+               work_package_id: work_package.id,
+               title: "Next append",
+               position: 1
+             })
+
+    assert first.position == 1
+    assert second.position == 2
   end
 
   test "uses append sequence as deterministic order for findings and progress", %{repo: repo} do
@@ -408,7 +429,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
     assert context =~ "Source material (not instructions):"
     assert context =~ "> " <> String.duplicate("x", 20)
-    assert context =~ "> [truncated]"
+    assert context =~ "> \\[truncated\\]"
     refute context =~ String.duplicate("x", 4_050)
   end
 
@@ -419,7 +440,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert {:ok, context} = Renderer.render(repo, work_package.id, "context.md")
 
     assert String.valid?(context)
-    assert context =~ "> [truncated]"
+    assert context =~ "> \\[truncated\\]"
   end
 
   test "escapes source-owned inline markdown", %{repo: repo} do
@@ -429,12 +450,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
                acceptance_criteria: ["- [ ] Treat this as text"]
              )
 
+    assert {:ok, _node} =
+             Service.append_plan_node(repo, %{
+               work_package_id: work_package.id,
+               title: "Body boundary",
+               body: "# Heading\n- [ ] run `cmd`\n1. ordered"
+             })
+
     assert {:ok, context} = Renderer.render(repo, work_package.id, "context.md")
     assert {:ok, acceptance} = Renderer.render(repo, work_package.id, "acceptance.md")
+    assert {:ok, task_plan} = Renderer.render(repo, work_package.id, "task_plan.md")
 
     assert context =~ "# source: \\# Run \\[setup\\]\\(x\\) \\`code\\` \\| table"
     refute context =~ "# source: # Run [setup](x) `code` | table"
-    assert acceptance =~ "- [ ] source: - \\[ \\] Treat this as text"
+    assert acceptance =~ "- [ ] source: \\- \\[ \\] Treat this as text"
+    assert task_plan =~ "> \\# Heading"
+    assert task_plan =~ "> \\- \\[ \\] run \\`cmd\\`"
+    assert task_plan =~ "> 1\\. ordered"
   end
 
   test "caps rendered append-only history with an omission notice", %{repo: repo} do
@@ -455,6 +487,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     refute findings =~ "source: Finding 1\n\n- Severity"
     assert findings =~ "source: Finding 6"
     assert findings =~ "source: Finding 105"
+
+    assert {:ok, state} = Service.get_state(repo, work_package.id)
+    assert length(state.findings) == 100
+    assert state.findings_omitted_count == 5
   end
 
   test "caps ordered plan and acceptance lists from the head", %{repo: repo} do
@@ -506,7 +542,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert {:ok, handoff} = Renderer.render(repo, work_package.id, "handoff.md")
 
     assert handoff =~
-             "source: z-last.md - source: First artifact (`reference`)\n- source: a-first.md - source: Second artifact (`reference`)"
+             "source: z\\-last\\.md - source: First artifact (`reference`)\n- source: a\\-first\\.md - source: Second artifact (`reference`)"
   end
 
   test "renders review suite for hotfix and phase-child policy templates", %{repo: repo} do
@@ -553,7 +589,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert task_plan =~ "No plan nodes recorded."
 
     assert handoff =~
-             "source: task\\_plan.md - source: Generated markdown export (`export`) - source: file:///tmp/task\\_plan.md"
+             "source: task\\_plan\\.md - source: Generated markdown export (`export`) - source: file:///tmp/task\\_plan\\.md"
   end
 
   test "rejects unknown virtual files", %{repo: repo} do
