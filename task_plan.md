@@ -31,11 +31,11 @@ Phase 3
 - **Status:** complete
 
 ### Phase 4: PR & Reviews
-- [ ] Commit and push branch.
-- [ ] Open PR `[SYMPP-P3-002] Worker MCP tools and resources` to `symphony-plus-plus/beta`.
+- [x] Commit and push branch.
+- [x] Open PR `[SYMPP-P3-002] Worker MCP tools and resources` to `symphony-plus-plus/beta`.
 - [ ] Run review-t1, fix valid findings, then review-t2, fix valid findings, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** pending
+- **Status:** blocked on review-suite T1 infrastructure: repeated review slots interrupted before usable output.
 
 ## Boundaries
 

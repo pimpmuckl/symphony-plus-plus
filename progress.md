@@ -19,6 +19,8 @@
 - Added scoped worker writes for task plan, findings, progress, blocker/scope-expansion metadata, branch/PR metadata, review package metadata, status changes, and readiness.
 - Added focused MCP tests covering claim/session binding, scoped writes, sibling denial, idempotent progress replay, readiness gates, and denied worker actions.
 - Tightened `mark_ready` to require `ci_waiting` and added coverage that scope-expansion requests are recorded with `approved: false`.
+- Committed implementation as `750d6e8978c65142f5fcd1b96890e58c1c55b5db`, pushed branch, and opened PR #15.
+- Attempted required review-suite T1 multiple times; every reviewer slot interrupted before usable output, so there is no T1 verdict/anchor yet.
 
 ### Validation Results
 
@@ -34,8 +36,13 @@
 | `mise exec -- mix specs.check` | pass | Latest rerun: all public functions have specs or exemption. |
 | `mise exec -- mix credo --strict` | pass | Latest rerun: no issues. |
 | `mise exec -- mix test` | blocked | 468 tests, 59 failures, 2 skipped. Failures are outside P3-002 focused scope and are Windows/environment baseline classes: fake `sh`/`ssh` command interception, symlink permission, path canonicalization/temp-root mismatch, and timing-sensitive orchestrator retry assertions. |
+| `review_t1.py --commit 750d6e8978c65142f5fcd1b96890e58c1c55b5db ...` | blocked | Round `phase_review-symphony-plus-plus-sympp-p3-002-e4d006-20260502T173328Z-4346473c`; alpha/bravo interrupted before usable result. |
+| `review_suite_arena.py reroll-slot ... --slot alpha` | blocked | Follow-up round `phase_review-symphony-plus-plus-sympp-p3-002-e4d006-20260502T173347Z-018e0cdf`; interrupted before usable result. |
+| `review_suite_arena.py reroll-slot ... --slot bravo` | blocked | Follow-up round `phase_review-symphony-plus-plus-sympp-p3-002-e4d006-20260502T173404Z-6335426f`; interrupted before usable result. |
+| `review_state.py status --base symphony-plus-plus/beta ...` | pass | Recommendation `full-review`; no review anchor exists. |
+| `review_t1.py --commit 750d6e8978c65142f5fcd1b96890e58c1c55b5db ...` | blocked | Round `phase_review-symphony-plus-plus-sympp-p3-002-e4d006-20260502T173443Z-cc2004d4`; alpha/bravo interrupted before usable result. |
+| `review_t1.py --base symphony-plus-plus/beta ...` | blocked | Round `phase_review-symphony-plus-plus-sympp-p3-002-e4d006-20260502T173505Z-99e59471`; alpha/bravo interrupted before usable result. |
 
 ### Next Steps
 
-- Run broader Symphony++ slice plus specs/Credo.
-- Commit, push, open PR, then run required review-suite flow.
+- Unblock review-suite T1 infrastructure, then run T1 -> T2 -> GitHub review.
