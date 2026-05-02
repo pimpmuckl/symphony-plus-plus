@@ -13,7 +13,7 @@ defmodule SymphonyElixir.Tracker do
   @callback create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   @callback update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   @callback start_agent_run(term(), keyword()) :: {:ok, term()} | {:error, term()}
-  @callback list_running_agent_runs() :: {:ok, [term()]} | {:error, term()}
+  @callback list_active_agent_runs() :: {:ok, [term()]} | {:error, term()}
   @callback heartbeat_agent_run(String.t(), map()) :: {:ok, term()} | {:error, term()}
   @callback mark_agent_run_running(String.t(), String.t() | nil) :: {:ok, term()} | {:error, term()}
   @callback mark_agent_run_retrying(String.t(), String.t() | nil) :: {:ok, term()} | {:error, term()}
@@ -23,7 +23,7 @@ defmodule SymphonyElixir.Tracker do
 
   @optional_callbacks dispatch_filters_match?: 1,
                       start_agent_run: 2,
-                      list_running_agent_runs: 0,
+                      list_active_agent_runs: 0,
                       heartbeat_agent_run: 2,
                       mark_agent_run_running: 2,
                       mark_agent_run_retrying: 2,
@@ -78,12 +78,12 @@ defmodule SymphonyElixir.Tracker do
     end
   end
 
-  @spec list_running_agent_runs() :: {:ok, [term()]} | {:error, term()}
-  def list_running_agent_runs do
+  @spec list_active_agent_runs() :: {:ok, [term()]} | {:error, term()}
+  def list_active_agent_runs do
     adapter = adapter()
 
-    if function_exported?(adapter, :list_running_agent_runs, 0) do
-      adapter.list_running_agent_runs()
+    if function_exported?(adapter, :list_active_agent_runs, 0) do
+      adapter.list_active_agent_runs()
     else
       {:ok, []}
     end

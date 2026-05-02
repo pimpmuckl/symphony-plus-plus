@@ -64,8 +64,8 @@ defmodule SymphonyElixir.Orchestrator do
       codex_rate_limits: nil
     }
 
-    run_terminal_workspace_cleanup()
-    state = reconcile_persisted_running_agent_runs(state)
+    state = reconcile_persisted_active_agent_runs(state)
+    run_terminal_workspace_cleanup(state)
     state = schedule_tick(state, 0)
 
     {:ok, state}
@@ -143,7 +143,8 @@ defmodule SymphonyElixir.Orchestrator do
                   identifier: running_entry.identifier,
                   delay_type: :continuation,
                   worker_host: Map.get(running_entry, :worker_host),
-                  workspace_path: Map.get(running_entry, :workspace_path)
+                  workspace_path: Map.get(running_entry, :workspace_path),
+                  confirmed_worker_down: true
                 }
                 |> maybe_put_retry_agent_run_id(completed_result, agent_run_id)
 
@@ -158,13 +159,16 @@ defmodule SymphonyElixir.Orchestrator do
               retry_reason = "agent exited: #{inspect(reason)}"
               record_agent_run_retrying(agent_run_id, retry_reason)
 
-              schedule_issue_retry(state, issue_id, next_attempt, %{
+              retry_metadata = %{
                 identifier: running_entry.identifier,
                 error: retry_reason,
                 worker_host: Map.get(running_entry, :worker_host),
                 workspace_path: Map.get(running_entry, :workspace_path),
+                confirmed_worker_down: true,
                 agent_run_id: agent_run_id
-              })
+              }
+
+              schedule_issue_retry(state, issue_id, next_attempt, retry_metadata)
           end
 
         Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
@@ -366,8 +370,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
-  @spec reconcile_persisted_running_agent_runs_for_test(term()) :: term()
-  def reconcile_persisted_running_agent_runs_for_test(%State{} = state), do: reconcile_persisted_running_agent_runs(state)
+  @spec reconcile_persisted_active_agent_runs_for_test(term()) :: term()
+  def reconcile_persisted_active_agent_runs_for_test(%State{} = state), do: reconcile_persisted_active_agent_runs(state)
 
   @doc false
   @spec worker_task_handle_for_test(pid()) :: String.t()
@@ -1065,18 +1069,18 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp cleanup_issue_workspace(_identifier, _worker_host), do: :ok
 
-  defp reconcile_persisted_running_agent_runs(%State{} = state) do
-    case Tracker.list_running_agent_runs() do
+  defp reconcile_persisted_active_agent_runs(%State{} = state) do
+    case Tracker.list_active_agent_runs() do
       {:ok, agent_runs} when is_list(agent_runs) ->
-        Enum.reduce(agent_runs, state, &reconcile_persisted_running_agent_run/2)
+        Enum.reduce(agent_runs, state, &reconcile_persisted_active_agent_run/2)
 
       {:error, reason} ->
-        Logger.warning("Skipping AgentRun restart reconciliation; failed to list running AgentRuns: #{inspect(reason)}")
+        Logger.warning("Skipping AgentRun restart reconciliation; failed to list active AgentRuns: #{inspect(reason)}")
         state
     end
   end
 
-  defp reconcile_persisted_running_agent_run(agent_run, %State{} = state) do
+  defp reconcile_persisted_active_agent_run(agent_run, %State{} = state) do
     work_package_id = agent_run_value(agent_run, :work_package_id)
 
     cond do
@@ -1086,13 +1090,16 @@ defmodule SymphonyElixir.Orchestrator do
       Map.has_key?(state.running, work_package_id) ->
         state
 
+      agent_run_value(agent_run, :status) == "retrying" ->
+        claim_retrying_agent_run_after_restart(state, agent_run)
+
       true ->
         case verified_worker_task_pid(agent_run_value(agent_run, :worker_task_handle)) do
           {:ok, pid} ->
             reattach_running_agent_run(state, agent_run, pid)
 
           :error ->
-            release_unverifiable_running_agent_run(state, agent_run)
+            release_unverifiable_active_agent_run(state, agent_run)
         end
     end
   end
@@ -1105,6 +1112,7 @@ defmodule SymphonyElixir.Orchestrator do
         ref = Process.monitor(pid)
         worker_host = agent_run_value(agent_run, :worker_host)
         agent_run_id = agent_run_value(agent_run, :id)
+        :ok = ensure_agent_run_marked_running(agent_run)
 
         Logger.info("Reattached running AgentRun after restart: #{issue_context(issue)} pid=#{inspect(pid)} agent_run_id=#{agent_run_id}")
 
@@ -1125,11 +1133,26 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, reason} ->
         Logger.warning("Unable to reattach running AgentRun; issue lookup failed work_package_id=#{work_package_id}: #{inspect(reason)}")
-        release_unverifiable_running_agent_run(state, agent_run)
+        release_unverifiable_active_agent_run(state, agent_run)
     end
   end
 
-  defp release_unverifiable_running_agent_run(%State{} = state, agent_run) do
+  defp claim_retrying_agent_run_after_restart(%State{} = state, agent_run) do
+    work_package_id = agent_run_value(agent_run, :work_package_id)
+    issue = fetch_issue_for_agent_run(work_package_id)
+
+    state
+    |> schedule_issue_retry(work_package_id, next_retry_attempt_from_agent_run(agent_run), %{
+      identifier: retry_identifier_for_agent_run(agent_run, issue),
+      error: agent_run_value(agent_run, :reason),
+      worker_host: agent_run_value(agent_run, :worker_host),
+      workspace_path: agent_run_value(agent_run, :workspace_path),
+      agent_run_id: agent_run_value(agent_run, :id)
+    })
+    |> claim_issue(work_package_id)
+  end
+
+  defp release_unverifiable_active_agent_run(%State{} = state, agent_run) do
     work_package_id = agent_run_value(agent_run, :work_package_id)
     agent_run_id = agent_run_value(agent_run, :id)
     reason = "worker task handle not live after orchestrator restart"
@@ -1150,8 +1173,16 @@ defmodule SymphonyElixir.Orchestrator do
         |> claim_issue(work_package_id)
 
       {:error, reason} ->
-        Logger.warning("Failed to release unverifiable running AgentRun agent_run_id=#{agent_run_id}: #{inspect(reason)}")
+        Logger.warning("Failed to release unverifiable active AgentRun agent_run_id=#{agent_run_id}: #{inspect(reason)}")
         state
+    end
+  end
+
+  defp ensure_agent_run_marked_running(agent_run) do
+    if agent_run_value(agent_run, :status) == "starting" do
+      record_agent_run_running(agent_run_value(agent_run, :id), "worker task reattached after restart")
+    else
+      :ok
     end
   end
 
@@ -1180,8 +1211,18 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp verified_worker_task_pid(_worker_task_handle), do: :error
 
-  defp parse_worker_task_handle("local-task:" <> pid_text) do
-    {:ok, :erlang.list_to_pid(String.to_charlist(pid_text))}
+  defp parse_worker_task_handle("local-task:" <> handle) do
+    case String.split(handle, ":", parts: 2) do
+      [runtime_id, pid_text] ->
+        if runtime_id == worker_task_runtime_id() do
+          {:ok, :erlang.list_to_pid(String.to_charlist(pid_text))}
+        else
+          :error
+        end
+
+      _ ->
+        :error
+    end
   rescue
     ArgumentError -> :error
   end
@@ -1198,24 +1239,43 @@ defmodule SymphonyElixir.Orchestrator do
     :exit, _reason -> false
   end
 
-  defp worker_task_handle(pid) when is_pid(pid), do: "local-task:" <> List.to_string(:erlang.pid_to_list(pid))
+  defp worker_task_handle(pid) when is_pid(pid),
+    do: "local-task:" <> worker_task_runtime_id() <> ":" <> List.to_string(:erlang.pid_to_list(pid))
 
-  defp run_terminal_workspace_cleanup do
+  defp worker_task_runtime_id do
+    key = {__MODULE__, :worker_task_runtime_id}
+
+    case :persistent_term.get(key, nil) do
+      runtime_id when is_binary(runtime_id) ->
+        runtime_id
+
+      nil ->
+        runtime_id = Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+        :persistent_term.put(key, runtime_id)
+        runtime_id
+    end
+  end
+
+  defp run_terminal_workspace_cleanup(%State{} = state) do
+    running_issue_ids = Map.keys(state.running) |> MapSet.new()
+
     case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
       {:ok, issues} ->
-        issues
-        |> Enum.each(fn
-          %Issue{identifier: identifier} when is_binary(identifier) ->
-            cleanup_issue_workspace(identifier)
-
-          _ ->
-            :ok
-        end)
+        Enum.each(issues, &cleanup_terminal_issue_workspace(&1, running_issue_ids))
 
       {:error, reason} ->
         Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
     end
   end
+
+  defp cleanup_terminal_issue_workspace(%Issue{id: issue_id, identifier: identifier}, running_issue_ids)
+       when is_binary(identifier) do
+    unless is_binary(issue_id) and MapSet.member?(running_issue_ids, issue_id) do
+      cleanup_issue_workspace(identifier)
+    end
+  end
+
+  defp cleanup_terminal_issue_workspace(_issue, _running_issue_ids), do: :ok
 
   defp notify_dashboard do
     StatusDashboard.notify_update()
@@ -1225,7 +1285,10 @@ defmodule SymphonyElixir.Orchestrator do
     if retry_candidate_issue?(issue, terminal_state_set()) and
          dispatch_slots_available?(issue, state) and
          worker_slots_available?(state, metadata[:worker_host]) do
-      retry_opts = [replace_agent_run_id: metadata[:agent_run_id]]
+      retry_opts = [
+        replace_agent_run_id: metadata[:agent_run_id],
+        replace_confirmed_dead_worker: metadata[:confirmed_worker_down] == true
+      ]
 
       {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host], retry_opts)}
     else

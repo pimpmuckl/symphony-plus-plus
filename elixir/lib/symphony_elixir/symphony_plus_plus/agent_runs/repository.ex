@@ -55,12 +55,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
     {:ok, agent_runs}
   end
 
-  @spec list_running(repo()) :: {:ok, [AgentRun.t()]} | {:error, error()}
-  def list_running(repo) when is_atom(repo) do
+  @spec list_active(repo()) :: {:ok, [AgentRun.t()]} | {:error, error()}
+  def list_active(repo) when is_atom(repo) do
     agent_runs =
       repo.all(
         from(agent_run in AgentRun,
-          where: agent_run.status == "running",
+          where: agent_run.status in ^AgentRun.active_statuses(),
           order_by: [asc: agent_run.started_at, asc: agent_run.id]
         )
       )
@@ -123,7 +123,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
   defp start_run_transaction(repo, attrs, opts) do
     work_package_id = work_package_id(attrs)
 
-    with :ok <- release_previous_attempt(repo, Keyword.get(opts, :replace_agent_run_id), work_package_id) do
+    with :ok <- release_previous_attempt(repo, Keyword.get(opts, :replace_agent_run_id), work_package_id, opts) do
       case insert_run(repo, attrs) do
         {:error, :active_run_exists} ->
           repo
@@ -146,25 +146,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
     error in Ecto.ConstraintError -> normalize_constraint_error(error)
   end
 
-  defp release_previous_attempt(_repo, previous_agent_run_id, _work_package_id)
+  defp release_previous_attempt(_repo, previous_agent_run_id, _work_package_id, _opts)
        when previous_agent_run_id in [nil, ""],
        do: :ok
 
-  defp release_previous_attempt(repo, previous_agent_run_id, work_package_id)
+  defp release_previous_attempt(repo, previous_agent_run_id, work_package_id, opts)
        when is_binary(previous_agent_run_id) and is_binary(work_package_id) do
     case get(repo, previous_agent_run_id) do
-      {:ok, %AgentRun{work_package_id: ^work_package_id, status: status}}
-      when status in ["starting", "retrying"] ->
-        case mark_failed(repo, previous_agent_run_id, "replaced by retry dispatch") do
-          {:ok, _agent_run} -> :ok
-          {:error, reason} -> {:error, reason}
-        end
-
-      {:ok, %AgentRun{work_package_id: ^work_package_id}} ->
-        :ok
-
-      {:ok, %AgentRun{}} ->
-        {:error, :agent_run_work_package_mismatch}
+      {:ok, %AgentRun{} = agent_run} ->
+        release_previous_agent_run(repo, agent_run, work_package_id, opts)
 
       {:error, :not_found} ->
         :ok
@@ -174,7 +164,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
     end
   end
 
-  defp release_previous_attempt(_repo, _previous_agent_run_id, _work_package_id), do: :ok
+  defp release_previous_attempt(_repo, _previous_agent_run_id, _work_package_id, _opts), do: :ok
+
+  defp release_previous_agent_run(repo, %AgentRun{work_package_id: work_package_id, status: status, id: id}, work_package_id, _opts)
+       when status in ["starting", "retrying"] do
+    mark_previous_attempt_failed(repo, id, "replaced by retry dispatch")
+  end
+
+  defp release_previous_agent_run(repo, %AgentRun{work_package_id: work_package_id, status: "running", id: id}, work_package_id, opts) do
+    release_confirmed_dead_running_attempt(repo, id, opts)
+  end
+
+  defp release_previous_agent_run(_repo, %AgentRun{work_package_id: work_package_id}, work_package_id, _opts), do: :ok
+  defp release_previous_agent_run(_repo, %AgentRun{}, _work_package_id, _opts), do: {:error, :agent_run_work_package_mismatch}
+
+  defp release_confirmed_dead_running_attempt(repo, previous_agent_run_id, opts) do
+    if Keyword.get(opts, :replace_confirmed_dead_worker) == true do
+      mark_previous_attempt_failed(repo, previous_agent_run_id, "replaced after confirmed worker exit")
+    else
+      :ok
+    end
+  end
+
+  defp mark_previous_attempt_failed(repo, previous_agent_run_id, reason) do
+    case mark_failed(repo, previous_agent_run_id, reason) do
+      {:ok, _agent_run} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp release_retrying_reservation(repo, work_package_id, opts) when is_binary(work_package_id) and is_list(opts) do
     with %AgentRun{} = agent_run <- retrying_for_work_package(repo, work_package_id),

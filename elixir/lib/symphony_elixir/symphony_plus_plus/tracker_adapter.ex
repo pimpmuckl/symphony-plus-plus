@@ -109,9 +109,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
     with_repo_access(fn -> AgentRunService.start_dispatch(repo(), issue, opts) end)
   end
 
-  @spec list_running_agent_runs() :: {:ok, [term()]} | {:error, term()}
-  def list_running_agent_runs do
-    with_repo_access(fn -> AgentRunService.list_running(repo()) end)
+  @spec list_active_agent_runs() :: {:ok, [term()]} | {:error, term()}
+  def list_active_agent_runs do
+    with_repo_access(fn -> AgentRunService.list_active(repo()) end)
   end
 
   @spec heartbeat_agent_run(String.t(), map()) :: {:ok, term()} | {:error, term()}

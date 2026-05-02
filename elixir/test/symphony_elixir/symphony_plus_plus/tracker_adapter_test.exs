@@ -1443,13 +1443,58 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
 
     state =
       %Orchestrator.State{max_concurrent_agents: 1, running: %{}, claimed: MapSet.new(), retry_attempts: %{}}
-      |> Orchestrator.reconcile_persisted_running_agent_runs_for_test()
+      |> Orchestrator.reconcile_persisted_active_agent_runs_for_test()
 
     assert %{pid: ^worker_pid, ref: ref, agent_run_id: run_id, retry_attempt: 2} = state.running[work_package.id]
     assert is_reference(ref)
     assert run_id == run.id
     assert MapSet.member?(state.claimed, work_package.id)
     assert state.retry_attempts == %{}
+
+    assert {:ok, persisted} = AgentRunRepository.get(repo, run.id)
+    assert persisted.status == "running"
+    assert persisted.worker_task_handle == worker_task_handle
+  end
+
+  test "restart reconciliation promotes live starting AgentRun with worker handle", %{repo: repo} do
+    assert {:ok, work_package} =
+             Repository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-REATTACH-STARTING", kind: "adapter", status: "ready_for_worker")
+             )
+
+    assert {:ok, work_package_grant} = AccessGrantService.mint_worker_grant(repo, work_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, work_package_grant.work_key.secret, claimed_by: "agent-1")
+    assert {:ok, [issue]} = Tracker.fetch_issue_states_by_ids([work_package.id])
+
+    {:ok, worker_pid} =
+      Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, worker_pid)
+      end
+    end)
+
+    worker_task_handle = Orchestrator.worker_task_handle_for_test(worker_pid)
+
+    assert {:ok, run} =
+             Tracker.start_agent_run(issue,
+               status: "starting",
+               attempt: 2,
+               worker_task_handle: worker_task_handle
+             )
+
+    state =
+      %Orchestrator.State{max_concurrent_agents: 1, running: %{}, claimed: MapSet.new(), retry_attempts: %{}}
+      |> Orchestrator.reconcile_persisted_active_agent_runs_for_test()
+
+    assert %{pid: ^worker_pid, agent_run_id: run_id} = state.running[work_package.id]
+    assert run_id == run.id
 
     assert {:ok, persisted} = AgentRunRepository.get(repo, run.id)
     assert persisted.status == "running"
@@ -1476,7 +1521,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
 
     state =
       %Orchestrator.State{max_concurrent_agents: 1, running: %{}, claimed: MapSet.new(), retry_attempts: %{}}
-      |> Orchestrator.reconcile_persisted_running_agent_runs_for_test()
+      |> Orchestrator.reconcile_persisted_active_agent_runs_for_test()
 
     refute Map.has_key?(state.running, work_package.id)
     assert MapSet.member?(state.claimed, work_package.id)
@@ -1487,6 +1532,51 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert {:ok, released} = AgentRunRepository.get(repo, run.id)
     assert released.status == "retrying"
     assert released.finished_at == nil
+  end
+
+  test "restart reconciliation rejects live pid handles from another runtime", %{repo: repo} do
+    assert {:ok, work_package} =
+             Repository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-OLD-RUNTIME-RUNNING", kind: "adapter", status: "ready_for_worker")
+             )
+
+    assert {:ok, work_package_grant} = AccessGrantService.mint_worker_grant(repo, work_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, work_package_grant.work_key.secret, claimed_by: "agent-1")
+    assert {:ok, [issue]} = Tracker.fetch_issue_states_by_ids([work_package.id])
+
+    {:ok, worker_pid} =
+      Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, worker_pid)
+      end
+    end)
+
+    stale_runtime_handle = "local-task:stale-runtime:" <> List.to_string(:erlang.pid_to_list(worker_pid))
+
+    assert {:ok, run} =
+             Tracker.start_agent_run(issue,
+               status: "running",
+               attempt: 2,
+               worker_task_handle: stale_runtime_handle
+             )
+
+    state =
+      %Orchestrator.State{max_concurrent_agents: 1, running: %{}, claimed: MapSet.new(), retry_attempts: %{}}
+      |> Orchestrator.reconcile_persisted_active_agent_runs_for_test()
+
+    refute Map.has_key?(state.running, work_package.id)
+    assert %{agent_run_id: agent_run_id} = state.retry_attempts[work_package.id]
+    assert agent_run_id == run.id
+
+    assert {:ok, released} = AgentRunRepository.get(repo, run.id)
+    assert released.status == "retrying"
   end
 
   test "fetches packages by explicit states and ids", %{repo: repo} do

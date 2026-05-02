@@ -24,6 +24,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Service do
 
     Repository.start_run(repo, attrs,
       replace_agent_run_id: Keyword.get(opts, :replace_agent_run_id),
+      replace_confirmed_dead_worker: Keyword.get(opts, :replace_confirmed_dead_worker),
       retry_recovery_base_ms: Keyword.get(opts, :retry_recovery_base_ms),
       retry_recovery_max_ms: Keyword.get(opts, :retry_recovery_max_ms),
       starting_stale_after_ms: Keyword.get(opts, :starting_stale_after_ms)
@@ -35,8 +36,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Service do
     Repository.heartbeat(repo, agent_run_id, compact_attrs(attrs))
   end
 
-  @spec list_running(Repository.repo()) :: {:ok, [AgentRun.t()]} | {:error, error()}
-  def list_running(repo) when is_atom(repo), do: Repository.list_running(repo)
+  @spec list_active(Repository.repo()) :: {:ok, [AgentRun.t()]} | {:error, error()}
+  def list_active(repo) when is_atom(repo), do: Repository.list_active(repo)
 
   @spec mark_retrying(Repository.repo(), String.t(), String.t() | nil) :: {:ok, AgentRun.t()} | {:error, error()}
   def mark_retrying(repo, agent_run_id, reason \\ nil), do: Repository.mark_retrying(repo, agent_run_id, reason)
