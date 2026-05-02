@@ -767,6 +767,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "claimed_by"]) == "worker-1"
   end
 
+  test "response-only handle preserves initialized state for sequential calls", %{repo: repo} do
+    server = Server.new(Config.default(repo: repo))
+
+    init_response = Server.handle(%{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()}, server)
+
+    assert get_in(init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
+
+    tools_response = Server.handle(%{"jsonrpc" => "2.0", "id" => "tools", "method" => "tools/list", "params" => %{}}, server)
+
+    assert is_list(get_in(tools_response, ["result", "tools"]))
+  end
+
   test "response-only handle does not retain unchanged one-shot server state", %{repo: repo} do
     server = Server.new(Config.default(repo: repo), initialized: true)
     Process.delete({Server, server.state_key})
@@ -873,6 +885,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(architect_response, ["error", "data", "reason"]) == "worker_grant_required"
+    assert {:ok, architect_assignment} = AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+    assert architect_assignment.grant_role == "architect"
 
     {claim_response, claimed_server} =
       Server.handle_state(
@@ -1582,6 +1596,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(empty_review_response, ["error", "data", "reason"]) == "missing_summary"
+
+    invalid_blocker_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "invalid-blocker",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "report_blocker",
+            "arguments" => %{"summary" => "Invalid blocker", "idempotency_key" => "invalid-blocker", "blocker_id" => 1}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(invalid_blocker_response, ["error", "data", "reason"]) == "invalid_blocker_id"
 
     attach_tool(repo, session, "append_progress", %{"summary" => "Progress with shared retry key", "idempotency_key" => "blocker-1"})
 

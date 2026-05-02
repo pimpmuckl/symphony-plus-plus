@@ -114,7 +114,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp restore_handle_state(%__MODULE__{} = server) do
     case Process.get(handle_state_key(server)) do
       %__MODULE__{} = stored ->
-        %{server | session: server.session || stored.session}
+        %{server | initialized: server.initialized or stored.initialized, session: server.session || stored.session}
 
       _stored ->
         server
@@ -122,7 +122,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp persist_handle_state(%__MODULE__{} = server, %__MODULE__{} = updated_server) do
-    if server.session != updated_server.session do
+    if server.initialized != updated_server.initialized or server.session != updated_server.session do
       Process.put(handle_state_key(server), updated_server)
     end
 
@@ -643,6 +643,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, secret} <- required_argument(arguments, "secret"),
          claimed_by <- optional_argument(arguments, "claimed_by", "worker"),
          proof_hash = WorkKey.secret_hash(secret),
+         :ok <- require_worker_secret(config.repo, secret),
          {:ok, assignment} <- AccessGrantService.claim(config.repo, secret, claimed_by: claimed_by),
          :ok <- require_worker_assignment(assignment) do
       session = Session.new(assignment, proof_hash: proof_hash)
@@ -660,6 +661,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash),
          :ok <- require_worker_assignment(session.assignment) do
       {:ok, session}
+    end
+  end
+
+  defp require_worker_secret(repo, secret) do
+    if String.length(secret) == 4 do
+      {:error, :display_key_only}
+    else
+      with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, WorkKey.secret_hash(secret)) do
+        require_worker_assignment(grant)
+      end
     end
   end
 
@@ -732,14 +743,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool("report_blocker", arguments, %__MODULE__{config: config, session: session}) do
-    blocker_id = optional_argument(arguments, "blocker_id", Map.get(arguments, "idempotency_key"))
+    case optional_blocker_id(arguments) do
+      {:ok, blocker_id} ->
+        append_scoped_progress(config.repo, session, arguments, "report_blocker", %{
+          "type" => "blocker",
+          "source_tool" => "report_blocker",
+          "blocker_id" => blocker_id,
+          "active" => true
+        })
 
-    append_scoped_progress(config.repo, session, arguments, "report_blocker", %{
-      "type" => "blocker",
-      "source_tool" => "report_blocker",
-      "blocker_id" => blocker_id,
-      "active" => true
-    })
+      {:error, reason} ->
+        worker_error(reason, "report_blocker")
+    end
   end
 
   defp worker_tool("resolve_blocker", arguments, %__MODULE__{config: config, session: session}) do
@@ -1512,6 +1527,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       value when is_binary(value) -> if String.trim(value) == "", do: default, else: value
       nil -> default
       value -> value
+    end
+  end
+
+  defp optional_blocker_id(arguments) do
+    default = Map.get(arguments, "idempotency_key")
+
+    case Map.get(arguments, "blocker_id") do
+      value when is_binary(value) -> {:ok, if(String.trim(value) == "", do: default, else: value)}
+      nil -> {:ok, default}
+      _value -> {:error, :invalid_blocker_id}
     end
   end
 
