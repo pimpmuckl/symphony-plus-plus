@@ -599,4 +599,4 @@
 
 ### Next Steps
 
-- Commit and push twenty-sixth T2 fixes, rerun full-diff T2, then proceed to GitHub review if clean.
+- Pushed twenty-sixth T2 fix head `594931da57c51645f603d00fa86cad22c0c61b82`; rerun full-diff T2, then proceed to GitHub review if clean.
