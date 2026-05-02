@@ -491,3 +491,26 @@
 ### Next Steps
 
 - Pushed code fix head `88f2df8bc4ad9bef8e8c21761b93557e1b04a00d`; commit this planning correction, rerun full-diff T2, then proceed to GitHub review if clean.
+
+### Twenty-Second T2 Follow-up Actions
+
+- Pushed planning-correction head `4dbed4fe501413f7d0270cd344731d403e70b908` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T220447Z-59704ea0`; closed it as `findings`.
+- Fixed valid findings by enforcing worker grants on virtual resource reads/listing and worker read tools, requiring documented `expected_status` on `set_status` before lifecycle transitions, and trimming blocker ids when storing and evaluating blocker events.
+- High-pressure coherence check before the next same-tier T2: the package remains centered on P3-002 worker MCP tools/resources, and the latest findings are narrow API-race/authorization/retry hardening rather than a design/scope problem.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after twenty-second T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 59 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass after rerun | First run hit unrelated `TrackerAdapterTest` active-run race; isolated rerun passed, then full suite rerun passed with 253 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/tracker_adapter_test.exs:1606` | pass | Isolated rerun of the one broad-suite failure, 1 test, 0 failures. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues after extracting worker resource helpers. |
+
+### Next Steps
+
+- Commit and push twenty-second T2 fixes, rerun full-diff T2, then proceed to GitHub review if clean.

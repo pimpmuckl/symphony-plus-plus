@@ -254,6 +254,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["append_finding", "inputSchema", "required"]) == ["title", "body", "idempotency_key"]
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "required"]) == ["expected_version"]
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "expected_version", "type"]) == "integer"
+    assert get_in(tools_by_name, ["set_status", "inputSchema", "required"]) == ["status", "expected_status"]
     assert get_in(tools_by_name, ["report_blocker", "inputSchema", "properties", "blocker_id", "type"]) == "string"
     assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["blocker_id", "resolution", "summary", "idempotency_key"]
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "required"]) == ["url", "head_sha"]
@@ -732,12 +733,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "jsonrpc" => "2.0",
           "id" => "status",
           "method" => "tools/call",
-          "params" => %{"name" => "set_status", "arguments" => %{"status" => "claimed"}}
+          "params" => %{"name" => "set_status", "arguments" => %{"status" => "claimed", "expected_status" => "ready_for_worker"}}
         },
         claimed_server
       )
 
     assert get_in(status_response, ["result", "structuredContent", "work_package", "status"]) == "claimed"
+
+    stale_status_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "stale-status",
+          "method" => "tools/call",
+          "params" => %{"name" => "set_status", "arguments" => %{"status" => "implementing", "expected_status" => "ready_for_worker"}}
+        },
+        claimed_server
+      )
+
+    assert get_in(stale_status_response, ["error", "data", "reason"]) == "stale_status"
   end
 
   test "response-only handle preserves claimed session for sequential calls", %{repo: repo} do
@@ -940,6 +954,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(response, ["error", "data", "reason"]) == "worker_grant_required"
+
+    read_tool_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "architect-read-tool", "method" => "tools/call", "params" => %{"name" => "read_task_plan"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(read_tool_response, ["error", "data", "reason"]) == "worker_grant_required"
+
+    resource_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "architect-resource",
+          "method" => "resources/read",
+          "params" => %{"uri" => "sympp://work-packages/SYMPP-INJECTED-ARCHITECT/task_plan.md"}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(resource_response, ["error", "data", "reason"]) == "worker_grant_required"
+
+    assignment_resource_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "architect-assignment-resource", "method" => "resources/read", "params" => %{"uri" => "sympp://assignment/current"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(assignment_resource_response, ["error", "data", "reason"]) == "worker_grant_required"
   end
 
   test "batch calls thread claim_work_key session to later worker tools", %{repo: repo} do
@@ -1450,7 +1496,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "jsonrpc" => "2.0",
           "id" => "ready-bypass",
           "method" => "tools/call",
-          "params" => %{"name" => "set_status", "arguments" => %{"status" => "ready_for_human_merge"}}
+          "params" => %{"name" => "set_status", "arguments" => %{"status" => "ready_for_human_merge", "expected_status" => "ci_waiting"}}
         },
         repo: repo,
         session: session
@@ -1804,7 +1850,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "method" => "tools/call",
           "params" => %{
             "name" => "report_blocker",
-            "arguments" => %{"summary" => "Temporarily blocked", "idempotency_key" => "blocker-1", "blocker_id" => "blocker-1"}
+            "arguments" => %{"summary" => "Temporarily blocked", "idempotency_key" => "blocker-1", "blocker_id" => "blocker-1 "}
           }
         },
         repo: repo,
@@ -1812,6 +1858,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(blocker_response, ["result", "structuredContent", "progress_event", "payload", "active"]) == true
+    assert get_in(blocker_response, ["result", "structuredContent", "progress_event", "payload", "blocker_id"]) == "blocker-1"
 
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-BLOCKER/worker"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/125", "head_sha" => "abc125"})
@@ -2058,7 +2105,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "jsonrpc" => "2.0",
           "id" => "merged",
           "method" => "tools/call",
-          "params" => %{"name" => "set_status", "arguments" => %{"status" => "merged"}}
+          "params" => %{"name" => "set_status", "arguments" => %{"status" => "merged", "expected_status" => "ready_for_human_merge"}}
         },
         repo: repo,
         session: session

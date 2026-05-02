@@ -102,9 +102,12 @@ Phase 3
 - [x] Run fresh full-diff T2 on pushed head `941170e` and close valid findings gate.
 - [x] Fix twenty-first T2 readiness, latest-review, compatibility, worker-session, and finding-normalization findings locally.
 - [x] Commit and push twenty-first T2 fixes.
+- [x] Run fresh full-diff T2 on pushed head `4dbed4f` and close valid findings gate.
+- [x] Fix twenty-second T2 worker-resource, expected-status, and blocker-normalization findings locally.
+- [ ] Commit and push twenty-second T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** twenty-first T2 fixes committed and pushed; pending fresh full-diff T2 rerun.
+- **Status:** twenty-second T2 fixes implemented locally with validation green; pending commit/push and T2 rerun.
 
 ### High-Pressure Coherence Review
 
@@ -112,6 +115,8 @@ Phase 3
 - The latest T2 findings are converging to narrow contract/idempotency hardening, not a design or scope problem, so continuing the mandated T2/GitHub loop is appropriate.
 - Before the next same-tier T2, the core approach is still right because the new fix set keeps the existing worker MCP architecture and only tightens policy evidence, session authorization, latest-review semantics, and retry normalization.
 - The current findings remain small edge-case hardening against the same P3-002 API surface rather than evidence of a broader design split, so continuing one more full-diff T2 is still coherent.
+- Before the next T2, the approach remains coherent because the latest fixes only extend the same worker-scoped authorization/idempotency/readiness contract to resource reads, lifecycle races, and blocker retries.
+- Findings are still converging as narrow edge-case hardening around the worker MCP API rather than broad architecture churn.
 
 ## Boundaries
 

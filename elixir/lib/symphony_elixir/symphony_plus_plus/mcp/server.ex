@@ -350,8 +350,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp dispatch("resources/read", %{"uri" => @assignment_resource}, %__MODULE__{config: config, session: session}) do
-    case Auth.require_session(session, config.repo) do
-      {:ok, session} -> {:ok, json_resource(@assignment_resource, Session.public_assignment(session))}
+    with {:ok, session} <- Auth.require_session(session, config.repo),
+         :ok <- require_worker_assignment(session.assignment) do
+      {:ok, json_resource(@assignment_resource, Session.public_assignment(session))}
+    else
+      {:error, :worker_grant_required} -> auth_error({:unauthorized, :worker_grant_required}, @assignment_resource)
       {:error, reason} -> auth_error(reason, @assignment_resource)
     end
   end
@@ -363,8 +366,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case work_package_resource_id(rest) do
       {:ok, work_package_id, file_name} ->
         case Auth.require_work_package(session, work_package_id, config.repo) do
-          {:ok, _session} ->
-            read_virtual_resource(config.repo, work_package_id, file_name, uri)
+          {:ok, session} ->
+            read_worker_virtual_resource(config.repo, session, work_package_id, file_name, uri)
 
           {:error, reason} ->
             auth_error(reason, uri)
@@ -476,7 +479,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool_input_schema("set_status") do
-    schema(scoped_properties(%{"status" => string_schema()}), ["status"])
+    schema(scoped_properties(%{"status" => string_schema(), "expected_status" => string_schema(), "reason" => nullable_string_schema()}), [
+      "status",
+      "expected_status"
+    ])
   end
 
   defp worker_tool_input_schema("attach_branch") do
@@ -567,17 +573,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp assignment_resources(%Session{} = session, repo) do
     case Auth.require_session(session, repo) do
-      {:ok, %Session{}} ->
-        work_package_id = Session.work_package_id(session)
-
-        {:ok,
-         [
-           %{
-             "uri" => @assignment_resource,
-             "name" => "Current Symphony++ assignment",
-             "mimeType" => "application/json"
-           }
-         ] ++ work_package_resources(work_package_id)}
+      {:ok, %Session{} = session} ->
+        assignment_resources_for_worker(session)
 
       {:error, {:service_unavailable, reason}} ->
         service_error(reason, @assignment_resource)
@@ -588,6 +585,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp assignment_resources(_session, _repo), do: {:ok, []}
+
+  defp assignment_resources_for_worker(%Session{} = session) do
+    case require_worker_assignment(session.assignment) do
+      :ok -> listed_assignment_resources(session)
+      {:error, _reason} -> {:ok, []}
+    end
+  end
+
+  defp listed_assignment_resources(%Session{} = session) do
+    work_package_id = Session.work_package_id(session)
+
+    {:ok,
+     [
+       %{
+         "uri" => @assignment_resource,
+         "name" => "Current Symphony++ assignment",
+         "mimeType" => "application/json"
+       }
+     ] ++ work_package_resources(work_package_id)}
+  end
 
   defp work_package_resources(work_package_id) do
     Enum.map(PlanningRenderer.virtual_files(), fn file_name ->
@@ -607,6 +624,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       end
     else
       {:error, -32_601, "Method not found", %{"resource" => uri, "reason" => "unknown_virtual_file"}}
+    end
+  end
+
+  defp read_worker_virtual_resource(repo, %Session{} = session, work_package_id, file_name, uri) do
+    case require_worker_assignment(session.assignment) do
+      :ok -> read_virtual_resource(repo, work_package_id, file_name, uri)
+      {:error, reason} -> auth_error({:unauthorized, reason}, uri)
     end
   end
 
@@ -737,7 +761,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp worker_tool("set_status", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
          {:ok, status} <- required_argument(arguments, "status"),
+         {:ok, expected_status} <- required_argument(arguments, "expected_status"),
          :ok <- reject_ready_status(status),
+         {:ok, state} <- PlanningRepository.get_state(config.repo, Session.work_package_id(session)),
+         :ok <- require_expected_status(state.work_package, expected_status),
          {:ok, work_package} <-
            LifecycleService.transition(config.repo, Session.work_package_id(session), status, actor(session)) do
       {:ok, tool_result(%{"work_package" => work_package_payload(work_package)})}
@@ -854,8 +881,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp reject_ready_status(_status), do: :ok
 
+  defp require_expected_status(%WorkPackage{status: expected_status}, expected_status), do: :ok
+  defp require_expected_status(%WorkPackage{}, _expected_status), do: {:tool_error, "stale_status"}
+
   defp read_current_virtual_file(repo, session, file_name) do
     with {:ok, session} <- Auth.require_session(session, repo),
+         :ok <- require_worker_assignment(session.assignment),
          {:ok, markdown} <- PlanningRenderer.render(repo, Session.work_package_id(session), file_name) do
       {:ok, tool_result(%{"uri" => "sympp://work-packages/#{Session.work_package_id(session)}/#{file_name}", "text" => markdown})}
     else
@@ -873,6 +904,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp read_task_plan_file(repo, session) do
     with {:ok, session} <- Auth.require_session(session, repo),
+         :ok <- require_worker_assignment(session.assignment),
          work_package_id = Session.work_package_id(session),
          {:ok, state} <- PlanningRepository.get_state(repo, work_package_id),
          {:ok, markdown} <- PlanningRenderer.render_state(state, "task_plan.md") do
@@ -1502,7 +1534,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp blocker_event?(%ProgressEvent{}), do: false
 
   defp blocker_id(%ProgressEvent{payload: payload, idempotency_key: idempotency_key, id: id}) do
-    Map.get(payload || %{}, "blocker_id") || idempotency_key || id
+    blocker_id = Map.get(payload || %{}, "blocker_id")
+    normalize_blocker_id(blocker_id || idempotency_key || id)
   end
 
   defp incomplete_plan?(plan_nodes), do: Enum.any?(plan_nodes, &(&1.status == "pending"))
@@ -1674,11 +1707,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     default = Map.get(arguments, "idempotency_key")
 
     case Map.get(arguments, "blocker_id") do
-      value when is_binary(value) -> {:ok, if(String.trim(value) == "", do: default, else: value)}
-      nil -> {:ok, default}
+      value when is_binary(value) -> {:ok, if(String.trim(value) == "", do: normalize_blocker_id(default), else: String.trim(value))}
+      nil -> {:ok, normalize_blocker_id(default)}
       _value -> {:error, :invalid_blocker_id}
     end
   end
+
+  defp normalize_blocker_id(value) when is_binary(value), do: String.trim(value)
+  defp normalize_blocker_id(value), do: value
 
   defp optional_payload(arguments) do
     case Map.get(arguments, "payload", %{}) do
