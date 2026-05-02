@@ -517,7 +517,8 @@ defmodule SymphonyElixir.Orchestrator do
       |> terminate_running_issue(issue_id, false)
       |> schedule_issue_retry(issue_id, next_attempt, %{
         identifier: identifier,
-        error: "stalled for #{elapsed_ms}ms without codex activity"
+        error: "stalled for #{elapsed_ms}ms without codex activity",
+        agent_run_id: Map.get(running_entry, :agent_run_id)
       })
     else
       record_agent_run_heartbeat(Map.get(running_entry, :agent_run_id), %{})
@@ -740,6 +741,7 @@ defmodule SymphonyElixir.Orchestrator do
            attempt: attempt,
            worker_host: worker_host,
            replace_agent_run_id: Keyword.get(opts, :replace_agent_run_id),
+           recover_retrying: is_nil(Keyword.get(opts, :replace_agent_run_id)),
            stale_after_ms: agent_run_stale_after_ms()
          ) do
       {:ok, agent_run} ->

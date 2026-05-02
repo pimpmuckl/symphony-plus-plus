@@ -105,7 +105,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
       case insert_run(repo, attrs) do
         {:error, :active_run_exists} ->
           repo
-          |> release_stale_active_run(work_package_id, Keyword.get(opts, :stale_after_ms))
+          |> release_retrying_reservation(work_package_id, Keyword.get(opts, :recover_retrying, false))
+          |> maybe_release_stale_active_run(repo, work_package_id, Keyword.get(opts, :stale_after_ms))
           |> maybe_insert_after_stale_release(repo, attrs)
 
         result ->
@@ -153,45 +154,77 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
 
   defp release_previous_attempt(_repo, _previous_agent_run_id, _work_package_id), do: :ok
 
+  defp release_retrying_reservation(repo, work_package_id, true) when is_binary(work_package_id) do
+    now = DateTime.utc_now(:microsecond)
+
+    {updated_count, _rows} =
+      repo.update_all(
+        from(agent_run in AgentRun,
+          where: agent_run.work_package_id == ^work_package_id,
+          where: agent_run.status == "retrying"
+        ),
+        set: [
+          status: "failed",
+          reason: "retry reservation recovered by dispatch",
+          last_seen_at: now,
+          finished_at: now,
+          updated_at: now
+        ]
+      )
+
+    case updated_count do
+      0 -> {:ok, :active}
+      1 -> {:ok, :released}
+      _count -> {:error, {:constraint_failed, "multiple_retrying_agent_runs"}}
+    end
+  end
+
+  defp release_retrying_reservation(_repo, _work_package_id, _recover_retrying), do: {:ok, :active}
+
+  defp maybe_release_stale_active_run({:ok, :released}, _repo, _work_package_id, _stale_after_ms), do: {:ok, :released}
+
+  defp maybe_release_stale_active_run({:ok, :active}, repo, work_package_id, stale_after_ms) do
+    release_stale_active_run(repo, work_package_id, stale_after_ms)
+  end
+
+  defp maybe_release_stale_active_run({:error, reason}, _repo, _work_package_id, _stale_after_ms), do: {:error, reason}
+
   defp release_stale_active_run(_repo, _work_package_id, stale_after_ms)
        when not is_integer(stale_after_ms) or stale_after_ms <= 0,
        do: {:ok, :active}
 
   defp release_stale_active_run(repo, work_package_id, stale_after_ms) when is_binary(work_package_id) do
-    case active_for_work_package(repo, work_package_id) do
-      {:ok, %AgentRun{} = agent_run} -> release_stale_agent_run(repo, agent_run, stale_after_ms)
-      {:error, :not_found} -> {:ok, :released}
-      {:error, reason} -> {:error, reason}
+    now = DateTime.utc_now(:microsecond)
+    stale_cutoff = DateTime.add(now, -stale_after_ms, :millisecond)
+
+    {updated_count, _rows} =
+      repo.update_all(
+        from(agent_run in AgentRun,
+          where: agent_run.work_package_id == ^work_package_id,
+          where: agent_run.status in ^AgentRun.active_statuses(),
+          where: agent_run.last_seen_at <= ^stale_cutoff
+        ),
+        set: [
+          status: "failed",
+          reason: "stale active AgentRun released before dispatch",
+          last_seen_at: now,
+          finished_at: now,
+          updated_at: now
+        ]
+      )
+
+    case updated_count do
+      0 -> {:ok, :active}
+      1 -> {:ok, :released}
+      _count -> {:error, {:constraint_failed, "multiple_active_agent_runs"}}
     end
   end
 
   defp release_stale_active_run(_repo, _work_package_id, _stale_after_ms), do: {:ok, :active}
 
-  defp release_stale_agent_run(repo, %AgentRun{} = agent_run, stale_after_ms) do
-    if stale_agent_run?(agent_run, stale_after_ms) do
-      mark_stale_agent_run_failed(repo, agent_run)
-    else
-      {:ok, :active}
-    end
-  end
-
-  defp mark_stale_agent_run_failed(repo, %AgentRun{} = agent_run) do
-    case mark_failed(repo, agent_run.id, "stale active AgentRun released before dispatch") do
-      {:ok, _agent_run} -> {:ok, :released}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
   defp maybe_insert_after_stale_release({:ok, :released}, repo, attrs), do: insert_run(repo, attrs)
   defp maybe_insert_after_stale_release({:ok, :active}, _repo, _attrs), do: {:error, :active_run_exists}
   defp maybe_insert_after_stale_release({:error, reason}, _repo, _attrs), do: {:error, reason}
-
-  defp stale_agent_run?(%AgentRun{last_seen_at: %DateTime{} = last_seen_at}, stale_after_ms) do
-    stale_cutoff = DateTime.add(DateTime.utc_now(:microsecond), -stale_after_ms, :millisecond)
-    DateTime.compare(last_seen_at, stale_cutoff) in [:lt, :eq]
-  end
-
-  defp stale_agent_run?(_agent_run, _stale_after_ms), do: false
 
   defp work_package_id(attrs), do: Map.get(attrs, :work_package_id) || Map.get(attrs, "work_package_id")
 
