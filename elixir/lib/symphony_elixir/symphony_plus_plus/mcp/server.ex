@@ -2,7 +2,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @moduledoc false
 
   alias Ecto.Adapters.SQL
-  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
@@ -584,7 +583,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, secret} <- required_argument(arguments, "secret"),
          claimed_by <- optional_argument(arguments, "claimed_by", "worker"),
          proof_hash = WorkKey.secret_hash(secret),
-         {:ok, session} <- claim_or_recover_session(config.repo, secret, claimed_by, proof_hash) do
+         {:ok, assignment} <- AccessGrantService.claim(config.repo, secret, claimed_by: claimed_by) do
+      session = Session.new(assignment, proof_hash: proof_hash)
       {:ok, %{"assignment" => Session.public_assignment(session)}, session}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "claim_work_key", "reason" => reason}}
@@ -592,20 +592,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   rescue
     _error -> {:error, -32_000, "Server error", %{"tool" => "claim_work_key", "reason" => "ledger_unavailable"}}
-  end
-
-  defp claim_or_recover_session(repo, secret, claimed_by, proof_hash) do
-    case AccessGrantService.claim(repo, secret, claimed_by: claimed_by) do
-      {:ok, assignment} -> {:ok, Session.new(assignment, proof_hash: proof_hash)}
-      {:error, :already_claimed} -> recover_claimed_session(repo, proof_hash)
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp recover_claimed_session(repo, proof_hash) do
-    with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, proof_hash) do
-      Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash)
-    end
   end
 
   defp worker_tool("get_current_assignment", _arguments, %__MODULE__{config: config, session: session}) do
@@ -722,7 +708,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool("submit_review_package", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- Auth.require_session(session, config.repo),
+    with {:ok, session} <- scoped_session(config.repo, session, arguments),
          {:ok, summary} <- required_argument(arguments, "summary"),
          {:ok, tests} <- required_list(arguments, "tests"),
          {:ok, artifacts} <- required_string_list(arguments, "artifacts"),
@@ -1045,28 +1031,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     case PlanningRepository.list_artifacts(repo, work_package_id) do
       {:ok, existing_artifacts} ->
-        append_review_artifacts(repo, session, work_package_id, existing_artifacts, head_sha, artifacts)
+        append_review_artifacts(repo, work_package_id, existing_artifacts, head_sha, artifacts)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp append_review_artifacts(repo, %Session{} = session, work_package_id, existing_artifacts, head_sha, artifacts) do
+  defp append_review_artifacts(repo, work_package_id, existing_artifacts, head_sha, artifacts) do
     Enum.reduce_while(artifacts, :ok, fn artifact, :ok ->
-      case append_review_artifact(repo, session, work_package_id, existing_artifacts, head_sha, artifact) do
+      case append_review_artifact(repo, work_package_id, existing_artifacts, head_sha, artifact) do
         :ok -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
   end
 
-  defp append_review_artifact(repo, %Session{} = session, work_package_id, existing_artifacts, head_sha, artifact) do
-    if persisted_review_artifact?(existing_artifacts, artifact) do
+  defp append_review_artifact(repo, work_package_id, existing_artifacts, head_sha, artifact) do
+    if persisted_review_artifact?(existing_artifacts, work_package_id, head_sha, artifact) do
       :ok
     else
       attrs = %{
-        "id" => review_artifact_id(session, head_sha, artifact),
+        "id" => review_artifact_id(work_package_id, head_sha, artifact),
         "work_package_id" => work_package_id,
         "path" => artifact,
         "title" => artifact,
@@ -1081,8 +1067,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp review_artifact_id(%Session{} = session, head_sha, artifact) do
-    material = [Session.work_package_id(session), head_sha || "no-head", artifact] |> Enum.join(":")
+  defp review_artifact_id(work_package_id, head_sha, artifact) do
+    material = [work_package_id, head_sha || "no-head", artifact] |> Enum.join(":")
     "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
@@ -1108,7 +1094,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       |> maybe_missing(review_required? and not metadata_present?(state.progress_events, "branch"), "branch_attached")
       |> maybe_missing(pr_required?(state.work_package) and not metadata_present?(state.progress_events, "pr"), "pr_attached")
       |> maybe_missing(review_required? and not metadata_present?(state.progress_events, "review_package"), "review_package_submitted")
-      |> maybe_missing(review_required? and not review_artifacts_present?(state.progress_events, state.artifacts), "review_artifacts_attached")
+      |> maybe_missing(
+        review_required? and not review_artifacts_present?(state.progress_events, state.artifacts, state.work_package.id),
+        "review_artifacts_attached"
+      )
       |> maybe_missing(review_required? and not review_lanes_present?(state.progress_events, required_review_lanes), "review_lanes_complete")
       |> maybe_missing(state.work_package.kind == "investigation" and state.findings == [], "findings_documented")
       |> maybe_missing(state.work_package.kind == "investigation" and not recommendation_recorded?(state.progress_events), "recommendation_recorded")
@@ -1138,13 +1127,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end)
   end
 
-  defp review_artifacts_present?(progress_events, artifacts) do
+  defp review_artifacts_present?(progress_events, artifacts, work_package_id) do
     current_head_sha = latest_pr_head_sha(progress_events)
 
     progress_events
     |> Enum.filter(&payload_type?(&1, "review_package", "submit_review_package"))
     |> Enum.flat_map(&review_package_artifact_paths(&1, current_head_sha))
-    |> Enum.any?(&persisted_review_artifact?(artifacts, &1))
+    |> Enum.any?(&persisted_review_artifact?(artifacts, work_package_id, current_head_sha, &1))
   end
 
   defp review_package_artifact_paths(%ProgressEvent{payload: payload}, current_head_sha) when is_map(payload) do
@@ -1159,8 +1148,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp review_package_artifact_paths(%ProgressEvent{}, _current_head_sha), do: []
 
-  defp persisted_review_artifact?(artifacts, path) do
-    Enum.any?(artifacts, &(&1.kind == "review" and &1.path == path))
+  defp persisted_review_artifact?(artifacts, work_package_id, head_sha, path) do
+    expected_id = review_artifact_id(work_package_id, head_sha, path)
+    Enum.any?(artifacts, &(&1.id == expected_id and &1.kind == "review" and &1.path == path))
   end
 
   defp review_package_reviews(%ProgressEvent{payload: payload}, current_head_sha) when is_map(payload) do

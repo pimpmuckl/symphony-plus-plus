@@ -66,10 +66,13 @@ Phase 3
 - [x] Commit ninth T2 fixes.
 - [x] Run fresh full-diff T2 on `849ce9e` and close valid findings gate.
 - [x] Fix tenth T2 review-package atomicity, blank artifact, schema, stale-head, and persisted-artifact readiness findings locally.
-- [ ] Commit and push tenth T2 fixes.
+- [x] Commit tenth T2 fixes.
+- [x] Run fresh full-diff T2 on `83c372a` and close valid findings gate.
+- [x] Fix eleventh T2 one-time claim, review artifact per-head, and review-package scope findings locally.
+- [ ] Commit and push eleventh T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** tenth T2 fixes implemented locally with validation green; pending commit/push and T2 rerun.
+- **Status:** eleventh T2 fixes implemented locally with validation green; pending commit/push and T2 rerun.
 
 ## Boundaries
 

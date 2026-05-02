@@ -710,8 +710,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         server
       )
 
-    assert get_in(retry_claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-P3-002"
-    assert retry_claimed_server.session.assignment.grant_id == claimed_server.session.assignment.grant_id
+    assert get_in(retry_claim_response, ["error", "code"]) == -32_001
+    assert get_in(retry_claim_response, ["error", "data", "reason"]) == "already_claimed"
+    assert retry_claimed_server.session == nil
 
     assignment_response =
       Server.handle(
@@ -1263,6 +1264,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(malformed_reviews_response, ["error", "data", "reason"]) == "invalid_reviews"
+
+    sibling_review_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "sibling-review-package",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "submit_review_package",
+            "arguments" => %{
+              "work_package_id" => "SYMPP-OTHER",
+              "summary" => "Wrong package",
+              "tests" => ["mix test"],
+              "artifacts" => ["review-log.txt"],
+              "head_sha" => "abc123",
+              "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(sibling_review_response, ["error", "data", "reason"]) == "outside_session_scope"
 
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Ready",

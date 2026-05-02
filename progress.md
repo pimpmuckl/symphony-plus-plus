@@ -256,3 +256,23 @@
 ### Next Steps
 
 - Commit and push tenth T2 fixes, rerun T2, then proceed to GitHub review if clean.
+
+### Eighth T2 Follow-up Actions
+
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T200742Z-797c616f`; closed it as `findings`.
+- Fixed valid T2 findings by restoring one-time work-key claim semantics, making review artifact persistence/readiness PR-head specific, and enforcing the scoped `work_package_id` guard for `submit_review_package`.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after eleventh T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 52 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 246 tests, 0 failures. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit and push eleventh T2 fixes, rerun T2, then proceed to GitHub review if clean.
