@@ -157,7 +157,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
     assert {:ok, retrying} = Service.mark_retrying(repo, run.id, "worker exited")
     assert retrying.status == "retrying"
     assert retrying.reason == "worker exited"
-    assert %DateTime{} = retrying.finished_at
+    assert retrying.finished_at == nil
 
     assert {:error, :active_run_exists} = Service.start_dispatch(repo, issue(work_package.id), attempt: 1)
 

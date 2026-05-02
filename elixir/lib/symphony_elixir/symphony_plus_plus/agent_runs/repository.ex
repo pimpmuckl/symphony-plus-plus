@@ -77,7 +77,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
   end
 
   @spec mark_retrying(repo(), String.t(), String.t() | nil) :: {:ok, AgentRun.t()} | {:error, error()}
-  def mark_retrying(repo, id, reason \\ nil), do: update_terminal_status(repo, id, "retrying", reason)
+  def mark_retrying(repo, id, reason \\ nil), do: update_active_status(repo, id, "retrying", reason)
 
   @spec mark_running(repo(), String.t(), String.t() | nil) :: {:ok, AgentRun.t()} | {:error, error()}
   def mark_running(repo, id, reason \\ nil), do: update_active_status(repo, id, "running", reason)

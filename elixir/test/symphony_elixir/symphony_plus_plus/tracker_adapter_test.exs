@@ -1378,6 +1378,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert Orchestrator.dispatch_filters_allow_issue_for_test(running_state, repo_mismatch_issue, nil, "worker-a")
   end
 
+  test "orchestrator claims issue until retry when AgentRun creation fails", %{repo: repo} do
+    assert {:ok, work_package} =
+             Repository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-FAILED-AGENTRUN-CLAIM", kind: "adapter", status: "ready_for_worker")
+             )
+
+    assert {:ok, other_work_package} =
+             Repository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-OTHER-AGENTRUN-CLAIM", kind: "adapter", status: "ready_for_worker")
+             )
+
+    assert {:ok, work_package_grant} = AccessGrantService.mint_worker_grant(repo, work_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, work_package_grant.work_key.secret, claimed_by: "agent-1")
+
+    assert {:ok, [issue]} = Tracker.fetch_issue_states_by_ids([work_package.id])
+    assert {:ok, [other_issue]} = Tracker.fetch_issue_states_by_ids([other_work_package.id])
+    assert {:ok, other_run} = Tracker.start_agent_run(other_issue, status: "starting")
+
+    state = %Orchestrator.State{max_concurrent_agents: 1, running: %{}, claimed: MapSet.new(), retry_attempts: %{}}
+
+    next_state = Orchestrator.dispatch_issue_for_test(state, issue, 1, nil, replace_agent_run_id: other_run.id)
+
+    assert MapSet.member?(next_state.claimed, issue.id)
+    assert %{attempt: 2, error: error} = next_state.retry_attempts[issue.id]
+    assert error =~ "failed to create AgentRun"
+  end
+
   test "fetches packages by explicit states and ids", %{repo: repo} do
     assert {:ok, ready} =
              Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-READY", kind: "adapter", status: "ready_for_worker"))

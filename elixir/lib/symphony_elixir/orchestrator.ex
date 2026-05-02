@@ -359,6 +359,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
+  @spec dispatch_issue_for_test(term(), Issue.t(), term(), String.t() | nil, keyword()) :: term()
+  def dispatch_issue_for_test(%State{} = state, %Issue{} = issue, attempt, preferred_worker_host, opts) when is_list(opts) do
+    dispatch_issue(state, issue, attempt, preferred_worker_host, opts)
+  end
+
+  @doc false
   @spec workflow_config_error_message_for_test(term()) :: String.t() | nil
   def workflow_config_error_message_for_test(reason), do: workflow_config_error_message(reason)
 
@@ -785,11 +791,13 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.warning("Skipping dispatch; failed to create AgentRun for #{issue_context(issue)}: #{inspect(reason)}")
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
-        schedule_issue_retry(state, issue.id, next_attempt, %{
+        state
+        |> schedule_issue_retry(issue.id, next_attempt, %{
           identifier: issue.identifier,
           error: "failed to create AgentRun: #{inspect(reason)}",
           worker_host: worker_host
         })
+        |> claim_issue(issue.id)
     end
   end
 
