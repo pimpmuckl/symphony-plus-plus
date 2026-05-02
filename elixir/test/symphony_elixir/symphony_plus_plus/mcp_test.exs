@@ -810,6 +810,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert is_list(get_in(tools_response, ["result", "tools"]))
   end
 
+  test "response-only handle uses a stable default state key for recreated servers", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STATELESS-HANDLE", kind: "mcp", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    init_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()},
+        Server.new(Config.default(repo: repo))
+      )
+
+    claim_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo))
+      )
+
+    assignment_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "assignment", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        Server.new(Config.default(repo: repo))
+      )
+
+    assert get_in(init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-STATELESS-HANDLE"
+    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-STATELESS-HANDLE"
+  end
+
   test "response-only handle does not retain unchanged one-shot server state", %{repo: repo} do
     server = Server.new(Config.default(repo: repo), initialized: true)
     Process.delete({Server, server.state_key})
@@ -931,6 +963,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-WORKER-CLAIM"
+
+    reconnect_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-reconnect",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => worker_minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true, state_key: make_ref())
+      )
+
+    assert get_in(reconnect_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-WORKER-CLAIM"
+
+    duplicate_owner_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-reconnect-other-owner",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => worker_minted.work_key.secret, "claimed_by" => "worker-2"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true, state_key: make_ref())
+      )
+
+    assert get_in(duplicate_owner_response, ["error", "data", "reason"]) == "already_claimed"
+
     assert {:ok, _grant} = AccessGrantService.revoke(repo, worker_minted.grant.id)
 
     {replay_response, replay_server} =
@@ -1124,7 +1183,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
-    assert get_in(explicit_finding_replay_response, ["result", "structuredContent", "finding", "id"]) == "custom-finding-id"
+    assert get_in(explicit_finding_replay_response, ["error", "data", "reason"]) == "idempotency_conflict"
+
+    matching_explicit_finding_replay_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "finding-explicit-id-matching-replay",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_finding",
+            "arguments" => %{"id" => "custom-finding-id", "title" => "Explicit", "body" => "Caller supplied id", "idempotency_key" => "finding-explicit"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(matching_explicit_finding_replay_response, ["result", "structuredContent", "finding", "id"]) == "custom-finding-id"
 
     explicit_finding_id_conflict_response =
       MCPHarness.request(
@@ -2004,6 +2080,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+  end
+
+  test "mark_ready does not require review-package metadata for non-merge-gated policies", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-READY-QUICK-FIX", kind: "quick_fix", status: "ci_waiting"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-quick-fix", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    missing = get_in(response, ["error", "data", "missing"])
+    assert get_in(response, ["error", "data", "reason"]) == "readiness_failed"
+    refute "review_package_submitted" in missing
   end
 
   test "investigation readiness does not require branch or review package", %{repo: repo} do

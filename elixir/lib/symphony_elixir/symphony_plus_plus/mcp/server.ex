@@ -35,11 +35,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   ]
   @version_resource "sympp://health/version"
   @assignment_resource "sympp://assignment/current"
+  @finding_replay_retry_attempts 50
 
   @enforce_keys [:config]
   defstruct [:config, :session, :state_key, initialized: false]
 
-  @type t :: %__MODULE__{config: Config.t(), session: Session.t() | nil, state_key: reference(), initialized: boolean()}
+  @type t :: %__MODULE__{config: Config.t(), session: Session.t() | nil, state_key: term(), initialized: boolean()}
 
   defguardp valid_request_id(id) when is_binary(id) or is_number(id) or is_nil(id)
   defguardp invalid_request_id(id) when not is_binary(id) and not is_number(id) and not is_nil(id)
@@ -49,7 +50,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     %__MODULE__{
       config: config,
       session: Keyword.get(opts, :session),
-      state_key: Keyword.get(opts, :state_key, make_ref()),
+      state_key: Keyword.get_lazy(opts, :state_key, fn -> default_state_key(config) end),
       initialized: Keyword.get(opts, :initialized, false)
     }
   end
@@ -130,6 +131,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp handle_state_key(%__MODULE__{state_key: state_key}), do: {__MODULE__, state_key}
+  defp default_state_key(%Config{} = config), do: {:default, config.repo}
 
   defp do_handle([], %__MODULE__{}) do
     error_response(nil, -32_600, "Invalid Request", %{"reason" => "empty_batch"})
@@ -696,20 +698,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         end
 
       {:error, :already_claimed} ->
-        reconnect_claimed_worker_session(repo, proof_hash)
+        reconnect_claimed_worker_session(repo, proof_hash, claimed_by)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp reconnect_claimed_worker_session(repo, proof_hash) do
+  defp reconnect_claimed_worker_session(repo, proof_hash, claimed_by) do
     with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, proof_hash),
+         :ok <- require_same_claim_owner(grant, claimed_by),
          {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash),
          :ok <- require_worker_assignment(session.assignment) do
       {:ok, session}
     end
   end
+
+  defp require_same_claim_owner(%{claimed_by: claimed_by}, claimed_by), do: :ok
+  defp require_same_claim_owner(_grant, _claimed_by), do: {:error, :already_claimed}
 
   defp require_worker_secret(repo, secret) do
     if String.length(secret) == 4 do
@@ -1134,19 +1140,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         {:ok, finding}
 
       {:error, :id_already_exists} ->
-        repo
-        |> PlanningRepository.list_findings(work_package_id)
-        |> find_existing_finding(finding_id, attrs)
+        find_existing_finding_with_retry(repo, work_package_id, finding_id, attrs, finding_replay_retry_attempts())
 
       {:error, :idempotency_key_conflict} ->
-        repo
-        |> PlanningRepository.list_findings(work_package_id)
-        |> find_existing_finding_by_idempotency(attrs)
+        find_existing_finding_by_idempotency_with_retry(repo, work_package_id, attrs, finding_replay_retry_attempts())
 
       {:error, reason} ->
         {:error, reason}
     end
   end
+
+  defp find_existing_finding_with_retry(repo, work_package_id, finding_id, attrs, attempts_left) do
+    retry_fun = fn ->
+      find_existing_finding_with_retry(repo, work_package_id, finding_id, attrs, attempts_left - 1)
+    end
+
+    repo
+    |> PlanningRepository.list_findings(work_package_id)
+    |> find_existing_finding(finding_id, attrs)
+    |> retry_missing_finding(retry_fun, attempts_left)
+  end
+
+  defp find_existing_finding_by_idempotency_with_retry(repo, work_package_id, attrs, attempts_left) do
+    retry_fun = fn ->
+      find_existing_finding_by_idempotency_with_retry(repo, work_package_id, attrs, attempts_left - 1)
+    end
+
+    repo
+    |> PlanningRepository.list_findings(work_package_id)
+    |> find_existing_finding_by_idempotency(attrs)
+    |> retry_missing_finding(retry_fun, attempts_left)
+  end
+
+  defp retry_missing_finding({:error, :id_already_exists}, retry_fun, attempts_left) when attempts_left > 0 do
+    Process.sleep(5)
+    retry_fun.()
+  end
+
+  defp retry_missing_finding(result, _retry_fun, _attempts_left), do: result
 
   defp find_existing_finding({:ok, findings}, finding_id, attrs) do
     case Enum.find(findings, &(&1.id == finding_id)) do
@@ -1178,8 +1209,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp idempotent_finding_result(finding, attrs) do
-    expected = Map.take(attrs, ["title", "body", "severity"])
-    actual = %{"title" => finding.title, "body" => finding.body, "severity" => finding.severity}
+    expected = Map.take(attrs, ["id", "title", "body", "severity"])
+    actual = %{"id" => finding.id, "title" => finding.title, "body" => finding.body, "severity" => finding.severity}
 
     if expected == actual do
       {:ok, finding}
@@ -1199,6 +1230,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp generated_finding_id(session, idempotency_key) do
     material = [session.assignment.work_package_id, session.assignment.grant_id, idempotency_key] |> Enum.join(":")
     "finding_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
+  end
+
+  defp finding_replay_retry_attempts do
+    :symphony_elixir
+    |> Application.get_env(:sympp_finding_replay_retry_attempts, @finding_replay_retry_attempts)
+    |> max(0)
   end
 
   defp append_scoped_progress(repo, session, arguments, tool, payload) do
@@ -1465,7 +1502,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp review_package_missing?(state, required_review_lanes) do
-    required_review_lanes != [] and not metadata_present?(state.progress_events, "review_package")
+    merge_required?(state.work_package) and required_review_lanes != [] and
+      not metadata_present?(state.progress_events, "review_package")
   end
 
   defp review_artifacts_missing?(state, required_review_lanes) do

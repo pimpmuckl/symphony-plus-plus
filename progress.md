@@ -578,3 +578,25 @@
 ### Next Steps
 
 - Pushed twenty-fifth T2 fix head `c42f794404fd4933290f44834a797db1c6bd1fbf`; rerun full-diff T2, then proceed to GitHub review if clean.
+
+### Twenty-Sixth T2 Follow-up Actions
+
+- Pushed planning head `28d456e08d225b8603e4c6aba2dc29ca8ef0309f` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T225037Z-493948ab`; closed it as `findings`.
+- Fixed valid findings by requiring same-owner `claimed_by` for already-claimed work-key reconnect, comparing explicit finding ids during idempotent replay, retrying finding replay lookup after unique-key conflicts, limiting the `review_package_submitted` readiness gate to merge-required policies, and giving recreated response-only servers a stable default state key.
+- High-pressure coherence check before the next same-tier T2: the full diff remains the P3-002 worker MCP tools/resources implementation plus focused support, and these findings continue to converge as small contract/race hardening rather than a design or scope break.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after twenty-sixth T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 61 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 256 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues after line splitting. |
+
+### Next Steps
+
+- Commit and push twenty-sixth T2 fixes, rerun full-diff T2, then proceed to GitHub review if clean.
