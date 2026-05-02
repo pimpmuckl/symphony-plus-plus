@@ -54,10 +54,13 @@ Phase 3
 - [x] Commit fifth T2 fixes.
 - [x] Run fresh full-diff T2 on `c9c036b` and close valid findings gate.
 - [x] Fix sixth T2 malformed patch, claim retry, investigation recommendation, and metadata idempotency findings locally.
-- [ ] Commit and push sixth T2 fixes.
+- [x] Commit sixth T2 fixes.
+- [x] Run fresh full-diff T2 on `27786b6` and close valid findings gate.
+- [x] Fix seventh T2 claim replay, package-scoped finding idempotency, no-op patch, recommendation artifact, and finding conflict findings locally.
+- [ ] Commit and push seventh T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** sixth T2 fixes implemented locally with focused validation green; pending commit/push and T2 rerun.
+- **Status:** seventh T2 fixes implemented locally with focused validation green; pending commit/push and T2 rerun.
 
 ## Boundaries
 

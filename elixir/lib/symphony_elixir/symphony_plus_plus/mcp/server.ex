@@ -2,6 +2,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @moduledoc false
 
   alias Ecto.Adapters.SQL
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
@@ -583,8 +584,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, secret} <- required_argument(arguments, "secret"),
          claimed_by <- optional_argument(arguments, "claimed_by", "worker"),
          proof_hash = WorkKey.secret_hash(secret),
-         {:ok, assignment} <- AccessGrantService.claim(config.repo, secret, claimed_by: claimed_by) do
-      session = Session.new(assignment, proof_hash: proof_hash)
+         {:ok, session} <- claim_or_recover_session(config.repo, secret, claimed_by, proof_hash) do
       {:ok, %{"assignment" => Session.public_assignment(session)}, session}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "claim_work_key", "reason" => reason}}
@@ -592,6 +592,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   rescue
     _error -> {:error, -32_000, "Server error", %{"tool" => "claim_work_key", "reason" => "ledger_unavailable"}}
+  end
+
+  defp claim_or_recover_session(repo, secret, claimed_by, proof_hash) do
+    case AccessGrantService.claim(repo, secret, claimed_by: claimed_by) do
+      {:ok, assignment} -> {:ok, Session.new(assignment, proof_hash: proof_hash)}
+      {:error, :already_claimed} -> recover_claimed_session(repo, proof_hash)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp recover_claimed_session(repo, proof_hash) do
+    with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, proof_hash) do
+      Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash)
+    end
   end
 
   defp worker_tool("get_current_assignment", _arguments, %__MODULE__{config: config, session: session}) do
@@ -868,11 +882,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp reverse_plan_patch_result({:error, reason}), do: {:error, reason}
 
   defp apply_plan_node_patch(repo, work_package_id, %{"id" => id} = attrs) when is_binary(id) do
+    updates = Map.take(attrs, ["title", "body", "status"])
+
     with {:ok, existing_nodes} <- PlanningRepository.list_plan_nodes(repo, work_package_id),
          %PlanNode{} <- Enum.find(existing_nodes, &(&1.id == id)) || {:error, :forbidden},
-         {:ok, plan_node} <- PlanningService.update_plan_node(repo, id, Map.take(attrs, ["title", "body", "status"])) do
+         :ok <- require_plan_node_updates(updates),
+         {:ok, plan_node} <- PlanningService.update_plan_node(repo, id, updates) do
       {:ok, plan_node}
     else
+      {:tool_error, reason} -> {:tool_error, reason}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -891,6 +909,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp apply_plan_node_patch(_repo, _work_package_id, _attrs), do: {:tool_error, "invalid_patch_node"}
+
+  defp require_plan_node_updates(updates) when map_size(updates) == 0, do: {:tool_error, "invalid_patch_node"}
+  defp require_plan_node_updates(_updates), do: :ok
 
   defp require_plan_version(plan_nodes, expected_version) do
     if plan_version(plan_nodes) == expected_version, do: :ok, else: {:tool_error, "stale_plan_version"}
@@ -912,24 +933,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, :id_already_exists} ->
         repo
         |> PlanningRepository.list_findings(work_package_id)
-        |> find_existing_finding(finding_id)
+        |> find_existing_finding(finding_id, attrs)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp find_existing_finding({:ok, findings}, finding_id) do
+  defp find_existing_finding({:ok, findings}, finding_id, attrs) do
     case Enum.find(findings, &(&1.id == finding_id)) do
-      %{} = finding -> {:ok, finding}
+      %{} = finding -> idempotent_finding_result(finding, attrs)
       nil -> {:error, :id_already_exists}
     end
   end
 
-  defp find_existing_finding({:error, reason}, _finding_id), do: {:error, reason}
+  defp find_existing_finding({:error, reason}, _finding_id, _attrs), do: {:error, reason}
+
+  defp idempotent_finding_result(finding, attrs) do
+    expected = Map.take(attrs, ["title", "body", "severity"])
+    actual = %{"title" => finding.title, "body" => finding.body, "severity" => finding.severity}
+
+    if expected == actual do
+      {:ok, finding}
+    else
+      {:tool_error, "idempotency_conflict"}
+    end
+  end
 
   defp finding_id(session, idempotency_key) do
-    material = [session.assignment.grant_id, session.assignment.work_package_id, idempotency_key] |> Enum.join(":")
+    material = [session.assignment.work_package_id, idempotency_key] |> Enum.join(":")
     "finding_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
@@ -1084,7 +1116,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp metadata_present?(progress_events, type), do: Enum.any?(progress_events, &payload_type?(&1, type, metadata_tool(type)))
 
-  defp recommendation_recorded?(progress_events), do: Enum.any?(progress_events, &payload_type?(&1, "scope_expansion_request", "request_scope_expansion"))
+  defp recommendation_recorded?(progress_events), do: Enum.any?(progress_events, &recommendation_event?/1)
+
+  defp recommendation_event?(%ProgressEvent{payload: payload}) when is_map(payload) do
+    Map.get(payload, "type") == "recommendation"
+  end
+
+  defp recommendation_event?(%ProgressEvent{}), do: false
 
   defp metadata_tool("branch"), do: "attach_branch"
   defp metadata_tool("pr"), do: "attach_pr"

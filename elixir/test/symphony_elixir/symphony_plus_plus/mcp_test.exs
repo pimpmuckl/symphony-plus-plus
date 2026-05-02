@@ -696,6 +696,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute inspect(claim_response) =~ minted.work_key.secret
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-P3-002"
 
+    {retry_claim_response, retry_claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-retry",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_work_key",
+            "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}
+          }
+        },
+        server
+      )
+
+    assert get_in(retry_claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-P3-002"
+    assert retry_claimed_server.session.assignment.grant_id == claimed_server.session.assignment.grant_id
+
     assignment_response =
       Server.handle(
         %{"jsonrpc" => "2.0", "id" => "assignment", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
@@ -814,6 +831,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(finding_replay_response, ["result", "structuredContent", "finding", "id"]) ==
              get_in(finding_response, ["result", "structuredContent", "finding", "id"])
+
+    assert {:ok, second_minted} = AccessGrantService.mint_worker_grant(repo, own_package.id)
+    assert {:ok, second_assignment} = AccessGrantService.claim(repo, second_minted.work_key.secret, claimed_by: "worker-2")
+    second_session = MCPHarness.session(second_assignment, proof_hash: second_minted.grant.secret_hash)
+
+    finding_regrant_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "finding-regrant",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_finding",
+            "arguments" => %{"title" => "Scoped", "body" => "Own package only", "idempotency_key" => "finding-scoped"}
+          }
+        },
+        repo: repo,
+        session: second_session
+      )
+
+    assert get_in(finding_regrant_response, ["result", "structuredContent", "finding", "id"]) ==
+             get_in(finding_response, ["result", "structuredContent", "finding", "id"])
+
+    conflicting_finding_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "finding-conflict",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_finding",
+            "arguments" => %{"title" => "Scoped", "body" => "Different body", "idempotency_key" => "finding-scoped"}
+          }
+        },
+        repo: repo,
+        session: second_session
+      )
+
+    assert get_in(conflicting_finding_response, ["error", "data", "reason"]) == "idempotency_conflict"
 
     progress_args = %{"summary" => "Progress", "idempotency_key" => "worker-progress-1", "body" => "Done"}
 
@@ -973,6 +1029,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(malformed_id_response, ["error", "data", "reason"]) == "invalid_patch_node"
     assert {:ok, unchanged_after_bad_id} = PlanningRepository.list_plan_nodes(repo, package.id)
     assert length(unchanged_after_bad_id) == 2
+
+    no_op_patch_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "no-op-patch-plan",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "update_task_plan",
+            "arguments" => %{"expected_version" => version, "patch" => %{"nodes" => [%{"id" => plan_node.id}]}}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(no_op_patch_response, ["error", "data", "reason"]) == "invalid_patch_node"
 
     patch_response =
       MCPHarness.request(
@@ -1237,10 +1310,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert "recommendation_recorded" in get_in(missing_recommendation_response, ["error", "data", "missing"])
 
-    attach_tool(repo, session, "request_scope_expansion", %{
+    attach_tool(repo, session, "append_progress", %{
       "summary" => "No scope expansion needed",
       "body" => "Recommendation recorded for the investigation package.",
-      "idempotency_key" => "investigation-recommendation"
+      "idempotency_key" => "investigation-recommendation",
+      "payload" => %{"type" => "recommendation", "recommendation" => "no_scope_expansion_needed"}
     })
 
     ready_response =
