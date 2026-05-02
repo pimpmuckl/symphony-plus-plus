@@ -722,18 +722,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool("submit_review_package", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, summary} <- required_argument(arguments, "summary"),
-         {:ok, tests} <- required_list(arguments, "tests") do
-      append_metadata_event(config.repo, session, arguments, "submit_review_package", "review_package_submitted", %{
-        "type" => "review_package",
-        "summary" => summary,
-        "tests" => tests,
-        "artifacts" => optional_list(arguments, "artifacts"),
-        "reviews" => optional_list(arguments, "reviews"),
-        "head_sha" => optional_argument(arguments, "head_sha", nil)
-      })
+    with {:ok, session} <- Auth.require_session(session, config.repo),
+         {:ok, summary} <- required_argument(arguments, "summary"),
+         {:ok, tests} <- required_list(arguments, "tests"),
+         {:ok, artifacts} <- required_string_list(arguments, "artifacts"),
+         {:ok, reviews} <- required_list(arguments, "reviews"),
+         {:ok, state} <- PlanningRepository.get_state(config.repo, Session.work_package_id(session)),
+         {:ok, head_sha} <- review_package_head_sha(arguments, state.progress_events),
+         {:ok, result} <-
+           append_metadata_event(config.repo, session, arguments, "submit_review_package", "review_package_submitted", %{
+             "type" => "review_package",
+             "summary" => summary,
+             "tests" => tests,
+             "artifacts" => artifacts,
+             "reviews" => reviews,
+             "head_sha" => head_sha
+           }),
+         :ok <- append_review_artifacts(config.repo, session, artifacts, head_sha) do
+      {:ok, result}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "submit_review_package", "reason" => reason}}
+      {:error, _code, _message, _data} = error -> error
+      {:error, reason} -> worker_error(reason, "submit_review_package")
     end
   end
 
@@ -780,7 +790,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- Auth.require_session(session, repo),
          work_package_id = Session.work_package_id(session),
          {:ok, state} <- PlanningRepository.get_state(repo, work_package_id),
-         {:ok, markdown} <- PlanningRenderer.render(repo, work_package_id, "task_plan.md") do
+         {:ok, markdown} <- PlanningRenderer.render_state(state, "task_plan.md") do
       {:ok,
        tool_result(%{
          "uri" => "sympp://work-packages/#{work_package_id}/task_plan.md",
@@ -995,6 +1005,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       |> Map.put("idempotency_key", metadata_idempotency_key(payload))
 
     append_scoped_progress(repo, session, arguments, tool, payload)
+  end
+
+  defp review_package_head_sha(arguments, progress_events) do
+    current_head_sha = latest_pr_head_sha(progress_events)
+
+    case optional_argument(arguments, "head_sha", nil) do
+      nil when is_binary(current_head_sha) -> {:tool_error, "missing_head_sha"}
+      head_sha -> {:ok, head_sha}
+    end
+  end
+
+  defp append_review_artifacts(repo, %Session{} = session, artifacts, head_sha) do
+    Enum.reduce_while(artifacts, :ok, fn artifact, :ok ->
+      attrs = %{
+        "id" => review_artifact_id(session, head_sha, artifact),
+        "work_package_id" => Session.work_package_id(session),
+        "path" => artifact,
+        "title" => artifact,
+        "kind" => "review",
+        "uri" => review_artifact_uri(artifact)
+      }
+
+      case PlanningService.append_artifact(repo, attrs) do
+        {:ok, _artifact} -> {:cont, :ok}
+        {:error, :id_already_exists} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp review_artifact_id(%Session{} = session, head_sha, artifact) do
+    material = [Session.work_package_id(session), head_sha || "no-head", artifact] |> Enum.join(":")
+    "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
+  end
+
+  defp review_artifact_uri(artifact) do
+    if String.contains?(artifact, "://"), do: artifact, else: nil
   end
 
   defp scoped_progress_idempotency_key(tool, idempotency_key, %Session{} = session) when tool in ["attach_branch", "attach_pr", "submit_review_package"] do
@@ -1212,14 +1259,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp required_list(arguments, key) do
     case Map.get(arguments, key) do
       [_head | _tail] = value -> {:ok, value}
-      _value -> {:tool_error, "missing_#{key}"}
+      nil -> {:tool_error, "missing_#{key}"}
+      [] -> {:tool_error, "missing_#{key}"}
+      _value -> {:tool_error, "invalid_#{key}"}
     end
   end
 
-  defp optional_list(arguments, key) do
-    case Map.get(arguments, key, []) do
-      value when is_list(value) -> value
-      _value -> []
+  defp required_string_list(arguments, key) do
+    with {:ok, values} <- required_list(arguments, key) do
+      if Enum.all?(values, &is_binary/1) do
+        {:ok, values}
+      else
+        {:tool_error, "invalid_#{key}"}
+      end
     end
   end
 

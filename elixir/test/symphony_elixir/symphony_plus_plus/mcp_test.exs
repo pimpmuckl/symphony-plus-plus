@@ -1139,7 +1139,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-GATES/worker", "idempotency_key" => "shared-metadata-key"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => "abc123"})
 
-    attach_tool(repo, session, "submit_review_package", %{"summary" => "Ready", "tests" => ["mix test", "review_t1 green", "review_t2 green"], "artifacts" => []})
+    headless_review_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "headless-review",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "submit_review_package",
+            "arguments" => %{
+              "summary" => "Headless review",
+              "tests" => ["mix test"],
+              "artifacts" => ["review-log.txt"],
+              "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(headless_review_response, ["error", "data", "reason"]) == "missing_head_sha"
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready",
+      "tests" => ["mix test", "review_t1 green", "review_t2 green"],
+      "artifacts" => ["review-log.txt"],
+      "head_sha" => "abc123",
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+    })
 
     missing_review_lanes_response =
       MCPHarness.request(
@@ -1153,7 +1181,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Malformed review",
       "tests" => ["mix test"],
-      "artifacts" => [],
+      "artifacts" => ["review-log.txt"],
       "head_sha" => "abc123",
       "reviews" => [%{"lane" => 1, "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => nil}]
     })
@@ -1167,22 +1195,51 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert "review_lanes_complete" in get_in(malformed_review_response, ["error", "data", "missing"])
 
-    attach_tool(repo, session, "submit_review_package", %{
-      "summary" => "Ready without artifacts",
-      "tests" => ["mix test"],
-      "artifacts" => [],
-      "head_sha" => "abc123",
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
-    })
-
     missing_artifacts_response =
       MCPHarness.request(
-        %{"jsonrpc" => "2.0", "id" => "ready-missing-artifacts", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "ready-missing-artifacts",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "submit_review_package",
+            "arguments" => %{
+              "summary" => "Ready without artifacts",
+              "tests" => ["mix test"],
+              "artifacts" => [],
+              "head_sha" => "abc123",
+              "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+            }
+          }
+        },
         repo: repo,
         session: session
       )
 
-    assert "review_artifacts_attached" in get_in(missing_artifacts_response, ["error", "data", "missing"])
+    assert get_in(missing_artifacts_response, ["error", "data", "reason"]) == "missing_artifacts"
+
+    malformed_reviews_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "malformed-reviews",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "submit_review_package",
+            "arguments" => %{
+              "summary" => "Malformed reviews",
+              "tests" => ["mix test"],
+              "artifacts" => ["review-log.txt"],
+              "head_sha" => "abc123",
+              "reviews" => %{"lane" => "review_t1", "verdict" => "green"}
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(malformed_reviews_response, ["error", "data", "reason"]) == "invalid_reviews"
 
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Ready",
@@ -1191,6 +1248,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "head_sha" => "abc123",
       "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
     })
+
+    handoff_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "handoff-with-review-artifact",
+          "method" => "resources/read",
+          "params" => %{"uri" => "sympp://work-packages/SYMPP-READY-GATES/handoff.md"}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(handoff_response, ["result", "contents", Access.at(0), "text"]) =~ "review-log.txt"
 
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => "def456"})
 

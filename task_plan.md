@@ -60,10 +60,13 @@ Phase 3
 - [x] Commit seventh T2 fixes.
 - [x] Run fresh full-diff T2 on `8217287` and close valid findings gate.
 - [x] Fix eighth T2 review-artifact and idempotency-scope findings locally.
-- [ ] Commit and push eighth T2 fixes.
+- [x] Commit eighth T2 fixes.
+- [x] Run fresh full-diff T2 on `ca9d750` and close valid findings gate.
+- [x] Fix ninth T2 review-package validation, artifact persistence, and task-plan snapshot findings locally.
+- [ ] Commit and push ninth T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** eighth T2 fixes implemented locally with focused validation green; pending commit/push and T2 rerun.
+- **Status:** ninth T2 fixes implemented locally with validation green; pending commit/push and T2 rerun.
 
 ## Boundaries
 
