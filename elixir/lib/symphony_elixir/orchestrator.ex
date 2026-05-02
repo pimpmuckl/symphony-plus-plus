@@ -12,6 +12,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @worker_start_ack_timeout_ms 1_000
+  @worker_task_runtime_id Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -628,11 +630,17 @@ defmodule SymphonyElixir.Orchestrator do
   defp terminate_task(_pid), do: :ok
 
   defp start_agent_runner_task(pid) when is_pid(pid) do
-    send(pid, :start_agent_runner)
-    :ok
+    send(pid, {:start_agent_runner, self()})
+
+    receive do
+      {:agent_runner_started, ^pid} -> :ok
+      {:DOWN, _ref, :process, ^pid, reason} -> {:error, {:worker_exited_before_start_ack, reason}}
+    after
+      @worker_start_ack_timeout_ms -> {:error, :worker_start_ack_timeout}
+    end
   end
 
-  defp start_agent_runner_task(_pid), do: :ok
+  defp start_agent_runner_task(_pid), do: {:error, :invalid_worker_task}
 
   defp codex_update_recipient(opts) when is_list(opts) do
     case Keyword.get(opts, :name, __MODULE__) do
@@ -859,8 +867,9 @@ defmodule SymphonyElixir.Orchestrator do
            Process.put(:sympp_worker_task_state, :waiting)
 
            receive do
-             :start_agent_runner ->
+             {:start_agent_runner, starter} ->
                Process.put(:sympp_worker_task_state, :running)
+               send(starter, {:agent_runner_started, self()})
                AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
            end
          end) do
@@ -889,23 +898,22 @@ defmodule SymphonyElixir.Orchestrator do
       :ok ->
         original_state = state
 
-        case record_agent_run_running(agent_run_id, "worker task started") do
-          :ok ->
-            state =
-              bind_running_issue(
-                original_state,
-                issue,
-                attempt,
-                worker_host,
-                pid,
-                ref,
-                agent_run_id,
-                worker_task_handle
-              )
+        state =
+          bind_running_issue(
+            original_state,
+            issue,
+            attempt,
+            worker_host,
+            pid,
+            ref,
+            agent_run_id,
+            worker_task_handle
+          )
 
-            start_agent_runner_task(pid)
-            state
-
+        with :ok <- start_agent_runner_task(pid),
+             :ok <- record_agent_run_running(agent_run_id, "worker task started") do
+          state
+        else
           {:error, reason} ->
             fail_spawned_worker_bind(original_state, issue, attempt, worker_host, agent_run_id, pid, ref, reason)
         end
@@ -1431,19 +1439,7 @@ defmodule SymphonyElixir.Orchestrator do
     Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
   end
 
-  defp worker_task_runtime_id do
-    key = {__MODULE__, :worker_task_runtime_id}
-
-    case :persistent_term.get(key, nil) do
-      runtime_id when is_binary(runtime_id) ->
-        runtime_id
-
-      nil ->
-        runtime_id = Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
-        :persistent_term.put(key, runtime_id)
-        runtime_id
-    end
-  end
+  defp worker_task_runtime_id, do: @worker_task_runtime_id
 
   defp run_terminal_workspace_cleanup(%State{} = state) do
     running_issue_ids = Map.keys(state.running) |> MapSet.new()

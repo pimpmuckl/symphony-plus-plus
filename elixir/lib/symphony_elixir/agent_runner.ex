@@ -71,7 +71,20 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
 
-  defp send_recipient(recipient, message) do
+  defp send_recipient(recipient, message) when is_pid(recipient) do
+    send(recipient, message)
+    :ok
+  end
+
+  defp send_recipient(recipient, message) when is_atom(recipient) do
+    if Process.whereis(recipient) do
+      send(recipient, message)
+    end
+
+    :ok
+  end
+
+  defp send_recipient(recipient, message) when is_tuple(recipient) do
     GenServer.cast(recipient, {:worker_message, message})
     :ok
   rescue
@@ -79,6 +92,8 @@ defmodule SymphonyElixir.AgentRunner do
   catch
     :exit, _reason -> :ok
   end
+
+  defp send_recipient(_recipient, _message), do: :ok
 
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
