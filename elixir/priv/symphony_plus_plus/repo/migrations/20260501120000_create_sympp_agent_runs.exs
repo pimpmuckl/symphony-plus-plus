@@ -10,6 +10,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo.Migrations.CreateSymppAgentRuns d
       add(:status, :text, null: false)
       add(:attempt, :integer, null: false, default: 0)
       add(:worker_host, :text)
+      add(:worker_task_handle, :text)
       add(:workspace_path, :text)
       add(:session_id, :text)
       add(:started_at, :utc_datetime_usec, null: false)

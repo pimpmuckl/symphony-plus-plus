@@ -20,6 +20,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun do
           status: String.t() | nil,
           attempt: non_neg_integer() | nil,
           worker_host: String.t() | nil,
+          worker_task_handle: String.t() | nil,
           workspace_path: String.t() | nil,
           session_id: String.t() | nil,
           started_at: DateTime.t() | nil,
@@ -37,6 +38,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun do
     field(:status, :string)
     field(:attempt, :integer, default: 0)
     field(:worker_host, :string)
+    field(:worker_task_handle, :string)
     field(:workspace_path, :string)
     field(:session_id, :string)
     field(:started_at, :utc_datetime_usec)
@@ -75,6 +77,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun do
       :status,
       :attempt,
       :worker_host,
+      :worker_task_handle,
       :workspace_path,
       :session_id,
       :started_at,
@@ -99,6 +102,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun do
       :actor_id,
       :status,
       :worker_host,
+      :worker_task_handle,
       :workspace_path,
       :session_id,
       :last_seen_at,

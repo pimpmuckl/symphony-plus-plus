@@ -65,6 +65,7 @@ defmodule SymphonyElixir.Orchestrator do
     }
 
     run_terminal_workspace_cleanup()
+    state = reconcile_persisted_running_agent_runs(state)
     state = schedule_tick(state, 0)
 
     {:ok, state}
@@ -363,6 +364,14 @@ defmodule SymphonyElixir.Orchestrator do
   def dispatch_issue_for_test(%State{} = state, %Issue{} = issue, attempt, preferred_worker_host, opts) when is_list(opts) do
     dispatch_issue(state, issue, attempt, preferred_worker_host, opts)
   end
+
+  @doc false
+  @spec reconcile_persisted_running_agent_runs_for_test(term()) :: term()
+  def reconcile_persisted_running_agent_runs_for_test(%State{} = state), do: reconcile_persisted_running_agent_runs(state)
+
+  @doc false
+  @spec worker_task_handle_for_test(pid()) :: String.t()
+  def worker_task_handle_for_test(pid) when is_pid(pid), do: worker_task_handle(pid)
 
   @doc false
   @spec workflow_config_error_message_for_test(term()) :: String.t() | nil
@@ -824,54 +833,42 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp handle_spawned_worker(state, issue, attempt, worker_host, agent_run_id, pid) do
     ref = Process.monitor(pid)
+    worker_task_handle = worker_task_handle(pid)
 
-    case record_agent_run_running(agent_run_id, "worker task started") do
-      :ok ->
-        bind_running_issue(state, issue, attempt, worker_host, pid, ref, agent_run_id)
-
+    with :ok <- record_agent_run_heartbeat(agent_run_id, %{worker_task_handle: worker_task_handle}),
+         :ok <- record_agent_run_running(agent_run_id, "worker task started") do
+      bind_running_issue(state, issue, attempt, worker_host, pid, ref, agent_run_id, worker_task_handle)
+    else
       {:error, reason} ->
         terminate_task(pid)
         Process.demonitor(ref, [:flush])
-        Logger.warning("Skipping dispatch; failed to mark AgentRun running for #{issue_context(issue)}: #{inspect(reason)}")
+        Logger.warning("Skipping dispatch; failed to bind AgentRun worker task for #{issue_context(issue)}: #{inspect(reason)}")
+
+        record_agent_run_failed(agent_run_id, "failed to bind worker task: #{inspect(reason)}")
 
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
         schedule_issue_retry(state, issue.id, next_attempt, %{
           identifier: issue.identifier,
-          error: "failed to mark AgentRun running: #{inspect(reason)}",
+          error: "failed to bind AgentRun worker task: #{inspect(reason)}",
           worker_host: worker_host,
           agent_run_id: agent_run_id
         })
     end
   end
 
-  defp bind_running_issue(state, issue, attempt, worker_host, pid, ref, agent_run_id) do
+  defp bind_running_issue(state, issue, attempt, worker_host, pid, ref, agent_run_id, worker_task_handle) do
     Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
 
     running =
-      Map.put(state.running, issue.id, %{
-        pid: pid,
-        ref: ref,
-        identifier: issue.identifier,
-        issue: issue,
-        worker_host: worker_host,
-        workspace_path: nil,
-        session_id: nil,
-        last_codex_message: nil,
-        last_codex_timestamp: nil,
-        last_codex_event: nil,
-        codex_app_server_pid: nil,
-        codex_input_tokens: 0,
-        codex_output_tokens: 0,
-        codex_total_tokens: 0,
-        codex_last_reported_input_tokens: 0,
-        codex_last_reported_output_tokens: 0,
-        codex_last_reported_total_tokens: 0,
-        turn_count: 0,
-        retry_attempt: normalize_retry_attempt(attempt),
-        agent_run_id: agent_run_id,
-        started_at: DateTime.utc_now()
-      })
+      Map.put(
+        state.running,
+        issue.id,
+        running_entry(issue, attempt, worker_host, pid, ref, agent_run_id, %{
+          worker_task_handle: worker_task_handle,
+          started_at: DateTime.utc_now()
+        })
+      )
 
     %{
       state
@@ -1068,6 +1065,141 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp cleanup_issue_workspace(_identifier, _worker_host), do: :ok
 
+  defp reconcile_persisted_running_agent_runs(%State{} = state) do
+    case Tracker.list_running_agent_runs() do
+      {:ok, agent_runs} when is_list(agent_runs) ->
+        Enum.reduce(agent_runs, state, &reconcile_persisted_running_agent_run/2)
+
+      {:error, reason} ->
+        Logger.warning("Skipping AgentRun restart reconciliation; failed to list running AgentRuns: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp reconcile_persisted_running_agent_run(agent_run, %State{} = state) do
+    work_package_id = agent_run_value(agent_run, :work_package_id)
+
+    cond do
+      not is_binary(work_package_id) ->
+        state
+
+      Map.has_key?(state.running, work_package_id) ->
+        state
+
+      true ->
+        case verified_worker_task_pid(agent_run_value(agent_run, :worker_task_handle)) do
+          {:ok, pid} ->
+            reattach_running_agent_run(state, agent_run, pid)
+
+          :error ->
+            release_unverifiable_running_agent_run(state, agent_run)
+        end
+    end
+  end
+
+  defp reattach_running_agent_run(%State{} = state, agent_run, pid) when is_pid(pid) do
+    work_package_id = agent_run_value(agent_run, :work_package_id)
+
+    case fetch_issue_for_agent_run(work_package_id) do
+      {:ok, %Issue{} = issue} ->
+        ref = Process.monitor(pid)
+        worker_host = agent_run_value(agent_run, :worker_host)
+        agent_run_id = agent_run_value(agent_run, :id)
+
+        Logger.info("Reattached running AgentRun after restart: #{issue_context(issue)} pid=#{inspect(pid)} agent_run_id=#{agent_run_id}")
+
+        running_entry =
+          running_entry(issue, agent_run_value(agent_run, :attempt), worker_host, pid, ref, agent_run_id, %{
+            worker_task_handle: agent_run_value(agent_run, :worker_task_handle),
+            workspace_path: agent_run_value(agent_run, :workspace_path),
+            session_id: agent_run_value(agent_run, :session_id),
+            started_at: agent_run_value(agent_run, :started_at) || DateTime.utc_now()
+          })
+
+        %{
+          state
+          | running: Map.put(state.running, issue.id, running_entry),
+            claimed: MapSet.put(state.claimed, issue.id),
+            retry_attempts: Map.delete(state.retry_attempts, issue.id)
+        }
+
+      {:error, reason} ->
+        Logger.warning("Unable to reattach running AgentRun; issue lookup failed work_package_id=#{work_package_id}: #{inspect(reason)}")
+        release_unverifiable_running_agent_run(state, agent_run)
+    end
+  end
+
+  defp release_unverifiable_running_agent_run(%State{} = state, agent_run) do
+    work_package_id = agent_run_value(agent_run, :work_package_id)
+    agent_run_id = agent_run_value(agent_run, :id)
+    reason = "worker task handle not live after orchestrator restart"
+
+    case record_agent_run_retrying(agent_run_id, reason) do
+      :ok ->
+        issue = fetch_issue_for_agent_run(work_package_id)
+        identifier = retry_identifier_for_agent_run(agent_run, issue)
+
+        state
+        |> schedule_issue_retry(work_package_id, next_retry_attempt_from_agent_run(agent_run), %{
+          identifier: identifier,
+          error: reason,
+          worker_host: agent_run_value(agent_run, :worker_host),
+          workspace_path: agent_run_value(agent_run, :workspace_path),
+          agent_run_id: agent_run_id
+        })
+        |> claim_issue(work_package_id)
+
+      {:error, reason} ->
+        Logger.warning("Failed to release unverifiable running AgentRun agent_run_id=#{agent_run_id}: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp fetch_issue_for_agent_run(work_package_id) when is_binary(work_package_id) do
+    case Tracker.fetch_issue_states_by_ids([work_package_id]) do
+      {:ok, [%Issue{} = issue | _]} -> {:ok, issue}
+      {:ok, []} -> {:error, :missing}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp fetch_issue_for_agent_run(_work_package_id), do: {:error, :missing}
+
+  defp retry_identifier_for_agent_run(_agent_run, {:ok, %Issue{identifier: identifier}}) when is_binary(identifier), do: identifier
+  defp retry_identifier_for_agent_run(agent_run, _issue), do: agent_run_value(agent_run, :work_package_id)
+
+  defp verified_worker_task_pid(worker_task_handle) when is_binary(worker_task_handle) do
+    with {:ok, pid} <- parse_worker_task_handle(worker_task_handle),
+         true <- Process.alive?(pid),
+         true <- supervised_worker_task?(pid) do
+      {:ok, pid}
+    else
+      _ -> :error
+    end
+  end
+
+  defp verified_worker_task_pid(_worker_task_handle), do: :error
+
+  defp parse_worker_task_handle("local-task:" <> pid_text) do
+    {:ok, :erlang.list_to_pid(String.to_charlist(pid_text))}
+  rescue
+    ArgumentError -> :error
+  end
+
+  defp parse_worker_task_handle(_worker_task_handle), do: :error
+
+  defp supervised_worker_task?(pid) when is_pid(pid) do
+    SymphonyElixir.TaskSupervisor
+    |> Task.Supervisor.children()
+    |> Enum.member?(pid)
+  rescue
+    _error -> false
+  catch
+    :exit, _reason -> false
+  end
+
+  defp worker_task_handle(pid) when is_pid(pid), do: "local-task:" <> List.to_string(:erlang.pid_to_list(pid))
+
   defp run_terminal_workspace_cleanup do
     case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
       {:ok, issues} ->
@@ -1167,6 +1299,13 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp next_retry_attempt_from_agent_run(agent_run) do
+    case agent_run_value(agent_run, :attempt) do
+      attempt when is_integer(attempt) and attempt > 0 -> attempt + 1
+      _ -> 1
+    end
+  end
+
   defp pick_retry_identifier(issue_id, previous_retry, metadata) do
     metadata[:identifier] || Map.get(previous_retry, :identifier) || issue_id
   end
@@ -1185,6 +1324,9 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp agent_run_id(%{id: id}) when is_binary(id), do: id
   defp agent_run_id(_agent_run), do: nil
+
+  defp agent_run_value(agent_run, key) when is_map(agent_run), do: Map.get(agent_run, key) || Map.get(agent_run, Atom.to_string(key))
+  defp agent_run_value(_agent_run, _key), do: nil
 
   defp maybe_put_runtime_value(running_entry, _key, nil), do: running_entry
 
@@ -1275,6 +1417,33 @@ defmodule SymphonyElixir.Orchestrator do
     do: session_id
 
   defp running_entry_session_id(_running_entry), do: "n/a"
+
+  defp running_entry(issue, attempt, worker_host, pid, ref, agent_run_id, attrs) do
+    %{
+      pid: pid,
+      ref: ref,
+      identifier: issue.identifier,
+      issue: issue,
+      worker_host: worker_host,
+      worker_task_handle: Map.get(attrs, :worker_task_handle),
+      workspace_path: Map.get(attrs, :workspace_path),
+      session_id: Map.get(attrs, :session_id),
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      codex_app_server_pid: nil,
+      codex_input_tokens: 0,
+      codex_output_tokens: 0,
+      codex_total_tokens: 0,
+      codex_last_reported_input_tokens: 0,
+      codex_last_reported_output_tokens: 0,
+      codex_last_reported_total_tokens: 0,
+      turn_count: 0,
+      retry_attempt: normalize_retry_attempt(attempt),
+      agent_run_id: agent_run_id,
+      started_at: Map.get(attrs, :started_at) || DateTime.utc_now()
+    }
+  end
 
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"

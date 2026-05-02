@@ -256,21 +256,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
     assert active.status == "running"
   end
 
-  test "replacement retry can release the previous running attempt by id", %{repo: repo} do
+  test "replacement retry does not release a running attempt without liveness reconciliation", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-REPLACE", status: "ready_for_worker"))
 
     assert {:ok, run} = Service.start_dispatch(repo, issue(work_package.id))
 
-    assert {:ok, replacement} =
+    assert {:error, :active_run_exists} =
              Service.start_dispatch(repo, issue(work_package.id), attempt: 2, replace_agent_run_id: run.id)
 
-    assert replacement.status == "running"
-    assert replacement.id != run.id
-
-    assert {:ok, replaced} = Repository.get(repo, run.id)
-    assert replaced.status == "failed"
-    assert replaced.reason == "replaced by retry dispatch"
+    assert {:ok, still_running} = Repository.get(repo, run.id)
+    assert still_running.status == "running"
+    assert still_running.reason == nil
   end
 
   test "fresh dispatch can recover persisted retrying reservation after restart", %{repo: repo} do

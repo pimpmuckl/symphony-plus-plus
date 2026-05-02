@@ -17,7 +17,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Service do
         work_package_id: issue.id,
         status: Keyword.get(opts, :status, "running"),
         attempt: normalize_attempt(Keyword.get(opts, :attempt)),
-        worker_host: Keyword.get(opts, :worker_host)
+        worker_host: Keyword.get(opts, :worker_host),
+        worker_task_handle: Keyword.get(opts, :worker_task_handle)
       }
       |> Map.merge(grant_binding(repo, issue))
 
@@ -33,6 +34,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Service do
   def heartbeat(repo, agent_run_id, attrs \\ %{}) when is_atom(repo) and is_binary(agent_run_id) and is_map(attrs) do
     Repository.heartbeat(repo, agent_run_id, compact_attrs(attrs))
   end
+
+  @spec list_running(Repository.repo()) :: {:ok, [AgentRun.t()]} | {:error, error()}
+  def list_running(repo) when is_atom(repo), do: Repository.list_running(repo)
 
   @spec mark_retrying(Repository.repo(), String.t(), String.t() | nil) :: {:ok, AgentRun.t()} | {:error, error()}
   def mark_retrying(repo, agent_run_id, reason \\ nil), do: Repository.mark_retrying(repo, agent_run_id, reason)
@@ -93,7 +97,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Service do
 
   defp compact_attrs(attrs) do
     attrs
-    |> Map.take([:worker_host, :workspace_path, :session_id])
+    |> Map.take([:worker_host, :worker_task_handle, :workspace_path, :session_id])
     |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
     |> Map.new()
   end

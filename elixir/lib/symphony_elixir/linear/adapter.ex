@@ -79,6 +79,9 @@ defmodule SymphonyElixir.Linear.Adapter do
   @spec start_agent_run(term(), keyword()) :: {:ok, nil}
   def start_agent_run(_issue, _opts), do: {:ok, nil}
 
+  @spec list_running_agent_runs() :: {:ok, []}
+  def list_running_agent_runs, do: {:ok, []}
+
   @spec heartbeat_agent_run(String.t(), map()) :: {:ok, nil}
   def heartbeat_agent_run(_agent_run_id, _attrs), do: {:ok, nil}
 

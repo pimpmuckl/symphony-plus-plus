@@ -55,6 +55,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
     {:ok, agent_runs}
   end
 
+  @spec list_running(repo()) :: {:ok, [AgentRun.t()]} | {:error, error()}
+  def list_running(repo) when is_atom(repo) do
+    agent_runs =
+      repo.all(
+        from(agent_run in AgentRun,
+          where: agent_run.status == "running",
+          order_by: [asc: agent_run.started_at, asc: agent_run.id]
+        )
+      )
+
+    {:ok, agent_runs}
+  end
+
   @spec active_for_work_package(repo(), String.t()) :: {:ok, AgentRun.t()} | {:error, error()}
   def active_for_work_package(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
     query =
@@ -141,7 +154,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
        when is_binary(previous_agent_run_id) and is_binary(work_package_id) do
     case get(repo, previous_agent_run_id) do
       {:ok, %AgentRun{work_package_id: ^work_package_id, status: status}}
-      when status in ["starting", "running", "retrying"] ->
+      when status in ["starting", "retrying"] ->
         case mark_failed(repo, previous_agent_run_id, "replaced by retry dispatch") do
           {:ok, _agent_run} -> :ok
           {:error, reason} -> {:error, reason}
