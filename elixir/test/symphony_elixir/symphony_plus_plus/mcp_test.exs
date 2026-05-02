@@ -749,19 +749,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
 
+    read_plan_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "read-plan", "method" => "tools/call", "params" => %{"name" => "read_task_plan"}},
+        repo: repo,
+        session: session
+      )
+
     plan_response =
       MCPHarness.request(
         %{
           "jsonrpc" => "2.0",
           "id" => "plan",
           "method" => "tools/call",
-          "params" => %{"name" => "update_task_plan", "arguments" => %{"title" => "Implement MCP worker tools", "status" => "done"}}
+          "params" => %{
+            "name" => "update_task_plan",
+            "arguments" => %{
+              "expected_version" => get_in(read_plan_response, ["result", "structuredContent", "version"]),
+              "title" => "Implement MCP worker tools",
+              "status" => "done"
+            }
+          }
         },
         repo: repo,
         session: session
       )
 
-    assert get_in(plan_response, ["result", "structuredContent", "plan_node", "status"]) == "done"
+    assert get_in(plan_response, ["result", "structuredContent", "plan_nodes", Access.at(0), "status"]) == "done"
 
     finding_response =
       MCPHarness.request(
@@ -866,6 +880,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   test "update_task_plan patches existing nodes with expected version", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PLAN-PATCH", kind: "mcp"))
     assert {:ok, plan_node} = PlanningRepository.append_plan_node(repo, %{"work_package_id" => package.id, "title" => "Original", "status" => "pending"})
+    assert {:ok, second_node} = PlanningRepository.append_plan_node(repo, %{"work_package_id" => package.id, "title" => "Second", "status" => "pending"})
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
@@ -878,6 +893,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     version = get_in(read_response, ["result", "structuredContent", "version"])
+
+    invalid_patch_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "invalid-patch-plan",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "update_task_plan",
+            "arguments" => %{
+              "expected_version" => version,
+              "patch" => %{"nodes" => [%{"id" => plan_node.id, "status" => "done"}, %{"id" => second_node.id, "status" => "invalid"}]}
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(invalid_patch_response, ["error", "code"]) == -32_602
+    assert {:ok, unchanged_nodes} = PlanningRepository.list_plan_nodes(repo, package.id)
+    assert Enum.find(unchanged_nodes, &(&1.id == plan_node.id)).status == "pending"
 
     patch_response =
       MCPHarness.request(
@@ -896,8 +933,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(patch_response, ["result", "structuredContent", "plan_nodes", Access.at(0), "status"]) == "done"
     assert {:ok, nodes} = PlanningRepository.list_plan_nodes(repo, package.id)
-    assert length(nodes) == 1
-    assert hd(nodes).body == "Complete"
+    assert length(nodes) == 2
+    assert Enum.find(nodes, &(&1.id == plan_node.id)).body == "Complete"
 
     stale_response =
       MCPHarness.request(
@@ -935,7 +972,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-GATES/worker"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => "abc123"})
+
     attach_tool(repo, session, "submit_review_package", %{"summary" => "Ready", "tests" => ["mix test"], "artifacts" => []})
+
+    missing_review_lanes_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-missing-review-lanes", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "review_lanes_complete" in get_in(missing_review_lanes_response, ["error", "data", "missing"])
+
+    attach_tool(repo, session, "submit_review_package", %{"summary" => "Ready", "tests" => ["mix test", "review_t1 green", "review_t2 green"], "artifacts" => []})
 
     ready_response =
       MCPHarness.request(
@@ -979,7 +1028,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-BLOCKER/worker"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/125", "head_sha" => "abc125"})
-    attach_tool(repo, session, "submit_review_package", %{"summary" => "Ready", "tests" => ["mix test"], "artifacts" => []})
+    attach_tool(repo, session, "submit_review_package", %{"summary" => "Ready", "tests" => ["mix test", "review_t1 green", "review_t2 green"], "artifacts" => []})
 
     blocked_response =
       MCPHarness.request(
@@ -1095,7 +1144,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(ready_response, ["error", "data", "reason"]) == "readiness_failed"
-    assert get_in(ready_response, ["error", "data", "missing"]) == ["branch_attached", "pr_attached", "review_package_submitted"]
+
+    assert get_in(ready_response, ["error", "data", "missing"]) == [
+             "branch_attached",
+             "pr_attached",
+             "review_package_submitted",
+             "review_lanes_complete"
+           ]
   end
 
   test "worker metadata tools preserve protected fields and reject non-map payloads", %{repo: repo} do
@@ -1157,7 +1212,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-CAP/worker"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/124", "head_sha" => "abc124"})
-    attach_tool(repo, session, "submit_review_package", %{"summary" => "Ready", "tests" => ["mix test"], "artifacts" => []})
+    attach_tool(repo, session, "submit_review_package", %{"summary" => "Ready", "tests" => ["mix test", "review_t1 green", "review_t2 green"], "artifacts" => []})
 
     response =
       MCPHarness.request(

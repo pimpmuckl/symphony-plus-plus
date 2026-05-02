@@ -39,3 +39,6 @@
 - T2 found `submit_review_package` must reject empty review evidence before satisfying readiness.
 - T2 found `append_finding` needs idempotency across client retries; the worker MCP path now derives a stable finding id from the grant/package/idempotency key.
 - T2 found new lifecycle-supported worker package kinds need policy templates so review-suite resources do not render unknown-policy output.
+- Second T2 found every `update_task_plan` write path must require `expected_version`; append-style node creation now also goes through version checking.
+- Second T2 found multi-node plan patches must be atomic; patch application now runs inside a repo transaction and rolls back on any failed node.
+- Second T2 found `mark_ready` must enforce required review lanes from policy templates, not only the presence of arbitrary review metadata.

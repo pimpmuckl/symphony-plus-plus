@@ -744,6 +744,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp normalize_update_task_plan_result({:tool_error, reason}),
     do: {:error, -32_602, "Invalid params", %{"tool" => "update_task_plan", "reason" => reason}}
 
+  defp normalize_update_task_plan_result({:error, reason}),
+    do: worker_error(reason, "update_task_plan")
+
   defp normalize_update_task_plan_result(result), do: result
 
   defp read_task_plan_file(repo, session) do
@@ -762,12 +765,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp update_task_plan(repo, session, %{"patch" => patch} = arguments) when is_map(patch) do
+  defp update_task_plan(repo, session, arguments) do
     with {:ok, expected_version} <- required_integer(arguments, "expected_version"),
          work_package_id = Session.work_package_id(session),
          {:ok, state} <- PlanningRepository.get_state(repo, work_package_id),
          :ok <- require_plan_version(state.plan_nodes, expected_version),
-         {:ok, plan_nodes} <- apply_plan_patch(repo, work_package_id, patch),
+         {:ok, plan_nodes} <- apply_plan_update(repo, work_package_id, arguments),
          {:ok, refreshed} <- PlanningRepository.get_state(repo, work_package_id) do
       {:ok,
        tool_result(%{
@@ -777,19 +780,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp update_task_plan(repo, session, arguments) do
+  defp apply_plan_update(repo, work_package_id, %{"patch" => patch}) when is_map(patch) do
+    transaction_plan_update(repo, fn -> apply_plan_patch(repo, work_package_id, patch) end)
+  end
+
+  defp apply_plan_update(repo, work_package_id, arguments) do
+    transaction_plan_update(repo, fn -> append_plan_node_from_arguments(repo, work_package_id, arguments) end)
+  end
+
+  defp transaction_plan_update(repo, update_fun) do
+    case repo.transaction(fn -> transaction_result(repo, update_fun.()) end) do
+      {:ok, result} -> result
+      {:error, reason} -> reason
+    end
+  end
+
+  defp transaction_result(_repo, {:ok, result}), do: {:ok, result}
+  defp transaction_result(repo, {:tool_error, reason}), do: repo.rollback({:tool_error, reason})
+  defp transaction_result(repo, {:error, reason}), do: repo.rollback({:error, reason})
+
+  defp append_plan_node_from_arguments(repo, work_package_id, arguments) do
     with {:ok, title} <- required_argument(arguments, "title"),
-         status <- optional_argument(arguments, "status", "pending"),
-         body <- optional_argument(arguments, "body", nil),
          attrs = %{
-           "work_package_id" => Session.work_package_id(session),
+           "work_package_id" => work_package_id,
            "title" => title,
-           "body" => body,
-           "status" => status
+           "body" => optional_argument(arguments, "body", nil),
+           "status" => optional_argument(arguments, "status", "pending")
          },
-         {:ok, plan_node} <- PlanningRepository.append_plan_node(repo, maybe_put_id(attrs, arguments)),
-         {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)) do
-      {:ok, tool_result(%{"plan_node" => plan_node_payload(plan_node), "version" => plan_version(state.plan_nodes)})}
+         {:ok, plan_node} <- PlanningRepository.append_plan_node(repo, maybe_put_id(attrs, arguments)) do
+      {:ok, [plan_node]}
     end
   end
 
@@ -916,6 +935,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp readiness_gates(state) do
     review_required? = state.work_package.kind != "investigation"
+    required_review_lanes = required_review_lanes(state.work_package)
 
     missing =
       []
@@ -925,9 +945,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       |> maybe_missing(review_required? and not metadata_present?(state.progress_events, "branch"), "branch_attached")
       |> maybe_missing(pr_required?(state.work_package) and not metadata_present?(state.progress_events, "pr"), "pr_attached")
       |> maybe_missing(review_required? and not metadata_present?(state.progress_events, "review_package"), "review_package_submitted")
+      |> maybe_missing(review_required? and not review_lanes_present?(state.progress_events, required_review_lanes), "review_lanes_complete")
       |> maybe_missing(state.work_package.kind == "investigation" and state.findings == [], "findings_documented")
 
     if missing == [], do: :ok, else: {:error, {:readiness_failed, Enum.reverse(missing)}}
+  end
+
+  defp required_review_lanes(%WorkPackage{} = work_package) do
+    case LifecycleService.policy_for(work_package) do
+      {:ok, policy} -> get_in(policy, [:review_suite, :required]) || []
+      {:error, _reason} -> []
+    end
+  end
+
+  defp review_lanes_present?(_progress_events, []), do: true
+
+  defp review_lanes_present?(progress_events, required_lanes) do
+    review_evidence =
+      progress_events
+      |> Enum.filter(&payload_type?(&1, "review_package", "submit_review_package"))
+      |> Enum.flat_map(&review_package_terms/1)
+      |> Enum.map(&String.downcase/1)
+
+    Enum.all?(required_lanes, fn lane ->
+      lane = String.downcase(lane)
+      Enum.any?(review_evidence, &String.contains?(&1, lane))
+    end)
+  end
+
+  defp review_package_terms(%ProgressEvent{payload: payload}) when is_map(payload) do
+    payload
+    |> Map.take(["summary", "tests", "artifacts", "reviews"])
+    |> Map.values()
+    |> List.flatten()
+    |> Enum.filter(&is_binary/1)
   end
 
   defp active_blocker?(progress_events) do

@@ -77,7 +77,14 @@
 | `mise exec -- mix specs.check` | pass | All public functions have specs or exemption. |
 | `mise exec -- mix format --check-formatted` | pass | After warning cleanup. |
 | `mise exec -- mix credo --strict` | pass | No issues. |
+| `review_t2.py --base symphony-plus-plus/beta ...` | findings | Round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T183643Z-04b8a3d1`; valid findings for review-lane gating and atomic/versioned task-plan writes. |
+| `review_suite_arena.py close-gate --round-id phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T183643Z-04b8a3d1 --verdict findings` | pass | T2 gate closed as findings; not anchored. |
+| `mise exec -- mix format` | pass | After second T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs test/symphony_elixir/symphony_plus_plus/lifecycle_test.exs test/symphony_elixir/symphony_plus_plus/planning_test.exs` | pass | After second T2 fixes: 109 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | After second T2 fixes: 246 tests, 0 failures. |
+| `mise exec -- mix specs.check` | pass | After second T2 fixes: all public functions have specs or exemption. |
+| `mise exec -- mix credo --strict` | pass | After second T2 fixes: no issues. |
 
 ### Next Steps
 
-- Commit and push T2 fixes, then run T2 follow-up/full T2 until green and GitHub review.
+- Commit and push second T2 fixes, then run T2 follow-up/full T2 until green and GitHub review.
