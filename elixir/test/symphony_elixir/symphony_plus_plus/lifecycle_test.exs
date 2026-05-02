@@ -78,6 +78,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     assert investigation.constraints.expiry_seconds == 43_200
     assert investigation.constraints.planning_depth == "findings"
     assert investigation.required_gates == ["findings_documented", "scope_recommendation"]
+
+    for kind <- ["mcp", "skill", "hooks"] do
+      assert {:ok, policy} = Templates.expand(kind)
+      assert policy.template == "worker_package"
+      assert policy.review_suite.required == ["review_t1", "review_t2"]
+      assert policy.constraints.terminal_readiness_status == "ready_for_human_merge"
+    end
   end
 
   test "policy can be computed from a persisted work package", %{repo: repo} do

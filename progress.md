@@ -27,6 +27,10 @@
 - Committed and pushed the initial T1 fix as `0dd2e1471b33bdf3eb40b5449d168504e05033fe`.
 - Re-ran T1 at `0dd2e1471b33bdf3eb40b5449d168504e05033fe`; second T1 round produced valid batch state-threading and tool schema findings.
 - Fixed second T1 findings locally by making batch handling carry returned server state across items and by adding per-tool input schemas for worker argument discovery.
+- Committed and pushed second T1 fix as `aabc18ac5b05acab1d99bfc19c14a9876e6e62f3`.
+- Ran T1 follow-up against `aabc18ac5b05acab1d99bfc19c14a9876e6e62f3`; result was no findings.
+- Ran T2 signoff round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T182237Z-4eae1633`; closed the gate as `findings`.
+- Fixed valid T2 findings locally: plan patch/update with expected version, blocker resolution, non-empty review package evidence, idempotent findings, investigation readiness without PR/review metadata, and policy templates for `mcp`/`skill`/`hooks`.
 
 ### Validation Results
 
@@ -64,7 +68,16 @@
 | `mise exec -- mix specs.check` | pass | After second T1 fixes: all public functions have specs or exemption. |
 | `mise exec -- mix format --check-formatted` | pass | After second T1 fixes. |
 | `mise exec -- mix credo --strict` | pass | After second T1 fixes: no issues. |
+| `review_followup.py --since 0dd2e1471b33bdf3eb40b5449d168504e05033fe ...` | pass | Session `019de9ec-ec46-77e1-8ce2-77040bb555e1`; no findings. |
+| `review_t2.py --base symphony-plus-plus/beta ...` | findings | Round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T182237Z-4eae1633`; valid findings from all reviewers. |
+| `review_suite_arena.py close-gate --round-id phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T182237Z-4eae1633 --verdict findings` | pass | T2 gate closed as findings; not anchored. |
+| `mise exec -- mix format` | pass | After T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs test/symphony_elixir/symphony_plus_plus/lifecycle_test.exs test/symphony_elixir/symphony_plus_plus/planning_test.exs` | pass | 109 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 246 tests, 0 failures. |
+| `mise exec -- mix specs.check` | pass | All public functions have specs or exemption. |
+| `mise exec -- mix format --check-formatted` | pass | After warning cleanup. |
+| `mise exec -- mix credo --strict` | pass | No issues. |
 
 ### Next Steps
 
-- Commit and push second T1 fixes, then run T1 follow-up/full T1 until green, T2 until green, and GitHub review.
+- Commit and push T2 fixes, then run T2 follow-up/full T2 until green and GitHub review.

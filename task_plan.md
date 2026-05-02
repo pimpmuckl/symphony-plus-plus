@@ -37,10 +37,14 @@ Phase 3
 - [x] Fix valid T1 findings.
 - [x] Commit and push initial T1 fixes.
 - [x] Fix second T1 batch/schema findings locally.
-- [ ] Commit and push second T1 fixes.
-- [ ] Run T1 follow-up/full T1 until green, then review-t2, fix valid findings, then GitHub review.
+- [x] Commit and push second T1 fixes.
+- [x] Run T1 follow-up/full T1 until green.
+- [x] Run T2 and close findings gate for valid signoff findings.
+- [x] Fix valid T2 findings locally.
+- [ ] Commit and push T2 fixes.
+- [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** T1 fixes implemented locally; validation green; pending commit/push and review reruns.
+- **Status:** T2 fixes implemented locally; validation green; pending commit/push and T2 rerun.
 
 ## Boundaries
 

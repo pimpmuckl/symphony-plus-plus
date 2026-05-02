@@ -34,3 +34,8 @@
 - Lifecycle support was widened only to the worker package kinds needed by P3 tooling (`mcp`, `skill`, `hooks`) plus existing supported kinds, leaving broader kinds such as `docs` and `standard_pr` unchanged to preserve current tracker behavior.
 - Second T1 found batch requests must thread the updated MCP server state so `claim_work_key` can bind a session for later batch items.
 - Second T1 found `tools/list` should advertise real per-tool worker argument schemas instead of the generic unconstrained object schema.
+- T2 found `update_task_plan` must support the documented patch plus `expected_version` contract so existing pending plan nodes can be completed instead of duplicated.
+- T2 found `report_blocker` needs a matching worker path to clear transient blockers before readiness; the MCP surface now includes `resolve_blocker`.
+- T2 found `submit_review_package` must reject empty review evidence before satisfying readiness.
+- T2 found `append_finding` needs idempotency across client retries; the worker MCP path now derives a stable finding id from the grant/package/idempotency key.
+- T2 found new lifecycle-supported worker package kinds need policy templates so review-suite resources do not render unknown-policy output.

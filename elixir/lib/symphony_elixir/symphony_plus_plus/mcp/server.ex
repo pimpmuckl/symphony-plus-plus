@@ -25,6 +25,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "append_progress",
     "set_status",
     "report_blocker",
+    "resolve_blocker",
     "request_scope_expansion",
     "attach_branch",
     "attach_pr",
@@ -402,11 +403,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(
       scoped_properties(%{
         "body" => nullable_string_schema(),
+        "expected_version" => integer_schema(),
         "id" => string_schema(),
+        "patch" => object_schema(),
         "status" => string_schema(),
         "title" => string_schema()
       }),
-      ["title"]
+      []
     )
   end
 
@@ -415,15 +418,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       scoped_properties(%{
         "body" => string_schema(),
         "id" => string_schema(),
+        "idempotency_key" => string_schema(),
         "severity" => string_schema(),
         "title" => string_schema()
       }),
-      ["title", "body"]
+      ["title", "body", "idempotency_key"]
     )
   end
 
   defp worker_tool_input_schema(name) when name in ["append_progress", "report_blocker", "request_scope_expansion"] do
     schema(progress_properties(), ["summary", "idempotency_key"])
+  end
+
+  defp worker_tool_input_schema("resolve_blocker") do
+    schema(
+      progress_properties()
+      |> Map.merge(%{"blocker_id" => string_schema(), "resolution" => string_schema()}),
+      ["blocker_id", "resolution", "summary", "idempotency_key"]
+    )
   end
 
   defp worker_tool_input_schema("set_status") do
@@ -439,7 +451,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool_input_schema("submit_review_package") do
-    schema(metadata_properties(%{"summary" => string_schema(), "tests" => array_schema(), "artifacts" => array_schema()}), [])
+    schema(metadata_properties(%{"summary" => string_schema(), "tests" => array_schema(), "artifacts" => array_schema()}), ["summary", "tests"])
   end
 
   defp schema(properties, required) do
@@ -471,6 +483,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp string_schema, do: %{"type" => "string"}
+  defp integer_schema, do: %{"type" => "integer"}
   defp nullable_string_schema, do: %{"type" => ["string", "null"]}
   defp object_schema, do: %{"type" => "object", "additionalProperties" => true}
   defp array_schema, do: %{"type" => "array", "items" => %{}}
@@ -589,24 +602,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool("read_task_plan", _arguments, %__MODULE__{config: config, session: session}) do
-    read_current_virtual_file(config.repo, session, "task_plan.md")
+    read_task_plan_file(config.repo, session)
   end
 
   defp worker_tool("update_task_plan", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- scoped_session(config.repo, session, arguments),
-         {:ok, title} <- required_argument(arguments, "title"),
-         status <- optional_argument(arguments, "status", "pending"),
-         body <- optional_argument(arguments, "body", nil),
-         attrs = %{
-           "work_package_id" => Session.work_package_id(session),
-           "title" => title,
-           "body" => body,
-           "status" => status
-         },
-         {:ok, plan_node} <- PlanningRepository.append_plan_node(config.repo, maybe_put_id(attrs, arguments)) do
-      {:ok, tool_result(%{"plan_node" => plan_node_payload(plan_node)})}
-    else
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "update_task_plan", "reason" => reason}}
+    case scoped_session(config.repo, session, arguments) do
+      {:ok, session} -> normalize_update_task_plan_result(update_task_plan(config.repo, session, arguments))
       {:error, reason} -> worker_error(reason, "update_task_plan")
     end
   end
@@ -615,13 +616,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
          {:ok, title} <- required_argument(arguments, "title"),
          {:ok, body} <- required_argument(arguments, "body"),
+         {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
+         finding_id = finding_id(session, idempotency_key),
          attrs = %{
+           "id" => finding_id,
            "work_package_id" => Session.work_package_id(session),
            "title" => title,
            "body" => body,
            "severity" => optional_argument(arguments, "severity", "info")
          },
-         {:ok, finding} <- PlanningRepository.append_finding(config.repo, maybe_put_id(attrs, arguments)) do
+         {:ok, finding} <- append_idempotent_finding(config.repo, Session.work_package_id(session), finding_id, attrs) do
       {:ok, tool_result(%{"finding" => %{"id" => finding.id, "title" => finding.title, "severity" => finding.severity}})}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "append_finding", "reason" => reason}}
@@ -646,11 +650,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool("report_blocker", arguments, %__MODULE__{config: config, session: session}) do
+    blocker_id = optional_argument(arguments, "blocker_id", Map.get(arguments, "idempotency_key"))
+
     append_scoped_progress(config.repo, session, arguments, "report_blocker", %{
       "type" => "blocker",
       "source_tool" => "report_blocker",
+      "blocker_id" => blocker_id,
       "active" => true
     })
+  end
+
+  defp worker_tool("resolve_blocker", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, blocker_id} <- required_argument(arguments, "blocker_id"),
+         {:ok, resolution} <- required_argument(arguments, "resolution") do
+      append_scoped_progress(config.repo, session, arguments, "resolve_blocker", %{
+        "type" => "blocker",
+        "source_tool" => "resolve_blocker",
+        "blocker_id" => blocker_id,
+        "resolution" => resolution,
+        "active" => false
+      })
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "resolve_blocker", "reason" => reason}}
+    end
   end
 
   defp worker_tool("request_scope_expansion", arguments, %__MODULE__{config: config, session: session}) do
@@ -681,12 +703,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool("submit_review_package", arguments, %__MODULE__{config: config, session: session}) do
-    append_metadata_event(config.repo, session, arguments, "submit_review_package", "review_package_submitted", %{
-      "type" => "review_package",
-      "summary" => Map.get(arguments, "summary"),
-      "tests" => Map.get(arguments, "tests"),
-      "artifacts" => Map.get(arguments, "artifacts", [])
-    })
+    with {:ok, summary} <- required_argument(arguments, "summary"),
+         {:ok, tests} <- required_list(arguments, "tests") do
+      append_metadata_event(config.repo, session, arguments, "submit_review_package", "review_package_submitted", %{
+        "type" => "review_package",
+        "summary" => summary,
+        "tests" => tests,
+        "artifacts" => optional_list(arguments, "artifacts")
+      })
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "submit_review_package", "reason" => reason}}
+    end
   end
 
   defp worker_tool("mark_ready", _arguments, %__MODULE__{config: config, session: session}) do
@@ -712,6 +739,148 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     else
       {:error, reason} -> worker_error(reason, "read_#{file_name}")
     end
+  end
+
+  defp normalize_update_task_plan_result({:tool_error, reason}),
+    do: {:error, -32_602, "Invalid params", %{"tool" => "update_task_plan", "reason" => reason}}
+
+  defp normalize_update_task_plan_result(result), do: result
+
+  defp read_task_plan_file(repo, session) do
+    with {:ok, session} <- Auth.require_session(session, repo),
+         work_package_id = Session.work_package_id(session),
+         {:ok, state} <- PlanningRepository.get_state(repo, work_package_id),
+         {:ok, markdown} <- PlanningRenderer.render(repo, work_package_id, "task_plan.md") do
+      {:ok,
+       tool_result(%{
+         "uri" => "sympp://work-packages/#{work_package_id}/task_plan.md",
+         "text" => markdown,
+         "version" => plan_version(state.plan_nodes)
+       })}
+    else
+      {:error, reason} -> worker_error(reason, "read_task_plan.md")
+    end
+  end
+
+  defp update_task_plan(repo, session, %{"patch" => patch} = arguments) when is_map(patch) do
+    with {:ok, expected_version} <- required_integer(arguments, "expected_version"),
+         work_package_id = Session.work_package_id(session),
+         {:ok, state} <- PlanningRepository.get_state(repo, work_package_id),
+         :ok <- require_plan_version(state.plan_nodes, expected_version),
+         {:ok, plan_nodes} <- apply_plan_patch(repo, work_package_id, patch),
+         {:ok, refreshed} <- PlanningRepository.get_state(repo, work_package_id) do
+      {:ok,
+       tool_result(%{
+         "plan_nodes" => Enum.map(plan_nodes, &plan_node_payload/1),
+         "version" => plan_version(refreshed.plan_nodes)
+       })}
+    end
+  end
+
+  defp update_task_plan(repo, session, arguments) do
+    with {:ok, title} <- required_argument(arguments, "title"),
+         status <- optional_argument(arguments, "status", "pending"),
+         body <- optional_argument(arguments, "body", nil),
+         attrs = %{
+           "work_package_id" => Session.work_package_id(session),
+           "title" => title,
+           "body" => body,
+           "status" => status
+         },
+         {:ok, plan_node} <- PlanningRepository.append_plan_node(repo, maybe_put_id(attrs, arguments)),
+         {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)) do
+      {:ok, tool_result(%{"plan_node" => plan_node_payload(plan_node), "version" => plan_version(state.plan_nodes)})}
+    end
+  end
+
+  defp apply_plan_patch(repo, work_package_id, patch) do
+    nodes = Map.get(patch, "nodes", [])
+
+    cond do
+      not is_list(nodes) -> {:tool_error, "missing_patch_nodes"}
+      nodes == [] -> {:tool_error, "missing_patch_nodes"}
+      true -> apply_plan_node_patches(repo, work_package_id, nodes)
+    end
+  end
+
+  defp apply_plan_node_patches(repo, work_package_id, nodes) do
+    nodes
+    |> Enum.reduce_while({:ok, []}, &apply_plan_node_patch_step(repo, work_package_id, &1, &2))
+    |> reverse_plan_patch_result()
+  end
+
+  defp apply_plan_node_patch_step(repo, work_package_id, node_attrs, {:ok, plan_nodes}) do
+    case apply_plan_node_patch(repo, work_package_id, node_attrs) do
+      {:ok, plan_node} -> {:cont, {:ok, [plan_node | plan_nodes]}}
+      {:error, reason} -> {:halt, {:error, reason}}
+    end
+  end
+
+  defp reverse_plan_patch_result({:ok, plan_nodes}), do: {:ok, Enum.reverse(plan_nodes)}
+  defp reverse_plan_patch_result({:error, reason}), do: {:error, reason}
+
+  defp apply_plan_node_patch(repo, work_package_id, %{"id" => id} = attrs) when is_binary(id) do
+    with {:ok, existing_nodes} <- PlanningRepository.list_plan_nodes(repo, work_package_id),
+         %PlanNode{} <- Enum.find(existing_nodes, &(&1.id == id)) || {:error, :forbidden},
+         {:ok, plan_node} <- PlanningService.update_plan_node(repo, id, Map.take(attrs, ["title", "body", "status"])) do
+      {:ok, plan_node}
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp apply_plan_node_patch(repo, work_package_id, attrs) when is_map(attrs) do
+    with {:ok, title} <- required_argument(attrs, "title") do
+      PlanningRepository.append_plan_node(repo, %{
+        "work_package_id" => work_package_id,
+        "title" => title,
+        "body" => optional_argument(attrs, "body", nil),
+        "status" => optional_argument(attrs, "status", "pending")
+      })
+    end
+  end
+
+  defp apply_plan_node_patch(_repo, _work_package_id, _attrs), do: {:tool_error, "invalid_patch_node"}
+
+  defp require_plan_version(plan_nodes, expected_version) do
+    if plan_version(plan_nodes) == expected_version, do: :ok, else: {:tool_error, "stale_plan_version"}
+  end
+
+  defp plan_version(plan_nodes) do
+    plan_nodes
+    |> Enum.map(& &1.updated_at)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&DateTime.to_unix(&1, :microsecond))
+    |> Enum.max(fn -> 0 end)
+  end
+
+  defp append_idempotent_finding(repo, work_package_id, finding_id, attrs) do
+    case PlanningRepository.append_finding(repo, attrs) do
+      {:ok, finding} ->
+        {:ok, finding}
+
+      {:error, :id_already_exists} ->
+        repo
+        |> PlanningRepository.list_findings(work_package_id)
+        |> find_existing_finding(finding_id)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp find_existing_finding({:ok, findings}, finding_id) do
+    case Enum.find(findings, &(&1.id == finding_id)) do
+      %{} = finding -> {:ok, finding}
+      nil -> {:error, :id_already_exists}
+    end
+  end
+
+  defp find_existing_finding({:error, reason}, _finding_id), do: {:error, reason}
+
+  defp finding_id(session, idempotency_key) do
+    material = [session.assignment.grant_id, session.assignment.work_package_id, idempotency_key] |> Enum.join(":")
+    "finding_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
   defp append_scoped_progress(repo, session, arguments, tool, payload) do
@@ -746,20 +915,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp readiness_gates(state) do
+    review_required? = state.work_package.kind != "investigation"
+
     missing =
       []
       |> maybe_missing(state.work_package.status != "ci_waiting", "status_ci_waiting")
       |> maybe_missing(active_blocker?(state.progress_events), "no_active_blockers")
       |> maybe_missing(incomplete_plan?(state.plan_nodes), "plan_complete")
-      |> maybe_missing(not metadata_present?(state.progress_events, "branch"), "branch_attached")
+      |> maybe_missing(review_required? and not metadata_present?(state.progress_events, "branch"), "branch_attached")
       |> maybe_missing(pr_required?(state.work_package) and not metadata_present?(state.progress_events, "pr"), "pr_attached")
-      |> maybe_missing(not metadata_present?(state.progress_events, "review_package"), "review_package_submitted")
+      |> maybe_missing(review_required? and not metadata_present?(state.progress_events, "review_package"), "review_package_submitted")
+      |> maybe_missing(state.work_package.kind == "investigation" and state.findings == [], "findings_documented")
 
     if missing == [], do: :ok, else: {:error, {:readiness_failed, Enum.reverse(missing)}}
   end
 
   defp active_blocker?(progress_events) do
-    Enum.any?(progress_events, &(payload_type?(&1, "blocker", "report_blocker") and Map.get(&1.payload || %{}, "active") == true))
+    progress_events
+    |> Enum.filter(&blocker_event?/1)
+    |> Enum.reduce(%{}, fn event, blockers ->
+      Map.put(blockers, blocker_id(event), Map.get(event.payload || %{}, "active") == true)
+    end)
+    |> Map.values()
+    |> Enum.any?(& &1)
+  end
+
+  defp blocker_event?(%ProgressEvent{payload: payload}) when is_map(payload) do
+    Map.get(payload, "type") == "blocker" and Map.get(payload, "source_tool") in ["report_blocker", "resolve_blocker"]
+  end
+
+  defp blocker_event?(%ProgressEvent{}), do: false
+
+  defp blocker_id(%ProgressEvent{payload: payload, idempotency_key: idempotency_key, id: id}) do
+    Map.get(payload || %{}, "blocker_id") || idempotency_key || id
   end
 
   defp incomplete_plan?(plan_nodes), do: Enum.any?(plan_nodes, &(&1.status == "pending"))
@@ -819,6 +1007,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp required_integer(arguments, key) do
+    case Map.get(arguments, key) do
+      value when is_integer(value) -> {:ok, value}
+      _value -> {:tool_error, "missing_#{key}"}
+    end
+  end
+
+  defp required_list(arguments, key) do
+    case Map.get(arguments, key) do
+      [_head | _tail] = value -> {:ok, value}
+      _value -> {:tool_error, "missing_#{key}"}
+    end
+  end
+
+  defp optional_list(arguments, key) do
+    case Map.get(arguments, key, []) do
+      value when is_list(value) -> value
+      _value -> []
+    end
+  end
+
   defp optional_argument(arguments, key, default) do
     case Map.get(arguments, key, default) do
       value when is_binary(value) -> if String.trim(value) == "", do: default, else: value
@@ -871,7 +1080,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp progress_event_payload(%ProgressEvent{} = event) do
-    %{"id" => event.id, "summary" => event.summary, "status" => event.status, "idempotency_key" => event.idempotency_key}
+    %{
+      "id" => event.id,
+      "summary" => event.summary,
+      "status" => event.status,
+      "idempotency_key" => event.idempotency_key,
+      "payload" => event.payload || %{}
+    }
   end
 
   defp work_package_payload(%WorkPackage{} = work_package) do

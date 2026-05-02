@@ -209,6 +209,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
+  @spec update_plan_node(repo(), String.t(), map()) :: {:ok, PlanNode.t()} | {:error, error()}
+  def update_plan_node(repo, plan_node_id, attrs)
+      when is_atom(repo) and is_binary(plan_node_id) and is_map(attrs) do
+    case repo.get(PlanNode, plan_node_id) do
+      nil ->
+        {:error, :not_found}
+
+      %PlanNode{} = plan_node ->
+        plan_node
+        |> PlanNode.update_changeset(attrs)
+        |> update(repo)
+    end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
   @spec list_plan_nodes(repo(), String.t()) :: {:ok, [PlanNode.t()]} | {:error, error()}
   def list_plan_nodes(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
     safe_all(repo, fn ->

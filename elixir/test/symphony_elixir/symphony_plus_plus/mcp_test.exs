@@ -249,8 +249,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["claim_work_key", "inputSchema", "required"]) == ["secret"]
     assert get_in(tools_by_name, ["claim_work_key", "inputSchema", "properties", "secret", "type"]) == "string"
     assert get_in(tools_by_name, ["append_progress", "inputSchema", "required"]) == ["summary", "idempotency_key"]
+    assert get_in(tools_by_name, ["append_finding", "inputSchema", "required"]) == ["title", "body", "idempotency_key"]
+    assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "expected_version", "type"]) == "integer"
+    assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["blocker_id", "resolution", "summary", "idempotency_key"]
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "required"]) == ["url"]
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == ["string", "null"]
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests"]
   end
 
   test "server rejects re-initialize after handshake", %{repo: repo} do
@@ -765,13 +769,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "jsonrpc" => "2.0",
           "id" => "finding",
           "method" => "tools/call",
-          "params" => %{"name" => "append_finding", "arguments" => %{"title" => "Scoped", "body" => "Own package only"}}
+          "params" => %{
+            "name" => "append_finding",
+            "arguments" => %{"title" => "Scoped", "body" => "Own package only", "idempotency_key" => "finding-scoped"}
+          }
         },
         repo: repo,
         session: session
       )
 
     assert get_in(finding_response, ["result", "structuredContent", "finding", "title"]) == "Scoped"
+
+    finding_replay_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "finding-replay",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_finding",
+            "arguments" => %{"title" => "Scoped", "body" => "Own package only", "idempotency_key" => "finding-scoped"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(finding_replay_response, ["result", "structuredContent", "finding", "id"]) ==
+             get_in(finding_response, ["result", "structuredContent", "finding", "id"])
 
     progress_args = %{"summary" => "Progress", "idempotency_key" => "worker-progress-1", "body" => "Done"}
 
@@ -838,6 +863,60 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Enum.any?(events, &(get_in(&1.payload, ["type"]) == "scope_expansion_request" and get_in(&1.payload, ["approved"]) == false))
   end
 
+  test "update_task_plan patches existing nodes with expected version", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PLAN-PATCH", kind: "mcp"))
+    assert {:ok, plan_node} = PlanningRepository.append_plan_node(repo, %{"work_package_id" => package.id, "title" => "Original", "status" => "pending"})
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    read_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "read-plan", "method" => "tools/call", "params" => %{"name" => "read_task_plan"}},
+        repo: repo,
+        session: session
+      )
+
+    version = get_in(read_response, ["result", "structuredContent", "version"])
+
+    patch_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "patch-plan",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "update_task_plan",
+            "arguments" => %{"expected_version" => version, "patch" => %{"nodes" => [%{"id" => plan_node.id, "status" => "done", "body" => "Complete"}]}}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(patch_response, ["result", "structuredContent", "plan_nodes", Access.at(0), "status"]) == "done"
+    assert {:ok, nodes} = PlanningRepository.list_plan_nodes(repo, package.id)
+    assert length(nodes) == 1
+    assert hd(nodes).body == "Complete"
+
+    stale_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "stale-plan",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "update_task_plan",
+            "arguments" => %{"expected_version" => version, "patch" => %{"nodes" => [%{"id" => plan_node.id, "status" => "pending"}]}}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(stale_response, ["error", "data", "reason"]) == "stale_plan_version"
+  end
+
   test "mark_ready enforces worker readiness gates", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-READY-GATES", kind: "mcp", status: "ci_waiting"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -867,6 +946,108 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
     assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
+  end
+
+  test "mark_ready rejects empty review packages and allows resolved blockers", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-READY-BLOCKER", kind: "mcp", status: "ci_waiting"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    empty_review_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "empty-review", "method" => "tools/call", "params" => %{"name" => "submit_review_package", "arguments" => %{}}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(empty_review_response, ["error", "data", "reason"]) == "missing_summary"
+
+    MCPHarness.request(
+      %{
+        "jsonrpc" => "2.0",
+        "id" => "blocker",
+        "method" => "tools/call",
+        "params" => %{
+          "name" => "report_blocker",
+          "arguments" => %{"summary" => "Temporarily blocked", "idempotency_key" => "blocker-1", "blocker_id" => "blocker-1"}
+        }
+      },
+      repo: repo,
+      session: session
+    )
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-BLOCKER/worker"})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/125", "head_sha" => "abc125"})
+    attach_tool(repo, session, "submit_review_package", %{"summary" => "Ready", "tests" => ["mix test"], "artifacts" => []})
+
+    blocked_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-blocked", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "no_active_blockers" in get_in(blocked_response, ["error", "data", "missing"])
+
+    resolved_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "resolve",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "resolve_blocker",
+            "arguments" => %{"blocker_id" => "blocker-1", "resolution" => "Unblocked", "summary" => "Resolved", "idempotency_key" => "resolve-1"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(resolved_response, ["result", "structuredContent", "progress_event", "payload", "active"]) == false
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-resolved", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+  end
+
+  test "investigation readiness does not require branch or review package", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-INVESTIGATION-READY", kind: "investigation", status: "ci_waiting"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    finding_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "finding",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_finding",
+            "arguments" => %{"title" => "Recommendation", "body" => "No code change needed.", "idempotency_key" => "investigation-finding"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(finding_response, ["result", "structuredContent", "finding", "title"]) == "Recommendation"
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
   end
 
   test "mark_ready rejects spoofed metadata and accepts skipped plan nodes", %{repo: repo} do

@@ -62,6 +62,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode do
     |> validate_inclusion(:status, @statuses)
   end
 
+  @spec update_changeset(t(), map()) :: Ecto.Changeset.t()
+  def update_changeset(%__MODULE__{} = plan_node, attrs) do
+    plan_node
+    |> cast(normalize_keys(attrs), [:title, :body, :status])
+    |> validate_required([:title, :status])
+    |> validate_inclusion(:status, @statuses)
+  end
+
   defp normalize_keys(attrs) when is_map(attrs) do
     Map.new(attrs, fn {key, value} -> {normalize_key(key), value} end)
   end

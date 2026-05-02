@@ -75,6 +75,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Service do
   @spec update_plan_node_status(Repository.repo(), String.t(), String.t()) :: {:ok, PlanNode.t()} | {:error, error()}
   def update_plan_node_status(repo, plan_node_id, status), do: Repository.update_plan_node_status(repo, plan_node_id, status)
 
+  @spec update_plan_node(Repository.repo(), String.t(), map()) :: {:ok, PlanNode.t()} | {:error, Repository.error()}
+  def update_plan_node(repo, plan_node_id, attrs), do: Repository.update_plan_node(repo, plan_node_id, attrs)
+
   @spec get_state(Repository.repo(), String.t()) :: {:ok, State.t()} | {:error, error()}
   def get_state(repo, work_package_id), do: Repository.get_state(repo, work_package_id)
 
