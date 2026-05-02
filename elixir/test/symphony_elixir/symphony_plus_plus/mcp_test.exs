@@ -248,7 +248,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     tools = get_in(response, ["result", "tools"])
     tools_by_name = Map.new(tools, &{&1["name"], &1})
 
-    assert get_in(tools_by_name, ["claim_work_key", "inputSchema", "required"]) == ["secret"]
+    assert get_in(tools_by_name, ["claim_work_key", "inputSchema", "required"]) == ["secret", "claimed_by"]
     assert get_in(tools_by_name, ["claim_work_key", "inputSchema", "properties", "secret", "type"]) == "string"
     assert get_in(tools_by_name, ["append_progress", "inputSchema", "required"]) == ["summary", "idempotency_key"]
     assert get_in(tools_by_name, ["append_finding", "inputSchema", "required"]) == ["title", "body", "idempotency_key"]
@@ -684,6 +684,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     server = Server.new(Config.default(repo: repo), initialized: true)
 
+    missing_owner_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-missing-owner",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret}}
+        },
+        server
+      )
+
+    assert get_in(missing_owner_response, ["error", "data", "reason"]) == "missing_claimed_by"
+
     {claim_response, claimed_server} =
       Server.handle_state(
         %{
@@ -810,14 +823,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert is_list(get_in(tools_response, ["result", "tools"]))
   end
 
-  test "response-only handle uses a stable default state key for recreated servers", %{repo: repo} do
+  test "response-only handle supports explicit state keys for recreated servers", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STATELESS-HANDLE", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    state_key = make_ref()
 
     init_response =
       Server.handle(
         %{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()},
-        Server.new(Config.default(repo: repo))
+        Server.new(Config.default(repo: repo), state_key: state_key)
       )
 
     claim_response =
@@ -828,18 +842,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "method" => "tools/call",
           "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
         },
-        Server.new(Config.default(repo: repo))
+        Server.new(Config.default(repo: repo), state_key: state_key)
       )
 
     assignment_response =
       Server.handle(
         %{"jsonrpc" => "2.0", "id" => "assignment", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
-        Server.new(Config.default(repo: repo))
+        Server.new(Config.default(repo: repo), state_key: state_key)
       )
 
     assert get_in(init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-STATELESS-HANDLE"
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-STATELESS-HANDLE"
+  end
+
+  test "response-only handle does not share default state between recreated servers", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STATE-ISOLATED", kind: "mcp", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    claim_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assignment_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "assignment", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-STATE-ISOLATED"
+    assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
   end
 
   test "response-only handle does not retain unchanged one-shot server state", %{repo: repo} do

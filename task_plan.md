@@ -117,9 +117,12 @@ Phase 3
 - [x] Run fresh full-diff T2 on pushed head `28d456e` and close valid findings gate.
 - [x] Fix twenty-sixth T2 reconnect ownership, finding replay id, finding retry, quick-fix readiness, and response-state findings locally.
 - [x] Commit and push twenty-sixth T2 fixes.
+- [x] Run fresh full-diff T2 on pushed head `e16849c` and close valid findings gate.
+- [x] Fix twenty-seventh T2 response-state isolation and required reconnect owner contract findings locally.
+- [ ] Commit and push twenty-seventh T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** twenty-sixth T2 fixes pushed; pending fresh full-diff T2 rerun and GitHub review if clean.
+- **Status:** twenty-seventh T2 fixes implemented locally with validation green; pending commit/push and fresh full-diff T2 rerun.
 
 ### High-Pressure Coherence Review
 
@@ -137,6 +140,8 @@ Phase 3
 - Findings are still converging on small race and input-validation hardening around the same P3-002 tools, not showing a need to split or redesign the package.
 - Before the next T2, the approach remains coherent because the latest changes only tighten worker claim ownership, response-only state continuity, finding idempotency, and policy-gate alignment inside the same P3-002 MCP surface.
 - The latest findings are still converging as small contract/race hardening, not as evidence of a broader design or scope problem.
+- Before the next T2, the approach remains coherent because the latest change keeps default MCP state isolated while preserving explicit `state_key` continuity for stateless transports and making claim ownership explicit.
+- Findings remain concentrated on the same worker MCP state/claim contract, so continuing the loop is still appropriate.
 
 ## Boundaries
 

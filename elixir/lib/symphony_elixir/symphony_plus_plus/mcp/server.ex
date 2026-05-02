@@ -50,7 +50,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     %__MODULE__{
       config: config,
       session: Keyword.get(opts, :session),
-      state_key: Keyword.get_lazy(opts, :state_key, fn -> default_state_key(config) end),
+      state_key: Keyword.get(opts, :state_key, make_ref()),
       initialized: Keyword.get(opts, :initialized, false)
     }
   end
@@ -131,7 +131,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp handle_state_key(%__MODULE__{state_key: state_key}), do: {__MODULE__, state_key}
-  defp default_state_key(%Config{} = config), do: {:default, config.repo}
 
   defp do_handle([], %__MODULE__{}) do
     error_response(nil, -32_600, "Invalid Request", %{"reason" => "empty_batch"})
@@ -430,7 +429,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool_input_schema("claim_work_key") do
-    schema(%{"secret" => string_schema(), "claimed_by" => string_schema()}, ["secret"])
+    schema(%{"secret" => string_schema(), "claimed_by" => string_schema()}, ["secret", "claimed_by"])
   end
 
   defp worker_tool_input_schema(name) when name in ["get_current_assignment", "read_context", "read_task_plan", "mark_ready"] do
@@ -653,8 +652,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp claim_work_key(params, %__MODULE__{config: config, session: %Session{} = session}) do
     with {:ok, arguments} <- tool_arguments(params, "claim_work_key"),
          {:ok, secret} <- required_argument(arguments, "secret"),
+         {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
          proof_hash = WorkKey.secret_hash(secret),
          true <- session.proof_hash == proof_hash,
+         :ok <- require_same_claim_owner(session.assignment, claimed_by),
          {:ok, session} <- revalidate_worker_session(config.repo, session, proof_hash) do
       {:ok, %{"assignment" => Session.public_assignment(session)}, session}
     else
@@ -669,7 +670,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp claim_work_key(params, %__MODULE__{config: config}) do
     with {:ok, arguments} <- tool_arguments(params, "claim_work_key"),
          {:ok, secret} <- required_argument(arguments, "secret"),
-         claimed_by <- optional_argument(arguments, "claimed_by", "worker"),
+         {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
          proof_hash = WorkKey.secret_hash(secret),
          :ok <- require_worker_secret(config.repo, secret),
          {:ok, session} <- claim_or_reconnect_worker_session(config.repo, secret, proof_hash, claimed_by) do
