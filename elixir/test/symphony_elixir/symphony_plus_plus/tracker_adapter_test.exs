@@ -271,6 +271,115 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert {:error, {:overlapping_symphony_plus_plus_tracker_states, ["ready_for_worker"]}} = Config.validate!()
   end
 
+  test "Symphony++ tracker config accepts dispatch filters" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "symphony_pp",
+      tracker_api_token: nil,
+      tracker_project_slug: nil,
+      tracker_assignee: "agent-1",
+      tracker_active_states: ["ready_for_worker"],
+      tracker_terminal_states: ["merged"],
+      tracker_filter_repos: ["nextide/service"],
+      tracker_filter_base_branches: ["origin/symphony-plus-plus/beta"],
+      tracker_filter_work_kinds: [" adapter "]
+    )
+
+    assert :ok = Config.validate!()
+    tracker = Config.settings!().tracker
+    assert tracker.kind == "Symphony_pp"
+    assert tracker.filters.repos == ["nextide/service"]
+    assert tracker.filters.base_branches == ["origin/symphony-plus-plus/beta"]
+    assert tracker.filters.work_kinds == ["adapter"]
+  end
+
+  test "Symphony++ dispatch matcher treats missing filters as unrestricted" do
+    File.write!(Workflow.workflow_file_path(), """
+    ---
+    tracker:
+      kind: Symphony_pp
+      assignee: agent-1
+      active_states: [ready_for_worker]
+      terminal_states: [merged]
+    ---
+    Prompt
+    """)
+
+    if Process.whereis(SymphonyElixir.WorkflowStore) do
+      SymphonyElixir.WorkflowStore.force_reload()
+    end
+
+    issue =
+      TrackerAdapter.to_issue(
+        struct!(
+          WorkPackage,
+          WorkPackageFactory.attrs(
+            id: "SYMPP-NO-FILTERS",
+            kind: "adapter",
+            repo: "nextide/other",
+            base_branch: "main",
+            status: "ready_for_worker"
+          )
+        )
+      )
+
+    assert :ok = Config.validate!()
+    assert TrackerAdapter.dispatch_filters_match?(issue)
+  end
+
+  test "Symphony++ tracker config rejects invalid dispatch filters" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "Symphony_pp",
+      tracker_api_token: nil,
+      tracker_project_slug: nil,
+      tracker_assignee: "agent-1",
+      tracker_active_states: ["ready_for_worker"],
+      tracker_terminal_states: ["merged"],
+      tracker_filter_repos: ["nextide/service", " "]
+    )
+
+    assert {:error, {:invalid_symphony_plus_plus_dispatch_filter, :repos, [""]}} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "Symphony_pp",
+      tracker_api_token: nil,
+      tracker_project_slug: nil,
+      tracker_assignee: "agent-1",
+      tracker_active_states: ["ready_for_worker"],
+      tracker_terminal_states: ["merged"],
+      tracker_filter_work_kinds: ["adapter", "docs"]
+    )
+
+    assert {:error, {:unsupported_symphony_plus_plus_work_kinds, ["docs"]}} = Config.validate!()
+
+    File.write!(Workflow.workflow_file_path(), """
+    ---
+    tracker:
+      kind: Symphony_pp
+      assignee: agent-1
+      active_states: [ready_for_worker]
+      terminal_states: [merged]
+      filters:
+        repos: nextide/service
+    ---
+    Prompt
+    """)
+
+    if Process.whereis(SymphonyElixir.WorkflowStore) do
+      SymphonyElixir.WorkflowStore.force_reload()
+    end
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "tracker.filters.repos"
+  end
+
+  test "Symphony++ dispatch filter errors are reported as workflow config errors" do
+    assert Orchestrator.workflow_config_error_message_for_test({:invalid_symphony_plus_plus_dispatch_filter, :repos, [""]}) ==
+             ~s(Invalid WORKFLOW.md config: invalid Symphony++ dispatch filter repos: [""])
+
+    assert Orchestrator.workflow_config_error_message_for_test({:unsupported_symphony_plus_plus_work_kinds, ["docs"]}) ==
+             ~s(Invalid WORKFLOW.md config: unsupported Symphony++ work kinds: ["docs"])
+  end
+
   test "malformed tracker config returns workflow validation error" do
     File.write!(Workflow.workflow_file_path(), """
     ---
@@ -1174,6 +1283,97 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
 
     assert {:ok, issues} = Tracker.fetch_candidate_issues()
     assert MapSet.new(Enum.map(issues, & &1.id)) == MapSet.new([ready.id, implementing.id])
+  end
+
+  test "configured dispatch filters exclude out-of-scope work packages", %{repo: repo} do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "Symphony_pp",
+      tracker_api_token: nil,
+      tracker_project_slug: nil,
+      tracker_assignee: "agent-1",
+      tracker_active_states: ["ready_for_worker"],
+      tracker_terminal_states: ["merged"],
+      tracker_filter_repos: ["nextide/symphony-plus-plus"],
+      tracker_filter_base_branches: ["origin/symphony-plus-plus/beta"],
+      tracker_filter_work_kinds: ["adapter"]
+    )
+
+    assert {:ok, in_scope} =
+             Repository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-IN-SCOPE",
+                 kind: "adapter",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "origin/symphony-plus-plus/beta",
+                 status: "ready_for_worker"
+               )
+             )
+
+    assert {:ok, repo_mismatch} =
+             Repository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-REPO-MISMATCH",
+                 kind: "adapter",
+                 repo: "nextide/other",
+                 base_branch: "origin/symphony-plus-plus/beta",
+                 status: "ready_for_worker"
+               )
+             )
+
+    assert {:ok, base_mismatch} =
+             Repository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-BASE-MISMATCH",
+                 kind: "adapter",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "main",
+                 status: "ready_for_worker"
+               )
+             )
+
+    assert {:ok, kind_mismatch} =
+             Repository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-KIND-MISMATCH",
+                 kind: "hotfix",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "origin/symphony-plus-plus/beta",
+                 status: "ready_for_worker"
+               )
+             )
+
+    assert {:ok, issues} = Tracker.fetch_candidate_issues()
+    assert Enum.map(issues, & &1.id) == [in_scope.id]
+
+    assert {:ok, state_issues} = Tracker.fetch_issues_by_states(["ready_for_worker"])
+
+    assert MapSet.new(Enum.map(state_issues, & &1.id)) ==
+             MapSet.new([in_scope.id, repo_mismatch.id, base_mismatch.id, kind_mismatch.id])
+
+    assert {:ok, out_of_scope_issues} = Tracker.fetch_issue_states_by_ids([repo_mismatch.id, base_mismatch.id, kind_mismatch.id])
+    assert MapSet.new(Enum.map(out_of_scope_issues, & &1.id)) == MapSet.new([repo_mismatch.id, base_mismatch.id, kind_mismatch.id])
+    assert Enum.all?(out_of_scope_issues, &(not TrackerAdapter.dispatch_filters_match?(&1)))
+    repo_mismatch_issue = Enum.find(out_of_scope_issues, &(&1.id == repo_mismatch.id))
+
+    assert {:ok, [issue]} = Tracker.fetch_issue_states_by_ids([in_scope.id])
+    assert issue.id == in_scope.id
+    assert TrackerAdapter.dispatch_filters_match?(issue)
+
+    state = %Orchestrator.State{max_concurrent_agents: 1, running: %{}, claimed: MapSet.new()}
+    refute Orchestrator.dispatch_filters_allow_issue_for_test(state, repo_mismatch_issue, 1)
+
+    retry_state = %{state | retry_attempts: %{repo_mismatch.id => %{attempt: 1}}}
+    assert %{retry_attempts: %{}} = Orchestrator.dispatch_issue_for_test(retry_state, repo_mismatch_issue, 1)
+
+    claimed_state = %{state | claimed: MapSet.new([repo_mismatch.id])}
+    assert Orchestrator.dispatch_filters_allow_issue_for_test(claimed_state, repo_mismatch_issue, 1)
+
+    running_state = %{state | running: %{repo_mismatch.id => %{}}}
+    assert Orchestrator.dispatch_filters_allow_issue_for_test(running_state, repo_mismatch_issue, nil, "worker-a")
   end
 
   test "fetches packages by explicit states and ids", %{repo: repo} do

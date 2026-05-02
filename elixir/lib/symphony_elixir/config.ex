@@ -4,6 +4,7 @@ defmodule SymphonyElixir.Config do
   """
 
   alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
   alias SymphonyElixir.SymphonyPlusPlus.TrackerStates
   alias SymphonyElixir.Workflow
 
@@ -139,8 +140,9 @@ defmodule SymphonyElixir.Config do
 
   defp validate_symphony_plus_plus_tracker(tracker) do
     with :ok <- validate_symphony_plus_plus_tracker_secrets(tracker),
-         :ok <- validate_symphony_plus_plus_tracker_assignee(tracker) do
-      validate_symphony_plus_plus_tracker_states(tracker)
+         :ok <- validate_symphony_plus_plus_tracker_assignee(tracker),
+         :ok <- validate_symphony_plus_plus_tracker_states(tracker) do
+      validate_symphony_plus_plus_dispatch_filters(tracker.filters)
     end
   end
 
@@ -205,6 +207,39 @@ defmodule SymphonyElixir.Config do
 
       true ->
         :ok
+    end
+  end
+
+  defp validate_symphony_plus_plus_dispatch_filters(nil), do: :ok
+
+  defp validate_symphony_plus_plus_dispatch_filters(filters) do
+    with :ok <- validate_dispatch_filter_values(:repos, filters.repos),
+         :ok <- validate_dispatch_filter_values(:base_branches, filters.base_branches),
+         :ok <- validate_dispatch_filter_values(:work_kinds, filters.work_kinds) do
+      validate_dispatch_filter_work_kinds(filters.work_kinds)
+    end
+  end
+
+  defp validate_dispatch_filter_values(field, values) when is_list(values) do
+    invalid_values =
+      values
+      |> Enum.reject(&(is_binary(&1) and String.trim(&1) != ""))
+
+    case invalid_values do
+      [] -> :ok
+      _ -> {:error, {:invalid_symphony_plus_plus_dispatch_filter, field, invalid_values}}
+    end
+  end
+
+  defp validate_dispatch_filter_values(field, value),
+    do: {:error, {:invalid_symphony_plus_plus_dispatch_filter, field, value}}
+
+  defp validate_dispatch_filter_work_kinds(work_kinds) do
+    invalid_kinds = Enum.reject(work_kinds, &StateMachine.supported_kind?/1)
+
+    case invalid_kinds do
+      [] -> :ok
+      _ -> {:error, {:unsupported_symphony_plus_plus_work_kinds, invalid_kinds}}
     end
   end
 

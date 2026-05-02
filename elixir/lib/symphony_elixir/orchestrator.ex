@@ -247,6 +247,16 @@ defmodule SymphonyElixir.Orchestrator do
 
         state
 
+      {:error, {:invalid_symphony_plus_plus_dispatch_filter, field, values}} ->
+        Logger.error(workflow_config_error_message({:invalid_symphony_plus_plus_dispatch_filter, field, values}))
+
+        state
+
+      {:error, {:unsupported_symphony_plus_plus_work_kinds, work_kinds}} ->
+        Logger.error(workflow_config_error_message({:unsupported_symphony_plus_plus_work_kinds, work_kinds}))
+
+        state
+
       {:error, {:invalid_workflow_config, message}} ->
         Logger.error("Invalid WORKFLOW.md config: #{message}")
         state
@@ -320,6 +330,16 @@ defmodule SymphonyElixir.Orchestrator do
       when is_function(issue_fetcher, 1) do
     revalidate_issue_for_dispatch(issue, issue_fetcher, terminal_state_set())
   end
+
+  @doc false
+  @spec dispatch_issue_for_test(%State{}, Issue.t(), term(), String.t() | nil) :: %State{}
+  def dispatch_issue_for_test(%State{} = state, %Issue{} = issue, attempt \\ nil, preferred_worker_host \\ nil) do
+    dispatch_issue(state, issue, attempt, preferred_worker_host)
+  end
+
+  @doc false
+  @spec workflow_config_error_message_for_test(term()) :: String.t() | nil
+  def workflow_config_error_message_for_test(reason), do: workflow_config_error_message(reason)
 
   @doc false
   @spec sort_issues_for_dispatch_for_test([Issue.t()]) :: [Issue.t()]
@@ -660,7 +680,12 @@ defmodule SymphonyElixir.Orchestrator do
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
-        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
+        if dispatch_filters_allow_issue?(state, refreshed_issue, attempt, preferred_worker_host) do
+          do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
+        else
+          Logger.info("Skipping dispatch; issue outside configured dispatch filters: #{issue_context(refreshed_issue)}")
+          clear_issue_retry(state, refreshed_issue.id)
+        end
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -762,6 +787,37 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp revalidate_issue_for_dispatch(issue, _issue_fetcher, _terminal_states), do: {:ok, issue}
 
+  defp workflow_config_error_message({:invalid_symphony_plus_plus_dispatch_filter, field, values}) do
+    "Invalid WORKFLOW.md config: invalid Symphony++ dispatch filter #{field}: #{inspect(values)}"
+  end
+
+  defp workflow_config_error_message({:unsupported_symphony_plus_plus_work_kinds, work_kinds}) do
+    "Invalid WORKFLOW.md config: unsupported Symphony++ work kinds: #{inspect(work_kinds)}"
+  end
+
+  defp workflow_config_error_message(_reason), do: nil
+
+  @doc false
+  def dispatch_filters_allow_issue_for_test(%State{} = state, %Issue{} = issue, attempt \\ nil, preferred_worker_host \\ nil) do
+    dispatch_filters_allow_issue?(state, issue, attempt, preferred_worker_host)
+  end
+
+  defp dispatch_filters_allow_issue?(%State{} = state, %Issue{} = issue, _attempt, _preferred_worker_host) do
+    issue_owned_by_orchestrator?(state, issue.id) or Tracker.dispatch_filters_match?(issue)
+  end
+
+  defp issue_owned_by_orchestrator?(%State{} = state, issue_id) when is_binary(issue_id) do
+    MapSet.member?(state.claimed, issue_id) or Map.has_key?(state.running, issue_id)
+  end
+
+  defp issue_owned_by_orchestrator?(_state, _issue_id), do: false
+
+  defp clear_issue_retry(%State{} = state, issue_id) when is_binary(issue_id) do
+    %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}
+  end
+
+  defp clear_issue_retry(%State{} = state, _issue_id), do: state
+
   defp complete_issue(%State{} = state, issue_id) do
     %{
       state
@@ -827,7 +883,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_retry_issue(%State{} = state, issue_id, attempt, metadata) do
-    case Tracker.fetch_candidate_issues() do
+    case Tracker.fetch_issue_states_by_ids([issue_id]) do
       {:ok, issues} ->
         issues
         |> find_issue_by_id(issue_id)
