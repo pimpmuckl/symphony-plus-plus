@@ -880,7 +880,8 @@ defmodule SymphonyElixir.Orchestrator do
       worker_host: worker_host,
       status: "starting",
       replace_agent_run_id: Keyword.get(opts, :replace_agent_run_id),
-      recover_retrying_after_ms: retrying_recovery_after_ms(opts),
+      retry_recovery_base_ms: retrying_recovery_base_ms(opts),
+      retry_recovery_max_ms: retrying_recovery_max_ms(opts),
       starting_stale_after_ms: @failure_retry_base_ms,
       stale_after_ms: agent_run_stale_after_ms()
     )
@@ -1140,11 +1141,19 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp retrying_recovery_after_ms(opts) do
+  defp retrying_recovery_base_ms(opts) do
     if is_binary(Keyword.get(opts, :replace_agent_run_id)) do
       nil
     else
       @failure_retry_base_ms
+    end
+  end
+
+  defp retrying_recovery_max_ms(opts) do
+    if is_binary(Keyword.get(opts, :replace_agent_run_id)) do
+      nil
+    else
+      Config.settings!().agent.max_retry_backoff_ms
     end
   end
 

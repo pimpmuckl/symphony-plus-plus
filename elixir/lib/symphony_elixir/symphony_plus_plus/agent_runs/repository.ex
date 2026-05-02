@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
   @moduledoc false
 
+  import Bitwise, only: [<<<: 2]
   import Ecto.Query, only: [from: 2]
 
   alias Ecto.Changeset
@@ -113,7 +114,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
       case insert_run(repo, attrs) do
         {:error, :active_run_exists} ->
           repo
-          |> release_retrying_reservation(work_package_id, Keyword.get(opts, :recover_retrying_after_ms))
+          |> release_retrying_reservation(work_package_id, opts)
           |> maybe_release_stale_starting_run(repo, work_package_id, Keyword.get(opts, :starting_stale_after_ms))
           |> maybe_release_stale_active_run(repo, work_package_id, Keyword.get(opts, :stale_after_ms))
           |> maybe_insert_after_stale_release(repo, attrs)
@@ -163,15 +164,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
 
   defp release_previous_attempt(_repo, _previous_agent_run_id, _work_package_id), do: :ok
 
-  defp release_retrying_reservation(repo, work_package_id, recover_after_ms)
-       when is_binary(work_package_id) and is_integer(recover_after_ms) and recover_after_ms >= 0 do
+  defp release_retrying_reservation(repo, work_package_id, opts) when is_binary(work_package_id) and is_list(opts) do
+    with %AgentRun{} = agent_run <- retrying_for_work_package(repo, work_package_id),
+         recover_after_ms when is_integer(recover_after_ms) and recover_after_ms >= 0 <-
+           retry_recovery_delay_ms(agent_run, opts) do
+      release_retrying_reservation(repo, agent_run, recover_after_ms)
+    else
+      nil -> {:ok, :active}
+      _recover_after_ms -> {:ok, :active}
+    end
+  end
+
+  defp release_retrying_reservation(repo, %AgentRun{} = agent_run, recover_after_ms) do
     now = DateTime.utc_now(:microsecond)
     recovery_cutoff = DateTime.add(now, -recover_after_ms, :millisecond)
 
     {updated_count, _rows} =
       repo.update_all(
         from(agent_run in AgentRun,
-          where: agent_run.work_package_id == ^work_package_id,
+          where: agent_run.id == ^agent_run.id,
           where: agent_run.status == "retrying",
           where: agent_run.last_seen_at <= ^recovery_cutoff
         ),
@@ -191,7 +202,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
     end
   end
 
-  defp release_retrying_reservation(_repo, _work_package_id, _recover_retrying), do: {:ok, :active}
+  defp release_retrying_reservation(_repo, _work_package_id, _opts), do: {:ok, :active}
+
+  defp retrying_for_work_package(repo, work_package_id) do
+    repo.one(
+      from(agent_run in AgentRun,
+        where: agent_run.work_package_id == ^work_package_id,
+        where: agent_run.status == "retrying",
+        order_by: [desc: agent_run.started_at, asc: agent_run.id],
+        limit: 1
+      )
+    )
+  end
+
+  defp retry_recovery_delay_ms(%AgentRun{} = agent_run, opts) do
+    with base_ms when is_integer(base_ms) and base_ms >= 0 <- Keyword.get(opts, :retry_recovery_base_ms),
+         max_ms when is_integer(max_ms) and max_ms >= 0 <- Keyword.get(opts, :retry_recovery_max_ms) do
+      next_attempt =
+        case agent_run.attempt do
+          attempt when is_integer(attempt) and attempt > 0 -> attempt + 1
+          _attempt -> 1
+        end
+
+      max_delay_power = min(next_attempt - 1, 10)
+      min(base_ms * (1 <<< max_delay_power), max_ms)
+    end
+  end
 
   defp maybe_release_stale_active_run({:ok, :released}, _repo, _work_package_id, _stale_after_ms), do: {:ok, :released}
 
@@ -214,7 +250,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
        do: {:ok, :active}
 
   defp release_stale_active_run(repo, work_package_id, stale_after_ms) when is_binary(work_package_id) do
-    release_stale_status(repo, work_package_id, ["running", "retrying"], stale_after_ms, "stale active AgentRun released before dispatch")
+    release_stale_status(repo, work_package_id, "running", stale_after_ms, "stale active AgentRun released before dispatch")
   end
 
   defp release_stale_active_run(_repo, _work_package_id, _stale_after_ms), do: {:ok, :active}

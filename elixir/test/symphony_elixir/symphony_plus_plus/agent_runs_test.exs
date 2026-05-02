@@ -285,7 +285,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
     assert retrying.status == "retrying"
 
     assert {:ok, replacement} =
-             Service.start_dispatch(repo, issue(work_package.id), attempt: 2, recover_retrying_after_ms: 0)
+             Service.start_dispatch(repo, issue(work_package.id), attempt: 2, retry_recovery_base_ms: 0, retry_recovery_max_ms: 0)
 
     assert replacement.status == "running"
     assert replacement.id != run.id
@@ -304,10 +304,91 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
     assert retrying.status == "retrying"
 
     assert {:error, :active_run_exists} =
-             Service.start_dispatch(repo, issue(work_package.id), attempt: 2, recover_retrying_after_ms: 60_000)
+             Service.start_dispatch(
+               repo,
+               issue(work_package.id),
+               attempt: 2,
+               retry_recovery_base_ms: 60_000,
+               retry_recovery_max_ms: 60_000
+             )
 
     assert {:ok, reserved} = Repository.get(repo, run.id)
     assert reserved.status == "retrying"
+  end
+
+  test "generic stale active recovery does not release retrying reservations", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-RETRY-NOT-STALE", status: "ready_for_worker"))
+
+    assert {:ok, run} = Service.start_dispatch(repo, issue(work_package.id))
+    assert {:ok, retrying} = Service.mark_retrying(repo, run.id, "worker exited")
+
+    stale_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -5, :second)
+
+    assert {:ok, _retrying} =
+             retrying
+             |> AgentRun.update_changeset(%{last_seen_at: stale_seen_at})
+             |> repo.update()
+
+    assert {:error, :active_run_exists} =
+             Service.start_dispatch(
+               repo,
+               issue(work_package.id),
+               attempt: 2,
+               stale_after_ms: 1_000,
+               retry_recovery_base_ms: 60_000,
+               retry_recovery_max_ms: 60_000
+             )
+
+    assert {:ok, reserved} = Repository.get(repo, run.id)
+    assert reserved.status == "retrying"
+  end
+
+  test "retrying recovery age follows stored retry attempt backoff", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-RETRY-BACKOFF", status: "ready_for_worker"))
+
+    assert {:ok, run} = Service.start_dispatch(repo, issue(work_package.id), attempt: 3)
+    assert {:ok, retrying} = Service.mark_retrying(repo, run.id, "worker exited")
+
+    nearly_old_enough_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -700, :millisecond)
+
+    assert {:ok, _retrying} =
+             retrying
+             |> AgentRun.update_changeset(%{last_seen_at: nearly_old_enough_seen_at})
+             |> repo.update()
+
+    assert {:error, :active_run_exists} =
+             Service.start_dispatch(
+               repo,
+               issue(work_package.id),
+               attempt: 4,
+               retry_recovery_base_ms: 100,
+               retry_recovery_max_ms: 10_000
+             )
+
+    old_enough_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -1_000, :millisecond)
+
+    assert {:ok, _retrying} =
+             retrying
+             |> AgentRun.update_changeset(%{last_seen_at: old_enough_seen_at})
+             |> repo.update()
+
+    assert {:ok, replacement} =
+             Service.start_dispatch(
+               repo,
+               issue(work_package.id),
+               attempt: 4,
+               retry_recovery_base_ms: 100,
+               retry_recovery_max_ms: 10_000
+             )
+
+    assert replacement.status == "running"
+    assert replacement.id != run.id
+
+    assert {:ok, recovered} = Repository.get(repo, run.id)
+    assert recovered.status == "failed"
+    assert recovered.reason == "retry reservation recovered by dispatch"
   end
 
   test "terminal AgentRun rows reject late lifecycle updates", %{repo: repo} do
