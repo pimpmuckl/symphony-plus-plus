@@ -25,8 +25,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Service do
       replace_agent_run_id: Keyword.get(opts, :replace_agent_run_id),
       retry_recovery_base_ms: Keyword.get(opts, :retry_recovery_base_ms),
       retry_recovery_max_ms: Keyword.get(opts, :retry_recovery_max_ms),
-      starting_stale_after_ms: Keyword.get(opts, :starting_stale_after_ms),
-      stale_after_ms: Keyword.get(opts, :stale_after_ms)
+      starting_stale_after_ms: Keyword.get(opts, :starting_stale_after_ms)
     )
   end
 

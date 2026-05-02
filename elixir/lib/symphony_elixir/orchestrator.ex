@@ -890,8 +890,7 @@ defmodule SymphonyElixir.Orchestrator do
       replace_agent_run_id: Keyword.get(opts, :replace_agent_run_id),
       retry_recovery_base_ms: retrying_recovery_base_ms(opts),
       retry_recovery_max_ms: retrying_recovery_max_ms(opts),
-      starting_stale_after_ms: @failure_retry_base_ms,
-      stale_after_ms: agent_run_stale_after_ms()
+      starting_stale_after_ms: @failure_retry_base_ms
     )
   end
 
@@ -1140,13 +1139,6 @@ defmodule SymphonyElixir.Orchestrator do
   defp failure_retry_delay(attempt) do
     max_delay_power = min(attempt - 1, 10)
     min(@failure_retry_base_ms * (1 <<< max_delay_power), Config.settings!().agent.max_retry_backoff_ms)
-  end
-
-  defp agent_run_stale_after_ms do
-    case Config.settings!().codex.stall_timeout_ms do
-      timeout_ms when is_integer(timeout_ms) and timeout_ms > 0 -> timeout_ms
-      _timeout_ms -> @failure_retry_base_ms
-    end
   end
 
   defp retrying_recovery_base_ms(opts) do

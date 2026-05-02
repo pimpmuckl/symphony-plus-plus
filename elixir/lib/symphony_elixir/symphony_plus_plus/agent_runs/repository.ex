@@ -116,7 +116,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
           repo
           |> release_retrying_reservation(work_package_id, opts)
           |> maybe_release_stale_starting_run(repo, work_package_id, Keyword.get(opts, :starting_stale_after_ms))
-          |> maybe_release_stale_active_run(repo, work_package_id, Keyword.get(opts, :stale_after_ms))
           |> maybe_insert_after_stale_release(repo, attrs)
 
         result ->
@@ -229,14 +228,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
     end
   end
 
-  defp maybe_release_stale_active_run({:ok, :released}, _repo, _work_package_id, _stale_after_ms), do: {:ok, :released}
-
-  defp maybe_release_stale_active_run({:ok, :active}, repo, work_package_id, stale_after_ms) do
-    release_stale_active_run(repo, work_package_id, stale_after_ms)
-  end
-
-  defp maybe_release_stale_active_run({:error, reason}, _repo, _work_package_id, _stale_after_ms), do: {:error, reason}
-
   defp maybe_release_stale_starting_run({:ok, :released}, _repo, _work_package_id, _stale_after_ms), do: {:ok, :released}
 
   defp maybe_release_stale_starting_run({:ok, :active}, repo, work_package_id, stale_after_ms) do
@@ -244,16 +235,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
   end
 
   defp maybe_release_stale_starting_run({:error, reason}, _repo, _work_package_id, _stale_after_ms), do: {:error, reason}
-
-  defp release_stale_active_run(_repo, _work_package_id, stale_after_ms)
-       when not is_integer(stale_after_ms) or stale_after_ms <= 0,
-       do: {:ok, :active}
-
-  defp release_stale_active_run(repo, work_package_id, stale_after_ms) when is_binary(work_package_id) do
-    release_stale_status(repo, work_package_id, "running", stale_after_ms, "stale active AgentRun released before dispatch")
-  end
-
-  defp release_stale_active_run(_repo, _work_package_id, _stale_after_ms), do: {:ok, :active}
 
   defp release_stale_status(_repo, _work_package_id, _statuses, stale_after_ms, _reason)
        when not is_integer(stale_after_ms) or stale_after_ms <= 0,
@@ -300,10 +281,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
 
   defp update_run(repo, id, attrs) do
     with {:ok, agent_run} <- get(repo, id),
-         :ok <- active_agent_run?(agent_run) do
-      agent_run
-      |> AgentRun.update_changeset(attrs)
-      |> repo.update()
+         :ok <- active_agent_run?(agent_run),
+         {:ok, changes} <- update_changes(agent_run, attrs) do
+      persist_active_update(repo, id, changes)
+    end
+  end
+
+  defp update_changes(%AgentRun{} = agent_run, attrs) do
+    changeset = AgentRun.update_changeset(agent_run, attrs)
+
+    if changeset.valid? do
+      {:ok, Map.put(changeset.changes, :updated_at, DateTime.utc_now(:microsecond))}
+    else
+      {:error, changeset}
+    end
+  end
+
+  defp persist_active_update(repo, id, changes) when map_size(changes) > 0 do
+    {updated_count, _rows} =
+      repo.update_all(
+        from(agent_run in AgentRun,
+          where: agent_run.id == ^id,
+          where: agent_run.status in ^AgentRun.active_statuses()
+        ),
+        set: Map.to_list(changes)
+      )
+
+    case updated_count do
+      1 -> get(repo, id)
+      0 -> {:error, :not_active}
+      _count -> {:error, {:constraint_failed, "multiple_agent_run_updates"}}
     end
   end
 

@@ -223,7 +223,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
     assert replacement.attempt == 1
   end
 
-  test "stale active AgentRun is failed before replacement dispatch", %{repo: repo} do
+  test "stale running AgentRun is not released from heartbeat age alone", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-STALE", status: "ready_for_worker"))
 
@@ -235,15 +235,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
              |> AgentRun.update_changeset(%{last_seen_at: stale_seen_at})
              |> repo.update()
 
-    assert {:ok, replacement} =
+    assert {:error, :active_run_exists} =
              Service.start_dispatch(repo, issue(work_package.id), attempt: 2, stale_after_ms: 1_000)
 
-    assert replacement.status == "running"
-    assert replacement.id != run.id
-
-    assert {:ok, stale} = Repository.get(repo, run.id)
-    assert stale.status == "failed"
-    assert stale.reason == "stale active AgentRun released before dispatch"
+    assert {:ok, active} = Repository.get(repo, run.id)
+    assert active.status == "running"
+    assert active.reason == nil
   end
 
   test "fresh active AgentRun is not reconciled as stale", %{repo: repo} do
