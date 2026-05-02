@@ -460,7 +460,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "reviews" => array_schema(),
         "head_sha" => nullable_string_schema()
       }),
-      ["summary", "tests"]
+      ["summary", "tests", "artifacts", "reviews"]
     )
   end
 
@@ -730,15 +730,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, state} <- PlanningRepository.get_state(config.repo, Session.work_package_id(session)),
          {:ok, head_sha} <- review_package_head_sha(arguments, state.progress_events),
          {:ok, result} <-
-           append_metadata_event(config.repo, session, arguments, "submit_review_package", "review_package_submitted", %{
+           submit_review_package_transaction(config.repo, session, arguments, artifacts, %{
              "type" => "review_package",
              "summary" => summary,
              "tests" => tests,
              "artifacts" => artifacts,
              "reviews" => reviews,
              "head_sha" => head_sha
-           }),
-         :ok <- append_review_artifacts(config.repo, session, artifacts, head_sha) do
+           }) do
       {:ok, result}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "submit_review_package", "reason" => reason}}
@@ -1012,15 +1011,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     case optional_argument(arguments, "head_sha", nil) do
       nil when is_binary(current_head_sha) -> {:tool_error, "missing_head_sha"}
+      head_sha when is_binary(current_head_sha) and head_sha != current_head_sha -> {:tool_error, "stale_head_sha"}
       head_sha -> {:ok, head_sha}
     end
   end
 
+  defp submit_review_package_transaction(repo, %Session{} = session, arguments, artifacts, payload) do
+    case repo.transaction(fn ->
+           submit_review_package_transaction_body(repo, session, arguments, artifacts, payload)
+         end) do
+      {:ok, result} -> {:ok, result}
+      {:error, {:mcp_error, code, message, data}} -> {:error, code, message, data}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp submit_review_package_transaction_body(repo, %Session{} = session, arguments, artifacts, payload) do
+    case append_metadata_event(repo, session, arguments, "submit_review_package", "review_package_submitted", payload) do
+      {:ok, result} -> persist_review_artifacts_or_rollback(repo, session, artifacts, Map.get(payload, "head_sha"), result)
+      {:error, code, message, data} -> repo.rollback({:mcp_error, code, message, data})
+    end
+  end
+
+  defp persist_review_artifacts_or_rollback(repo, %Session{} = session, artifacts, head_sha, result) do
+    case append_review_artifacts(repo, session, artifacts, head_sha) do
+      :ok -> result
+      {:error, reason} -> repo.rollback(reason)
+    end
+  end
+
   defp append_review_artifacts(repo, %Session{} = session, artifacts, head_sha) do
+    work_package_id = Session.work_package_id(session)
+
+    case PlanningRepository.list_artifacts(repo, work_package_id) do
+      {:ok, existing_artifacts} ->
+        append_review_artifacts(repo, session, work_package_id, existing_artifacts, head_sha, artifacts)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp append_review_artifacts(repo, %Session{} = session, work_package_id, existing_artifacts, head_sha, artifacts) do
     Enum.reduce_while(artifacts, :ok, fn artifact, :ok ->
+      case append_review_artifact(repo, session, work_package_id, existing_artifacts, head_sha, artifact) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp append_review_artifact(repo, %Session{} = session, work_package_id, existing_artifacts, head_sha, artifact) do
+    if persisted_review_artifact?(existing_artifacts, artifact) do
+      :ok
+    else
       attrs = %{
         "id" => review_artifact_id(session, head_sha, artifact),
-        "work_package_id" => Session.work_package_id(session),
+        "work_package_id" => work_package_id,
         "path" => artifact,
         "title" => artifact,
         "kind" => "review",
@@ -1028,11 +1075,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       }
 
       case PlanningService.append_artifact(repo, attrs) do
-        {:ok, _artifact} -> {:cont, :ok}
-        {:error, :id_already_exists} -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, reason}}
+        {:ok, _artifact} -> :ok
+        {:error, reason} -> {:error, reason}
       end
-    end)
+    end
   end
 
   defp review_artifact_id(%Session{} = session, head_sha, artifact) do
@@ -1062,7 +1108,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       |> maybe_missing(review_required? and not metadata_present?(state.progress_events, "branch"), "branch_attached")
       |> maybe_missing(pr_required?(state.work_package) and not metadata_present?(state.progress_events, "pr"), "pr_attached")
       |> maybe_missing(review_required? and not metadata_present?(state.progress_events, "review_package"), "review_package_submitted")
-      |> maybe_missing(review_required? and not review_artifacts_present?(state.progress_events), "review_artifacts_attached")
+      |> maybe_missing(review_required? and not review_artifacts_present?(state.progress_events, state.artifacts), "review_artifacts_attached")
       |> maybe_missing(review_required? and not review_lanes_present?(state.progress_events, required_review_lanes), "review_lanes_complete")
       |> maybe_missing(state.work_package.kind == "investigation" and state.findings == [], "findings_documented")
       |> maybe_missing(state.work_package.kind == "investigation" and not recommendation_recorded?(state.progress_events), "recommendation_recorded")
@@ -1092,22 +1138,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end)
   end
 
-  defp review_artifacts_present?(progress_events) do
+  defp review_artifacts_present?(progress_events, artifacts) do
     current_head_sha = latest_pr_head_sha(progress_events)
 
     progress_events
     |> Enum.filter(&payload_type?(&1, "review_package", "submit_review_package"))
-    |> Enum.any?(&review_package_has_artifacts?(&1, current_head_sha))
+    |> Enum.flat_map(&review_package_artifact_paths(&1, current_head_sha))
+    |> Enum.any?(&persisted_review_artifact?(artifacts, &1))
   end
 
-  defp review_package_has_artifacts?(%ProgressEvent{payload: payload}, current_head_sha) when is_map(payload) do
+  defp review_package_artifact_paths(%ProgressEvent{payload: payload}, current_head_sha) when is_map(payload) do
     artifacts = Map.get(payload, "artifacts")
 
-    is_list(artifacts) and artifacts != [] and
-      (current_head_sha == nil or Map.get(payload, "head_sha") == current_head_sha)
+    if is_list(artifacts) and (current_head_sha == nil or Map.get(payload, "head_sha") == current_head_sha) do
+      Enum.filter(artifacts, &(is_binary(&1) and String.trim(&1) != ""))
+    else
+      []
+    end
   end
 
-  defp review_package_has_artifacts?(%ProgressEvent{}, _current_head_sha), do: false
+  defp review_package_artifact_paths(%ProgressEvent{}, _current_head_sha), do: []
+
+  defp persisted_review_artifact?(artifacts, path) do
+    Enum.any?(artifacts, &(&1.kind == "review" and &1.path == path))
+  end
 
   defp review_package_reviews(%ProgressEvent{payload: payload}, current_head_sha) when is_map(payload) do
     reviews = Map.get(payload, "reviews")
@@ -1267,7 +1321,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp required_string_list(arguments, key) do
     with {:ok, values} <- required_list(arguments, key) do
-      if Enum.all?(values, &is_binary/1) do
+      if Enum.all?(values, &(is_binary(&1) and String.trim(&1) != "")) do
         {:ok, values}
       else
         {:tool_error, "invalid_#{key}"}

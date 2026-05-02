@@ -255,7 +255,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["blocker_id", "resolution", "summary", "idempotency_key"]
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "required"]) == ["url", "head_sha"]
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == "string"
-    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests"]
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts", "reviews"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "type"]) == "array"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "head_sha", "type"]) == ["string", "null"]
   end
@@ -1218,6 +1218,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(missing_artifacts_response, ["error", "data", "reason"]) == "missing_artifacts"
 
+    blank_artifact_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "blank-artifact",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "submit_review_package",
+            "arguments" => %{
+              "summary" => "Blank artifact",
+              "tests" => ["mix test"],
+              "artifacts" => [" "],
+              "head_sha" => "abc123",
+              "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(blank_artifact_response, ["error", "data", "reason"]) == "invalid_artifacts"
+
     malformed_reviews_response =
       MCPHarness.request(
         %{
@@ -1264,6 +1287,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(handoff_response, ["result", "contents", Access.at(0), "text"]) =~ "review-log.txt"
 
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => "def456"})
+
+    stale_submit_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "stale-review-submit",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "submit_review_package",
+            "arguments" => %{
+              "summary" => "Stale review",
+              "tests" => ["mix test"],
+              "artifacts" => ["review-log.txt"],
+              "head_sha" => "abc123",
+              "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(stale_submit_response, ["error", "data", "reason"]) == "stale_head_sha"
 
     stale_review_response =
       MCPHarness.request(
