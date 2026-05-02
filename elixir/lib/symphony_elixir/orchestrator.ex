@@ -850,11 +850,11 @@ defmodule SymphonyElixir.Orchestrator do
 
     case record_agent_run_heartbeat(agent_run_id, %{worker_task_handle: worker_task_handle}) do
       :ok ->
-        start_agent_runner_task(pid)
-
         case record_agent_run_running(agent_run_id, "worker task started") do
           :ok ->
-            bind_running_issue(state, issue, attempt, worker_host, pid, ref, agent_run_id, worker_task_handle)
+            state = bind_running_issue(state, issue, attempt, worker_host, pid, ref, agent_run_id, worker_task_handle)
+            start_agent_runner_task(pid)
+            state
 
           {:error, reason} ->
             fail_spawned_worker_bind(state, issue, attempt, worker_host, agent_run_id, pid, ref, reason)
@@ -1164,8 +1164,6 @@ defmodule SymphonyElixir.Orchestrator do
 
     case ensure_agent_run_marked_running(agent_run) do
       :ok ->
-        maybe_start_reattached_worker(agent_run, pid)
-
         Logger.info("Reattached running AgentRun after restart: #{issue_context(issue)} pid=#{inspect(pid)} agent_run_id=#{agent_run_id}")
 
         running_entry =
@@ -1174,16 +1172,19 @@ defmodule SymphonyElixir.Orchestrator do
             workspace_path: agent_run_value(agent_run, :workspace_path),
             session_id: agent_run_value(agent_run, :session_id),
             started_at: reattached_at,
-            last_codex_timestamp: agent_run_value(agent_run, :last_seen_at),
+            last_codex_timestamp: reattached_at,
             last_codex_event: :reattached
           })
 
-        %{
+        state = %{
           state
           | running: Map.put(state.running, issue.id, running_entry),
             claimed: MapSet.put(state.claimed, issue.id),
             retry_attempts: Map.delete(state.retry_attempts, issue.id)
         }
+
+        maybe_start_reattached_worker(agent_run, pid)
+        state
 
       {:error, reason} ->
         Process.demonitor(ref, [:flush])
