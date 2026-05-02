@@ -168,7 +168,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
 
   defp release_previous_agent_run(repo, %AgentRun{work_package_id: work_package_id, status: status, id: id}, work_package_id, _opts)
        when status in ["starting", "retrying"] do
-    mark_previous_attempt_failed(repo, id, "replaced by retry dispatch")
+    mark_previous_attempt_failed(repo, id, status, "replaced by retry dispatch")
   end
 
   defp release_previous_agent_run(repo, %AgentRun{work_package_id: work_package_id, status: "running", id: id}, work_package_id, opts) do
@@ -180,16 +180,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
 
   defp release_confirmed_dead_running_attempt(repo, previous_agent_run_id, opts) do
     if Keyword.get(opts, :replace_confirmed_dead_worker) == true do
-      mark_previous_attempt_failed(repo, previous_agent_run_id, "replaced after confirmed worker exit")
+      mark_previous_attempt_failed(repo, previous_agent_run_id, "running", "replaced after confirmed worker exit")
     else
       :ok
     end
   end
 
-  defp mark_previous_attempt_failed(repo, previous_agent_run_id, reason) do
-    case mark_failed(repo, previous_agent_run_id, reason) do
-      {:ok, _agent_run} -> :ok
-      {:error, reason} -> {:error, reason}
+  defp mark_previous_attempt_failed(repo, previous_agent_run_id, expected_status, reason) do
+    now = DateTime.utc_now(:microsecond)
+
+    {updated_count, _rows} =
+      repo.update_all(
+        from(agent_run in AgentRun,
+          where: agent_run.id == ^previous_agent_run_id,
+          where: agent_run.status == ^expected_status
+        ),
+        set: [
+          status: "failed",
+          reason: reason,
+          last_seen_at: now,
+          finished_at: now,
+          updated_at: now
+        ]
+      )
+
+    case updated_count do
+      0 -> :ok
+      1 -> :ok
+      _count -> {:error, {:constraint_failed, "multiple_previous_agent_runs"}}
     end
   end
 

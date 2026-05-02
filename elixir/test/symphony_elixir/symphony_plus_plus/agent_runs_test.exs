@@ -77,13 +77,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
              Service.heartbeat(repo, run.id, %{
                session_id: "thread-1-turn-1",
                workspace_path: "C:/tmp/workspace",
-               worker_host: "worker-a"
+               worker_host: "worker-a",
+               codex_input_tokens: 12,
+               codex_output_tokens: 4,
+               codex_total_tokens: 16,
+               turn_count: 2
              })
 
     assert updated.id == run.id
     assert updated.session_id == "thread-1-turn-1"
     assert updated.workspace_path == "C:/tmp/workspace"
     assert updated.worker_host == "worker-a"
+    assert updated.codex_input_tokens == 12
+    assert updated.codex_output_tokens == 4
+    assert updated.codex_total_tokens == 16
+    assert updated.turn_count == 2
     assert DateTime.compare(updated.last_seen_at, run.last_seen_at) in [:gt, :eq]
   end
 
@@ -146,6 +154,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
     assert {:ok, replaced} = Repository.get(repo, starting.id)
     assert replaced.status == "failed"
     assert replaced.reason == "replaced by retry dispatch"
+  end
+
+  test "replacement retry does not fail starting row that already promoted to running", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-REPLACE-PROMOTED", status: "ready_for_worker"))
+
+    assert {:ok, starting} = Service.start_dispatch(repo, issue(work_package.id), status: "starting")
+    assert {:ok, running} = Service.mark_running(repo, starting.id, "worker task started")
+    assert running.status == "running"
+
+    assert {:error, :active_run_exists} =
+             Service.start_dispatch(repo, issue(work_package.id), attempt: 2, replace_agent_run_id: starting.id)
+
+    assert {:ok, persisted} = Repository.get(repo, starting.id)
+    assert persisted.status == "running"
   end
 
   test "retry reconciliation holds dispatch lock until replacement retry starts", %{repo: repo} do

@@ -98,7 +98,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Service do
 
   defp compact_attrs(attrs) do
     attrs
-    |> Map.take([:worker_host, :worker_task_handle, :workspace_path, :session_id])
+    |> Map.take([
+      :worker_host,
+      :worker_task_handle,
+      :workspace_path,
+      :session_id,
+      :codex_input_tokens,
+      :codex_output_tokens,
+      :codex_total_tokens,
+      :turn_count
+    ])
     |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
     |> Map.new()
   end

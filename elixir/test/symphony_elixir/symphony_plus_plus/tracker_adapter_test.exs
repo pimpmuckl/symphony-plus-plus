@@ -1441,7 +1441,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
                worker_task_handle: worker_task_handle
              )
 
-    assert {:ok, live_run} = Tracker.heartbeat_agent_run(run.id, %{session_id: "session-reattach"})
+    assert {:ok, live_run} =
+             Tracker.heartbeat_agent_run(run.id, %{
+               session_id: "session-reattach",
+               codex_input_tokens: 12,
+               codex_output_tokens: 4,
+               codex_total_tokens: 16,
+               turn_count: 2
+             })
 
     state =
       %Orchestrator.State{max_concurrent_agents: 1, running: %{}, claimed: MapSet.new(), retry_attempts: %{}}
@@ -1452,15 +1459,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
              ref: ref,
              agent_run_id: run_id,
              retry_attempt: 2,
-             started_at: reattached_at,
+             started_at: restored_started_at,
              last_codex_timestamp: last_codex_timestamp,
-             last_codex_event: :reattached
+             last_codex_event: :reattached,
+             codex_input_tokens: 12,
+             codex_output_tokens: 4,
+             codex_total_tokens: 16,
+             restored_codex_input_tokens: 12,
+             restored_codex_output_tokens: 4,
+             restored_codex_total_tokens: 16,
+             turn_count: 2
            } = state.running[work_package.id]
 
     assert is_reference(ref)
     assert run_id == run.id
-    assert DateTime.compare(reattached_at, live_run.started_at) in [:gt, :eq]
-    assert last_codex_timestamp == reattached_at
+    assert restored_started_at == live_run.started_at
     assert DateTime.compare(last_codex_timestamp, live_run.last_seen_at) in [:gt, :eq]
     assert MapSet.member?(state.claimed, work_package.id)
     assert state.retry_attempts == %{}
