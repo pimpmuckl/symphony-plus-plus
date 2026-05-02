@@ -46,3 +46,9 @@
 - Third T2 found review-lane readiness evidence must be structured review entries, not arbitrary free text in summary/tests/artifacts.
 - Third T2 found malformed plan patch nodes must return tool errors instead of crashing during transaction rollback.
 - Third T2 found storage/transaction failure classes should surface as MCP service errors rather than invalid user params.
+
+## Takeover Findings
+
+- The handoff's dirty `server.ex` change is no longer dirty in this worktree; it was committed and pushed as `55748aa` (`fix(mcp): tighten worker readiness gates`).
+- `review-state` on `55748aa` recommends a fresh full-diff `review_t2` because the current branch has exceeded the narrow follow-up churn threshold.
+- PR #15 currently has no GitHub comments, reviews, or status checks reported by `gh pr view`.
