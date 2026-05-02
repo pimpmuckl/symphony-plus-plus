@@ -2,10 +2,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @moduledoc false
 
   alias Ecto.Adapters.SQL
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Session}
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Renderer, as: PlanningRenderer
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
   @protocol_version "2025-03-26"
   @health_tool "sympp.health"
+  @worker_tools [
+    "claim_work_key",
+    "get_current_assignment",
+    "read_context",
+    "read_task_plan",
+    "update_task_plan",
+    "append_finding",
+    "append_progress",
+    "set_status",
+    "report_blocker",
+    "request_scope_expansion",
+    "attach_branch",
+    "attach_pr",
+    "submit_review_package",
+    "mark_ready"
+  ]
   @version_resource "sympp://health/version"
   @assignment_resource "sympp://assignment/current"
 
@@ -40,6 +66,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case response do
       %{"result" => _result} -> {response, %{server | initialized: true}}
       _response -> {response, server}
+    end
+  end
+
+  def handle_state(
+        %{"jsonrpc" => "2.0", "id" => id, "method" => "tools/call"} = payload,
+        %__MODULE__{initialized: true} = server
+      )
+      when valid_request_id(id) do
+    case request_params(payload) do
+      {:ok, %{"name" => "claim_work_key"} = params} ->
+        handle_claim_work_key(params, id, server)
+
+      _params ->
+        {do_handle(payload, server), server}
     end
   end
 
@@ -181,18 +221,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp dispatch("tools/list", params, _server) when is_map(params) do
     {:ok,
      %{
-       "tools" => [
-         %{
-           "name" => @health_tool,
-           "title" => "Symphony++ health",
-           "description" => "Returns server version and ledger reachability without exposing package data.",
-           "inputSchema" => %{
-             "type" => "object",
-             "additionalProperties" => false,
-             "properties" => %{}
-           }
-         }
-       ]
+       "tools" => [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]
      }}
   end
 
@@ -214,6 +243,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
       _arguments ->
         {:error, -32_602, "Invalid params", %{"tool" => @health_tool, "reason" => "invalid_tool_arguments"}}
+    end
+  end
+
+  defp dispatch("tools/call", %{"name" => "claim_work_key"} = params, %__MODULE__{} = server) do
+    case claim_work_key(params, server) do
+      {:ok, result, _session} -> {:ok, tool_result(result)}
+      {:error, code, message, data} -> {:error, code, message, data}
+    end
+  end
+
+  defp dispatch("tools/call", %{"name" => name} = params, %__MODULE__{} = server) when name in @worker_tools do
+    case Map.get(params, "arguments", %{}) do
+      arguments when is_map(arguments) ->
+        worker_tool(name, arguments, server)
+
+      _arguments ->
+        {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "invalid_tool_arguments"}}
     end
   end
 
@@ -265,10 +311,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          session: session
        }) do
     case work_package_resource_id(rest) do
-      {:ok, work_package_id} ->
+      {:ok, work_package_id, file_name} ->
         case Auth.require_work_package(session, work_package_id, config.repo) do
           {:ok, _session} ->
-            {:error, -32_601, "Method not found", %{"resource" => uri, "reason" => "worker_resources_not_implemented"}}
+            read_virtual_resource(config.repo, work_package_id, file_name, uri)
 
           {:error, reason} ->
             auth_error(reason, uri)
@@ -306,6 +352,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
+  defp health_tool_spec do
+    %{
+      "name" => @health_tool,
+      "title" => "Symphony++ health",
+      "description" => "Returns server version and ledger reachability without exposing package data.",
+      "inputSchema" => %{
+        "type" => "object",
+        "additionalProperties" => false,
+        "properties" => %{}
+      }
+    }
+  end
+
+  defp worker_tool_spec(name) do
+    %{
+      "name" => name,
+      "title" => name,
+      "description" => "Symphony++ worker tool #{name}.",
+      "inputSchema" => %{"type" => "object", "additionalProperties" => true, "properties" => %{}}
+    }
+  end
+
   defp ledger_health(repo) when is_atom(repo) do
     case SQL.query(repo, "SELECT 1", [], log: false) do
       {:ok, _result} -> %{"reachable" => true}
@@ -319,7 +387,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case String.split(rest, "/", parts: 2) do
       [work_package_id, resource_path] ->
         if String.trim(work_package_id) != "" and valid_resource_path?(resource_path) do
-          {:ok, work_package_id}
+          {:ok, work_package_id, resource_path}
         else
           :error
         end
@@ -338,6 +406,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp assignment_resources(%Session{} = session, repo) do
     case Auth.require_session(session, repo) do
       {:ok, %Session{}} ->
+        work_package_id = Session.work_package_id(session)
+
         {:ok,
          [
            %{
@@ -345,7 +415,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              "name" => "Current Symphony++ assignment",
              "mimeType" => "application/json"
            }
-         ]}
+         ] ++ work_package_resources(work_package_id)}
 
       {:error, {:service_unavailable, reason}} ->
         service_error(reason, @assignment_resource)
@@ -357,6 +427,329 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp assignment_resources(_session, _repo), do: {:ok, []}
 
+  defp work_package_resources(work_package_id) do
+    Enum.map(PlanningRenderer.virtual_files(), fn file_name ->
+      %{
+        "uri" => "sympp://work-packages/#{work_package_id}/#{file_name}",
+        "name" => file_name,
+        "mimeType" => "text/markdown"
+      }
+    end)
+  end
+
+  defp read_virtual_resource(repo, work_package_id, file_name, uri) do
+    if file_name in PlanningRenderer.virtual_files() do
+      case PlanningRenderer.render(repo, work_package_id, file_name) do
+        {:ok, markdown} -> {:ok, text_resource(uri, markdown, "text/markdown")}
+        {:error, reason} -> service_error(reason, uri)
+      end
+    else
+      {:error, -32_601, "Method not found", %{"resource" => uri, "reason" => "unknown_virtual_file"}}
+    end
+  end
+
+  defp handle_claim_work_key(params, id, %__MODULE__{} = server) do
+    case claim_work_key(params, server) do
+      {:ok, result, session} -> {response(id, tool_result(result)), %{server | session: session}}
+      {:error, code, message, data} -> {error_response(id, code, message, data), server}
+    end
+  end
+
+  defp claim_work_key(params, %__MODULE__{config: config}) do
+    with {:ok, arguments} <- tool_arguments(params, "claim_work_key"),
+         {:ok, secret} <- required_argument(arguments, "secret"),
+         claimed_by <- optional_argument(arguments, "claimed_by", "worker"),
+         proof_hash = WorkKey.secret_hash(secret),
+         {:ok, assignment} <- AccessGrantService.claim(config.repo, secret, claimed_by: claimed_by),
+         {:ok, session} <- Session.from_grant(live_grant!(config.repo, assignment.grant_id), DateTime.utc_now(:microsecond), proof_hash: proof_hash) do
+      {:ok, %{"assignment" => Session.public_assignment(session)}, session}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "claim_work_key", "reason" => reason}}
+      {:error, reason} -> {:error, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => reason_text(reason)}}
+    end
+  rescue
+    _error -> {:error, -32_000, "Server error", %{"tool" => "claim_work_key", "reason" => "ledger_unavailable"}}
+  end
+
+  defp live_grant!(repo, grant_id) do
+    {:ok, grant} = SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository.get(repo, grant_id)
+    grant
+  end
+
+  defp worker_tool("get_current_assignment", _arguments, %__MODULE__{config: config, session: session}) do
+    case Auth.require_session(session, config.repo) do
+      {:ok, session} -> {:ok, tool_result(%{"assignment" => Session.public_assignment(session)})}
+      {:error, reason} -> auth_error(reason, "get_current_assignment")
+    end
+  end
+
+  defp worker_tool("read_context", _arguments, %__MODULE__{config: config, session: session}) do
+    read_current_virtual_file(config.repo, session, "context.md")
+  end
+
+  defp worker_tool("read_task_plan", _arguments, %__MODULE__{config: config, session: session}) do
+    read_current_virtual_file(config.repo, session, "task_plan.md")
+  end
+
+  defp worker_tool("update_task_plan", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- scoped_session(config.repo, session, arguments),
+         {:ok, title} <- required_argument(arguments, "title"),
+         status <- optional_argument(arguments, "status", "pending"),
+         body <- optional_argument(arguments, "body", nil),
+         attrs = %{
+           "work_package_id" => Session.work_package_id(session),
+           "title" => title,
+           "body" => body,
+           "status" => status
+         },
+         {:ok, plan_node} <- PlanningRepository.append_plan_node(config.repo, maybe_put_id(attrs, arguments)) do
+      {:ok, tool_result(%{"plan_node" => plan_node_payload(plan_node)})}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "update_task_plan", "reason" => reason}}
+      {:error, reason} -> worker_error(reason, "update_task_plan")
+    end
+  end
+
+  defp worker_tool("append_finding", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- scoped_session(config.repo, session, arguments),
+         {:ok, title} <- required_argument(arguments, "title"),
+         {:ok, body} <- required_argument(arguments, "body"),
+         attrs = %{
+           "work_package_id" => Session.work_package_id(session),
+           "title" => title,
+           "body" => body,
+           "severity" => optional_argument(arguments, "severity", "info")
+         },
+         {:ok, finding} <- PlanningRepository.append_finding(config.repo, maybe_put_id(attrs, arguments)) do
+      {:ok, tool_result(%{"finding" => %{"id" => finding.id, "title" => finding.title, "severity" => finding.severity}})}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "append_finding", "reason" => reason}}
+      {:error, reason} -> worker_error(reason, "append_finding")
+    end
+  end
+
+  defp worker_tool("append_progress", arguments, %__MODULE__{config: config, session: session}) do
+    append_scoped_progress(config.repo, session, arguments, "append_progress", %{})
+  end
+
+  defp worker_tool("set_status", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- scoped_session(config.repo, session, arguments),
+         {:ok, status} <- required_argument(arguments, "status"),
+         {:ok, work_package} <-
+           LifecycleService.transition(config.repo, Session.work_package_id(session), status, actor(session)) do
+      {:ok, tool_result(%{"work_package" => work_package_payload(work_package)})}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "set_status", "reason" => reason}}
+      {:error, reason} -> worker_error(reason, "set_status")
+    end
+  end
+
+  defp worker_tool("report_blocker", arguments, %__MODULE__{config: config, session: session}) do
+    append_scoped_progress(config.repo, session, arguments, "report_blocker", %{"type" => "blocker", "active" => true})
+  end
+
+  defp worker_tool("request_scope_expansion", arguments, %__MODULE__{config: config, session: session}) do
+    append_scoped_progress(config.repo, session, arguments, "request_scope_expansion", %{
+      "type" => "scope_expansion_request",
+      "approved" => false
+    })
+  end
+
+  defp worker_tool("attach_branch", arguments, %__MODULE__{config: config, session: session}) do
+    case required_argument(arguments, "branch") do
+      {:ok, branch} ->
+        append_metadata_event(config.repo, session, arguments, "attach_branch", "branch_attached", %{"type" => "branch", "branch" => branch})
+
+      {:tool_error, reason} ->
+        {:error, -32_602, "Invalid params", %{"tool" => "attach_branch", "reason" => reason}}
+    end
+  end
+
+  defp worker_tool("attach_pr", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, url} <- required_argument(arguments, "url"),
+         head_sha <- optional_argument(arguments, "head_sha", nil) do
+      append_metadata_event(config.repo, session, arguments, "attach_pr", "pr_attached", %{"type" => "pr", "url" => url, "head_sha" => head_sha})
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "attach_pr", "reason" => reason}}
+    end
+  end
+
+  defp worker_tool("submit_review_package", arguments, %__MODULE__{config: config, session: session}) do
+    append_metadata_event(config.repo, session, arguments, "submit_review_package", "review_package_submitted", %{
+      "type" => "review_package",
+      "summary" => Map.get(arguments, "summary"),
+      "tests" => Map.get(arguments, "tests"),
+      "artifacts" => Map.get(arguments, "artifacts", [])
+    })
+  end
+
+  defp worker_tool("mark_ready", _arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- Auth.require_session(session, config.repo),
+         {:ok, state} <- PlanningRepository.get_state(config.repo, Session.work_package_id(session)),
+         :ok <- readiness_gates(state),
+         ready_status <- terminal_ready_status(state.work_package),
+         {:ok, work_package} <- WorkPackageRepository.update_status(config.repo, state.work_package.id, state.work_package.status, ready_status) do
+      {:ok, tool_result(%{"work_package" => work_package_payload(work_package), "ready" => true})}
+    else
+      {:error, {:readiness_failed, missing}} ->
+        {:error, -32_602, "Invalid params", %{"tool" => "mark_ready", "reason" => "readiness_failed", "missing" => missing}}
+
+      {:error, reason} ->
+        worker_error(reason, "mark_ready")
+    end
+  end
+
+  defp read_current_virtual_file(repo, session, file_name) do
+    with {:ok, session} <- Auth.require_session(session, repo),
+         {:ok, markdown} <- PlanningRenderer.render(repo, Session.work_package_id(session), file_name) do
+      {:ok, tool_result(%{"uri" => "sympp://work-packages/#{Session.work_package_id(session)}/#{file_name}", "text" => markdown})}
+    else
+      {:error, reason} -> worker_error(reason, "read_#{file_name}")
+    end
+  end
+
+  defp append_scoped_progress(repo, session, arguments, tool, payload) do
+    with {:ok, session} <- scoped_session(repo, session, arguments),
+         {:ok, summary} <- required_argument(arguments, "summary"),
+         {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
+         attrs = %{
+           "summary" => summary,
+           "body" => optional_argument(arguments, "body", nil),
+           "status" => optional_argument(arguments, "status", "recorded"),
+           "idempotency_key" => idempotency_key,
+           "payload" => Map.merge(payload, Map.get(arguments, "payload", %{}))
+         },
+         {:ok, event} <- PlanningService.append_authenticated_progress_event(repo, session.assignment, attrs) do
+      {:ok, tool_result(%{"progress_event" => progress_event_payload(event)})}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason}}
+      {:error, reason} -> worker_error(reason, tool)
+    end
+  end
+
+  defp append_metadata_event(repo, session, arguments, tool, status, payload) do
+    arguments =
+      Map.put_new(arguments, "summary", status)
+      |> Map.put_new("status", status)
+      |> Map.put_new("idempotency_key", metadata_idempotency_key(payload))
+      |> Map.put("payload", payload)
+
+    append_scoped_progress(repo, session, arguments, tool, %{})
+  end
+
+  defp readiness_gates(state) do
+    missing =
+      []
+      |> maybe_missing(state.work_package.status != "ci_waiting", "status_ci_waiting")
+      |> maybe_missing(active_blocker?(state.progress_events), "no_active_blockers")
+      |> maybe_missing(incomplete_plan?(state.plan_nodes), "plan_complete")
+      |> maybe_missing(not metadata_present?(state.progress_events, "branch"), "branch_attached")
+      |> maybe_missing(pr_required?(state.work_package) and not metadata_present?(state.progress_events, "pr"), "pr_attached")
+      |> maybe_missing(not metadata_present?(state.progress_events, "review_package"), "review_package_submitted")
+
+    if missing == [], do: :ok, else: {:error, {:readiness_failed, Enum.reverse(missing)}}
+  end
+
+  defp active_blocker?(progress_events) do
+    Enum.any?(progress_events, &(payload_type?(&1, "blocker") and Map.get(&1.payload || %{}, "active") == true))
+  end
+
+  defp incomplete_plan?(plan_nodes), do: Enum.any?(plan_nodes, &(&1.status != "done"))
+
+  defp pr_required?(%WorkPackage{kind: "investigation"}), do: false
+  defp pr_required?(%WorkPackage{}), do: true
+
+  defp metadata_present?(progress_events, type), do: Enum.any?(progress_events, &payload_type?(&1, type))
+
+  defp payload_type?(%ProgressEvent{payload: payload}, type) when is_map(payload), do: Map.get(payload, "type") == type
+  defp payload_type?(%ProgressEvent{}, _type), do: false
+
+  defp maybe_missing(missing, true, name), do: [name | missing]
+  defp maybe_missing(missing, false, _name), do: missing
+
+  defp terminal_ready_status(%WorkPackage{kind: "phase_child"}), do: "ready_for_architect_merge"
+  defp terminal_ready_status(%WorkPackage{}), do: "ready_for_human_merge"
+
+  defp worker_error(:unauthorized, resource), do: auth_error(:unauthorized, resource)
+  defp worker_error({:unauthorized, _reason} = reason, resource), do: auth_error(reason, resource)
+  defp worker_error(:forbidden, resource), do: auth_error(:forbidden, resource)
+  defp worker_error({:service_unavailable, _reason} = reason, resource), do: auth_error(reason, resource)
+  defp worker_error(reason, tool), do: {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason_text(reason)}}
+
+  defp scoped_session(repo, session, arguments) when is_map(arguments) do
+    case Auth.require_session(session, repo) do
+      {:ok, session} -> require_argument_scope(session, Map.get(arguments, "work_package_id"))
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_argument_scope(session, nil), do: {:ok, session}
+  defp require_argument_scope(session, work_package_id) when work_package_id == session.assignment.work_package_id, do: {:ok, session}
+  defp require_argument_scope(_session, _work_package_id), do: {:error, :forbidden}
+
+  defp tool_arguments(params, tool) do
+    case Map.get(params, "arguments", %{}) do
+      arguments when is_map(arguments) -> {:ok, arguments}
+      _arguments -> {:tool_error, "invalid_#{tool}_arguments"}
+    end
+  end
+
+  defp required_argument(arguments, key) do
+    case Map.get(arguments, key) do
+      value when is_binary(value) ->
+        if String.trim(value) == "", do: {:tool_error, "missing_#{key}"}, else: {:ok, value}
+
+      _value ->
+        {:tool_error, "missing_#{key}"}
+    end
+  end
+
+  defp optional_argument(arguments, key, default) do
+    case Map.get(arguments, key, default) do
+      value when is_binary(value) -> if String.trim(value) == "", do: default, else: value
+      nil -> default
+      value -> value
+    end
+  end
+
+  defp maybe_put_id(attrs, arguments) do
+    case Map.get(arguments, "id") do
+      id when is_binary(id) and id != "" -> Map.put(attrs, "id", id)
+      _id -> attrs
+    end
+  end
+
+  defp metadata_idempotency_key(payload), do: "mcp:" <> Map.get(payload, "type", "metadata") <> ":" <> Base.url_encode64(:erlang.term_to_binary(payload), padding: false)
+
+  defp actor(%Session{} = session) do
+    %{
+      grant_id: session.assignment.grant_id,
+      grant_role: session.assignment.grant_role,
+      capabilities: session.assignment.capabilities,
+      work_package_id: session.assignment.work_package_id
+    }
+  end
+
+  defp tool_result(payload) do
+    %{
+      "content" => [%{"type" => "text", "text" => Jason.encode!(payload)}],
+      "structuredContent" => payload,
+      "isError" => false
+    }
+  end
+
+  defp plan_node_payload(%PlanNode{} = plan_node) do
+    %{"id" => plan_node.id, "title" => plan_node.title, "status" => plan_node.status}
+  end
+
+  defp progress_event_payload(%ProgressEvent{} = event) do
+    %{"id" => event.id, "summary" => event.summary, "status" => event.status, "idempotency_key" => event.idempotency_key}
+  end
+
+  defp work_package_payload(%WorkPackage{} = work_package) do
+    %{"id" => work_package.id, "kind" => work_package.kind, "status" => work_package.status}
+  end
+
   defp json_resource(uri, payload) do
     %{
       "contents" => [
@@ -364,6 +757,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
           "uri" => uri,
           "mimeType" => "application/json",
           "text" => Jason.encode!(payload)
+        }
+      ]
+    }
+  end
+
+  defp text_resource(uri, text, mime_type) do
+    %{
+      "contents" => [
+        %{
+          "uri" => uri,
+          "mimeType" => mime_type,
+          "text" => text
         }
       ]
     }

@@ -12,6 +12,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Server, Session, Stdio}
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
@@ -631,7 +632,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
-    assert get_in(own_response, ["error", "data", "reason"]) == "worker_resources_not_implemented"
+    own_text = get_in(own_response, ["result", "contents", Access.at(0), "text"])
+    assert own_text =~ "Task Plan"
+    assert own_text =~ "SYMPP-P3-001"
 
     sibling_response =
       MCPHarness.request(
@@ -647,6 +650,214 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(sibling_response, ["error", "code"]) == -32_003
     assert get_in(sibling_response, ["error", "data", "reason"]) == "outside_session_scope"
+  end
+
+  test "claim_work_key binds the server session for worker lifecycle tools", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-P3-002", kind: "adapter", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    server = Server.new(Config.default(repo: repo), initialized: true)
+
+    {claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_work_key",
+            "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}
+          }
+        },
+        server
+      )
+
+    refute inspect(claim_response) =~ minted.work_key.secret
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-P3-002"
+
+    assignment_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "assignment", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        claimed_server
+      )
+
+    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "claimed_by"]) == "worker-1"
+
+    status_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "status",
+          "method" => "tools/call",
+          "params" => %{"name" => "set_status", "arguments" => %{"status" => "claimed"}}
+        },
+        claimed_server
+      )
+
+    assert get_in(status_response, ["result", "structuredContent", "work_package", "status"]) == "claimed"
+  end
+
+  test "worker tools update only the scoped planning state and deny sibling mutations", %{repo: repo} do
+    assert {:ok, own_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-OWN", kind: "adapter"))
+    assert {:ok, sibling_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-SIBLING", kind: "adapter"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, own_package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    plan_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "plan",
+          "method" => "tools/call",
+          "params" => %{"name" => "update_task_plan", "arguments" => %{"title" => "Implement MCP worker tools", "status" => "done"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(plan_response, ["result", "structuredContent", "plan_node", "status"]) == "done"
+
+    finding_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "finding",
+          "method" => "tools/call",
+          "params" => %{"name" => "append_finding", "arguments" => %{"title" => "Scoped", "body" => "Own package only"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(finding_response, ["result", "structuredContent", "finding", "title"]) == "Scoped"
+
+    progress_args = %{"summary" => "Progress", "idempotency_key" => "worker-progress-1", "body" => "Done"}
+
+    progress_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "progress", "method" => "tools/call", "params" => %{"name" => "append_progress", "arguments" => progress_args}},
+        repo: repo,
+        session: session
+      )
+
+    replay_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "progress-replay", "method" => "tools/call", "params" => %{"name" => "append_progress", "arguments" => progress_args}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(progress_response, ["result", "structuredContent", "progress_event", "id"]) ==
+             get_in(replay_response, ["result", "structuredContent", "progress_event", "id"])
+
+    scope_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "scope",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "request_scope_expansion",
+            "arguments" => %{
+              "summary" => "Need broader files",
+              "idempotency_key" => "scope-request-1",
+              "payload" => %{"requested_file_globs" => ["lib/other/**"]}
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(scope_response, ["result", "structuredContent", "progress_event", "status"]) == "recorded"
+
+    denied_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "denied",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "update_task_plan",
+            "arguments" => %{"work_package_id" => sibling_package.id, "title" => "Mutate sibling"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(denied_response, ["error", "code"]) == -32_003
+
+    assert {:ok, own_nodes} = PlanningRepository.list_plan_nodes(repo, own_package.id)
+    assert {:ok, sibling_nodes} = PlanningRepository.list_plan_nodes(repo, sibling_package.id)
+    assert {:ok, events} = PlanningRepository.list_progress_events(repo, own_package.id)
+    assert length(own_nodes) == 1
+    assert sibling_nodes == []
+    assert Enum.any?(events, &(get_in(&1.payload, ["type"]) == "scope_expansion_request" and get_in(&1.payload, ["approved"]) == false))
+  end
+
+  test "mark_ready enforces worker readiness gates", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-READY-GATES", kind: "adapter", status: "ci_waiting"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    missing_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-missing", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(missing_response, ["error", "data", "reason"]) == "readiness_failed"
+    assert "pr_attached" in get_in(missing_response, ["error", "data", "missing"])
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-GATES/worker"})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => "abc123"})
+    attach_tool(repo, session, "submit_review_package", %{"summary" => "Ready", "tests" => ["mix test"], "artifacts" => []})
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+    assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
+  end
+
+  test "worker cannot mark merged mint grants or list all packages through MCP", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-DENIALS", kind: "adapter", status: "ready_for_human_merge"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    merged_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "merged",
+          "method" => "tools/call",
+          "params" => %{"name" => "set_status", "arguments" => %{"status" => "merged"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(merged_response, ["error", "data", "reason"]) == "worker_cannot_mark_merged"
+
+    Enum.each(["mint_worker_grant", "list_work_packages"], fn tool ->
+      response =
+        MCPHarness.request(
+          %{"jsonrpc" => "2.0", "id" => tool, "method" => "tools/call", "params" => %{"name" => tool, "arguments" => %{}}},
+          repo: repo,
+          session: session
+        )
+
+      assert get_in(response, ["error", "code"]) == -32_601
+    end)
   end
 
   test "protected resources revalidate injected sessions against live grants", %{repo: repo} do
@@ -853,6 +1064,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "clientInfo" => %{"name" => "sympp-test-client", "version" => "0.1.0"},
       "capabilities" => %{}
     }
+  end
+
+  defp attach_tool(repo, session, name, arguments) do
+    response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => name, "method" => "tools/call", "params" => %{"name" => name, "arguments" => arguments}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(response, ["result", "structuredContent", "progress_event", "id"])
+    response
   end
 
   defp decode_json_lines(output) do
