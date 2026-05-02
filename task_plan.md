@@ -107,10 +107,13 @@ Phase 3
 - [x] Commit and push twenty-second T2 fixes.
 - [x] Run fresh full-diff T2 on pushed head `a0e600b` and close valid findings gate.
 - [x] Fix twenty-third T2 claim-reconnect, assignment-role, review-array, and boolean-validation findings locally.
-- [ ] Commit and push twenty-third T2 fixes.
+- [x] Commit and push twenty-third T2 fixes.
+- [x] Run fresh full-diff T2 on pushed head `3163976` and close valid findings gate.
+- [x] Fix twenty-fourth T2 test-entry, status-reason, progress-idempotency, and empty-plan findings locally.
+- [ ] Commit and push twenty-fourth T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** twenty-third T2 fixes implemented locally with validation green; pending commit/push and T2 rerun.
+- **Status:** twenty-fourth T2 fixes implemented locally with validation green; pending commit/push and T2 rerun.
 
 ### High-Pressure Coherence Review
 
@@ -122,6 +125,8 @@ Phase 3
 - Findings are still converging as narrow edge-case hardening around the worker MCP API rather than broad architecture churn.
 - Before the next T2, the core remains coherent: this fix preserves the existing claim/session design while adding restart recovery for the same worker secret and tightening optional argument validation.
 - The latest findings are still confined to worker MCP reconnect and validation edge cases, so the loop is converging rather than revealing a package split.
+- Before the next T2, the core approach remains sound because the latest changes only align accepted inputs with readiness semantics and preserve documented audit context for the same worker MCP tools.
+- The findings continue to converge as contract-shape and retry-normalization edge cases, not a broader scope or architecture concern.
 
 ## Boundaries
 

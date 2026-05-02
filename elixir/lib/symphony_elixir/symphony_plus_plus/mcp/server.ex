@@ -789,7 +789,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, state} <- PlanningRepository.get_state(config.repo, Session.work_package_id(session)),
          :ok <- require_expected_status(state.work_package, expected_status),
          {:ok, work_package} <-
-           LifecycleService.transition(config.repo, Session.work_package_id(session), status, actor(session)) do
+           LifecycleService.transition(config.repo, Session.work_package_id(session), status, actor(session)),
+         {:ok, _event} <- append_status_reason_event(config.repo, session, arguments, expected_status, status) do
       {:ok, tool_result(%{"work_package" => work_package_payload(work_package)})}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "set_status", "reason" => reason}}
@@ -857,7 +858,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp worker_tool("submit_review_package", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
          {:ok, summary} <- required_argument(arguments, "summary"),
-         {:ok, tests} <- required_list(arguments, "tests"),
+         {:ok, tests} <- required_string_list(arguments, "tests"),
          {:ok, artifacts} <- required_string_list(arguments, "artifacts"),
          artifacts = Enum.uniq(artifacts),
          {:ok, reviews} <- optional_review_list(arguments, "reviews"),
@@ -1169,7 +1170,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, summary} <- required_argument(arguments, "summary"),
          {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
          {:ok, caller_payload} <- optional_payload(arguments) do
-      idempotency_key = scoped_progress_idempotency_key(tool, idempotency_key, session)
+      idempotency_key = scoped_progress_idempotency_key(tool, String.trim(idempotency_key), session)
 
       attrs = %{
         "summary" => summary,
@@ -1183,6 +1184,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason}}
       {:error, reason} -> worker_error(reason, tool)
+    end
+  end
+
+  defp append_status_reason_event(repo, %Session{} = session, arguments, expected_status, status) do
+    case optional_argument(arguments, "reason", nil) do
+      reason when is_binary(reason) ->
+        payload = %{"type" => "status_transition", "from_status" => expected_status, "to_status" => status}
+
+        append_scoped_progress(
+          repo,
+          session,
+          %{
+            "summary" => "Status changed to #{status}",
+            "body" => reason,
+            "status" => "status_changed",
+            "idempotency_key" => metadata_idempotency_key(Map.put(payload, "reason", reason))
+          },
+          "set_status",
+          payload
+        )
+
+      nil ->
+        {:ok, nil}
     end
   end
 
@@ -1365,7 +1389,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     [
       {state.work_package.status != "ci_waiting", "status_ci_waiting"},
       {active_blocker?(state.progress_events), "no_active_blockers"},
-      {incomplete_plan?(state.plan_nodes), "plan_complete"},
+      {incomplete_plan?(state), "plan_complete"},
       {acceptance_missing?(state), "acceptance_criteria_met"},
       {tests_missing?(state), "tests_passed"},
       {merge_metadata_missing?(state, "branch"), "branch_attached"},
@@ -1562,7 +1586,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     normalize_blocker_id(blocker_id || idempotency_key || id)
   end
 
-  defp incomplete_plan?(plan_nodes), do: Enum.any?(plan_nodes, &(&1.status == "pending"))
+  defp incomplete_plan?(state) do
+    plan_required?(state.work_package) and (state.plan_nodes == [] or Enum.any?(state.plan_nodes, &(&1.status == "pending")))
+  end
+
+  defp plan_required?(%WorkPackage{} = work_package) do
+    case LifecycleService.policy_for(work_package) do
+      {:ok, policy} -> get_in(policy, [:constraints, :planning_depth]) != "findings"
+      {:error, _reason} -> true
+    end
+  end
 
   defp acceptance_missing?(state) do
     required_gate?(state.work_package, "package_acceptance") and not acceptance_recorded?(state.progress_events)

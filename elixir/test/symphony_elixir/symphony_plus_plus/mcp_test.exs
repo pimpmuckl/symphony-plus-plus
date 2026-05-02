@@ -732,12 +732,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "jsonrpc" => "2.0",
           "id" => "status",
           "method" => "tools/call",
-          "params" => %{"name" => "set_status", "arguments" => %{"status" => "claimed", "expected_status" => "ready_for_worker"}}
+          "params" => %{"name" => "set_status", "arguments" => %{"status" => "claimed", "expected_status" => "ready_for_worker", "reason" => "Starting work"}}
         },
         claimed_server
       )
 
     assert get_in(status_response, ["result", "structuredContent", "work_package", "status"]) == "claimed"
+    assert {:ok, status_events} = PlanningRepository.list_progress_events(repo, package.id)
+    assert Enum.any?(status_events, &(&1.body == "Starting work" and &1.payload["type"] == "status_transition"))
 
     stale_status_response =
       Server.handle(
@@ -1238,6 +1240,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(progress_response, ["result", "structuredContent", "progress_event", "id"]) ==
              get_in(replay_response, ["result", "structuredContent", "progress_event", "id"])
 
+    whitespace_progress_replay_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "progress-whitespace-replay",
+          "method" => "tools/call",
+          "params" => %{"name" => "append_progress", "arguments" => %{progress_args | "idempotency_key" => " worker-progress-1 "}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(whitespace_progress_replay_response, ["result", "structuredContent", "progress_event", "id"]) ==
+             get_in(progress_response, ["result", "structuredContent", "progress_event", "id"])
+
     redacted_progress_args = %{
       "summary" => "Redacted progress",
       "idempotency_key" => "worker-progress-redacted",
@@ -1701,6 +1718,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(invalid_acceptance_response, ["error", "data", "reason"]) == "invalid_acceptance_criteria_met"
 
+    invalid_tests_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "invalid-tests",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "submit_review_package",
+            "arguments" => %{
+              "summary" => "Invalid tests",
+              "tests" => [" "],
+              "artifacts" => ["review-log.txt"],
+              "head_sha" => "abc123",
+              "reviews" => []
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(invalid_tests_response, ["error", "data", "reason"]) == "invalid_tests"
+
     sibling_review_response =
       MCPHarness.request(
         %{
@@ -1829,6 +1869,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "reviews" => [%{"lane" => " review_t1 ", "verdict" => " green "}, %{"lane" => " review_t2 ", "verdict" => " green "}]
     })
 
+    empty_plan_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-empty-plan", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "plan_complete" in get_in(empty_plan_response, ["error", "data", "missing"])
+    append_done_plan(repo, package.id)
+
     ready_response =
       MCPHarness.request(
         %{"jsonrpc" => "2.0", "id" => "ready", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
@@ -1842,6 +1892,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   test "mark_ready rejects empty review packages and allows resolved blockers", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-READY-BLOCKER", kind: "mcp", status: "ci_waiting"))
+    append_done_plan(repo, package.id)
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
@@ -2099,6 +2150,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   test "mark_ready uses lifecycle capability checks", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-READY-CAP", kind: "mcp", status: "ci_waiting"))
+    append_done_plan(repo, package.id)
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id, capabilities: ["worker:claim"])
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
@@ -2373,6 +2425,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(response, ["result", "structuredContent", "progress_event", "id"])
     response
+  end
+
+  defp append_done_plan(repo, work_package_id) do
+    assert {:ok, _plan_node} =
+             PlanningRepository.append_plan_node(repo, %{
+               "work_package_id" => work_package_id,
+               "title" => "Complete implementation",
+               "status" => "done"
+             })
   end
 
   defp create_architect_work_key(repo, work_package_id) do
