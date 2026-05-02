@@ -836,6 +836,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, second_assignment} = AccessGrantService.claim(repo, second_minted.work_key.secret, claimed_by: "worker-2")
     second_session = MCPHarness.session(second_assignment, proof_hash: second_minted.grant.secret_hash)
 
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-WORKER-OWN/worker"})
+    attach_tool(repo, second_session, "attach_branch", %{"branch" => "agent/SYMPP-WORKER-OWN/worker"})
+
     finding_regrant_response =
       MCPHarness.request(
         %{
@@ -1165,9 +1168,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert "review_lanes_complete" in get_in(malformed_review_response, ["error", "data", "missing"])
 
     attach_tool(repo, session, "submit_review_package", %{
-      "summary" => "Ready",
+      "summary" => "Ready without artifacts",
       "tests" => ["mix test"],
       "artifacts" => [],
+      "head_sha" => "abc123",
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
+
+    missing_artifacts_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-missing-artifacts", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "review_artifacts_attached" in get_in(missing_artifacts_response, ["error", "data", "missing"])
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready",
+      "tests" => ["mix test"],
+      "artifacts" => ["review-log.txt"],
       "head_sha" => "abc123",
       "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
     })
@@ -1186,7 +1206,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Ready",
       "tests" => ["mix test"],
-      "artifacts" => [],
+      "artifacts" => ["review-log.txt"],
       "head_sha" => "def456",
       "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
     })
@@ -1217,19 +1237,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(empty_review_response, ["error", "data", "reason"]) == "missing_summary"
 
-    MCPHarness.request(
-      %{
-        "jsonrpc" => "2.0",
-        "id" => "blocker",
-        "method" => "tools/call",
-        "params" => %{
-          "name" => "report_blocker",
-          "arguments" => %{"summary" => "Temporarily blocked", "idempotency_key" => "blocker-1", "blocker_id" => "blocker-1"}
-        }
-      },
-      repo: repo,
-      session: session
-    )
+    attach_tool(repo, session, "append_progress", %{"summary" => "Progress with shared retry key", "idempotency_key" => "blocker-1"})
+
+    blocker_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "blocker",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "report_blocker",
+            "arguments" => %{"summary" => "Temporarily blocked", "idempotency_key" => "blocker-1", "blocker_id" => "blocker-1"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(blocker_response, ["result", "structuredContent", "progress_event", "payload", "active"]) == true
 
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-BLOCKER/worker"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/125", "head_sha" => "abc125"})
@@ -1237,7 +1262,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Ready",
       "tests" => ["mix test"],
-      "artifacts" => [],
+      "artifacts" => ["review-log.txt"],
       "head_sha" => "abc125",
       "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
     })
@@ -1377,6 +1402,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              "branch_attached",
              "pr_attached",
              "review_package_submitted",
+             "review_artifacts_attached",
              "review_lanes_complete"
            ]
   end
@@ -1444,7 +1470,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Ready",
       "tests" => ["mix test"],
-      "artifacts" => [],
+      "artifacts" => ["review-log.txt"],
       "head_sha" => "abc124",
       "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
     })

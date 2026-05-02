@@ -970,6 +970,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, summary} <- required_argument(arguments, "summary"),
          {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
          {:ok, caller_payload} <- optional_payload(arguments),
+         idempotency_key <- scoped_progress_idempotency_key(tool, idempotency_key, session),
          attrs = %{
            "summary" => summary,
            "body" => optional_argument(arguments, "body", nil),
@@ -996,6 +997,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     append_scoped_progress(repo, session, arguments, tool, payload)
   end
 
+  defp scoped_progress_idempotency_key(tool, idempotency_key, %Session{} = session) when tool in ["attach_branch", "attach_pr", "submit_review_package"] do
+    [tool, session.assignment.grant_id, idempotency_key] |> Enum.join(":")
+  end
+
+  defp scoped_progress_idempotency_key(tool, idempotency_key, %Session{}), do: tool <> ":" <> idempotency_key
+
   defp readiness_gates(state) do
     review_required? = state.work_package.kind != "investigation"
     required_review_lanes = required_review_lanes(state.work_package)
@@ -1008,6 +1015,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       |> maybe_missing(review_required? and not metadata_present?(state.progress_events, "branch"), "branch_attached")
       |> maybe_missing(pr_required?(state.work_package) and not metadata_present?(state.progress_events, "pr"), "pr_attached")
       |> maybe_missing(review_required? and not metadata_present?(state.progress_events, "review_package"), "review_package_submitted")
+      |> maybe_missing(review_required? and not review_artifacts_present?(state.progress_events), "review_artifacts_attached")
       |> maybe_missing(review_required? and not review_lanes_present?(state.progress_events, required_review_lanes), "review_lanes_complete")
       |> maybe_missing(state.work_package.kind == "investigation" and state.findings == [], "findings_documented")
       |> maybe_missing(state.work_package.kind == "investigation" and not recommendation_recorded?(state.progress_events), "recommendation_recorded")
@@ -1036,6 +1044,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       Enum.any?(review_evidence, &(Map.get(&1, "lane") == lane and Map.get(&1, "verdict") == "green"))
     end)
   end
+
+  defp review_artifacts_present?(progress_events) do
+    current_head_sha = latest_pr_head_sha(progress_events)
+
+    progress_events
+    |> Enum.filter(&payload_type?(&1, "review_package", "submit_review_package"))
+    |> Enum.any?(&review_package_has_artifacts?(&1, current_head_sha))
+  end
+
+  defp review_package_has_artifacts?(%ProgressEvent{payload: payload}, current_head_sha) when is_map(payload) do
+    artifacts = Map.get(payload, "artifacts")
+
+    is_list(artifacts) and artifacts != [] and
+      (current_head_sha == nil or Map.get(payload, "head_sha") == current_head_sha)
+  end
+
+  defp review_package_has_artifacts?(%ProgressEvent{}, _current_head_sha), do: false
 
   defp review_package_reviews(%ProgressEvent{payload: payload}, current_head_sha) when is_map(payload) do
     reviews = Map.get(payload, "reviews")
