@@ -894,6 +894,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(progress_response, ["result", "structuredContent", "progress_event", "id"]) ==
              get_in(replay_response, ["result", "structuredContent", "progress_event", "id"])
 
+    conflicting_progress_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "progress-conflict",
+          "method" => "tools/call",
+          "params" => %{"name" => "append_progress", "arguments" => Map.put(progress_args, "summary", "Different progress")}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(conflicting_progress_response, ["error", "data", "reason"]) == "idempotency_conflict"
+
     scope_response =
       MCPHarness.request(
         %{

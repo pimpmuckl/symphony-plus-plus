@@ -316,3 +316,24 @@
 ### Next Steps
 
 - Commit and push thirteenth T2 fixes, rerun T2, then proceed to GitHub review if clean.
+
+### Eleventh T2 Follow-up Actions
+
+- Pushed head `911f2310325b89598a75d6d3bb35fa7257590bca` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T203648Z-ab64dde9`; closed it as `findings`.
+- Fixed valid T2 findings by returning `update_task_plan` plan versions from the same transaction as the write, deduping duplicate review artifact paths inside one submission, and rejecting idempotent progress retries when the stored event does not match the retried content.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after fourteenth T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 52 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 246 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit and push fourteenth T2 fixes, rerun T2, then proceed to GitHub review if clean.

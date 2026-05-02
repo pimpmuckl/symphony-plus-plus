@@ -717,6 +717,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, summary} <- required_argument(arguments, "summary"),
          {:ok, tests} <- required_list(arguments, "tests"),
          {:ok, artifacts} <- required_string_list(arguments, "artifacts"),
+         artifacts = Enum.uniq(artifacts),
          {:ok, reviews} <- required_review_list(arguments, "reviews"),
          {:ok, state} <- PlanningRepository.get_state(config.repo, Session.work_package_id(session)),
          {:ok, head_sha} <- review_package_head_sha(arguments, state.progress_events),
@@ -795,12 +796,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp update_task_plan(repo, session, arguments) do
     with {:ok, expected_version} <- required_integer(arguments, "expected_version"),
          work_package_id = Session.work_package_id(session),
-         {:ok, plan_nodes} <- apply_plan_update(repo, work_package_id, expected_version, arguments),
-         {:ok, refreshed} <- PlanningRepository.get_state(repo, work_package_id) do
+         {:ok, plan_nodes, version} <- apply_plan_update(repo, work_package_id, expected_version, arguments) do
       {:ok,
        tool_result(%{
          "plan_nodes" => Enum.map(plan_nodes, &plan_node_payload/1),
-         "version" => plan_version(refreshed.plan_nodes)
+         "version" => version
        })}
     end
   end
@@ -821,15 +821,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp transaction_plan_update(repo, work_package_id, expected_version, update_fun) do
     case repo.transaction(fn -> transaction_result(repo, work_package_id, expected_version, update_fun) end) do
-      {:ok, result} -> result
+      {:ok, {plan_nodes, version}} -> {:ok, plan_nodes, version}
       {:error, reason} -> reason
     end
   end
 
   defp transaction_result(repo, work_package_id, expected_version, update_fun) do
     with {:ok, plan_nodes} <- PlanningRepository.list_plan_nodes(repo, work_package_id),
-         :ok <- require_plan_version(plan_nodes, expected_version) do
-      transaction_result(repo, update_fun.())
+         :ok <- require_plan_version(plan_nodes, expected_version),
+         {:ok, updated_plan_nodes} <- transaction_result(repo, update_fun.()),
+         {:ok, refreshed_plan_nodes} <- PlanningRepository.list_plan_nodes(repo, work_package_id) do
+      {updated_plan_nodes, plan_version(refreshed_plan_nodes)}
     else
       {:tool_error, reason} -> repo.rollback({:tool_error, reason})
       {:error, reason} -> repo.rollback({:error, reason})
@@ -1003,22 +1005,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp append_progress_event_or_replay(repo, %Session{} = session, attrs, idempotency_key, tool) do
     case PlanningService.append_authenticated_progress_event(repo, session.assignment, attrs) do
-      {:ok, event} -> {:ok, tool_result(%{"progress_event" => progress_event_payload(event)})}
-      {:error, :idempotency_key_conflict} -> replay_progress_event(repo, session, idempotency_key, tool)
+      {:ok, event} -> replay_matching_progress_event(event, attrs, tool)
+      {:error, :idempotency_key_conflict} -> replay_progress_event(repo, session, attrs, idempotency_key, tool)
       {:error, reason} -> worker_error(reason, tool)
     end
   end
 
-  defp replay_progress_event(repo, %Session{} = session, idempotency_key, tool) do
+  defp replay_progress_event(repo, %Session{} = session, attrs, idempotency_key, tool) do
     case PlanningRepository.get_progress_event_by_idempotency_key(
            repo,
            Session.work_package_id(session),
            idempotency_key,
            session.assignment.grant_id
          ) do
-      {:ok, event} -> {:ok, tool_result(%{"progress_event" => progress_event_payload(event)})}
+      {:ok, event} -> replay_matching_progress_event(event, attrs, tool)
       {:error, reason} -> worker_error(reason, tool)
     end
+  end
+
+  defp replay_matching_progress_event(%ProgressEvent{} = event, attrs, tool) do
+    if progress_replay_matches?(event, attrs) do
+      {:ok, tool_result(%{"progress_event" => progress_event_payload(event)})}
+    else
+      {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => "idempotency_conflict"}}
+    end
+  end
+
+  defp progress_replay_matches?(%ProgressEvent{} = event, attrs) do
+    event.summary == Map.get(attrs, "summary") and
+      event.body == Map.get(attrs, "body") and
+      event.status == Map.get(attrs, "status") and
+      event.payload == Map.get(attrs, "payload")
   end
 
   defp append_metadata_event(repo, session, arguments, tool, status, payload) do
