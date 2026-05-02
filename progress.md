@@ -337,3 +337,24 @@
 ### Next Steps
 
 - Commit and push fourteenth T2 fixes, rerun T2, then proceed to GitHub review if clean.
+
+### Twelfth T2 Follow-up Actions
+
+- Pushed head `e300fb208110838ecf301d12752234ee5618dfb4` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T204729Z-944e7454`; closed it as `findings`.
+- Fixed valid T2 findings by preserving response-only `Server.handle/2` initialized/session state with a per-server state key, binding `claim_work_key` notifications inside batches, replaying same-secret claims on an already-bound server, and rejecting attempts to rebind a live server to a different work key.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after fifteenth T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 55 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 249 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit and push fifteenth T2 fixes, rerun T2, then proceed to GitHub review if clean.

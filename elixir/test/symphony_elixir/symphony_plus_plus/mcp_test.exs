@@ -736,6 +736,113 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(status_response, ["result", "structuredContent", "work_package", "status"]) == "claimed"
   end
 
+  test "response-only handle preserves claimed session for sequential calls", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-HANDLE-CLAIM", kind: "mcp", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    server = Server.new(Config.default(repo: repo))
+
+    assert get_in(
+             Server.handle(%{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()}, server),
+             ["result", "serverInfo", "name"]
+           ) == "symphony-plus-plus"
+
+    claim_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        server
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-HANDLE-CLAIM"
+
+    assignment_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "assignment", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        server
+      )
+
+    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "claimed_by"]) == "worker-1"
+  end
+
+  test "claim_work_key notification binds session inside a batch", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-NOTIFY-CLAIM", kind: "mcp", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {responses, server} =
+      Server.handle_state(
+        [
+          %{
+            "jsonrpc" => "2.0",
+            "method" => "tools/call",
+            "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+          },
+          %{"jsonrpc" => "2.0", "id" => "assignment", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}}
+        ],
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert Enum.map(responses, & &1["id"]) == ["assignment"]
+    assert get_in(List.first(responses), ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-NOTIFY-CLAIM"
+    assert server.session.assignment.work_package_id == "SYMPP-NOTIFY-CLAIM"
+  end
+
+  test "claim_work_key rejects rebinding a server to another work key", %{repo: repo} do
+    assert {:ok, first_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-FIRST-CLAIM", kind: "mcp", status: "ready_for_worker"))
+
+    assert {:ok, second_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SECOND-CLAIM", kind: "mcp", status: "ready_for_worker"))
+
+    assert {:ok, first_minted} = AccessGrantService.mint_worker_grant(repo, first_package.id)
+    assert {:ok, second_minted} = AccessGrantService.mint_worker_grant(repo, second_package.id)
+
+    {claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => first_minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-FIRST-CLAIM"
+
+    {replay_response, replay_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-replay",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => first_minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        claimed_server
+      )
+
+    assert get_in(replay_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-FIRST-CLAIM"
+    assert replay_server.session.assignment.work_package_id == "SYMPP-FIRST-CLAIM"
+
+    {rebind_response, rebound_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-other",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => second_minted.work_key.secret, "claimed_by" => "worker-2"}}
+        },
+        claimed_server
+      )
+
+    assert get_in(rebind_response, ["error", "data", "reason"]) == "session_already_bound"
+    assert rebound_server.session.assignment.work_package_id == "SYMPP-FIRST-CLAIM"
+  end
+
   test "batch calls thread claim_work_key session to later worker tools", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BATCH-CLAIM", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)

@@ -36,9 +36,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @assignment_resource "sympp://assignment/current"
 
   @enforce_keys [:config]
-  defstruct [:config, :session, initialized: false]
+  defstruct [:config, :session, :state_key, initialized: false]
 
-  @type t :: %__MODULE__{config: Config.t(), session: Session.t() | nil, initialized: boolean()}
+  @type t :: %__MODULE__{config: Config.t(), session: Session.t() | nil, state_key: reference(), initialized: boolean()}
 
   defguardp valid_request_id(id) when is_binary(id) or is_number(id) or is_nil(id)
   defguardp invalid_request_id(id) when not is_binary(id) and not is_number(id) and not is_nil(id)
@@ -48,15 +48,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     %__MODULE__{
       config: config,
       session: Keyword.get(opts, :session),
+      state_key: Keyword.get(opts, :state_key, make_ref()),
       initialized: Keyword.get(opts, :initialized, false)
     }
   end
 
   @spec handle(term(), t()) :: map() | [map()] | nil
   def handle(payload, %__MODULE__{} = server) do
-    payload
-    |> handle_state(server)
-    |> elem(0)
+    {response, server} = handle_state(payload, restore_handle_state(server))
+    persist_handle_state(server)
+    response
   end
 
   @spec handle_state(term(), t()) :: {map() | [map()] | nil, t()}
@@ -96,7 +97,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  def handle_state(%{"jsonrpc" => "2.0", "method" => "tools/call"} = payload, %__MODULE__{initialized: true} = server) do
+    case request_params(payload) do
+      {:ok, %{"name" => "claim_work_key"} = params} ->
+        handle_claim_work_key_notification(params, server)
+
+      _params ->
+        {do_handle(payload, server), server}
+    end
+  end
+
   def handle_state(payload, %__MODULE__{} = server), do: {do_handle(payload, server), server}
+
+  defp restore_handle_state(%__MODULE__{} = server) do
+    case Process.get(handle_state_key(server)) do
+      %__MODULE__{} = stored ->
+        %{server | initialized: server.initialized or stored.initialized, session: server.session || stored.session}
+
+      _stored ->
+        server
+    end
+  end
+
+  defp persist_handle_state(%__MODULE__{} = server) do
+    Process.put(handle_state_key(server), server)
+    :ok
+  end
+
+  defp handle_state_key(%__MODULE__{state_key: state_key}), do: {__MODULE__, state_key}
 
   defp do_handle([], %__MODULE__{}) do
     error_response(nil, -32_600, "Invalid Request", %{"reason" => "empty_batch"})
@@ -575,6 +603,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case claim_work_key(params, server) do
       {:ok, result, session} -> {response(id, tool_result(result)), %{server | session: session}}
       {:error, code, message, data} -> {error_response(id, code, message, data), server}
+    end
+  end
+
+  defp handle_claim_work_key_notification(params, %__MODULE__{} = server) do
+    case claim_work_key(params, server) do
+      {:ok, _result, session} -> {nil, %{server | session: session}}
+      {:error, _code, _message, _data} -> {nil, server}
+    end
+  end
+
+  defp claim_work_key(params, %__MODULE__{session: %Session{} = session}) do
+    with {:ok, arguments} <- tool_arguments(params, "claim_work_key"),
+         {:ok, secret} <- required_argument(arguments, "secret"),
+         proof_hash = WorkKey.secret_hash(secret),
+         true <- session.proof_hash == proof_hash do
+      {:ok, %{"assignment" => Session.public_assignment(session)}, session}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "claim_work_key", "reason" => reason}}
+      _not_same_session -> {:error, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => "session_already_bound"}}
     end
   end
 
