@@ -709,7 +709,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, title} <- required_argument(arguments, "title"),
          {:ok, body} <- required_argument(arguments, "body"),
          {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
-         finding_id = finding_id(session, idempotency_key),
+         {:ok, finding_id} <- optional_finding_id(arguments, session, idempotency_key),
          attrs = %{
            "id" => finding_id,
            "work_package_id" => Session.work_package_id(session),
@@ -1063,8 +1063,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp finding_id(session, idempotency_key) do
-    material = [session.assignment.work_package_id, idempotency_key] |> Enum.join(":")
+  defp optional_finding_id(arguments, session, idempotency_key) do
+    case Map.get(arguments, "id") do
+      id when is_binary(id) -> if String.trim(id) == "", do: {:tool_error, "invalid_id"}, else: {:ok, id}
+      nil -> {:ok, generated_finding_id(session, idempotency_key)}
+      _id -> {:tool_error, "invalid_id"}
+    end
+  end
+
+  defp generated_finding_id(session, idempotency_key) do
+    material = [session.assignment.work_package_id, session.assignment.grant_id, idempotency_key] |> Enum.join(":")
     "finding_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 

@@ -996,6 +996,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(finding_response, ["result", "structuredContent", "finding", "title"]) == "Scoped"
 
+    explicit_finding_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "finding-explicit-id",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_finding",
+            "arguments" => %{"id" => "custom-finding-id", "title" => "Explicit", "body" => "Caller supplied id", "idempotency_key" => "finding-explicit"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(explicit_finding_response, ["result", "structuredContent", "finding", "id"]) == "custom-finding-id"
+
     finding_replay_response =
       MCPHarness.request(
         %{
@@ -1036,7 +1053,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: second_session
       )
 
-    assert get_in(finding_regrant_response, ["result", "structuredContent", "finding", "id"]) ==
+    refute get_in(finding_regrant_response, ["result", "structuredContent", "finding", "id"]) ==
              get_in(finding_response, ["result", "structuredContent", "finding", "id"])
 
     conflicting_finding_response =

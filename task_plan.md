@@ -87,10 +87,19 @@ Phase 3
 - [x] Commit and push sixteenth T2 fixes.
 - [x] Run fresh full-diff T2 on pushed head `d07f6f6` and close valid findings gate.
 - [x] Fix seventeenth T2 response-only handshake, non-worker preflight, and blocker-id validation findings locally.
-- [ ] Commit and push seventeenth T2 fixes.
+- [x] Commit and push seventeenth T2 fixes.
+- [x] Run fresh full-diff T2 on pushed head `c54d000` and close valid findings gate.
+- [x] Perform high-pressure coherence review before another same-tier review.
+- [x] Fix eighteenth T2 append-finding id/idempotency findings locally.
+- [ ] Commit and push eighteenth T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** seventeenth T2 fixes implemented locally with validation green; pending commit/push and T2 rerun.
+- **Status:** high-pressure coherence review complete; eighteenth T2 append-finding fixes implemented locally with validation green; pending commit/push and T2 rerun.
+
+### High-Pressure Coherence Review
+
+- Full diff remains coherent for P3-002: the large changes are concentrated in the MCP worker server/test surface with small lifecycle/policy/planning support needed by the worker tools and resources.
+- The latest T2 findings are converging to narrow contract/idempotency hardening, not a design or scope problem, so continuing the mandated T2/GitHub loop is appropriate.
 
 ## Boundaries
 
