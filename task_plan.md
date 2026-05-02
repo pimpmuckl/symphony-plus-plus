@@ -129,9 +129,11 @@ Phase 3
 - [x] Run fresh full-diff T2 on pushed head `c234740` and close valid findings gate.
 - [x] Fix thirtieth T2 worker tool notification dispatch finding locally.
 - [x] Commit and push thirtieth T2 fix.
+- [x] Run fresh full-diff T2 on pushed head `7bb1915` and close valid findings gate.
+- [ ] Resolve thirty-first T2 findings after architecture decision on `claim_work_key.claimed_by` compatibility.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** thirtieth T2 fix pushed; pending fresh full-diff T2 rerun and GitHub review if clean.
+- **Status:** blocked on backward-compatibility-sensitive `claim_work_key` contract decision; T2 also found a separate review-artifact aggregation fix to apply after the API direction is set.
 
 ### High-Pressure Coherence Review
 
@@ -157,6 +159,12 @@ Phase 3
 - Findings remain concentrated on review-package concurrency and incremental evidence edge cases, so continuing the P3-002 finish loop is still appropriate.
 - Before the next T2, the approach remains coherent because the latest change only executes existing worker tool dispatch for JSON-RPC notifications while preserving fire-and-forget response semantics.
 - The latest finding is a single protocol dispatch edge case inside P3-002 MCP behavior, not a broader design or scope problem.
+- The current loop is blocked because T2 findings now conflict on the public `claim_work_key` contract: earlier review required explicit `claimed_by` for reconnect ownership, while the latest review says published docs/templates require `claim_work_key(secret)`.
+- This is a backward-compatibility-sensitive API decision for P3-002 consumers, so implementation should pause until the overseeing architecture agent chooses the contract.
+
+## Blockers
+
+- Need architecture decision: keep `claim_work_key.claimed_by` required and update the published contract/templates, or restore `claim_work_key(secret)` compatibility and accept/define weaker or derived reconnect ownership semantics.
 
 ## Boundaries
 

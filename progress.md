@@ -688,3 +688,14 @@
 ### Next Steps
 
 - Pushed thirtieth T2 fix head `c20e006fd5c18d398a543b6042b4504534283d8a`; rerun full-diff T2, then proceed to GitHub review if clean.
+
+### Thirty-First T2 Follow-up Actions
+
+- Pushed planning head `7bb19156be657ce3df23045af5d1b2a83a27c915` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T234634Z-21df2210`; Bravo found a valid review-artifact aggregation issue, and Alpha found a `claim_work_key.claimed_by` compatibility issue.
+- Closed the T2 gate as `findings`.
+- Verified the compatibility concern against docs: `implementation_docs_symphplusplus/docs/04_MCP_AND_SKILL_CONTRACT.md` and `03_PERMISSION_MODEL.md` document `claim_work_key(secret)`, while current server schema requires `claimed_by` after prior T2 reconnect-ownership fixes.
+
+### Blocker
+
+- Need overseeing architecture decision before changing the claim contract again: either keep required `claimed_by` and update the public P3-002 contract/templates, or restore `claim_work_key(secret)` compatibility and define acceptable reconnect ownership behavior when no caller identity is supplied.
