@@ -12,6 +12,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment
+  alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Service, as: AgentRunService
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
@@ -42,7 +43,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
     candidate_states = active_states |> MapSet.difference(terminal_states) |> MapSet.to_list()
     filters = tracker.filters
 
-    fetch_work_package_issues(fn -> list_work_packages_by_statuses(candidate_states) end, &dispatchable_work_package?(&1, filters))
+    fetch_work_package_issues(
+      fn -> list_work_packages_by_statuses(candidate_states) end,
+      &dispatchable_work_package?(&1, filters)
+    )
   end
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
@@ -98,6 +102,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name) when is_binary(issue_id) and is_binary(state_name) do
     with_repo_access(fn -> do_update_issue_state(issue_id, state_name) end)
+  end
+
+  @spec start_agent_run(Issue.t(), keyword()) :: {:ok, term()} | {:error, term()}
+  def start_agent_run(%Issue{} = issue, opts) when is_list(opts) do
+    with_repo_access(fn -> AgentRunService.start_dispatch(repo(), issue, opts) end)
+  end
+
+  @spec list_active_agent_runs() :: {:ok, [term()]} | {:error, term()}
+  def list_active_agent_runs do
+    with_repo_access(fn -> AgentRunService.list_active(repo()) end)
+  end
+
+  @spec heartbeat_agent_run(String.t(), map()) :: {:ok, term()} | {:error, term()}
+  def heartbeat_agent_run(agent_run_id, attrs) when is_binary(agent_run_id) and is_map(attrs) do
+    with_repo_access(fn -> AgentRunService.heartbeat(repo(), agent_run_id, attrs) end)
+  end
+
+  @spec mark_agent_run_retrying(String.t(), String.t() | nil) :: {:ok, term()} | {:error, term()}
+  def mark_agent_run_retrying(agent_run_id, reason) when is_binary(agent_run_id) do
+    with_repo_access(fn -> AgentRunService.mark_retrying(repo(), agent_run_id, reason) end)
+  end
+
+  @spec mark_agent_run_running(String.t(), String.t() | nil) :: {:ok, term()} | {:error, term()}
+  def mark_agent_run_running(agent_run_id, reason) when is_binary(agent_run_id) do
+    with_repo_access(fn -> AgentRunService.mark_running(repo(), agent_run_id, reason) end)
+  end
+
+  @spec mark_agent_run_completed(String.t(), String.t() | nil) :: {:ok, term()} | {:error, term()}
+  def mark_agent_run_completed(agent_run_id, reason) when is_binary(agent_run_id) do
+    with_repo_access(fn -> AgentRunService.mark_completed(repo(), agent_run_id, reason) end)
+  end
+
+  @spec mark_agent_run_failed(String.t(), String.t() | nil) :: {:ok, term()} | {:error, term()}
+  def mark_agent_run_failed(agent_run_id, reason) when is_binary(agent_run_id) do
+    with_repo_access(fn -> AgentRunService.mark_failed(repo(), agent_run_id, reason) end)
+  end
+
+  @spec mark_agent_run_stopped(String.t(), String.t() | nil) :: {:ok, term()} | {:error, term()}
+  def mark_agent_run_stopped(agent_run_id, reason) when is_binary(agent_run_id) do
+    with_repo_access(fn -> AgentRunService.mark_stopped(repo(), agent_run_id, reason) end)
   end
 
   defp do_update_issue_state(issue_id, state_name) do

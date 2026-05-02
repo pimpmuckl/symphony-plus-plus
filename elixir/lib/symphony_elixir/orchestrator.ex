@@ -12,6 +12,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @worker_task_runtime_id Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -38,7 +39,8 @@ defmodule SymphonyElixir.Orchestrator do
       claimed: MapSet.new(),
       retry_attempts: %{},
       codex_totals: nil,
-      codex_rate_limits: nil
+      codex_rate_limits: nil,
+      codex_update_recipient: nil
     ]
   end
 
@@ -49,7 +51,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @impl true
-  def init(_opts) do
+  def init(opts) do
     now_ms = System.monotonic_time(:millisecond)
     config = Config.settings!()
 
@@ -61,14 +63,20 @@ defmodule SymphonyElixir.Orchestrator do
       tick_timer_ref: nil,
       tick_token: nil,
       codex_totals: @empty_codex_totals,
-      codex_rate_limits: nil
+      codex_rate_limits: nil,
+      codex_update_recipient: codex_update_recipient(opts)
     }
 
-    run_terminal_workspace_cleanup()
+    state = reconcile_persisted_active_agent_runs(state)
+    sweep_unmatched_waiting_worker_tasks(state)
+    run_terminal_workspace_cleanup(state)
     state = schedule_tick(state, 0)
 
     {:ok, state}
   end
+
+  @impl true
+  def handle_cast({:worker_message, message}, state), do: handle_info(message, state)
 
   @impl true
   def handle_info({:tick, tick_token}, %{tick_token: tick_token} = state)
@@ -128,38 +136,90 @@ defmodule SymphonyElixir.Orchestrator do
         {running_entry, state} = pop_running_entry(state, issue_id)
         state = record_session_completion_totals(state, running_entry)
         session_id = running_entry_session_id(running_entry)
+        agent_run_id = Map.get(running_entry, :agent_run_id)
 
         state =
           case reason do
             :normal ->
+              completed_result = record_agent_run_completed(agent_run_id, "worker task completed")
+
               Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+
+              retry_metadata =
+                %{
+                  identifier: running_entry.identifier,
+                  delay_type: :continuation,
+                  worker_host: Map.get(running_entry, :worker_host),
+                  workspace_path: Map.get(running_entry, :workspace_path),
+                  confirmed_worker_down: true
+                }
+                |> maybe_put_retry_agent_run_id(completed_result, agent_run_id)
 
               state
               |> complete_issue(issue_id)
-              |> schedule_issue_retry(issue_id, 1, %{
-                identifier: running_entry.identifier,
-                delay_type: :continuation,
-                worker_host: Map.get(running_entry, :worker_host),
-                workspace_path: Map.get(running_entry, :workspace_path)
-              })
+              |> schedule_issue_retry(issue_id, 1, retry_metadata)
 
             _ ->
               Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
 
               next_attempt = next_retry_attempt_from_running(running_entry)
+              retry_reason = "agent exited: #{inspect(reason)}"
+              record_agent_run_retrying(agent_run_id, retry_reason)
 
-              schedule_issue_retry(state, issue_id, next_attempt, %{
+              retry_metadata = %{
                 identifier: running_entry.identifier,
-                error: "agent exited: #{inspect(reason)}",
+                error: retry_reason,
                 worker_host: Map.get(running_entry, :worker_host),
-                workspace_path: Map.get(running_entry, :workspace_path)
-              })
+                workspace_path: Map.get(running_entry, :workspace_path),
+                confirmed_worker_down: true,
+                agent_run_id: agent_run_id
+              }
+
+              schedule_issue_retry(state, issue_id, next_attempt, retry_metadata)
           end
 
         Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
 
         notify_dashboard()
         {:noreply, state}
+    end
+  end
+
+  def handle_info({:agent_runner_started, pid}, %{running: running} = state) when is_pid(pid) do
+    case find_issue_id_for_pid(running, pid) do
+      nil ->
+        {:noreply, state}
+
+      issue_id ->
+        running_entry = Map.fetch!(running, issue_id)
+        agent_run_id = Map.get(running_entry, :agent_run_id)
+
+        case record_agent_run_running(agent_run_id, "worker task started") do
+          :ok ->
+            {:noreply, state}
+
+          {:error, reason} ->
+            {running_entry, state} = pop_running_entry(state, issue_id)
+            terminate_task(pid)
+            Process.demonitor(Map.get(running_entry, :ref), [:flush])
+
+            retry_reason = "failed to promote AgentRun after worker start: #{inspect(reason)}"
+            record_agent_run_failed(agent_run_id, retry_reason)
+
+            state =
+              state
+              |> schedule_issue_retry(issue_id, next_retry_attempt_from_running(running_entry), %{
+                identifier: Map.get(running_entry, :identifier, issue_id),
+                error: retry_reason,
+                worker_host: Map.get(running_entry, :worker_host),
+                workspace_path: Map.get(running_entry, :workspace_path),
+                agent_run_id: agent_run_id
+              })
+              |> claim_issue(issue_id)
+
+            notify_dashboard()
+            {:noreply, state}
+        end
     end
   end
 
@@ -174,6 +234,11 @@ defmodule SymphonyElixir.Orchestrator do
           running_entry
           |> maybe_put_runtime_value(:worker_host, runtime_info[:worker_host])
           |> maybe_put_runtime_value(:workspace_path, runtime_info[:workspace_path])
+
+        record_agent_run_heartbeat(Map.get(updated_running_entry, :agent_run_id), %{
+          worker_host: Map.get(updated_running_entry, :worker_host),
+          workspace_path: Map.get(updated_running_entry, :workspace_path)
+        })
 
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
@@ -195,6 +260,16 @@ defmodule SymphonyElixir.Orchestrator do
           state
           |> apply_codex_token_delta(token_delta)
           |> apply_codex_rate_limits(update)
+
+        record_agent_run_heartbeat(Map.get(updated_running_entry, :agent_run_id), %{
+          session_id: Map.get(updated_running_entry, :session_id),
+          worker_host: Map.get(updated_running_entry, :worker_host),
+          workspace_path: Map.get(updated_running_entry, :workspace_path),
+          codex_input_tokens: Map.get(updated_running_entry, :codex_input_tokens),
+          codex_output_tokens: Map.get(updated_running_entry, :codex_output_tokens),
+          codex_total_tokens: Map.get(updated_running_entry, :codex_total_tokens),
+          turn_count: Map.get(updated_running_entry, :turn_count)
+        })
 
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
@@ -332,9 +407,37 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
-  @spec dispatch_issue_for_test(%State{}, Issue.t(), term(), String.t() | nil) :: %State{}
+  @spec dispatch_issue_for_test(term(), Issue.t(), term(), String.t() | nil) :: term()
   def dispatch_issue_for_test(%State{} = state, %Issue{} = issue, attempt \\ nil, preferred_worker_host \\ nil) do
     dispatch_issue(state, issue, attempt, preferred_worker_host)
+  end
+
+  @doc false
+  @spec dispatch_issue_for_test(term(), Issue.t(), term(), String.t() | nil, keyword()) :: term()
+  def dispatch_issue_for_test(%State{} = state, %Issue{} = issue, attempt, preferred_worker_host, opts) when is_list(opts) do
+    dispatch_issue(state, issue, attempt, preferred_worker_host, opts)
+  end
+
+  @doc false
+  @spec reconcile_persisted_active_agent_runs_for_test(term()) :: term()
+  def reconcile_persisted_active_agent_runs_for_test(%State{} = state), do: reconcile_persisted_active_agent_runs(state)
+
+  @doc false
+  @spec worker_task_handle_for_test(pid()) :: String.t()
+  def worker_task_handle_for_test(pid) when is_pid(pid), do: worker_task_handle(pid, "test-token")
+
+  @doc false
+  @spec start_worker_task_for_test((-> term())) :: {:ok, pid(), String.t()} | {:error, term()}
+  def start_worker_task_for_test(fun) when is_function(fun, 0) do
+    worker_task_token = worker_task_token()
+
+    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+           Process.put(:sympp_worker_task_token, worker_task_token)
+           fun.()
+         end) do
+      {:ok, pid} -> {:ok, pid, worker_task_handle(pid, worker_task_token)}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @doc false
@@ -440,6 +543,7 @@ defmodule SymphonyElixir.Orchestrator do
       %{pid: pid, ref: ref, identifier: identifier} = running_entry ->
         state = record_session_completion_totals(state, running_entry)
         worker_host = Map.get(running_entry, :worker_host)
+        record_agent_run_stopped(Map.get(running_entry, :agent_run_id), "orchestrator stopped active worker")
 
         if cleanup_workspace do
           cleanup_issue_workspace(identifier, worker_host)
@@ -464,6 +568,31 @@ defmodule SymphonyElixir.Orchestrator do
         release_issue_claim(state, issue_id)
     end
   end
+
+  defp terminate_running_issue_for_retry(%State{} = state, issue_id, running_entry, reason)
+       when is_map(running_entry) do
+    state = record_session_completion_totals(state, running_entry)
+    pid = Map.get(running_entry, :pid)
+    ref = Map.get(running_entry, :ref)
+
+    record_agent_run_retrying(Map.get(running_entry, :agent_run_id), reason)
+
+    if is_pid(pid) do
+      terminate_task(pid)
+    end
+
+    if is_reference(ref) do
+      Process.demonitor(ref, [:flush])
+    end
+
+    %{
+      state
+      | running: Map.delete(state.running, issue_id),
+        retry_attempts: Map.delete(state.retry_attempts, issue_id)
+    }
+  end
+
+  defp terminate_running_issue_for_retry(%State{} = state, _issue_id, _running_entry, _reason), do: state
 
   defp reconcile_stalled_running_issues(%State{} = state) do
     timeout_ms = Config.settings!().codex.stall_timeout_ms
@@ -496,10 +625,11 @@ defmodule SymphonyElixir.Orchestrator do
       next_attempt = next_retry_attempt_from_running(running_entry)
 
       state
-      |> terminate_running_issue(issue_id, false)
+      |> terminate_running_issue_for_retry(issue_id, running_entry, "stalled for #{elapsed_ms}ms without codex activity")
       |> schedule_issue_retry(issue_id, next_attempt, %{
         identifier: identifier,
-        error: "stalled for #{elapsed_ms}ms without codex activity"
+        error: "stalled for #{elapsed_ms}ms without codex activity",
+        agent_run_id: Map.get(running_entry, :agent_run_id)
       })
     else
       state
@@ -535,6 +665,21 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp terminate_task(_pid), do: :ok
+
+  defp start_agent_runner_task(pid) when is_pid(pid) do
+    send(pid, {:start_agent_runner, self()})
+    :ok
+  end
+
+  defp start_agent_runner_task(_pid), do: {:error, :invalid_worker_task}
+
+  defp codex_update_recipient(opts) when is_list(opts) do
+    case Keyword.get(opts, :name, __MODULE__) do
+      name when is_atom(name) -> name
+      name when is_tuple(name) -> name
+      _name -> self()
+    end
+  end
 
   defp choose_issues(issues, state) do
     active_states = active_state_set()
@@ -677,11 +822,11 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
-  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
+  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil, opts \\ []) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
         if dispatch_filters_allow_issue?(state, refreshed_issue, attempt, preferred_worker_host) do
-          do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
+          do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host, opts)
         else
           Logger.info("Skipping dispatch; issue outside configured dispatch filters: #{issue_context(refreshed_issue)}")
           clear_issue_retry(state, refreshed_issue.id)
@@ -702,69 +847,164 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
-    recipient = self()
-
+  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, opts) do
     case select_worker_host(state, preferred_worker_host) do
       :no_worker_capacity ->
         Logger.debug("No SSH worker slots available for #{issue_context(issue)} preferred_worker_host=#{inspect(preferred_worker_host)}")
         state
 
       worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
+        spawn_issue_on_worker_host(state, issue, attempt, state.codex_update_recipient, worker_host, opts)
     end
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
-    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
-         end) do
-      {:ok, pid} ->
-        ref = Process.monitor(pid)
+  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, opts) do
+    case start_agent_run_for_issue(issue, attempt, worker_host, opts) do
+      {:ok, agent_run} ->
+        do_spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, agent_run_id(agent_run))
 
-        Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
+      {:error, :active_run_exists} ->
+        Logger.info("Deferring dispatch; active AgentRun already exists for #{issue_context(issue)}")
+        next_attempt = if is_integer(attempt), do: attempt + 1, else: 1
 
-        running =
-          Map.put(state.running, issue.id, %{
-            pid: pid,
-            ref: ref,
-            identifier: issue.identifier,
-            issue: issue,
-            worker_host: worker_host,
-            workspace_path: nil,
-            session_id: nil,
-            last_codex_message: nil,
-            last_codex_timestamp: nil,
-            last_codex_event: nil,
-            codex_app_server_pid: nil,
-            codex_input_tokens: 0,
-            codex_output_tokens: 0,
-            codex_total_tokens: 0,
-            codex_last_reported_input_tokens: 0,
-            codex_last_reported_output_tokens: 0,
-            codex_last_reported_total_tokens: 0,
-            turn_count: 0,
-            retry_attempt: normalize_retry_attempt(attempt),
-            started_at: DateTime.utc_now()
-          })
-
-        %{
-          state
-          | running: running,
-            claimed: MapSet.put(state.claimed, issue.id),
-            retry_attempts: Map.delete(state.retry_attempts, issue.id)
-        }
+        state
+        |> schedule_issue_retry(issue.id, next_attempt, %{
+          identifier: issue.identifier,
+          error: "active AgentRun already exists",
+          worker_host: worker_host,
+          agent_run_id: Keyword.get(opts, :replace_agent_run_id)
+        })
+        |> claim_issue(issue.id)
 
       {:error, reason} ->
+        Logger.warning("Skipping dispatch; failed to create AgentRun for #{issue_context(issue)}: #{inspect(reason)}")
+        next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
+
+        state
+        |> schedule_issue_retry(issue.id, next_attempt, %{
+          identifier: issue.identifier,
+          error: "failed to create AgentRun: #{inspect(reason)}",
+          worker_host: worker_host
+        })
+        |> claim_issue(issue.id)
+    end
+  end
+
+  defp do_spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, agent_run_id) do
+    worker_task_token = worker_task_token()
+
+    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+           Process.put(:sympp_worker_task_token, worker_task_token)
+           Process.put(:sympp_worker_task_state, :waiting)
+
+           receive do
+             {:start_agent_runner, starter} ->
+               Process.put(:sympp_worker_task_state, :running)
+               send(starter, {:agent_runner_started, self()})
+               AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+           end
+         end) do
+      {:ok, pid} ->
+        handle_spawned_worker(state, issue, attempt, worker_host, agent_run_id, pid, worker_task_token)
+
+      {:error, reason} ->
+        record_agent_run_failed(agent_run_id, "failed to spawn agent: #{inspect(reason)}")
         Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
         schedule_issue_retry(state, issue.id, next_attempt, %{
           identifier: issue.identifier,
           error: "failed to spawn agent: #{inspect(reason)}",
-          worker_host: worker_host
+          worker_host: worker_host,
+          agent_run_id: agent_run_id
         })
     end
+  end
+
+  defp handle_spawned_worker(state, issue, attempt, worker_host, agent_run_id, pid, worker_task_token) do
+    ref = Process.monitor(pid)
+    worker_task_handle = worker_task_handle(pid, worker_task_token)
+
+    case record_agent_run_heartbeat(agent_run_id, %{worker_task_handle: worker_task_handle}) do
+      :ok ->
+        original_state = state
+
+        state =
+          bind_running_issue(
+            original_state,
+            issue,
+            attempt,
+            worker_host,
+            pid,
+            ref,
+            agent_run_id,
+            worker_task_handle
+          )
+
+        with :ok <- start_agent_runner_task(pid),
+             :ok <- record_agent_run_running(agent_run_id, "worker task started") do
+          state
+        else
+          {:error, reason} ->
+            fail_spawned_worker_bind(original_state, issue, attempt, worker_host, agent_run_id, pid, ref, reason)
+        end
+
+      {:error, reason} ->
+        fail_spawned_worker_bind(state, issue, attempt, worker_host, agent_run_id, pid, ref, reason)
+    end
+  end
+
+  defp fail_spawned_worker_bind(state, issue, attempt, worker_host, agent_run_id, pid, ref, reason) do
+    terminate_task(pid)
+    Process.demonitor(ref, [:flush])
+    Logger.warning("Skipping dispatch; failed to bind AgentRun worker task for #{issue_context(issue)}: #{inspect(reason)}")
+
+    record_agent_run_failed(agent_run_id, "failed to bind worker task: #{inspect(reason)}")
+
+    next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
+
+    state
+    |> schedule_issue_retry(issue.id, next_attempt, %{
+      identifier: issue.identifier,
+      error: "failed to bind AgentRun worker task: #{inspect(reason)}",
+      worker_host: worker_host,
+      agent_run_id: agent_run_id
+    })
+    |> claim_issue(issue.id)
+  end
+
+  defp bind_running_issue(state, issue, attempt, worker_host, pid, ref, agent_run_id, worker_task_handle) do
+    Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
+
+    running =
+      Map.put(
+        state.running,
+        issue.id,
+        running_entry(issue, attempt, worker_host, pid, ref, agent_run_id, %{
+          worker_task_handle: worker_task_handle,
+          started_at: DateTime.utc_now()
+        })
+      )
+
+    %{
+      state
+      | running: running,
+        claimed: MapSet.put(state.claimed, issue.id),
+        retry_attempts: Map.delete(state.retry_attempts, issue.id)
+    }
+  end
+
+  defp start_agent_run_for_issue(issue, attempt, worker_host, opts) do
+    Tracker.start_agent_run(
+      issue,
+      attempt: attempt,
+      worker_host: worker_host,
+      status: "starting",
+      replace_agent_run_id: Keyword.get(opts, :replace_agent_run_id),
+      retry_recovery_base_ms: retrying_recovery_base_ms(opts),
+      retry_recovery_max_ms: retrying_recovery_max_ms(opts),
+      starting_stale_after_ms: @failure_retry_base_ms
+    )
   end
 
   defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher, terminal_states)
@@ -798,6 +1038,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp workflow_config_error_message(_reason), do: nil
 
   @doc false
+  @spec dispatch_filters_allow_issue_for_test(term(), Issue.t(), term(), String.t() | nil) :: boolean()
   def dispatch_filters_allow_issue_for_test(%State{} = state, %Issue{} = issue, attempt \\ nil, preferred_worker_host \\ nil) do
     dispatch_filters_allow_issue?(state, issue, attempt, preferred_worker_host)
   end
@@ -838,6 +1079,7 @@ defmodule SymphonyElixir.Orchestrator do
     error = pick_retry_error(previous_retry, metadata)
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
+    confirmed_worker_down = pick_retry_confirmed_worker_down(previous_retry, metadata)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -860,7 +1102,9 @@ defmodule SymphonyElixir.Orchestrator do
             identifier: identifier,
             error: error,
             worker_host: worker_host,
-            workspace_path: workspace_path
+            workspace_path: workspace_path,
+            agent_run_id: Map.get(metadata, :agent_run_id),
+            confirmed_worker_down: confirmed_worker_down
           })
     }
   end
@@ -872,7 +1116,9 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(retry_entry, :identifier),
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
-          workspace_path: Map.get(retry_entry, :workspace_path)
+          workspace_path: Map.get(retry_entry, :workspace_path),
+          agent_run_id: Map.get(retry_entry, :agent_run_id),
+          confirmed_worker_down: Map.get(retry_entry, :confirmed_worker_down)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -909,6 +1155,7 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
 
+        record_agent_run_stopped(metadata[:agent_run_id], "issue reached terminal state before retry")
         cleanup_issue_workspace(issue.identifier, metadata[:worker_host])
         {:noreply, release_issue_claim(state, issue_id)}
 
@@ -918,12 +1165,14 @@ defmodule SymphonyElixir.Orchestrator do
       true ->
         Logger.debug("Issue left active states, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier}")
 
+        record_agent_run_stopped(metadata[:agent_run_id], "issue left active state before retry")
         {:noreply, release_issue_claim(state, issue_id)}
     end
   end
 
-  defp handle_retry_issue_lookup(nil, state, issue_id, _attempt, _metadata) do
+  defp handle_retry_issue_lookup(nil, state, issue_id, _attempt, metadata) do
     Logger.debug("Issue no longer visible, removing claim issue_id=#{issue_id}")
+    record_agent_run_stopped(metadata[:agent_run_id], "issue disappeared before retry")
     {:noreply, release_issue_claim(state, issue_id)}
   end
 
@@ -935,22 +1184,322 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp cleanup_issue_workspace(_identifier, _worker_host), do: :ok
 
-  defp run_terminal_workspace_cleanup do
+  defp reconcile_persisted_active_agent_runs(%State{} = state) do
+    case Tracker.list_active_agent_runs() do
+      {:ok, agent_runs} when is_list(agent_runs) ->
+        Enum.reduce(agent_runs, state, &reconcile_persisted_active_agent_run/2)
+
+      {:error, reason} ->
+        Logger.warning("Skipping AgentRun restart reconciliation; failed to list active AgentRuns: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp reconcile_persisted_active_agent_run(agent_run, %State{} = state) do
+    work_package_id = agent_run_value(agent_run, :work_package_id)
+
+    cond do
+      not is_binary(work_package_id) ->
+        state
+
+      Map.has_key?(state.running, work_package_id) ->
+        state
+
+      agent_run_value(agent_run, :status) == "retrying" ->
+        claim_retrying_agent_run_after_restart(state, agent_run)
+
+      true ->
+        case verified_worker_task_pid(agent_run_value(agent_run, :worker_task_handle)) do
+          {:ok, pid} ->
+            reattach_running_agent_run(state, agent_run, pid)
+
+          :error ->
+            release_unverifiable_active_agent_run(state, agent_run)
+        end
+    end
+  end
+
+  defp reattach_running_agent_run(%State{} = state, agent_run, pid) when is_pid(pid) do
+    work_package_id = agent_run_value(agent_run, :work_package_id)
+
+    if is_pid(state.codex_update_recipient) do
+      Logger.info("Skipping AgentRun reattach for pid-bound orchestrator recipient work_package_id=#{work_package_id}")
+      terminate_task(pid)
+      release_unverifiable_active_agent_run(state, agent_run)
+    else
+      case fetch_issue_for_agent_run(work_package_id) do
+        {:ok, %Issue{} = issue} ->
+          reattach_running_agent_run_issue(state, agent_run, issue, pid)
+
+        {:error, reason} ->
+          Logger.warning("Unable to reattach running AgentRun; issue lookup failed work_package_id=#{work_package_id}: #{inspect(reason)}")
+          release_unverifiable_active_agent_run(state, agent_run)
+      end
+    end
+  end
+
+  defp reattach_running_agent_run_issue(%State{} = state, agent_run, %Issue{} = issue, pid) when is_pid(pid) do
+    if retry_candidate_issue?(issue, terminal_state_set()) do
+      bind_reattached_agent_run(state, agent_run, issue, pid)
+    else
+      agent_run_id = agent_run_value(agent_run, :id)
+
+      Logger.info("Skipping AgentRun reattach for inactive issue: #{issue_context(issue)} agent_run_id=#{agent_run_id}")
+      terminate_task(pid)
+      record_agent_run_stopped(agent_run_id, "issue not active during restart reconciliation")
+      state
+    end
+  end
+
+  defp bind_reattached_agent_run(%State{} = state, agent_run, %Issue{} = issue, pid) when is_pid(pid) do
+    ref = Process.monitor(pid)
+    worker_host = agent_run_value(agent_run, :worker_host)
+    agent_run_id = agent_run_value(agent_run, :id)
+    reattached_at = DateTime.utc_now()
+
+    worker_waiting = waiting_worker_task?(pid)
+
+    with :ok <- maybe_start_reattached_worker(agent_run, pid),
+         :ok <- maybe_mark_reattached_agent_run_running(agent_run, worker_waiting) do
+      Logger.info("Reattached running AgentRun after restart: #{issue_context(issue)} pid=#{inspect(pid)} agent_run_id=#{agent_run_id}")
+
+      running_entry =
+        running_entry(
+          issue,
+          agent_run_value(agent_run, :attempt),
+          worker_host,
+          pid,
+          ref,
+          agent_run_id,
+          reattached_attrs(agent_run, reattached_at)
+        )
+
+      bind_reattached_running_entry(state, issue, running_entry)
+    else
+      {:error, reason} ->
+        Process.demonitor(ref, [:flush])
+        Logger.warning("Unable to reattach AgentRun for #{issue_context(issue)} agent_run_id=#{agent_run_id}: #{inspect(reason)}")
+        terminate_task(pid)
+        release_unverifiable_active_agent_run(state, agent_run)
+    end
+  end
+
+  defp bind_reattached_running_entry(%State{} = state, %Issue{} = issue, running_entry) do
+    %{
+      state
+      | running: Map.put(state.running, issue.id, running_entry),
+        claimed: MapSet.put(state.claimed, issue.id),
+        retry_attempts: Map.delete(state.retry_attempts, issue.id)
+    }
+  end
+
+  defp reattached_attrs(agent_run, reattached_at) do
+    input_tokens = agent_run_value(agent_run, :codex_input_tokens) || 0
+    output_tokens = agent_run_value(agent_run, :codex_output_tokens) || 0
+    total_tokens = agent_run_value(agent_run, :codex_total_tokens) || 0
+
+    %{
+      worker_task_handle: agent_run_value(agent_run, :worker_task_handle),
+      workspace_path: agent_run_value(agent_run, :workspace_path),
+      session_id: agent_run_value(agent_run, :session_id),
+      started_at: agent_run_value(agent_run, :started_at) || reattached_at,
+      last_codex_timestamp: agent_run_value(agent_run, :last_seen_at) || reattached_at,
+      last_codex_event: :reattached,
+      codex_input_tokens: input_tokens,
+      codex_output_tokens: output_tokens,
+      codex_total_tokens: total_tokens,
+      restored_codex_input_tokens: input_tokens,
+      restored_codex_output_tokens: output_tokens,
+      restored_codex_total_tokens: total_tokens,
+      codex_last_reported_input_tokens: input_tokens,
+      codex_last_reported_output_tokens: output_tokens,
+      codex_last_reported_total_tokens: total_tokens,
+      turn_count: agent_run_value(agent_run, :turn_count) || 0
+    }
+  end
+
+  defp maybe_start_reattached_worker(agent_run, pid) do
+    if agent_run_value(agent_run, :status) in ["starting", "running"] and waiting_worker_task?(pid) do
+      start_agent_runner_task(pid)
+    else
+      :ok
+    end
+  end
+
+  defp maybe_mark_reattached_agent_run_running(_agent_run, true), do: :ok
+  defp maybe_mark_reattached_agent_run_running(agent_run, false), do: ensure_agent_run_marked_running(agent_run)
+
+  defp claim_retrying_agent_run_after_restart(%State{} = state, agent_run) do
+    work_package_id = agent_run_value(agent_run, :work_package_id)
+    issue = fetch_issue_for_agent_run(work_package_id)
+
+    state
+    |> schedule_issue_retry(work_package_id, next_retry_attempt_from_agent_run(agent_run), %{
+      identifier: retry_identifier_for_agent_run(agent_run, issue),
+      error: agent_run_value(agent_run, :reason),
+      worker_host: agent_run_value(agent_run, :worker_host),
+      workspace_path: agent_run_value(agent_run, :workspace_path),
+      agent_run_id: agent_run_value(agent_run, :id)
+    })
+    |> claim_issue(work_package_id)
+  end
+
+  defp release_unverifiable_active_agent_run(%State{} = state, agent_run) do
+    work_package_id = agent_run_value(agent_run, :work_package_id)
+    agent_run_id = agent_run_value(agent_run, :id)
+    reason = "worker task handle not live after orchestrator restart"
+
+    case record_agent_run_retrying(agent_run_id, reason) do
+      :ok ->
+        issue = fetch_issue_for_agent_run(work_package_id)
+        identifier = retry_identifier_for_agent_run(agent_run, issue)
+
+        state
+        |> schedule_issue_retry(work_package_id, next_retry_attempt_from_agent_run(agent_run), %{
+          identifier: identifier,
+          error: reason,
+          worker_host: agent_run_value(agent_run, :worker_host),
+          workspace_path: agent_run_value(agent_run, :workspace_path),
+          agent_run_id: agent_run_id
+        })
+        |> claim_issue(work_package_id)
+
+      {:error, reason} ->
+        Logger.warning("Failed to release unverifiable active AgentRun agent_run_id=#{agent_run_id}: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp sweep_unmatched_waiting_worker_tasks(%State{} = state) do
+    running_pids =
+      state.running
+      |> Map.values()
+      |> Enum.map(&Map.get(&1, :pid))
+      |> MapSet.new()
+
+    SymphonyElixir.TaskSupervisor
+    |> Task.Supervisor.children()
+    |> Enum.reject(&MapSet.member?(running_pids, &1))
+    |> Enum.filter(&waiting_worker_task?/1)
+    |> Enum.each(&terminate_task/1)
+  rescue
+    error -> Logger.warning("Skipping waiting worker sweep after restart: #{inspect(error)}")
+  catch
+    :exit, reason -> Logger.warning("Skipping waiting worker sweep after restart: #{inspect(reason)}")
+  end
+
+  defp ensure_agent_run_marked_running(agent_run) do
+    if agent_run_value(agent_run, :status) == "starting" do
+      record_agent_run_running(agent_run_value(agent_run, :id), "worker task reattached after restart")
+    else
+      :ok
+    end
+  end
+
+  defp fetch_issue_for_agent_run(work_package_id) when is_binary(work_package_id) do
+    case Tracker.fetch_issue_states_by_ids([work_package_id]) do
+      {:ok, [%Issue{} = issue | _]} -> {:ok, issue}
+      {:ok, []} -> {:error, :missing}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp fetch_issue_for_agent_run(_work_package_id), do: {:error, :missing}
+
+  defp retry_identifier_for_agent_run(_agent_run, {:ok, %Issue{identifier: identifier}}) when is_binary(identifier), do: identifier
+  defp retry_identifier_for_agent_run(agent_run, _issue), do: agent_run_value(agent_run, :work_package_id)
+
+  defp verified_worker_task_pid(worker_task_handle) when is_binary(worker_task_handle) do
+    with {:ok, pid, worker_task_token} <- parse_worker_task_handle(worker_task_handle),
+         true <- Process.alive?(pid),
+         true <- supervised_worker_task?(pid),
+         true <- worker_task_token_matches?(pid, worker_task_token) do
+      {:ok, pid}
+    else
+      _ -> :error
+    end
+  end
+
+  defp verified_worker_task_pid(_worker_task_handle), do: :error
+
+  defp parse_worker_task_handle("local-task:" <> handle) do
+    case String.split(handle, ":", parts: 3) do
+      [runtime_id, worker_task_token, pid_text] ->
+        if runtime_id == worker_task_runtime_id() do
+          {:ok, :erlang.list_to_pid(String.to_charlist(pid_text)), worker_task_token}
+        else
+          :error
+        end
+
+      _ ->
+        :error
+    end
+  rescue
+    ArgumentError -> :error
+  end
+
+  defp parse_worker_task_handle(_worker_task_handle), do: :error
+
+  defp supervised_worker_task?(pid) when is_pid(pid) do
+    SymphonyElixir.TaskSupervisor
+    |> Task.Supervisor.children()
+    |> Enum.member?(pid)
+  rescue
+    _error -> false
+  catch
+    :exit, _reason -> false
+  end
+
+  defp worker_task_token_matches?(pid, worker_task_token) when is_pid(pid) and is_binary(worker_task_token) do
+    worker_task_process_value(pid, :sympp_worker_task_token) == worker_task_token
+  end
+
+  defp worker_task_token_matches?(_pid, _worker_task_token), do: false
+
+  defp waiting_worker_task?(pid) when is_pid(pid) do
+    worker_task_process_value(pid, :sympp_worker_task_state) == :waiting
+  end
+
+  defp waiting_worker_task?(_pid), do: false
+
+  defp worker_task_process_value(pid, key) when is_pid(pid) do
+    case Process.info(pid, :dictionary) do
+      {:dictionary, dictionary} -> Keyword.get(dictionary, key)
+      _ -> nil
+    end
+  end
+
+  defp worker_task_handle(pid, worker_task_token) when is_pid(pid) and is_binary(worker_task_token) do
+    "local-task:" <>
+      worker_task_runtime_id() <> ":" <> worker_task_token <> ":" <> List.to_string(:erlang.pid_to_list(pid))
+  end
+
+  defp worker_task_token do
+    Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+  end
+
+  defp worker_task_runtime_id, do: @worker_task_runtime_id
+
+  defp run_terminal_workspace_cleanup(%State{} = state) do
+    running_issue_ids = Map.keys(state.running) |> MapSet.new()
+
     case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
       {:ok, issues} ->
-        issues
-        |> Enum.each(fn
-          %Issue{identifier: identifier} when is_binary(identifier) ->
-            cleanup_issue_workspace(identifier)
-
-          _ ->
-            :ok
-        end)
+        Enum.each(issues, &cleanup_terminal_issue_workspace(&1, running_issue_ids))
 
       {:error, reason} ->
         Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
     end
   end
+
+  defp cleanup_terminal_issue_workspace(%Issue{id: issue_id, identifier: identifier}, running_issue_ids)
+       when is_binary(identifier) do
+    unless is_binary(issue_id) and MapSet.member?(running_issue_ids, issue_id) do
+      cleanup_issue_workspace(identifier)
+    end
+  end
+
+  defp cleanup_terminal_issue_workspace(_issue, _running_issue_ids), do: :ok
 
   defp notify_dashboard do
     StatusDashboard.notify_update()
@@ -960,7 +1509,12 @@ defmodule SymphonyElixir.Orchestrator do
     if retry_candidate_issue?(issue, terminal_state_set()) and
          dispatch_slots_available?(issue, state) and
          worker_slots_available?(state, metadata[:worker_host]) do
-      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host])}
+      retry_opts = [
+        replace_agent_run_id: metadata[:agent_run_id],
+        replace_confirmed_dead_worker: metadata[:confirmed_worker_down] == true
+      ]
+
+      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host], retry_opts)}
     else
       Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
@@ -981,6 +1535,18 @@ defmodule SymphonyElixir.Orchestrator do
     %{state | claimed: MapSet.delete(state.claimed, issue_id)}
   end
 
+  defp claim_issue(%State{} = state, issue_id) when is_binary(issue_id) do
+    %{state | claimed: MapSet.put(state.claimed, issue_id)}
+  end
+
+  defp claim_issue(%State{} = state, _issue_id), do: state
+
+  defp maybe_put_retry_agent_run_id(metadata, {:error, _reason}, agent_run_id) when is_binary(agent_run_id) do
+    Map.put(metadata, :agent_run_id, agent_run_id)
+  end
+
+  defp maybe_put_retry_agent_run_id(metadata, _result, _agent_run_id), do: metadata
+
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
     if metadata[:delay_type] == :continuation and attempt == 1 do
       @continuation_retry_delay_ms
@@ -994,6 +1560,22 @@ defmodule SymphonyElixir.Orchestrator do
     min(@failure_retry_base_ms * (1 <<< max_delay_power), Config.settings!().agent.max_retry_backoff_ms)
   end
 
+  defp retrying_recovery_base_ms(opts) do
+    if is_binary(Keyword.get(opts, :replace_agent_run_id)) do
+      nil
+    else
+      @failure_retry_base_ms
+    end
+  end
+
+  defp retrying_recovery_max_ms(opts) do
+    if is_binary(Keyword.get(opts, :replace_agent_run_id)) do
+      nil
+    else
+      Config.settings!().agent.max_retry_backoff_ms
+    end
+  end
+
   defp normalize_retry_attempt(attempt) when is_integer(attempt) and attempt > 0, do: attempt
   defp normalize_retry_attempt(_attempt), do: 0
 
@@ -1001,6 +1583,13 @@ defmodule SymphonyElixir.Orchestrator do
     case Map.get(running_entry, :retry_attempt) do
       attempt when is_integer(attempt) and attempt > 0 -> attempt + 1
       _ -> nil
+    end
+  end
+
+  defp next_retry_attempt_from_agent_run(agent_run) do
+    case agent_run_value(agent_run, :attempt) do
+      attempt when is_integer(attempt) and attempt > 0 -> attempt + 1
+      _ -> 1
     end
   end
 
@@ -1019,6 +1608,16 @@ defmodule SymphonyElixir.Orchestrator do
   defp pick_retry_workspace_path(previous_retry, metadata) do
     metadata[:workspace_path] || Map.get(previous_retry, :workspace_path)
   end
+
+  defp pick_retry_confirmed_worker_down(previous_retry, metadata) do
+    metadata[:confirmed_worker_down] == true or Map.get(previous_retry, :confirmed_worker_down) == true
+  end
+
+  defp agent_run_id(%{id: id}) when is_binary(id), do: id
+  defp agent_run_id(_agent_run), do: nil
+
+  defp agent_run_value(agent_run, key) when is_map(agent_run), do: Map.get(agent_run, key) || Map.get(agent_run, Atom.to_string(key))
+  defp agent_run_value(_agent_run, _key), do: nil
 
   defp maybe_put_runtime_value(running_entry, _key, nil), do: running_entry
 
@@ -1105,10 +1704,47 @@ defmodule SymphonyElixir.Orchestrator do
     end)
   end
 
+  defp find_issue_id_for_pid(running, pid) do
+    running
+    |> Enum.find_value(fn {issue_id, %{pid: running_pid}} ->
+      if running_pid == pid, do: issue_id
+    end)
+  end
+
   defp running_entry_session_id(%{session_id: session_id}) when is_binary(session_id),
     do: session_id
 
   defp running_entry_session_id(_running_entry), do: "n/a"
+
+  defp running_entry(issue, attempt, worker_host, pid, ref, agent_run_id, attrs) do
+    %{
+      pid: pid,
+      ref: ref,
+      identifier: issue.identifier,
+      issue: issue,
+      worker_host: worker_host,
+      worker_task_handle: Map.get(attrs, :worker_task_handle),
+      workspace_path: Map.get(attrs, :workspace_path),
+      session_id: Map.get(attrs, :session_id),
+      last_codex_message: nil,
+      last_codex_timestamp: Map.get(attrs, :last_codex_timestamp),
+      last_codex_event: Map.get(attrs, :last_codex_event),
+      codex_app_server_pid: nil,
+      codex_input_tokens: Map.get(attrs, :codex_input_tokens, 0),
+      codex_output_tokens: Map.get(attrs, :codex_output_tokens, 0),
+      codex_total_tokens: Map.get(attrs, :codex_total_tokens, 0),
+      restored_codex_input_tokens: Map.get(attrs, :restored_codex_input_tokens, 0),
+      restored_codex_output_tokens: Map.get(attrs, :restored_codex_output_tokens, 0),
+      restored_codex_total_tokens: Map.get(attrs, :restored_codex_total_tokens, 0),
+      codex_last_reported_input_tokens: Map.get(attrs, :codex_last_reported_input_tokens, 0),
+      codex_last_reported_output_tokens: Map.get(attrs, :codex_last_reported_output_tokens, 0),
+      codex_last_reported_total_tokens: Map.get(attrs, :codex_last_reported_total_tokens, 0),
+      turn_count: Map.get(attrs, :turn_count, 0),
+      retry_attempt: normalize_retry_attempt(attempt),
+      agent_run_id: agent_run_id,
+      started_at: Map.get(attrs, :started_at) || DateTime.utc_now()
+    }
+  end
 
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
@@ -1337,9 +1973,9 @@ defmodule SymphonyElixir.Orchestrator do
       apply_token_delta(
         state.codex_totals,
         %{
-          input_tokens: 0,
-          output_tokens: 0,
-          total_tokens: 0,
+          input_tokens: Map.get(running_entry, :restored_codex_input_tokens, 0),
+          output_tokens: Map.get(running_entry, :restored_codex_output_tokens, 0),
+          total_tokens: Map.get(running_entry, :restored_codex_total_tokens, 0),
           seconds_running: runtime_seconds
         }
       )
@@ -1708,4 +2344,36 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp integer_like(_value), do: nil
+
+  defp record_agent_run_heartbeat(agent_run_id, attrs) do
+    log_agent_run_result(agent_run_id, Tracker.heartbeat_agent_run(agent_run_id, attrs), "heartbeat")
+  end
+
+  defp record_agent_run_running(agent_run_id, reason) do
+    log_agent_run_result(agent_run_id, Tracker.mark_agent_run_running(agent_run_id, reason), "mark running")
+  end
+
+  defp record_agent_run_retrying(agent_run_id, reason) do
+    log_agent_run_result(agent_run_id, Tracker.mark_agent_run_retrying(agent_run_id, reason), "mark retrying")
+  end
+
+  defp record_agent_run_completed(agent_run_id, reason) do
+    log_agent_run_result(agent_run_id, Tracker.mark_agent_run_completed(agent_run_id, reason), "mark completed")
+  end
+
+  defp record_agent_run_failed(agent_run_id, reason) do
+    log_agent_run_result(agent_run_id, Tracker.mark_agent_run_failed(agent_run_id, reason), "mark failed")
+  end
+
+  defp record_agent_run_stopped(agent_run_id, reason) do
+    log_agent_run_result(agent_run_id, Tracker.mark_agent_run_stopped(agent_run_id, reason), "mark stopped")
+  end
+
+  defp log_agent_run_result(nil, _result, _action), do: :ok
+  defp log_agent_run_result(_agent_run_id, {:ok, _result}, _action), do: :ok
+
+  defp log_agent_run_result(agent_run_id, {:error, reason}, action) do
+    Logger.warning("Failed to #{action} AgentRun agent_run_id=#{agent_run_id}: #{inspect(reason)}")
+    {:error, reason}
+  end
 end
