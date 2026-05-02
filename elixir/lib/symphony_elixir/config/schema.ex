@@ -6,6 +6,7 @@ defmodule SymphonyElixir.Config.Schema do
   import Ecto.Changeset
 
   alias SymphonyElixir.PathSafety
+  alias SymphonyElixir.SymphonyPlusPlus.TrackerStates
 
   @primary_key false
 
@@ -275,14 +276,19 @@ defmodule SymphonyElixir.Config.Schema do
 
   @spec parse(map()) :: {:ok, %__MODULE__{}} | {:error, {:invalid_workflow_config, String.t()}}
   def parse(config) when is_map(config) do
-    config
-    |> normalize_keys()
-    |> drop_nil_values()
+    normalized_config =
+      config
+      |> normalize_keys()
+      |> drop_nil_values()
+
+    tracker_state_fields = tracker_state_fields(normalized_config)
+
+    normalized_config
     |> changeset()
     |> apply_action(:validate)
     |> case do
       {:ok, settings} ->
-        {:ok, finalize_settings(settings)}
+        {:ok, finalize_settings(settings, tracker_state_fields)}
 
       {:error, changeset} ->
         {:error, {:invalid_workflow_config, format_errors(changeset)}}
@@ -365,12 +371,17 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:server, with: &Server.changeset/2)
   end
 
-  defp finalize_settings(settings) do
-    tracker = %{
-      settings.tracker
-      | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
-        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
-    }
+  defp finalize_settings(settings, tracker_state_fields) do
+    tracker_kind = canonical_tracker_kind(settings.tracker.kind)
+
+    tracker =
+      %{
+        settings.tracker
+        | kind: tracker_kind,
+          api_key: resolve_tracker_secret_setting(tracker_kind, settings.tracker.api_key, "LINEAR_API_KEY"),
+          assignee: resolve_tracker_secret_setting(tracker_kind, settings.tracker.assignee, "LINEAR_ASSIGNEE")
+      }
+      |> maybe_apply_symphony_plus_plus_tracker_states(tracker_state_fields)
 
     workspace = %{
       settings.workspace
@@ -384,6 +395,48 @@ defmodule SymphonyElixir.Config.Schema do
     }
 
     %{settings | tracker: tracker, workspace: workspace, codex: codex}
+  end
+
+  defp maybe_apply_symphony_plus_plus_tracker_states(tracker, tracker_state_fields) do
+    if TrackerStates.tracker_kind?(tracker.kind) do
+      active_states = explicit_or_default(tracker.active_states, tracker_state_fields.active?)
+      terminal_states = explicit_or_default(tracker.terminal_states, tracker_state_fields.terminal?)
+
+      %{
+        tracker
+        | project_slug: nil,
+          active_states: TrackerStates.active_state_names(active_states),
+          terminal_states: TrackerStates.terminal_state_names(terminal_states)
+      }
+    else
+      tracker
+    end
+  end
+
+  defp tracker_state_fields(config) when is_map(config) do
+    tracker = Map.get(config, "tracker", %{})
+
+    if is_map(tracker) do
+      %{
+        active?: Map.has_key?(tracker, "active_states"),
+        terminal?: Map.has_key?(tracker, "terminal_states")
+      }
+    else
+      %{active?: false, terminal?: false}
+    end
+  end
+
+  defp explicit_or_default(state_names, true), do: state_names
+  defp explicit_or_default(_state_names, false), do: nil
+
+  defp canonical_tracker_kind(kind), do: TrackerStates.canonical_tracker_kind(kind) || kind
+
+  defp resolve_tracker_secret_setting(tracker_kind, value, env_var) do
+    cond do
+      TrackerStates.tracker_kind?(tracker_kind) -> value
+      tracker_kind == "linear" -> resolve_secret_setting(value, System.get_env(env_var))
+      true -> resolve_secret_setting(value, nil)
+    end
   end
 
   defp normalize_keys(value) when is_map(value) do
