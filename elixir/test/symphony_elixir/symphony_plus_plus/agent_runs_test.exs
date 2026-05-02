@@ -132,6 +132,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
     assert stale.reason == "stale starting AgentRun released before dispatch"
   end
 
+  test "replacement retry releases previous starting reservation by id", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-REPLACE-STARTING", status: "ready_for_worker"))
+
+    assert {:ok, starting} = Service.start_dispatch(repo, issue(work_package.id), status: "starting")
+
+    assert {:ok, replacement} =
+             Service.start_dispatch(repo, issue(work_package.id), attempt: 1, replace_agent_run_id: starting.id)
+
+    assert replacement.status == "running"
+
+    assert {:ok, replaced} = Repository.get(repo, starting.id)
+    assert replaced.status == "failed"
+    assert replaced.reason == "replaced by retry dispatch"
+  end
+
   test "retry reconciliation holds dispatch lock until replacement retry starts", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-RETRY-STOP", status: "ready_for_worker"))

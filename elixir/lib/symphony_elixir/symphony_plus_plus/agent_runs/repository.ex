@@ -141,7 +141,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
        when is_binary(previous_agent_run_id) and is_binary(work_package_id) do
     case get(repo, previous_agent_run_id) do
       {:ok, %AgentRun{work_package_id: ^work_package_id, status: status}}
-      when status in ["running", "retrying"] ->
+      when status in ["starting", "running", "retrying"] ->
         case mark_failed(repo, previous_agent_run_id, "replaced by retry dispatch") do
           {:ok, _agent_run} -> :ok
           {:error, reason} -> {:error, reason}

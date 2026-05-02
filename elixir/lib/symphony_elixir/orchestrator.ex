@@ -550,7 +550,6 @@ defmodule SymphonyElixir.Orchestrator do
         agent_run_id: Map.get(running_entry, :agent_run_id)
       })
     else
-      record_agent_run_heartbeat(Map.get(running_entry, :agent_run_id), %{})
       state
     end
   end
