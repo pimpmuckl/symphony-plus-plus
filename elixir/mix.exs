@@ -40,8 +40,10 @@ defmodule SymphonyElixir.MixProject do
         ]
       ],
       test_ignore_filters: [
+        "test/support/mcp_harness.exs",
         "test/support/snapshot_support.exs",
-        "test/support/test_support.exs"
+        "test/support/test_support.exs",
+        "test/support/work_package_factory.exs"
       ],
       dialyzer: [
         plt_add_apps: [:mix]
