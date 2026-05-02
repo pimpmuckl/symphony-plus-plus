@@ -143,7 +143,8 @@ defmodule SymphonyElixir.Orchestrator do
                 identifier: running_entry.identifier,
                 delay_type: :continuation,
                 worker_host: Map.get(running_entry, :worker_host),
-                workspace_path: Map.get(running_entry, :workspace_path)
+                workspace_path: Map.get(running_entry, :workspace_path),
+                agent_run_id: agent_run_id
               })
 
             _ ->
@@ -695,11 +696,11 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
-  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
+  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil, opts \\ []) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
         if dispatch_filters_allow_issue?(state, refreshed_issue, attempt, preferred_worker_host) do
-          do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
+          do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host, opts)
         else
           Logger.info("Skipping dispatch; issue outside configured dispatch filters: #{issue_context(refreshed_issue)}")
           clear_issue_retry(state, refreshed_issue.id)
@@ -720,7 +721,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
+  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, opts) do
     recipient = self()
 
     case select_worker_host(state, preferred_worker_host) do
@@ -729,18 +730,33 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
+        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, opts)
     end
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
-    case Tracker.start_agent_run(issue, attempt: attempt, worker_host: worker_host) do
+  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, opts) do
+    case Tracker.start_agent_run(
+           issue,
+           attempt: attempt,
+           worker_host: worker_host,
+           replace_agent_run_id: Keyword.get(opts, :replace_agent_run_id),
+           stale_after_ms: agent_run_stale_after_ms()
+         ) do
       {:ok, agent_run} ->
         do_spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, agent_run_id(agent_run))
 
       {:error, :active_run_exists} ->
-        Logger.info("Skipping dispatch; active AgentRun already exists for #{issue_context(issue)}")
-        clear_issue_retry(state, issue.id)
+        Logger.info("Deferring dispatch; active AgentRun already exists for #{issue_context(issue)}")
+        next_attempt = if is_integer(attempt), do: attempt + 1, else: 1
+
+        state
+        |> schedule_issue_retry(issue.id, next_attempt, %{
+          identifier: issue.identifier,
+          error: "active AgentRun already exists",
+          worker_host: worker_host,
+          agent_run_id: Keyword.get(opts, :replace_agent_run_id)
+        })
+        |> claim_issue(issue.id)
 
       {:error, reason} ->
         Logger.warning("Skipping dispatch; failed to create AgentRun for #{issue_context(issue)}: #{inspect(reason)}")
@@ -1008,7 +1024,9 @@ defmodule SymphonyElixir.Orchestrator do
     if retry_candidate_issue?(issue, terminal_state_set()) and
          dispatch_slots_available?(issue, state) and
          worker_slots_available?(state, metadata[:worker_host]) do
-      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host])}
+      retry_opts = [replace_agent_run_id: metadata[:agent_run_id]]
+
+      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host], retry_opts)}
     else
       Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
@@ -1029,6 +1047,12 @@ defmodule SymphonyElixir.Orchestrator do
     %{state | claimed: MapSet.delete(state.claimed, issue_id)}
   end
 
+  defp claim_issue(%State{} = state, issue_id) when is_binary(issue_id) do
+    %{state | claimed: MapSet.put(state.claimed, issue_id)}
+  end
+
+  defp claim_issue(%State{} = state, _issue_id), do: state
+
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
     if metadata[:delay_type] == :continuation and attempt == 1 do
       @continuation_retry_delay_ms
@@ -1040,6 +1064,13 @@ defmodule SymphonyElixir.Orchestrator do
   defp failure_retry_delay(attempt) do
     max_delay_power = min(attempt - 1, 10)
     min(@failure_retry_base_ms * (1 <<< max_delay_power), Config.settings!().agent.max_retry_backoff_ms)
+  end
+
+  defp agent_run_stale_after_ms do
+    case Config.settings!().codex.stall_timeout_ms do
+      timeout_ms when is_integer(timeout_ms) and timeout_ms > 0 -> timeout_ms
+      _timeout_ms -> @failure_retry_base_ms
+    end
   end
 
   defp normalize_retry_attempt(attempt) when is_integer(attempt) and attempt > 0, do: attempt

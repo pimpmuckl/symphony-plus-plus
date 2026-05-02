@@ -21,7 +21,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Service do
       }
       |> Map.merge(grant_binding(repo, issue.id, issue.assignee_id))
 
-    Repository.start_run(repo, attrs)
+    Repository.start_run(repo, attrs,
+      replace_agent_run_id: Keyword.get(opts, :replace_agent_run_id),
+      stale_after_ms: Keyword.get(opts, :stale_after_ms)
+    )
   end
 
   @spec heartbeat(Repository.repo(), String.t(), map()) :: {:ok, AgentRun.t()} | {:error, error()}

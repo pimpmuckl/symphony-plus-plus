@@ -97,7 +97,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
     assert {:error, :active_run_exists} = Service.start_dispatch(repo, issue(work_package.id), attempt: 1)
   end
 
-  test "retry and stop reconciliation update AgentRun status", %{repo: repo} do
+  test "retry reconciliation holds dispatch lock until replacement retry starts", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-RETRY-STOP", status: "ready_for_worker"))
 
@@ -108,8 +108,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
     assert retrying.reason == "worker exited"
     assert %DateTime{} = retrying.finished_at
 
-    assert {:ok, replacement} = Service.start_dispatch(repo, issue(work_package.id), attempt: 1)
+    assert {:error, :active_run_exists} = Service.start_dispatch(repo, issue(work_package.id), attempt: 1)
+
+    assert {:ok, replacement} =
+             Service.start_dispatch(repo, issue(work_package.id), attempt: 1, replace_agent_run_id: run.id)
+
     assert replacement.status == "running"
+
+    assert {:ok, replaced} = Repository.get(repo, run.id)
+    assert replaced.status == "failed"
+    assert replaced.reason == "replaced by retry dispatch"
+  end
+
+  test "stop reconciliation updates AgentRun status", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-STOP", status: "ready_for_worker"))
+
+    assert {:ok, run} = Service.start_dispatch(repo, issue(work_package.id))
 
     assert {:ok, stopped} = Service.mark_stopped(repo, run.id, "package left active state")
     assert stopped.status == "stopped"
@@ -142,6 +157,59 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
     assert replacement.id != failed_run.id
     assert replacement.status == "running"
     assert replacement.attempt == 1
+  end
+
+  test "stale active AgentRun is failed before replacement dispatch", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-STALE", status: "ready_for_worker"))
+
+    assert {:ok, run} = Service.start_dispatch(repo, issue(work_package.id))
+    stale_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -5, :second)
+
+    assert {:ok, _stale_run} =
+             run
+             |> AgentRun.update_changeset(%{last_seen_at: stale_seen_at})
+             |> repo.update()
+
+    assert {:ok, replacement} =
+             Service.start_dispatch(repo, issue(work_package.id), attempt: 2, stale_after_ms: 1_000)
+
+    assert replacement.status == "running"
+    assert replacement.id != run.id
+
+    assert {:ok, stale} = Repository.get(repo, run.id)
+    assert stale.status == "failed"
+    assert stale.reason == "stale active AgentRun released before dispatch"
+  end
+
+  test "fresh active AgentRun is not reconciled as stale", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-FRESH", status: "ready_for_worker"))
+
+    assert {:ok, run} = Service.start_dispatch(repo, issue(work_package.id))
+
+    assert {:error, :active_run_exists} =
+             Service.start_dispatch(repo, issue(work_package.id), attempt: 2, stale_after_ms: 300_000)
+
+    assert {:ok, active} = Repository.get(repo, run.id)
+    assert active.status == "running"
+  end
+
+  test "replacement retry can release the previous running attempt by id", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-REPLACE", status: "ready_for_worker"))
+
+    assert {:ok, run} = Service.start_dispatch(repo, issue(work_package.id))
+
+    assert {:ok, replacement} =
+             Service.start_dispatch(repo, issue(work_package.id), attempt: 2, replace_agent_run_id: run.id)
+
+    assert replacement.status == "running"
+    assert replacement.id != run.id
+
+    assert {:ok, replaced} = Repository.get(repo, run.id)
+    assert replaced.status == "failed"
+    assert replaced.reason == "replaced by retry dispatch"
   end
 
   defp issue(id) do

@@ -26,7 +26,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo.Migrations.CreateSymppAgentRuns d
 
     create(
       unique_index(:sympp_agent_runs, [:work_package_id],
-        where: "status = 'running'",
+        where: "status IN ('running', 'retrying')",
         name: :sympp_agent_runs_one_active_per_work_package_index
       )
     )

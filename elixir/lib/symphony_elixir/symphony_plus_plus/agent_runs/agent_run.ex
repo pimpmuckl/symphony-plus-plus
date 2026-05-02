@@ -8,7 +8,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun do
   @primary_key {:id, :string, autogenerate: false}
   @foreign_key_type :string
 
-  @active_statuses ["running"]
+  @active_statuses ["running", "retrying"]
   @terminal_statuses ["completed", "failed", "stopped"]
   @statuses ["retrying" | @active_statuses ++ @terminal_statuses]
 

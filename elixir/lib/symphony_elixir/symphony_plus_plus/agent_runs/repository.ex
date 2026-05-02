@@ -9,6 +9,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
   @type repo :: module()
   @type error ::
           :active_run_exists
+          | :agent_run_work_package_mismatch
           | :id_already_exists
           | :not_found
           | {:constraint_failed, String.t()}
@@ -23,14 +24,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
     error -> {:error, {:migration_failed, error}}
   end
 
-  @spec start_run(repo(), map()) :: {:ok, AgentRun.t()} | {:error, error()}
-  def start_run(repo, attrs) when is_atom(repo) and is_map(attrs) do
-    attrs
-    |> AgentRun.create_changeset()
-    |> repo.insert()
-    |> normalize_insert_result()
-  rescue
-    error in Ecto.ConstraintError -> normalize_constraint_error(error)
+  @spec start_run(repo(), map(), keyword()) :: {:ok, AgentRun.t()} | {:error, error()}
+  def start_run(repo, attrs, opts \\ []) when is_atom(repo) and is_map(attrs) and is_list(opts) do
+    case repo.transaction(fn -> start_run_transaction(repo, attrs, opts) end) do
+      {:ok, {:ok, agent_run}} -> {:ok, agent_run}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @spec get(repo(), String.t()) :: {:ok, AgentRun.t()} | {:error, error()}
@@ -91,6 +91,103 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
     now = DateTime.utc_now(:microsecond)
     update_run(repo, id, %{status: status, reason: reason, last_seen_at: now, finished_at: now})
   end
+
+  defp start_run_transaction(repo, attrs, opts) do
+    work_package_id = work_package_id(attrs)
+
+    with :ok <- release_previous_attempt(repo, Keyword.get(opts, :replace_agent_run_id), work_package_id) do
+      case insert_run(repo, attrs) do
+        {:error, :active_run_exists} ->
+          repo
+          |> release_stale_active_run(work_package_id, Keyword.get(opts, :stale_after_ms))
+          |> maybe_insert_after_stale_release(repo, attrs)
+
+        result ->
+          result
+      end
+    end
+  end
+
+  defp insert_run(repo, attrs) do
+    attrs
+    |> AgentRun.create_changeset()
+    |> repo.insert()
+    |> normalize_insert_result()
+  rescue
+    error in Ecto.ConstraintError -> normalize_constraint_error(error)
+  end
+
+  defp release_previous_attempt(_repo, previous_agent_run_id, _work_package_id)
+       when previous_agent_run_id in [nil, ""],
+       do: :ok
+
+  defp release_previous_attempt(repo, previous_agent_run_id, work_package_id)
+       when is_binary(previous_agent_run_id) and is_binary(work_package_id) do
+    case get(repo, previous_agent_run_id) do
+      {:ok, %AgentRun{work_package_id: ^work_package_id, status: status}}
+      when status in ["running", "retrying"] ->
+        case mark_failed(repo, previous_agent_run_id, "replaced by retry dispatch") do
+          {:ok, _agent_run} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:ok, %AgentRun{work_package_id: ^work_package_id}} ->
+        :ok
+
+      {:ok, %AgentRun{}} ->
+        {:error, :agent_run_work_package_mismatch}
+
+      {:error, :not_found} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp release_previous_attempt(_repo, _previous_agent_run_id, _work_package_id), do: :ok
+
+  defp release_stale_active_run(_repo, _work_package_id, stale_after_ms)
+       when not is_integer(stale_after_ms) or stale_after_ms <= 0,
+       do: {:ok, :active}
+
+  defp release_stale_active_run(repo, work_package_id, stale_after_ms) when is_binary(work_package_id) do
+    case active_for_work_package(repo, work_package_id) do
+      {:ok, %AgentRun{} = agent_run} -> release_stale_agent_run(repo, agent_run, stale_after_ms)
+      {:error, :not_found} -> {:ok, :released}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp release_stale_active_run(_repo, _work_package_id, _stale_after_ms), do: {:ok, :active}
+
+  defp release_stale_agent_run(repo, %AgentRun{} = agent_run, stale_after_ms) do
+    if stale_agent_run?(agent_run, stale_after_ms) do
+      mark_stale_agent_run_failed(repo, agent_run)
+    else
+      {:ok, :active}
+    end
+  end
+
+  defp mark_stale_agent_run_failed(repo, %AgentRun{} = agent_run) do
+    case mark_failed(repo, agent_run.id, "stale active AgentRun released before dispatch") do
+      {:ok, _agent_run} -> {:ok, :released}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_insert_after_stale_release({:ok, :released}, repo, attrs), do: insert_run(repo, attrs)
+  defp maybe_insert_after_stale_release({:ok, :active}, _repo, _attrs), do: {:error, :active_run_exists}
+  defp maybe_insert_after_stale_release({:error, reason}, _repo, _attrs), do: {:error, reason}
+
+  defp stale_agent_run?(%AgentRun{last_seen_at: %DateTime{} = last_seen_at}, stale_after_ms) do
+    stale_cutoff = DateTime.add(DateTime.utc_now(:microsecond), -stale_after_ms, :millisecond)
+    DateTime.compare(last_seen_at, stale_cutoff) in [:lt, :eq]
+  end
+
+  defp stale_agent_run?(_agent_run, _stale_after_ms), do: false
+
+  defp work_package_id(attrs), do: Map.get(attrs, :work_package_id) || Map.get(attrs, "work_package_id")
 
   defp update_run(repo, id, attrs) do
     with {:ok, agent_run} <- get(repo, id) do
