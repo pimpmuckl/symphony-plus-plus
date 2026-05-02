@@ -40,8 +40,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
     active_states = TrackerStates.active_state_set(tracker.active_states)
     terminal_states = TrackerStates.terminal_state_set(tracker.terminal_states)
     candidate_states = active_states |> MapSet.difference(terminal_states) |> MapSet.to_list()
+    filters = tracker.filters
 
-    fetch_work_package_issues(fn -> list_work_packages_by_statuses(candidate_states) end, &dispatchable_kind?/1)
+    fetch_work_package_issues(fn -> list_work_packages_by_statuses(candidate_states) end, &dispatchable_work_package?(&1, filters))
   end
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
@@ -129,6 +130,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
   @spec to_issue(WorkPackage.t()) :: Issue.t()
   def to_issue(%WorkPackage{} = work_package) do
     to_issue(work_package, nil)
+  end
+
+  @doc false
+  @spec dispatch_filters_match?(Issue.t()) :: boolean()
+  def dispatch_filters_match?(%Issue{} = issue) do
+    filters = Config.settings!().tracker.filters
+
+    matches_issue_dispatch_filters?(issue, filters)
   end
 
   defp to_issue(%WorkPackage{} = work_package, worker_grants_by_work_package_id) do
@@ -972,7 +981,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
     end
   end
 
+  defp dispatchable_work_package?(%WorkPackage{} = work_package, filters) do
+    dispatchable_kind?(work_package) and matches_dispatch_filters?(work_package, filters)
+  end
+
   defp dispatchable_kind?(%WorkPackage{kind: kind}), do: StateMachine.supported_kind?(kind)
+
+  defp matches_dispatch_filters?(%WorkPackage{}, nil), do: true
+
+  defp matches_dispatch_filters?(%WorkPackage{} = work_package, filters) do
+    dispatch_filter_match?(filters.repos, work_package.repo) and
+      dispatch_filter_match?(filters.base_branches, work_package.base_branch) and
+      dispatch_filter_match?(filters.work_kinds, work_package.kind)
+  end
+
+  defp matches_issue_dispatch_filters?(%Issue{}, nil), do: true
+
+  defp matches_issue_dispatch_filters?(%Issue{} = issue, filters) do
+    dispatch_filter_match?(filters.repos, issue_label_value(issue, "repo")) and
+      dispatch_filter_match?(filters.base_branches, issue_label_value(issue, "base")) and
+      dispatch_filter_match?(filters.work_kinds, issue_label_value(issue, "kind"))
+  end
+
+  defp dispatch_filter_match?([], _value), do: true
+  defp dispatch_filter_match?(nil, _value), do: true
+
+  defp dispatch_filter_match?(allowed_values, value) when is_list(allowed_values) and is_binary(value) do
+    String.trim(value) in allowed_values
+  end
+
+  defp dispatch_filter_match?(_allowed_values, _value), do: false
+
+  defp issue_label_value(%Issue{labels: labels}, name) when is_list(labels) and is_binary(name) do
+    prefix = name <> ":"
+
+    Enum.find_value(labels, fn
+      label when is_binary(label) ->
+        if String.starts_with?(label, prefix) do
+          String.trim(String.replace_prefix(label, prefix, ""))
+        end
+
+      _label ->
+        nil
+    end)
+  end
+
+  defp issue_label_value(_issue, _name), do: nil
 
   defp issue_assignee_id(%WorkPackage{}, {:ok, %AccessGrant{claimed_by: claimed_by}}) when is_binary(claimed_by) do
     claimed_by

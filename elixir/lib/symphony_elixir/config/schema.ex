@@ -38,10 +38,31 @@ defmodule SymphonyElixir.Config.Schema do
     def dump(_value), do: :error
   end
 
+  defmodule DispatchFilters do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+
+    embedded_schema do
+      field(:repos, {:array, :string}, default: [])
+      field(:base_branches, {:array, :string}, default: [])
+      field(:work_kinds, {:array, :string}, default: [])
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:repos, :base_branches, :work_kinds], empty_values: [])
+    end
+  end
+
   defmodule Tracker do
     @moduledoc false
     use Ecto.Schema
     import Ecto.Changeset
+    alias SymphonyElixir.Config.Schema.DispatchFilters
 
     @primary_key false
 
@@ -53,6 +74,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:assignee, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
+      embeds_one(:filters, DispatchFilters, on_replace: :update, defaults_to_struct: true)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -63,6 +85,7 @@ defmodule SymphonyElixir.Config.Schema do
         [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
         empty_values: []
       )
+      |> cast_embed(:filters, with: &DispatchFilters.changeset/2)
     end
   end
 
@@ -381,6 +404,7 @@ defmodule SymphonyElixir.Config.Schema do
           api_key: resolve_tracker_secret_setting(tracker_kind, settings.tracker.api_key, "LINEAR_API_KEY"),
           assignee: resolve_tracker_secret_setting(tracker_kind, settings.tracker.assignee, "LINEAR_ASSIGNEE")
       }
+      |> normalize_dispatch_filters()
       |> maybe_apply_symphony_plus_plus_tracker_states(tracker_state_fields)
 
     workspace = %{
@@ -413,6 +437,28 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defp normalize_dispatch_filters(%{filters: nil} = tracker), do: tracker
+
+  defp normalize_dispatch_filters(%{filters: filters} = tracker) do
+    filters = %{
+      filters
+      | repos: normalize_filter_values(filters.repos),
+        base_branches: normalize_filter_values(filters.base_branches),
+        work_kinds: normalize_filter_values(filters.work_kinds)
+    }
+
+    %{tracker | filters: filters}
+  end
+
+  defp normalize_filter_values(values) when is_list(values) do
+    Enum.map(values, fn
+      value when is_binary(value) -> String.trim(value)
+      value -> value
+    end)
+  end
+
+  defp normalize_filter_values(values), do: values
+
   defp tracker_state_fields(config) when is_map(config) do
     tracker = Map.get(config, "tracker", %{})
 
@@ -434,7 +480,7 @@ defmodule SymphonyElixir.Config.Schema do
   defp resolve_tracker_secret_setting(tracker_kind, value, env_var) do
     cond do
       TrackerStates.tracker_kind?(tracker_kind) -> value
-      tracker_kind == "linear" -> resolve_secret_setting(value, System.get_env(env_var))
+      tracker_kind in ["linear", nil] -> resolve_secret_setting(value, System.get_env(env_var))
       true -> resolve_secret_setting(value, nil)
     end
   end

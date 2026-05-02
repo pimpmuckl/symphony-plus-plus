@@ -1,24 +1,31 @@
 ---
 tracker:
   kind: Symphony_pp
-  endpoint: "http://127.0.0.1:7777"
-  api_key_env: "Symphony_PP_ORCHESTRATOR_TOKEN"
+  assignee: "worker-1"
   active_states:
-    - created
     - ready_for_worker
     - claimed
     - planning
     - implementing
     - reviewing
     - ci_waiting
+    - ready_for_architect_merge
+    - merging_into_phase
   terminal_states:
     - merged
     - merged_into_phase
     - closed
     - abandoned
+  filters:
+    repos:
+      - nextide/symphony-plus-plus
+    base_branches:
+      - origin/symphony-plus-plus/beta
+    work_kinds:
+      - adapter
 
 workspace:
-  root: "~/code/Symphony-workspaces"
+  root: "~/code/symphony-workspaces"
 
 agent:
   max_concurrent_agents: 5
