@@ -274,8 +274,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
              })
   end
 
-  test "transition rejects unsupported lifecycle kinds", %{repo: repo} do
-    package = insert_raw_package!(repo, kind: "standard_pr", status: "created")
+  test "transition supports declared standalone lifecycle kinds", %{repo: repo} do
+    package = insert_raw_package!(repo, kind: "mcp", status: "created")
+
+    assert {:ok, updated} = Service.transition(repo, package.id, "ready_for_worker", worker_actor!(repo, package))
+    assert updated.status == "ready_for_worker"
+  end
+
+  test "transition rejects unknown lifecycle kinds", %{repo: repo} do
+    package = insert_raw_package!(repo, kind: "legacy_kind", status: "created")
 
     assert {:error, :unsupported_work_package_kind} = Service.transition(repo, package.id, "ready_for_worker", worker_actor!(repo, package))
   end

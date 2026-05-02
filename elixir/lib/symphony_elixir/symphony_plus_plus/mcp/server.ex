@@ -11,7 +11,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Renderer, as: PlanningRenderer
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
-  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
   @protocol_version "2025-03-26"
@@ -545,12 +544,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool("report_blocker", arguments, %__MODULE__{config: config, session: session}) do
-    append_scoped_progress(config.repo, session, arguments, "report_blocker", %{"type" => "blocker", "active" => true})
+    append_scoped_progress(config.repo, session, arguments, "report_blocker", %{
+      "type" => "blocker",
+      "source_tool" => "report_blocker",
+      "active" => true
+    })
   end
 
   defp worker_tool("request_scope_expansion", arguments, %__MODULE__{config: config, session: session}) do
     append_scoped_progress(config.repo, session, arguments, "request_scope_expansion", %{
       "type" => "scope_expansion_request",
+      "source_tool" => "request_scope_expansion",
       "approved" => false
     })
   end
@@ -588,7 +592,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, state} <- PlanningRepository.get_state(config.repo, Session.work_package_id(session)),
          :ok <- readiness_gates(state),
          ready_status <- terminal_ready_status(state.work_package),
-         {:ok, work_package} <- WorkPackageRepository.update_status(config.repo, state.work_package.id, state.work_package.status, ready_status) do
+         {:ok, work_package} <- LifecycleService.transition(config.repo, state.work_package.id, ready_status, actor(session)) do
       {:ok, tool_result(%{"work_package" => work_package_payload(work_package), "ready" => true})}
     else
       {:error, {:readiness_failed, missing}} ->
@@ -612,12 +616,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- scoped_session(repo, session, arguments),
          {:ok, summary} <- required_argument(arguments, "summary"),
          {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
+         {:ok, caller_payload} <- optional_payload(arguments),
          attrs = %{
            "summary" => summary,
            "body" => optional_argument(arguments, "body", nil),
            "status" => optional_argument(arguments, "status", "recorded"),
            "idempotency_key" => idempotency_key,
-           "payload" => Map.merge(payload, Map.get(arguments, "payload", %{}))
+           "payload" => merge_tool_payload(caller_payload, payload)
          },
          {:ok, event} <- PlanningService.append_authenticated_progress_event(repo, session.assignment, attrs) do
       {:ok, tool_result(%{"progress_event" => progress_event_payload(event)})}
@@ -628,13 +633,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp append_metadata_event(repo, session, arguments, tool, status, payload) do
+    payload = Map.put(payload, "source_tool", tool)
+
     arguments =
       Map.put_new(arguments, "summary", status)
       |> Map.put_new("status", status)
       |> Map.put_new("idempotency_key", metadata_idempotency_key(payload))
-      |> Map.put("payload", payload)
 
-    append_scoped_progress(repo, session, arguments, tool, %{})
+    append_scoped_progress(repo, session, arguments, tool, payload)
   end
 
   defp readiness_gates(state) do
@@ -651,18 +657,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp active_blocker?(progress_events) do
-    Enum.any?(progress_events, &(payload_type?(&1, "blocker") and Map.get(&1.payload || %{}, "active") == true))
+    Enum.any?(progress_events, &(payload_type?(&1, "blocker", "report_blocker") and Map.get(&1.payload || %{}, "active") == true))
   end
 
-  defp incomplete_plan?(plan_nodes), do: Enum.any?(plan_nodes, &(&1.status != "done"))
+  defp incomplete_plan?(plan_nodes), do: Enum.any?(plan_nodes, &(&1.status == "pending"))
 
   defp pr_required?(%WorkPackage{kind: "investigation"}), do: false
   defp pr_required?(%WorkPackage{}), do: true
 
-  defp metadata_present?(progress_events, type), do: Enum.any?(progress_events, &payload_type?(&1, type))
+  defp metadata_present?(progress_events, type), do: Enum.any?(progress_events, &payload_type?(&1, type, metadata_tool(type)))
 
-  defp payload_type?(%ProgressEvent{payload: payload}, type) when is_map(payload), do: Map.get(payload, "type") == type
-  defp payload_type?(%ProgressEvent{}, _type), do: false
+  defp metadata_tool("branch"), do: "attach_branch"
+  defp metadata_tool("pr"), do: "attach_pr"
+  defp metadata_tool("review_package"), do: "submit_review_package"
+
+  defp payload_type?(%ProgressEvent{payload: payload}, type, source_tool) when is_map(payload) do
+    Map.get(payload, "type") == type and Map.get(payload, "source_tool") == source_tool
+  end
+
+  defp payload_type?(%ProgressEvent{}, _type, _source_tool), do: false
 
   defp maybe_missing(missing, true, name), do: [name | missing]
   defp maybe_missing(missing, false, _name), do: missing
@@ -711,6 +724,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       value -> value
     end
   end
+
+  defp optional_payload(arguments) do
+    case Map.get(arguments, "payload", %{}) do
+      payload when is_map(payload) -> {:ok, payload}
+      _payload -> {:tool_error, "invalid_payload"}
+    end
+  end
+
+  defp merge_tool_payload(caller_payload, tool_payload) when tool_payload == %{} do
+    Map.drop(caller_payload, ["source_tool"])
+  end
+
+  defp merge_tool_payload(caller_payload, tool_payload), do: Map.merge(caller_payload, tool_payload)
 
   defp maybe_put_id(attrs, arguments) do
     case Map.get(arguments, "id") do

@@ -21,6 +21,9 @@
 - Tightened `mark_ready` to require `ci_waiting` and added coverage that scope-expansion requests are recorded with `approved: false`.
 - Committed implementation as `750d6e8978c65142f5fcd1b96890e58c1c55b5db`, pushed branch, and opened PR #15.
 - Attempted required review-suite T1 multiple times; every reviewer slot interrupted before usable output, so there is no T1 verdict/anchor yet.
+- After Codex auth was fixed, ran review-state and T1 successfully. T1 round `phase_review-symphony-plus-plus-sympp-p3-002-e4d006-20260502T175707Z-7f78e7d9` produced valid lifecycle/readiness/payload findings; graded Bravo as the stronger finding set.
+- Fixed valid T1 findings by routing `mark_ready` through `LifecycleService.transition/4`, requiring protected `source_tool` metadata for readiness evidence and active blockers, preserving tool-owned blocker/scope-expansion metadata against caller override, rejecting non-map progress payloads, and allowing skipped plan nodes during readiness.
+- Narrowed new lifecycle support to P3 worker package kinds (`mcp`, `skill`, `hooks`) instead of all declared work-package kinds, preserving existing tracker behavior for `docs` and `standard_pr`.
 
 ### Validation Results
 
@@ -42,7 +45,15 @@
 | `review_state.py status --base symphony-plus-plus/beta ...` | pass | Recommendation `full-review`; no review anchor exists. |
 | `review_t1.py --commit 750d6e8978c65142f5fcd1b96890e58c1c55b5db ...` | blocked | Round `phase_review-symphony-plus-plus-sympp-p3-002-e4d006-20260502T173443Z-cc2004d4`; alpha/bravo interrupted before usable result. |
 | `review_t1.py --base symphony-plus-plus/beta ...` | blocked | Round `phase_review-symphony-plus-plus-sympp-p3-002-e4d006-20260502T173505Z-99e59471`; alpha/bravo interrupted before usable result. |
+| `review_state.py status --base symphony-plus-plus/beta ...` | pass | After auth fix: recommendation `full-review`; no review anchor existed. |
+| `review_t1.py --base symphony-plus-plus/beta ...` | findings | Round `phase_review-symphony-plus-plus-sympp-p3-002-e4d006-20260502T175707Z-7f78e7d9`; valid lifecycle/readiness/payload findings found. |
+| `review_suite_arena.py grade --winner bravo --basis better_bug_coverage` | pass | T1 round graded with Bravo as winner. |
+| `mise exec -- mix format` | pass | Re-ran after T1 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs test/symphony_elixir/symphony_plus_plus/lifecycle_test.exs` | pass | 73 tests, 0 failures. Windows emitted known Phoenix LiveView symlink warning. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 241 tests, 0 failures. |
+| `mise exec -- mix specs.check` | pass | All public functions have specs or exemption. |
+| `mise exec -- mix credo --strict` | pass | 100 files checked; no issues. |
 
 ### Next Steps
 
-- Unblock review-suite T1 infrastructure, then run T1 -> T2 -> GitHub review.
+- Commit and push T1 fixes, then run T1 follow-up/full T1 until green, T2 until green, and GitHub review.

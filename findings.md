@@ -26,3 +26,9 @@
 - Use existing access-grant/session proof checks for every scoped read/write rather than trusting request-supplied work package ids.
 - Require explicit `idempotency_key` for general `append_progress`; derive deterministic keys for branch/PR/review metadata tools.
 - Reject request-supplied sibling `work_package_id` values on worker writes instead of silently applying them to the current package.
+- T1 found `mark_ready` should use the lifecycle service rather than direct status updates so worker capability checks still apply.
+- T1 found readiness evidence must come from protected metadata tools rather than free-form `append_progress` payloads.
+- T1 found blocker and scope-expansion tool-owned payload fields must override caller-supplied payload metadata.
+- T1 found non-map progress payloads should return a structured tool error rather than crashing during payload merge.
+- T1 found skipped plan nodes should not block readiness; only pending plan nodes remain incomplete.
+- Lifecycle support was widened only to the worker package kinds needed by P3 tooling (`mcp`, `skill`, `hooks`) plus existing supported kinds, leaving broader kinds such as `docs` and `standard_pr` unchanged to preserve current tracker behavior.
