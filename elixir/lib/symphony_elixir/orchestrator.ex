@@ -128,10 +128,13 @@ defmodule SymphonyElixir.Orchestrator do
         {running_entry, state} = pop_running_entry(state, issue_id)
         state = record_session_completion_totals(state, running_entry)
         session_id = running_entry_session_id(running_entry)
+        agent_run_id = Map.get(running_entry, :agent_run_id)
 
         state =
           case reason do
             :normal ->
+              record_agent_run_completed(agent_run_id, "worker task completed")
+
               Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
 
               state
@@ -144,6 +147,8 @@ defmodule SymphonyElixir.Orchestrator do
               })
 
             _ ->
+              record_agent_run_failed(agent_run_id, "agent exited: #{inspect(reason)}")
+
               Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
 
               next_attempt = next_retry_attempt_from_running(running_entry)
@@ -175,6 +180,11 @@ defmodule SymphonyElixir.Orchestrator do
           |> maybe_put_runtime_value(:worker_host, runtime_info[:worker_host])
           |> maybe_put_runtime_value(:workspace_path, runtime_info[:workspace_path])
 
+        record_agent_run_heartbeat(Map.get(updated_running_entry, :agent_run_id), %{
+          worker_host: Map.get(updated_running_entry, :worker_host),
+          workspace_path: Map.get(updated_running_entry, :workspace_path)
+        })
+
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
     end
@@ -195,6 +205,12 @@ defmodule SymphonyElixir.Orchestrator do
           state
           |> apply_codex_token_delta(token_delta)
           |> apply_codex_rate_limits(update)
+
+        record_agent_run_heartbeat(Map.get(updated_running_entry, :agent_run_id), %{
+          session_id: Map.get(updated_running_entry, :session_id),
+          worker_host: Map.get(updated_running_entry, :worker_host),
+          workspace_path: Map.get(updated_running_entry, :workspace_path)
+        })
 
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
@@ -332,7 +348,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
-  @spec dispatch_issue_for_test(%State{}, Issue.t(), term(), String.t() | nil) :: %State{}
+  @spec dispatch_issue_for_test(term(), Issue.t(), term(), String.t() | nil) :: term()
   def dispatch_issue_for_test(%State{} = state, %Issue{} = issue, attempt \\ nil, preferred_worker_host \\ nil) do
     dispatch_issue(state, issue, attempt, preferred_worker_host)
   end
@@ -440,6 +456,7 @@ defmodule SymphonyElixir.Orchestrator do
       %{pid: pid, ref: ref, identifier: identifier} = running_entry ->
         state = record_session_completion_totals(state, running_entry)
         worker_host = Map.get(running_entry, :worker_host)
+        record_agent_run_stopped(Map.get(running_entry, :agent_run_id), "orchestrator stopped active worker")
 
         if cleanup_workspace do
           cleanup_issue_workspace(identifier, worker_host)
@@ -716,6 +733,28 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+    case Tracker.start_agent_run(issue, attempt: attempt, worker_host: worker_host) do
+      {:ok, agent_run} ->
+        do_spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, agent_run_id(agent_run))
+
+      {:error, :active_run_exists} ->
+        Logger.info("Skipping dispatch; active AgentRun already exists for #{issue_context(issue)}")
+        clear_issue_retry(state, issue.id)
+
+      {:error, reason} ->
+        Logger.warning("Skipping dispatch; failed to create AgentRun for #{issue_context(issue)}: #{inspect(reason)}")
+
+        next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
+
+        schedule_issue_retry(state, issue.id, next_attempt, %{
+          identifier: issue.identifier,
+          error: "failed to create AgentRun: #{inspect(reason)}",
+          worker_host: worker_host
+        })
+    end
+  end
+
+  defp do_spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, agent_run_id) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
            AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
          end) do
@@ -745,6 +784,7 @@ defmodule SymphonyElixir.Orchestrator do
             codex_last_reported_total_tokens: 0,
             turn_count: 0,
             retry_attempt: normalize_retry_attempt(attempt),
+            agent_run_id: agent_run_id,
             started_at: DateTime.utc_now()
           })
 
@@ -756,6 +796,7 @@ defmodule SymphonyElixir.Orchestrator do
         }
 
       {:error, reason} ->
+        record_agent_run_failed(agent_run_id, "failed to spawn agent: #{inspect(reason)}")
         Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
@@ -798,6 +839,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp workflow_config_error_message(_reason), do: nil
 
   @doc false
+  @spec dispatch_filters_allow_issue_for_test(term(), Issue.t(), term(), String.t() | nil) :: boolean()
   def dispatch_filters_allow_issue_for_test(%State{} = state, %Issue{} = issue, attempt \\ nil, preferred_worker_host \\ nil) do
     dispatch_filters_allow_issue?(state, issue, attempt, preferred_worker_host)
   end
@@ -828,6 +870,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp schedule_issue_retry(%State{} = state, issue_id, attempt, metadata)
        when is_binary(issue_id) and is_map(metadata) do
+    record_agent_run_retrying(Map.get(metadata, :agent_run_id), metadata[:error])
+
     previous_retry = Map.get(state.retry_attempts, issue_id, %{attempt: 0})
     next_attempt = if is_integer(attempt), do: attempt, else: previous_retry.attempt + 1
     delay_ms = retry_delay(next_attempt, metadata)
@@ -860,7 +904,8 @@ defmodule SymphonyElixir.Orchestrator do
             identifier: identifier,
             error: error,
             worker_host: worker_host,
-            workspace_path: workspace_path
+            workspace_path: workspace_path,
+            agent_run_id: Map.get(metadata, :agent_run_id)
           })
     }
   end
@@ -872,7 +917,8 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(retry_entry, :identifier),
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
-          workspace_path: Map.get(retry_entry, :workspace_path)
+          workspace_path: Map.get(retry_entry, :workspace_path),
+          agent_run_id: Map.get(retry_entry, :agent_run_id)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1019,6 +1065,9 @@ defmodule SymphonyElixir.Orchestrator do
   defp pick_retry_workspace_path(previous_retry, metadata) do
     metadata[:workspace_path] || Map.get(previous_retry, :workspace_path)
   end
+
+  defp agent_run_id(%{id: id}) when is_binary(id), do: id
+  defp agent_run_id(_agent_run), do: nil
 
   defp maybe_put_runtime_value(running_entry, _key, nil), do: running_entry
 
@@ -1708,4 +1757,32 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp integer_like(_value), do: nil
+
+  defp record_agent_run_heartbeat(agent_run_id, attrs) do
+    log_agent_run_result(agent_run_id, Tracker.heartbeat_agent_run(agent_run_id, attrs), "heartbeat")
+  end
+
+  defp record_agent_run_retrying(agent_run_id, reason) do
+    log_agent_run_result(agent_run_id, Tracker.mark_agent_run_retrying(agent_run_id, reason), "mark retrying")
+  end
+
+  defp record_agent_run_completed(agent_run_id, reason) do
+    log_agent_run_result(agent_run_id, Tracker.mark_agent_run_completed(agent_run_id, reason), "mark completed")
+  end
+
+  defp record_agent_run_failed(agent_run_id, reason) do
+    log_agent_run_result(agent_run_id, Tracker.mark_agent_run_failed(agent_run_id, reason), "mark failed")
+  end
+
+  defp record_agent_run_stopped(agent_run_id, reason) do
+    log_agent_run_result(agent_run_id, Tracker.mark_agent_run_stopped(agent_run_id, reason), "mark stopped")
+  end
+
+  defp log_agent_run_result(nil, _result, _action), do: :ok
+  defp log_agent_run_result(_agent_run_id, {:ok, _result}, _action), do: :ok
+
+  defp log_agent_run_result(agent_run_id, {:error, reason}, action) do
+    Logger.warning("Failed to #{action} AgentRun agent_run_id=#{agent_run_id}: #{inspect(reason)}")
+    :ok
+  end
 end

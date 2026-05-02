@@ -373,7 +373,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
   end
 
   test "Symphony++ dispatch filter errors are reported as workflow config errors" do
-    assert Orchestrator.workflow_config_error_message_for_test({:invalid_symphony_plus_plus_dispatch_filter, :repos, [""]}) ==
+    invalid_filter_error = {:invalid_symphony_plus_plus_dispatch_filter, :repos, [""]}
+
+    assert Orchestrator.workflow_config_error_message_for_test(invalid_filter_error) ==
              ~s(Invalid WORKFLOW.md config: invalid Symphony++ dispatch filter repos: [""])
 
     assert Orchestrator.workflow_config_error_message_for_test({:unsupported_symphony_plus_plus_work_kinds, ["docs"]}) ==
