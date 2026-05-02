@@ -588,11 +588,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, %{"assignment" => Session.public_assignment(session)}, session}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "claim_work_key", "reason" => reason}}
-      {:error, reason} -> {:error, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => reason_text(reason)}}
+      {:error, reason} -> claim_error(reason)
     end
   rescue
     _error -> {:error, -32_000, "Server error", %{"tool" => "claim_work_key", "reason" => "ledger_unavailable"}}
   end
+
+  defp claim_error(:database_busy), do: service_error(:database_busy, "claim_work_key")
+  defp claim_error({:storage_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
+  defp claim_error({:migration_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
+  defp claim_error(reason), do: {:error, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => reason_text(reason)}}
 
   defp worker_tool("get_current_assignment", _arguments, %__MODULE__{config: config, session: session}) do
     case Auth.require_session(session, config.repo) do
@@ -978,19 +983,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- scoped_session(repo, session, arguments),
          {:ok, summary} <- required_argument(arguments, "summary"),
          {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
-         {:ok, caller_payload} <- optional_payload(arguments),
-         idempotency_key <- scoped_progress_idempotency_key(tool, idempotency_key, session),
-         attrs = %{
-           "summary" => summary,
-           "body" => optional_argument(arguments, "body", nil),
-           "status" => optional_argument(arguments, "status", "recorded"),
-           "idempotency_key" => idempotency_key,
-           "payload" => merge_tool_payload(caller_payload, payload)
-         },
-         {:ok, event} <- PlanningService.append_authenticated_progress_event(repo, session.assignment, attrs) do
-      {:ok, tool_result(%{"progress_event" => progress_event_payload(event)})}
+         {:ok, caller_payload} <- optional_payload(arguments) do
+      idempotency_key = scoped_progress_idempotency_key(tool, idempotency_key, session)
+
+      attrs = %{
+        "summary" => summary,
+        "body" => optional_argument(arguments, "body", nil),
+        "status" => optional_argument(arguments, "status", "recorded"),
+        "idempotency_key" => idempotency_key,
+        "payload" => merge_tool_payload(caller_payload, payload)
+      }
+
+      append_progress_event_or_replay(repo, session, attrs, idempotency_key, tool)
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason}}
+      {:error, reason} -> worker_error(reason, tool)
+    end
+  end
+
+  defp append_progress_event_or_replay(repo, %Session{} = session, attrs, idempotency_key, tool) do
+    case PlanningService.append_authenticated_progress_event(repo, session.assignment, attrs) do
+      {:ok, event} -> {:ok, tool_result(%{"progress_event" => progress_event_payload(event)})}
+      {:error, :idempotency_key_conflict} -> replay_progress_event(repo, session, idempotency_key, tool)
+      {:error, reason} -> worker_error(reason, tool)
+    end
+  end
+
+  defp replay_progress_event(repo, %Session{} = session, idempotency_key, tool) do
+    case PlanningRepository.get_progress_event_by_idempotency_key(
+           repo,
+           Session.work_package_id(session),
+           idempotency_key,
+           session.assignment.grant_id
+         ) do
+      {:ok, event} -> {:ok, tool_result(%{"progress_event" => progress_event_payload(event)})}
       {:error, reason} -> worker_error(reason, tool)
     end
   end

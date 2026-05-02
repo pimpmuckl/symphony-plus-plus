@@ -295,3 +295,24 @@
 ### Next Steps
 
 - Commit and push twelfth T2 fixes, rerun T2, then proceed to GitHub review if clean.
+
+### Tenth T2 Follow-up Actions
+
+- Pushed head `0828704e41d8f016c8b28791181c538507427764` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T202615Z-8f9e500a`; closed it as `findings`.
+- Fixed valid T2 findings by replaying successful progress/metadata writes on idempotency-key conflict and classifying `claim_work_key` ledger/storage failures as server errors.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after thirteenth T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 52 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 246 tests, 0 failures. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit and push thirteenth T2 fixes, rerun T2, then proceed to GitHub review if clean.
