@@ -105,8 +105,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, %{"name" => "claim_work_key"} = params} ->
         handle_claim_work_key_notification(params, server)
 
-      _params ->
-        {do_handle(payload, server), server}
+      params_result ->
+        dispatch_notification(params_result, "tools/call", server)
+        {nil, server}
     end
   end
 
@@ -2075,6 +2076,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp dispatch_request({:error, code, message, data}, _method, id, %__MODULE__{}) do
     error_response(id, code, message, data)
   end
+
+  defp dispatch_notification({:ok, params}, method, %__MODULE__{} = server) do
+    _result = dispatch(method, params, server)
+    nil
+  end
+
+  defp dispatch_notification({:error, _code, _message, _data}, _method, %__MODULE__{}), do: nil
 
   defp initialize_request?(%{"jsonrpc" => "2.0", "method" => "initialize"}), do: true
   defp initialize_request?(_payload), do: false

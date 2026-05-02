@@ -957,6 +957,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert server.session.assignment.work_package_id == "SYMPP-NOTIFY-CLAIM"
   end
 
+  test "worker tool notifications execute without JSON-RPC responses", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-NOTIFY-WRITE", kind: "mcp", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {responses, server} =
+      Server.handle_state(
+        [
+          %{
+            "jsonrpc" => "2.0",
+            "method" => "tools/call",
+            "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+          },
+          %{
+            "jsonrpc" => "2.0",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "append_progress",
+              "arguments" => %{
+                "summary" => "Notification progress",
+                "body" => "Persisted through fire-and-forget call",
+                "status" => "in_progress",
+                "idempotency_key" => "notify-progress"
+              }
+            }
+          },
+          %{"jsonrpc" => "2.0", "id" => "assignment", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}}
+        ],
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert Enum.map(responses, & &1["id"]) == ["assignment"]
+    assert server.session.assignment.work_package_id == "SYMPP-NOTIFY-WRITE"
+    assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, package.id)
+    assert Enum.any?(progress_events, &(&1.summary == "Notification progress"))
+  end
+
   test "claim_work_key rejects rebinding a server to another work key", %{repo: repo} do
     assert {:ok, first_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-FIRST-CLAIM", kind: "mcp", status: "ready_for_worker"))

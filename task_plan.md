@@ -126,9 +126,12 @@ Phase 3
 - [x] Run fresh full-diff T2 on pushed head `5da5404` and close valid findings gate.
 - [x] Fix twenty-ninth T2 review-package transaction, acceptance carry-forward, and artifact retry findings locally.
 - [x] Commit and push twenty-ninth T2 fixes.
+- [x] Run fresh full-diff T2 on pushed head `c234740` and close valid findings gate.
+- [x] Fix thirtieth T2 worker tool notification dispatch finding locally.
+- [ ] Commit and push thirtieth T2 fix.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** twenty-ninth T2 fixes pushed; pending fresh full-diff T2 rerun and GitHub review if clean.
+- **Status:** thirtieth T2 fix validated locally; pending commit/push, fresh full-diff T2 rerun, and GitHub review if clean.
 
 ### High-Pressure Coherence Review
 
@@ -152,6 +155,8 @@ Phase 3
 - Findings are still converging as small authorization, idempotency, and readiness edge cases around the same worker tools rather than a broader package design problem.
 - Before the next T2, the approach remains coherent because the latest change only moves review-package head/default evidence decisions into the existing transaction and hardens deterministic artifact replay.
 - Findings remain concentrated on review-package concurrency and incremental evidence edge cases, so continuing the P3-002 finish loop is still appropriate.
+- Before the next T2, the approach remains coherent because the latest change only executes existing worker tool dispatch for JSON-RPC notifications while preserving fire-and-forget response semantics.
+- The latest finding is a single protocol dispatch edge case inside P3-002 MCP behavior, not a broader design or scope problem.
 
 ## Boundaries
 
