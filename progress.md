@@ -665,4 +665,4 @@
 
 ### Next Steps
 
-- Commit and push twenty-ninth T2 fixes, rerun full-diff T2, then proceed to GitHub review if clean.
+- Pushed twenty-ninth T2 fix head `c9de4c1f000f4c7c6c69c431bd6e30834e8e313f`; rerun full-diff T2, then proceed to GitHub review if clean.
