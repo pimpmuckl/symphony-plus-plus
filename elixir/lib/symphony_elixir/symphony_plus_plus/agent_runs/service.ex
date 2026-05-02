@@ -15,7 +15,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Service do
     attrs =
       %{
         work_package_id: issue.id,
-        status: "running",
+        status: Keyword.get(opts, :status, "running"),
         attempt: normalize_attempt(Keyword.get(opts, :attempt)),
         worker_host: Keyword.get(opts, :worker_host)
       }
@@ -24,6 +24,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Service do
     Repository.start_run(repo, attrs,
       replace_agent_run_id: Keyword.get(opts, :replace_agent_run_id),
       recover_retrying_after_ms: Keyword.get(opts, :recover_retrying_after_ms),
+      starting_stale_after_ms: Keyword.get(opts, :starting_stale_after_ms),
       stale_after_ms: Keyword.get(opts, :stale_after_ms)
     )
   end
@@ -35,6 +36,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Service do
 
   @spec mark_retrying(Repository.repo(), String.t(), String.t() | nil) :: {:ok, AgentRun.t()} | {:error, error()}
   def mark_retrying(repo, agent_run_id, reason \\ nil), do: Repository.mark_retrying(repo, agent_run_id, reason)
+
+  @spec mark_running(Repository.repo(), String.t(), String.t() | nil) :: {:ok, AgentRun.t()} | {:error, error()}
+  def mark_running(repo, agent_run_id, reason \\ nil), do: Repository.mark_running(repo, agent_run_id, reason)
 
   @spec mark_completed(Repository.repo(), String.t(), String.t() | nil) :: {:ok, AgentRun.t()} | {:error, error()}
   def mark_completed(repo, agent_run_id, reason \\ nil), do: Repository.mark_completed(repo, agent_run_id, reason)

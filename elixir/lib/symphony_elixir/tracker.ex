@@ -14,6 +14,7 @@ defmodule SymphonyElixir.Tracker do
   @callback update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   @callback start_agent_run(term(), keyword()) :: {:ok, term()} | {:error, term()}
   @callback heartbeat_agent_run(String.t(), map()) :: {:ok, term()} | {:error, term()}
+  @callback mark_agent_run_running(String.t(), String.t() | nil) :: {:ok, term()} | {:error, term()}
   @callback mark_agent_run_retrying(String.t(), String.t() | nil) :: {:ok, term()} | {:error, term()}
   @callback mark_agent_run_completed(String.t(), String.t() | nil) :: {:ok, term()} | {:error, term()}
   @callback mark_agent_run_failed(String.t(), String.t() | nil) :: {:ok, term()} | {:error, term()}
@@ -22,6 +23,7 @@ defmodule SymphonyElixir.Tracker do
   @optional_callbacks dispatch_filters_match?: 1,
                       start_agent_run: 2,
                       heartbeat_agent_run: 2,
+                      mark_agent_run_running: 2,
                       mark_agent_run_retrying: 2,
                       mark_agent_run_completed: 2,
                       mark_agent_run_failed: 2,
@@ -92,6 +94,9 @@ defmodule SymphonyElixir.Tracker do
 
   @spec mark_agent_run_retrying(String.t() | nil, String.t() | nil) :: {:ok, term() | nil} | {:error, term()}
   def mark_agent_run_retrying(agent_run_id, reason \\ nil), do: mark_agent_run(agent_run_id, reason, :mark_agent_run_retrying)
+
+  @spec mark_agent_run_running(String.t() | nil, String.t() | nil) :: {:ok, term() | nil} | {:error, term()}
+  def mark_agent_run_running(agent_run_id, reason \\ nil), do: mark_agent_run(agent_run_id, reason, :mark_agent_run_running)
 
   @spec mark_agent_run_completed(String.t() | nil, String.t() | nil) :: {:ok, term() | nil} | {:error, term()}
   def mark_agent_run_completed(agent_run_id, reason \\ nil), do: mark_agent_run(agent_run_id, reason, :mark_agent_run_completed)

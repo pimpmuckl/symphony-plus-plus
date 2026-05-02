@@ -85,6 +85,9 @@ defmodule SymphonyElixir.Linear.Adapter do
   @spec mark_agent_run_retrying(String.t(), String.t() | nil) :: {:ok, nil}
   def mark_agent_run_retrying(_agent_run_id, _reason), do: {:ok, nil}
 
+  @spec mark_agent_run_running(String.t(), String.t() | nil) :: {:ok, nil}
+  def mark_agent_run_running(_agent_run_id, _reason), do: {:ok, nil}
+
   @spec mark_agent_run_completed(String.t(), String.t() | nil) :: {:ok, nil}
   def mark_agent_run_completed(_agent_run_id, _reason), do: {:ok, nil}
 

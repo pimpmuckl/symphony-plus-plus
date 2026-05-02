@@ -97,6 +97,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
     assert {:error, :active_run_exists} = Service.start_dispatch(repo, issue(work_package.id), attempt: 1)
   end
 
+  test "starting reservation blocks duplicate dispatch until promoted", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-STARTING", status: "ready_for_worker"))
+
+    assert {:ok, starting} = Service.start_dispatch(repo, issue(work_package.id), status: "starting")
+    assert starting.status == "starting"
+
+    assert {:error, :active_run_exists} = Service.start_dispatch(repo, issue(work_package.id), attempt: 1)
+
+    assert {:ok, running} = Service.mark_running(repo, starting.id, "worker task started")
+    assert running.status == "running"
+  end
+
+  test "stale starting reservation can be recovered before dispatch", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-STALE-STARTING", status: "ready_for_worker"))
+
+    assert {:ok, starting} = Service.start_dispatch(repo, issue(work_package.id), status: "starting")
+    stale_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -5, :second)
+
+    assert {:ok, _stale_starting} =
+             starting
+             |> AgentRun.update_changeset(%{last_seen_at: stale_seen_at})
+             |> repo.update()
+
+    assert {:ok, replacement} =
+             Service.start_dispatch(repo, issue(work_package.id), attempt: 1, starting_stale_after_ms: 1_000)
+
+    assert replacement.status == "running"
+
+    assert {:ok, stale} = Repository.get(repo, starting.id)
+    assert stale.status == "failed"
+    assert stale.reason == "stale starting AgentRun released before dispatch"
+  end
+
   test "retry reconciliation holds dispatch lock until replacement retry starts", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-RETRY-STOP", status: "ready_for_worker"))

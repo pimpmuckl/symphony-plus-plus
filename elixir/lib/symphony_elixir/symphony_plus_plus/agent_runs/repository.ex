@@ -78,6 +78,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
   @spec mark_retrying(repo(), String.t(), String.t() | nil) :: {:ok, AgentRun.t()} | {:error, error()}
   def mark_retrying(repo, id, reason \\ nil), do: update_terminal_status(repo, id, "retrying", reason)
 
+  @spec mark_running(repo(), String.t(), String.t() | nil) :: {:ok, AgentRun.t()} | {:error, error()}
+  def mark_running(repo, id, reason \\ nil), do: update_active_status(repo, id, "running", reason)
+
   @spec mark_completed(repo(), String.t(), String.t() | nil) :: {:ok, AgentRun.t()} | {:error, error()}
   def mark_completed(repo, id, reason \\ nil), do: update_terminal_status(repo, id, "completed", reason)
 
@@ -90,6 +93,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
   defp update_terminal_status(repo, id, status, reason) do
     now = DateTime.utc_now(:microsecond)
     update_run(repo, id, %{status: status, reason: reason, last_seen_at: now, finished_at: now})
+  end
+
+  defp update_active_status(repo, id, status, reason) do
+    update_run(repo, id, %{status: status, reason: reason, last_seen_at: DateTime.utc_now(:microsecond)})
   end
 
   defp start_run_or_rollback(repo, attrs, opts) do
@@ -107,6 +114,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
         {:error, :active_run_exists} ->
           repo
           |> release_retrying_reservation(work_package_id, Keyword.get(opts, :recover_retrying_after_ms))
+          |> maybe_release_stale_starting_run(repo, work_package_id, Keyword.get(opts, :starting_stale_after_ms))
           |> maybe_release_stale_active_run(repo, work_package_id, Keyword.get(opts, :stale_after_ms))
           |> maybe_insert_after_stale_release(repo, attrs)
 
@@ -193,11 +201,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
 
   defp maybe_release_stale_active_run({:error, reason}, _repo, _work_package_id, _stale_after_ms), do: {:error, reason}
 
+  defp maybe_release_stale_starting_run({:ok, :released}, _repo, _work_package_id, _stale_after_ms), do: {:ok, :released}
+
+  defp maybe_release_stale_starting_run({:ok, :active}, repo, work_package_id, stale_after_ms) do
+    release_stale_status(repo, work_package_id, "starting", stale_after_ms, "stale starting AgentRun released before dispatch")
+  end
+
+  defp maybe_release_stale_starting_run({:error, reason}, _repo, _work_package_id, _stale_after_ms), do: {:error, reason}
+
   defp release_stale_active_run(_repo, _work_package_id, stale_after_ms)
        when not is_integer(stale_after_ms) or stale_after_ms <= 0,
        do: {:ok, :active}
 
   defp release_stale_active_run(repo, work_package_id, stale_after_ms) when is_binary(work_package_id) do
+    release_stale_status(repo, work_package_id, ["running", "retrying"], stale_after_ms, "stale active AgentRun released before dispatch")
+  end
+
+  defp release_stale_active_run(_repo, _work_package_id, _stale_after_ms), do: {:ok, :active}
+
+  defp release_stale_status(_repo, _work_package_id, _statuses, stale_after_ms, _reason)
+       when not is_integer(stale_after_ms) or stale_after_ms <= 0,
+       do: {:ok, :active}
+
+  defp release_stale_status(repo, work_package_id, statuses, stale_after_ms, reason)
+       when is_binary(work_package_id) and is_list(statuses) do
     now = DateTime.utc_now(:microsecond)
     stale_cutoff = DateTime.add(now, -stale_after_ms, :millisecond)
 
@@ -205,12 +232,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
       repo.update_all(
         from(agent_run in AgentRun,
           where: agent_run.work_package_id == ^work_package_id,
-          where: agent_run.status in ^AgentRun.active_statuses(),
+          where: agent_run.status in ^statuses,
           where: agent_run.last_seen_at <= ^stale_cutoff
         ),
         set: [
           status: "failed",
-          reason: "stale active AgentRun released before dispatch",
+          reason: reason,
           last_seen_at: now,
           finished_at: now,
           updated_at: now
@@ -224,7 +251,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
     end
   end
 
-  defp release_stale_active_run(_repo, _work_package_id, _stale_after_ms), do: {:ok, :active}
+  defp release_stale_status(repo, work_package_id, status, stale_after_ms, reason)
+       when is_binary(status) do
+    release_stale_status(repo, work_package_id, [status], stale_after_ms, reason)
+  end
 
   defp maybe_insert_after_stale_release({:ok, :released}, repo, attrs), do: insert_run(repo, attrs)
   defp maybe_insert_after_stale_release({:ok, :active}, _repo, _attrs), do: {:error, :active_run_exists}
@@ -241,7 +271,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
     end
   end
 
-  defp active_agent_run?(%AgentRun{status: status}) when status in ["running", "retrying"], do: :ok
+  defp active_agent_run?(%AgentRun{status: status}) when status in ["starting", "running", "retrying"], do: :ok
   defp active_agent_run?(%AgentRun{}), do: {:error, :not_active}
 
   defp normalize_insert_result({:ok, agent_run}), do: {:ok, agent_run}

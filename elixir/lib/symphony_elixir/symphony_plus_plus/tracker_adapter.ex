@@ -119,6 +119,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
     with_repo_access(fn -> AgentRunService.mark_retrying(repo(), agent_run_id, reason) end)
   end
 
+  @spec mark_agent_run_running(String.t(), String.t() | nil) :: {:ok, term()} | {:error, term()}
+  def mark_agent_run_running(agent_run_id, reason) when is_binary(agent_run_id) do
+    with_repo_access(fn -> AgentRunService.mark_running(repo(), agent_run_id, reason) end)
+  end
+
   @spec mark_agent_run_completed(String.t(), String.t() | nil) :: {:ok, term()} | {:error, term()}
   def mark_agent_run_completed(agent_run_id, reason) when is_binary(agent_run_id) do
     with_repo_access(fn -> AgentRunService.mark_completed(repo(), agent_run_id, reason) end)
