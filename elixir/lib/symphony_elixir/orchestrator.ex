@@ -150,10 +150,12 @@ defmodule SymphonyElixir.Orchestrator do
               Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
 
               next_attempt = next_retry_attempt_from_running(running_entry)
+              retry_reason = "agent exited: #{inspect(reason)}"
+              record_agent_run_retrying(agent_run_id, retry_reason)
 
               schedule_issue_retry(state, issue_id, next_attempt, %{
                 identifier: running_entry.identifier,
-                error: "agent exited: #{inspect(reason)}",
+                error: retry_reason,
                 worker_host: Map.get(running_entry, :worker_host),
                 workspace_path: Map.get(running_entry, :workspace_path),
                 agent_run_id: agent_run_id
@@ -869,8 +871,6 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp schedule_issue_retry(%State{} = state, issue_id, attempt, metadata)
        when is_binary(issue_id) and is_map(metadata) do
-    record_agent_run_retrying(Map.get(metadata, :agent_run_id), metadata[:error])
-
     previous_retry = Map.get(state.retry_attempts, issue_id, %{attempt: 0})
     next_attempt = if is_integer(attempt), do: attempt, else: previous_retry.attempt + 1
     delay_ms = retry_delay(next_attempt, metadata)
