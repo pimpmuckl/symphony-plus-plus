@@ -35,7 +35,9 @@ Phase 3
 - [x] Open PR `[SYMPP-P3-002] Worker MCP tools and resources` to `symphony-plus-plus/beta`.
 - [x] Run review-state and obtain usable T1 findings.
 - [x] Fix valid T1 findings.
-- [ ] Commit and push T1 fixes.
+- [x] Commit and push initial T1 fixes.
+- [x] Fix second T1 batch/schema findings locally.
+- [ ] Commit and push second T1 fixes.
 - [ ] Run T1 follow-up/full T1 until green, then review-t2, fix valid findings, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
 - **Status:** T1 fixes implemented locally; validation green; pending commit/push and review reruns.

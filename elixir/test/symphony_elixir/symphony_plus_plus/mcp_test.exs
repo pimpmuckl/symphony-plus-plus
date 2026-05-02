@@ -239,6 +239,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert is_list(get_in(post_init_response, ["result", "tools"]))
   end
 
+  test "tools list advertises worker argument schemas", %{repo: repo} do
+    server = Server.new(Config.default(repo: repo), initialized: true)
+
+    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "tools", "method" => "tools/list", "params" => %{}}, server)
+    tools = get_in(response, ["result", "tools"])
+    tools_by_name = Map.new(tools, &{&1["name"], &1})
+
+    assert get_in(tools_by_name, ["claim_work_key", "inputSchema", "required"]) == ["secret"]
+    assert get_in(tools_by_name, ["claim_work_key", "inputSchema", "properties", "secret", "type"]) == "string"
+    assert get_in(tools_by_name, ["append_progress", "inputSchema", "required"]) == ["summary", "idempotency_key"]
+    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "required"]) == ["url"]
+    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == ["string", "null"]
+  end
+
   test "server rejects re-initialize after handshake", %{repo: repo} do
     server = Server.new(Config.default(repo: repo))
     initialize_request = %{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()}
@@ -695,6 +709,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(status_response, ["result", "structuredContent", "work_package", "status"]) == "claimed"
+  end
+
+  test "batch calls thread claim_work_key session to later worker tools", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BATCH-CLAIM", kind: "mcp", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {responses, server} =
+      Server.handle_state(
+        [
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "claim",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "claim_work_key",
+              "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}
+            }
+          },
+          %{"jsonrpc" => "2.0", "id" => "assignment", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}}
+        ],
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert Enum.map(responses, & &1["id"]) == ["claim", "assignment"]
+    refute inspect(responses) =~ minted.work_key.secret
+    assert get_in(Enum.at(responses, 1), ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-BATCH-CLAIM"
+    assert server.session.assignment.work_package_id == "SYMPP-BATCH-CLAIM"
   end
 
   test "worker tools update only the scoped planning state and deny sibling mutations", %{repo: repo} do

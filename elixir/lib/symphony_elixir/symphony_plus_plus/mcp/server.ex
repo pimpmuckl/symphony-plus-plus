@@ -68,6 +68,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  def handle_state(payloads, %__MODULE__{} = server) when is_list(payloads) do
+    cond do
+      payloads == [] ->
+        {error_response(nil, -32_600, "Invalid Request", %{"reason" => "empty_batch"}), server}
+
+      Enum.any?(payloads, &initialize_request?/1) ->
+        {error_response(nil, -32_600, "Invalid Request", %{"reason" => "initialize_must_be_standalone"}), server}
+
+      true ->
+        handle_batch(payloads, server)
+    end
+  end
+
   def handle_state(
         %{"jsonrpc" => "2.0", "id" => id, "method" => "tools/call"} = payload,
         %__MODULE__{initialized: true} = server
@@ -93,6 +106,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       error_response(nil, -32_600, "Invalid Request", %{"reason" => "initialize_must_be_standalone"})
     else
       handle_batch(payloads, server)
+      |> elem(0)
     end
   end
 
@@ -168,12 +182,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp handle_batch(payloads, %__MODULE__{} = server) do
-    responses =
-      payloads
-      |> Enum.map(&handle_batch_item(&1, server))
-      |> Enum.reject(&is_nil/1)
+    {responses, server} =
+      Enum.reduce(payloads, {[], server}, fn payload, {responses, server} ->
+        {response, server} = handle_batch_item(payload, server)
+        responses = if is_nil(response), do: responses, else: [response | responses]
+        {responses, server}
+      end)
 
-    if responses == [], do: nil, else: responses
+    responses = Enum.reverse(responses)
+    {if(responses == [], do: nil, else: responses), server}
   end
 
   defp dispatch(
@@ -369,9 +386,94 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "name" => name,
       "title" => name,
       "description" => "Symphony++ worker tool #{name}.",
-      "inputSchema" => %{"type" => "object", "additionalProperties" => true, "properties" => %{}}
+      "inputSchema" => worker_tool_input_schema(name)
     }
   end
+
+  defp worker_tool_input_schema("claim_work_key") do
+    schema(%{"secret" => string_schema(), "claimed_by" => string_schema()}, ["secret"])
+  end
+
+  defp worker_tool_input_schema(name) when name in ["get_current_assignment", "read_context", "read_task_plan", "mark_ready"] do
+    schema(%{}, [])
+  end
+
+  defp worker_tool_input_schema("update_task_plan") do
+    schema(
+      scoped_properties(%{
+        "body" => nullable_string_schema(),
+        "id" => string_schema(),
+        "status" => string_schema(),
+        "title" => string_schema()
+      }),
+      ["title"]
+    )
+  end
+
+  defp worker_tool_input_schema("append_finding") do
+    schema(
+      scoped_properties(%{
+        "body" => string_schema(),
+        "id" => string_schema(),
+        "severity" => string_schema(),
+        "title" => string_schema()
+      }),
+      ["title", "body"]
+    )
+  end
+
+  defp worker_tool_input_schema(name) when name in ["append_progress", "report_blocker", "request_scope_expansion"] do
+    schema(progress_properties(), ["summary", "idempotency_key"])
+  end
+
+  defp worker_tool_input_schema("set_status") do
+    schema(scoped_properties(%{"status" => string_schema()}), ["status"])
+  end
+
+  defp worker_tool_input_schema("attach_branch") do
+    schema(metadata_properties(%{"branch" => string_schema()}), ["branch"])
+  end
+
+  defp worker_tool_input_schema("attach_pr") do
+    schema(metadata_properties(%{"url" => string_schema(), "head_sha" => nullable_string_schema()}), ["url"])
+  end
+
+  defp worker_tool_input_schema("submit_review_package") do
+    schema(metadata_properties(%{"summary" => string_schema(), "tests" => array_schema(), "artifacts" => array_schema()}), [])
+  end
+
+  defp schema(properties, required) do
+    %{"type" => "object", "additionalProperties" => false, "properties" => properties, "required" => required}
+  end
+
+  defp scoped_properties(properties), do: Map.put(properties, "work_package_id", string_schema())
+
+  defp progress_properties do
+    scoped_properties(%{
+      "summary" => string_schema(),
+      "body" => nullable_string_schema(),
+      "status" => string_schema(),
+      "idempotency_key" => string_schema(),
+      "payload" => object_schema()
+    })
+  end
+
+  defp metadata_properties(properties) do
+    properties
+    |> Map.merge(%{
+      "body" => nullable_string_schema(),
+      "idempotency_key" => string_schema(),
+      "payload" => object_schema(),
+      "status" => string_schema(),
+      "summary" => string_schema()
+    })
+    |> scoped_properties()
+  end
+
+  defp string_schema, do: %{"type" => "string"}
+  defp nullable_string_schema, do: %{"type" => ["string", "null"]}
+  defp object_schema, do: %{"type" => "object", "additionalProperties" => true}
+  defp array_schema, do: %{"type" => "array", "items" => %{}}
 
   defp ledger_health(repo) when is_atom(repo) do
     case SQL.query(repo, "SELECT 1", [], log: false) do
@@ -845,10 +947,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp initialize_request?(%{"jsonrpc" => "2.0", "method" => "initialize"}), do: true
   defp initialize_request?(_payload), do: false
 
-  defp handle_batch_item(payload, %__MODULE__{} = server) when is_map(payload), do: handle(payload, server)
+  defp handle_batch_item(payload, %__MODULE__{} = server) when is_map(payload), do: handle_state(payload, server)
 
-  defp handle_batch_item(_payload, %__MODULE__{}) do
-    error_response(nil, -32_600, "Invalid Request", %{"reason" => "request_must_be_object"})
+  defp handle_batch_item(_payload, %__MODULE__{} = server) do
+    {error_response(nil, -32_600, "Invalid Request", %{"reason" => "request_must_be_object"}), server}
   end
 
   defp error_response(id, code, message, data) do

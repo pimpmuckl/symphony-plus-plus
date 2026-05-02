@@ -24,6 +24,9 @@
 - After Codex auth was fixed, ran review-state and T1 successfully. T1 round `phase_review-symphony-plus-plus-sympp-p3-002-e4d006-20260502T175707Z-7f78e7d9` produced valid lifecycle/readiness/payload findings; graded Bravo as the stronger finding set.
 - Fixed valid T1 findings by routing `mark_ready` through `LifecycleService.transition/4`, requiring protected `source_tool` metadata for readiness evidence and active blockers, preserving tool-owned blocker/scope-expansion metadata against caller override, rejecting non-map progress payloads, and allowing skipped plan nodes during readiness.
 - Narrowed new lifecycle support to P3 worker package kinds (`mcp`, `skill`, `hooks`) instead of all declared work-package kinds, preserving existing tracker behavior for `docs` and `standard_pr`.
+- Committed and pushed the initial T1 fix as `0dd2e1471b33bdf3eb40b5449d168504e05033fe`.
+- Re-ran T1 at `0dd2e1471b33bdf3eb40b5449d168504e05033fe`; second T1 round produced valid batch state-threading and tool schema findings.
+- Fixed second T1 findings locally by making batch handling carry returned server state across items and by adding per-tool input schemas for worker argument discovery.
 
 ### Validation Results
 
@@ -53,7 +56,15 @@
 | `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 241 tests, 0 failures. |
 | `mise exec -- mix specs.check` | pass | All public functions have specs or exemption. |
 | `mise exec -- mix credo --strict` | pass | 100 files checked; no issues. |
+| `review_state.py status --base symphony-plus-plus/beta ...` | pass | Recommended fresh full T1 after initial T1 fix because diff churn exceeded follow-up threshold. |
+| `review_t1.py --base symphony-plus-plus/beta ...` | findings | Round `phase_review-symphony-plus-plus-sympp-p3-002-e4d006-20260502T181239Z-37d644f9`; Alpha clean, Bravo found valid batch state-threading and generic schema findings. |
+| `review_suite_arena.py grade --winner bravo --basis valid_findings_vs_none` | pass | Second T1 round graded with Bravo as winner. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | After second T1 fixes: 49 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | After second T1 fixes: 243 tests, 0 failures. |
+| `mise exec -- mix specs.check` | pass | After second T1 fixes: all public functions have specs or exemption. |
+| `mise exec -- mix format --check-formatted` | pass | After second T1 fixes. |
+| `mise exec -- mix credo --strict` | pass | After second T1 fixes: no issues. |
 
 ### Next Steps
 
-- Commit and push T1 fixes, then run T1 follow-up/full T1 until green, T2 until green, and GitHub review.
+- Commit and push second T1 fixes, then run T1 follow-up/full T1 until green, T2 until green, and GitHub review.

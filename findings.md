@@ -32,3 +32,5 @@
 - T1 found non-map progress payloads should return a structured tool error rather than crashing during payload merge.
 - T1 found skipped plan nodes should not block readiness; only pending plan nodes remain incomplete.
 - Lifecycle support was widened only to the worker package kinds needed by P3 tooling (`mcp`, `skill`, `hooks`) plus existing supported kinds, leaving broader kinds such as `docs` and `standard_pr` unchanged to preserve current tracker behavior.
+- Second T1 found batch requests must thread the updated MCP server state so `claim_work_key` can bind a session for later batch items.
+- Second T1 found `tools/list` should advertise real per-tool worker argument schemas instead of the generic unconstrained object schema.
