@@ -1179,22 +1179,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert "review_lanes_complete" in get_in(missing_review_lanes_response, ["error", "data", "missing"])
 
-    attach_tool(repo, session, "submit_review_package", %{
-      "summary" => "Malformed review",
-      "tests" => ["mix test"],
-      "artifacts" => ["review-log.txt"],
-      "head_sha" => "abc123",
-      "reviews" => [%{"lane" => 1, "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => nil}]
-    })
-
     malformed_review_response =
       MCPHarness.request(
-        %{"jsonrpc" => "2.0", "id" => "ready-malformed-review", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "malformed-review-entries",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "submit_review_package",
+            "arguments" => %{
+              "summary" => "Malformed review",
+              "tests" => ["mix test"],
+              "artifacts" => ["review-log.txt"],
+              "head_sha" => "abc123",
+              "reviews" => [%{"lane" => 1, "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => nil}]
+            }
+          }
+        },
         repo: repo,
         session: session
       )
 
-    assert "review_lanes_complete" in get_in(malformed_review_response, ["error", "data", "missing"])
+    assert get_in(malformed_review_response, ["error", "data", "reason"]) == "invalid_reviews"
 
     missing_artifacts_response =
       MCPHarness.request(
@@ -1310,6 +1316,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(handoff_response, ["result", "contents", Access.at(0), "text"]) =~ "review-log.txt"
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Latest review has findings",
+      "tests" => ["mix test"],
+      "artifacts" => ["review-log.txt"],
+      "head_sha" => "abc123",
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "findings"}]
+    })
+
+    latest_findings_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-latest-findings", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "review_lanes_complete" in get_in(latest_findings_response, ["error", "data", "missing"])
 
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => "def456"})
 

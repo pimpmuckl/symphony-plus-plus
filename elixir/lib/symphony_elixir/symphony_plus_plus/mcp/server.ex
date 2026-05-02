@@ -712,7 +712,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, summary} <- required_argument(arguments, "summary"),
          {:ok, tests} <- required_list(arguments, "tests"),
          {:ok, artifacts} <- required_string_list(arguments, "artifacts"),
-         {:ok, reviews} <- required_list(arguments, "reviews"),
+         {:ok, reviews} <- required_review_list(arguments, "reviews"),
          {:ok, state} <- PlanningRepository.get_state(config.repo, Session.work_package_id(session)),
          {:ok, head_sha} <- review_package_head_sha(arguments, state.progress_events),
          {:ok, result} <-
@@ -913,12 +913,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp plan_version(plan_nodes) do
-    plan_nodes
-    |> Enum.map(& &1.updated_at)
-    |> Enum.reject(&is_nil/1)
-    |> Enum.map(&DateTime.to_unix(&1, :microsecond))
-    |> Enum.max(fn -> 0 end)
+    material =
+      Enum.map(plan_nodes, fn node ->
+        %{
+          id: node.id,
+          title: node.title,
+          body: node.body,
+          status: node.status,
+          position: node.position,
+          updated_at: timestamp_version_part(node.updated_at)
+        }
+      end)
+
+    :crypto.hash(:sha256, :erlang.term_to_binary(material))
+    |> binary_part(0, 8)
+    |> :binary.decode_unsigned()
+    |> rem(9_007_199_254_740_991)
   end
+
+  defp timestamp_version_part(nil), do: nil
+  defp timestamp_version_part(%DateTime{} = timestamp), do: DateTime.to_unix(timestamp, :microsecond)
 
   defp append_idempotent_finding(repo, work_package_id, finding_id, attrs) do
     case PlanningRepository.append_finding(repo, attrs) do
@@ -1083,26 +1097,59 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp scoped_progress_idempotency_key(tool, idempotency_key, %Session{}), do: tool <> ":" <> idempotency_key
 
   defp readiness_gates(state) do
-    review_required? = state.work_package.kind != "investigation"
     required_review_lanes = required_review_lanes(state.work_package)
 
-    missing =
-      []
-      |> maybe_missing(state.work_package.status != "ci_waiting", "status_ci_waiting")
-      |> maybe_missing(active_blocker?(state.progress_events), "no_active_blockers")
-      |> maybe_missing(incomplete_plan?(state.plan_nodes), "plan_complete")
-      |> maybe_missing(review_required? and not metadata_present?(state.progress_events, "branch"), "branch_attached")
-      |> maybe_missing(pr_required?(state.work_package) and not metadata_present?(state.progress_events, "pr"), "pr_attached")
-      |> maybe_missing(review_required? and not metadata_present?(state.progress_events, "review_package"), "review_package_submitted")
-      |> maybe_missing(
-        review_required? and not review_artifacts_present?(state.progress_events, state.artifacts, state.work_package.id),
-        "review_artifacts_attached"
-      )
-      |> maybe_missing(review_required? and not review_lanes_present?(state.progress_events, required_review_lanes), "review_lanes_complete")
-      |> maybe_missing(state.work_package.kind == "investigation" and state.findings == [], "findings_documented")
-      |> maybe_missing(state.work_package.kind == "investigation" and not recommendation_recorded?(state.progress_events), "recommendation_recorded")
+    missing = missing_readiness_gates(state, required_review_lanes)
 
     if missing == [], do: :ok, else: {:error, {:readiness_failed, Enum.reverse(missing)}}
+  end
+
+  defp missing_readiness_gates(state, required_review_lanes) do
+    [
+      {state.work_package.status != "ci_waiting", "status_ci_waiting"},
+      {active_blocker?(state.progress_events), "no_active_blockers"},
+      {incomplete_plan?(state.plan_nodes), "plan_complete"},
+      {merge_metadata_missing?(state, "branch"), "branch_attached"},
+      {merge_metadata_missing?(state, "pr"), "pr_attached"},
+      {review_package_missing?(state, required_review_lanes), "review_package_submitted"},
+      {review_artifacts_missing?(state, required_review_lanes), "review_artifacts_attached"},
+      {review_lanes_missing?(state, required_review_lanes), "review_lanes_complete"},
+      {investigation_findings_missing?(state), "findings_documented"},
+      {investigation_recommendation_missing?(state), "recommendation_recorded"}
+    ]
+    |> Enum.reduce([], fn
+      {true, gate}, missing -> [gate | missing]
+      {false, _gate}, missing -> missing
+    end)
+  end
+
+  defp merge_metadata_missing?(state, "pr") do
+    merge_required?(state.work_package) and
+      pr_required?(state.work_package) and
+      not metadata_present?(state.progress_events, "pr")
+  end
+
+  defp merge_metadata_missing?(state, metadata_type) do
+    merge_required?(state.work_package) and not metadata_present?(state.progress_events, metadata_type)
+  end
+
+  defp review_package_missing?(state, required_review_lanes) do
+    required_review_lanes != [] and not metadata_present?(state.progress_events, "review_package")
+  end
+
+  defp review_artifacts_missing?(state, required_review_lanes) do
+    merge_required?(state.work_package) and required_review_lanes != [] and
+      not review_artifacts_present?(state.progress_events, state.artifacts, state.work_package.id)
+  end
+
+  defp review_lanes_missing?(state, required_review_lanes) do
+    required_review_lanes != [] and not review_lanes_present?(state.progress_events, required_review_lanes)
+  end
+
+  defp investigation_findings_missing?(state), do: state.work_package.kind == "investigation" and state.findings == []
+
+  defp investigation_recommendation_missing?(state) do
+    state.work_package.kind == "investigation" and not recommendation_recorded?(state.progress_events)
   end
 
   defp required_review_lanes(%WorkPackage{} = work_package) do
@@ -1112,18 +1159,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp merge_required?(%WorkPackage{} = work_package) do
+    case LifecycleService.policy_for(work_package) do
+      {:ok, policy} ->
+        required_gates = MapSet.new(Map.get(policy, :required_gates, []))
+        merge_gates = MapSet.new(["human_merge", "architect_merge"])
+        not MapSet.disjoint?(required_gates, merge_gates)
+
+      {:error, _reason} ->
+        false
+    end
+  end
+
   defp review_lanes_present?(_progress_events, []), do: true
 
   defp review_lanes_present?(progress_events, required_lanes) do
     current_head_sha = latest_pr_head_sha(progress_events)
 
-    review_evidence =
+    latest_verdicts =
       progress_events
       |> Enum.filter(&payload_type?(&1, "review_package", "submit_review_package"))
       |> Enum.flat_map(&review_package_reviews(&1, current_head_sha))
+      |> Enum.reduce(%{}, fn review, verdicts -> Map.put(verdicts, Map.get(review, "lane"), Map.get(review, "verdict")) end)
 
     Enum.all?(required_lanes, fn lane ->
-      Enum.any?(review_evidence, &(Map.get(&1, "lane") == lane and Map.get(&1, "verdict") == "green"))
+      Map.get(latest_verdicts, lane) == "green"
     end)
   end
 
@@ -1132,8 +1192,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     progress_events
     |> Enum.filter(&payload_type?(&1, "review_package", "submit_review_package"))
-    |> Enum.flat_map(&review_package_artifact_paths(&1, current_head_sha))
-    |> Enum.any?(&persisted_review_artifact?(artifacts, work_package_id, current_head_sha, &1))
+    |> Enum.map(&review_package_artifact_paths(&1, current_head_sha))
+    |> Enum.any?(fn artifact_paths ->
+      artifact_paths != [] and
+        Enum.all?(artifact_paths, &persisted_review_artifact?(artifacts, work_package_id, current_head_sha, &1))
+    end)
   end
 
   defp review_package_artifact_paths(%ProgressEvent{payload: payload}, current_head_sha) when is_map(payload) do
@@ -1181,7 +1244,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end)
   end
 
-  defp valid_review_entry?(%{"lane" => lane, "verdict" => verdict}) when is_binary(lane) and is_binary(verdict), do: true
+  defp valid_review_entry?(%{"lane" => lane, "verdict" => verdict}) do
+    is_binary(lane) and String.trim(lane) != "" and is_binary(verdict) and String.trim(verdict) != ""
+  end
+
   defp valid_review_entry?(_review), do: false
 
   defp latest_pr_head_sha(progress_events) do
@@ -1250,9 +1316,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp payload_type?(%ProgressEvent{}, _type, _source_tool), do: false
 
-  defp maybe_missing(missing, true, name), do: [name | missing]
-  defp maybe_missing(missing, false, _name), do: missing
-
   defp terminal_ready_status(%WorkPackage{kind: "phase_child"}), do: "ready_for_architect_merge"
   defp terminal_ready_status(%WorkPackage{}), do: "ready_for_human_merge"
 
@@ -1312,6 +1375,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp required_string_list(arguments, key) do
     with {:ok, values} <- required_list(arguments, key) do
       if Enum.all?(values, &(is_binary(&1) and String.trim(&1) != "")) do
+        {:ok, values}
+      else
+        {:tool_error, "invalid_#{key}"}
+      end
+    end
+  end
+
+  defp required_review_list(arguments, key) do
+    with {:ok, values} <- required_list(arguments, key) do
+      if Enum.all?(values, &valid_review_entry?/1) do
         {:ok, values}
       else
         {:tool_error, "invalid_#{key}"}
