@@ -91,10 +91,13 @@ Phase 3
 - [x] Run fresh full-diff T2 on pushed head `c54d000` and close valid findings gate.
 - [x] Perform high-pressure coherence review before another same-tier review.
 - [x] Fix eighteenth T2 append-finding id/idempotency findings locally.
-- [ ] Commit and push eighteenth T2 fixes.
+- [x] Commit and push eighteenth T2 fixes.
+- [x] Run fresh full-diff T2 on pushed head `0546cbd` and close valid findings gate.
+- [x] Fix nineteenth T2 normalized progress replay, finding idempotency, and latest review-artifact findings locally.
+- [ ] Commit and push nineteenth T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** high-pressure coherence review complete; eighteenth T2 append-finding fixes implemented locally with validation green; pending commit/push and T2 rerun.
+- **Status:** nineteenth T2 fixes implemented locally with validation green; pending commit/push and T2 rerun.
 
 ### High-Pressure Coherence Review
 

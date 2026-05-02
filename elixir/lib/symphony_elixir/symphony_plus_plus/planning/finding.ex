@@ -15,6 +15,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Finding do
           body: String.t() | nil,
           severity: String.t() | nil,
           sequence: non_neg_integer() | nil,
+          idempotency_key: String.t() | nil,
+          access_grant_id: String.t() | nil,
           created_at: DateTime.t() | nil,
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
@@ -26,6 +28,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Finding do
     field(:body, :string)
     field(:severity, :string)
     field(:sequence, :integer)
+    field(:idempotency_key, :string)
+    field(:access_grant_id, :string)
     field(:created_at, :utc_datetime_usec)
 
     timestamps(type: :utc_datetime_usec)
@@ -41,11 +45,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Finding do
       |> put_new_value("created_at", DateTime.utc_now(:microsecond))
 
     %__MODULE__{}
-    |> cast(attrs, [:id, :work_package_id, :title, :body, :severity, :sequence, :created_at])
+    |> cast(attrs, [
+      :id,
+      :work_package_id,
+      :title,
+      :body,
+      :severity,
+      :sequence,
+      :idempotency_key,
+      :access_grant_id,
+      :created_at
+    ])
     |> validate_required([:id, :work_package_id, :title, :body, :severity, :sequence, :created_at])
     |> validate_number(:sequence, greater_than_or_equal_to: 1)
+    |> validate_nonblank_optional(:idempotency_key)
+    |> validate_nonblank_optional(:access_grant_id)
     |> unique_constraint(:id, name: :sympp_findings_id_unique_index)
+    |> unique_constraint(:idempotency_key, name: :sympp_findings_scoped_idempotency_key_unique_index)
     |> foreign_key_constraint(:work_package_id)
+  end
+
+  defp validate_nonblank_optional(changeset, field) do
+    validate_change(changeset, field, fn ^field, value ->
+      if is_binary(value) and String.trim(value) == "" do
+        [{field, "cannot be blank"}]
+      else
+        []
+      end
+    end)
   end
 
   defp normalize_keys(attrs) when is_map(attrs) do

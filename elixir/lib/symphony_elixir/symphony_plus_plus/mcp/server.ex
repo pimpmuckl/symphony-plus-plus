@@ -715,7 +715,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            "work_package_id" => Session.work_package_id(session),
            "title" => title,
            "body" => body,
-           "severity" => optional_argument(arguments, "severity", "info")
+           "severity" => optional_argument(arguments, "severity", "info"),
+           "idempotency_key" => idempotency_key,
+           "access_grant_id" => session.assignment.grant_id
          },
          {:ok, finding} <- append_idempotent_finding(config.repo, Session.work_package_id(session), finding_id, attrs) do
       {:ok, tool_result(%{"finding" => %{"id" => finding.id, "title" => finding.title, "severity" => finding.severity}})}
@@ -1038,6 +1040,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         |> PlanningRepository.list_findings(work_package_id)
         |> find_existing_finding(finding_id, attrs)
 
+      {:error, :idempotency_key_conflict} ->
+        repo
+        |> PlanningRepository.list_findings(work_package_id)
+        |> find_existing_finding_by_idempotency(attrs)
+
       {:error, reason} ->
         {:error, reason}
     end
@@ -1051,6 +1058,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp find_existing_finding({:error, reason}, _finding_id, _attrs), do: {:error, reason}
+
+  defp find_existing_finding_by_idempotency({:ok, findings}, attrs) do
+    case Enum.find(findings, &finding_idempotency_match?(&1, attrs)) do
+      %{} = finding -> idempotent_finding_result(finding, attrs)
+      nil -> {:error, :id_already_exists}
+    end
+  end
+
+  defp find_existing_finding_by_idempotency({:error, reason}, _attrs), do: {:error, reason}
+
+  defp finding_idempotency_match?(finding, attrs) do
+    finding.idempotency_key == Map.get(attrs, "idempotency_key") and finding.access_grant_id == Map.get(attrs, "access_grant_id")
+  end
 
   defp idempotent_finding_result(finding, attrs) do
     expected = Map.take(attrs, ["title", "body", "severity"])
@@ -1099,8 +1119,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp append_progress_event_or_replay(repo, %Session{} = session, attrs, idempotency_key, tool) do
+    case PlanningRepository.get_progress_event_by_idempotency_key(
+           repo,
+           Session.work_package_id(session),
+           idempotency_key,
+           session.assignment.grant_id
+         ) do
+      {:ok, event} ->
+        replay_matching_progress_event(event, attrs, tool)
+
+      {:error, :not_found} ->
+        append_new_progress_event_or_replay(repo, session, attrs, idempotency_key, tool)
+
+      {:error, reason} ->
+        worker_error(reason, tool)
+    end
+  end
+
+  defp append_new_progress_event_or_replay(repo, %Session{} = session, attrs, idempotency_key, tool) do
     case PlanningService.append_authenticated_progress_event(repo, session.assignment, attrs) do
-      {:ok, event} -> replay_matching_progress_event(event, attrs, tool)
+      {:ok, event} -> {:ok, tool_result(%{"progress_event" => progress_event_payload(event)})}
       {:error, :idempotency_key_conflict} -> replay_progress_event(repo, session, attrs, idempotency_key, tool)
       {:error, reason} -> worker_error(reason, tool)
     end
@@ -1130,7 +1168,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     event.summary == Map.get(attrs, "summary") and
       event.body == Map.get(attrs, "body") and
       event.status == Map.get(attrs, "status") and
-      event.payload == Map.get(attrs, "payload")
+      event.payload == normalized_progress_payload(event, attrs)
+  end
+
+  defp normalized_progress_payload(%ProgressEvent{} = event, attrs) do
+    attrs
+    |> Map.merge(%{
+      "id" => "replay_probe",
+      "work_package_id" => event.work_package_id,
+      "sequence" => 1,
+      "created_at" => event.created_at || DateTime.utc_now(:microsecond)
+    })
+    |> ProgressEvent.create_changeset(trusted_audit_metadata: true)
+    |> Ecto.Changeset.apply_changes()
+    |> Map.get(:payload)
   end
 
   defp append_metadata_event(repo, session, arguments, tool, status, payload) do
@@ -1328,13 +1379,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp review_artifacts_present?(progress_events, artifacts, work_package_id) do
     current_head_sha = latest_pr_head_sha(progress_events)
 
+    case latest_review_package_event(progress_events, current_head_sha) do
+      %ProgressEvent{} = event ->
+        artifact_paths = review_package_artifact_paths(event, current_head_sha)
+
+        artifact_paths != [] and
+          Enum.all?(artifact_paths, &persisted_review_artifact?(artifacts, work_package_id, current_head_sha, &1))
+
+      nil ->
+        false
+    end
+  end
+
+  defp latest_review_package_event(progress_events, current_head_sha) do
     progress_events
     |> Enum.filter(&payload_type?(&1, "review_package", "submit_review_package"))
-    |> Enum.map(&review_package_artifact_paths(&1, current_head_sha))
-    |> Enum.any?(fn artifact_paths ->
-      artifact_paths != [] and
-        Enum.all?(artifact_paths, &persisted_review_artifact?(artifacts, work_package_id, current_head_sha, &1))
-    end)
+    |> Enum.reverse()
+    |> Enum.find(fn event -> review_package_artifact_paths(event, current_head_sha) != [] end)
   end
 
   defp review_package_artifact_paths(%ProgressEvent{payload: payload}, current_head_sha) when is_map(payload) do

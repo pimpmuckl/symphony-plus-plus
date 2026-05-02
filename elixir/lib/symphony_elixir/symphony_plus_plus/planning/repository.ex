@@ -757,7 +757,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   end
 
   defp normalize_constraint_error(%Ecto.ConstraintError{constraint: constraint}) when is_binary(constraint) do
-    if progress_event_idempotency_constraint?(constraint) do
+    if idempotency_constraint?(constraint) do
       {:error, :idempotency_key_conflict}
     else
       if String.ends_with?(constraint, "_id_unique_index") or String.ends_with?(constraint, "_id_index") or
@@ -786,9 +786,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
          (String.contains?(constraint, "sequence") or String.contains?(constraint, "position")))
   end
 
-  defp progress_event_idempotency_constraint?(constraint) when is_binary(constraint) do
+  defp idempotency_constraint?(constraint) when is_binary(constraint) do
     constraint == "sympp_progress_events_work_package_idempotency_key_unique_index" or
-      (String.contains?(constraint, "sympp_progress_events") and String.contains?(constraint, "idempotency_key"))
+      (String.contains?(constraint, "sympp_progress_events") and String.contains?(constraint, "idempotency_key")) or
+      constraint == "sympp_findings_scoped_idempotency_key_unique_index" or
+      (String.contains?(constraint, "sympp_findings") and String.contains?(constraint, "idempotency_key"))
   end
 
   defp normalize_exqlite_error(error) do

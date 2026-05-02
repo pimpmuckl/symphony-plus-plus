@@ -422,3 +422,24 @@
 ### Next Steps
 
 - Commit and push eighteenth T2 fixes, rerun T2, then proceed to GitHub review if clean.
+
+### Sixteenth T2 Follow-up Actions
+
+- Pushed head `0546cbd545e5e69e30de99b29f447bc86c2d45b1` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T212729Z-765eb917`; closed it as `findings`.
+- Fixed valid T2 findings by pre-reading progress idempotency keys before appending, comparing duplicate progress replays against normalized payloads, adding durable grant-scoped idempotency metadata to findings, replaying explicit-id finding retries by idempotency key, and checking review artifacts only from the latest current-head review package.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after nineteenth T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 58 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 252 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues after finding schema line split. |
+
+### Next Steps
+
+- Commit and push nineteenth T2 fixes, rerun T2, then proceed to GitHub review if clean.

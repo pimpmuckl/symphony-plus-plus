@@ -1013,6 +1013,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(explicit_finding_response, ["result", "structuredContent", "finding", "id"]) == "custom-finding-id"
 
+    explicit_finding_replay_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "finding-explicit-id-replay",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_finding",
+            "arguments" => %{"id" => "custom-finding-id-retry", "title" => "Explicit", "body" => "Caller supplied id", "idempotency_key" => "finding-explicit"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(explicit_finding_replay_response, ["result", "structuredContent", "finding", "id"]) == "custom-finding-id"
+
     finding_replay_response =
       MCPHarness.request(
         %{
@@ -1091,6 +1108,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(progress_response, ["result", "structuredContent", "progress_event", "id"]) ==
              get_in(replay_response, ["result", "structuredContent", "progress_event", "id"])
+
+    redacted_progress_args = %{
+      "summary" => "Redacted progress",
+      "idempotency_key" => "worker-progress-redacted",
+      "payload" => %{"token" => "sk-secret"}
+    }
+
+    redacted_progress_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "progress-redacted",
+          "method" => "tools/call",
+          "params" => %{"name" => "append_progress", "arguments" => redacted_progress_args}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(redacted_progress_response, ["result", "structuredContent", "progress_event", "payload", "token"]) == "[REDACTED]"
+
+    redacted_replay_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "progress-redacted-replay",
+          "method" => "tools/call",
+          "params" => %{"name" => "append_progress", "arguments" => redacted_progress_args}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(redacted_replay_response, ["result", "structuredContent", "progress_event", "id"]) ==
+             get_in(redacted_progress_response, ["result", "structuredContent", "progress_event", "id"])
 
     conflicting_progress_response =
       MCPHarness.request(
