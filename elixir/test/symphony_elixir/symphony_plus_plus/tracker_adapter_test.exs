@@ -1472,7 +1472,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert is_reference(ref)
     assert run_id == run.id
     assert restored_started_at == live_run.started_at
-    assert DateTime.compare(last_codex_timestamp, live_run.last_seen_at) in [:gt, :eq]
+    assert last_codex_timestamp == live_run.last_seen_at
     assert MapSet.member?(state.claimed, work_package.id)
     assert state.retry_attempts == %{}
 

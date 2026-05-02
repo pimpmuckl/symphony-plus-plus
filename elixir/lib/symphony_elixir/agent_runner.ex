@@ -77,11 +77,15 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp send_recipient(recipient, message) when is_atom(recipient) do
-    if Process.whereis(recipient) do
-      send(recipient, message)
+    if pid = Process.whereis(recipient) do
+      send(pid, message)
     end
 
     :ok
+  rescue
+    _error -> :ok
+  catch
+    :exit, _reason -> :ok
   end
 
   defp send_recipient(recipient, message) when is_tuple(recipient) do

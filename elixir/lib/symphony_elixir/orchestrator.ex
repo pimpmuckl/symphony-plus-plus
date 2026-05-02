@@ -1264,7 +1264,7 @@ defmodule SymphonyElixir.Orchestrator do
       workspace_path: agent_run_value(agent_run, :workspace_path),
       session_id: agent_run_value(agent_run, :session_id),
       started_at: agent_run_value(agent_run, :started_at) || reattached_at,
-      last_codex_timestamp: reattached_at,
+      last_codex_timestamp: agent_run_value(agent_run, :last_seen_at) || reattached_at,
       last_codex_event: :reattached,
       codex_input_tokens: input_tokens,
       codex_output_tokens: output_tokens,
