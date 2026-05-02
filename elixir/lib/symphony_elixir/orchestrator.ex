@@ -147,8 +147,6 @@ defmodule SymphonyElixir.Orchestrator do
               })
 
             _ ->
-              record_agent_run_failed(agent_run_id, "agent exited: #{inspect(reason)}")
-
               Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
 
               next_attempt = next_retry_attempt_from_running(running_entry)
@@ -157,7 +155,8 @@ defmodule SymphonyElixir.Orchestrator do
                 identifier: running_entry.identifier,
                 error: "agent exited: #{inspect(reason)}",
                 worker_host: Map.get(running_entry, :worker_host),
-                workspace_path: Map.get(running_entry, :workspace_path)
+                workspace_path: Map.get(running_entry, :workspace_path),
+                agent_run_id: agent_run_id
               })
           end
 
@@ -955,6 +954,7 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
 
+        record_agent_run_stopped(metadata[:agent_run_id], "issue reached terminal state before retry")
         cleanup_issue_workspace(issue.identifier, metadata[:worker_host])
         {:noreply, release_issue_claim(state, issue_id)}
 
@@ -964,12 +964,14 @@ defmodule SymphonyElixir.Orchestrator do
       true ->
         Logger.debug("Issue left active states, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier}")
 
+        record_agent_run_stopped(metadata[:agent_run_id], "issue left active state before retry")
         {:noreply, release_issue_claim(state, issue_id)}
     end
   end
 
-  defp handle_retry_issue_lookup(nil, state, issue_id, _attempt, _metadata) do
+  defp handle_retry_issue_lookup(nil, state, issue_id, _attempt, metadata) do
     Logger.debug("Issue no longer visible, removing claim issue_id=#{issue_id}")
+    record_agent_run_stopped(metadata[:agent_run_id], "issue disappeared before retry")
     {:noreply, release_issue_claim(state, issue_id)}
   end
 

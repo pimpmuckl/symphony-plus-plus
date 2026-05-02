@@ -106,12 +106,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
     assert {:ok, retrying} = Service.mark_retrying(repo, run.id, "worker exited")
     assert retrying.status == "retrying"
     assert retrying.reason == "worker exited"
-    assert retrying.finished_at == nil
+    assert %DateTime{} = retrying.finished_at
+
+    assert {:ok, replacement} = Service.start_dispatch(repo, issue(work_package.id), attempt: 1)
+    assert replacement.status == "running"
 
     assert {:ok, stopped} = Service.mark_stopped(repo, run.id, "package left active state")
     assert stopped.status == "stopped"
     assert stopped.reason == "package left active state"
     assert %DateTime{} = stopped.finished_at
+  end
+
+  test "unassigned AgentRun does not bind an arbitrary claimed worker grant", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-UNASSIGNED", status: "ready_for_worker"))
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, work_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "agent-1")
+
+    assert {:ok, run} = Service.start_dispatch(repo, unassigned_issue(work_package.id))
+
+    assert run.access_grant_id == nil
+    assert run.actor_id == nil
   end
 
   test "failed start does not orphan an active AgentRun", %{repo: repo} do
@@ -137,6 +153,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
       state: "ready_for_worker",
       assignee_id: "agent-1",
       assigned_to_worker: true
+    }
+  end
+
+  defp unassigned_issue(id) do
+    %Issue{
+      id: id,
+      identifier: id,
+      title: "Run package",
+      description: "Dispatch package",
+      state: "ready_for_worker",
+      assigned_to_worker: false
     }
   end
 end

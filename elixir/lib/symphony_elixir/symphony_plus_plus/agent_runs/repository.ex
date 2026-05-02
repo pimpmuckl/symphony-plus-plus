@@ -76,7 +76,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
   end
 
   @spec mark_retrying(repo(), String.t(), String.t() | nil) :: {:ok, AgentRun.t()} | {:error, error()}
-  def mark_retrying(repo, id, reason \\ nil), do: update_active_status(repo, id, "retrying", reason)
+  def mark_retrying(repo, id, reason \\ nil), do: update_terminal_status(repo, id, "retrying", reason)
 
   @spec mark_completed(repo(), String.t(), String.t() | nil) :: {:ok, AgentRun.t()} | {:error, error()}
   def mark_completed(repo, id, reason \\ nil), do: update_terminal_status(repo, id, "completed", reason)
@@ -86,10 +86,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
 
   @spec mark_stopped(repo(), String.t(), String.t() | nil) :: {:ok, AgentRun.t()} | {:error, error()}
   def mark_stopped(repo, id, reason \\ nil), do: update_terminal_status(repo, id, "stopped", reason)
-
-  defp update_active_status(repo, id, status, reason) do
-    update_run(repo, id, %{status: status, reason: reason, last_seen_at: DateTime.utc_now(:microsecond)})
-  end
 
   defp update_terminal_status(repo, id, status, reason) do
     now = DateTime.utc_now(:microsecond)

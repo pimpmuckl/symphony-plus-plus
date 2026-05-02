@@ -8,9 +8,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun do
   @primary_key {:id, :string, autogenerate: false}
   @foreign_key_type :string
 
-  @active_statuses ["running", "retrying"]
+  @active_statuses ["running"]
   @terminal_statuses ["completed", "failed", "stopped"]
-  @statuses @active_statuses ++ @terminal_statuses
+  @statuses ["retrying" | @active_statuses ++ @terminal_statuses]
 
   @type t :: %__MODULE__{
           id: String.t() | nil,

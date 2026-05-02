@@ -71,8 +71,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Service do
     Enum.find(grants, &(normalize_actor_id(&1.claimed_by) == normalized_assignee_id))
   end
 
-  defp select_grant_for_assignee([grant | _grants], _assignee_id), do: grant
-  defp select_grant_for_assignee([], _assignee_id), do: nil
+  defp select_grant_for_assignee(_grants, _assignee_id), do: nil
 
   defp normalize_actor_id(actor_id) when is_binary(actor_id) do
     actor_id
