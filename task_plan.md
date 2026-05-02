@@ -119,10 +119,10 @@ Phase 3
 - [x] Commit and push twenty-sixth T2 fixes.
 - [x] Run fresh full-diff T2 on pushed head `e16849c` and close valid findings gate.
 - [x] Fix twenty-seventh T2 response-state isolation and required reconnect owner contract findings locally.
-- [ ] Commit and push twenty-seventh T2 fixes.
+- [x] Commit and push twenty-seventh T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** twenty-seventh T2 fixes implemented locally with validation green; pending commit/push and fresh full-diff T2 rerun.
+- **Status:** twenty-seventh T2 fixes pushed; pending fresh full-diff T2 rerun and GitHub review if clean.
 
 ### High-Pressure Coherence Review
 
