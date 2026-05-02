@@ -250,10 +250,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["claim_work_key", "inputSchema", "properties", "secret", "type"]) == "string"
     assert get_in(tools_by_name, ["append_progress", "inputSchema", "required"]) == ["summary", "idempotency_key"]
     assert get_in(tools_by_name, ["append_finding", "inputSchema", "required"]) == ["title", "body", "idempotency_key"]
+    assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "required"]) == ["expected_version"]
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "expected_version", "type"]) == "integer"
     assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["blocker_id", "resolution", "summary", "idempotency_key"]
-    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "required"]) == ["url"]
-    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == ["string", "null"]
+    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "required"]) == ["url", "head_sha"]
+    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == "string"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "type"]) == "array"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "head_sha", "type"]) == ["string", "null"]
@@ -1024,6 +1025,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, unchanged_package} = WorkPackageRepository.get(repo, package.id)
     assert unchanged_package.status == "ci_waiting"
 
+    missing_head_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "missing-pr-head",
+          "method" => "tools/call",
+          "params" => %{"name" => "attach_pr", "arguments" => %{"url" => "https://github.com/example/repo/pull/123"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(missing_head_response, ["error", "data", "reason"]) == "missing_head_sha"
+
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-GATES/worker"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => "abc123"})
 
@@ -1037,6 +1052,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert "review_lanes_complete" in get_in(missing_review_lanes_response, ["error", "data", "missing"])
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Malformed review",
+      "tests" => ["mix test"],
+      "artifacts" => [],
+      "head_sha" => "abc123",
+      "reviews" => [%{"lane" => 1, "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => nil}]
+    })
+
+    malformed_review_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-malformed-review", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "review_lanes_complete" in get_in(malformed_review_response, ["error", "data", "missing"])
 
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Ready",

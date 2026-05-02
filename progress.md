@@ -136,3 +136,23 @@
 ### Next Steps
 
 - Commit and push fourth T2 fixes, rerun T2, then proceed to GitHub review if clean.
+
+### Second T2 Follow-up Actions
+
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T190914Z-8b11cd9e`; closed it as `findings`.
+- Fixed valid T2 findings by requiring `attach_pr.head_sha`, marking `update_task_plan.expected_version` required in the advertised schema, and filtering malformed review entries before readiness normalization.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after fifth T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 52 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 246 tests, 0 failures. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit and push fifth T2 fixes, rerun T2, then proceed to GitHub review if clean.

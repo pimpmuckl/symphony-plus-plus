@@ -409,7 +409,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "status" => string_schema(),
         "title" => string_schema()
       }),
-      []
+      ["expected_version"]
     )
   end
 
@@ -447,7 +447,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool_input_schema("attach_pr") do
-    schema(metadata_properties(%{"url" => string_schema(), "head_sha" => nullable_string_schema()}), ["url"])
+    schema(metadata_properties(%{"url" => string_schema(), "head_sha" => string_schema()}), ["url", "head_sha"])
   end
 
   defp worker_tool_input_schema("submit_review_package") do
@@ -705,7 +705,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp worker_tool("attach_pr", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, url} <- required_argument(arguments, "url"),
-         head_sha <- optional_argument(arguments, "head_sha", nil) do
+         {:ok, head_sha} <- required_argument(arguments, "head_sha") do
       append_metadata_event(config.repo, session, arguments, "attach_pr", "pr_attached", %{"type" => "pr", "url" => url, "head_sha" => head_sha})
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "attach_pr", "reason" => reason}}
@@ -1026,7 +1026,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp normalize_review_entries(reviews) do
     reviews
-    |> Enum.filter(&is_map/1)
+    |> Enum.filter(&valid_review_entry?/1)
     |> Enum.map(fn review ->
       %{
         "lane" => review |> Map.get("lane", "") |> String.downcase(),
@@ -1035,16 +1035,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end)
   end
 
+  defp valid_review_entry?(%{"lane" => lane, "verdict" => verdict}) when is_binary(lane) and is_binary(verdict), do: true
+  defp valid_review_entry?(_review), do: false
+
   defp latest_pr_head_sha(progress_events) do
     progress_events
     |> Enum.filter(&payload_type?(&1, "pr", "attach_pr"))
     |> Enum.reverse()
-    |> Enum.find_value(fn %ProgressEvent{payload: payload} ->
-      case Map.get(payload || %{}, "head_sha") do
-        head_sha when is_binary(head_sha) and head_sha != "" -> head_sha
-        _ -> nil
-      end
-    end)
+    |> List.first()
+    |> case do
+      %ProgressEvent{payload: payload} ->
+        latest_pr_payload_head_sha(payload)
+
+      nil ->
+        nil
+    end
+  end
+
+  defp latest_pr_payload_head_sha(payload) do
+    case Map.get(payload || %{}, "head_sha") do
+      head_sha when is_binary(head_sha) and head_sha != "" -> head_sha
+      _ -> nil
+    end
   end
 
   defp active_blocker?(progress_events) do

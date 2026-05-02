@@ -54,3 +54,5 @@
 - PR #15 currently has no GitHub comments, reviews, or status checks reported by `gh pr view`.
 - Fresh T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T190153Z-5b4edd37` produced valid findings: `submit_review_package` schema omitted required `reviews` evidence, malformed patch ids could append duplicate nodes, and review readiness was not tied to the latest attached PR head.
 - Fourth T2 fix keeps scope inside P3-002: advertise `reviews`/`head_sha`, reject non-string patch ids with `invalid_patch_node`, and accept review-lane evidence only for the latest attached PR `head_sha` when one is known.
+- Fresh T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T190914Z-8b11cd9e` produced valid findings: `attach_pr` still allowed missing `head_sha`, `update_task_plan` schema did not require `expected_version`, and malformed review lane/verdict values could crash readiness checks.
+- Fifth T2 fix requires PR `head_sha` at schema and runtime, advertises `expected_version` as required, and ignores review entries whose lane/verdict fields are not strings.
