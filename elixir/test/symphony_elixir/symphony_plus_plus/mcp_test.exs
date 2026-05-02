@@ -1779,7 +1779,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "tests" => ["mix test", "review_t2 green"],
       "artifacts" => ["review-log.txt"],
       "head_sha" => "abc123",
-      "acceptance_criteria_met" => true,
       "reviews" => [%{"lane" => "review_t2", "verdict" => "green"}]
     })
 
@@ -1792,6 +1791,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     incremental_missing = get_in(incremental_review_lanes_response, ["error", "data", "missing"])
     refute "review_lanes_complete" in incremental_missing
+    refute "acceptance_criteria_met" in incremental_missing
     assert "plan_complete" in incremental_missing
 
     malformed_review_response =

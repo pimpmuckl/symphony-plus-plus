@@ -123,9 +123,12 @@ Phase 3
 - [x] Run fresh full-diff T2 on pushed head `136184b` and close valid findings gate.
 - [x] Fix twenty-eighth T2 authenticated plan/finding writes, incremental review lanes, and repeated status-reason audit findings locally.
 - [x] Commit and push twenty-eighth T2 fixes.
+- [x] Run fresh full-diff T2 on pushed head `5da5404` and close valid findings gate.
+- [x] Fix twenty-ninth T2 review-package transaction, acceptance carry-forward, and artifact retry findings locally.
+- [ ] Commit and push twenty-ninth T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** twenty-eighth T2 fixes pushed; pending fresh full-diff T2 rerun and GitHub review if clean.
+- **Status:** twenty-ninth T2 fixes validated locally; pending commit/push, fresh full-diff T2 rerun, and GitHub review if clean.
 
 ### High-Pressure Coherence Review
 
@@ -147,6 +150,8 @@ Phase 3
 - Findings remain concentrated on the same worker MCP state/claim contract, so continuing the loop is still appropriate.
 - Before the next T2, the core approach remains coherent because the latest fix only revalidates existing worker assignments inside transactional plan/finding writes and refines review/status audit semantics within the P3-002 MCP surface.
 - Findings are still converging as small authorization, idempotency, and readiness edge cases around the same worker tools rather than a broader package design problem.
+- Before the next T2, the approach remains coherent because the latest change only moves review-package head/default evidence decisions into the existing transaction and hardens deterministic artifact replay.
+- Findings remain concentrated on review-package concurrency and incremental evidence edge cases, so continuing the P3-002 finish loop is still appropriate.
 
 ## Boundaries
 

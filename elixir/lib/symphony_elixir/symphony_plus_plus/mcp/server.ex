@@ -867,9 +867,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, artifacts} <- required_string_list(arguments, "artifacts"),
          artifacts = Enum.uniq(artifacts),
          {:ok, reviews} <- optional_review_list(arguments, "reviews"),
-         {:ok, acceptance_criteria_met} <- optional_boolean(arguments, "acceptance_criteria_met", false),
-         {:ok, state} <- PlanningRepository.get_state(config.repo, Session.work_package_id(session)),
-         {:ok, head_sha} <- review_package_head_sha(arguments, state.progress_events),
+         {:ok, acceptance_criteria_met} <- optional_boolean(arguments, "acceptance_criteria_met", nil),
          {:ok, result} <-
            submit_review_package_transaction(config.repo, session, arguments, artifacts, %{
              "type" => "review_package",
@@ -877,7 +875,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              "tests" => tests,
              "artifacts" => artifacts,
              "reviews" => reviews,
-             "head_sha" => head_sha,
              "acceptance_criteria_met" => acceptance_criteria_met
            }) do
       {:ok, result}
@@ -1430,9 +1427,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp submit_review_package_transaction_body(repo, %Session{} = session, arguments, artifacts, payload) do
-    case append_metadata_event(repo, session, arguments, "submit_review_package", "review_package_submitted", payload) do
-      {:ok, result} -> persist_review_artifacts_or_rollback(repo, session, artifacts, Map.get(payload, "head_sha"), result)
-      {:error, code, message, data} -> repo.rollback({:mcp_error, code, message, data})
+    with {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)),
+         {:ok, head_sha} <- review_package_head_sha(arguments, state.progress_events) do
+      payload =
+        payload
+        |> Map.put("head_sha", head_sha)
+        |> put_review_package_acceptance(state.progress_events, head_sha)
+
+      case append_metadata_event(repo, session, arguments, "submit_review_package", "review_package_submitted", payload) do
+        {:ok, result} -> persist_review_artifacts_or_rollback(repo, session, artifacts, head_sha, result)
+        {:error, code, message, data} -> repo.rollback({:mcp_error, code, message, data})
+      end
+    else
+      {:tool_error, reason} ->
+        repo.rollback({:mcp_error, -32_602, "Invalid params", %{"tool" => "submit_review_package", "reason" => reason}})
+
+      {:error, reason} ->
+        repo.rollback(reason)
+    end
+  end
+
+  defp put_review_package_acceptance(%{"acceptance_criteria_met" => value} = payload, _progress_events, _head_sha) when is_boolean(value) do
+    payload
+  end
+
+  defp put_review_package_acceptance(payload, progress_events, head_sha) do
+    Map.put(payload, "acceptance_criteria_met", review_package_acceptance_recorded?(progress_events, head_sha))
+  end
+
+  defp review_package_acceptance_recorded?(progress_events, head_sha) do
+    case latest_review_package_event(progress_events, head_sha) do
+      %ProgressEvent{payload: payload} when is_map(payload) -> Map.get(payload, "acceptance_criteria_met") == true
+      _event -> false
     end
   end
 
@@ -1479,8 +1505,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
       case PlanningService.append_artifact(repo, attrs) do
         {:ok, _artifact} -> :ok
+        {:error, :id_already_exists} -> replay_review_artifact(repo, work_package_id, head_sha, artifact)
         {:error, reason} -> {:error, reason}
       end
+    end
+  end
+
+  defp replay_review_artifact(repo, work_package_id, head_sha, artifact) do
+    case PlanningRepository.list_artifacts(repo, work_package_id) do
+      {:ok, artifacts} ->
+        if persisted_review_artifact?(artifacts, work_package_id, head_sha, artifact) do
+          :ok
+        else
+          {:error, :id_already_exists}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
