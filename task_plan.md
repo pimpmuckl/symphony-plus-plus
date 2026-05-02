@@ -113,10 +113,10 @@ Phase 3
 - [x] Commit and push twenty-fourth T2 fixes.
 - [x] Run fresh full-diff T2 on pushed head `0b8bbbf` and close valid findings gate.
 - [x] Fix twenty-fifth T2 status-reason validation, status-transition atomicity, expected-status race, and readiness race findings locally.
-- [ ] Commit and push twenty-fifth T2 fixes.
+- [x] Commit and push twenty-fifth T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** twenty-fifth T2 fixes implemented locally with validation green; pending commit/push and T2 rerun.
+- **Status:** twenty-fifth T2 fixes pushed; pending fresh full-diff T2 rerun and GitHub review if clean.
 
 ### High-Pressure Coherence Review
 

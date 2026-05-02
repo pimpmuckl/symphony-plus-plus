@@ -577,4 +577,4 @@
 
 ### Next Steps
 
-- Commit and push twenty-fifth T2 fixes, rerun full-diff T2, then proceed to GitHub review if clean.
+- Pushed twenty-fifth T2 fix head `c42f794404fd4933290f44834a797db1c6bd1fbf`; rerun full-diff T2, then proceed to GitHub review if clean.
