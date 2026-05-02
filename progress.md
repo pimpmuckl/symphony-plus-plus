@@ -358,3 +358,24 @@
 ### Next Steps
 
 - Commit and push fifteenth T2 fixes, rerun T2, then proceed to GitHub review if clean.
+
+### Thirteenth T2 Follow-up Actions
+
+- Pushed head `6f01410f399361e77466ea42dc7fbffcb3e4ba0f` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T205743Z-809031fd`; closed it as `findings`.
+- Fixed valid T2 findings by revalidating same-secret bound claim replays against live access-grant state, rejecting non-worker grants at the worker MCP claim path, persisting response-only handle state only when session changes, advertising `blocker_id` for `report_blocker`, and trimming review lane/verdict values before readiness checks.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after sixteenth T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 57 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 251 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues after alias ordering fix. |
+
+### Next Steps
+
+- Commit and push sixteenth T2 fixes, rerun T2, then proceed to GitHub review if clean.

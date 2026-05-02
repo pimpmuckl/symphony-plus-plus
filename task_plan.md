@@ -81,10 +81,13 @@ Phase 3
 - [x] Commit and push fourteenth T2 fixes.
 - [x] Run fresh full-diff T2 on pushed head `e300fb2` and close valid findings gate.
 - [x] Fix fifteenth T2 claim-session persistence and rebind findings locally.
-- [ ] Commit and push fifteenth T2 fixes.
+- [x] Commit and push fifteenth T2 fixes.
+- [x] Run fresh full-diff T2 on pushed head `6f01410` and close valid findings gate.
+- [x] Fix sixteenth T2 worker-claim role, replay revalidation, schema, normalization, and state-retention findings locally.
+- [ ] Commit and push sixteenth T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** fifteenth T2 fixes implemented locally with validation green; pending commit/push and T2 rerun.
+- **Status:** sixteenth T2 fixes implemented locally with validation green; pending commit/push and T2 rerun.
 
 ## Boundaries
 

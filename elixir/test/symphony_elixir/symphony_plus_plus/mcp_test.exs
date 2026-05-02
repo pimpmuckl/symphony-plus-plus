@@ -10,7 +10,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.MCPHarness
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Server, Session, Stdio}
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
@@ -252,6 +254,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["append_finding", "inputSchema", "required"]) == ["title", "body", "idempotency_key"]
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "required"]) == ["expected_version"]
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "expected_version", "type"]) == "integer"
+    assert get_in(tools_by_name, ["report_blocker", "inputSchema", "properties", "blocker_id", "type"]) == "string"
     assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["blocker_id", "resolution", "summary", "idempotency_key"]
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "required"]) == ["url", "head_sha"]
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == "string"
@@ -740,12 +743,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-HANDLE-CLAIM", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
 
-    server = Server.new(Config.default(repo: repo))
-
-    assert get_in(
-             Server.handle(%{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()}, server),
-             ["result", "serverInfo", "name"]
-           ) == "symphony-plus-plus"
+    server = Server.new(Config.default(repo: repo), initialized: true)
 
     claim_response =
       Server.handle(
@@ -767,6 +765,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "claimed_by"]) == "worker-1"
+  end
+
+  test "response-only handle does not retain unchanged one-shot server state", %{repo: repo} do
+    server = Server.new(Config.default(repo: repo), initialized: true)
+    Process.delete({Server, server.state_key})
+
+    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "tools", "method" => "tools/list", "params" => %{}}, server)
+
+    assert is_list(get_in(response, ["result", "tools"]))
+    assert Process.get({Server, server.state_key}) == nil
   end
 
   test "claim_work_key notification binds session inside a batch", %{repo: repo} do
@@ -841,6 +849,58 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(rebind_response, ["error", "data", "reason"]) == "session_already_bound"
     assert rebound_server.session.assignment.work_package_id == "SYMPP-FIRST-CLAIM"
+  end
+
+  test "claim_work_key rejects non-worker grants and revalidates bound replays", %{repo: repo} do
+    assert {:ok, worker_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-CLAIM", kind: "mcp", status: "ready_for_worker"))
+
+    assert {:ok, architect_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-CLAIM", kind: "mcp", status: "ready_for_worker"))
+
+    assert {:ok, worker_minted} = AccessGrantService.mint_worker_grant(repo, worker_package.id)
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, architect_package.id)
+
+    architect_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "architect-claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => architect_work_key.secret, "claimed_by" => "architect-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(architect_response, ["error", "data", "reason"]) == "worker_grant_required"
+
+    {claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => worker_minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-WORKER-CLAIM"
+    assert {:ok, _grant} = AccessGrantService.revoke(repo, worker_minted.grant.id)
+
+    {replay_response, replay_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-replay",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => worker_minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        claimed_server
+      )
+
+    assert get_in(replay_response, ["error", "data", "reason"]) == "revoked"
+    assert replay_server.session.assignment.work_package_id == "SYMPP-WORKER-CLAIM"
   end
 
   test "batch calls thread claim_work_key session to later worker tools", %{repo: repo} do
@@ -1494,7 +1554,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "tests" => ["mix test"],
       "artifacts" => ["review-log.txt"],
       "head_sha" => "def456",
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => " review_t1 ", "verdict" => " green "}, %{"lane" => " review_t2 ", "verdict" => " green "}]
     })
 
     ready_response =
@@ -2019,6 +2079,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(response, ["result", "structuredContent", "progress_event", "id"])
     response
+  end
+
+  defp create_architect_work_key(repo, work_package_id) do
+    now = DateTime.utc_now(:microsecond)
+    work_key = WorkKey.generate()
+
+    with {:ok, _grant} <-
+           AccessGrantRepository.create(repo, %{
+             work_package_id: work_package_id,
+             display_key: work_key.display_key,
+             secret_hash: WorkKey.secret_hash(work_key.secret),
+             grant_role: "architect",
+             capabilities: ["architect:lifecycle.transition"],
+             expires_at: DateTime.add(now, 86_400, :second)
+           }) do
+      {:ok, work_key}
+    end
   end
 
   defp decode_json_lines(output) do

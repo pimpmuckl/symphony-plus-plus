@@ -2,6 +2,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @moduledoc false
 
   alias Ecto.Adapters.SQL
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
@@ -55,8 +56,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   @spec handle(term(), t()) :: map() | [map()] | nil
   def handle(payload, %__MODULE__{} = server) do
-    {response, server} = handle_state(payload, restore_handle_state(server))
-    persist_handle_state(server)
+    server = restore_handle_state(server)
+    {response, updated_server} = handle_state(payload, server)
+    persist_handle_state(server, updated_server)
     response
   end
 
@@ -112,15 +114,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp restore_handle_state(%__MODULE__{} = server) do
     case Process.get(handle_state_key(server)) do
       %__MODULE__{} = stored ->
-        %{server | initialized: server.initialized or stored.initialized, session: server.session || stored.session}
+        %{server | session: server.session || stored.session}
 
       _stored ->
         server
     end
   end
 
-  defp persist_handle_state(%__MODULE__{} = server) do
-    Process.put(handle_state_key(server), server)
+  defp persist_handle_state(%__MODULE__{} = server, %__MODULE__{} = updated_server) do
+    if server.session != updated_server.session do
+      Process.put(handle_state_key(server), updated_server)
+    end
+
     :ok
   end
 
@@ -454,8 +459,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     )
   end
 
-  defp worker_tool_input_schema(name) when name in ["append_progress", "report_blocker", "request_scope_expansion"] do
+  defp worker_tool_input_schema(name) when name in ["append_progress", "request_scope_expansion"] do
     schema(progress_properties(), ["summary", "idempotency_key"])
+  end
+
+  defp worker_tool_input_schema("report_blocker") do
+    schema(Map.put(progress_properties(), "blocker_id", string_schema()), ["summary", "idempotency_key"])
   end
 
   defp worker_tool_input_schema("resolve_blocker") do
@@ -613,16 +622,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp claim_work_key(params, %__MODULE__{session: %Session{} = session}) do
+  defp claim_work_key(params, %__MODULE__{config: config, session: %Session{} = session}) do
     with {:ok, arguments} <- tool_arguments(params, "claim_work_key"),
          {:ok, secret} <- required_argument(arguments, "secret"),
          proof_hash = WorkKey.secret_hash(secret),
-         true <- session.proof_hash == proof_hash do
+         true <- session.proof_hash == proof_hash,
+         {:ok, session} <- revalidate_worker_session(config.repo, session, proof_hash) do
       {:ok, %{"assignment" => Session.public_assignment(session)}, session}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "claim_work_key", "reason" => reason}}
+      {:error, reason} -> claim_error(reason)
       _not_same_session -> {:error, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => "session_already_bound"}}
     end
+  rescue
+    _error -> {:error, -32_000, "Server error", %{"tool" => "claim_work_key", "reason" => "ledger_unavailable"}}
   end
 
   defp claim_work_key(params, %__MODULE__{config: config}) do
@@ -630,7 +643,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, secret} <- required_argument(arguments, "secret"),
          claimed_by <- optional_argument(arguments, "claimed_by", "worker"),
          proof_hash = WorkKey.secret_hash(secret),
-         {:ok, assignment} <- AccessGrantService.claim(config.repo, secret, claimed_by: claimed_by) do
+         {:ok, assignment} <- AccessGrantService.claim(config.repo, secret, claimed_by: claimed_by),
+         :ok <- require_worker_assignment(assignment) do
       session = Session.new(assignment, proof_hash: proof_hash)
       {:ok, %{"assignment" => Session.public_assignment(session)}, session}
     else
@@ -640,6 +654,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   rescue
     _error -> {:error, -32_000, "Server error", %{"tool" => "claim_work_key", "reason" => "ledger_unavailable"}}
   end
+
+  defp revalidate_worker_session(repo, %Session{} = session, proof_hash) do
+    with {:ok, grant} <- AccessGrantRepository.get(repo, session.assignment.grant_id),
+         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash),
+         :ok <- require_worker_assignment(session.assignment) do
+      {:ok, session}
+    end
+  end
+
+  defp require_worker_assignment(%{grant_role: "worker"}), do: :ok
+  defp require_worker_assignment(_assignment), do: {:error, :worker_grant_required}
 
   defp claim_error(:database_busy), do: service_error(:database_busy, "claim_work_key")
   defp claim_error({:storage_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
@@ -1328,8 +1353,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> Enum.filter(&valid_review_entry?/1)
     |> Enum.map(fn review ->
       %{
-        "lane" => review |> Map.get("lane", "") |> String.downcase(),
-        "verdict" => review |> Map.get("verdict", "") |> String.downcase()
+        "lane" => review |> Map.get("lane", "") |> String.trim() |> String.downcase(),
+        "verdict" => review |> Map.get("verdict", "") |> String.trim() |> String.downcase()
       }
     end)
   end
