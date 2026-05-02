@@ -751,6 +751,58 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert due_in_ms > 0
   end
 
+  test "worker down retry preserves confirmed liveness metadata" do
+    orchestrator_name = Module.concat(__MODULE__, :ConfirmedWorkerDownRetryOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    issue_id = "issue-confirmed-worker-down"
+    process_ref = make_ref()
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: process_ref,
+      identifier: "MT-DOWN",
+      issue: %Issue{id: issue_id, identifier: "MT-DOWN", state: "In Progress"},
+      worker_host: "worker-1",
+      workspace_path: "workspace/path",
+      session_id: "thread-down-turn-down",
+      last_codex_message: nil,
+      last_codex_timestamp: started_at,
+      last_codex_event: :notification,
+      started_at: started_at,
+      retry_attempt: 1,
+      agent_run_id: "agent-run-down"
+    }
+
+    initial_state = :sys.get_state(pid)
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(pid, {:DOWN, process_ref, :process, self(), :boom})
+    Process.sleep(50)
+
+    state = :sys.get_state(pid)
+
+    assert %{
+             attempt: 2,
+             agent_run_id: "agent-run-down",
+             confirmed_worker_down: true,
+             worker_host: "worker-1",
+             workspace_path: "workspace/path"
+           } = state.retry_attempts[issue_id]
+  end
+
   test "orchestrator snapshot includes poll countdown and checking status" do
     orchestrator_name = Module.concat(__MODULE__, :PollingSnapshotOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)

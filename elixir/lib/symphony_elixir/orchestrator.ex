@@ -969,6 +969,7 @@ defmodule SymphonyElixir.Orchestrator do
     error = pick_retry_error(previous_retry, metadata)
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
+    confirmed_worker_down = pick_retry_confirmed_worker_down(previous_retry, metadata)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -992,7 +993,8 @@ defmodule SymphonyElixir.Orchestrator do
             error: error,
             worker_host: worker_host,
             workspace_path: workspace_path,
-            agent_run_id: Map.get(metadata, :agent_run_id)
+            agent_run_id: Map.get(metadata, :agent_run_id),
+            confirmed_worker_down: confirmed_worker_down
           })
     }
   end
@@ -1005,7 +1007,8 @@ defmodule SymphonyElixir.Orchestrator do
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
           workspace_path: Map.get(retry_entry, :workspace_path),
-          agent_run_id: Map.get(retry_entry, :agent_run_id)
+          agent_run_id: Map.get(retry_entry, :agent_run_id),
+          confirmed_worker_down: Map.get(retry_entry, :confirmed_worker_down)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1136,6 +1139,7 @@ defmodule SymphonyElixir.Orchestrator do
     ref = Process.monitor(pid)
     worker_host = agent_run_value(agent_run, :worker_host)
     agent_run_id = agent_run_value(agent_run, :id)
+    reattached_at = DateTime.utc_now()
     :ok = ensure_agent_run_marked_running(agent_run)
 
     Logger.info("Reattached running AgentRun after restart: #{issue_context(issue)} pid=#{inspect(pid)} agent_run_id=#{agent_run_id}")
@@ -1145,10 +1149,9 @@ defmodule SymphonyElixir.Orchestrator do
         worker_task_handle: agent_run_value(agent_run, :worker_task_handle),
         workspace_path: agent_run_value(agent_run, :workspace_path),
         session_id: agent_run_value(agent_run, :session_id),
-        started_at: agent_run_value(agent_run, :started_at) || DateTime.utc_now(),
+        started_at: reattached_at,
         last_codex_timestamp: agent_run_value(agent_run, :last_seen_at),
-        last_codex_event: :reattached,
-        usage_accounting_restored: false
+        last_codex_event: :reattached
       })
 
     %{
@@ -1407,6 +1410,10 @@ defmodule SymphonyElixir.Orchestrator do
     metadata[:workspace_path] || Map.get(previous_retry, :workspace_path)
   end
 
+  defp pick_retry_confirmed_worker_down(previous_retry, metadata) do
+    metadata[:confirmed_worker_down] == true or Map.get(previous_retry, :confirmed_worker_down) == true
+  end
+
   defp agent_run_id(%{id: id}) when is_binary(id), do: id
   defp agent_run_id(_agent_run), do: nil
 
@@ -1526,8 +1533,7 @@ defmodule SymphonyElixir.Orchestrator do
       turn_count: 0,
       retry_attempt: normalize_retry_attempt(attempt),
       agent_run_id: agent_run_id,
-      started_at: Map.get(attrs, :started_at) || DateTime.utc_now(),
-      usage_accounting_restored: Map.get(attrs, :usage_accounting_restored, true)
+      started_at: Map.get(attrs, :started_at) || DateTime.utc_now()
     }
   end
 
@@ -1752,24 +1758,20 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp record_session_completion_totals(state, running_entry) when is_map(running_entry) do
-    if Map.get(running_entry, :usage_accounting_restored, true) == false do
-      state
-    else
-      runtime_seconds = running_seconds(running_entry.started_at, DateTime.utc_now())
+    runtime_seconds = running_seconds(running_entry.started_at, DateTime.utc_now())
 
-      codex_totals =
-        apply_token_delta(
-          state.codex_totals,
-          %{
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 0,
-            seconds_running: runtime_seconds
-          }
-        )
+    codex_totals =
+      apply_token_delta(
+        state.codex_totals,
+        %{
+          input_tokens: 0,
+          output_tokens: 0,
+          total_tokens: 0,
+          seconds_running: runtime_seconds
+        }
+      )
 
-      %{state | codex_totals: codex_totals}
-    end
+    %{state | codex_totals: codex_totals}
   end
 
   defp record_session_completion_totals(state, _running_entry), do: state
