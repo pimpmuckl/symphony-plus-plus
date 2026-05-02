@@ -40,6 +40,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Finding do
     attrs =
       attrs
       |> normalize_keys()
+      |> normalize_idempotency_key()
       |> put_new_value("id", stable_id("finding"))
       |> put_new_value("severity", "info")
       |> put_new_value("created_at", DateTime.utc_now(:microsecond))
@@ -81,6 +82,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Finding do
 
   defp normalize_key(key) when is_atom(key), do: Atom.to_string(key)
   defp normalize_key(key), do: to_string(key)
+
+  defp normalize_idempotency_key(attrs) do
+    Map.update(attrs, "idempotency_key", nil, fn
+      value when is_binary(value) -> String.trim(value)
+      value -> value
+    end)
+  end
 
   defp put_new_value(attrs, key, value) do
     if Map.get(attrs, key) in [nil, ""] do

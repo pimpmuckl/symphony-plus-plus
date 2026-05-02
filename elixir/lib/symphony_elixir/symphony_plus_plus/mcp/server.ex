@@ -494,9 +494,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "tests" => array_schema(),
         "artifacts" => array_schema(),
         "reviews" => array_schema(),
-        "head_sha" => nullable_string_schema()
+        "head_sha" => nullable_string_schema(),
+        "acceptance_criteria_met" => boolean_schema()
       }),
-      ["summary", "tests", "artifacts", "reviews"]
+      ["summary", "tests", "artifacts"]
     )
   end
 
@@ -529,6 +530,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp string_schema, do: %{"type" => "string"}
+  defp boolean_schema, do: %{"type" => "boolean"}
   defp integer_schema, do: %{"type" => "integer"}
   defp nullable_string_schema, do: %{"type" => ["string", "null"]}
   defp object_schema, do: %{"type" => "object", "additionalProperties" => true}
@@ -709,6 +711,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, title} <- required_argument(arguments, "title"),
          {:ok, body} <- required_argument(arguments, "body"),
          {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
+         idempotency_key = String.trim(idempotency_key),
          {:ok, finding_id} <- optional_finding_id(arguments, session, idempotency_key),
          attrs = %{
            "id" => finding_id,
@@ -807,7 +810,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, tests} <- required_list(arguments, "tests"),
          {:ok, artifacts} <- required_string_list(arguments, "artifacts"),
          artifacts = Enum.uniq(artifacts),
-         {:ok, reviews} <- required_review_list(arguments, "reviews"),
+         {:ok, reviews} <- optional_review_list(arguments, "reviews"),
          {:ok, state} <- PlanningRepository.get_state(config.repo, Session.work_package_id(session)),
          {:ok, head_sha} <- review_package_head_sha(arguments, state.progress_events),
          {:ok, result} <-
@@ -817,7 +820,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              "tests" => tests,
              "artifacts" => artifacts,
              "reviews" => reviews,
-             "head_sha" => head_sha
+             "head_sha" => head_sha,
+             "acceptance_criteria_met" => optional_boolean(arguments, "acceptance_criteria_met", false)
            }) do
       {:ok, result}
     else
@@ -829,6 +833,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp worker_tool("mark_ready", _arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
+         :ok <- require_worker_assignment(session.assignment),
          {:ok, state} <- PlanningRepository.get_state(config.repo, Session.work_package_id(session)),
          :ok <- readiness_gates(state),
          ready_status <- terminal_ready_status(state.work_package),
@@ -1206,7 +1211,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     current_head_sha = latest_pr_head_sha(progress_events)
 
     case optional_argument(arguments, "head_sha", nil) do
-      nil when is_binary(current_head_sha) -> {:tool_error, "missing_head_sha"}
+      nil when is_binary(current_head_sha) -> {:ok, current_head_sha}
       head_sha when is_binary(current_head_sha) and head_sha != current_head_sha -> {:tool_error, "stale_head_sha"}
       head_sha -> {:ok, head_sha}
     end
@@ -1305,6 +1310,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {state.work_package.status != "ci_waiting", "status_ci_waiting"},
       {active_blocker?(state.progress_events), "no_active_blockers"},
       {incomplete_plan?(state.plan_nodes), "plan_complete"},
+      {acceptance_missing?(state), "acceptance_criteria_met"},
+      {tests_missing?(state), "tests_passed"},
       {merge_metadata_missing?(state, "branch"), "branch_attached"},
       {merge_metadata_missing?(state, "pr"), "pr_attached"},
       {review_package_missing?(state, required_review_lanes), "review_package_submitted"},
@@ -1374,8 +1381,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     latest_verdicts =
       progress_events
-      |> Enum.filter(&payload_type?(&1, "review_package", "submit_review_package"))
-      |> Enum.flat_map(&review_package_reviews(&1, current_head_sha))
+      |> latest_review_package_event(current_head_sha)
+      |> review_package_reviews(current_head_sha)
       |> Enum.reduce(%{}, fn review, verdicts -> Map.put(verdicts, Map.get(review, "lane"), Map.get(review, "verdict")) end)
 
     Enum.all?(required_lanes, fn lane ->
@@ -1438,6 +1445,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp review_package_reviews(%ProgressEvent{}, _current_head_sha), do: []
+  defp review_package_reviews(nil, _current_head_sha), do: []
 
   defp normalize_review_entries(reviews) do
     reviews
@@ -1499,6 +1507,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp incomplete_plan?(plan_nodes), do: Enum.any?(plan_nodes, &(&1.status == "pending"))
 
+  defp acceptance_missing?(state) do
+    required_gate?(state.work_package, "package_acceptance") and not acceptance_recorded?(state.progress_events)
+  end
+
+  defp tests_missing?(state) do
+    required_gate?(state.work_package, "focused_tests") and not tests_recorded?(state.progress_events)
+  end
+
+  defp required_gate?(%WorkPackage{} = work_package, gate) do
+    case LifecycleService.policy_for(work_package) do
+      {:ok, policy} -> gate in Map.get(policy, :required_gates, [])
+      {:error, _reason} -> false
+    end
+  end
+
+  defp acceptance_recorded?(progress_events) do
+    current_head_sha = latest_pr_head_sha(progress_events)
+
+    case latest_review_package_event(progress_events, current_head_sha) do
+      %ProgressEvent{payload: payload} when is_map(payload) -> Map.get(payload, "acceptance_criteria_met") == true
+      _event -> false
+    end
+  end
+
+  defp tests_recorded?(progress_events) do
+    current_head_sha = latest_pr_head_sha(progress_events)
+
+    case latest_review_package_event(progress_events, current_head_sha) do
+      %ProgressEvent{payload: payload} when is_map(payload) ->
+        tests = Map.get(payload, "tests")
+        is_list(tests) and Enum.any?(tests, &(is_binary(&1) and String.trim(&1) != ""))
+
+      _event ->
+        false
+    end
+  end
+
   defp pr_required?(%WorkPackage{kind: "investigation"}), do: false
   defp pr_required?(%WorkPackage{}), do: true
 
@@ -1536,8 +1581,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp scoped_session(repo, session, arguments) when is_map(arguments) do
     case Auth.require_session(session, repo) do
-      {:ok, session} -> require_argument_scope(session, Map.get(arguments, "work_package_id"))
-      {:error, reason} -> {:error, reason}
+      {:ok, session} ->
+        with :ok <- require_worker_assignment(session.assignment) do
+          require_argument_scope(session, Map.get(arguments, "work_package_id"))
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -1595,6 +1645,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       else
         {:tool_error, "invalid_#{key}"}
       end
+    end
+  end
+
+  defp optional_review_list(arguments, key) do
+    case Map.get(arguments, key) do
+      nil -> {:ok, []}
+      _reviews -> required_review_list(arguments, key)
+    end
+  end
+
+  defp optional_boolean(arguments, key, default) do
+    case Map.get(arguments, key, default) do
+      value when is_boolean(value) -> value
+      _value -> default
     end
   end
 

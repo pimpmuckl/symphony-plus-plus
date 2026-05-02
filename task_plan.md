@@ -97,15 +97,21 @@ Phase 3
 - [x] Commit and push nineteenth T2 fixes.
 - [x] Run fresh full-diff T2 on pushed head `af68331` and close valid findings gate.
 - [x] Fix twentieth T2 migration-upgrade and duplicate explicit finding id findings locally.
-- [ ] Commit and push twentieth T2 fixes.
+- [x] Commit and push twentieth T2 fixes.
+- [x] Perform continued high-pressure coherence review before another same-tier review.
+- [x] Run fresh full-diff T2 on pushed head `941170e` and close valid findings gate.
+- [x] Fix twenty-first T2 readiness, latest-review, compatibility, worker-session, and finding-normalization findings locally.
+- [ ] Commit and push twenty-first T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** twentieth T2 fixes implemented locally with validation green; pending commit/push and T2 rerun.
+- **Status:** twenty-first T2 fixes implemented locally with validation green; pending commit/push and T2 rerun.
 
 ### High-Pressure Coherence Review
 
 - Full diff remains coherent for P3-002: the large changes are concentrated in the MCP worker server/test surface with small lifecycle/policy/planning support needed by the worker tools and resources.
 - The latest T2 findings are converging to narrow contract/idempotency hardening, not a design or scope problem, so continuing the mandated T2/GitHub loop is appropriate.
+- Before the next same-tier T2, the core approach is still right because the new fix set keeps the existing worker MCP architecture and only tightens policy evidence, session authorization, latest-review semantics, and retry normalization.
+- The current findings remain small edge-case hardening against the same P3-002 API surface rather than evidence of a broader design split, so continuing one more full-diff T2 is still coherent.
 
 ## Boundaries
 

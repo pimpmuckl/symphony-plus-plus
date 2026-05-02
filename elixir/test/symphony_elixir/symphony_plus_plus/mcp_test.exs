@@ -258,9 +258,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["blocker_id", "resolution", "summary", "idempotency_key"]
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "required"]) == ["url", "head_sha"]
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == "string"
-    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts", "reviews"]
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "type"]) == "array"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "head_sha", "type"]) == ["string", "null"]
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "acceptance_criteria_met", "type"]) == "boolean"
   end
 
   test "server rejects re-initialize after handshake", %{repo: repo} do
@@ -917,6 +918,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert replay_server.session.assignment.work_package_id == "SYMPP-WORKER-CLAIM"
   end
 
+  test "worker tools reject injected non-worker sessions", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-INJECTED-ARCHITECT", kind: "mcp"))
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id)
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "architect-write",
+          "method" => "tools/call",
+          "params" => %{"name" => "append_finding", "arguments" => %{"title" => "Architect", "body" => "Wrong role", "idempotency_key" => "architect"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "worker_grant_required"
+  end
+
   test "batch calls thread claim_work_key session to later worker tools", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BATCH-CLAIM", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -1064,6 +1089,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(finding_replay_response, ["result", "structuredContent", "finding", "id"]) ==
              get_in(finding_response, ["result", "structuredContent", "finding", "id"])
+
+    whitespace_finding_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "finding-whitespace",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_finding",
+            "arguments" => %{"title" => "Whitespace", "body" => "Trim idempotency", "idempotency_key" => " finding-space "}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    whitespace_replay_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "finding-whitespace-replay",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_finding",
+            "arguments" => %{"title" => "Whitespace", "body" => "Trim idempotency", "idempotency_key" => "finding-space"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(whitespace_replay_response, ["result", "structuredContent", "finding", "id"]) ==
+             get_in(whitespace_finding_response, ["result", "structuredContent", "finding", "id"])
 
     assert {:ok, second_minted} = AccessGrantService.mint_worker_grant(repo, own_package.id)
     assert {:ok, second_assignment} = AccessGrantService.claim(repo, second_minted.work_key.secret, claimed_by: "worker-2")
@@ -1441,13 +1499,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
-    assert get_in(headless_review_response, ["error", "data", "reason"]) == "missing_head_sha"
+    assert get_in(headless_review_response, ["result", "structuredContent", "progress_event", "payload", "head_sha"]) == "abc123"
+    assert get_in(headless_review_response, ["result", "structuredContent", "progress_event", "payload", "reviews"]) == [%{"lane" => "review_t1", "verdict" => "green"}]
+
+    missing_acceptance_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-missing-acceptance", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "acceptance_criteria_met" in get_in(missing_acceptance_response, ["error", "data", "missing"])
 
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Ready",
       "tests" => ["mix test", "review_t1 green", "review_t2 green"],
       "artifacts" => ["review-log.txt"],
       "head_sha" => "abc123",
+      "acceptance_criteria_met" => true,
       "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
     })
 
@@ -1473,6 +1542,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "tests" => ["mix test"],
               "artifacts" => ["review-log.txt"],
               "head_sha" => "abc123",
+              "acceptance_criteria_met" => true,
               "reviews" => [%{"lane" => 1, "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => nil}]
             }
           }
@@ -1542,6 +1612,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "tests" => ["mix test"],
               "artifacts" => ["review-log.txt"],
               "head_sha" => "abc123",
+              "acceptance_criteria_met" => true,
               "reviews" => %{"lane" => "review_t1", "verdict" => "green"}
             }
           }
@@ -1566,6 +1637,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "tests" => ["mix test"],
               "artifacts" => ["review-log.txt"],
               "head_sha" => "abc123",
+              "acceptance_criteria_met" => true,
               "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
             }
           }
@@ -1581,6 +1653,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "tests" => ["mix test"],
       "artifacts" => ["review-log.txt"],
       "head_sha" => "abc123",
+      "acceptance_criteria_met" => true,
       "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
     })
 
@@ -1603,6 +1676,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "tests" => ["mix test"],
       "artifacts" => ["review-log.txt"],
       "head_sha" => "abc123",
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+    })
+
+    latest_missing_lane_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-latest-missing-lane", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "review_lanes_complete" in get_in(latest_missing_lane_response, ["error", "data", "missing"])
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Latest review has findings",
+      "tests" => ["mix test"],
+      "artifacts" => ["review-log.txt"],
+      "head_sha" => "abc123",
+      "acceptance_criteria_met" => true,
       "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "findings"}]
     })
 
@@ -1630,6 +1722,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "tests" => ["mix test"],
               "artifacts" => ["review-log.txt"],
               "head_sha" => "abc123",
+              "acceptance_criteria_met" => true,
               "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
             }
           }
@@ -1654,6 +1747,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "tests" => ["mix test"],
       "artifacts" => ["review-log.txt"],
       "head_sha" => "def456",
+      "acceptance_criteria_met" => true,
       "reviews" => [%{"lane" => " review_t1 ", "verdict" => " green "}, %{"lane" => " review_t2 ", "verdict" => " green "}]
     })
 
@@ -1727,6 +1821,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "tests" => ["mix test"],
       "artifacts" => ["review-log.txt"],
       "head_sha" => "abc125",
+      "acceptance_criteria_met" => true,
       "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
     })
 
@@ -1862,6 +1957,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(ready_response, ["error", "data", "reason"]) == "readiness_failed"
 
     assert get_in(ready_response, ["error", "data", "missing"]) == [
+             "acceptance_criteria_met",
+             "tests_passed",
              "branch_attached",
              "pr_attached",
              "review_package_submitted",
@@ -1935,6 +2032,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "tests" => ["mix test"],
       "artifacts" => ["review-log.txt"],
       "head_sha" => "abc124",
+      "acceptance_criteria_met" => true,
       "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
     })
 
