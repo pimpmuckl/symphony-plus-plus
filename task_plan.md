@@ -110,10 +110,13 @@ Phase 3
 - [x] Commit and push twenty-third T2 fixes.
 - [x] Run fresh full-diff T2 on pushed head `3163976` and close valid findings gate.
 - [x] Fix twenty-fourth T2 test-entry, status-reason, progress-idempotency, and empty-plan findings locally.
-- [ ] Commit and push twenty-fourth T2 fixes.
+- [x] Commit and push twenty-fourth T2 fixes.
+- [x] Run fresh full-diff T2 on pushed head `0b8bbbf` and close valid findings gate.
+- [x] Fix twenty-fifth T2 status-reason validation, status-transition atomicity, expected-status race, and readiness race findings locally.
+- [ ] Commit and push twenty-fifth T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** twenty-fourth T2 fixes implemented locally with validation green; pending commit/push and T2 rerun.
+- **Status:** twenty-fifth T2 fixes implemented locally with validation green; pending commit/push and T2 rerun.
 
 ### High-Pressure Coherence Review
 
@@ -127,6 +130,8 @@ Phase 3
 - The latest findings are still confined to worker MCP reconnect and validation edge cases, so the loop is converging rather than revealing a package split.
 - Before the next T2, the core approach remains sound because the latest changes only align accepted inputs with readiness semantics and preserve documented audit context for the same worker MCP tools.
 - The findings continue to converge as contract-shape and retry-normalization edge cases, not a broader scope or architecture concern.
+- Before the next T2, the core approach remains coherent because the latest fix keeps the worker MCP lifecycle contract intact while moving status/reason/readiness writes into transactional checks.
+- Findings are still converging on small race and input-validation hardening around the same P3-002 tools, not showing a need to split or redesign the package.
 
 ## Boundaries
 

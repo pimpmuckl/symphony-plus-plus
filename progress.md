@@ -558,3 +558,23 @@
 ### Next Steps
 
 - Commit and push twenty-fourth T2 fixes, rerun full-diff T2, then proceed to GitHub review if clean.
+
+### Twenty-Fifth T2 Follow-up Actions
+
+- Pushed head `0b8bbbfcc88d7988b1388bc75bcbb260f432abb3` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T223850Z-5b69a018`; closed it as `findings`.
+- Fixed valid findings by rejecting non-string `set_status.reason` before side effects, running `set_status` reason persistence plus conditional lifecycle transition inside one worker transaction, adding a lifecycle transition entry point for already-fetched work-package snapshots, and rechecking readiness gates inside the `mark_ready` transaction before the ready transition.
+- High-pressure coherence check before the next same-tier T2: the core approach remains P3-002 worker MCP lifecycle hardening, and the current findings are still focused race/input-validation fixes rather than a design or scope problem.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after twenty-fifth T2 fixes. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs test/symphony_elixir/symphony_plus_plus/lifecycle_test.exs` | pass | 86 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 254 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+
+### Next Steps
+
+- Commit and push twenty-fifth T2 fixes, rerun full-diff T2, then proceed to GitHub review if clean.

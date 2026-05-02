@@ -19,11 +19,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service do
           {:ok, WorkPackage.t()} | {:error, error()}
   def transition(repo, work_package_id, next_status, actor)
       when is_atom(repo) and is_binary(work_package_id) and is_binary(next_status) and is_map(actor) do
-    with {:ok, work_package} <- Repository.get(repo, work_package_id),
-         {:ok, actor} <- verified_actor(repo, work_package, actor),
+    with {:ok, work_package} <- Repository.get(repo, work_package_id) do
+      transition(repo, work_package, next_status, actor)
+    end
+  end
+
+  @spec transition(Repository.repo(), WorkPackage.t(), String.t(), StateMachine.actor()) ::
+          {:ok, WorkPackage.t()} | {:error, error()}
+  def transition(repo, %WorkPackage{} = work_package, next_status, actor)
+      when is_atom(repo) and is_binary(next_status) and is_map(actor) do
+    with {:ok, actor} <- verified_actor(repo, work_package, actor),
          :ok <- StateMachine.validate_transition(work_package, next_status, actor) do
       # SYMPP-P1-005 owns durable transition event recording; keep this hook narrow.
-      Repository.update_status(repo, work_package_id, work_package.status, next_status)
+      Repository.update_status(repo, work_package.id, work_package.status, next_status)
     end
   end
 

@@ -726,6 +726,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "claimed_by"]) == "worker-1"
 
+    invalid_reason_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "invalid-status-reason",
+          "method" => "tools/call",
+          "params" => %{"name" => "set_status", "arguments" => %{"status" => "claimed", "expected_status" => "ready_for_worker", "reason" => 123}}
+        },
+        claimed_server
+      )
+
+    assert get_in(invalid_reason_response, ["error", "data", "reason"]) == "invalid_reason"
+    assert {:ok, unchanged_package} = WorkPackageRepository.get(repo, package.id)
+    assert unchanged_package.status == "ready_for_worker"
+
     status_response =
       Server.handle(
         %{

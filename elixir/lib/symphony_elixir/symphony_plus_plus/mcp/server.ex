@@ -785,15 +785,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
          {:ok, status} <- required_argument(arguments, "status"),
          {:ok, expected_status} <- required_argument(arguments, "expected_status"),
+         {:ok, reason} <- optional_reason(arguments),
          :ok <- reject_ready_status(status),
-         {:ok, state} <- PlanningRepository.get_state(config.repo, Session.work_package_id(session)),
-         :ok <- require_expected_status(state.work_package, expected_status),
-         {:ok, work_package} <-
-           LifecycleService.transition(config.repo, Session.work_package_id(session), status, actor(session)),
-         {:ok, _event} <- append_status_reason_event(config.repo, session, arguments, expected_status, status) do
+         {:ok, work_package} <- set_status_transaction(config.repo, session, expected_status, status, reason) do
       {:ok, tool_result(%{"work_package" => work_package_payload(work_package)})}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "set_status", "reason" => reason}}
+      {:error, _code, _message, _data} = error -> error
       {:error, reason} -> worker_error(reason, "set_status")
     end
   end
@@ -886,10 +884,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp worker_tool("mark_ready", _arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
          :ok <- require_worker_assignment(session.assignment),
-         {:ok, state} <- PlanningRepository.get_state(config.repo, Session.work_package_id(session)),
-         :ok <- readiness_gates(state),
-         ready_status <- terminal_ready_status(state.work_package),
-         {:ok, work_package} <- LifecycleService.transition(config.repo, state.work_package.id, ready_status, actor(session)) do
+         {:ok, work_package} <- mark_ready_transaction(config.repo, session) do
       {:ok, tool_result(%{"work_package" => work_package_payload(work_package), "ready" => true})}
     else
       {:error, {:readiness_failed, missing}} ->
@@ -908,6 +903,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_expected_status(%WorkPackage{status: expected_status}, expected_status), do: :ok
   defp require_expected_status(%WorkPackage{}, _expected_status), do: {:tool_error, "stale_status"}
+
+  defp set_status_transaction(repo, %Session{} = session, expected_status, status, reason) do
+    repo
+    |> run_worker_transaction(fn ->
+      with {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)),
+           :ok <- require_expected_status(state.work_package, expected_status),
+           {:ok, _event} <- append_status_reason_event(repo, session, expected_status, status, reason) do
+        LifecycleService.transition(repo, state.work_package, status, actor(session))
+      end
+    end)
+  end
+
+  defp mark_ready_transaction(repo, %Session{} = session) do
+    repo
+    |> run_worker_transaction(fn ->
+      with {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)),
+           :ok <- readiness_gates(state) do
+        ready_status = terminal_ready_status(state.work_package)
+        LifecycleService.transition(repo, state.work_package, ready_status, actor(session))
+      end
+    end)
+  end
+
+  defp run_worker_transaction(repo, fun) do
+    case repo.transaction(fn -> rollback_worker_transaction_result(repo, fun.()) end) do
+      {:ok, result} -> {:ok, result}
+      {:error, {:tool_error, reason}} -> {:tool_error, reason}
+      {:error, {:mcp_error, code, message, data}} -> {:error, code, message, data}
+      {:error, {:error, reason}} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp rollback_worker_transaction_result(_repo, {:ok, result}), do: result
+  defp rollback_worker_transaction_result(repo, {:tool_error, reason}), do: repo.rollback({:tool_error, reason})
+
+  defp rollback_worker_transaction_result(repo, {:error, code, message, data}) do
+    repo.rollback({:mcp_error, code, message, data})
+  end
+
+  defp rollback_worker_transaction_result(repo, {:error, reason}), do: repo.rollback({:error, reason})
 
   defp read_current_virtual_file(repo, session, file_name) do
     with {:ok, session} <- Auth.require_session(session, repo),
@@ -1187,26 +1223,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp append_status_reason_event(repo, %Session{} = session, arguments, expected_status, status) do
-    case optional_argument(arguments, "reason", nil) do
-      reason when is_binary(reason) ->
-        payload = %{"type" => "status_transition", "from_status" => expected_status, "to_status" => status}
+  defp append_status_reason_event(_repo, %Session{}, _expected_status, _status, nil), do: {:ok, nil}
 
-        append_scoped_progress(
-          repo,
-          session,
-          %{
-            "summary" => "Status changed to #{status}",
-            "body" => reason,
-            "status" => "status_changed",
-            "idempotency_key" => metadata_idempotency_key(Map.put(payload, "reason", reason))
-          },
-          "set_status",
-          payload
-        )
+  defp append_status_reason_event(repo, %Session{} = session, expected_status, status, reason) when is_binary(reason) do
+    payload = %{"type" => "status_transition", "from_status" => expected_status, "to_status" => status}
 
+    append_scoped_progress(
+      repo,
+      session,
+      %{
+        "summary" => "Status changed to #{status}",
+        "body" => reason,
+        "status" => "status_changed",
+        "idempotency_key" => metadata_idempotency_key(Map.put(payload, "reason", reason))
+      },
+      "set_status",
+      payload
+    )
+  end
+
+  defp optional_reason(arguments) do
+    case Map.get(arguments, "reason") do
       nil ->
         {:ok, nil}
+
+      reason when is_binary(reason) ->
+        case String.trim(reason) do
+          "" -> {:ok, nil}
+          trimmed -> {:ok, trimmed}
+        end
+
+      _reason ->
+        {:tool_error, "invalid_reason"}
     end
   end
 

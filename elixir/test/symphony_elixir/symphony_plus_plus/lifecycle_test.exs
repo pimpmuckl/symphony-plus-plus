@@ -318,6 +318,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     assert fetched.status == "ci_waiting"
   end
 
+  test "snapshot transitions fail when the stored status has changed", %{repo: repo} do
+    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix", status: "reviewing"))
+    actor = worker_actor!(repo, package)
+
+    assert {:ok, updated} = Repository.update_status(repo, package.id, "reviewing", "ci_waiting")
+    assert updated.status == "ci_waiting"
+
+    assert {:error, :stale_status} = Service.transition(repo, package, "ci_waiting", actor)
+    assert {:ok, fetched} = Repository.get(repo, package.id)
+    assert fetched.status == "ci_waiting"
+  end
+
   test "conditional status update rejects unknown statuses before writing", %{repo: repo} do
     assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix", status: "reviewing"))
 
