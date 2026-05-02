@@ -776,7 +776,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            "idempotency_key" => idempotency_key,
            "access_grant_id" => session.assignment.grant_id
          },
-         {:ok, finding} <- append_idempotent_finding(config.repo, Session.work_package_id(session), finding_id, attrs) do
+         {:ok, finding} <- append_authenticated_idempotent_finding(config.repo, session.assignment, Session.work_package_id(session), finding_id, attrs) do
       {:ok, tool_result(%{"finding" => %{"id" => finding.id, "title" => finding.title, "severity" => finding.severity}})}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "append_finding", "reason" => reason}}
@@ -990,7 +990,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp update_task_plan(repo, session, arguments) do
     with {:ok, expected_version} <- required_integer(arguments, "expected_version"),
          work_package_id = Session.work_package_id(session),
-         {:ok, plan_nodes, version} <- apply_plan_update(repo, work_package_id, expected_version, arguments) do
+         {:ok, plan_nodes, version} <-
+           apply_plan_update(repo, session.assignment, work_package_id, expected_version, arguments) do
       {:ok,
        tool_result(%{
          "plan_nodes" => Enum.map(plan_nodes, &plan_node_payload/1),
@@ -999,29 +1000,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp apply_plan_update(repo, work_package_id, expected_version, %{"patch" => patch}) when is_map(patch) do
-    transaction_plan_update(repo, work_package_id, expected_version, fn ->
+  defp apply_plan_update(repo, assignment, work_package_id, expected_version, %{"patch" => patch}) when is_map(patch) do
+    transaction_plan_update(repo, assignment, work_package_id, expected_version, fn ->
       apply_plan_patch(repo, work_package_id, patch)
     end)
   end
 
-  defp apply_plan_update(_repo, _work_package_id, _expected_version, %{"patch" => _patch}), do: {:tool_error, "invalid_patch"}
+  defp apply_plan_update(_repo, _assignment, _work_package_id, _expected_version, %{"patch" => _patch}) do
+    {:tool_error, "invalid_patch"}
+  end
 
-  defp apply_plan_update(repo, work_package_id, expected_version, arguments) do
-    transaction_plan_update(repo, work_package_id, expected_version, fn ->
+  defp apply_plan_update(repo, assignment, work_package_id, expected_version, arguments) do
+    transaction_plan_update(repo, assignment, work_package_id, expected_version, fn ->
       append_plan_node_from_arguments(repo, work_package_id, arguments)
     end)
   end
 
-  defp transaction_plan_update(repo, work_package_id, expected_version, update_fun) do
-    case repo.transaction(fn -> transaction_result(repo, work_package_id, expected_version, update_fun) end) do
+  defp transaction_plan_update(repo, assignment, work_package_id, expected_version, update_fun) do
+    transaction_fun = fn ->
+      transaction_result(repo, assignment, work_package_id, expected_version, update_fun)
+    end
+
+    case repo.transaction(transaction_fun) do
       {:ok, {plan_nodes, version}} -> {:ok, plan_nodes, version}
       {:error, reason} -> reason
     end
   end
 
-  defp transaction_result(repo, work_package_id, expected_version, update_fun) do
-    with {:ok, plan_nodes} <- PlanningRepository.list_plan_nodes(repo, work_package_id),
+  defp transaction_result(repo, assignment, work_package_id, expected_version, update_fun) do
+    with :ok <- PlanningService.require_valid_assignment(repo, assignment),
+         {:ok, plan_nodes} <- PlanningRepository.list_plan_nodes(repo, work_package_id),
          :ok <- require_plan_version(plan_nodes, expected_version),
          {:ok, updated_plan_nodes} <- transaction_result(repo, update_fun.()),
          {:ok, refreshed_plan_nodes} <- PlanningRepository.list_plan_nodes(repo, work_package_id) do
@@ -1135,19 +1143,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp timestamp_version_part(nil), do: nil
   defp timestamp_version_part(%DateTime{} = timestamp), do: DateTime.to_unix(timestamp, :microsecond)
 
-  defp append_idempotent_finding(repo, work_package_id, finding_id, attrs) do
-    case PlanningRepository.append_finding(repo, attrs) do
-      {:ok, finding} ->
-        {:ok, finding}
+  defp append_authenticated_idempotent_finding(repo, assignment, work_package_id, finding_id, attrs) do
+    transaction_fun = fn ->
+      append_authenticated_idempotent_finding_tx(repo, assignment, work_package_id, finding_id, attrs)
+    end
 
+    case run_worker_transaction(repo, transaction_fun) do
+      {:error, :finding_insert_conflict} ->
+        replay_finding_after_insert_conflict(repo, work_package_id, finding_id, attrs)
+
+      result ->
+        result
+    end
+  end
+
+  defp append_authenticated_idempotent_finding_tx(repo, assignment, work_package_id, finding_id, attrs) do
+    with :ok <- PlanningService.require_valid_assignment(repo, assignment),
+         {:error, :id_already_exists} <-
+           repo |> PlanningRepository.list_findings(work_package_id) |> find_existing_finding(finding_id, attrs),
+         {:error, :id_already_exists} <-
+           repo |> PlanningRepository.list_findings(work_package_id) |> find_existing_finding_by_idempotency(attrs) do
+      case PlanningRepository.append_finding(repo, attrs) do
+        {:ok, finding} ->
+          {:ok, finding}
+
+        {:error, reason} when reason in [:id_already_exists, :idempotency_key_conflict] ->
+          {:error, :finding_insert_conflict}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  defp replay_finding_after_insert_conflict(repo, work_package_id, finding_id, attrs) do
+    case find_existing_finding_with_retry(repo, work_package_id, finding_id, attrs, finding_replay_retry_attempts()) do
       {:error, :id_already_exists} ->
-        find_existing_finding_with_retry(repo, work_package_id, finding_id, attrs, finding_replay_retry_attempts())
-
-      {:error, :idempotency_key_conflict} ->
         find_existing_finding_by_idempotency_with_retry(repo, work_package_id, attrs, finding_replay_retry_attempts())
 
-      {:error, reason} ->
-        {:error, reason}
+      result ->
+        result
     end
   end
 
@@ -1265,6 +1300,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp append_status_reason_event(repo, %Session{} = session, expected_status, status, reason) when is_binary(reason) do
     payload = %{"type" => "status_transition", "from_status" => expected_status, "to_status" => status}
+    idempotency_payload = Map.put(payload, "reason_event_id", System.unique_integer([:positive, :monotonic]))
 
     append_scoped_progress(
       repo,
@@ -1273,7 +1309,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "summary" => "Status changed to #{status}",
         "body" => reason,
         "status" => "status_changed",
-        "idempotency_key" => metadata_idempotency_key(Map.put(payload, "reason", reason))
+        "idempotency_key" => metadata_idempotency_key(Map.put(idempotency_payload, "reason", reason))
       },
       "set_status",
       payload
@@ -1548,8 +1584,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     latest_verdicts =
       progress_events
-      |> latest_review_package_event(current_head_sha)
-      |> review_package_reviews(current_head_sha)
+      |> current_head_review_package_events(current_head_sha)
+      |> Enum.flat_map(&review_package_reviews(&1, current_head_sha))
       |> Enum.reduce(%{}, fn review, verdicts -> Map.put(verdicts, Map.get(review, "lane"), Map.get(review, "verdict")) end)
 
     Enum.all?(required_lanes, fn lane ->
@@ -1574,10 +1610,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp latest_review_package_event(progress_events, current_head_sha) do
     progress_events
-    |> Enum.filter(&payload_type?(&1, "review_package", "submit_review_package"))
+    |> current_head_review_package_events(current_head_sha)
     |> Enum.reverse()
     |> Enum.find(fn event -> review_package_artifact_paths(event, current_head_sha) != [] end)
   end
+
+  defp current_head_review_package_events(progress_events, current_head_sha) do
+    Enum.filter(progress_events, fn event ->
+      payload_type?(event, "review_package", "submit_review_package") and current_head_review_package?(event, current_head_sha)
+    end)
+  end
+
+  defp current_head_review_package?(%ProgressEvent{payload: payload}, nil) when is_map(payload), do: true
+
+  defp current_head_review_package?(%ProgressEvent{payload: payload}, current_head_sha) when is_map(payload) do
+    Map.get(payload, "head_sha") == current_head_sha
+  end
+
+  defp current_head_review_package?(%ProgressEvent{}, _current_head_sha), do: false
 
   defp review_package_artifact_paths(%ProgressEvent{payload: payload}, current_head_sha) when is_map(payload) do
     artifacts = Map.get(payload, "artifacts")

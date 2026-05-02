@@ -69,6 +69,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Service do
     {:error, :unauthenticated}
   end
 
+  @spec require_valid_assignment(Repository.repo(), Assignment.t()) :: :ok | {:error, error()}
+  def require_valid_assignment(repo, %Assignment{} = assignment) when is_atom(repo) do
+    lock_valid_assignment(repo, assignment)
+  end
+
+  def require_valid_assignment(repo, _assignment) when is_atom(repo), do: {:error, :unauthenticated}
+
   @spec append_artifact(Repository.repo(), map()) :: {:ok, Artifact.t()} | {:error, error()}
   def append_artifact(repo, attrs), do: Repository.append_artifact(repo, attrs)
 

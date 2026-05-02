@@ -811,6 +811,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "claimed_by"]) == "worker-1"
   end
 
+  test "set_status records repeated matching reason audit events", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STATUS-REASON-REPEAT", kind: "mcp", status: "planning"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    block_args = %{"status" => "blocked", "expected_status" => "planning", "reason" => "Waiting on dependency"}
+
+    first_block_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "blocked-1", "method" => "tools/call", "params" => %{"name" => "set_status", "arguments" => block_args}},
+        repo: repo,
+        session: session
+      )
+
+    planning_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "planning",
+          "method" => "tools/call",
+          "params" => %{"name" => "set_status", "arguments" => %{"status" => "planning", "expected_status" => "blocked"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    second_block_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "blocked-2", "method" => "tools/call", "params" => %{"name" => "set_status", "arguments" => block_args}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(first_block_response, ["result", "structuredContent", "work_package", "status"]) == "blocked"
+    assert get_in(planning_response, ["result", "structuredContent", "work_package", "status"]) == "planning"
+    assert get_in(second_block_response, ["result", "structuredContent", "work_package", "status"]) == "blocked"
+    assert {:ok, status_events} = PlanningRepository.list_progress_events(repo, package.id)
+
+    assert status_events
+           |> Enum.filter(&(&1.body == "Waiting on dependency" and &1.payload["type"] == "status_transition"))
+           |> length() == 2
+  end
+
   test "response-only handle preserves initialized state for sequential calls", %{repo: repo} do
     server = Server.new(Config.default(repo: repo))
 
@@ -1730,6 +1774,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert "review_lanes_complete" in get_in(missing_review_lanes_response, ["error", "data", "missing"])
 
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready after T2",
+      "tests" => ["mix test", "review_t2 green"],
+      "artifacts" => ["review-log.txt"],
+      "head_sha" => "abc123",
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t2", "verdict" => "green"}]
+    })
+
+    incremental_review_lanes_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-incremental-review-lanes", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    incremental_missing = get_in(incremental_review_lanes_response, ["error", "data", "missing"])
+    refute "review_lanes_complete" in incremental_missing
+    assert "plan_complete" in incremental_missing
+
     malformed_review_response =
       MCPHarness.request(
         %{
@@ -1935,7 +1999,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
-    assert "review_lanes_complete" in get_in(latest_missing_lane_response, ["error", "data", "missing"])
+    latest_missing_lane_missing = get_in(latest_missing_lane_response, ["error", "data", "missing"])
+    refute "review_lanes_complete" in latest_missing_lane_missing
+    assert "plan_complete" in latest_missing_lane_missing
 
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Latest review has findings",
