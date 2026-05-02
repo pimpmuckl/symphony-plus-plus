@@ -687,4 +687,4 @@
 
 ### Next Steps
 
-- Commit and push thirtieth T2 fix, rerun full-diff T2, then proceed to GitHub review if clean.
+- Pushed thirtieth T2 fix head `c20e006fd5c18d398a543b6042b4504534283d8a`; rerun full-diff T2, then proceed to GitHub review if clean.

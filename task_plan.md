@@ -128,10 +128,10 @@ Phase 3
 - [x] Commit and push twenty-ninth T2 fixes.
 - [x] Run fresh full-diff T2 on pushed head `c234740` and close valid findings gate.
 - [x] Fix thirtieth T2 worker tool notification dispatch finding locally.
-- [ ] Commit and push thirtieth T2 fix.
+- [x] Commit and push thirtieth T2 fix.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** thirtieth T2 fix validated locally; pending commit/push, fresh full-diff T2 rerun, and GitHub review if clean.
+- **Status:** thirtieth T2 fix pushed; pending fresh full-diff T2 rerun and GitHub review if clean.
 
 ### High-Pressure Coherence Review
 
