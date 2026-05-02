@@ -583,8 +583,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, secret} <- required_argument(arguments, "secret"),
          claimed_by <- optional_argument(arguments, "claimed_by", "worker"),
          proof_hash = WorkKey.secret_hash(secret),
-         {:ok, assignment} <- AccessGrantService.claim(config.repo, secret, claimed_by: claimed_by),
-         {:ok, session} <- Session.from_grant(live_grant!(config.repo, assignment.grant_id), DateTime.utc_now(:microsecond), proof_hash: proof_hash) do
+         {:ok, assignment} <- AccessGrantService.claim(config.repo, secret, claimed_by: claimed_by) do
+      session = Session.new(assignment, proof_hash: proof_hash)
       {:ok, %{"assignment" => Session.public_assignment(session)}, session}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "claim_work_key", "reason" => reason}}
@@ -592,11 +592,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   rescue
     _error -> {:error, -32_000, "Server error", %{"tool" => "claim_work_key", "reason" => "ledger_unavailable"}}
-  end
-
-  defp live_grant!(repo, grant_id) do
-    {:ok, grant} = SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository.get(repo, grant_id)
-    grant
   end
 
   defp worker_tool("get_current_assignment", _arguments, %__MODULE__{config: config, session: session}) do
@@ -802,6 +797,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end)
   end
 
+  defp apply_plan_update(_repo, _work_package_id, _expected_version, %{"patch" => _patch}), do: {:tool_error, "invalid_patch"}
+
   defp apply_plan_update(repo, work_package_id, expected_version, arguments) do
     transaction_plan_update(repo, work_package_id, expected_version, fn ->
       append_plan_node_from_arguments(repo, work_package_id, arguments)
@@ -962,7 +959,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     arguments =
       Map.put_new(arguments, "summary", status)
       |> Map.put_new("status", status)
-      |> Map.put_new("idempotency_key", metadata_idempotency_key(payload))
+      |> Map.put("idempotency_key", metadata_idempotency_key(payload))
 
     append_scoped_progress(repo, session, arguments, tool, payload)
   end
@@ -981,6 +978,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       |> maybe_missing(review_required? and not metadata_present?(state.progress_events, "review_package"), "review_package_submitted")
       |> maybe_missing(review_required? and not review_lanes_present?(state.progress_events, required_review_lanes), "review_lanes_complete")
       |> maybe_missing(state.work_package.kind == "investigation" and state.findings == [], "findings_documented")
+      |> maybe_missing(state.work_package.kind == "investigation" and not recommendation_recorded?(state.progress_events), "recommendation_recorded")
 
     if missing == [], do: :ok, else: {:error, {:readiness_failed, Enum.reverse(missing)}}
   end
@@ -1085,6 +1083,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp pr_required?(%WorkPackage{}), do: true
 
   defp metadata_present?(progress_events, type), do: Enum.any?(progress_events, &payload_type?(&1, type, metadata_tool(type)))
+
+  defp recommendation_recorded?(progress_events), do: Enum.any?(progress_events, &payload_type?(&1, "scope_expansion_request", "request_scope_expansion"))
 
   defp metadata_tool("branch"), do: "attach_branch"
   defp metadata_tool("pr"), do: "attach_pr"

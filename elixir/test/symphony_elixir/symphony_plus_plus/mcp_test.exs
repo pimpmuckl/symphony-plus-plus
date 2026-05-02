@@ -936,6 +936,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(malformed_patch_response, ["error", "data", "reason"]) == "invalid_patch_node"
 
+    malformed_patch_shape_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "malformed-patch-shape-plan",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "update_task_plan",
+            "arguments" => %{"expected_version" => version, "patch" => "bad", "title" => "Do not append"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(malformed_patch_shape_response, ["error", "data", "reason"]) == "invalid_patch"
+    assert {:ok, unchanged_after_bad_patch} = PlanningRepository.list_plan_nodes(repo, package.id)
+    assert length(unchanged_after_bad_patch) == 2
+
     malformed_id_response =
       MCPHarness.request(
         %{
@@ -1025,6 +1044,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, unchanged_package} = WorkPackageRepository.get(repo, package.id)
     assert unchanged_package.status == "ci_waiting"
 
+    attach_tool(repo, session, "append_progress", %{"summary" => "Shared key baseline", "idempotency_key" => "shared-metadata-key"})
+
     missing_head_response =
       MCPHarness.request(
         %{
@@ -1039,7 +1060,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(missing_head_response, ["error", "data", "reason"]) == "missing_head_sha"
 
-    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-GATES/worker"})
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-GATES/worker", "idempotency_key" => "shared-metadata-key"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => "abc123"})
 
     attach_tool(repo, session, "submit_review_package", %{"summary" => "Ready", "tests" => ["mix test", "review_t1 green", "review_t2 green"], "artifacts" => []})
@@ -1206,6 +1227,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(finding_response, ["result", "structuredContent", "finding", "title"]) == "Recommendation"
+
+    missing_recommendation_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-missing-recommendation", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "recommendation_recorded" in get_in(missing_recommendation_response, ["error", "data", "missing"])
+
+    attach_tool(repo, session, "request_scope_expansion", %{
+      "summary" => "No scope expansion needed",
+      "body" => "Recommendation recorded for the investigation package.",
+      "idempotency_key" => "investigation-recommendation"
+    })
 
     ready_response =
       MCPHarness.request(
