@@ -255,6 +255,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "required"]) == ["url"]
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == ["string", "null"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests"]
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "type"]) == "array"
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "head_sha", "type"]) == ["string", "null"]
   end
 
   test "server rejects re-initialize after handshake", %{repo: repo} do
@@ -933,6 +935,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(malformed_patch_response, ["error", "data", "reason"]) == "invalid_patch_node"
 
+    malformed_id_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "malformed-id-patch-plan",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "update_task_plan",
+            "arguments" => %{"expected_version" => version, "patch" => %{"nodes" => [%{"id" => 123, "title" => "Duplicate"}]}}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(malformed_id_response, ["error", "data", "reason"]) == "invalid_patch_node"
+    assert {:ok, unchanged_after_bad_id} = PlanningRepository.list_plan_nodes(repo, package.id)
+    assert length(unchanged_after_bad_id) == 2
+
     patch_response =
       MCPHarness.request(
         %{
@@ -1021,6 +1042,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "summary" => "Ready",
       "tests" => ["mix test"],
       "artifacts" => [],
+      "head_sha" => "abc123",
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
+
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => "def456"})
+
+    stale_review_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-stale-review", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "review_lanes_complete" in get_in(stale_review_response, ["error", "data", "missing"])
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready",
+      "tests" => ["mix test"],
+      "artifacts" => [],
+      "head_sha" => "def456",
       "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
     })
 
@@ -1071,6 +1112,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "summary" => "Ready",
       "tests" => ["mix test"],
       "artifacts" => [],
+      "head_sha" => "abc125",
       "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
     })
 
@@ -1261,6 +1303,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "summary" => "Ready",
       "tests" => ["mix test"],
       "artifacts" => [],
+      "head_sha" => "abc124",
       "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
     })
 

@@ -46,9 +46,12 @@ Phase 3
 - [x] Fix second T2 findings locally.
 - [x] Fix third T2 readiness/status, structured review, atomicity, and storage-error findings locally.
 - [x] Commit and push latest T2 fixes.
+- [x] Run fresh full-diff T2 on `55748aa`/takeover head and close valid findings gate.
+- [x] Fix fourth T2 schema, malformed patch id, and stale review-head findings locally.
+- [ ] Commit and push fourth T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** latest T2 fixes are committed/pushed at `55748aa`; review-state recommends a fresh full-diff T2 on the current head.
+- **Status:** fourth T2 fixes implemented locally with focused validation green; pending commit/push and T2 rerun.
 
 ## Boundaries
 

@@ -114,3 +114,25 @@
 ### Next Steps
 
 - Run `review_t2.py --base symphony-plus-plus/beta` and handle the result.
+
+### T2 Follow-up Actions
+
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T190153Z-5b4edd37`; closed it as `findings`.
+- Fixed valid T2 findings by adding `reviews` and `head_sha` to the `submit_review_package` input schema and persisted review package payload.
+- Fixed malformed task-plan patch ids so any patch entry with a non-string `id` returns `invalid_patch_node` instead of falling through to append-node behavior.
+- Fixed stale review readiness by requiring review package evidence to match the latest attached PR `head_sha` when a current head is known.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after fourth T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 52 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 246 tests, 0 failures. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit and push fourth T2 fixes, rerun T2, then proceed to GitHub review if clean.

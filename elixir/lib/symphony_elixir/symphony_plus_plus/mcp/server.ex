@@ -451,7 +451,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool_input_schema("submit_review_package") do
-    schema(metadata_properties(%{"summary" => string_schema(), "tests" => array_schema(), "artifacts" => array_schema()}), ["summary", "tests"])
+    schema(
+      metadata_properties(%{
+        "summary" => string_schema(),
+        "tests" => array_schema(),
+        "artifacts" => array_schema(),
+        "reviews" => array_schema(),
+        "head_sha" => nullable_string_schema()
+      }),
+      ["summary", "tests"]
+    )
   end
 
   defp schema(properties, required) do
@@ -711,7 +720,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "summary" => summary,
         "tests" => tests,
         "artifacts" => optional_list(arguments, "artifacts"),
-        "reviews" => optional_list(arguments, "reviews")
+        "reviews" => optional_list(arguments, "reviews"),
+        "head_sha" => optional_argument(arguments, "head_sha", nil)
       })
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "submit_review_package", "reason" => reason}}
@@ -870,6 +880,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp apply_plan_node_patch(_repo, _work_package_id, %{"id" => _id}), do: {:tool_error, "invalid_patch_node"}
+
   defp apply_plan_node_patch(repo, work_package_id, attrs) when is_map(attrs) do
     with {:ok, title} <- required_argument(attrs, "title") do
       PlanningRepository.append_plan_node(repo, %{
@@ -983,17 +995,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp review_lanes_present?(_progress_events, []), do: true
 
   defp review_lanes_present?(progress_events, required_lanes) do
+    current_head_sha = latest_pr_head_sha(progress_events)
+
     review_evidence =
       progress_events
       |> Enum.filter(&payload_type?(&1, "review_package", "submit_review_package"))
-      |> Enum.flat_map(&review_package_reviews/1)
+      |> Enum.flat_map(&review_package_reviews(&1, current_head_sha))
 
     Enum.all?(required_lanes, fn lane ->
       Enum.any?(review_evidence, &(Map.get(&1, "lane") == lane and Map.get(&1, "verdict") == "green"))
     end)
   end
 
-  defp review_package_reviews(%ProgressEvent{payload: %{"reviews" => reviews}}) when is_list(reviews) do
+  defp review_package_reviews(%ProgressEvent{payload: payload}, current_head_sha) when is_map(payload) do
+    reviews = Map.get(payload, "reviews")
+
+    cond do
+      not is_list(reviews) ->
+        []
+
+      current_head_sha != nil and Map.get(payload, "head_sha") != current_head_sha ->
+        []
+
+      true ->
+        normalize_review_entries(reviews)
+    end
+  end
+
+  defp review_package_reviews(%ProgressEvent{}, _current_head_sha), do: []
+
+  defp normalize_review_entries(reviews) do
     reviews
     |> Enum.filter(&is_map/1)
     |> Enum.map(fn review ->
@@ -1004,7 +1035,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end)
   end
 
-  defp review_package_reviews(%ProgressEvent{}), do: []
+  defp latest_pr_head_sha(progress_events) do
+    progress_events
+    |> Enum.filter(&payload_type?(&1, "pr", "attach_pr"))
+    |> Enum.reverse()
+    |> Enum.find_value(fn %ProgressEvent{payload: payload} ->
+      case Map.get(payload || %{}, "head_sha") do
+        head_sha when is_binary(head_sha) and head_sha != "" -> head_sha
+        _ -> nil
+      end
+    end)
+  end
 
   defp active_blocker?(progress_events) do
     progress_events

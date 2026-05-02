@@ -52,3 +52,5 @@
 - The handoff's dirty `server.ex` change is no longer dirty in this worktree; it was committed and pushed as `55748aa` (`fix(mcp): tighten worker readiness gates`).
 - `review-state` on `55748aa` recommends a fresh full-diff `review_t2` because the current branch has exceeded the narrow follow-up churn threshold.
 - PR #15 currently has no GitHub comments, reviews, or status checks reported by `gh pr view`.
+- Fresh T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T190153Z-5b4edd37` produced valid findings: `submit_review_package` schema omitted required `reviews` evidence, malformed patch ids could append duplicate nodes, and review readiness was not tied to the latest attached PR head.
+- Fourth T2 fix keeps scope inside P3-002: advertise `reviews`/`head_sha`, reject non-string patch ids with `invalid_patch_node`, and accept review-lane evidence only for the latest attached PR `head_sha` when one is known.
