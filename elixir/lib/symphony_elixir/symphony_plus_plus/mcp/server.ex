@@ -670,9 +670,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          claimed_by <- optional_argument(arguments, "claimed_by", "worker"),
          proof_hash = WorkKey.secret_hash(secret),
          :ok <- require_worker_secret(config.repo, secret),
-         {:ok, assignment} <- AccessGrantService.claim(config.repo, secret, claimed_by: claimed_by),
-         :ok <- require_worker_assignment(assignment) do
-      session = Session.new(assignment, proof_hash: proof_hash)
+         {:ok, session} <- claim_or_reconnect_worker_session(config.repo, secret, proof_hash, claimed_by) do
       {:ok, %{"assignment" => Session.public_assignment(session)}, session}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "claim_work_key", "reason" => reason}}
@@ -684,6 +682,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp revalidate_worker_session(repo, %Session{} = session, proof_hash) do
     with {:ok, grant} <- AccessGrantRepository.get(repo, session.assignment.grant_id),
+         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash),
+         :ok <- require_worker_assignment(session.assignment) do
+      {:ok, session}
+    end
+  end
+
+  defp claim_or_reconnect_worker_session(repo, secret, proof_hash, claimed_by) do
+    case AccessGrantService.claim(repo, secret, claimed_by: claimed_by) do
+      {:ok, assignment} ->
+        with :ok <- require_worker_assignment(assignment) do
+          {:ok, Session.new(assignment, proof_hash: proof_hash)}
+        end
+
+      {:error, :already_claimed} ->
+        reconnect_claimed_worker_session(repo, proof_hash)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp reconnect_claimed_worker_session(repo, proof_hash) do
+    with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, proof_hash),
          {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash),
          :ok <- require_worker_assignment(session.assignment) do
       {:ok, session}
@@ -709,9 +730,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp claim_error(reason), do: {:error, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => reason_text(reason)}}
 
   defp worker_tool("get_current_assignment", _arguments, %__MODULE__{config: config, session: session}) do
-    case Auth.require_session(session, config.repo) do
-      {:ok, session} -> {:ok, tool_result(%{"assignment" => Session.public_assignment(session)})}
-      {:error, reason} -> auth_error(reason, "get_current_assignment")
+    with {:ok, session} <- Auth.require_session(session, config.repo),
+         :ok <- require_worker_assignment(session.assignment) do
+      {:ok, tool_result(%{"assignment" => Session.public_assignment(session)})}
+    else
+      {:error, reason} -> worker_error(reason, "get_current_assignment")
     end
   end
 
@@ -838,6 +861,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, artifacts} <- required_string_list(arguments, "artifacts"),
          artifacts = Enum.uniq(artifacts),
          {:ok, reviews} <- optional_review_list(arguments, "reviews"),
+         {:ok, acceptance_criteria_met} <- optional_boolean(arguments, "acceptance_criteria_met", false),
          {:ok, state} <- PlanningRepository.get_state(config.repo, Session.work_package_id(session)),
          {:ok, head_sha} <- review_package_head_sha(arguments, state.progress_events),
          {:ok, result} <-
@@ -848,7 +872,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              "artifacts" => artifacts,
              "reviews" => reviews,
              "head_sha" => head_sha,
-             "acceptance_criteria_met" => optional_boolean(arguments, "acceptance_criteria_met", false)
+             "acceptance_criteria_met" => acceptance_criteria_met
            }) do
       {:ok, result}
     else
@@ -1684,14 +1708,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp optional_review_list(arguments, key) do
     case Map.get(arguments, key) do
       nil -> {:ok, []}
+      [] -> {:ok, []}
       _reviews -> required_review_list(arguments, key)
     end
   end
 
   defp optional_boolean(arguments, key, default) do
-    case Map.get(arguments, key, default) do
-      value when is_boolean(value) -> value
-      _value -> default
+    case Map.fetch(arguments, key) do
+      {:ok, value} when is_boolean(value) -> {:ok, value}
+      {:ok, _value} -> {:tool_error, "invalid_#{key}"}
+      :error -> {:ok, default}
     end
   end
 

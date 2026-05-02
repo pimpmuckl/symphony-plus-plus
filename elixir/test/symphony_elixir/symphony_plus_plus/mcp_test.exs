@@ -715,9 +715,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         server
       )
 
-    assert get_in(retry_claim_response, ["error", "code"]) == -32_001
-    assert get_in(retry_claim_response, ["error", "data", "reason"]) == "already_claimed"
-    assert retry_claimed_server.session == nil
+    assert get_in(retry_claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-P3-002"
+    assert retry_claimed_server.session.assignment.work_package_id == "SYMPP-P3-002"
 
     assignment_response =
       Server.handle(
@@ -954,6 +953,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(response, ["error", "data", "reason"]) == "worker_grant_required"
+
+    assignment_tool_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "architect-assignment-tool", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(assignment_tool_response, ["error", "data", "reason"]) == "worker_grant_required"
 
     read_tool_response =
       MCPHarness.request(
@@ -1537,7 +1545,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "summary" => "Headless review",
               "tests" => ["mix test"],
               "artifacts" => ["review-log.txt"],
-              "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+              "reviews" => []
             }
           }
         },
@@ -1546,7 +1554,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(headless_review_response, ["result", "structuredContent", "progress_event", "payload", "head_sha"]) == "abc123"
-    assert get_in(headless_review_response, ["result", "structuredContent", "progress_event", "payload", "reviews"]) == [%{"lane" => "review_t1", "verdict" => "green"}]
+    assert get_in(headless_review_response, ["result", "structuredContent", "progress_event", "payload", "reviews"]) == []
 
     missing_acceptance_response =
       MCPHarness.request(
@@ -1668,6 +1676,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(malformed_reviews_response, ["error", "data", "reason"]) == "invalid_reviews"
+
+    invalid_acceptance_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "invalid-acceptance",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "submit_review_package",
+            "arguments" => %{
+              "summary" => "Invalid acceptance",
+              "tests" => ["mix test"],
+              "artifacts" => ["review-log.txt"],
+              "head_sha" => "abc123",
+              "acceptance_criteria_met" => "true",
+              "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(invalid_acceptance_response, ["error", "data", "reason"]) == "invalid_acceptance_criteria_met"
 
     sibling_review_response =
       MCPHarness.request(
