@@ -490,4 +490,4 @@
 
 ### Next Steps
 
-- Commit and push twenty-first T2 fixes, rerun full-diff T2, then proceed to GitHub review if clean.
+- Pushed code fix head `88f2df8bc4ad9bef8e8c21761b93557e1b04a00d`; commit this planning correction, rerun full-diff T2, then proceed to GitHub review if clean.

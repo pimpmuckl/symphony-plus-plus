@@ -101,10 +101,10 @@ Phase 3
 - [x] Perform continued high-pressure coherence review before another same-tier review.
 - [x] Run fresh full-diff T2 on pushed head `941170e` and close valid findings gate.
 - [x] Fix twenty-first T2 readiness, latest-review, compatibility, worker-session, and finding-normalization findings locally.
-- [ ] Commit and push twenty-first T2 fixes.
+- [x] Commit and push twenty-first T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** twenty-first T2 fixes implemented locally with validation green; pending commit/push and T2 rerun.
+- **Status:** twenty-first T2 fixes committed and pushed; pending fresh full-diff T2 rerun.
 
 ### High-Pressure Coherence Review
 
