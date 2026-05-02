@@ -31,6 +31,10 @@
 - Ran T1 follow-up against `aabc18ac5b05acab1d99bfc19c14a9876e6e62f3`; result was no findings.
 - Ran T2 signoff round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T182237Z-4eae1633`; closed the gate as `findings`.
 - Fixed valid T2 findings locally: plan patch/update with expected version, blocker resolution, non-empty review package evidence, idempotent findings, investigation readiness without PR/review metadata, and policy templates for `mcp`/`skill`/`hooks`.
+- Fixed second T2 findings locally: every `update_task_plan` path now requires `expected_version`, task-plan writes run in a repository transaction, multi-node patches roll back atomically on failure, and `mark_ready` enforces policy-required review lanes.
+- Committed and pushed second T2 fix as `9c9e8407fc8ef6f11522712fdf1110a610d41515`.
+- Ran T2 signoff round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T184659Z-7c945536`; closed the gate as `findings`.
+- Fixed third T2 findings locally: `set_status` rejects ready-state bypasses, review readiness checks structured review entries only, malformed plan patch nodes return `invalid_patch_node`, plan-version checks happen inside the task-plan transaction, and storage/transaction failures map to service errors.
 
 ### Validation Results
 
@@ -84,7 +88,16 @@
 | `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | After second T2 fixes: 246 tests, 0 failures. |
 | `mise exec -- mix specs.check` | pass | After second T2 fixes: all public functions have specs or exemption. |
 | `mise exec -- mix credo --strict` | pass | After second T2 fixes: no issues. |
+| `review_t2.py --base symphony-plus-plus/beta ...` | findings | Round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T184659Z-7c945536`; valid findings for ready status bypass, free-text review evidence, malformed patch crashes, transaction atomicity, and storage-error classification. |
+| `review_suite_arena.py close-gate --round-id phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T184659Z-7c945536 --verdict findings` | pass | T2 gate closed as findings; not anchored. |
+| `mise exec -- mix format` | pass | After third T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs test/symphony_elixir/symphony_plus_plus/lifecycle_test.exs test/symphony_elixir/symphony_plus_plus/planning_test.exs` | pass | After third T2 fixes: 109 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | After third T2 fixes: 246 tests, 0 failures. |
+| `mise exec -- mix specs.check` | pass | After third T2 fixes: all public functions have specs or exemption. |
+| `mise exec -- mix format --check-formatted` | pass | After third T2 fixes. |
+| `mise exec -- mix credo --strict` | pass | After third T2 fixes: no issues. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | Final focused rerun after Credo cleanup: 52 tests, 0 failures. |
 
 ### Next Steps
 
-- Commit and push second T2 fixes, then run T2 follow-up/full T2 until green and GitHub review.
+- Commit and push latest T2 fixes, then run T2 follow-up/full T2 until green and GitHub review.

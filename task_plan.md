@@ -44,10 +44,11 @@ Phase 3
 - [x] Commit and push first T2 fixes.
 - [x] Run fresh T2 and close findings gate for plan atomicity/review-gate findings.
 - [x] Fix second T2 findings locally.
-- [ ] Commit and push second T2 fixes.
+- [x] Fix third T2 readiness/status, structured review, atomicity, and storage-error findings locally.
+- [ ] Commit and push latest T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** second T2 fixes implemented locally; validation green; pending commit/push and T2 rerun.
+- **Status:** latest T2 fixes implemented locally; validation green; pending commit/push and T2 rerun.
 
 ## Boundaries
 

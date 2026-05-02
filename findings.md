@@ -42,3 +42,7 @@
 - Second T2 found every `update_task_plan` write path must require `expected_version`; append-style node creation now also goes through version checking.
 - Second T2 found multi-node plan patches must be atomic; patch application now runs inside a repo transaction and rolls back on any failed node.
 - Second T2 found `mark_ready` must enforce required review lanes from policy templates, not only the presence of arbitrary review metadata.
+- Third T2 found `set_status` must not bypass readiness gates by transitioning directly to ready statuses; ready transitions now require `mark_ready`.
+- Third T2 found review-lane readiness evidence must be structured review entries, not arbitrary free text in summary/tests/artifacts.
+- Third T2 found malformed plan patch nodes must return tool errors instead of crashing during transaction rollback.
+- Third T2 found storage/transaction failure classes should surface as MCP service errors rather than invalid user params.

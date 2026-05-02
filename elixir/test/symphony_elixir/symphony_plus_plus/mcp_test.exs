@@ -916,6 +916,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, unchanged_nodes} = PlanningRepository.list_plan_nodes(repo, package.id)
     assert Enum.find(unchanged_nodes, &(&1.id == plan_node.id)).status == "pending"
 
+    malformed_patch_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "malformed-patch-plan",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "update_task_plan",
+            "arguments" => %{"expected_version" => version, "patch" => %{"nodes" => ["bad"]}}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(malformed_patch_response, ["error", "data", "reason"]) == "invalid_patch_node"
+
     patch_response =
       MCPHarness.request(
         %{
@@ -970,10 +987,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(missing_response, ["error", "data", "reason"]) == "readiness_failed"
     assert "pr_attached" in get_in(missing_response, ["error", "data", "missing"])
 
+    bypass_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "ready-bypass",
+          "method" => "tools/call",
+          "params" => %{"name" => "set_status", "arguments" => %{"status" => "ready_for_human_merge"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(bypass_response, ["error", "data", "reason"]) == "use_mark_ready"
+    assert {:ok, unchanged_package} = WorkPackageRepository.get(repo, package.id)
+    assert unchanged_package.status == "ci_waiting"
+
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-GATES/worker"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => "abc123"})
 
-    attach_tool(repo, session, "submit_review_package", %{"summary" => "Ready", "tests" => ["mix test"], "artifacts" => []})
+    attach_tool(repo, session, "submit_review_package", %{"summary" => "Ready", "tests" => ["mix test", "review_t1 green", "review_t2 green"], "artifacts" => []})
 
     missing_review_lanes_response =
       MCPHarness.request(
@@ -984,7 +1017,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert "review_lanes_complete" in get_in(missing_review_lanes_response, ["error", "data", "missing"])
 
-    attach_tool(repo, session, "submit_review_package", %{"summary" => "Ready", "tests" => ["mix test", "review_t1 green", "review_t2 green"], "artifacts" => []})
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready",
+      "tests" => ["mix test"],
+      "artifacts" => [],
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
 
     ready_response =
       MCPHarness.request(
@@ -1028,7 +1066,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-BLOCKER/worker"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/125", "head_sha" => "abc125"})
-    attach_tool(repo, session, "submit_review_package", %{"summary" => "Ready", "tests" => ["mix test", "review_t1 green", "review_t2 green"], "artifacts" => []})
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready",
+      "tests" => ["mix test"],
+      "artifacts" => [],
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
 
     blocked_response =
       MCPHarness.request(
@@ -1212,7 +1256,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-CAP/worker"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/124", "head_sha" => "abc124"})
-    attach_tool(repo, session, "submit_review_package", %{"summary" => "Ready", "tests" => ["mix test", "review_t1 green", "review_t2 green"], "artifacts" => []})
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready",
+      "tests" => ["mix test"],
+      "artifacts" => [],
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
 
     response =
       MCPHarness.request(

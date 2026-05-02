@@ -640,6 +640,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp worker_tool("set_status", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
          {:ok, status} <- required_argument(arguments, "status"),
+         :ok <- reject_ready_status(status),
          {:ok, work_package} <-
            LifecycleService.transition(config.repo, Session.work_package_id(session), status, actor(session)) do
       {:ok, tool_result(%{"work_package" => work_package_payload(work_package)})}
@@ -709,7 +710,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "type" => "review_package",
         "summary" => summary,
         "tests" => tests,
-        "artifacts" => optional_list(arguments, "artifacts")
+        "artifacts" => optional_list(arguments, "artifacts"),
+        "reviews" => optional_list(arguments, "reviews")
       })
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "submit_review_package", "reason" => reason}}
@@ -731,6 +733,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         worker_error(reason, "mark_ready")
     end
   end
+
+  defp reject_ready_status(status) when status in ["ready_for_human_merge", "ready_for_architect_merge"] do
+    {:tool_error, "use_mark_ready"}
+  end
+
+  defp reject_ready_status(_status), do: :ok
 
   defp read_current_virtual_file(repo, session, file_name) do
     with {:ok, session} <- Auth.require_session(session, repo),
@@ -768,9 +776,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp update_task_plan(repo, session, arguments) do
     with {:ok, expected_version} <- required_integer(arguments, "expected_version"),
          work_package_id = Session.work_package_id(session),
-         {:ok, state} <- PlanningRepository.get_state(repo, work_package_id),
-         :ok <- require_plan_version(state.plan_nodes, expected_version),
-         {:ok, plan_nodes} <- apply_plan_update(repo, work_package_id, arguments),
+         {:ok, plan_nodes} <- apply_plan_update(repo, work_package_id, expected_version, arguments),
          {:ok, refreshed} <- PlanningRepository.get_state(repo, work_package_id) do
       {:ok,
        tool_result(%{
@@ -780,18 +786,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp apply_plan_update(repo, work_package_id, %{"patch" => patch}) when is_map(patch) do
-    transaction_plan_update(repo, fn -> apply_plan_patch(repo, work_package_id, patch) end)
+  defp apply_plan_update(repo, work_package_id, expected_version, %{"patch" => patch}) when is_map(patch) do
+    transaction_plan_update(repo, work_package_id, expected_version, fn ->
+      apply_plan_patch(repo, work_package_id, patch)
+    end)
   end
 
-  defp apply_plan_update(repo, work_package_id, arguments) do
-    transaction_plan_update(repo, fn -> append_plan_node_from_arguments(repo, work_package_id, arguments) end)
+  defp apply_plan_update(repo, work_package_id, expected_version, arguments) do
+    transaction_plan_update(repo, work_package_id, expected_version, fn ->
+      append_plan_node_from_arguments(repo, work_package_id, arguments)
+    end)
   end
 
-  defp transaction_plan_update(repo, update_fun) do
-    case repo.transaction(fn -> transaction_result(repo, update_fun.()) end) do
+  defp transaction_plan_update(repo, work_package_id, expected_version, update_fun) do
+    case repo.transaction(fn -> transaction_result(repo, work_package_id, expected_version, update_fun) end) do
       {:ok, result} -> result
       {:error, reason} -> reason
+    end
+  end
+
+  defp transaction_result(repo, work_package_id, expected_version, update_fun) do
+    with {:ok, plan_nodes} <- PlanningRepository.list_plan_nodes(repo, work_package_id),
+         :ok <- require_plan_version(plan_nodes, expected_version) do
+      transaction_result(repo, update_fun.())
+    else
+      {:tool_error, reason} -> repo.rollback({:tool_error, reason})
+      {:error, reason} -> repo.rollback({:error, reason})
     end
   end
 
@@ -831,11 +851,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp apply_plan_node_patch_step(repo, work_package_id, node_attrs, {:ok, plan_nodes}) do
     case apply_plan_node_patch(repo, work_package_id, node_attrs) do
       {:ok, plan_node} -> {:cont, {:ok, [plan_node | plan_nodes]}}
+      {:tool_error, reason} -> {:halt, {:tool_error, reason}}
       {:error, reason} -> {:halt, {:error, reason}}
     end
   end
 
   defp reverse_plan_patch_result({:ok, plan_nodes}), do: {:ok, Enum.reverse(plan_nodes)}
+  defp reverse_plan_patch_result({:tool_error, reason}), do: {:tool_error, reason}
   defp reverse_plan_patch_result({:error, reason}), do: {:error, reason}
 
   defp apply_plan_node_patch(repo, work_package_id, %{"id" => id} = attrs) when is_binary(id) do
@@ -964,22 +986,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     review_evidence =
       progress_events
       |> Enum.filter(&payload_type?(&1, "review_package", "submit_review_package"))
-      |> Enum.flat_map(&review_package_terms/1)
-      |> Enum.map(&String.downcase/1)
+      |> Enum.flat_map(&review_package_reviews/1)
 
     Enum.all?(required_lanes, fn lane ->
-      lane = String.downcase(lane)
-      Enum.any?(review_evidence, &String.contains?(&1, lane))
+      Enum.any?(review_evidence, &(Map.get(&1, "lane") == lane and Map.get(&1, "verdict") == "green"))
     end)
   end
 
-  defp review_package_terms(%ProgressEvent{payload: payload}) when is_map(payload) do
-    payload
-    |> Map.take(["summary", "tests", "artifacts", "reviews"])
-    |> Map.values()
-    |> List.flatten()
-    |> Enum.filter(&is_binary/1)
+  defp review_package_reviews(%ProgressEvent{payload: %{"reviews" => reviews}}) when is_list(reviews) do
+    reviews
+    |> Enum.filter(&is_map/1)
+    |> Enum.map(fn review ->
+      %{
+        "lane" => review |> Map.get("lane", "") |> String.downcase(),
+        "verdict" => review |> Map.get("verdict", "") |> String.downcase()
+      }
+    end)
   end
+
+  defp review_package_reviews(%ProgressEvent{}), do: []
 
   defp active_blocker?(progress_events) do
     progress_events
@@ -1028,6 +1053,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp worker_error({:unauthorized, _reason} = reason, resource), do: auth_error(reason, resource)
   defp worker_error(:forbidden, resource), do: auth_error(:forbidden, resource)
   defp worker_error({:service_unavailable, _reason} = reason, resource), do: auth_error(reason, resource)
+  defp worker_error(:database_busy, tool), do: service_error(:database_busy, tool)
+  defp worker_error({:storage_failed, _reason} = reason, tool), do: service_error(reason, tool)
+  defp worker_error({:migration_failed, _reason} = reason, tool), do: service_error(reason, tool)
   defp worker_error(reason, tool), do: {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason_text(reason)}}
 
   defp scoped_session(repo, session, arguments) when is_map(arguments) do
