@@ -234,7 +234,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
     assert retrying.status == "retrying"
 
     assert {:ok, replacement} =
-             Service.start_dispatch(repo, issue(work_package.id), attempt: 2, recover_retrying: true)
+             Service.start_dispatch(repo, issue(work_package.id), attempt: 2, recover_retrying_after_ms: 0)
 
     assert replacement.status == "running"
     assert replacement.id != run.id
@@ -242,6 +242,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
     assert {:ok, recovered} = Repository.get(repo, run.id)
     assert recovered.status == "failed"
     assert recovered.reason == "retry reservation recovered by dispatch"
+  end
+
+  test "fresh retrying reservation is not recovered before recovery age", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-RECOVER-FRESH", status: "ready_for_worker"))
+
+    assert {:ok, run} = Service.start_dispatch(repo, issue(work_package.id))
+    assert {:ok, retrying} = Service.mark_retrying(repo, run.id, "worker exited")
+    assert retrying.status == "retrying"
+
+    assert {:error, :active_run_exists} =
+             Service.start_dispatch(repo, issue(work_package.id), attempt: 2, recover_retrying_after_ms: 60_000)
+
+    assert {:ok, reserved} = Repository.get(repo, run.id)
+    assert reserved.status == "retrying"
+  end
+
+  test "terminal AgentRun rows reject late lifecycle updates", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-TERMINAL", status: "ready_for_worker"))
+
+    assert {:ok, run} = Service.start_dispatch(repo, issue(work_package.id))
+    assert {:ok, completed} = Service.mark_completed(repo, run.id, "worker completed")
+    assert completed.status == "completed"
+
+    assert {:error, :not_active} = Service.mark_stopped(repo, run.id, "late cleanup")
+    assert {:error, :not_active} = Service.heartbeat(repo, run.id, %{worker_host: "late"})
+
+    assert {:ok, terminal} = Repository.get(repo, run.id)
+    assert terminal.status == "completed"
+    assert terminal.reason == "worker completed"
   end
 
   test "replacement release rolls back when new AgentRun insert fails", %{repo: repo} do

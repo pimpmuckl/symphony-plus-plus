@@ -23,7 +23,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Service do
 
     Repository.start_run(repo, attrs,
       replace_agent_run_id: Keyword.get(opts, :replace_agent_run_id),
-      recover_retrying: Keyword.get(opts, :recover_retrying, false),
+      recover_retrying_after_ms: Keyword.get(opts, :recover_retrying_after_ms),
       stale_after_ms: Keyword.get(opts, :stale_after_ms)
     )
   end

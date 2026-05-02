@@ -736,49 +736,29 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, opts) do
-    case Tracker.start_agent_run(
-           issue,
-           attempt: attempt,
-           worker_host: worker_host,
-           replace_agent_run_id: Keyword.get(opts, :replace_agent_run_id),
-           recover_retrying: is_nil(Keyword.get(opts, :replace_agent_run_id)),
-           stale_after_ms: agent_run_stale_after_ms()
-         ) do
-      {:ok, agent_run} ->
-        do_spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, agent_run_id(agent_run))
-
-      {:error, :active_run_exists} ->
-        Logger.info("Deferring dispatch; active AgentRun already exists for #{issue_context(issue)}")
-        next_attempt = if is_integer(attempt), do: attempt + 1, else: 1
-
-        state
-        |> schedule_issue_retry(issue.id, next_attempt, %{
-          identifier: issue.identifier,
-          error: "active AgentRun already exists",
-          worker_host: worker_host,
-          agent_run_id: Keyword.get(opts, :replace_agent_run_id)
-        })
-        |> claim_issue(issue.id)
+    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+         end) do
+      {:ok, pid} ->
+        bind_spawned_issue_on_worker_host(state, issue, attempt, recipient, worker_host, opts, pid)
 
       {:error, reason} ->
-        Logger.warning("Skipping dispatch; failed to create AgentRun for #{issue_context(issue)}: #{inspect(reason)}")
-
+        Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
         schedule_issue_retry(state, issue.id, next_attempt, %{
           identifier: issue.identifier,
-          error: "failed to create AgentRun: #{inspect(reason)}",
+          error: "failed to spawn agent: #{inspect(reason)}",
           worker_host: worker_host
         })
     end
   end
 
-  defp do_spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, agent_run_id) do
-    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
-         end) do
-      {:ok, pid} ->
+  defp bind_spawned_issue_on_worker_host(%State{} = state, issue, attempt, _recipient, worker_host, opts, pid) do
+    case start_agent_run_for_spawned_issue(issue, attempt, worker_host, opts) do
+      {:ok, agent_run} ->
         ref = Process.monitor(pid)
+        agent_run_id = agent_run_id(agent_run)
 
         Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
 
@@ -814,17 +794,43 @@ defmodule SymphonyElixir.Orchestrator do
             retry_attempts: Map.delete(state.retry_attempts, issue.id)
         }
 
+      {:error, :active_run_exists} ->
+        terminate_task(pid)
+        Logger.info("Deferring dispatch; active AgentRun already exists for #{issue_context(issue)}")
+        next_attempt = if is_integer(attempt), do: attempt + 1, else: 1
+
+        state
+        |> schedule_issue_retry(issue.id, next_attempt, %{
+          identifier: issue.identifier,
+          error: "active AgentRun already exists",
+          worker_host: worker_host,
+          agent_run_id: Keyword.get(opts, :replace_agent_run_id)
+        })
+        |> claim_issue(issue.id)
+
       {:error, reason} ->
-        record_agent_run_failed(agent_run_id, "failed to spawn agent: #{inspect(reason)}")
-        Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
+        terminate_task(pid)
+        Logger.warning("Skipping dispatch; failed to create AgentRun for #{issue_context(issue)}: #{inspect(reason)}")
+
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
         schedule_issue_retry(state, issue.id, next_attempt, %{
           identifier: issue.identifier,
-          error: "failed to spawn agent: #{inspect(reason)}",
+          error: "failed to create AgentRun: #{inspect(reason)}",
           worker_host: worker_host
         })
     end
+  end
+
+  defp start_agent_run_for_spawned_issue(issue, attempt, worker_host, opts) do
+    Tracker.start_agent_run(
+      issue,
+      attempt: attempt,
+      worker_host: worker_host,
+      replace_agent_run_id: Keyword.get(opts, :replace_agent_run_id),
+      recover_retrying_after_ms: retrying_recovery_after_ms(opts),
+      stale_after_ms: agent_run_stale_after_ms()
+    )
   end
 
   defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher, terminal_states)
@@ -1072,6 +1078,14 @@ defmodule SymphonyElixir.Orchestrator do
     case Config.settings!().codex.stall_timeout_ms do
       timeout_ms when is_integer(timeout_ms) and timeout_ms > 0 -> timeout_ms
       _timeout_ms -> @failure_retry_base_ms
+    end
+  end
+
+  defp retrying_recovery_after_ms(opts) do
+    if is_binary(Keyword.get(opts, :replace_agent_run_id)) do
+      nil
+    else
+      @failure_retry_base_ms
     end
   end
 
@@ -1803,10 +1817,6 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp record_agent_run_completed(agent_run_id, reason) do
     log_agent_run_result(agent_run_id, Tracker.mark_agent_run_completed(agent_run_id, reason), "mark completed")
-  end
-
-  defp record_agent_run_failed(agent_run_id, reason) do
-    log_agent_run_result(agent_run_id, Tracker.mark_agent_run_failed(agent_run_id, reason), "mark failed")
   end
 
   defp record_agent_run_stopped(agent_run_id, reason) do

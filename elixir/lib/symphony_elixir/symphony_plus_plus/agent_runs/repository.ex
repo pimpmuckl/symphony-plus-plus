@@ -11,6 +11,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
           :active_run_exists
           | :agent_run_work_package_mismatch
           | :id_already_exists
+          | :not_active
           | :not_found
           | {:constraint_failed, String.t()}
           | {:migration_failed, term()}
@@ -105,7 +106,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
       case insert_run(repo, attrs) do
         {:error, :active_run_exists} ->
           repo
-          |> release_retrying_reservation(work_package_id, Keyword.get(opts, :recover_retrying, false))
+          |> release_retrying_reservation(work_package_id, Keyword.get(opts, :recover_retrying_after_ms))
           |> maybe_release_stale_active_run(repo, work_package_id, Keyword.get(opts, :stale_after_ms))
           |> maybe_insert_after_stale_release(repo, attrs)
 
@@ -154,14 +155,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
 
   defp release_previous_attempt(_repo, _previous_agent_run_id, _work_package_id), do: :ok
 
-  defp release_retrying_reservation(repo, work_package_id, true) when is_binary(work_package_id) do
+  defp release_retrying_reservation(repo, work_package_id, recover_after_ms)
+       when is_binary(work_package_id) and is_integer(recover_after_ms) and recover_after_ms >= 0 do
     now = DateTime.utc_now(:microsecond)
+    recovery_cutoff = DateTime.add(now, -recover_after_ms, :millisecond)
 
     {updated_count, _rows} =
       repo.update_all(
         from(agent_run in AgentRun,
           where: agent_run.work_package_id == ^work_package_id,
-          where: agent_run.status == "retrying"
+          where: agent_run.status == "retrying",
+          where: agent_run.last_seen_at <= ^recovery_cutoff
         ),
         set: [
           status: "failed",
@@ -229,12 +233,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
   defp work_package_id(attrs), do: Map.get(attrs, :work_package_id) || Map.get(attrs, "work_package_id")
 
   defp update_run(repo, id, attrs) do
-    with {:ok, agent_run} <- get(repo, id) do
+    with {:ok, agent_run} <- get(repo, id),
+         :ok <- active_agent_run?(agent_run) do
       agent_run
       |> AgentRun.update_changeset(attrs)
       |> repo.update()
     end
   end
+
+  defp active_agent_run?(%AgentRun{status: status}) when status in ["running", "retrying"], do: :ok
+  defp active_agent_run?(%AgentRun{}), do: {:error, :not_active}
 
   defp normalize_insert_result({:ok, agent_run}), do: {:ok, agent_run}
 
