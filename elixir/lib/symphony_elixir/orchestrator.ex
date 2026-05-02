@@ -12,7 +12,6 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
-  @worker_start_ack_timeout_ms 1_000
   @worker_task_runtime_id Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
@@ -183,6 +182,44 @@ defmodule SymphonyElixir.Orchestrator do
 
         notify_dashboard()
         {:noreply, state}
+    end
+  end
+
+  def handle_info({:agent_runner_started, pid}, %{running: running} = state) when is_pid(pid) do
+    case find_issue_id_for_pid(running, pid) do
+      nil ->
+        {:noreply, state}
+
+      issue_id ->
+        running_entry = Map.fetch!(running, issue_id)
+        agent_run_id = Map.get(running_entry, :agent_run_id)
+
+        case record_agent_run_running(agent_run_id, "worker task started") do
+          :ok ->
+            {:noreply, state}
+
+          {:error, reason} ->
+            {running_entry, state} = pop_running_entry(state, issue_id)
+            terminate_task(pid)
+            Process.demonitor(Map.get(running_entry, :ref), [:flush])
+
+            retry_reason = "failed to promote AgentRun after worker start: #{inspect(reason)}"
+            record_agent_run_failed(agent_run_id, retry_reason)
+
+            state =
+              state
+              |> schedule_issue_retry(issue_id, next_retry_attempt_from_running(running_entry), %{
+                identifier: Map.get(running_entry, :identifier, issue_id),
+                error: retry_reason,
+                worker_host: Map.get(running_entry, :worker_host),
+                workspace_path: Map.get(running_entry, :workspace_path),
+                agent_run_id: agent_run_id
+              })
+              |> claim_issue(issue_id)
+
+            notify_dashboard()
+            {:noreply, state}
+        end
     end
   end
 
@@ -631,13 +668,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp start_agent_runner_task(pid) when is_pid(pid) do
     send(pid, {:start_agent_runner, self()})
-
-    receive do
-      {:agent_runner_started, ^pid} -> :ok
-      {:DOWN, _ref, :process, ^pid, reason} -> {:error, {:worker_exited_before_start_ack, reason}}
-    after
-      @worker_start_ack_timeout_ms -> {:error, :worker_start_ack_timeout}
-    end
+    :ok
   end
 
   defp start_agent_runner_task(_pid), do: {:error, :invalid_worker_task}
@@ -1191,13 +1222,19 @@ defmodule SymphonyElixir.Orchestrator do
   defp reattach_running_agent_run(%State{} = state, agent_run, pid) when is_pid(pid) do
     work_package_id = agent_run_value(agent_run, :work_package_id)
 
-    case fetch_issue_for_agent_run(work_package_id) do
-      {:ok, %Issue{} = issue} ->
-        reattach_running_agent_run_issue(state, agent_run, issue, pid)
+    if is_pid(state.codex_update_recipient) do
+      Logger.info("Skipping AgentRun reattach for pid-bound orchestrator recipient work_package_id=#{work_package_id}")
+      terminate_task(pid)
+      release_unverifiable_active_agent_run(state, agent_run)
+    else
+      case fetch_issue_for_agent_run(work_package_id) do
+        {:ok, %Issue{} = issue} ->
+          reattach_running_agent_run_issue(state, agent_run, issue, pid)
 
-      {:error, reason} ->
-        Logger.warning("Unable to reattach running AgentRun; issue lookup failed work_package_id=#{work_package_id}: #{inspect(reason)}")
-        release_unverifiable_active_agent_run(state, agent_run)
+        {:error, reason} ->
+          Logger.warning("Unable to reattach running AgentRun; issue lookup failed work_package_id=#{work_package_id}: #{inspect(reason)}")
+          release_unverifiable_active_agent_run(state, agent_run)
+      end
     end
   end
 
@@ -1220,8 +1257,10 @@ defmodule SymphonyElixir.Orchestrator do
     agent_run_id = agent_run_value(agent_run, :id)
     reattached_at = DateTime.utc_now()
 
+    worker_waiting = waiting_worker_task?(pid)
+
     with :ok <- maybe_start_reattached_worker(agent_run, pid),
-         :ok <- ensure_agent_run_marked_running(agent_run) do
+         :ok <- maybe_mark_reattached_agent_run_running(agent_run, worker_waiting) do
       Logger.info("Reattached running AgentRun after restart: #{issue_context(issue)} pid=#{inspect(pid)} agent_run_id=#{agent_run_id}")
 
       running_entry =
@@ -1286,6 +1325,9 @@ defmodule SymphonyElixir.Orchestrator do
       :ok
     end
   end
+
+  defp maybe_mark_reattached_agent_run_running(_agent_run, true), do: :ok
+  defp maybe_mark_reattached_agent_run_running(agent_run, false), do: ensure_agent_run_marked_running(agent_run)
 
   defp claim_retrying_agent_run_after_restart(%State{} = state, agent_run) do
     work_package_id = agent_run_value(agent_run, :work_package_id)
@@ -1659,6 +1701,13 @@ defmodule SymphonyElixir.Orchestrator do
     running
     |> Enum.find_value(fn {issue_id, %{ref: running_ref}} ->
       if running_ref == ref, do: issue_id
+    end)
+  end
+
+  defp find_issue_id_for_pid(running, pid) do
+    running
+    |> Enum.find_value(fn {issue_id, %{pid: running_pid}} ->
+      if running_pid == pid, do: issue_id
     end)
   end
 

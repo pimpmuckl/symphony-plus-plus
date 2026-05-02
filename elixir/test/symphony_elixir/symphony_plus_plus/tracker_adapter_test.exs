@@ -1603,6 +1603,54 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert released.finished_at == nil
   end
 
+  test "restart reconciliation releases pid-recipient running AgentRun instead of reattaching", %{repo: repo} do
+    assert {:ok, work_package} =
+             Repository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-PID-RECIPIENT-RUNNING", kind: "adapter", status: "ready_for_worker")
+             )
+
+    assert {:ok, work_package_grant} = AccessGrantService.mint_worker_grant(repo, work_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, work_package_grant.work_key.secret, claimed_by: "agent-1")
+    assert {:ok, [issue]} = Tracker.fetch_issue_states_by_ids([work_package.id])
+
+    {:ok, worker_pid, worker_task_handle} =
+      Orchestrator.start_worker_task_for_test(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    worker_ref = Process.monitor(worker_pid)
+
+    assert {:ok, run} =
+             Tracker.start_agent_run(issue,
+               status: "running",
+               attempt: 2,
+               worker_task_handle: worker_task_handle
+             )
+
+    state =
+      %Orchestrator.State{
+        max_concurrent_agents: 1,
+        running: %{},
+        claimed: MapSet.new(),
+        retry_attempts: %{},
+        codex_update_recipient: self()
+      }
+      |> Orchestrator.reconcile_persisted_active_agent_runs_for_test()
+
+    assert_receive {:DOWN, ^worker_ref, :process, ^worker_pid, _reason}, 500
+    refute Map.has_key?(state.running, work_package.id)
+    assert MapSet.member?(state.claimed, work_package.id)
+    assert %{attempt: 3, agent_run_id: agent_run_id, error: error} = state.retry_attempts[work_package.id]
+    assert agent_run_id == run.id
+    assert error == "worker task handle not live after orchestrator restart"
+
+    assert {:ok, released} = AgentRunRepository.get(repo, run.id)
+    assert released.status == "retrying"
+  end
+
   test "restart reconciliation rejects live pid handles from another runtime", %{repo: repo} do
     assert {:ok, work_package} =
              Repository.create(
