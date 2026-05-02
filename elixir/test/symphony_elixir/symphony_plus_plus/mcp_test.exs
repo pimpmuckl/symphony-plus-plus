@@ -1030,6 +1030,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(explicit_finding_replay_response, ["result", "structuredContent", "finding", "id"]) == "custom-finding-id"
 
+    explicit_finding_id_conflict_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "finding-explicit-id-conflict",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_finding",
+            "arguments" => %{"id" => "custom-finding-id", "title" => "Explicit", "body" => "Caller supplied id", "idempotency_key" => "finding-other"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(explicit_finding_id_conflict_response, ["error", "data", "reason"]) == "idempotency_conflict"
+
     finding_replay_response =
       MCPHarness.request(
         %{

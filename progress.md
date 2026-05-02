@@ -443,3 +443,24 @@
 ### Next Steps
 
 - Commit and push nineteenth T2 fixes, rerun T2, then proceed to GitHub review if clean.
+
+### Seventeenth T2 Follow-up Actions
+
+- Pushed head `af68331c0ea20c9073a6e726e9d9194de60088fe` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260502T213807Z-71f13191`; closed it as `findings`.
+- Fixed valid T2 findings by moving finding idempotency columns/index into new migration `20260502190000_add_idempotency_fields_to_sympp_findings.exs` and requiring duplicate explicit finding ids to match the same grant-scoped idempotency metadata before replay succeeds.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after twentieth T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 58 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 252 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit and push twentieth T2 fixes, rerun T2, then proceed to GitHub review if clean.

@@ -1052,8 +1052,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp find_existing_finding({:ok, findings}, finding_id, attrs) do
     case Enum.find(findings, &(&1.id == finding_id)) do
-      %{} = finding -> idempotent_finding_result(finding, attrs)
-      nil -> {:error, :id_already_exists}
+      %{} = finding ->
+        if finding_idempotency_match?(finding, attrs) do
+          idempotent_finding_result(finding, attrs)
+        else
+          {:tool_error, "idempotency_conflict"}
+        end
+
+      nil ->
+        {:error, :id_already_exists}
     end
   end
 
