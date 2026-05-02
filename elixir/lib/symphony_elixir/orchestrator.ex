@@ -603,6 +603,13 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp terminate_task(_pid), do: :ok
 
+  defp start_agent_runner_task(pid) when is_pid(pid) do
+    send(pid, :start_agent_runner)
+    :ok
+  end
+
+  defp start_agent_runner_task(_pid), do: :ok
+
   defp choose_issues(issues, state) do
     active_states = active_state_set()
     terminal_states = terminal_state_set()
@@ -816,7 +823,9 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp do_spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, agent_run_id) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+           receive do
+             :start_agent_runner -> AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+           end
          end) do
       {:ok, pid} ->
         handle_spawned_worker(state, issue, attempt, worker_host, agent_run_id, pid)
@@ -839,28 +848,40 @@ defmodule SymphonyElixir.Orchestrator do
     ref = Process.monitor(pid)
     worker_task_handle = worker_task_handle(pid)
 
-    with :ok <- record_agent_run_heartbeat(agent_run_id, %{worker_task_handle: worker_task_handle}),
-         :ok <- record_agent_run_running(agent_run_id, "worker task started") do
-      bind_running_issue(state, issue, attempt, worker_host, pid, ref, agent_run_id, worker_task_handle)
-    else
+    case record_agent_run_heartbeat(agent_run_id, %{worker_task_handle: worker_task_handle}) do
+      :ok ->
+        start_agent_runner_task(pid)
+
+        case record_agent_run_running(agent_run_id, "worker task started") do
+          :ok ->
+            bind_running_issue(state, issue, attempt, worker_host, pid, ref, agent_run_id, worker_task_handle)
+
+          {:error, reason} ->
+            fail_spawned_worker_bind(state, issue, attempt, worker_host, agent_run_id, pid, ref, reason)
+        end
+
       {:error, reason} ->
-        terminate_task(pid)
-        Process.demonitor(ref, [:flush])
-        Logger.warning("Skipping dispatch; failed to bind AgentRun worker task for #{issue_context(issue)}: #{inspect(reason)}")
-
-        record_agent_run_failed(agent_run_id, "failed to bind worker task: #{inspect(reason)}")
-
-        next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
-
-        state
-        |> schedule_issue_retry(issue.id, next_attempt, %{
-          identifier: issue.identifier,
-          error: "failed to bind AgentRun worker task: #{inspect(reason)}",
-          worker_host: worker_host,
-          agent_run_id: agent_run_id
-        })
-        |> claim_issue(issue.id)
+        fail_spawned_worker_bind(state, issue, attempt, worker_host, agent_run_id, pid, ref, reason)
     end
+  end
+
+  defp fail_spawned_worker_bind(state, issue, attempt, worker_host, agent_run_id, pid, ref, reason) do
+    terminate_task(pid)
+    Process.demonitor(ref, [:flush])
+    Logger.warning("Skipping dispatch; failed to bind AgentRun worker task for #{issue_context(issue)}: #{inspect(reason)}")
+
+    record_agent_run_failed(agent_run_id, "failed to bind worker task: #{inspect(reason)}")
+
+    next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
+
+    state
+    |> schedule_issue_retry(issue.id, next_attempt, %{
+      identifier: issue.identifier,
+      error: "failed to bind AgentRun worker task: #{inspect(reason)}",
+      worker_host: worker_host,
+      agent_run_id: agent_run_id
+    })
+    |> claim_issue(issue.id)
   end
 
   defp bind_running_issue(state, issue, attempt, worker_host, pid, ref, agent_run_id, worker_task_handle) do
@@ -1140,26 +1161,44 @@ defmodule SymphonyElixir.Orchestrator do
     worker_host = agent_run_value(agent_run, :worker_host)
     agent_run_id = agent_run_value(agent_run, :id)
     reattached_at = DateTime.utc_now()
-    :ok = ensure_agent_run_marked_running(agent_run)
 
-    Logger.info("Reattached running AgentRun after restart: #{issue_context(issue)} pid=#{inspect(pid)} agent_run_id=#{agent_run_id}")
+    case ensure_agent_run_marked_running(agent_run) do
+      :ok ->
+        maybe_start_reattached_worker(agent_run, pid)
 
-    running_entry =
-      running_entry(issue, agent_run_value(agent_run, :attempt), worker_host, pid, ref, agent_run_id, %{
-        worker_task_handle: agent_run_value(agent_run, :worker_task_handle),
-        workspace_path: agent_run_value(agent_run, :workspace_path),
-        session_id: agent_run_value(agent_run, :session_id),
-        started_at: reattached_at,
-        last_codex_timestamp: agent_run_value(agent_run, :last_seen_at),
-        last_codex_event: :reattached
-      })
+        Logger.info("Reattached running AgentRun after restart: #{issue_context(issue)} pid=#{inspect(pid)} agent_run_id=#{agent_run_id}")
 
-    %{
-      state
-      | running: Map.put(state.running, issue.id, running_entry),
-        claimed: MapSet.put(state.claimed, issue.id),
-        retry_attempts: Map.delete(state.retry_attempts, issue.id)
-    }
+        running_entry =
+          running_entry(issue, agent_run_value(agent_run, :attempt), worker_host, pid, ref, agent_run_id, %{
+            worker_task_handle: agent_run_value(agent_run, :worker_task_handle),
+            workspace_path: agent_run_value(agent_run, :workspace_path),
+            session_id: agent_run_value(agent_run, :session_id),
+            started_at: reattached_at,
+            last_codex_timestamp: agent_run_value(agent_run, :last_seen_at),
+            last_codex_event: :reattached
+          })
+
+        %{
+          state
+          | running: Map.put(state.running, issue.id, running_entry),
+            claimed: MapSet.put(state.claimed, issue.id),
+            retry_attempts: Map.delete(state.retry_attempts, issue.id)
+        }
+
+      {:error, reason} ->
+        Process.demonitor(ref, [:flush])
+        Logger.warning("Unable to reattach AgentRun; failed to promote status for #{issue_context(issue)} agent_run_id=#{agent_run_id}: #{inspect(reason)}")
+        terminate_task(pid)
+        release_unverifiable_active_agent_run(state, agent_run)
+    end
+  end
+
+  defp maybe_start_reattached_worker(agent_run, pid) do
+    if agent_run_value(agent_run, :status) == "starting" do
+      start_agent_runner_task(pid)
+    else
+      :ok
+    end
   end
 
   defp claim_retrying_agent_run_after_restart(%State{} = state, agent_run) do
