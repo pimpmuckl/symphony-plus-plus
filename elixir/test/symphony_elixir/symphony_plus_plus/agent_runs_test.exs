@@ -145,6 +145,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
     assert run.actor_id == nil
   end
 
+  test "AgentRun grant binding requires worker assignment source of truth", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-NON-WORKER", status: "ready_for_worker"))
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, work_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "agent-1")
+
+    assert {:ok, run} = Service.start_dispatch(repo, non_worker_assigned_issue(work_package.id))
+
+    assert run.access_grant_id == nil
+    assert run.actor_id == nil
+  end
+
   test "failed start does not orphan an active AgentRun", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-FAILED-START", status: "ready_for_worker"))
@@ -212,6 +225,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
     assert replaced.reason == "replaced by retry dispatch"
   end
 
+  test "replacement release rolls back when new AgentRun insert fails", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-ROLLBACK", status: "ready_for_worker"))
+
+    assert {:ok, run} = Service.start_dispatch(repo, issue(work_package.id))
+
+    assert {:error, _reason} =
+             Repository.start_run(
+               repo,
+               %{
+                 work_package_id: work_package.id,
+                 access_grant_id: "missing-grant",
+                 status: "running",
+                 attempt: 2
+               },
+               replace_agent_run_id: run.id
+             )
+
+    assert {:ok, active} = Repository.get(repo, run.id)
+    assert active.status == "running"
+    assert active.reason == nil
+  end
+
   defp issue(id) do
     %Issue{
       id: id,
@@ -231,6 +267,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
       title: "Run package",
       description: "Dispatch package",
       state: "ready_for_worker",
+      assigned_to_worker: false
+    }
+  end
+
+  defp non_worker_assigned_issue(id) do
+    %Issue{
+      id: id,
+      identifier: id,
+      title: "Run package",
+      description: "Dispatch package",
+      state: "ready_for_worker",
+      assignee_id: "agent-1",
       assigned_to_worker: false
     }
   end

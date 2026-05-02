@@ -19,7 +19,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Service do
         attempt: normalize_attempt(Keyword.get(opts, :attempt)),
         worker_host: Keyword.get(opts, :worker_host)
       }
-      |> Map.merge(grant_binding(repo, issue.id, issue.assignee_id))
+      |> Map.merge(grant_binding(repo, issue))
 
     Repository.start_run(repo, attrs,
       replace_agent_run_id: Keyword.get(opts, :replace_agent_run_id),
@@ -44,7 +44,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Service do
   @spec mark_stopped(Repository.repo(), String.t(), String.t() | nil) :: {:ok, AgentRun.t()} | {:error, error()}
   def mark_stopped(repo, agent_run_id, reason \\ nil), do: Repository.mark_stopped(repo, agent_run_id, reason)
 
-  defp grant_binding(repo, work_package_id, assignee_id) do
+  defp grant_binding(_repo, %Issue{assigned_to_worker: assigned_to_worker}) when assigned_to_worker != true, do: %{}
+
+  defp grant_binding(repo, %Issue{id: work_package_id, assignee_id: assignee_id}) do
     now = DateTime.utc_now(:microsecond)
 
     query =

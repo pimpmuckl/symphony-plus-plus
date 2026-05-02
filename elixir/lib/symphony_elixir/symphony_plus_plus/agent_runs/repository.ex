@@ -26,9 +26,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
 
   @spec start_run(repo(), map(), keyword()) :: {:ok, AgentRun.t()} | {:error, error()}
   def start_run(repo, attrs, opts \\ []) when is_atom(repo) and is_map(attrs) and is_list(opts) do
-    case repo.transaction(fn -> start_run_transaction(repo, attrs, opts) end) do
-      {:ok, {:ok, agent_run}} -> {:ok, agent_run}
-      {:ok, {:error, reason}} -> {:error, reason}
+    case repo.transaction(fn -> start_run_or_rollback(repo, attrs, opts) end) do
+      {:ok, agent_run} -> {:ok, agent_run}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -90,6 +89,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
   defp update_terminal_status(repo, id, status, reason) do
     now = DateTime.utc_now(:microsecond)
     update_run(repo, id, %{status: status, reason: reason, last_seen_at: now, finished_at: now})
+  end
+
+  defp start_run_or_rollback(repo, attrs, opts) do
+    case start_run_transaction(repo, attrs, opts) do
+      {:ok, agent_run} -> agent_run
+      {:error, reason} -> repo.rollback(reason)
+    end
   end
 
   defp start_run_transaction(repo, attrs, opts) do

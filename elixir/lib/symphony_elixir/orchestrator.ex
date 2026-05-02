@@ -143,8 +143,7 @@ defmodule SymphonyElixir.Orchestrator do
                 identifier: running_entry.identifier,
                 delay_type: :continuation,
                 worker_host: Map.get(running_entry, :worker_host),
-                workspace_path: Map.get(running_entry, :workspace_path),
-                agent_run_id: agent_run_id
+                workspace_path: Map.get(running_entry, :workspace_path)
               })
 
             _ ->
@@ -521,6 +520,7 @@ defmodule SymphonyElixir.Orchestrator do
         error: "stalled for #{elapsed_ms}ms without codex activity"
       })
     else
+      record_agent_run_heartbeat(Map.get(running_entry, :agent_run_id), %{})
       state
     end
   end
