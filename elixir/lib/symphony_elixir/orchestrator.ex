@@ -38,7 +38,8 @@ defmodule SymphonyElixir.Orchestrator do
       claimed: MapSet.new(),
       retry_attempts: %{},
       codex_totals: nil,
-      codex_rate_limits: nil
+      codex_rate_limits: nil,
+      codex_update_recipient: nil
     ]
   end
 
@@ -49,7 +50,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @impl true
-  def init(_opts) do
+  def init(opts) do
     now_ms = System.monotonic_time(:millisecond)
     config = Config.settings!()
 
@@ -61,7 +62,8 @@ defmodule SymphonyElixir.Orchestrator do
       tick_timer_ref: nil,
       tick_token: nil,
       codex_totals: @empty_codex_totals,
-      codex_rate_limits: nil
+      codex_rate_limits: nil,
+      codex_update_recipient: codex_update_recipient(opts)
     }
 
     state = reconcile_persisted_active_agent_runs(state)
@@ -379,7 +381,21 @@ defmodule SymphonyElixir.Orchestrator do
 
   @doc false
   @spec worker_task_handle_for_test(pid()) :: String.t()
-  def worker_task_handle_for_test(pid) when is_pid(pid), do: worker_task_handle(pid)
+  def worker_task_handle_for_test(pid) when is_pid(pid), do: worker_task_handle(pid, "test-token")
+
+  @doc false
+  @spec start_worker_task_for_test((-> term())) :: {:ok, pid(), String.t()} | {:error, term()}
+  def start_worker_task_for_test(fun) when is_function(fun, 0) do
+    worker_task_token = worker_task_token()
+
+    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+           Process.put(:sympp_worker_task_token, worker_task_token)
+           fun.()
+         end) do
+      {:ok, pid} -> {:ok, pid, worker_task_handle(pid, worker_task_token)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   @doc false
   @spec workflow_config_error_message_for_test(term()) :: String.t() | nil
@@ -614,6 +630,13 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp start_agent_runner_task(_pid), do: :ok
 
+  defp codex_update_recipient(opts) when is_list(opts) do
+    case Keyword.get(opts, :name, __MODULE__) do
+      name when is_atom(name) -> name
+      _name -> self()
+    end
+  end
+
   defp choose_issues(issues, state) do
     active_states = active_state_set()
     terminal_states = terminal_state_set()
@@ -781,15 +804,13 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, opts) do
-    recipient = self()
-
     case select_worker_host(state, preferred_worker_host) do
       :no_worker_capacity ->
         Logger.debug("No SSH worker slots available for #{issue_context(issue)} preferred_worker_host=#{inspect(preferred_worker_host)}")
         state
 
       worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, opts)
+        spawn_issue_on_worker_host(state, issue, attempt, state.codex_update_recipient, worker_host, opts)
     end
   end
 
@@ -826,13 +847,17 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp do_spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, agent_run_id) do
+    worker_task_token = worker_task_token()
+
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+           Process.put(:sympp_worker_task_token, worker_task_token)
+
            receive do
              :start_agent_runner -> AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
            end
          end) do
       {:ok, pid} ->
-        handle_spawned_worker(state, issue, attempt, worker_host, agent_run_id, pid)
+        handle_spawned_worker(state, issue, attempt, worker_host, agent_run_id, pid, worker_task_token)
 
       {:error, reason} ->
         record_agent_run_failed(agent_run_id, "failed to spawn agent: #{inspect(reason)}")
@@ -848,9 +873,9 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp handle_spawned_worker(state, issue, attempt, worker_host, agent_run_id, pid) do
+  defp handle_spawned_worker(state, issue, attempt, worker_host, agent_run_id, pid, worker_task_token) do
     ref = Process.monitor(pid)
-    worker_task_handle = worker_task_handle(pid)
+    worker_task_handle = worker_task_handle(pid, worker_task_token)
 
     case record_agent_run_heartbeat(agent_run_id, %{worker_task_handle: worker_task_handle}) do
       :ok ->
@@ -1304,9 +1329,10 @@ defmodule SymphonyElixir.Orchestrator do
   defp retry_identifier_for_agent_run(agent_run, _issue), do: agent_run_value(agent_run, :work_package_id)
 
   defp verified_worker_task_pid(worker_task_handle) when is_binary(worker_task_handle) do
-    with {:ok, pid} <- parse_worker_task_handle(worker_task_handle),
+    with {:ok, pid, worker_task_token} <- parse_worker_task_handle(worker_task_handle),
          true <- Process.alive?(pid),
-         true <- supervised_worker_task?(pid) do
+         true <- supervised_worker_task?(pid),
+         true <- worker_task_token_matches?(pid, worker_task_token) do
       {:ok, pid}
     else
       _ -> :error
@@ -1316,10 +1342,10 @@ defmodule SymphonyElixir.Orchestrator do
   defp verified_worker_task_pid(_worker_task_handle), do: :error
 
   defp parse_worker_task_handle("local-task:" <> handle) do
-    case String.split(handle, ":", parts: 2) do
-      [runtime_id, pid_text] ->
+    case String.split(handle, ":", parts: 3) do
+      [runtime_id, worker_task_token, pid_text] ->
         if runtime_id == worker_task_runtime_id() do
-          {:ok, :erlang.list_to_pid(String.to_charlist(pid_text))}
+          {:ok, :erlang.list_to_pid(String.to_charlist(pid_text)), worker_task_token}
         else
           :error
         end
@@ -1343,8 +1369,23 @@ defmodule SymphonyElixir.Orchestrator do
     :exit, _reason -> false
   end
 
-  defp worker_task_handle(pid) when is_pid(pid),
-    do: "local-task:" <> worker_task_runtime_id() <> ":" <> List.to_string(:erlang.pid_to_list(pid))
+  defp worker_task_token_matches?(pid, worker_task_token) when is_pid(pid) and is_binary(worker_task_token) do
+    case Process.info(pid, :dictionary) do
+      {:dictionary, dictionary} -> Keyword.get(dictionary, :sympp_worker_task_token) == worker_task_token
+      _ -> false
+    end
+  end
+
+  defp worker_task_token_matches?(_pid, _worker_task_token), do: false
+
+  defp worker_task_handle(pid, worker_task_token) when is_pid(pid) and is_binary(worker_task_token) do
+    "local-task:" <>
+      worker_task_runtime_id() <> ":" <> worker_task_token <> ":" <> List.to_string(:erlang.pid_to_list(pid))
+  end
+
+  defp worker_task_token do
+    Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+  end
 
   defp worker_task_runtime_id do
     key = {__MODULE__, :worker_task_runtime_id}

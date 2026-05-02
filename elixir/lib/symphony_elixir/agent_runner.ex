@@ -9,7 +9,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   @type worker_host :: String.t() | nil
 
-  @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
+  @spec run(map(), GenServer.server() | nil, keyword()) :: :ok | no_return()
   def run(issue, codex_update_recipient \\ nil, opts \\ []) do
     # The orchestrator owns host retries so one worker lifetime never hops machines.
     worker_host = selected_worker_host(Keyword.get(opts, :worker_host), Config.settings!().worker.ssh_hosts)
@@ -52,29 +52,39 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp send_codex_update(recipient, %Issue{id: issue_id}, message)
-       when is_binary(issue_id) and is_pid(recipient) do
-    send(recipient, {:codex_worker_update, issue_id, message})
-    :ok
-  end
+  defp send_codex_update(recipient, %Issue{id: issue_id}, message) when is_binary(issue_id),
+    do: send_recipient(recipient, {:codex_worker_update, issue_id, message})
 
   defp send_codex_update(_recipient, _issue, _message), do: :ok
 
   defp send_worker_runtime_info(recipient, %Issue{id: issue_id}, worker_host, workspace)
-       when is_binary(issue_id) and is_pid(recipient) and is_binary(workspace) do
-    send(
-      recipient,
-      {:worker_runtime_info, issue_id,
-       %{
-         worker_host: worker_host,
-         workspace_path: workspace
-       }}
-    )
+       when is_binary(issue_id) and is_binary(workspace),
+       do:
+         send_recipient(recipient, {
+           :worker_runtime_info,
+           issue_id,
+           %{
+             worker_host: worker_host,
+             workspace_path: workspace
+           }
+         })
+
+  defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
+
+  defp send_recipient(recipient, message) when is_pid(recipient) do
+    send(recipient, message)
+    :ok
+  end
+
+  defp send_recipient(recipient, message) when is_atom(recipient) do
+    if Process.whereis(recipient) do
+      send(recipient, message)
+    end
 
     :ok
   end
 
-  defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
+  defp send_recipient(_recipient, _message), do: :ok
 
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)

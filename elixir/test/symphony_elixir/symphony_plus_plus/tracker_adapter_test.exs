@@ -1419,8 +1419,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert {:ok, _assignment} = AccessGrantService.claim(repo, work_package_grant.work_key.secret, claimed_by: "agent-1")
     assert {:ok, [issue]} = Tracker.fetch_issue_states_by_ids([work_package.id])
 
-    {:ok, worker_pid} =
-      Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+    {:ok, worker_pid, worker_task_handle} =
+      Orchestrator.start_worker_task_for_test(fn ->
         receive do
           :stop -> :ok
         end
@@ -1431,8 +1431,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
         Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, worker_pid)
       end
     end)
-
-    worker_task_handle = Orchestrator.worker_task_handle_for_test(worker_pid)
 
     assert {:ok, run} =
              Tracker.start_agent_run(issue,
@@ -1494,8 +1492,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert {:ok, _assignment} = AccessGrantService.claim(repo, work_package_grant.work_key.secret, claimed_by: "agent-1")
     assert {:ok, [issue]} = Tracker.fetch_issue_states_by_ids([work_package.id])
 
-    {:ok, worker_pid} =
-      Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+    {:ok, worker_pid, worker_task_handle} =
+      Orchestrator.start_worker_task_for_test(fn ->
         receive do
           :stop -> :ok
         end
@@ -1506,8 +1504,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
         Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, worker_pid)
       end
     end)
-
-    worker_task_handle = Orchestrator.worker_task_handle_for_test(worker_pid)
 
     assert {:ok, run} =
              Tracker.start_agent_run(issue,
@@ -1539,8 +1535,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert {:ok, _assignment} = AccessGrantService.claim(repo, work_package_grant.work_key.secret, claimed_by: "agent-1")
     assert {:ok, [issue]} = Tracker.fetch_issue_states_by_ids([work_package.id])
 
-    {:ok, worker_pid} =
-      Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+    {:ok, worker_pid, worker_task_handle} =
+      Orchestrator.start_worker_task_for_test(fn ->
         receive do
           :stop -> :ok
         end
@@ -1551,8 +1547,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
         Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, worker_pid)
       end
     end)
-
-    worker_task_handle = Orchestrator.worker_task_handle_for_test(worker_pid)
 
     assert {:ok, run} =
              Tracker.start_agent_run(issue,
