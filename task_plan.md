@@ -122,10 +122,10 @@ Phase 3
 - [x] Commit and push twenty-seventh T2 fixes.
 - [x] Run fresh full-diff T2 on pushed head `136184b` and close valid findings gate.
 - [x] Fix twenty-eighth T2 authenticated plan/finding writes, incremental review lanes, and repeated status-reason audit findings locally.
-- [ ] Commit and push twenty-eighth T2 fixes.
+- [x] Commit and push twenty-eighth T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** twenty-eighth T2 fixes validated locally; pending commit/push, fresh full-diff T2 rerun, and GitHub review if clean.
+- **Status:** twenty-eighth T2 fixes pushed; pending fresh full-diff T2 rerun and GitHub review if clean.
 
 ### High-Pressure Coherence Review
 

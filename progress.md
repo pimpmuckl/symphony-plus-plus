@@ -643,4 +643,4 @@
 
 ### Next Steps
 
-- Commit and push twenty-eighth T2 fixes, rerun full-diff T2, then proceed to GitHub review if clean.
+- Pushed twenty-eighth T2 fix head `5f2de2d159dcbb4ba51556f13cb5932323af73d9`; rerun full-diff T2, then proceed to GitHub review if clean.
