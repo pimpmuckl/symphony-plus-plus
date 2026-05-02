@@ -67,11 +67,15 @@ defmodule SymphonyElixir.Orchestrator do
     }
 
     state = reconcile_persisted_active_agent_runs(state)
+    sweep_unmatched_waiting_worker_tasks(state)
     run_terminal_workspace_cleanup(state)
     state = schedule_tick(state, 0)
 
     {:ok, state}
   end
+
+  @impl true
+  def handle_cast({:worker_message, message}, state), do: handle_info(message, state)
 
   @impl true
   def handle_info({:tick, tick_token}, %{tick_token: tick_token} = state)
@@ -633,6 +637,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp codex_update_recipient(opts) when is_list(opts) do
     case Keyword.get(opts, :name, __MODULE__) do
       name when is_atom(name) -> name
+      name when is_tuple(name) -> name
       _name -> self()
     end
   end
@@ -851,9 +856,12 @@ defmodule SymphonyElixir.Orchestrator do
 
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
            Process.put(:sympp_worker_task_token, worker_task_token)
+           Process.put(:sympp_worker_task_state, :waiting)
 
            receive do
-             :start_agent_runner -> AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+             :start_agent_runner ->
+               Process.put(:sympp_worker_task_state, :running)
+               AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
            end
          end) do
       {:ok, pid} ->
@@ -881,13 +889,21 @@ defmodule SymphonyElixir.Orchestrator do
       :ok ->
         original_state = state
 
-        state =
-          bind_running_issue(original_state, issue, attempt, worker_host, pid, ref, agent_run_id, worker_task_handle)
-
-        start_agent_runner_task(pid)
-
         case record_agent_run_running(agent_run_id, "worker task started") do
           :ok ->
+            state =
+              bind_running_issue(
+                original_state,
+                issue,
+                attempt,
+                worker_host,
+                pid,
+                ref,
+                agent_run_id,
+                worker_task_handle
+              )
+
+            start_agent_runner_task(pid)
             state
 
           {:error, reason} ->
@@ -1259,7 +1275,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp maybe_start_reattached_worker(agent_run, pid) do
-    if agent_run_value(agent_run, :status) == "starting" do
+    if agent_run_value(agent_run, :status) in ["starting", "running"] and waiting_worker_task?(pid) do
       start_agent_runner_task(pid)
     else
       :ok
@@ -1305,6 +1321,24 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.warning("Failed to release unverifiable active AgentRun agent_run_id=#{agent_run_id}: #{inspect(reason)}")
         state
     end
+  end
+
+  defp sweep_unmatched_waiting_worker_tasks(%State{} = state) do
+    running_pids =
+      state.running
+      |> Map.values()
+      |> Enum.map(&Map.get(&1, :pid))
+      |> MapSet.new()
+
+    SymphonyElixir.TaskSupervisor
+    |> Task.Supervisor.children()
+    |> Enum.reject(&MapSet.member?(running_pids, &1))
+    |> Enum.filter(&waiting_worker_task?/1)
+    |> Enum.each(&terminate_task/1)
+  rescue
+    error -> Logger.warning("Skipping waiting worker sweep after restart: #{inspect(error)}")
+  catch
+    :exit, reason -> Logger.warning("Skipping waiting worker sweep after restart: #{inspect(reason)}")
   end
 
   defp ensure_agent_run_marked_running(agent_run) do
@@ -1370,13 +1404,23 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp worker_task_token_matches?(pid, worker_task_token) when is_pid(pid) and is_binary(worker_task_token) do
-    case Process.info(pid, :dictionary) do
-      {:dictionary, dictionary} -> Keyword.get(dictionary, :sympp_worker_task_token) == worker_task_token
-      _ -> false
-    end
+    worker_task_process_value(pid, :sympp_worker_task_token) == worker_task_token
   end
 
   defp worker_task_token_matches?(_pid, _worker_task_token), do: false
+
+  defp waiting_worker_task?(pid) when is_pid(pid) do
+    worker_task_process_value(pid, :sympp_worker_task_state) == :waiting
+  end
+
+  defp waiting_worker_task?(_pid), do: false
+
+  defp worker_task_process_value(pid, key) when is_pid(pid) do
+    case Process.info(pid, :dictionary) do
+      {:dictionary, dictionary} -> Keyword.get(dictionary, key)
+      _ -> nil
+    end
+  end
 
   defp worker_task_handle(pid, worker_task_token) when is_pid(pid) and is_binary(worker_task_token) do
     "local-task:" <>
