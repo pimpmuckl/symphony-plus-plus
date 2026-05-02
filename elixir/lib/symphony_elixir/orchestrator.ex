@@ -1220,29 +1220,26 @@ defmodule SymphonyElixir.Orchestrator do
     agent_run_id = agent_run_value(agent_run, :id)
     reattached_at = DateTime.utc_now()
 
-    case ensure_agent_run_marked_running(agent_run) do
-      :ok ->
-        Logger.info("Reattached running AgentRun after restart: #{issue_context(issue)} pid=#{inspect(pid)} agent_run_id=#{agent_run_id}")
+    with :ok <- maybe_start_reattached_worker(agent_run, pid),
+         :ok <- ensure_agent_run_marked_running(agent_run) do
+      Logger.info("Reattached running AgentRun after restart: #{issue_context(issue)} pid=#{inspect(pid)} agent_run_id=#{agent_run_id}")
 
-        running_entry =
-          running_entry(
-            issue,
-            agent_run_value(agent_run, :attempt),
-            worker_host,
-            pid,
-            ref,
-            agent_run_id,
-            reattached_attrs(agent_run, reattached_at)
-          )
+      running_entry =
+        running_entry(
+          issue,
+          agent_run_value(agent_run, :attempt),
+          worker_host,
+          pid,
+          ref,
+          agent_run_id,
+          reattached_attrs(agent_run, reattached_at)
+        )
 
-        state = bind_reattached_running_entry(state, issue, running_entry)
-
-        maybe_start_reattached_worker(agent_run, pid)
-        state
-
+      bind_reattached_running_entry(state, issue, running_entry)
+    else
       {:error, reason} ->
         Process.demonitor(ref, [:flush])
-        Logger.warning("Unable to reattach AgentRun; failed to promote status for #{issue_context(issue)} agent_run_id=#{agent_run_id}: #{inspect(reason)}")
+        Logger.warning("Unable to reattach AgentRun for #{issue_context(issue)} agent_run_id=#{agent_run_id}: #{inspect(reason)}")
         terminate_task(pid)
         release_unverifiable_active_agent_run(state, agent_run)
     end
