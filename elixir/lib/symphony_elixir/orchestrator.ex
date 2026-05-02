@@ -852,12 +852,14 @@ defmodule SymphonyElixir.Orchestrator do
 
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
-        schedule_issue_retry(state, issue.id, next_attempt, %{
+        state
+        |> schedule_issue_retry(issue.id, next_attempt, %{
           identifier: issue.identifier,
           error: "failed to bind AgentRun worker task: #{inspect(reason)}",
           worker_host: worker_host,
           agent_run_id: agent_run_id
         })
+        |> claim_issue(issue.id)
     end
   end
 
@@ -1109,32 +1111,52 @@ defmodule SymphonyElixir.Orchestrator do
 
     case fetch_issue_for_agent_run(work_package_id) do
       {:ok, %Issue{} = issue} ->
-        ref = Process.monitor(pid)
-        worker_host = agent_run_value(agent_run, :worker_host)
-        agent_run_id = agent_run_value(agent_run, :id)
-        :ok = ensure_agent_run_marked_running(agent_run)
-
-        Logger.info("Reattached running AgentRun after restart: #{issue_context(issue)} pid=#{inspect(pid)} agent_run_id=#{agent_run_id}")
-
-        running_entry =
-          running_entry(issue, agent_run_value(agent_run, :attempt), worker_host, pid, ref, agent_run_id, %{
-            worker_task_handle: agent_run_value(agent_run, :worker_task_handle),
-            workspace_path: agent_run_value(agent_run, :workspace_path),
-            session_id: agent_run_value(agent_run, :session_id),
-            started_at: agent_run_value(agent_run, :started_at) || DateTime.utc_now()
-          })
-
-        %{
-          state
-          | running: Map.put(state.running, issue.id, running_entry),
-            claimed: MapSet.put(state.claimed, issue.id),
-            retry_attempts: Map.delete(state.retry_attempts, issue.id)
-        }
+        reattach_running_agent_run_issue(state, agent_run, issue, pid)
 
       {:error, reason} ->
         Logger.warning("Unable to reattach running AgentRun; issue lookup failed work_package_id=#{work_package_id}: #{inspect(reason)}")
         release_unverifiable_active_agent_run(state, agent_run)
     end
+  end
+
+  defp reattach_running_agent_run_issue(%State{} = state, agent_run, %Issue{} = issue, pid) when is_pid(pid) do
+    if retry_candidate_issue?(issue, terminal_state_set()) do
+      bind_reattached_agent_run(state, agent_run, issue, pid)
+    else
+      agent_run_id = agent_run_value(agent_run, :id)
+
+      Logger.info("Skipping AgentRun reattach for inactive issue: #{issue_context(issue)} agent_run_id=#{agent_run_id}")
+      terminate_task(pid)
+      record_agent_run_stopped(agent_run_id, "issue not active during restart reconciliation")
+      state
+    end
+  end
+
+  defp bind_reattached_agent_run(%State{} = state, agent_run, %Issue{} = issue, pid) when is_pid(pid) do
+    ref = Process.monitor(pid)
+    worker_host = agent_run_value(agent_run, :worker_host)
+    agent_run_id = agent_run_value(agent_run, :id)
+    :ok = ensure_agent_run_marked_running(agent_run)
+
+    Logger.info("Reattached running AgentRun after restart: #{issue_context(issue)} pid=#{inspect(pid)} agent_run_id=#{agent_run_id}")
+
+    running_entry =
+      running_entry(issue, agent_run_value(agent_run, :attempt), worker_host, pid, ref, agent_run_id, %{
+        worker_task_handle: agent_run_value(agent_run, :worker_task_handle),
+        workspace_path: agent_run_value(agent_run, :workspace_path),
+        session_id: agent_run_value(agent_run, :session_id),
+        started_at: agent_run_value(agent_run, :started_at) || DateTime.utc_now(),
+        last_codex_timestamp: agent_run_value(agent_run, :last_seen_at),
+        last_codex_event: :reattached,
+        usage_accounting_restored: false
+      })
+
+    %{
+      state
+      | running: Map.put(state.running, issue.id, running_entry),
+        claimed: MapSet.put(state.claimed, issue.id),
+        retry_attempts: Map.delete(state.retry_attempts, issue.id)
+    }
   end
 
   defp claim_retrying_agent_run_after_restart(%State{} = state, agent_run) do
@@ -1492,8 +1514,8 @@ defmodule SymphonyElixir.Orchestrator do
       workspace_path: Map.get(attrs, :workspace_path),
       session_id: Map.get(attrs, :session_id),
       last_codex_message: nil,
-      last_codex_timestamp: nil,
-      last_codex_event: nil,
+      last_codex_timestamp: Map.get(attrs, :last_codex_timestamp),
+      last_codex_event: Map.get(attrs, :last_codex_event),
       codex_app_server_pid: nil,
       codex_input_tokens: 0,
       codex_output_tokens: 0,
@@ -1504,7 +1526,8 @@ defmodule SymphonyElixir.Orchestrator do
       turn_count: 0,
       retry_attempt: normalize_retry_attempt(attempt),
       agent_run_id: agent_run_id,
-      started_at: Map.get(attrs, :started_at) || DateTime.utc_now()
+      started_at: Map.get(attrs, :started_at) || DateTime.utc_now(),
+      usage_accounting_restored: Map.get(attrs, :usage_accounting_restored, true)
     }
   end
 
@@ -1729,20 +1752,24 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp record_session_completion_totals(state, running_entry) when is_map(running_entry) do
-    runtime_seconds = running_seconds(running_entry.started_at, DateTime.utc_now())
+    if Map.get(running_entry, :usage_accounting_restored, true) == false do
+      state
+    else
+      runtime_seconds = running_seconds(running_entry.started_at, DateTime.utc_now())
 
-    codex_totals =
-      apply_token_delta(
-        state.codex_totals,
-        %{
-          input_tokens: 0,
-          output_tokens: 0,
-          total_tokens: 0,
-          seconds_running: runtime_seconds
-        }
-      )
+      codex_totals =
+        apply_token_delta(
+          state.codex_totals,
+          %{
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            seconds_running: runtime_seconds
+          }
+        )
 
-    %{state | codex_totals: codex_totals}
+      %{state | codex_totals: codex_totals}
+    end
   end
 
   defp record_session_completion_totals(state, _running_entry), do: state

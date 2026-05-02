@@ -1441,13 +1441,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
                worker_task_handle: worker_task_handle
              )
 
+    assert {:ok, live_run} = Tracker.heartbeat_agent_run(run.id, %{session_id: "session-reattach"})
+
     state =
       %Orchestrator.State{max_concurrent_agents: 1, running: %{}, claimed: MapSet.new(), retry_attempts: %{}}
       |> Orchestrator.reconcile_persisted_active_agent_runs_for_test()
 
-    assert %{pid: ^worker_pid, ref: ref, agent_run_id: run_id, retry_attempt: 2} = state.running[work_package.id]
+    assert %{
+             pid: ^worker_pid,
+             ref: ref,
+             agent_run_id: run_id,
+             retry_attempt: 2,
+             last_codex_timestamp: last_codex_timestamp,
+             last_codex_event: :reattached,
+             usage_accounting_restored: false
+           } = state.running[work_package.id]
+
     assert is_reference(ref)
     assert run_id == run.id
+    assert last_codex_timestamp == live_run.last_seen_at
     assert MapSet.member?(state.claimed, work_package.id)
     assert state.retry_attempts == %{}
 
@@ -1499,6 +1511,54 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert {:ok, persisted} = AgentRunRepository.get(repo, run.id)
     assert persisted.status == "running"
     assert persisted.worker_task_handle == worker_task_handle
+  end
+
+  test "restart reconciliation stops live persisted running AgentRun for terminal issue", %{repo: repo} do
+    assert {:ok, work_package} =
+             Repository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-TERMINAL-REATTACH", kind: "adapter", status: "ready_for_worker")
+             )
+
+    assert {:ok, work_package_grant} = AccessGrantService.mint_worker_grant(repo, work_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, work_package_grant.work_key.secret, claimed_by: "agent-1")
+    assert {:ok, [issue]} = Tracker.fetch_issue_states_by_ids([work_package.id])
+
+    {:ok, worker_pid} =
+      Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid) do
+        Task.Supervisor.terminate_child(SymphonyElixir.TaskSupervisor, worker_pid)
+      end
+    end)
+
+    worker_task_handle = Orchestrator.worker_task_handle_for_test(worker_pid)
+
+    assert {:ok, run} =
+             Tracker.start_agent_run(issue,
+               status: "running",
+               attempt: 2,
+               worker_task_handle: worker_task_handle
+             )
+
+    assert {:ok, _terminal_package} = Repository.update(repo, work_package.id, %{status: "merged"})
+
+    state =
+      %Orchestrator.State{max_concurrent_agents: 1, running: %{}, claimed: MapSet.new(), retry_attempts: %{}}
+      |> Orchestrator.reconcile_persisted_active_agent_runs_for_test()
+
+    refute Map.has_key?(state.running, work_package.id)
+    refute MapSet.member?(state.claimed, work_package.id)
+    assert state.retry_attempts == %{}
+
+    assert {:ok, stopped} = AgentRunRepository.get(repo, run.id)
+    assert stopped.status == "stopped"
+    assert stopped.reason == "issue not active during restart reconciliation"
   end
 
   test "restart reconciliation releases persisted running AgentRun with unverifiable worker", %{repo: repo} do
