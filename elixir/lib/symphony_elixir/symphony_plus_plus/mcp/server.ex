@@ -1586,7 +1586,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp append_new_progress_event_or_replay(repo, %Session{} = session, attrs, idempotency_key, tool) do
     transaction_fun = fn ->
-      with :ok <- PlanningService.require_valid_assignment(repo, session.assignment) do
+      with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
+           :ok <- reject_ready_evidence_mutation(repo, session, tool) do
         PlanningService.append_authenticated_progress_event(repo, session.assignment, attrs)
       end
     end
@@ -1595,6 +1596,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, event} ->
         {:ok, tool_result(%{"progress_event" => progress_event_payload(event)})}
 
+      {:tool_error, reason} ->
+        {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason}}
+
       {:error, :idempotency_key_conflict} ->
         replay_progress_event_with_retry(repo, session, attrs, idempotency_key, tool, progress_replay_retry_attempts())
 
@@ -1602,6 +1606,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         worker_error(reason, tool)
     end
   end
+
+  defp reject_ready_evidence_mutation(repo, %Session{} = session, tool) when tool in ["attach_branch", "attach_pr", "submit_review_package"] do
+    work_package_id = Session.work_package_id(session)
+
+    with :ok <- lock_work_package(repo, work_package_id),
+         {:ok, state} <- PlanningRepository.get_state(repo, work_package_id) do
+      reject_ready_work_package(state.work_package)
+    end
+  end
+
+  defp reject_ready_evidence_mutation(_repo, %Session{}, _tool), do: :ok
+
+  defp reject_ready_work_package(%WorkPackage{status: status}) when status in ["ready_for_human_merge", "ready_for_architect_merge"], do: {:tool_error, "already_ready"}
+  defp reject_ready_work_package(%WorkPackage{}), do: :ok
 
   defp replay_progress_event_with_retry(repo, %Session{} = session, attrs, idempotency_key, tool, attempts_left) do
     retry_fun = fn ->

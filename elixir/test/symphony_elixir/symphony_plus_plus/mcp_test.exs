@@ -2009,6 +2009,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert length(nodes) == 2
     assert Enum.find(nodes, &(&1.id == plan_node.id)).body == "Complete"
 
+    read_after_patch_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "read-plan-after-patch", "method" => "tools/call", "params" => %{"name" => "read_task_plan"}},
+        repo: repo,
+        session: session
+      )
+
+    body_only_patch_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "body-only-patch-plan",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "update_task_plan",
+            "arguments" => %{
+              "expected_version" => get_in(read_after_patch_response, ["result", "structuredContent", "version"]),
+              "patch" => %{"nodes" => [%{"id" => plan_node.id, "body" => "Body-only update"}]}
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(body_only_patch_response, ["result", "structuredContent", "plan_nodes", Access.at(0), "id"]) == plan_node.id
+    assert {:ok, body_only_nodes} = PlanningRepository.list_plan_nodes(repo, package.id)
+    assert Enum.find(body_only_nodes, &(&1.id == plan_node.id)).body == "Body-only update"
+
     stale_response =
       MCPHarness.request(
         %{
@@ -2526,6 +2555,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
     assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
+
+    post_ready_branch_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "post-ready-branch",
+          "method" => "tools/call",
+          "params" => %{"name" => "attach_branch", "arguments" => %{"branch" => "agent/SYMPP-READY-GATES/worker", "head_sha" => "new-ready-head"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    post_ready_review_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "post-ready-review",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "submit_review_package",
+            "arguments" => %{
+              "summary" => "Red after ready",
+              "tests" => ["mix test"],
+              "artifacts" => ["red-after-ready.txt"],
+              "head_sha" => "def456",
+              "acceptance_criteria_met" => false,
+              "reviews" => [%{"lane" => "review_t1", "verdict" => "red"}]
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(post_ready_branch_response, ["error", "data", "reason"]) == "already_ready"
+    assert get_in(post_ready_review_response, ["error", "data", "reason"]) == "already_ready"
+    assert {:ok, ready_package} = WorkPackageRepository.get(repo, package.id)
+    assert ready_package.status == "ready_for_human_merge"
   end
 
   test "review package submitted before PR attach does not satisfy later PR readiness", %{repo: repo} do
@@ -3388,7 +3456,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   defp ensure_handle_state_agent do
     case Process.whereis(handle_state_agent()) do
       nil ->
-        case Agent.start_link(fn -> %{} end, name: handle_state_agent()) do
+        case Agent.start(fn -> %{} end, name: handle_state_agent()) do
           {:ok, _pid} -> :ok
           {:error, {:already_started, _pid}} -> :ok
         end

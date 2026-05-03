@@ -189,10 +189,14 @@ Phase 3
 - [x] Run fresh full-diff T2 on pushed head `facc90b` and close valid findings gate.
 - [x] Fix forty-ninth T2 explicit plan patch id and stdio response-state findings locally.
 - [x] Validate forty-ninth T2 fixes locally.
-- [ ] Commit and push forty-ninth T2 fixes.
+- [x] Commit and push forty-ninth T2 fixes.
+- [x] Run fresh full-diff T2 on pushed head `7412155` and close valid findings gate.
+- [x] Fix fiftieth T2 ready-evidence drift and partial plan-patch clarity findings locally.
+- [x] Validate fiftieth T2 fixes locally.
+- [ ] Commit and push fiftieth T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** active: latest valid T2 findings are fixed and validated locally, pending commit/push plus fresh T2.
+- **Status:** active: fiftieth T2 fixes are validated locally, pending commit/push plus fresh T2.
 
 ### High-Pressure Coherence Review
 
@@ -260,6 +264,8 @@ Phase 3
 - Findings remain localized to review evidence freshness and response-state hygiene inside P3-002, so continuing the mandated T2/GitHub loop is appropriate.
 - Before the next T2, the approach remains coherent because the latest follow-up only makes the advertised task-plan patch schema consistent with runtime append behavior and applies the existing response-only persistence helper to the stdio line-response path.
 - Findings remain narrow contract-consistency and helper-path state retention hardening inside P3-002, not a broader package design problem.
+- Before the next T2, the approach remains coherent because the latest fix only prevents worker evidence mutations after a successful ready transition and makes partial plan-node updates explicit in the existing changeset.
+- Findings remain bounded to readiness immutability and task-plan patch contract clarity within P3-002.
 
 ## Blockers
 
