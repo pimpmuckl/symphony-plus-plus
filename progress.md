@@ -1340,3 +1340,17 @@
 ### Next Steps
 
 - Commit and push fifty-eighth T2 fixes, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
+
+### Fifty-Ninth T2 Blocker
+
+- Pushed head before this round: `1c28dbd`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T045342Z-cd526540`; closed it as `findings`.
+- Bravo reported that newest branch/PR metadata should select the current head so newer PR metadata can supersede older branch metadata.
+- Alpha reported that restoring a claimed session from explicit `state_key` alone is a session-hijack/bearer-token path, and that review-package evidence should not satisfy readiness when no current branch/PR head is attached.
+- Blocker: these findings conflict with prior T2-directed explicit `state_key` session continuity and with the just-applied branch-head authority rule. Further changes need an overseeing product/security decision rather than another blind T2 iteration.
+
+### Decision Needed
+
+- Explicit `state_key` reconnect: either preserve session continuity as a bearer-like reconnect token, or require `claim_work_key(secret, claimed_by)` again after reconnect initialize and retain only initialized handshake state.
+- Current head authority: either newest metadata event wins, latest branch head wins until PR metadata matches, or define a stricter rule such as review packages require explicit current branch/PR metadata and stale PR attachments are rejected at `attach_pr`.
+- Review packages without attached head metadata: either reject/ignore them for readiness, or allow them only for non-merge policies with explicit `head_sha`.
