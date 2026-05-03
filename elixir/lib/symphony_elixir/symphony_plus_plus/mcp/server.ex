@@ -1196,7 +1196,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp revalidate_bound_session(repo, %Session{} = session, proof_hash) do
     with {:ok, grant} <- AccessGrantRepository.get(repo, session.assignment.grant_id),
-         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash) do
+         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash),
+         :ok <- require_mcp_claimable_assignment(session.assignment) do
       {:ok, session}
     end
   end
@@ -1204,7 +1205,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp claim_or_reconnect_session(repo, secret, proof_hash, claimed_by) do
     case AccessGrantService.claim(repo, secret, claimed_by: claimed_by) do
       {:ok, assignment} ->
-        {:ok, Session.new(assignment, proof_hash: proof_hash)}
+        with :ok <- require_mcp_claimable_assignment(assignment) do
+          {:ok, Session.new(assignment, proof_hash: proof_hash)}
+        end
 
       {:error, :already_claimed} ->
         reconnect_claimed_session(repo, proof_hash, claimed_by)
@@ -1217,7 +1220,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp reconnect_claimed_session(repo, proof_hash, claimed_by) do
     with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, proof_hash),
          :ok <- require_same_claim_owner(grant, claimed_by),
-         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash) do
+         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash),
+         :ok <- require_mcp_claimable_assignment(session.assignment) do
       {:ok, session}
     end
   end
@@ -1238,6 +1242,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_architect_assignment(%{grant_role: "architect"}), do: :ok
   defp require_architect_assignment(_assignment), do: {:error, :architect_grant_required}
+
+  defp require_mcp_claimable_assignment(%{grant_role: role}) when role in ["worker", "architect"], do: :ok
+  defp require_mcp_claimable_assignment(_assignment), do: {:error, :unsupported_grant_role}
 
   defp require_architect_capability(%{capabilities: capabilities}, capability) when is_list(capabilities) do
     if capability in capabilities do

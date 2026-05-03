@@ -2107,6 +2107,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert replay_server.session.assignment.work_package_id == "SYMPP-WORKER-CLAIM"
   end
 
+  test "claim_work_key rejects non-worker non-architect grant roles", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-UNSUPPORTED-CLAIM-ROLE", kind: "mcp", status: "ready_for_worker"))
+
+    work_key = WorkKey.generate()
+    now = DateTime.utc_now(:microsecond)
+
+    assert {1, nil} =
+             repo.insert_all(AccessGrant, [
+               %{
+                 id: "ag_unsupported_claim_role",
+                 work_package_id: package.id,
+                 display_key: work_key.display_key,
+                 secret_hash: WorkKey.secret_hash(work_key.secret),
+                 grant_role: "auditor",
+                 capabilities: [],
+                 expires_at: DateTime.add(now, 86_400, :second),
+                 inserted_at: now,
+                 updated_at: now
+               }
+             ])
+
+    response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "unsupported-role-claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => work_key.secret, "claimed_by" => "auditor-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_001
+    assert get_in(response, ["error", "data", "reason"]) == "unsupported_grant_role"
+  end
+
   test "worker tools reject injected non-worker sessions", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-INJECTED-ARCHITECT", kind: "mcp"))
     assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id)
