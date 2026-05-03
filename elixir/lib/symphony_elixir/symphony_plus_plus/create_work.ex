@@ -168,11 +168,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   defp append_scope_plan_node(repo, %WorkPackage{} = work_package) do
     PlanningRepository.append_plan_node(repo, %{
       work_package_id: work_package.id,
-      title: "Implement requested scope",
+      title: initial_scope_title(work_package),
       body: nonblank_or(work_package.engineering_scope, "Use the engineering scope from context.md."),
       status: "pending"
     })
   end
+
+  defp initial_scope_title(%WorkPackage{kind: "investigation"}), do: "Investigate requested scope"
+  defp initial_scope_title(%WorkPackage{}), do: "Implement requested scope"
 
   defp append_review_plan_node(repo, %WorkPackage{} = work_package, policy) do
     PlanningRepository.append_plan_node(repo, %{
@@ -186,7 +189,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   defp review_plan_body(policy) do
     [
       acceptance_plan_line(policy),
-      "Required review gates:",
+      "Required gates:",
       gates_line(policy.required_gates),
       "",
       "Required review lanes:",

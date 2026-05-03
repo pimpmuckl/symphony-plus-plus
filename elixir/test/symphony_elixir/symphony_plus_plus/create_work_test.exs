@@ -250,6 +250,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
 
     assert creation.virtual_files["context.md"] =~ "Fix flaky uploader"
     assert creation.virtual_files["task_plan.md"] =~ "Implement requested scope"
+    assert creation.virtual_files["task_plan.md"] =~ "Required gates:"
     assert creation.virtual_files["acceptance.md"] =~ "Focused regression coverage exists."
     assert creation.virtual_files["review_suite.md"] =~ "Policy template: `quick_fix`"
 
@@ -289,8 +290,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
              })
 
     assert creation.policy.template == "investigation"
+    assert creation.virtual_files["task_plan.md"] =~ "Investigate requested scope"
+    refute creation.virtual_files["task_plan.md"] =~ "Implement requested scope"
     assert creation.virtual_files["task_plan.md"] =~ "Use the engineering scope from context.md."
     refute creation.virtual_files["task_plan.md"] =~ "Satisfy the package acceptance criteria"
+    assert creation.virtual_files["task_plan.md"] =~ "Required gates:"
+    assert creation.virtual_files["task_plan.md"] =~ "findings_documented"
     assert creation.virtual_files["acceptance.md"] =~ "No acceptance criteria recorded."
   end
 
