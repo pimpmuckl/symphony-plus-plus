@@ -48,6 +48,8 @@ default response-state TTL. They remain continuity metadata until overwritten,
 cleared by a failed explicit reconnect initialize, or expired by the explicit
 state-key retention window. A newer explicit initialize for the same state key
 invalidates stale live sessions that were claimed before that initialize.
+Duplicate initialize on the same active explicit-state connection is still
+rejected as already initialized and does not clear the live session.
 Implicit response-state continuity is for a single logical connection; a fresh
 implicit `initialize` clears stored session state before any new worker claim.
 

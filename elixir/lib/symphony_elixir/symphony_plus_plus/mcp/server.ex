@@ -171,7 +171,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp restore_handle_state(payload, %__MODULE__{state_key_explicit: true} = server) do
     if initialize_request?(payload) do
-      %{server | initialized: false, session: nil}
+      if server.initialized do
+        server
+      else
+        %{server | initialized: false, session: nil}
+      end
     else
       restore_explicit_handle_state(server)
     end

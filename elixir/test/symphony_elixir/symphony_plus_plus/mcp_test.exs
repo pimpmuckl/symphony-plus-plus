@@ -1193,6 +1193,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
   end
 
+  test "explicit state key duplicate initialize preserves active live session", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STATE-LIVE-DUP", kind: "mcp", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    state_key = make_ref()
+
+    {_init_response, initialized_server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()},
+        Server.new(Config.default(repo: repo), state_key: state_key)
+      )
+
+    {_claim_response, claimed_server} =
+      Server.handle_response_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        initialized_server
+      )
+
+    {duplicate_init_response, duplicate_server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "init-again", "method" => "initialize", "params" => initialize_params()},
+        claimed_server
+      )
+
+    {assignment_response, _server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "assignment-after-duplicate", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        duplicate_server
+      )
+
+    assert get_in(duplicate_init_response, ["error", "data", "reason"]) == "already_initialized"
+    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+  end
+
   test "failed explicit state key reinitialize clears prior handshake state", %{repo: repo} do
     state_key = make_ref()
 
@@ -1218,7 +1256,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_response, ["error", "data", "reason"]) == "server_not_initialized"
   end
 
-  test "failed explicit state key reinitialize clears live server session", %{repo: repo} do
+  test "failed duplicate explicit initialize preserves live server session", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-FAILED-REINIT-LIVE", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     state_key = make_ref()
@@ -1240,7 +1278,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         initialized_server
       )
 
-    {invalid_init_response, cleared_server} =
+    {invalid_init_response, live_server} =
       Server.handle_response_state(
         %{"jsonrpc" => "2.0", "id" => "invalid-init", "method" => "initialize", "params" => %{"protocolVersion" => "2025-03-26"}},
         claimed_server
@@ -1249,11 +1287,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     {assignment_response, _server} =
       Server.handle_response_state(
         %{"jsonrpc" => "2.0", "id" => "assignment-after-failed-init", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
-        cleared_server
+        live_server
       )
 
-    assert get_in(invalid_init_response, ["error", "data", "reason"]) == "invalid_initialize_params"
-    assert get_in(assignment_response, ["error", "data", "reason"]) == "server_not_initialized"
+    assert get_in(invalid_init_response, ["error", "data", "reason"]) == "already_initialized"
+    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
   end
 
   test "stdio response-only line helper retains initialized worker session", %{repo: repo} do

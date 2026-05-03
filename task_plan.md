@@ -329,6 +329,8 @@ Phase 3
 - Before the next T2, the approach remains coherent because the fixes narrow the existing protocol guarantees: a batch can retain one successful claim for later standalone requests but cannot claim multiple grants, and response-state continuity stays ledger-scoped even for blank-path SQLite databases.
 - Fresh T2 on pushed head `af3311a` produced valid response-state findings: blank-path SQLite ledgers with nil configured database still needed a non-nil namespace, and implicit response-state sessions should reset on a fresh initialize. Bravo also repeated a finding to grant-scope `append_finding` idempotency, which conflicts with earlier T2 and implemented contract text requiring work-package-scoped replay across grant renewal.
 - Before the next T2, the approach remains coherent because the applied fixes stay within response-state isolation and lifecycle semantics; the finding idempotency scope is left unchanged unless the overseer reverses the prior work-package-scoped idempotency decision.
+- Fresh T2 on pushed head `08eb4ce` produced one valid finding: duplicate `initialize` on an already-live explicit-state server should return `already_initialized` and preserve the active worker session, while recreated explicit-state servers may still initialize for reconnect continuity.
+- Before the next T2, the approach remains coherent because this only separates active-connection duplicate-initialize semantics from recreated-server reconnect semantics.
 
 ## Blockers
 
