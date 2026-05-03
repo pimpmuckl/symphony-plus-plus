@@ -156,10 +156,13 @@ Phase 3
 - [x] Commit and push thirty-eighth T2 fix.
 - [x] Run fresh full-diff T2 on pushed head `0a1114e` and close valid findings gate.
 - [x] Fix thirty-ninth T2 current-head merge metadata and `claim_work_key` strict-schema bypass findings locally.
-- [ ] Commit and push thirty-ninth T2 fix.
+- [x] Commit and push thirty-ninth T2 fix.
+- [x] Run fresh full-diff T2 on pushed head `b3b51db` and close valid findings gate.
+- [x] Fix fortieth T2 response-only state and `update_task_plan` schema findings locally.
+- [ ] Commit and push fortieth T2 fix.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** thirty-ninth T2 fixes validated locally; pending commit/push, fresh full-diff T2 rerun, and GitHub review if T2 is clean.
+- **Status:** fortieth T2 fixes validated locally; pending commit/push, fresh full-diff T2 rerun, and GitHub review if T2 is clean.
 
 ### High-Pressure Coherence Review
 
@@ -204,6 +207,8 @@ Phase 3
 - Findings remain localized to API contract enforcement for the same P3-002 tool dispatcher.
 - Before the next T2, the approach remains coherent because the latest change only applies existing strict-schema and current-head readiness rules to two bypass edges in the same worker MCP surface.
 - Findings remain localized to contract enforcement and merge-readiness evidence freshness, not a broader design or scope problem.
+- Before the next T2, the approach remains coherent because the latest fix only aligns the advertised task-plan schema with existing append/patch behavior and tightens response-only MCP state retention.
+- Findings remain localized to generated-client schema accuracy and response-only transport state edges inside P3-002.
 
 ## Blockers
 

@@ -36,11 +36,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @version_resource "sympp://health/version"
   @assignment_resource "sympp://assignment/current"
   @finding_replay_retry_attempts 50
+  @default_handle_state_ttl_ms 60_000
 
   @enforce_keys [:config]
-  defstruct [:config, :session, :state_key, initialized: false]
+  defstruct [:config, :session, :state_key, state_key_explicit: false, initialized: false]
 
-  @type t :: %__MODULE__{config: Config.t(), session: Session.t() | nil, state_key: term(), initialized: boolean()}
+  @type t :: %__MODULE__{
+          config: Config.t(),
+          session: Session.t() | nil,
+          state_key: term(),
+          state_key_explicit: boolean(),
+          initialized: boolean()
+        }
 
   defguardp valid_request_id(id) when is_binary(id) or is_number(id) or is_nil(id)
   defguardp invalid_request_id(id) when not is_binary(id) and not is_number(id) and not is_nil(id)
@@ -51,12 +58,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       config: config,
       session: Keyword.get(opts, :session),
       state_key: Keyword.get(opts, :state_key, make_ref()),
+      state_key_explicit: Keyword.has_key?(opts, :state_key),
       initialized: Keyword.get(opts, :initialized, false)
     }
   end
 
   @spec handle(term(), t()) :: map() | [map()] | nil
   def handle(payload, %__MODULE__{} = server) do
+    cleanup_default_handle_states()
     server = restore_handle_state(payload, server)
     {response, updated_server} = handle_state(payload, server)
     persist_handle_state(server, updated_server)
@@ -113,7 +122,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   def handle_state(payload, %__MODULE__{} = server), do: {do_handle(payload, server), server}
 
-  defp restore_handle_state(payload, %__MODULE__{initialized: false, session: nil} = server) do
+  defp restore_handle_state(payload, %__MODULE__{initialized: false, session: nil, state_key_explicit: true} = server) do
     if initialize_request?(payload) do
       Process.delete(handle_state_key(server))
       server
@@ -137,12 +146,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp persist_handle_state(%__MODULE__{} = server, %__MODULE__{} = updated_server) do
     if server.initialized != updated_server.initialized or server.session != updated_server.session do
       Process.put(handle_state_key(server), updated_server)
+      track_default_handle_state(updated_server)
     end
 
     :ok
   end
 
   defp handle_state_key(%__MODULE__{state_key: state_key}), do: {__MODULE__, state_key}
+  defp default_handle_state_keys_key, do: {__MODULE__, :default_handle_state_keys}
+
+  defp track_default_handle_state(%__MODULE__{state_key_explicit: true}), do: :ok
+
+  defp track_default_handle_state(%__MODULE__{state_key: state_key}) do
+    keys =
+      Process.get(default_handle_state_keys_key(), [])
+      |> Enum.reject(fn {key, _timestamp_ms} -> key == state_key end)
+
+    Process.put(default_handle_state_keys_key(), [{state_key, monotonic_ms()} | keys])
+    :ok
+  end
+
+  defp cleanup_default_handle_states do
+    now = monotonic_ms()
+
+    active_keys =
+      Process.get(default_handle_state_keys_key(), [])
+      |> Enum.filter(fn {state_key, timestamp_ms} ->
+        if now - timestamp_ms > @default_handle_state_ttl_ms do
+          Process.delete({__MODULE__, state_key})
+          false
+        else
+          true
+        end
+      end)
+
+    Process.put(default_handle_state_keys_key(), active_keys)
+    :ok
+  end
+
+  defp monotonic_ms, do: System.monotonic_time(:millisecond)
 
   defp do_handle([], %__MODULE__{}) do
     error_response(nil, -32_600, "Invalid Request", %{"reason" => "empty_batch"})
@@ -462,6 +504,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       }),
       ["expected_version"]
     )
+    |> Map.put("oneOf", [
+      %{"required" => ["expected_version", "patch"]},
+      %{"required" => ["expected_version", "title"]}
+    ])
   end
 
   defp worker_tool_input_schema("append_finding") do

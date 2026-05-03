@@ -255,6 +255,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["append_finding", "inputSchema", "required"]) == ["title", "body", "idempotency_key"]
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "required"]) == ["expected_version"]
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "expected_version", "type"]) == "integer"
+
+    assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "oneOf"]) == [
+             %{"required" => ["expected_version", "patch"]},
+             %{"required" => ["expected_version", "title"]}
+           ]
+
     assert get_in(tools_by_name, ["set_status", "inputSchema", "required"]) == ["status", "expected_status"]
     assert get_in(tools_by_name, ["report_blocker", "inputSchema", "properties", "blocker_id", "type"]) == "string"
     assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["blocker_id", "resolution", "summary", "idempotency_key"]
@@ -908,6 +914,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert is_list(get_in(tools_response, ["result", "tools"]))
   end
 
+  test "response-only handle preserves already initialized state for repeated initialize", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-REINIT-HANDLE", kind: "mcp", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    server = Server.new(Config.default(repo: repo))
+
+    init_response = Server.handle(%{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()}, server)
+
+    claim_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        server
+      )
+
+    reinit_response = Server.handle(%{"jsonrpc" => "2.0", "id" => "init-again", "method" => "initialize", "params" => initialize_params()}, server)
+
+    assignment_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "assignment", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        server
+      )
+
+    assert get_in(init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-REINIT-HANDLE"
+    assert get_in(reinit_response, ["error", "data", "reason"]) == "already_initialized"
+    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-REINIT-HANDLE"
+  end
+
   test "response-only handle supports explicit state keys for recreated servers", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STATELESS-HANDLE", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -1011,6 +1049,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert is_list(get_in(response, ["result", "tools"]))
     assert Process.get({Server, server.state_key}) == nil
+  end
+
+  test "response-only handle cleans stale default state entries", %{repo: repo} do
+    stale_key = make_ref()
+
+    Process.put({Server, stale_key}, Server.new(Config.default(repo: repo), initialized: true))
+    Process.put({Server, :default_handle_state_keys}, [{stale_key, System.monotonic_time(:millisecond) - 120_000}])
+
+    response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "init-cleanup", "method" => "initialize", "params" => initialize_params()},
+        Server.new(Config.default(repo: repo))
+      )
+
+    assert get_in(response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
+    assert Process.get({Server, stale_key}) == nil
   end
 
   test "claim_work_key notification binds session inside a batch", %{repo: repo} do
