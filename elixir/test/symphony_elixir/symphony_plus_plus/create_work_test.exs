@@ -92,6 +92,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
   test "accepts resolved policy template names and rejects blank acceptance criteria" do
     assert {:ok, request} =
              CreateWork.parse_request(%{
+               repo: "kraken",
+               base_branch: "main",
+               title: "Explicit hotfix policy",
+               acceptance_criteria: ["Hotfix works."],
+               policy_template: "hotfix",
+               review_suite_template: "hotfix"
+             })
+
+    assert request["kind"] == "hotfix"
+    assert request["policy"].template == "hotfix"
+
+    assert {:ok, request} =
+             CreateWork.parse_request(%{
                kind: "mcp",
                repo: "symphony-plus-plus",
                base_branch: "symphony-plus-plus/beta",
@@ -145,9 +158,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
 
     assert {:error, :policy_template_mismatch} =
              CreateWork.parse_request(%{
+               kind: "quick_fix",
                repo: "symphony-plus-plus",
                base_branch: "symphony-plus-plus/beta",
-               title: "Implicit quick fix cannot request worker package",
+               title: "Quick fix cannot request worker package",
                acceptance_criteria: ["Conflict is rejected."],
                policy_template: "worker_package"
              })
@@ -193,6 +207,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
                repo: "kraken",
                base_branch: "main",
                title: "Bad kind"
+             })
+
+    assert {:error, :invalid_kind} =
+             CreateWork.parse_request(%{
+               kind: "   ",
+               repo: "kraken",
+               base_branch: "main",
+               title: "Blank kind"
+             })
+
+    assert {:error, :invalid_kind} =
+             CreateWork.parse_request(%{
+               kind: 123,
+               repo: "kraken",
+               base_branch: "main",
+               title: "Numeric kind"
              })
   end
 

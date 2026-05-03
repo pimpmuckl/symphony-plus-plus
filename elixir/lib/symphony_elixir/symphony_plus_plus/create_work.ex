@@ -24,6 +24,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
           :empty_request_file
           | :invalid_acceptance_criteria
           | :invalid_allowed_file_globs
+          | :invalid_kind
           | :invalid_request
           | :invalid_work_package_id
           | :missing_acceptance_criteria
@@ -122,6 +123,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   def error_message(:empty_request_file), do: "Create-work request file is empty"
   def error_message(:invalid_acceptance_criteria), do: "acceptance_criteria must be a list of nonblank strings"
   def error_message(:invalid_allowed_file_globs), do: "allowed_file_globs must be a list of nonblank strings"
+  def error_message(:invalid_kind), do: "kind must be a nonblank string when provided"
   def error_message(:invalid_request), do: "Create-work request must be a JSON/YAML object"
   def error_message(:invalid_work_package_id), do: "id must be a nonblank string when provided"
   def error_message(:missing_acceptance_criteria), do: "acceptance_criteria is required for this work kind"
@@ -318,12 +320,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   end
 
   defp normalize_kind(attrs) do
-    kind = Map.get(attrs, "kind", @default_kind)
+    case Map.fetch(attrs, "kind") do
+      :error ->
+        default_kind(attrs)
 
-    case normalize_nonblank_string(kind) do
-      {:ok, "phase_child"} -> {:error, :standalone_kind_not_supported}
-      {:ok, kind} -> {:ok, kind}
-      {:error, :blank} -> {:ok, @default_kind}
+      {:ok, kind} ->
+        case normalize_nonblank_string(kind) do
+          {:ok, "phase_child"} -> {:error, :standalone_kind_not_supported}
+          {:ok, kind} -> {:ok, kind}
+          {:error, :blank} -> {:error, :invalid_kind}
+        end
+    end
+  end
+
+  defp default_kind(attrs) do
+    case Enum.uniq(explicit_policy_templates(attrs)) do
+      [] ->
+        {:ok, @default_kind}
+
+      [template] ->
+        with {:ok, policy} <- Templates.expand(template),
+             :ok <- reject_phase_child_policy(policy) do
+          {:ok, template}
+        end
+
+      _templates ->
+        {:error, :policy_template_mismatch}
     end
   end
 

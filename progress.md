@@ -80,6 +80,12 @@
 | `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/symphony_elixir/symphony_plus_plus/work_packages_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | Acceptance-less quick-fix persistence/render strengthening: 30 tests, 0 failures. |
 | `mise exec -- mix format --check-formatted` | pass | Acceptance-less quick-fix persistence/render strengthening: no formatting drift. |
 | `mise exec -- mix credo --strict lib/symphony_elixir/symphony_plus_plus/create_work.ex test/symphony_elixir/symphony_plus_plus/create_work_test.exs` | pass | Acceptance-less quick-fix persistence/render strengthening: touched files, no issues. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/create_work_test.exs` | pass | Kind/template parser fix validation: 12 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/symphony_elixir/symphony_plus_plus/work_packages_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | Kind/template parser fix validation: 30 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | Kind/template parser fix validation: 337 tests, 0 failures. |
+| `mise exec -- mix specs.check` | pass | Kind/template parser fix validation: all public functions have specs or exemption. |
+| `mise exec -- mix format --check-formatted` | pass | Kind/template parser fix validation: no formatting drift. |
+| `mise exec -- mix credo --strict lib/symphony_elixir/symphony_plus_plus/create_work.ex test/symphony_elixir/symphony_plus_plus/create_work_test.exs` | pass | Kind/template parser fix validation: touched files, no issues. |
 
 ## Review
 
@@ -102,7 +108,9 @@
 - Final cached `review_state` after GitHub review: `recommendation: none` for head `dff32133351ac6336223967a97fa74fda30a516e`.
 - Cached full-diff T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T183448Z-82b38779` flagged acceptance-less quick-fix persistence; added explicit regression coverage for the accepted/persisted quick-fix path.
 - Cached follow-up `019def24-cfe9-7d53-83c3-27c1c0042e2d` found the acceptance-less quick-fix regression needed to prove ledger reload/rendering. Updated the test to reload the persisted WorkPackage and render `acceptance.md` from repository state.
+- Cached follow-up `019def26-9112-74c1-befe-0054773bbc7e` returned no findings for the strengthened acceptance-less quick-fix regression.
+- Cached full-diff T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T184341Z-c43a17cd` found explicit invalid-kind defaulting and limited explicit-template selection. Closed the gate as findings and applied a narrow parser fix: absent kind can select a known explicit template, explicit malformed kind is rejected, and cross-kind overrides remain rejected.
 
 ## Outstanding
 
-- Validate and rerun cached review-state after the acceptance-less quick-fix regression-strengthening commit.
+- Validate and rerun cached review-state after the kind/template parser fix.
