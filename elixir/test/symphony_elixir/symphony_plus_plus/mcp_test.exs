@@ -979,6 +979,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-STATELESS-HANDLE"
   end
 
+  test "response-only handle supports explicit state keys across processes", %{repo: repo} do
+    state_key = make_ref()
+
+    init_response =
+      Task.async(fn ->
+        Server.handle(
+          %{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()},
+          Server.new(Config.default(repo: repo), state_key: state_key)
+        )
+      end)
+      |> Task.await()
+
+    tools_response =
+      Task.async(fn ->
+        Server.handle(
+          %{"jsonrpc" => "2.0", "id" => "tools", "method" => "tools/list", "params" => %{}},
+          Server.new(Config.default(repo: repo), state_key: state_key)
+        )
+      end)
+      |> Task.await()
+
+    assert get_in(init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
+    assert is_list(get_in(tools_response, ["result", "tools"]))
+  end
+
   test "response-only handle resets explicit state key on a new initialize", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STATE-RESET", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -1043,19 +1068,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   test "response-only handle does not retain unchanged one-shot server state", %{repo: repo} do
     server = Server.new(Config.default(repo: repo), initialized: true)
-    Process.delete({Server, server.state_key})
+    delete_handle_state_entry(server.state_key)
 
     response = Server.handle(%{"jsonrpc" => "2.0", "id" => "tools", "method" => "tools/list", "params" => %{}}, server)
 
     assert is_list(get_in(response, ["result", "tools"]))
-    assert Process.get({Server, server.state_key}) == nil
+    refute Map.has_key?(handle_state_store(), server.state_key)
   end
 
   test "response-only handle cleans stale default state entries", %{repo: repo} do
     stale_key = make_ref()
 
-    Process.put({Server, stale_key}, Server.new(Config.default(repo: repo), initialized: true))
-    Process.put({Server, :default_handle_state_keys}, [{stale_key, System.monotonic_time(:millisecond) - 120_000}])
+    put_handle_state_entry(stale_key, {Server.new(Config.default(repo: repo), initialized: true), System.monotonic_time(:millisecond) - 120_000, false})
 
     response =
       Server.handle(
@@ -1064,7 +1088,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
-    assert Process.get({Server, stale_key}) == nil
+    refute Map.has_key?(handle_state_store(), stale_key)
+  end
+
+  test "response-only handle refreshes active default state entries", %{repo: repo} do
+    server = Server.new(Config.default(repo: repo))
+
+    init_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "init-refresh", "method" => "initialize", "params" => initialize_params()},
+        server
+      )
+
+    {stored_server, _timestamp_ms, false} = Map.fetch!(handle_state_store(), server.state_key)
+    stale_but_active_timestamp = System.monotonic_time(:millisecond) - 59_000
+    put_handle_state_entry(server.state_key, {stored_server, stale_but_active_timestamp, false})
+
+    tools_response = Server.handle(%{"jsonrpc" => "2.0", "id" => "tools-refresh", "method" => "tools/list", "params" => %{}}, server)
+
+    {_stored_server, refreshed_timestamp, false} = Map.fetch!(handle_state_store(), server.state_key)
+    assert get_in(init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
+    assert is_list(get_in(tools_response, ["result", "tools"]))
+    assert refreshed_timestamp > stale_but_active_timestamp
   end
 
   test "claim_work_key notification binds session inside a batch", %{repo: repo} do
@@ -3030,6 +3075,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "clientInfo" => %{"name" => "sympp-test-client", "version" => "0.1.0"},
       "capabilities" => %{}
     }
+  end
+
+  defp handle_state_store_key, do: {Server, :handle_state_store}
+
+  defp handle_state_store, do: :persistent_term.get(handle_state_store_key(), %{})
+
+  defp put_handle_state_entry(state_key, entry) do
+    handle_state_store_key()
+    |> :persistent_term.put(Map.put(handle_state_store(), state_key, entry))
+  end
+
+  defp delete_handle_state_entry(state_key) do
+    handle_state_store_key()
+    |> :persistent_term.put(Map.delete(handle_state_store(), state_key))
   end
 
   defp attach_tool(repo, session, name, arguments) do

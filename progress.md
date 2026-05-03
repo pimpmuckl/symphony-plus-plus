@@ -220,6 +220,29 @@
 
 - Commit and push fortieth T2 fixes, then rerun full-diff T2 and proceed to GitHub review if clean.
 
+### Forty-First T2 Follow-up Actions
+
+- Pushed fortieth T2 fix head `a31a4107236ecfd2a14775623ec150c4d00ba572` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T014115Z-6c11e4e4`; closed it as `findings`.
+- Fixed valid findings by replacing the response-only process dictionary state with a BEAM-global `:persistent_term` registry, refreshing active default entries on successful read-only calls, and retaining stale cleanup for inactive default entries.
+- Added regressions for explicit `state_key` initialization across processes and active default TTL refresh.
+- High-pressure coherence check before the next same-tier T2: this remains response-only MCP transport durability inside P3-002, not broader runtime orchestration.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after forty-first T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 75 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 270 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit and push forty-first T2 fixes, then rerun full-diff T2 and proceed to GitHub review if clean.
+
 ### Next Steps
 
 - Commit and push the thirty-fourth T2 fix, then rerun fresh full-diff T2 against `symphony-plus-plus/beta`; run GitHub review on PR #15 if T2 is clean.

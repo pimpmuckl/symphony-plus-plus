@@ -37,6 +37,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @assignment_resource "sympp://assignment/current"
   @finding_replay_retry_attempts 50
   @default_handle_state_ttl_ms 60_000
+  @handle_state_store_key {__MODULE__, :handle_state_store}
 
   @enforce_keys [:config]
   defstruct [:config, :session, :state_key, state_key_explicit: false, initialized: false]
@@ -124,7 +125,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp restore_handle_state(payload, %__MODULE__{initialized: false, session: nil, state_key_explicit: true} = server) do
     if initialize_request?(payload) do
-      Process.delete(handle_state_key(server))
+      delete_handle_state(server.state_key)
       server
     else
       restore_handle_state(server)
@@ -134,8 +135,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp restore_handle_state(_payload, %__MODULE__{} = server), do: restore_handle_state(server)
 
   defp restore_handle_state(%__MODULE__{} = server) do
-    case Process.get(handle_state_key(server)) do
-      %__MODULE__{} = stored ->
+    case lookup_handle_state(server.state_key) do
+      {%__MODULE__{} = stored, _timestamp_ms, _explicit?} ->
         %{server | initialized: server.initialized or stored.initialized, session: server.session || stored.session}
 
       _stored ->
@@ -144,44 +145,71 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp persist_handle_state(%__MODULE__{} = server, %__MODULE__{} = updated_server) do
-    if server.initialized != updated_server.initialized or server.session != updated_server.session do
-      Process.put(handle_state_key(server), updated_server)
-      track_default_handle_state(updated_server)
+    cond do
+      server.initialized != updated_server.initialized or server.session != updated_server.session ->
+        put_handle_state(updated_server)
+
+      not updated_server.state_key_explicit and lookup_handle_state(updated_server.state_key) != nil ->
+        refresh_default_handle_state(updated_server.state_key)
+
+      true ->
+        :ok
     end
 
     :ok
   end
 
-  defp handle_state_key(%__MODULE__{state_key: state_key}), do: {__MODULE__, state_key}
-  defp default_handle_state_keys_key, do: {__MODULE__, :default_handle_state_keys}
+  defp put_handle_state(%__MODULE__{} = server) do
+    update_handle_state_store(&Map.put(&1, server.state_key, {server, monotonic_ms(), server.state_key_explicit}))
+    :ok
+  end
 
-  defp track_default_handle_state(%__MODULE__{state_key_explicit: true}), do: :ok
+  defp lookup_handle_state(state_key) do
+    handle_state_store()
+    |> Map.get(state_key)
+  end
 
-  defp track_default_handle_state(%__MODULE__{state_key: state_key}) do
-    keys =
-      Process.get(default_handle_state_keys_key(), [])
-      |> Enum.reject(fn {key, _timestamp_ms} -> key == state_key end)
+  defp refresh_default_handle_state(state_key) do
+    case lookup_handle_state(state_key) do
+      {%__MODULE__{} = server, _timestamp_ms, false} -> put_handle_state(server)
+      _state -> :ok
+    end
+  end
 
-    Process.put(default_handle_state_keys_key(), [{state_key, monotonic_ms()} | keys])
+  defp delete_handle_state(state_key) do
+    update_handle_state_store(&Map.delete(&1, state_key))
     :ok
   end
 
   defp cleanup_default_handle_states do
     now = monotonic_ms()
 
-    active_keys =
-      Process.get(default_handle_state_keys_key(), [])
-      |> Enum.filter(fn {state_key, timestamp_ms} ->
-        if now - timestamp_ms > @default_handle_state_ttl_ms do
-          Process.delete({__MODULE__, state_key})
-          false
-        else
+    update_handle_state_store(fn store ->
+      Map.reject(store, fn
+        {_state_key, {%__MODULE__{}, timestamp_ms, false}} when now - timestamp_ms > @default_handle_state_ttl_ms ->
           true
-        end
-      end)
 
-    Process.put(default_handle_state_keys_key(), active_keys)
+        _entry ->
+          false
+      end)
+    end)
+
     :ok
+  end
+
+  defp update_handle_state_store(fun) do
+    store =
+      handle_state_store()
+      |> fun.()
+
+    :persistent_term.put(@handle_state_store_key, store)
+  end
+
+  defp handle_state_store do
+    case :persistent_term.get(@handle_state_store_key, %{}) do
+      store when is_map(store) -> store
+      _store -> %{}
+    end
   end
 
   defp monotonic_ms, do: System.monotonic_time(:millisecond)
