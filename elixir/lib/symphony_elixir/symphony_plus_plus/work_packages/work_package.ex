@@ -63,6 +63,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
           product_description: String.t() | nil,
           engineering_scope: String.t() | nil,
           allowed_file_globs: [String.t()],
+          policy_template: String.t() | nil,
           acceptance_criteria: [String.t()],
           status: String.t() | nil,
           parent_id: String.t() | nil,
@@ -80,6 +81,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
     field(:product_description, :string)
     field(:engineering_scope, :string)
     field(:allowed_file_globs, StringList, default: [])
+    field(:policy_template, :string)
     field(:acceptance_criteria, StringList, default: [])
     field(:status, :string)
     field(:parent_id, :string)
@@ -126,6 +128,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
       :product_description,
       :engineering_scope,
       :allowed_file_globs,
+      :policy_template,
       :acceptance_criteria,
       :status,
       :parent_id,

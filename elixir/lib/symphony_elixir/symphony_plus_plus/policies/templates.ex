@@ -117,4 +117,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       :error -> {:error, :unknown_policy_template}
     end
   end
+
+  @spec resolve_key([String.t()]) ::
+          {:ok, String.t(), template()} | {:error, :policy_template_mismatch | :unknown_policy_template}
+  def resolve_key(templates) when is_list(templates) do
+    matches =
+      @templates
+      |> Enum.filter(fn {key, template} ->
+        Enum.all?(templates, fn requested -> requested in [key, template.template] end)
+      end)
+
+    case matches do
+      [{key, template}] -> {:ok, key, template}
+      [] -> unknown_or_mismatch(templates)
+      _matches -> {:error, :policy_template_mismatch}
+    end
+  end
+
+  defp unknown_or_mismatch(templates) do
+    known? =
+      Enum.all?(templates, fn requested ->
+        Enum.any?(@templates, fn {key, template} -> requested in [key, template.template] end)
+      end)
+
+    if known?, do: {:error, :policy_template_mismatch}, else: {:error, :unknown_policy_template}
+  end
 end

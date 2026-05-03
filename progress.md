@@ -92,6 +92,13 @@
 | `mise exec -- mix specs.check` | pass | Initial task-plan wording fix validation: all public functions have specs or exemption. |
 | `mise exec -- mix format --check-formatted` | pass | Initial task-plan wording fix validation: no formatting drift. |
 | `mise exec -- mix credo --strict lib/symphony_elixir/symphony_plus_plus/create_work.ex test/symphony_elixir/symphony_plus_plus/create_work_test.exs` | pass | Initial task-plan wording fix validation: touched files, no issues. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/create_work_test.exs` | pass | Policy-template persistence fix validation: 13 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/symphony_elixir/symphony_plus_plus/work_packages_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | Policy-template persistence fix validation: 31 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/lifecycle_test.exs test/symphony_elixir/symphony_plus_plus/create_work_test.exs` | pass | Policy-template persistence fix validation: 40 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | Policy-template persistence fix validation: 338 tests, 0 failures. |
+| `mise exec -- mix specs.check` | pass | Policy-template persistence fix validation: all public functions have specs or exemption. |
+| `mise exec -- mix format --check-formatted` | pass | Policy-template persistence fix validation: no formatting drift. |
+| `mise exec -- mix credo --strict lib/symphony_elixir/symphony_plus_plus/create_work.ex lib/symphony_elixir/symphony_plus_plus/policies/templates.ex lib/symphony_elixir/symphony_plus_plus/work_packages/work_package.ex lib/symphony_elixir/symphony_plus_plus/lifecycle/service.ex lib/symphony_elixir/symphony_plus_plus/planning/renderer.ex test/symphony_elixir/symphony_plus_plus/create_work_test.exs` | pass | Policy-template persistence fix validation: touched files, no issues. |
 
 ## Review
 
@@ -118,7 +125,8 @@
 - Cached full-diff T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T184341Z-c43a17cd` found explicit invalid-kind defaulting and limited explicit-template selection. Closed the gate as findings and applied a narrow parser fix: absent kind can select a known explicit template, explicit malformed kind is rejected, and cross-kind overrides remain rejected.
 - Cached follow-up `019def2f-f6c7-7971-bb17-7629b41144ad` returned no findings for the kind/template parser fix.
 - Cached full-diff T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T185347Z-f66046c4` found initial task plan wording issues for investigation packages and policy gate labels. Closed the gate as findings and patched the seeded plan title/label with regression assertions.
+- Cached full-diff T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T190239Z-cd4a85a0` found policy/template split issues for valid non-policy `kind` values plus malformed template fields. Closed the gate as findings and patched WorkPackage policy-template persistence, renderer/lifecycle policy lookup, typed template resolution, and regression coverage.
 
 ## Outstanding
 
-- Validate and rerun cached review-state after the initial task-plan wording fix.
+- Rerun cached review-state/T2/GitHub lanes on the pushed policy-template persistence head.

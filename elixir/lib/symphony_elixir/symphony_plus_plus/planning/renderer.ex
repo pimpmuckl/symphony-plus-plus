@@ -143,7 +143,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   end
 
   defp review_suite_markdown(%State{work_package: work_package}) do
-    case Templates.expand(work_package.kind) do
+    case Templates.expand(policy_key(work_package)) do
       {:ok, template} ->
         [
           "# Review Suite",
@@ -203,6 +203,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     [
       "- ID: `#{work_package.id}`",
       "- Kind: `#{work_package.kind}`",
+      "- Policy template: #{source_inline(policy_key(work_package))}",
       "- Status: `#{work_package.status}`",
       "- Repo: #{source_inline(work_package.repo)}",
       "- Base branch: #{source_inline(work_package.base_branch)}",
@@ -292,6 +293,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
 
   defp allowed_file_globs_text(%WorkPackage{allowed_file_globs: []}), do: nil
   defp allowed_file_globs_text(%WorkPackage{} = work_package), do: Enum.join(work_package.allowed_file_globs, "\n")
+
+  defp policy_key(%WorkPackage{policy_template: policy_template}) when is_binary(policy_template) and policy_template != "" do
+    policy_template
+  end
+
+  defp policy_key(%WorkPackage{kind: kind}), do: kind
 
   defp finding_summary_lines(%State{findings: []}), do: ["No findings recorded."]
 

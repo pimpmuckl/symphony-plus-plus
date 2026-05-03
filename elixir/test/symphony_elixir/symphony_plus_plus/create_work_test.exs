@@ -101,7 +101,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
              })
 
     assert request["kind"] == "hotfix"
+    assert request["policy_template"] == "hotfix"
     assert request["policy"].template == "hotfix"
+
+    assert {:ok, request} =
+             CreateWork.parse_request(%{
+               repo: "symphony-plus-plus",
+               base_branch: "symphony-plus-plus/beta",
+               title: "Explicit worker package policy",
+               acceptance_criteria: ["Worker package policy works."],
+               policy_template: "worker_package",
+               review_suite_template: "mcp"
+             })
+
+    assert request["kind"] == "mcp"
+    assert request["policy_template"] == "mcp"
+    assert request["policy"].template == "worker_package"
 
     assert {:ok, request} =
              CreateWork.parse_request(%{
@@ -141,6 +156,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
                repo: "symphony-plus-plus",
                base_branch: "symphony-plus-plus/beta",
                title: "Missing gated acceptance"
+             })
+
+    assert {:error, :invalid_policy_template} =
+             CreateWork.parse_request(%{
+               repo: "kraken",
+               base_branch: "main",
+               title: "Bad template",
+               policy_template: ["hotfix"]
              })
   end
 
@@ -277,6 +300,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
 
     assert {:ok, acceptance_md} = Renderer.render(repo, creation.work_package.id, "acceptance.md")
     assert acceptance_md =~ "No acceptance criteria recorded."
+  end
+
+  test "creates standalone product work with an explicit policy template", %{repo: repo} do
+    assert {:ok, creation} =
+             CreateWork.create(repo, %{
+               kind: "product",
+               repo: "kraken",
+               base_branch: "main",
+               title: "Polish account summary",
+               acceptance_criteria: ["Summary copy is updated."],
+               policy_template: "hotfix"
+             })
+
+    assert creation.work_package.kind == "product"
+    assert creation.work_package.policy_template == "hotfix"
+    assert creation.policy.template == "hotfix"
+    assert creation.virtual_files["review_suite.md"] =~ "Policy template: `hotfix`"
   end
 
   test "renders investigation and blank scope plan guidance correctly", %{repo: repo} do

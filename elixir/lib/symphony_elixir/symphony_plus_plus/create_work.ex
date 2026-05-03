@@ -25,6 +25,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
           | :invalid_acceptance_criteria
           | :invalid_allowed_file_globs
           | :invalid_kind
+          | :invalid_policy_template
           | :invalid_request
           | :invalid_work_package_id
           | :missing_acceptance_criteria
@@ -49,8 +50,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     with {:ok, attrs} <- require_standalone(attrs),
          {:ok, attrs} <- normalize_required_fields(attrs),
          {:ok, attrs} <- normalize_optional_id(attrs),
-         {:ok, kind} <- normalize_kind(attrs),
-         {:ok, policy} <- policy_for(kind, attrs),
+         {:ok, policy_templates} <- explicit_policy_templates(attrs),
+         {:ok, kind} <- normalize_kind(attrs, policy_templates),
+         {:ok, policy_key, policy} <- policy_for(kind, policy_templates),
          {:ok, acceptance_criteria} <- normalize_acceptance_criteria(Map.get(attrs, "acceptance_criteria", [])),
          {:ok, allowed_file_globs} <- normalize_allowed_file_globs(Map.get(attrs, "allowed_file_globs", [])),
          :ok <- require_acceptance_criteria(policy, acceptance_criteria) do
@@ -67,6 +69,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
          "owner_id"
        ])
        |> Map.put("kind", kind)
+       |> Map.put("policy_template", policy_key)
        |> Map.put("acceptance_criteria", acceptance_criteria)
        |> Map.put("allowed_file_globs", allowed_file_globs)
        |> Map.put("parent_id", nil)
@@ -124,6 +127,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   def error_message(:invalid_acceptance_criteria), do: "acceptance_criteria must be a list of nonblank strings"
   def error_message(:invalid_allowed_file_globs), do: "allowed_file_globs must be a list of nonblank strings"
   def error_message(:invalid_kind), do: "kind must be a nonblank string when provided"
+  def error_message(:invalid_policy_template), do: "policy_template/review_suite_template must be nonblank strings when provided"
   def error_message(:invalid_request), do: "Create-work request must be a JSON/YAML object"
   def error_message(:invalid_work_package_id), do: "id must be a nonblank string when provided"
   def error_message(:missing_acceptance_criteria), do: "acceptance_criteria is required for this work kind"
@@ -243,6 +247,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
       product_description: work_package.product_description,
       engineering_scope: work_package.engineering_scope,
       allowed_file_globs: work_package.allowed_file_globs,
+      policy_template: work_package.policy_template,
       acceptance_criteria: work_package.acceptance_criteria,
       status: work_package.status,
       parent_id: work_package.parent_id,
@@ -322,10 +327,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     end
   end
 
-  defp normalize_kind(attrs) do
+  defp normalize_kind(attrs, policy_templates) do
     case Map.fetch(attrs, "kind") do
       :error ->
-        default_kind(attrs)
+        default_kind(policy_templates)
 
       {:ok, kind} ->
         case normalize_nonblank_string(kind) do
@@ -336,54 +341,67 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     end
   end
 
-  defp default_kind(attrs) do
-    case Enum.uniq(explicit_policy_templates(attrs)) do
-      [] ->
-        {:ok, @default_kind}
+  defp default_kind([]), do: {:ok, @default_kind}
 
-      [template] ->
-        with {:ok, policy} <- Templates.expand(template),
-             :ok <- reject_phase_child_policy(policy) do
-          {:ok, template}
-        end
-
-      _templates ->
-        {:error, :policy_template_mismatch}
+  defp default_kind(policy_templates) do
+    with {:ok, policy_key, policy} <- Templates.resolve_key(policy_templates),
+         :ok <- reject_phase_child_policy(policy) do
+      {:ok, policy_key}
     end
   end
 
-  defp policy_for(kind, attrs) do
+  defp policy_for(kind, []) do
     with {:ok, policy} <- Templates.expand(kind),
-         :ok <- reject_phase_child_policy(policy),
-         :ok <- validate_policy_template(kind, policy.template, attrs) do
-      {:ok, policy}
+         :ok <- reject_phase_child_policy(policy) do
+      {:ok, kind, policy}
     else
       {:error, :unknown_policy_template} -> {:error, :unknown_policy_template}
       {:error, reason} -> {:error, reason}
     end
   end
 
+  defp policy_for(kind, policy_templates) do
+    with {:ok, policy_key, policy} <- Templates.resolve_key(policy_templates),
+         :ok <- reject_phase_child_policy(policy) do
+      {:ok, policy_key_for(kind, policy_key), policy}
+    end
+  end
+
   defp reject_phase_child_policy(%{template: "phase_child"}), do: {:error, :standalone_kind_not_supported}
   defp reject_phase_child_policy(_policy), do: :ok
 
-  defp validate_policy_template(kind, resolved_template, attrs) do
-    attrs
-    |> explicit_policy_templates()
-    |> Enum.reduce_while(:ok, fn template, :ok ->
-      if template in [kind, resolved_template] do
-        {:cont, :ok}
-      else
-        {:halt, {:error, :policy_template_mismatch}}
-      end
-    end)
+  defp policy_key_for(kind, policy_key) do
+    if kind == policy_key do
+      kind
+    else
+      policy_key
+    end
   end
 
   defp explicit_policy_templates(attrs) do
     ["policy_template", "review_suite_template"]
-    |> Enum.map(&Map.get(attrs, &1))
-    |> Enum.reject(&(not present?(&1)))
-    |> Enum.map(&String.trim(to_string(&1)))
+    |> Enum.reduce_while({:ok, []}, fn field, {:ok, templates} ->
+      case normalize_policy_template(Map.get(attrs, field)) do
+        {:ok, nil} -> {:cont, {:ok, templates}}
+        {:ok, template} -> {:cont, {:ok, [template | templates]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, templates} -> {:ok, Enum.reverse(templates)}
+      {:error, reason} -> {:error, reason}
+    end
   end
+
+  defp normalize_policy_template(value) when is_binary(value) do
+    case normalize_nonblank_string(value) do
+      {:ok, value} -> {:ok, value}
+      {:error, :blank} -> {:error, :invalid_policy_template}
+    end
+  end
+
+  defp normalize_policy_template(nil), do: {:ok, nil}
+  defp normalize_policy_template(_value), do: {:error, :invalid_policy_template}
 
   defp require_acceptance_criteria(%{required_gates: required_gates}, []) do
     if "package_acceptance" in required_gates do
