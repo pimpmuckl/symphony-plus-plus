@@ -43,3 +43,7 @@
 - Arena T1 sampled fully non-5.3 round `phase_review-symphony-plus-plus-sympp-p3-003-2e5a78-20260503T105320Z-c659a41e` with `gpt-5.5-medium` and `gpt-5.4-mini-medium`; both reviewers returned `review_interrupted`.
 - Committed and pushed arena interruption notes as `b6f3f9558ae508b371db43691a5607185afb4372`, leaving the worktree clean before the final-head T1 retry.
 - Final-head arena T1 sampled fully non-5.3 round `phase_review-symphony-plus-plus-sympp-p3-003-2e5a78-20260503T105447Z-b0bfb860` with `gpt-5.4-low` and `gpt-5.5-low`; both reviewers returned `review_interrupted` with `block=review_interrupted`.
+- Committed and pushed final-head T1 interruption notes as `49a6e528dada28df3eb8446c7bf996d7162a2a5e`, leaving the worktree clean before the manual-diff T1 route.
+- Generated full merge-base diff against `symphony-plus-plus/beta` at `.review-suite-tmp/sympp-p3-003-full.diff` from clean head `49a6e528dada28df3eb8446c7bf996d7162a2a5e`; `.review-suite-tmp/` is locally excluded.
+- Manual-diff T1 sampled round `phase_review-symphony-plus-plus-sympp-p3-003-2e5a78-20260503T105722Z-594b3586` with non-5.3 reviewers `gpt-5.4-mini-high` and `gpt-5.4-low`; `run-manual-round` returned `completed_ungraded`, `blocked: true`, and `review_interrupted` for both reviewers.
+- Manual-diff T1 sampled round `phase_review-symphony-plus-plus-sympp-p3-003-2e5a78-20260503T105802Z-d832849b` with non-5.3 reviewers `gpt-5.5-medium` and `gpt-5.5-low`; `run-manual-round` returned `completed_ungraded`, `blocked: true`, and `review_interrupted` for both reviewers.
