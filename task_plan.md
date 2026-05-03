@@ -144,7 +144,10 @@ Phase 3
 - [x] Commit and push thirty-fourth T2 fix.
 - [x] Run fresh full-diff T2 on pushed head `9fee4d9` and close valid findings gate.
 - [x] Fix thirty-fifth T2 branch-head review freshness and string normalization findings locally.
-- [ ] Commit and push thirty-fifth T2 fix.
+- [x] Commit and push thirty-fifth T2 fix.
+- [x] Run fresh full-diff T2 on pushed head `d385aec` and close valid findings gate.
+- [x] Fix thirty-sixth T2 newest metadata head selection finding locally.
+- [ ] Commit and push thirty-sixth T2 fix.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
 - **Status:** thirty-second T2 fixes pushed; pending fresh full-diff T2 rerun and GitHub review if clean.
@@ -184,6 +187,8 @@ Phase 3
 - Findings remain localized to the worker MCP transport/session state surface; this is still edge-case hardening rather than a design or scope blocker.
 - Before the next T2, the approach remains coherent because the latest fix extends the same head-based review-evidence contract from PR workflows to branch-only workflows by requiring `attach_branch` to publish the current head.
 - Findings remain narrow API-contract and normalization hardening inside P3-002 worker MCP metadata tools, not evidence of a broader package split.
+- Before the next T2, the approach remains coherent because the latest fix only changes current-head selection from PR-first to newest branch-or-PR metadata overall.
+- Findings remain converged on head freshness semantics for the same P3-002 metadata/review tools, not on broader design.
 
 ## Blockers
 

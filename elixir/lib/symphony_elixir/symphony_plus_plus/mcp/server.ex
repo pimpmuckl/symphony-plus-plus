@@ -1784,12 +1784,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp valid_review_entry?(_review), do: false
 
   defp latest_current_head_sha(progress_events) do
-    latest_metadata_head_sha(progress_events, "pr", "attach_pr") || latest_metadata_head_sha(progress_events, "branch", "attach_branch")
-  end
-
-  defp latest_metadata_head_sha(progress_events, type, source_tool) do
     progress_events
-    |> Enum.filter(&payload_type?(&1, type, source_tool))
+    |> Enum.filter(&(payload_type?(&1, "pr", "attach_pr") or payload_type?(&1, "branch", "attach_branch")))
     |> Enum.reverse()
     |> List.first()
     |> case do

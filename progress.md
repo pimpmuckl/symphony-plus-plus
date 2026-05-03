@@ -202,6 +202,29 @@
 
 - Commit and push the thirty-fifth T2 fix, then rerun fresh full-diff T2 against `symphony-plus-plus/beta`; run GitHub review on PR #15 if T2 is clean.
 
+### Thirty-Sixth T2 Follow-up Actions
+
+- Pushed thirty-fifth T2 fix head `d385aec` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T004334Z-682c08f8`; both reviewers reported the same valid current-head selection issue, then the gate was closed as `findings`.
+- Fixed the valid finding by selecting the current review-evidence head from the newest branch or PR metadata event overall instead of always preferring any PR head over later branch heads.
+- Added regression coverage for the common flow where a PR is attached at head A, the branch advances to head B, stale review evidence for A is rejected, and review evidence for B can satisfy quick-fix readiness.
+- High-pressure coherence check before the next same-tier T2: this is a narrow correction to the head-freshness model already introduced for P3-002 metadata and review tools.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after thirty-sixth T2 fix. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 68 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 263 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit and push the thirty-sixth T2 fix, then rerun fresh full-diff T2 against `symphony-plus-plus/beta`; run GitHub review on PR #15 if T2 is clean.
+
 ### Next Steps
 
 - Pushed thirty-first T2 fix head `cb3b14757a8d7fe52ce3a637f05ffca1749059a8`; rerun full-diff T2, then proceed to GitHub review if clean.
