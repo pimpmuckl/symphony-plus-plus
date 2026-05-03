@@ -110,7 +110,7 @@
     }
   ],
   "architect_authorization_policy": "Architect tools require a live architect grant session and the matching architect capability. Worker grants and architect grants without the required capability are denied. Worker grants cannot be minted with architect-only MCP capabilities.",
-  "architect_discovery_policy": "tools/list advertises architect tools only for already-bound architect sessions and filters them to the live grant capabilities. Stale sessions expose only health and claim_work_key for refresh. Anonymous and worker sessions receive the worker-facing tool surface. Architect sessions may call get_current_assignment and read sympp://assignment/current for scoped assignment introspection, but cannot use worker package read/write tools.",
+  "architect_discovery_policy": "tools/list advertises architect tools only for already-bound architect sessions and filters them to the live grant capabilities. Stale sessions expose only health and claim_work_key for refresh. Anonymous and worker sessions receive the worker-facing tool surface. Architect sessions may call get_current_assignment and read sympp://assignment/current for scoped assignment introspection, but cannot use worker package read/write tools. Lifecycle capabilities such as architect:lifecycle.transition do not imply MCP architect tool capabilities; explicit MCP capability strings are required.",
   "resources": [
     "sympp://assignment/current",
     "sympp://work-packages/{id}/context.md",

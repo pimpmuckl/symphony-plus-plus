@@ -967,15 +967,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, %Session{}} ->
         {:error, {:unauthorized, :unsupported_grant_role}}
 
-      {:error, {:service_unavailable, _reason} = reason} ->
-        {:error, reason}
-
-      {:error, reason} ->
-        {:ok, claimable_tool_specs(reason)}
+      {:error, _reason} ->
+        {:ok, claimable_tool_specs()}
     end
   end
 
-  defp claimable_tool_specs(_reason), do: [health_tool_spec(), worker_tool_spec("claim_work_key")]
+  defp claimable_tool_specs, do: [health_tool_spec(), worker_tool_spec("claim_work_key")]
 
   defp architect_tool_specs_for_session(%Session{assignment: %{capabilities: capabilities}}) do
     @architect_tools
@@ -1191,11 +1188,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, secret} <- required_argument(arguments, "secret"),
          {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
          :ok <- require_full_secret(secret),
-         proof_hash = WorkKey.secret_hash(secret),
-         true <- session.proof_hash == proof_hash,
-         :ok <- require_same_claim_owner(session.assignment, claimed_by),
-         {:ok, session} <- revalidate_bound_session(config.repo, session, proof_hash) do
-      {:ok, %{"assignment" => Session.public_assignment(session)}, session}
+         proof_hash = WorkKey.secret_hash(secret) do
+      case claim_work_key_with_bound_session(config.repo, session, secret, proof_hash, claimed_by) do
+        {:ok, _result, _session} = success -> success
+        {:error, reason} -> claim_error(reason)
+      end
     else
       {:error, code, message, data} -> {:error, code, message, data}
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "claim_work_key", "reason" => reason}}
@@ -1211,10 +1208,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, secret} <- required_argument(arguments, "secret"),
          {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
          :ok <- require_full_secret(secret),
-         proof_hash = WorkKey.secret_hash(secret),
-         :ok <- require_mcp_claimable_secret(config.repo, proof_hash),
-         {:ok, session} <- claim_or_reconnect_session(config.repo, secret, proof_hash, claimed_by) do
-      {:ok, %{"assignment" => Session.public_assignment(session)}, session}
+         proof_hash = WorkKey.secret_hash(secret) do
+      case claim_unbound_work_key(config.repo, secret, proof_hash, claimed_by) do
+        {:ok, _result, _session} = success -> success
+        {:error, reason} -> claim_error(reason)
+      end
     else
       {:error, code, message, data} -> {:error, code, message, data}
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "claim_work_key", "reason" => reason}}
@@ -1222,6 +1220,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   rescue
     _error -> {:error, -32_000, "Server error", %{"tool" => "claim_work_key", "reason" => "ledger_unavailable"}}
+  end
+
+  defp claim_work_key_with_bound_session(repo, %Session{} = session, secret, proof_hash, claimed_by) do
+    if session.proof_hash == proof_hash do
+      with :ok <- require_same_claim_owner(session.assignment, claimed_by),
+           {:ok, session} <- revalidate_bound_session(repo, session, proof_hash) do
+        {:ok, %{"assignment" => Session.public_assignment(session)}, session}
+      end
+    else
+      case Auth.require_session(session, repo) do
+        {:ok, %Session{}} -> {:error, :session_already_bound}
+        {:error, {:service_unavailable, _reason} = reason} -> {:error, reason}
+        {:error, _reason} -> claim_unbound_work_key(repo, secret, proof_hash, claimed_by)
+      end
+    end
+  end
+
+  defp claim_unbound_work_key(repo, secret, proof_hash, claimed_by) do
+    with :ok <- require_mcp_claimable_secret(repo, proof_hash),
+         {:ok, session} <- claim_or_reconnect_session(repo, secret, proof_hash, claimed_by) do
+      {:ok, %{"assignment" => Session.public_assignment(session)}, session}
+    end
   end
 
   defp revalidate_bound_session(repo, %Session{} = session, proof_hash) do

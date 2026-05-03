@@ -47,7 +47,10 @@ the live grant's capabilities; stale sessions expose only health and
 worker-facing discovery surface. Architect sessions may call
 `get_current_assignment` and read `sympp://assignment/current` to recover their
 scoped `work_package_id` after reconnect, but architect sessions still cannot
-use worker package read/write tools. Until Phase 7 introduces phase
+use worker package read/write tools. Existing lifecycle capabilities such as
+`architect:lifecycle.transition` do not imply MCP architect tool capabilities;
+P3-003 requires the explicit MCP capability strings listed in the permission
+model. Until Phase 7 introduces phase
 entities and phase-child scope checks, `read_child_status` requires both
 `read:child_progress` and `read:child_findings` because its summary includes
 progress, findings, and artifact counts, and it is intentionally limited to the

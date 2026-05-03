@@ -143,6 +143,9 @@ refresh, while worker and anonymous sessions keep the worker-facing discovery
 surface. Architect sessions may call `get_current_assignment()` and read
 `sympp://assignment/current` to recover their scoped `work_package_id` after
 reconnect, but they still cannot use worker package read/write tools.
+Lifecycle capabilities such as `architect:lifecycle.transition` do not imply
+MCP architect tool capabilities; P3-003 requires the explicit MCP capability
+strings listed in the permission model.
 `read_child_status(work_package_id)` is the
 only safe read-only tool implemented before Phase 7. It requires both
 `read:child_progress` and `read:child_findings` because its status payload

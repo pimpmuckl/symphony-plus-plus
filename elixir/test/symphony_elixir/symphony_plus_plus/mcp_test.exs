@@ -373,6 +373,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Map.keys(tools_by_name) |> Enum.sort() == ["claim_work_key", "sympp.health"]
   end
 
+  test "tools list does not treat lifecycle architect capabilities as MCP tool capabilities", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-LIFECYCLE-ONLY", kind: "mcp"))
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["architect:lifecycle.transition"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+    server = Server.new(Config.default(repo: repo), initialized: true, session: session)
+
+    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "lifecycle-only-architect-tools", "method" => "tools/list", "params" => %{}}, server)
+    tools_by_name = response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
+
+    assert Map.keys(tools_by_name) |> Enum.sort() == ["get_current_assignment", "sympp.health"]
+  end
+
   test "architect tools reject arguments outside their advertised schemas", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-STRICT", kind: "mcp"))
     assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:child_progress", "read:child_findings"])
@@ -2120,6 +2136,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(replay_response, ["error", "data", "reason"]) == "revoked"
     assert replay_server.session.assignment.work_package_id == "SYMPP-WORKER-CLAIM"
+
+    assert {:ok, replacement_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-CLAIM-REFRESH", kind: "mcp", status: "ready_for_worker"))
+
+    assert {:ok, replacement_minted} = AccessGrantService.mint_worker_grant(repo, replacement_package.id)
+
+    {refresh_response, refreshed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-refresh-after-revocation",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => replacement_minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        replay_server
+      )
+
+    assert get_in(refresh_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-WORKER-CLAIM-REFRESH"
+    assert refreshed_server.session.assignment.work_package_id == "SYMPP-WORKER-CLAIM-REFRESH"
   end
 
   test "claim_work_key rejects non-worker non-architect grant roles", %{repo: repo} do
