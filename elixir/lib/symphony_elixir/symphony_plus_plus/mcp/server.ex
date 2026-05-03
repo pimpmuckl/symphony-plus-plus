@@ -967,6 +967,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, %Session{}} ->
         {:error, {:unauthorized, :unsupported_grant_role}}
 
+      {:error, {:service_unavailable, _reason} = reason} ->
+        {:error, reason}
+
       {:error, _reason} ->
         {:ok, claimable_tool_specs()}
     end

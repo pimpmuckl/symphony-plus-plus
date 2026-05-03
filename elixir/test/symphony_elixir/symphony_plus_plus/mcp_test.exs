@@ -373,6 +373,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Map.keys(tools_by_name) |> Enum.sort() == ["claim_work_key", "sympp.health"]
   end
 
+  test "tools list preserves ledger failures while revalidating bound sessions" do
+    session =
+      Session.new(%Assignment{
+        grant_id: "grant-1",
+        work_package_id: "SYMPP-LEDGER-TOOLS-LIST",
+        display_key: "ABCD",
+        grant_role: "architect",
+        capabilities: ["read:phase"],
+        claimed_at: DateTime.utc_now(:microsecond),
+        claimed_by: "architect-1"
+      })
+
+    response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "tools-list-ledger-failure", "method" => "tools/list", "params" => %{}},
+        config: Config.default(repo: FailingAuthRepo),
+        session: session
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_000
+    assert get_in(response, ["error", "data", "reason"]) == "ledger_unavailable"
+  end
+
   test "tools list does not treat lifecycle architect capabilities as MCP tool capabilities", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-LIFECYCLE-ONLY", kind: "mcp"))
     assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["architect:lifecycle.transition"])
