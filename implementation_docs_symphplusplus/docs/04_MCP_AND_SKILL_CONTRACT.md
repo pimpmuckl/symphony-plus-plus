@@ -77,7 +77,8 @@ test and review-lane readiness with ordinary generic `append_progress` statuses:
 `tests_passed` and `<review_lane>_green` such as `review_t1_green`. Tool-owned
 metadata, blocker, status, and scope events do not satisfy those gates.
 Merge-gated packages still require current-head review package evidence and
-artifacts.
+artifacts. If a branch head is attached, generic fallback evidence must be newer
+than the latest branch head attachment.
 
 For investigation policies that require a scope recommendation,
 `request_scope_expansion` records the worker's recommendation evidence; it does

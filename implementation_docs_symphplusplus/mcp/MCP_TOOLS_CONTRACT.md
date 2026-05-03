@@ -68,7 +68,9 @@ events can satisfy focused-test and review-lane readiness by recording statuses
 `tests_passed` and `<review_lane>_green`, for example `review_t1_green`.
 Tool-owned metadata, blocker, status, and scope events are ignored for these
 fallback gates. Merge-gated packages still use current-head
-`submit_review_package` evidence and persisted review artifacts.
+`submit_review_package` evidence and persisted review artifacts. When a branch
+head is attached, fallback progress evidence must be recorded after the latest
+branch head attachment.
 
 For investigation policies, `request_scope_expansion` records the required
 scope recommendation evidence but never approves the expansion itself. Generic

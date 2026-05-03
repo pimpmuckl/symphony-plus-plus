@@ -306,6 +306,8 @@ Phase 3
 - Before the next T2, the approach remains coherent because the latest follow-up only makes the published schemas and replay/normalization behavior match the existing P3-002 product contract while preserving the overseer-decided branch-head authority and handshake-only state model.
 - Fresh T2 on pushed head `234574c` produced valid findings around failed explicit reconnect initialize state, post-ready task-plan mutation, and caller-controlled investigation recommendation spoofing.
 - Before the next T2, the approach remains coherent because these fixes only close remaining readiness/state trust gaps inside the existing P3-002 MCP contract: reconnect initialize must succeed before worker tools, ready packages are immutable, and investigation recommendation evidence must come from the dedicated tool.
+- Fresh T2 on pushed head `f7b6229` produced valid findings around same-process failed explicit reinitialize cleanup, non-merge fallback evidence staleness after branch changes, and transactional grant invalidation error classification.
+- Before the next T2, the approach remains coherent because the fix keeps the current product contract intact: failed reconnect initialize removes both persisted and live handshake/session state, generic fallback evidence is current-head-relative once a branch exists, and lost grants are authorization failures.
 
 ## Blockers
 

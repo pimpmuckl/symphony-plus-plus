@@ -1176,6 +1176,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_response, ["error", "data", "reason"]) == "server_not_initialized"
   end
 
+  test "failed explicit state key reinitialize clears live server session", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-FAILED-REINIT-LIVE", kind: "mcp", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    state_key = make_ref()
+
+    {_init_response, initialized_server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()},
+        Server.new(Config.default(repo: repo), state_key: state_key)
+      )
+
+    {_claim_response, claimed_server} =
+      Server.handle_response_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        initialized_server
+      )
+
+    {invalid_init_response, cleared_server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "invalid-init", "method" => "initialize", "params" => %{"protocolVersion" => "2025-03-26"}},
+        claimed_server
+      )
+
+    {assignment_response, _server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "assignment-after-failed-init", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        cleared_server
+      )
+
+    assert get_in(invalid_init_response, ["error", "data", "reason"]) == "invalid_initialize_params"
+    assert get_in(assignment_response, ["error", "data", "reason"]) == "server_not_initialized"
+  end
+
   test "stdio response-only line helper retains initialized worker session", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STDIO-STATE", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -3326,6 +3364,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "summary" => "T1 review green",
       "status" => "review_t1_green",
       "idempotency_key" => "quick-fix-review-t1"
+    })
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-QUICK-FIX/worker", "head_sha" => "quick-fix-head-b"})
+
+    stale_progress_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-quick-fix-stale-progress", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    stale_progress_missing = get_in(stale_progress_response, ["error", "data", "missing"])
+    assert "tests_passed" in stale_progress_missing
+    assert "review_lanes_complete" in stale_progress_missing
+
+    attach_tool(repo, session, "append_progress", %{
+      "summary" => "Focused tests passed for latest head",
+      "status" => "tests_passed",
+      "idempotency_key" => "quick-fix-tests-head-b"
+    })
+
+    attach_tool(repo, session, "append_progress", %{
+      "summary" => "T1 review green for latest head",
+      "status" => "review_t1_green",
+      "idempotency_key" => "quick-fix-review-t1-head-b"
     })
 
     ready_response =

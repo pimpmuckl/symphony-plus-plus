@@ -1450,3 +1450,25 @@
 ### Next Steps
 
 - Run focused validation, commit/push sixty-second T2 fixes, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
+
+### Sixty-Third T2 Follow-up Actions
+
+- Pushed head before this follow-up: `f7b6229`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T055122Z-7c599cb6`; closed it as `findings`.
+- Fixed valid findings by clearing live explicit server state on failed reconnect initialize, requiring non-merge generic progress readiness evidence to be newer than the latest branch head attachment, and mapping transactional `:assignment_revoked`/`:assignment_mismatch` races to authorization failures.
+- Updated public MCP docs/package docs for current-head-relative non-merge fallback evidence.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after sixty-third T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 90 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 285 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Run focused validation, commit/push sixty-third T2 fixes, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.

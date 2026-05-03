@@ -166,6 +166,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp restore_handle_state(payload, %__MODULE__{state_key_explicit: true} = server) do
+    if initialize_request?(payload) do
+      %{server | initialized: false, session: nil}
+    else
+      restore_explicit_handle_state(server)
+    end
+  end
+
   defp restore_handle_state(_payload, %__MODULE__{} = server), do: restore_handle_state(server)
 
   defp restore_explicit_handle_state(%__MODULE__{} = server) do
@@ -2147,16 +2155,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp progress_review_lanes_present?(progress_events, required_lanes) do
+    head_boundary_sequence = latest_branch_event_sequence(progress_events)
+
     Enum.all?(required_lanes, fn lane ->
-      Enum.any?(progress_events, &progress_review_lane_green?(&1, lane))
+      Enum.any?(progress_events, &progress_review_lane_green?(&1, lane, head_boundary_sequence))
     end)
   end
 
-  defp progress_review_lane_green?(%ProgressEvent{status: status} = event, lane) do
-    generic_append_progress_event?(event) and normalized_status(status) == "#{lane}_green"
+  defp progress_review_lane_green?(%ProgressEvent{status: status} = event, lane, head_boundary_sequence) do
+    generic_append_progress_event?(event) and progress_after_head_boundary?(event, head_boundary_sequence) and
+      normalized_status(status) == "#{lane}_green"
   end
 
-  defp progress_review_lane_green?(%ProgressEvent{}, _lane), do: false
+  defp progress_review_lane_green?(%ProgressEvent{}, _lane, _head_boundary_sequence), do: false
 
   defp generic_append_progress_event?(%ProgressEvent{payload: payload}) when is_map(payload) do
     Map.get(payload, "source_tool") == nil
@@ -2366,14 +2377,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp progress_status_recorded?(progress_events, expected_status) do
+    head_boundary_sequence = latest_branch_event_sequence(progress_events)
+
     Enum.any?(progress_events, fn
       %ProgressEvent{status: status} = event ->
-        generic_append_progress_event?(event) and normalized_status(status) == expected_status
+        generic_append_progress_event?(event) and progress_after_head_boundary?(event, head_boundary_sequence) and
+          normalized_status(status) == expected_status
 
       _event ->
         false
     end)
   end
+
+  defp latest_branch_event_sequence(progress_events) do
+    progress_events
+    |> Enum.reverse()
+    |> Enum.find(&payload_type?(&1, "branch", "attach_branch"))
+    |> case do
+      %ProgressEvent{sequence: sequence} when is_integer(sequence) -> sequence
+      _event -> nil
+    end
+  end
+
+  defp progress_after_head_boundary?(%ProgressEvent{}, nil), do: true
+  defp progress_after_head_boundary?(%ProgressEvent{sequence: sequence}, boundary_sequence) when is_integer(sequence), do: sequence > boundary_sequence
+  defp progress_after_head_boundary?(%ProgressEvent{}, _boundary_sequence), do: false
 
   defp normalized_status(status) when is_binary(status), do: status |> String.trim() |> String.downcase()
   defp normalized_status(_status), do: ""
@@ -2413,6 +2441,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp worker_error(:unauthorized, resource), do: auth_error(:unauthorized, resource)
   defp worker_error({:unauthorized, _reason} = reason, resource), do: auth_error(reason, resource)
   defp worker_error(:expired, resource), do: auth_error({:unauthorized, :expired}, resource)
+  defp worker_error(:assignment_revoked, resource), do: auth_error({:unauthorized, :revoked}, resource)
+  defp worker_error(:assignment_mismatch, resource), do: auth_error({:unauthorized, :assignment_mismatch}, resource)
   defp worker_error(:forbidden, resource), do: auth_error(:forbidden, resource)
   defp worker_error({:service_unavailable, _reason} = reason, resource), do: auth_error(reason, resource)
   defp worker_error(:database_busy, tool), do: service_error(:database_busy, tool)
