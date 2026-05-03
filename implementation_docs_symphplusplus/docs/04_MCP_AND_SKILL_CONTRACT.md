@@ -58,14 +58,15 @@ branch and PR metadata exist, the latest branch head is the worker-declared
 current code head; PR metadata proves that the PR is attached for that same
 head.
 
-`submit_review_package` must include `head_sha` on every submission and can only
-record readiness evidence after a current branch head is attached. The latest
+`submit_review_package` must include `head_sha` on every submission. Merge
+readiness evidence can only bind to the current attached branch head. The latest
 current-head review package is authoritative for review readiness; older
 packages for the same head are superseded rather than implicitly merged. The
 `tests` and `artifacts` lists are normalized by trimming entries before
-persistence and default idempotency-key calculation. If an idempotent retry
-matches an already recorded review package, Symphony++ replays that event even
-after the current branch head has moved forward.
+persistence and default idempotency-key calculation. If an exact idempotent
+retry matches an already recorded review package, Symphony++ replays that
+success even after the current branch head has moved forward. The replay does
+not make older-head evidence current for readiness.
 
 After `mark_ready` succeeds, worker evidence is frozen. Evidence-mutating tools
 such as progress, findings, blockers, branch/PR metadata, scope requests, and
@@ -75,10 +76,12 @@ idempotent replay behavior for already-recorded operations.
 For non-merge-gated policies such as `quick_fix`, workers may satisfy focused
 test and review-lane readiness with ordinary generic `append_progress` statuses:
 `tests_passed` and `<review_lane>_green` such as `review_t1_green`. Tool-owned
-metadata, blocker, status, and scope events do not satisfy those gates.
-Merge-gated packages still require current-head review package evidence and
-artifacts. If a branch head is attached, generic fallback evidence must be newer
-than the latest branch head attachment.
+metadata, blocker, status, and scope events do not satisfy those gates. These
+non-merge policies may also count explicit-head `submit_review_package` evidence
+without branch metadata when branch metadata is not a required gate. Merge-gated
+packages still require current-head review package evidence and artifacts. If a
+branch head is attached, generic fallback evidence and review-package evidence
+must be current to the latest branch head.
 
 For investigation policies that require a scope recommendation,
 `request_scope_expansion` records the worker's recommendation evidence; it does

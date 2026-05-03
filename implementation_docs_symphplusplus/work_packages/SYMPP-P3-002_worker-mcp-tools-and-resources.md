@@ -68,24 +68,27 @@ handshake state.
 ### Review package contract
 
 Workers must include `submit_review_package.head_sha` on every submission. The
-latest review package for that current head is authoritative for readiness;
+latest review package for the current head is authoritative for readiness;
 older same-head packages are superseded. `tests` and `artifacts` values are
-trimmed before persistence and default idempotency-key calculation, and
-idempotent retries of an already recorded review package replay that event even
-after the branch head moves.
+trimmed before persistence and default idempotency-key calculation. Exact
+idempotent retries of an already recorded review package replay the original
+success even after the branch head moves, but replayed older-head evidence is
+stale for readiness and does not satisfy merge/readiness gates.
 
 The latest attached branch head is the worker-declared current code head. PR
 metadata must match that head for merge readiness; stale PR metadata does not
-move readiness back to an older commit. Review packages require an attached
-current branch head and must bind to that head.
+move readiness back to an older commit. Merge-gated review packages require an
+attached current branch head and must bind to that head.
 
 For non-merge-gated package policies such as `quick_fix`, workers can satisfy
 focused-test and review-lane gates with generic `append_progress.status` values
 `tests_passed` and `<review_lane>_green`. Tool-owned metadata, blocker, status,
-and scope events do not satisfy those fallback gates. Merge-gated package
-policies still use current-head review package evidence and review artifacts.
-After a branch head is attached, fallback progress evidence must be recorded
-after the latest branch head attachment.
+and scope events do not satisfy those fallback gates. Non-merge policies that
+do not require branch metadata may also count explicit-head
+`submit_review_package` evidence before a branch head is attached. Merge-gated
+package policies still use current-head review package evidence and review
+artifacts. After a branch head is attached, fallback progress and review-package
+evidence must be current to the latest branch head.
 
 After `mark_ready` succeeds, worker evidence writes for the package are frozen;
 new progress, findings, blockers, branch/PR metadata, scope requests, and review

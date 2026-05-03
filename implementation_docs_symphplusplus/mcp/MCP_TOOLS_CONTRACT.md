@@ -51,12 +51,14 @@ PR metadata disagree, the latest branch head remains the current code head and
 merge readiness waits for PR metadata for that head.
 
 `submit_review_package` requires explicit `head_sha` on every submission. For
-readiness, review packages require an attached current branch head, and the
-latest review package for that current head is authoritative; older packages for
-that same head are superseded. `tests` and `artifacts` entries are trimmed
-before persistence and default idempotency-key calculation. Idempotent retries
-of an already recorded review package replay the recorded event even if the
-branch head has since advanced.
+merge readiness, review packages require an attached current branch head, and
+the latest review package for that current head is authoritative; older
+packages for that same head are superseded. Exact idempotent retries of an
+already recorded review package replay the recorded success even if the branch
+head has since advanced, but that replayed older-head evidence remains stale
+for readiness and does not satisfy merge/readiness gates. `tests` and
+`artifacts` entries are trimmed before persistence and default idempotency-key
+calculation.
 
 Once `mark_ready` succeeds, worker evidence for that package is immutable: new
 progress, finding, blocker, branch/PR, scope-request, and review-package writes
@@ -67,10 +69,13 @@ For non-merge-gated policies such as `quick_fix`, generic `append_progress`
 events can satisfy focused-test and review-lane readiness by recording statuses
 `tests_passed` and `<review_lane>_green`, for example `review_t1_green`.
 Tool-owned metadata, blocker, status, and scope events are ignored for these
-fallback gates. Merge-gated packages still use current-head
-`submit_review_package` evidence and persisted review artifacts. When a branch
-head is attached, fallback progress evidence must be recorded after the latest
-branch head attachment.
+fallback gates. Non-merge policies that do not require branch metadata may also
+count explicit-head `submit_review_package` evidence before a branch head is
+attached. Once a branch head is attached, readiness is evaluated against that
+current head and older review-package evidence is stale. Merge-gated packages
+still use current-head `submit_review_package` evidence and persisted review
+artifacts. When a branch head is attached, fallback progress evidence must be
+recorded after the latest branch head attachment.
 
 For investigation policies, `request_scope_expansion` records the required
 scope recommendation evidence but never approves the expansion itself. Generic

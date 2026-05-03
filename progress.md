@@ -1472,3 +1472,34 @@
 ### Next Steps
 
 - Run focused validation, commit/push sixty-third T2 fixes, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
+
+### Sixty-Fourth T2 Blocker
+
+- Pushed head before this round: `45de223`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T060358Z-1ec3dd1a`; closed it as `findings`.
+- Straightforward findings are valid and fixable: `attach_branch`/`attach_pr` need `scoped_session/3` revalidation to avoid nil-session crashes and stale `work_package_id` writes, and non-merge review-package evidence should count without branch metadata when branch is not a required gate.
+- Blocker: the stale `submit_review_package` replay finding conflicts with the prior T2-required behavior. Earlier T2 required retrying a recorded head-A review package after branch head B to replay the original success for idempotency stability; latest T2 requires that same replay to reject as `stale_head_sha`.
+
+### Decision Needed
+
+- Resolved: overseer chose replay stability for exact idempotent `submit_review_package(head_sha: A)` retries after branch head B is attached, with readiness still treating head-A evidence as stale.
+
+### Sixty-Fourth T2 Follow-up Actions
+
+- Implemented the valid scoped findings by routing `attach_branch` and `attach_pr` through `scoped_session/3`, preserving stale review-package replay while asserting it does not satisfy current-head readiness, and allowing non-merge packages to count explicit-head review-package evidence without branch metadata when branch metadata is not a required gate.
+- Updated MCP contract docs, worker template docs, and the P3-002 package spec to record the idempotent replay versus readiness distinction.
+
+### Next Steps
+
+- Run focused validation, commit/push sixty-fourth T2 fixes, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after sixty-fourth T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 92 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 287 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |

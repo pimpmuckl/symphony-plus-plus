@@ -3081,6 +3081,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-REVIEW-REPLAY", kind: "mcp", status: "ci_waiting"))
 
+    append_done_plan(repo, package.id)
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
@@ -3092,13 +3093,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "tests" => ["mix test"],
       "artifacts" => ["review-head-a.txt"],
       "head_sha" => "head-a",
-      "reviews" => []
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
     }
 
     first_response = attach_tool(repo, session, "submit_review_package", review_arguments)
     first_event_id = get_in(first_response, ["result", "structuredContent", "progress_event", "id"])
 
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-REVIEW-REPLAY/worker", "head_sha" => "head-b"})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/791", "head_sha" => "head-b"})
 
     retry_response =
       MCPHarness.request(
@@ -3113,6 +3116,53 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(retry_response, ["result", "structuredContent", "progress_event", "id"]) == first_event_id
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-after-replay", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "review_package_submitted" in get_in(ready_response, ["error", "data", "missing"])
+  end
+
+  test "metadata attachments require a scoped live session", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-METADATA-SCOPE", kind: "quick_fix", status: "ci_waiting"))
+    assert {:ok, sibling_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-METADATA-SIBLING", kind: "quick_fix", status: "ci_waiting"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    missing_session_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "branch-missing-session",
+          "method" => "tools/call",
+          "params" => %{"name" => "attach_branch", "arguments" => %{"branch" => "agent/SYMPP-METADATA-SCOPE/worker", "head_sha" => "head-a"}}
+        },
+        repo: repo
+      )
+
+    assert get_in(missing_session_response, ["error", "data", "reason"]) == "missing_session"
+
+    stale_scope_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "pr-wrong-package",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "attach_pr",
+            "arguments" => %{"work_package_id" => sibling_package.id, "url" => "https://github.com/example/repo/pull/792", "head_sha" => "head-a"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(stale_scope_response, ["error", "data", "reason"]) == "outside_session_scope"
   end
 
   test "metadata tools honor caller idempotency keys for repeated matching payloads", %{repo: repo} do
@@ -3400,6 +3450,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
     assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
+  end
+
+  test "non-merge readiness accepts branchless review packages when branch metadata is not required", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BRANCHLESS-REVIEW", kind: "quick_fix", status: "ci_waiting"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Branchless quick-fix review",
+      "tests" => ["mix test"],
+      "artifacts" => ["branchless-review.txt"],
+      "head_sha" => "standalone-head",
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+    })
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-branchless-review", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
   end
 
   test "hotfix mark_ready accepts incident-depth review evidence without plan nodes", %{repo: repo} do

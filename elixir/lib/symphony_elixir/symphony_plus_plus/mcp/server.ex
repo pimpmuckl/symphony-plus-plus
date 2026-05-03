@@ -1114,21 +1114,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool("attach_branch", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, branch} <- required_argument(arguments, "branch"),
+    with {:ok, session} <- scoped_session(config.repo, session, arguments),
+         {:ok, branch} <- required_argument(arguments, "branch"),
          {:ok, head_sha} <- required_argument(arguments, "head_sha") do
       append_metadata_event(config.repo, session, arguments, "attach_branch", "branch_attached", %{"type" => "branch", "branch" => branch, "head_sha" => head_sha})
     else
       {:tool_error, reason} ->
         {:error, -32_602, "Invalid params", %{"tool" => "attach_branch", "reason" => reason}}
+
+      {:error, reason} ->
+        worker_error(reason, "attach_branch")
     end
   end
 
   defp worker_tool("attach_pr", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, url} <- required_argument(arguments, "url"),
+    with {:ok, session} <- scoped_session(config.repo, session, arguments),
+         {:ok, url} <- required_argument(arguments, "url"),
          {:ok, head_sha} <- required_argument(arguments, "head_sha") do
       append_metadata_event(config.repo, session, arguments, "attach_pr", "pr_attached", %{"type" => "pr", "url" => url, "head_sha" => head_sha})
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "attach_pr", "reason" => reason}}
+      {:error, reason} -> worker_error(reason, "attach_pr")
     end
   end
 
@@ -1834,17 +1840,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp review_package_head_sha(head_sha, progress_events) do
+  defp review_package_head_sha(head_sha, progress_events, %WorkPackage{} = work_package) do
     current_head_sha = latest_current_head_sha(progress_events)
 
-    case current_head_sha do
-      current_head_sha when not is_binary(current_head_sha) ->
-        {:tool_error, "missing_current_head_sha"}
+    cond do
+      is_binary(current_head_sha) and head_sha == current_head_sha ->
+        {:ok, head_sha}
 
-      current_head_sha when head_sha != current_head_sha ->
+      is_binary(current_head_sha) ->
         {:tool_error, "stale_head_sha"}
 
-      _current_head_sha ->
+      merge_required?(work_package) ->
+        {:tool_error, "missing_current_head_sha"}
+
+      true ->
         {:ok, head_sha}
     end
   end
@@ -1894,6 +1903,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         artifacts,
         payload,
         requested_head_sha,
+        state.work_package,
         state.progress_events
       )
     else
@@ -1912,6 +1922,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          artifacts,
          payload,
          requested_head_sha,
+         work_package,
          progress_events
        ) do
     case replay_existing_metadata_event(repo, session, arguments, "submit_review_package", "review_package_submitted", payload) do
@@ -1919,15 +1930,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         result
 
       :not_found ->
-        submit_new_review_package(repo, session, arguments, artifacts, payload, requested_head_sha, progress_events)
+        submit_new_review_package(
+          repo,
+          session,
+          arguments,
+          artifacts,
+          payload,
+          requested_head_sha,
+          work_package,
+          progress_events
+        )
 
       {:error, code, message, data} ->
         repo.rollback({:mcp_error, code, message, data})
     end
   end
 
-  defp submit_new_review_package(repo, %Session{} = session, arguments, artifacts, payload, requested_head_sha, progress_events) do
-    case review_package_head_sha(requested_head_sha, progress_events) do
+  defp submit_new_review_package(repo, %Session{} = session, arguments, artifacts, payload, requested_head_sha, work_package, progress_events) do
+    case review_package_head_sha(requested_head_sha, progress_events, work_package) do
       {:ok, head_sha} ->
         case append_metadata_event(repo, session, arguments, "submit_review_package", "review_package_submitted", payload) do
           {:ok, result} -> persist_review_artifacts_or_rollback(repo, session, artifacts, head_sha, result)
@@ -2084,10 +2104,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp review_package_missing?(state, required_review_lanes) do
-    current_head_sha = latest_current_head_sha(state.progress_events)
+    readiness_head_sha = review_head_sha_for_readiness(state)
 
     merge_required?(state.work_package) and required_review_lanes != [] and
-      current_head_review_package_events(state.progress_events, current_head_sha) == []
+      current_head_review_package_events(state.progress_events, readiness_head_sha) == []
   end
 
   defp review_artifacts_missing?(state, required_review_lanes) do
@@ -2130,19 +2150,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if merge_required?(state.work_package) do
       review_package_lanes_present?(state.progress_events, required_lanes)
     else
-      review_package_lanes_present?(state.progress_events, required_lanes) or
+      review_package_lanes_present?(state.progress_events, required_lanes, review_head_sha_for_readiness(state)) or
         progress_review_lanes_present?(state.progress_events, required_lanes)
     end
   end
 
   defp review_package_lanes_present?(progress_events, required_lanes) do
-    current_head_sha = latest_current_head_sha(progress_events)
+    review_package_lanes_present?(progress_events, required_lanes, latest_current_head_sha(progress_events))
+  end
+
+  defp review_package_lanes_present?(progress_events, required_lanes, readiness_head_sha) do
+    readiness_head_sha = normalize_review_readiness_head_sha(readiness_head_sha)
 
     latest_verdicts =
-      case latest_review_package_event(progress_events, current_head_sha) do
+      case latest_review_package_event(progress_events, readiness_head_sha) do
         %ProgressEvent{} = event ->
           event
-          |> review_package_reviews(current_head_sha)
+          |> review_package_reviews(readiness_head_sha)
           |> Enum.reduce(%{}, fn review, verdicts -> Map.put(verdicts, Map.get(review, "lane"), Map.get(review, "verdict")) end)
 
         nil ->
@@ -2206,22 +2230,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end)
   end
 
-  defp current_head_review_package?(%ProgressEvent{}, nil), do: false
-
   defp current_head_review_package?(%ProgressEvent{payload: payload}, current_head_sha) when is_map(payload) do
-    Map.get(payload, "head_sha") == current_head_sha
+    review_head_matches?(payload, current_head_sha)
   end
 
   defp current_head_review_package?(%ProgressEvent{}, _current_head_sha), do: false
 
+  defp review_head_matches?(payload, :any_head) when is_map(payload) do
+    head_sha = Map.get(payload, "head_sha")
+    is_binary(head_sha) and String.trim(head_sha) != ""
+  end
+
+  defp review_head_matches?(payload, current_head_sha) when is_map(payload) and is_binary(current_head_sha) do
+    Map.get(payload, "head_sha") == current_head_sha
+  end
+
+  defp review_head_matches?(_payload, _current_head_sha), do: false
+
   defp review_package_artifact_paths(%ProgressEvent{payload: payload}, current_head_sha) when is_map(payload) do
     artifacts = Map.get(payload, "artifacts")
 
-    payload_head_sha = Map.get(payload, "head_sha")
-
-    current_head_artifact? = current_head_sha == nil or payload_head_sha == current_head_sha
-
-    if is_list(artifacts) and current_head_artifact? do
+    if is_list(artifacts) and review_head_matches?(payload, current_head_sha) do
       Enum.filter(artifacts, &(is_binary(&1) and String.trim(&1) != ""))
     else
       []
@@ -2250,7 +2279,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       not is_list(reviews) ->
         []
 
-      current_head_sha != nil and Map.get(payload, "head_sha") != current_head_sha ->
+      not review_head_matches?(payload, current_head_sha) ->
         []
 
       true ->
@@ -2359,14 +2388,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if merge_required?(state.work_package) do
       review_package_tests_recorded?(state.progress_events)
     else
-      review_package_tests_recorded?(state.progress_events) or progress_status_recorded?(state.progress_events, "tests_passed")
+      review_package_tests_recorded?(state) or progress_status_recorded?(state.progress_events, "tests_passed")
     end
   end
 
-  defp review_package_tests_recorded?(progress_events) do
-    current_head_sha = latest_current_head_sha(progress_events)
+  defp review_package_tests_recorded?(progress_events) when is_list(progress_events) do
+    review_package_tests_recorded?(progress_events, latest_current_head_sha(progress_events))
+  end
 
-    case latest_review_package_event(progress_events, current_head_sha) do
+  defp review_package_tests_recorded?(%{progress_events: progress_events} = state) do
+    review_package_tests_recorded?(progress_events, review_head_sha_for_readiness(state))
+  end
+
+  defp review_package_tests_recorded?(progress_events, readiness_head_sha) do
+    readiness_head_sha = normalize_review_readiness_head_sha(readiness_head_sha)
+
+    case latest_review_package_event(progress_events, readiness_head_sha) do
       %ProgressEvent{payload: payload} when is_map(payload) ->
         tests = Map.get(payload, "tests")
         is_list(tests) and Enum.any?(tests, &(is_binary(&1) and String.trim(&1) != ""))
@@ -2375,6 +2412,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         false
     end
   end
+
+  defp review_head_sha_for_readiness(%{work_package: %WorkPackage{} = work_package, progress_events: progress_events}) do
+    current_head_sha = latest_current_head_sha(progress_events)
+
+    cond do
+      is_binary(current_head_sha) -> current_head_sha
+      merge_required?(work_package) -> nil
+      true -> :any_head
+    end
+  end
+
+  defp normalize_review_readiness_head_sha(head_sha) when is_binary(head_sha), do: head_sha
+  defp normalize_review_readiness_head_sha(:any_head), do: :any_head
+  defp normalize_review_readiness_head_sha(_head_sha), do: nil
 
   defp progress_status_recorded?(progress_events, expected_status) do
     head_boundary_sequence = latest_branch_event_sequence(progress_events)

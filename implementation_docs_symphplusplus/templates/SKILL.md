@@ -46,7 +46,10 @@ initialize fails, initialize again successfully before calling worker tools.
 When calling `submit_review_package`, provide `head_sha` for the latest attached
 branch head. Symphony++ trims `tests` and `artifacts` entries and preserves
 idempotent replay for an already recorded package even after later commits move
-the branch head.
+the branch head. That replay is for lost-response stability only; readiness
+still evaluates review evidence against the current branch head. Non-merge
+packages without a branch gate may submit explicit-head review evidence before
+attaching branch metadata.
 
 After `mark_ready` succeeds, the package evidence is frozen. Do not attempt to
 append new progress, findings, blockers, branch/PR metadata, scope requests, or
