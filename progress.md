@@ -47,6 +47,11 @@
 | `mise exec -- mix specs.check` | pass | Template-selection/workflow-restore fix validation: all public functions have specs or exemption. |
 | `mise exec -- mix format --check-formatted` | pass | Template-selection/workflow-restore fix validation: no formatting drift. |
 | `mise exec -- mix credo --strict lib/symphony_elixir/symphony_plus_plus/create_work.ex lib/mix/tasks/sympp.create_work.ex test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | Template-selection/workflow-restore fix validation: 4 touched source/test files, no issues. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | Template-consistency fix validation: 14 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | Template-consistency fix validation: 333 tests, 0 failures. |
+| `mise exec -- mix specs.check` | pass | Template-consistency fix validation: all public functions have specs or exemption. |
+| `mise exec -- mix format --check-formatted` | pass | Template-consistency fix validation: no formatting drift. |
+| `mise exec -- mix credo --strict lib/symphony_elixir/symphony_plus_plus/create_work.ex lib/mix/tasks/sympp.create_work.ex test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | Template-consistency fix validation: 4 touched source/test files, no issues. |
 
 ## Review
 
@@ -59,6 +64,7 @@
 - Cached T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T170715Z-bee435ee` found valid workflow issues for omitted-`--database` default ledger selection and missing criteria on `package_acceptance` kinds. Closed the gate as findings and applied narrow fixes with regression coverage.
 - Cached T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T171824Z-1a29e29e` found valid edge cases for preconfigured workflow leakage and blank explicit IDs. Closed the gate as findings and applied narrow fixes with regression coverage.
 - Cached T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T172442Z-28f54e48` found valid issues for policy-template fields being no-ops and workflow path mutation leaking after default database resolution. Closed the gate as findings and applied narrow fixes with regression coverage.
+- Cached T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T173315Z-d2489c30` found a valid downstream inconsistency if explicit templates select a policy that does not match persisted `kind`. Closed the gate as findings and changed template fields back to strict consistency assertions for `kind`.
 
 ## Outstanding
 

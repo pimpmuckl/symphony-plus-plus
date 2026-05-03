@@ -310,9 +310,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   end
 
   defp policy_for(kind, attrs) do
-    with {:ok, policy} <- selected_policy(kind, attrs),
+    with {:ok, policy} <- Templates.expand(kind),
          :ok <- reject_phase_child_policy(policy),
-         :ok <- validate_policy_template(policy.template, attrs) do
+         :ok <- validate_policy_template(kind, policy.template, attrs) do
       {:ok, policy}
     else
       {:error, :unknown_policy_template} -> {:error, :unknown_policy_template}
@@ -320,33 +320,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     end
   end
 
-  defp selected_policy(kind, attrs) do
-    attrs
-    |> explicit_policy_templates()
-    |> List.first()
-    |> case do
-      nil -> Templates.expand(kind)
-      template -> expand_policy_input(template)
-    end
-  end
-
   defp reject_phase_child_policy(%{template: "phase_child"}), do: {:error, :standalone_kind_not_supported}
   defp reject_phase_child_policy(_policy), do: :ok
 
-  defp validate_policy_template(resolved_template, attrs) do
+  defp validate_policy_template(kind, resolved_template, attrs) do
     attrs
     |> explicit_policy_templates()
     |> Enum.reduce_while(:ok, fn template, :ok ->
-      case expand_policy_input(template) do
-        {:ok, %{template: ^resolved_template}} -> {:cont, :ok}
-        {:ok, _policy} -> {:halt, {:error, :policy_template_mismatch}}
-        {:error, reason} -> {:halt, {:error, reason}}
+      if template in [kind, resolved_template] do
+        {:cont, :ok}
+      else
+        {:halt, {:error, :policy_template_mismatch}}
       end
     end)
   end
-
-  defp expand_policy_input("worker_package"), do: Templates.expand("mcp")
-  defp expand_policy_input(template), do: Templates.expand(template)
 
   defp explicit_policy_templates(attrs) do
     ["policy_template", "review_suite_template"]
