@@ -2107,8 +2107,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp append_new_progress_event_or_replay(repo, %Session{} = session, attrs, idempotency_key, tool) do
     transaction_fun = fn ->
       with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
-           :ok <- reject_ready_evidence_mutation(repo, session, tool) do
-        PlanningService.append_authenticated_progress_event(repo, session.assignment, attrs)
+           :ok <- reject_ready_evidence_mutation(repo, session, tool),
+           {:ok, event} <- PlanningService.append_authenticated_progress_event(repo, session.assignment, attrs),
+           :ok <- append_investigation_recommendation_artifact(repo, session, tool, event) do
+        {:ok, event}
       end
     end
 
@@ -2125,6 +2127,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, reason} ->
         worker_error(reason, tool)
     end
+  end
+
+  defp append_investigation_recommendation_artifact(repo, %Session{} = session, "request_scope_expansion", %ProgressEvent{} = event) do
+    case PlanningRepository.get_state(repo, Session.work_package_id(session)) do
+      {:ok, %{work_package: %WorkPackage{kind: "investigation"}}} ->
+        append_recommendation_artifact(repo, session, event)
+
+      {:ok, _state} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp append_investigation_recommendation_artifact(_repo, %Session{}, _tool, %ProgressEvent{}), do: :ok
+
+  defp append_recommendation_artifact(repo, %Session{} = session, %ProgressEvent{} = event) do
+    attrs = %{
+      "id" => recommendation_artifact_id(session.assignment.work_package_id, event.id),
+      "work_package_id" => session.assignment.work_package_id,
+      "path" => "recommendation.md",
+      "title" => event.summary,
+      "kind" => "recommendation"
+    }
+
+    case PlanningService.append_artifact(repo, attrs) do
+      {:ok, _artifact} -> :ok
+      {:error, :id_already_exists} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp recommendation_artifact_id(work_package_id, event_id) do
+    material = [work_package_id, "recommendation", event_id] |> Enum.join(":")
+    "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
   defp reject_ready_evidence_mutation(repo, %Session{} = session, tool)
@@ -2534,7 +2572,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {review_artifacts_missing?(state, required_review_lanes), "review_artifacts_attached"},
       {review_lanes_missing?(state, required_review_lanes), "review_lanes_complete"},
       {investigation_findings_missing?(state), "findings_documented"},
-      {investigation_recommendation_missing?(state), "recommendation_recorded"}
+      {investigation_recommendation_missing?(state), "recommendation_artifact_recorded"}
     ]
     |> Enum.reduce([], fn
       {true, gate}, missing -> [gate | missing]
@@ -2576,7 +2614,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp investigation_findings_missing?(state), do: state.work_package.kind == "investigation" and state.findings == []
 
   defp investigation_recommendation_missing?(state) do
-    state.work_package.kind == "investigation" and not recommendation_recorded?(state.progress_events)
+    state.work_package.kind == "investigation" and not recommendation_artifact_recorded?(state.artifacts)
   end
 
   defp required_review_lanes(%WorkPackage{} = work_package) do
@@ -2926,9 +2964,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp metadata_present?(_progress_events, _type, _head_sha), do: false
 
-  defp recommendation_recorded?(progress_events), do: Enum.any?(progress_events, &recommendation_event?/1)
-
-  defp recommendation_event?(%ProgressEvent{} = event), do: payload_type?(event, "scope_expansion_request", "request_scope_expansion")
+  defp recommendation_artifact_recorded?(artifacts) do
+    Enum.any?(artifacts, &(&1.kind == "recommendation" and &1.path == "recommendation.md"))
+  end
 
   defp metadata_tool("branch"), do: "attach_branch"
   defp metadata_tool("pr"), do: "attach_pr"

@@ -4617,7 +4617,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
-    assert "recommendation_recorded" in get_in(missing_recommendation_response, ["error", "data", "missing"])
+    assert "recommendation_artifact_recorded" in get_in(missing_recommendation_response, ["error", "data", "missing"])
 
     attach_tool(repo, session, "append_progress", %{
       "summary" => "Spoofed recommendation",
@@ -4632,7 +4632,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
-    assert "recommendation_recorded" in get_in(spoofed_recommendation_response, ["error", "data", "missing"])
+    assert "recommendation_artifact_recorded" in get_in(spoofed_recommendation_response, ["error", "data", "missing"])
 
     attach_tool(repo, session, "request_scope_expansion", %{
       "summary" => "No scope expansion needed",
@@ -4648,6 +4648,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+
+    assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
+    assert Enum.any?(artifacts, &(&1.kind == "recommendation" and &1.path == "recommendation.md"))
   end
 
   test "mark_ready rejects spoofed metadata and accepts skipped plan nodes", %{repo: repo} do

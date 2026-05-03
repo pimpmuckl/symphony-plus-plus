@@ -30,29 +30,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     :ok
   end
 
-  test "allowed standalone transitions pass", %{repo: repo} do
-    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix"))
+  test "allowed standalone transitions pass for quick work templates", %{repo: repo} do
+    for kind <- ["quick_fix", "hotfix", "investigation"] do
+      assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: kind))
 
-    for status <- [
-          "ready_for_worker",
-          "claimed",
-          "planning",
-          "implementing",
-          "reviewing",
-          "ci_waiting",
-          "ready_for_human_merge"
-        ] do
-      assert {:ok, package} = Service.transition(repo, package.id, status, worker_actor!(repo, package))
-      assert package.status == status
+      for status <- [
+            "ready_for_worker",
+            "claimed",
+            "planning",
+            "implementing",
+            "reviewing",
+            "ci_waiting",
+            "ready_for_human_merge"
+          ] do
+        assert {:ok, package} = Service.transition(repo, package.id, status, worker_actor!(repo, package))
+        assert package.status == status
+      end
     end
   end
 
-  test "invalid transitions fail", %{repo: repo} do
-    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix"))
+  test "invalid standalone transitions fail for quick work templates", %{repo: repo} do
+    for kind <- ["quick_fix", "hotfix", "investigation"] do
+      assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: kind))
 
-    assert {:error, :invalid_transition} = Service.transition(repo, package.id, "merged", architect_actor!(repo, package))
-    assert {:ok, fetched} = Repository.get(repo, package.id)
-    assert fetched.status == "created"
+      assert {:error, :invalid_transition} =
+               Service.transition(repo, package.id, "merged", architect_actor!(repo, package))
+
+      assert {:ok, fetched} = Repository.get(repo, package.id)
+      assert fetched.status == "created"
+    end
   end
 
   test "policy templates expand into deterministic constraints and readiness requirements" do
@@ -77,13 +83,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     assert {:ok, investigation} = Templates.expand("investigation")
     assert investigation.constraints.expiry_seconds == 43_200
     assert investigation.constraints.planning_depth == "findings"
-    assert investigation.required_gates == ["findings_documented", "scope_recommendation"]
+    assert investigation.required_gates == ["findings_documented", "recommendation_artifact"]
+    assert investigation.readiness_requirements == ["findings_complete", "recommendation_artifact_recorded"]
 
     for kind <- ["mcp", "skill", "hooks"] do
       assert {:ok, policy} = Templates.expand(kind)
       assert policy.template == "worker_package"
       assert policy.review_suite.required == ["review_t1", "review_t2"]
       assert policy.constraints.terminal_readiness_status == "ready_for_human_merge"
+    end
+  end
+
+  test "quick work policy template defaults match product docs" do
+    docs =
+      File.read!(Path.expand("../../../../implementation_docs_symphplusplus/templates/quick_work_policy_templates.md", __DIR__))
+
+    for kind <- ["quick_fix", "hotfix", "investigation"] do
+      assert {:ok, policy} = Templates.expand(kind)
+
+      expected_row =
+        [
+          "| `#{kind}` ",
+          "`#{policy.constraints.planning_depth}`",
+          "`#{policy.constraints.expiry_seconds}`",
+          "`#{policy.constraints.terminal_readiness_status}`",
+          "`#{Enum.join(policy.required_gates, ", ")}`",
+          "`#{Enum.join(policy.review_suite.required, ", ")}`"
+        ]
+
+      Enum.each(expected_row, &assert(docs =~ &1))
     end
   end
 

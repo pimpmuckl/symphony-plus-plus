@@ -22,3 +22,14 @@ mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../impleme
 ```
 
 The command creates a parentless WorkPackage, applies the `quick_fix` policy, renders the initial virtual planning files, and returns the worker grant secret only in that creation response.
+
+## Investigation Example
+
+Create an investigation package with:
+
+```bash
+cd elixir
+mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../implementation_docs_symphplusplus/templates/create_work_package.investigation.example.yaml
+```
+
+The investigation policy does not require a PR. It requires findings plus a protected recommendation recorded through `request_scope_expansion`, which persists the canonical `recommendation.md` artifact.

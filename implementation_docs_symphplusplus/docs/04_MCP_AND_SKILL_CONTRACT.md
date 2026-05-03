@@ -111,9 +111,10 @@ relevant status after that branch head: later `tests_failed`,
 until a newer pass/green status is recorded.
 
 For investigation policies that require a scope recommendation,
-`request_scope_expansion` records the worker's recommendation evidence; it does
-not approve expanded scope. Caller-controlled generic `append_progress`
-payloads are not recommendation evidence.
+`request_scope_expansion` records the worker's recommendation evidence and
+persists a canonical `recommendation.md` recommendation artifact; it does not
+approve expanded scope. Caller-controlled generic `append_progress` payloads
+are not recommendation evidence.
 
 ## Architect MCP tools
 
