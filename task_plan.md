@@ -14,7 +14,7 @@ Implement only SYMPP-P4-001: a standalone create-work service plus human-facing 
 - [x] Add focused unit/integration tests for parsing, required fields, policy defaults, one-grant minting, parentless creation, virtual rendering, worker MCP claim, and no normal-read secret exposure.
 - [x] Update directly relevant docs/examples for quick-fix and hotfix usage.
 - [x] Run focused tests, formatting, specs, and lint.
-- [ ] Commit, push, open PR, and complete T1/T2/GitHub review cycle on the final pushed head.
+- [x] Commit, push, open PR, and complete T1/T2/GitHub review cycle on the final pushed head.
 
 ## Boundaries
 
