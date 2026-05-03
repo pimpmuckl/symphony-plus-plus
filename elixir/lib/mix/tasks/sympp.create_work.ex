@@ -36,6 +36,7 @@ defmodule Mix.Tasks.Sympp.CreateWork do
         cond do
           Keyword.get(opts, :help, false) -> :help
           blank?(Keyword.get(opts, :file)) -> {:error, usage()}
+          Keyword.has_key?(opts, :database) and blank?(Keyword.get(opts, :database)) -> {:error, usage()}
           true -> {:ok, opts}
         end
 
@@ -106,11 +107,14 @@ defmodule Mix.Tasks.Sympp.CreateWork do
 
   defp resolved_database(nil) do
     original_workflow = Application.get_env(:symphony_elixir, :workflow_file_path)
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
 
     try do
       use_mix_project_workflow()
+      Application.delete_env(:symphony_elixir, :sympp_repo_database)
       Repo.database_path()
     after
+      restore_sympp_repo_database(original_database)
       restore_workflow(original_workflow)
     end
   end
@@ -157,6 +161,9 @@ defmodule Mix.Tasks.Sympp.CreateWork do
 
   defp restore_workflow(nil), do: Workflow.clear_workflow_file_path()
   defp restore_workflow(path) when is_binary(path), do: Workflow.set_workflow_file_path(path)
+
+  defp restore_sympp_repo_database(nil), do: Application.delete_env(:symphony_elixir, :sympp_repo_database)
+  defp restore_sympp_repo_database(database), do: Application.put_env(:symphony_elixir, :sympp_repo_database, database)
 
   defp mix_project_workflow do
     Mix.Project.project_file()

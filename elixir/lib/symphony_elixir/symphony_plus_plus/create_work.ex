@@ -375,6 +375,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     end
   end
 
+  defp normalize_acceptance_criteria(nil), do: {:ok, []}
   defp normalize_acceptance_criteria(_criteria), do: {:error, :invalid_acceptance_criteria}
 
   defp normalize_acceptance_criterion(value) when is_binary(value), do: String.trim(value)

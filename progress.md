@@ -57,6 +57,11 @@
 | `mise exec -- mix specs.check` | pass | Planning-content fix validation: all public functions have specs or exemption. |
 | `mise exec -- mix format --check-formatted` | pass | Planning-content fix validation: no formatting drift. |
 | `mise exec -- mix credo --strict lib/symphony_elixir/symphony_plus_plus/create_work.ex lib/mix/tasks/sympp.create_work.ex test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | Planning-content fix validation: 4 touched source/test files, no issues. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | CLI/input edge validation: 16 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | CLI/input edge validation: 334 tests, 0 failures. |
+| `mise exec -- mix specs.check` | pass | CLI/input edge validation: all public functions have specs or exemption. |
+| `mise exec -- mix format --check-formatted` | pass | CLI/input edge validation: no formatting drift. |
+| `mise exec -- mix credo --strict lib/symphony_elixir/symphony_plus_plus/create_work.ex lib/mix/tasks/sympp.create_work.ex test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | CLI/input edge validation: 4 touched source/test files, no issues. |
 
 ## Review
 
@@ -71,6 +76,7 @@
 - Cached T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T172442Z-28f54e48` found valid issues for policy-template fields being no-ops and workflow path mutation leaking after default database resolution. Closed the gate as findings and applied narrow fixes with regression coverage.
 - Cached T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T173315Z-d2489c30` found a valid downstream inconsistency if explicit templates select a policy that does not match persisted `kind`. Closed the gate as findings and changed template fields back to strict consistency assertions for `kind`.
 - Cached T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T173958Z-e94af471` found valid initial planning content issues for investigation packages and whitespace-only engineering scope. Closed the gate as findings and applied narrow rendering-input fixes with regression coverage.
+- Cached T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T174643Z-49be956f` found valid CLI/input edge cases for global database override leakage, blank explicit `--database`, and nil YAML `acceptance_criteria`. Closed the gate as findings and applied narrow parsing/default fixes with regression coverage.
 
 ## Outstanding
 

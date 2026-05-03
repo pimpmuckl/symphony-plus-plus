@@ -82,6 +82,12 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
     end
   end
 
+  test "fails when explicit database option is blank" do
+    assert_raise Mix.Error, ~r/Usage: mix sympp.create_work/, fn ->
+      CreateWorkTask.run(["--file", "request.yaml", "--database", "   "])
+    end
+  end
+
   test "preserves SQLite special database names" do
     file_uri = "file:sympp-create-work-#{System.unique_integer([:positive])}.sqlite3?mode=memory&cache=shared"
     filesystem_path = Path.join(System.tmp_dir!(), "sympp-create-work-#{System.unique_integer([:positive])}.sqlite3")
@@ -93,18 +99,23 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
 
   test "defaults to the Mix project workflow ledger when database is omitted" do
     previous_workflow = Application.get_env(:symphony_elixir, :workflow_file_path)
+    previous_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
     unrelated_workflow = Path.join(System.tmp_dir!(), "unrelated-WORKFLOW.md")
+    unrelated_database = Path.join(System.tmp_dir!(), "unrelated-sympp.sqlite3")
     project_workflow = Path.expand("../../../WORKFLOW.md", __DIR__)
 
     Application.put_env(:symphony_elixir, :workflow_file_path, project_workflow)
+    Application.delete_env(:symphony_elixir, :sympp_repo_database)
     expected_database_path = Repo.database_path()
 
     Application.put_env(:symphony_elixir, :workflow_file_path, unrelated_workflow)
+    Application.put_env(:symphony_elixir, :sympp_repo_database, unrelated_database)
 
     try do
       database_path = CreateWorkTask.database_path_for_test(nil)
 
       assert Workflow.workflow_file_path() == unrelated_workflow
+      assert Application.get_env(:symphony_elixir, :sympp_repo_database) == unrelated_database
 
       assert Repo.same_database_path?(database_path, expected_database_path)
     after
@@ -112,6 +123,12 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
         Application.put_env(:symphony_elixir, :workflow_file_path, previous_workflow)
       else
         Application.delete_env(:symphony_elixir, :workflow_file_path)
+      end
+
+      if previous_database do
+        Application.put_env(:symphony_elixir, :sympp_repo_database, previous_database)
+      else
+        Application.delete_env(:symphony_elixir, :sympp_repo_database)
       end
     end
   end

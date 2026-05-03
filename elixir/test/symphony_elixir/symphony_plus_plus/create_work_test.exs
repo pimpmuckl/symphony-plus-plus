@@ -110,6 +110,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
                acceptance_criteria: ["  "]
              })
 
+    assert {:ok, request} =
+             CreateWork.parse_request(%{
+               repo: "kraken",
+               base_branch: "main",
+               title: "Nil acceptance",
+               acceptance_criteria: nil
+             })
+
+    assert request["acceptance_criteria"] == []
+
     assert {:error, :missing_acceptance_criteria} =
              CreateWork.parse_request(%{
                kind: "mcp",
