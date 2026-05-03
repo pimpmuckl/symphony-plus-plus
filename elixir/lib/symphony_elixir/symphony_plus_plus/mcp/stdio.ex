@@ -48,7 +48,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Stdio do
 
   @doc false
   @spec handle_payload(term(), Server.t()) :: map() | [map()] | nil
-  def handle_payload(payload, %Server{} = server), do: Server.handle(payload, server)
+  def handle_payload(payload, %Server{} = server) do
+    payload
+    |> Server.handle_response_state(server)
+    |> elem(0)
+  end
 
   defp emit_response(nil), do: :ok
   defp emit_response([]), do: :ok

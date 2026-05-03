@@ -230,7 +230,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     update_handle_state_store(fn store ->
       store
       |> Map.reject(fn
-        {_state_key, {%__MODULE__{}, timestamp_ms, false}} ->
+        {_state_key, {%__MODULE__{}, timestamp_ms, _explicit?}} ->
           now - timestamp_ms > @handle_state_ttl_ms
 
         _entry ->
@@ -1476,7 +1476,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     repo
     |> PlanningRepository.list_findings(work_package_id)
     |> find_existing_finding(finding_id, attrs)
-    |> retry_missing_finding(retry_fun, attempts_left)
+    |> retry_finding_replay_read(retry_fun, attempts_left)
   end
 
   defp find_existing_finding_by_idempotency_with_retry(repo, work_package_id, attrs, attempts_left) do
@@ -1487,15 +1487,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     repo
     |> PlanningRepository.list_findings(work_package_id)
     |> find_existing_finding_by_idempotency(attrs)
-    |> retry_missing_finding(retry_fun, attempts_left)
+    |> retry_finding_replay_read(retry_fun, attempts_left)
   end
 
-  defp retry_missing_finding({:error, :id_already_exists}, retry_fun, attempts_left) when attempts_left > 0 do
+  defp retry_finding_replay_read({:error, reason}, retry_fun, attempts_left)
+       when reason in [:id_already_exists, :database_busy] and attempts_left > 0 do
     Process.sleep(5)
     retry_fun.()
   end
 
-  defp retry_missing_finding(result, _retry_fun, _attempts_left), do: result
+  defp retry_finding_replay_read(result, _retry_fun, _attempts_left), do: result
 
   defp find_existing_finding({:ok, findings}, finding_id, attrs) do
     case Enum.find(findings, &(&1.id == finding_id)) do

@@ -1374,3 +1374,25 @@
 ### Next Steps
 
 - Run focused validation, commit/push the decision fix, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
+
+### Sixtieth T2 Follow-up Actions
+
+- Pushed head before this follow-up: `c55749e`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T050441Z-133bd9a7`; closed it as `findings`.
+- Fixed valid findings by expiring explicit handshake-only `state_key` entries through the existing TTL cleanup, routing `Stdio.handle_payload/2` through `Server.handle_response_state/2`, and retrying finding replay reads when SQLite returns transient `:database_busy`.
+- Added coverage for decoded stdio payload response-state retention and restored stale explicit handle-state cleanup coverage.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after sixtieth T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 86 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 281 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Run focused validation, commit/push sixtieth T2 fixes, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.

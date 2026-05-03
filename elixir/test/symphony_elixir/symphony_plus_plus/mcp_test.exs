@@ -670,6 +670,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(response, ["error", "data", "reason"]) == "empty_batch"
   end
 
+  test "stdio decoded payload helper retains response-only initialized state", %{repo: repo} do
+    server = Server.new(Config.default(repo: repo))
+
+    init_response =
+      Stdio.handle_payload(
+        %{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()},
+        server
+      )
+
+    tools_response =
+      Stdio.handle_payload(
+        %{"jsonrpc" => "2.0", "id" => "tools", "method" => "tools/list", "params" => %{}},
+        server
+      )
+
+    assert get_in(init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
+    assert is_list(get_in(tools_response, ["result", "tools"]))
+  end
+
   test "stdio handler ignores blank lines and accepts CRLF lines", %{repo: repo} do
     server = Server.new(Config.default(repo: repo), initialized: true)
 
@@ -1279,7 +1298,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute Map.has_key?(handle_state_store(), handle_state_store_key(server))
   end
 
-  test "response-only handle cleans stale implicit state entries only", %{repo: repo} do
+  test "response-only handle cleans stale state entries", %{repo: repo} do
     stale_explicit_key = make_ref()
     stale_server = Server.new(Config.default(repo: repo), initialized: true)
     stale_explicit_server = Server.new(Config.default(repo: repo), initialized: true, state_key: stale_explicit_key)
@@ -1296,7 +1315,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
     refute Map.has_key?(handle_state_store(), handle_state_store_key(stale_server))
-    assert Map.has_key?(handle_state_store(), handle_state_store_key(stale_explicit_server))
+    refute Map.has_key?(handle_state_store(), handle_state_store_key(stale_explicit_server))
   end
 
   test "response-only handle refreshes active default state entries", %{repo: repo} do

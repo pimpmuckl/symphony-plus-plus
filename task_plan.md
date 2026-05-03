@@ -300,6 +300,8 @@ Phase 3
 - Fresh T2 on pushed head `1c28dbd` was not converging: Bravo required newest branch/PR metadata to win for current head selection, while Alpha flagged explicit session restoration from `state_key` alone as a security issue and wanted review-package evidence ignored without an attached current head.
 - Overseer decided on 2026-05-03: explicit `state_key` retains initialized handshake state only and workers must re-run `claim_work_key(secret, claimed_by)` after reconnect initialize; latest attached branch head is the worker-declared current code head and PR metadata must match it for merge readiness; review packages require an attached current branch head and cannot satisfy readiness without one.
 - Before the next T2, the approach is coherent because the latest implementation applies those product/security decisions directly inside the existing P3-002 state and review-head gates without broadening scope.
+- Fresh T2 on pushed head `c55749e` produced valid findings around cleanup of explicit handshake-only state, decoded stdio response-state retention, and transient busy handling during finding replay.
+- Before the next T2, the approach remains coherent because this follow-up only applies bounded cleanup and helper-path/retry consistency to the same P3-002 response-state and idempotency mechanisms.
 
 ## Blockers
 
