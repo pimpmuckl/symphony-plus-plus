@@ -105,7 +105,7 @@ defmodule Mix.Tasks.Sympp.CreateWork do
   def database_path_for_test(database), do: resolved_database(database)
 
   defp resolved_database(nil) do
-    maybe_use_repo_root_workflow()
+    use_mix_project_workflow()
     Repo.database_path()
   end
 
@@ -141,15 +141,11 @@ defmodule Mix.Tasks.Sympp.CreateWork do
     end
   end
 
-  defp maybe_use_repo_root_workflow do
-    if Application.get_env(:symphony_elixir, :workflow_file_path) == nil do
-      mix_project_workflow()
-      |> case do
-        path when is_binary(path) -> Workflow.set_workflow_file_path(path)
-        nil -> :ok
-      end
-    else
-      :ok
+  defp use_mix_project_workflow do
+    mix_project_workflow()
+    |> case do
+      path when is_binary(path) -> Workflow.set_workflow_file_path(path)
+      nil -> :ok
     end
   end
 

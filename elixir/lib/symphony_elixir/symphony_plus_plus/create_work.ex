@@ -24,6 +24,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
           :empty_request_file
           | :invalid_acceptance_criteria
           | :invalid_request
+          | :invalid_work_package_id
           | :missing_acceptance_criteria
           | :parent_not_supported
           | :policy_template_mismatch
@@ -45,6 +46,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
 
     with {:ok, attrs} <- require_standalone(attrs),
          {:ok, attrs} <- normalize_required_fields(attrs),
+         {:ok, attrs} <- normalize_optional_id(attrs),
          {:ok, kind} <- normalize_kind(attrs),
          {:ok, policy} <- policy_for(kind, attrs),
          {:ok, acceptance_criteria} <- normalize_acceptance_criteria(Map.get(attrs, "acceptance_criteria", [])),
@@ -117,6 +119,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   def error_message(:empty_request_file), do: "Create-work request file is empty"
   def error_message(:invalid_acceptance_criteria), do: "acceptance_criteria must be a list of nonblank strings"
   def error_message(:invalid_request), do: "Create-work request must be a JSON/YAML object"
+  def error_message(:invalid_work_package_id), do: "id must be a nonblank string when provided"
   def error_message(:missing_acceptance_criteria), do: "acceptance_criteria is required for this work kind"
   def error_message(:parent_not_supported), do: "Standalone create-work does not accept parent_id"
   def error_message(:policy_template_mismatch), do: "policy_template/review_suite_template must match kind"
@@ -281,6 +284,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
         {:error, :blank} -> {:halt, {:error, {:missing_required_field, field}}}
       end
     end)
+  end
+
+  defp normalize_optional_id(attrs) do
+    case Map.fetch(attrs, "id") do
+      :error ->
+        {:ok, attrs}
+
+      {:ok, id} ->
+        case normalize_nonblank_string(id) do
+          {:ok, id} -> {:ok, Map.put(attrs, "id", id)}
+          {:error, :blank} -> {:error, :invalid_work_package_id}
+        end
+    end
   end
 
   defp normalize_kind(attrs) do

@@ -93,7 +93,7 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
 
   test "defaults to the Mix project workflow ledger when database is omitted" do
     previous_workflow = Application.get_env(:symphony_elixir, :workflow_file_path)
-    Application.delete_env(:symphony_elixir, :workflow_file_path)
+    Application.put_env(:symphony_elixir, :workflow_file_path, Path.join(System.tmp_dir!(), "unrelated-WORKFLOW.md"))
 
     try do
       database_path = CreateWorkTask.database_path_for_test(nil)

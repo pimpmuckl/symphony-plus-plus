@@ -36,6 +36,12 @@
 | `mise exec -- mix format --check-formatted` | pass | Cached T2 rerun fix validation: no formatting drift. |
 | `mise exec -- mix credo --strict lib/symphony_elixir/symphony_plus_plus/create_work.ex lib/mix/tasks/sympp.create_work.ex test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | Cached T2 rerun fix validation: 4 touched source/test files, no issues. |
 | `mise exec -- mix credo --strict` | blocked | Cached T2 rerun fix validation: same three existing `mcp/server.ex` refactoring findings outside package scope. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | Latest cached T2 fix validation: 13 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | Latest cached T2 fix validation: 332 tests, 0 failures. |
+| `mise exec -- mix specs.check` | pass | Latest cached T2 fix validation: all public functions have specs or exemption. |
+| `mise exec -- mix format --check-formatted` | pass | Latest cached T2 fix validation: no formatting drift. |
+| `mise exec -- mix credo --strict lib/symphony_elixir/symphony_plus_plus/create_work.ex lib/mix/tasks/sympp.create_work.ex test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | Latest cached T2 fix validation: 4 touched source/test files, no issues. |
+| `mise exec -- mix credo --strict` | blocked | Latest cached T2 fix validation: same three existing `mcp/server.ex` refactoring findings outside package scope. |
 
 ## Review
 
@@ -46,7 +52,8 @@
 - T2 round `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T165448Z-9ac9450c` found valid readiness issues around dispatchable status, `phase_child` rejection, SQLite special database handling, and Mix task repo dependency startup. Applied narrow fixes in the create-work service and Mix task and added regression coverage.
 - Cached follow-up session `019deecd-c77a-7e53-900d-e437463df05b` returned no findings for the dispatchable-status/SQLite/dependency-startup fix.
 - Cached T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T170715Z-bee435ee` found valid workflow issues for omitted-`--database` default ledger selection and missing criteria on `package_acceptance` kinds. Closed the gate as findings and applied narrow fixes with regression coverage.
+- Cached T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T171824Z-1a29e29e` found valid edge cases for preconfigured workflow leakage and blank explicit IDs. Closed the gate as findings and applied narrow fixes with regression coverage.
 
 ## Outstanding
 
-- Re-run validation, commit/push the cached T2 rerun fix, and continue cached review-state/T2/GitHub review cycle.
+- Re-run validation, commit/push the latest cached T2 rerun fix, and continue cached review-state/T2/GitHub review cycle.

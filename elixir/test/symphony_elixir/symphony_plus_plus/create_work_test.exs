@@ -66,6 +66,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
              CreateWork.parse_request(%{repo: "kraken", base_branch: "main"})
   end
 
+  test "normalizes explicit IDs and rejects blank IDs" do
+    assert {:ok, request} =
+             CreateWork.parse_request(%{
+               id: " custom-work-id ",
+               repo: "kraken",
+               base_branch: "main",
+               title: "Custom id",
+               acceptance_criteria: ["Custom ID works."]
+             })
+
+    assert request["id"] == "custom-work-id"
+
+    assert {:error, :invalid_work_package_id} =
+             CreateWork.parse_request(%{
+               id: "   ",
+               repo: "kraken",
+               base_branch: "main",
+               title: "Blank id"
+             })
+  end
+
   test "accepts resolved policy template names and rejects blank acceptance criteria" do
     assert {:ok, request} =
              CreateWork.parse_request(%{
