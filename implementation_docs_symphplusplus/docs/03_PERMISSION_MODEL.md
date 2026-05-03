@@ -40,11 +40,16 @@ Never log:
 1. Create WorkPackage.
 2. Mint AccessGrant.
 3. Return claim secret once.
-4. Agent calls claim_work_key(secret).
-5. Server validates hash, expiry, revocation, and not already bound.
-6. Server binds grant to AgentRun.
-7. Subsequent calls use bound session/grant identity.
+4. Agent calls claim_work_key(secret, claimed_by).
+5. Server validates hash, expiry, revocation, claimed owner, and not already bound to a different owner.
+6. Server binds grant to the worker session with the claimed_by owner identity.
+7. Reconnects are accepted only for the same owner identity and secret proof.
+8. Subsequent calls use bound session/grant identity.
 ```
+
+This is the Symphony++ worker MCP API decision for the pre-production worker
+surface: workers must claim with an explicit owner identity rather than relying
+on ambiguous anonymous ownership.
 
 ## Worker capabilities
 

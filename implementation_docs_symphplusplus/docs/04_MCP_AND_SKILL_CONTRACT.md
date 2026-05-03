@@ -20,7 +20,7 @@ sympp://work-packages/{id}/handoff.md
 ## Worker MCP tools
 
 ```text
-claim_work_key(secret)
+claim_work_key(secret, claimed_by)
 get_current_assignment()
 read_context()
 read_task_plan()
@@ -37,6 +37,11 @@ attach_pr(pr_url, head_sha)
 submit_review_package(summary, tests, artifacts)
 mark_ready()
 ```
+
+`claim_work_key` intentionally requires both the one-time secret and a stable
+`claimed_by` worker identity. Symphony++ uses that identity as part of the
+worker MCP ownership contract: reconnects are accepted only when the same
+secret proof is presented by the same `claimed_by` owner.
 
 ## Architect MCP tools
 

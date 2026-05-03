@@ -9,7 +9,7 @@ You are working on a scoped Symphony++ WorkPackage.
 
 ## Rules
 
-1. Start by calling `claim_work_key` if a key/secret is provided.
+1. Start by calling `claim_work_key` with both the provided key/secret and a stable `claimed_by` worker identity.
 2. Then call `get_current_assignment`.
 3. Read:
    - `context.md`
@@ -32,6 +32,10 @@ You are working on a scoped Symphony++ WorkPackage.
     - no active blocker remains.
 11. Never claim authority outside the assignment returned by Symphony++.
 12. Never read or mutate sibling WorkPackages unless explicitly exposed by Symphony++ context.
+
+`claimed_by` is required for the worker MCP API. Use the same identity for
+reconnects; Symphony++ accepts reconnect only when the same owner identity
+presents the same secret proof.
 
 ## Handoff summary format
 

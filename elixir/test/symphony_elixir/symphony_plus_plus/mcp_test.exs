@@ -14,6 +14,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Server, Session, Stdio}
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
@@ -1795,11 +1796,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Ready",
       "tests" => ["mix test", "review_t1 green", "review_t2 green"],
-      "artifacts" => ["review-log.txt"],
+      "artifacts" => ["review-t1-log.txt"],
       "head_sha" => "abc123",
       "acceptance_criteria_met" => true,
       "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
     })
+
+    repo.delete_all(Artifact)
 
     missing_review_lanes_response =
       MCPHarness.request(
@@ -1813,7 +1816,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Ready after T2",
       "tests" => ["mix test", "review_t2 green"],
-      "artifacts" => ["review-log.txt"],
+      "artifacts" => ["review-t2-log.txt"],
       "head_sha" => "abc123",
       "reviews" => [%{"lane" => "review_t2", "verdict" => "green"}]
     })
@@ -1828,6 +1831,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     incremental_missing = get_in(incremental_review_lanes_response, ["error", "data", "missing"])
     refute "review_lanes_complete" in incremental_missing
     refute "acceptance_criteria_met" in incremental_missing
+    assert "review_artifacts_attached" in incremental_missing
     assert "plan_complete" in incremental_missing
 
     malformed_review_response =

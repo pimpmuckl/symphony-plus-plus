@@ -1637,17 +1637,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp review_artifacts_present?(progress_events, artifacts, work_package_id) do
     current_head_sha = latest_pr_head_sha(progress_events)
+    artifact_paths = current_head_review_artifact_paths(progress_events, current_head_sha)
 
-    case latest_review_package_event(progress_events, current_head_sha) do
-      %ProgressEvent{} = event ->
-        artifact_paths = review_package_artifact_paths(event, current_head_sha)
+    artifact_paths != [] and
+      Enum.all?(artifact_paths, &persisted_review_artifact?(artifacts, work_package_id, current_head_sha, &1))
+  end
 
-        artifact_paths != [] and
-          Enum.all?(artifact_paths, &persisted_review_artifact?(artifacts, work_package_id, current_head_sha, &1))
-
-      nil ->
-        false
-    end
+  defp current_head_review_artifact_paths(progress_events, current_head_sha) do
+    progress_events
+    |> current_head_review_package_events(current_head_sha)
+    |> Enum.flat_map(&review_package_artifact_paths(&1, current_head_sha))
+    |> Enum.uniq()
   end
 
   defp latest_review_package_event(progress_events, current_head_sha) do

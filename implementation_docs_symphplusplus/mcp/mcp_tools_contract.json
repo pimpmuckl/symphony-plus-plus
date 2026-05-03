@@ -2,7 +2,9 @@
   "worker_tools": [
     {
       "name": "claim_work_key",
-      "purpose": "Claim a one-time work key/secret and bind it to the current agent run."
+      "purpose": "Claim a one-time work key/secret with required claimed_by owner identity and bind it to the current worker session.",
+      "required_arguments": ["secret", "claimed_by"],
+      "reconnect_policy": "Reconnects are accepted only when the same claimed_by owner presents the same secret proof."
     },
     {
       "name": "get_current_assignment",

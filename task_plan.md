@@ -130,10 +130,12 @@ Phase 3
 - [x] Fix thirtieth T2 worker tool notification dispatch finding locally.
 - [x] Commit and push thirtieth T2 fix.
 - [x] Run fresh full-diff T2 on pushed head `7bb1915` and close valid findings gate.
-- [ ] Resolve thirty-first T2 findings after architecture decision on `claim_work_key.claimed_by` compatibility.
+- [x] Resolve thirty-first T2 findings after architecture decision on `claim_work_key.claimed_by` compatibility.
+- [x] Validate thirty-first T2 fixes locally.
+- [ ] Commit and push thirty-first T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** blocked on backward-compatibility-sensitive `claim_work_key` contract decision; T2 also found a separate review-artifact aggregation fix to apply after the API direction is set.
+- **Status:** thirty-first T2 fixes validated locally; pending commit/push and fresh full-diff T2 rerun.
 
 ### High-Pressure Coherence Review
 
@@ -161,10 +163,11 @@ Phase 3
 - The latest finding is a single protocol dispatch edge case inside P3-002 MCP behavior, not a broader design or scope problem.
 - The current loop is blocked because T2 findings now conflict on the public `claim_work_key` contract: earlier review required explicit `claimed_by` for reconnect ownership, while the latest review says published docs/templates require `claim_work_key(secret)`.
 - This is a backward-compatibility-sensitive API decision for P3-002 consumers, so implementation should pause until the overseeing architecture agent chooses the contract.
+- Overseer selected Option A on 2026-05-03: keep `claim_work_key.claimed_by` required and update the published MCP docs/templates/package docs as an intentional pre-production API decision.
 
 ## Blockers
 
-- Need architecture decision: keep `claim_work_key.claimed_by` required and update the published contract/templates, or restore `claim_work_key(secret)` compatibility and accept/define weaker or derived reconnect ownership semantics.
+- None currently. The claim contract decision is resolved in favor of explicit `claimed_by` owner identity.
 
 ## Boundaries
 

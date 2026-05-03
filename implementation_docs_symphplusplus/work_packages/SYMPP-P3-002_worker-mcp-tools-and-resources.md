@@ -15,7 +15,7 @@ Implement scoped worker MCP tools/resources for claim, virtual planning files, p
 
 ## Implementation tasks
 
-- Implement claim_work_key.
+- Implement claim_work_key with required secret plus claimed_by owner identity.
 - Implement get_current_assignment.
 - Implement virtual planning file resources.
 - Implement update_task_plan, append_finding, append_progress.
@@ -50,6 +50,12 @@ Implement scoped worker MCP tools/resources for claim, virtual planning files, p
 - Worker cannot mark merged.
 - Worker cannot mint grants.
 - Worker cannot list all packages.
+
+### Claim contract
+
+Workers must call `claim_work_key(secret, claimed_by)`. The `claimed_by`
+identity is required so reconnect ownership is explicit; reconnects are accepted
+only for the same owner identity and secret proof.
 
 
 ## Deliverables

@@ -698,4 +698,26 @@
 
 ### Blocker
 
-- Need overseeing architecture decision before changing the claim contract again: either keep required `claimed_by` and update the public P3-002 contract/templates, or restore `claim_work_key(secret)` compatibility and define acceptable reconnect ownership behavior when no caller identity is supplied.
+- Resolved 2026-05-03 by overseer: choose Option A, keep required `claimed_by`, update public P3-002 contract/templates/docs, and keep same-owner reconnect semantics.
+
+### Thirty-First T2 Fix Actions
+
+- Updated worker MCP docs and templates to publish `claim_work_key(secret, claimed_by)` as the intentional pre-production API contract.
+- Documented that reconnects require the same owner identity and same secret proof.
+- Updated review artifact readiness to aggregate artifact paths across all current-head review-package submissions.
+- Added regression coverage by making incremental review submissions use separate artifacts and deleting the first persisted artifact; `mark_ready` now reports missing review artifacts instead of checking only the latest submission.
+
+### Next Steps
+
+- Commit and push the thirty-first T2 fixes, then rerun full-diff T2.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after thirty-first T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 64 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 259 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
