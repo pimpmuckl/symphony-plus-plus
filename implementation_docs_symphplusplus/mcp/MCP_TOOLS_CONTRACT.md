@@ -6,7 +6,7 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 
 | Tool | Purpose |
 |---|---|
-| claim_work_key | Claim a one-time work key/secret with required `claimed_by` owner identity and bind it to the current worker session. |
+| claim_work_key | Claim a one-time work key/secret with required `claimed_by` owner identity and bind the current MCP session to the grant role. |
 | get_current_assignment | Return the scoped assignment for the bound grant. |
 | read_context | Read context.md for the current work package. |
 | read_task_plan | Read task_plan.md for the current work package. |
@@ -65,7 +65,8 @@ sympp://work-packages/{id}/review_suite.md
 sympp://work-packages/{id}/handoff.md
 ```
 
-`claim_work_key` requires `secret` and `claimed_by`. Reconnects are accepted
+`claim_work_key` requires `secret` and `claimed_by`. It can bind an existing
+worker or architect grant; it does not mint new grants. Reconnects are accepted
 only when the same owner identity presents the same secret proof.
 
 Explicit `state_key` values retain initialized handshake continuity for

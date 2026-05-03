@@ -1165,7 +1165,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          proof_hash = WorkKey.secret_hash(secret),
          true <- session.proof_hash == proof_hash,
          :ok <- require_same_claim_owner(session.assignment, claimed_by),
-         {:ok, session} <- revalidate_worker_session(config.repo, session, proof_hash) do
+         {:ok, session} <- revalidate_bound_session(config.repo, session, proof_hash) do
       {:ok, %{"assignment" => Session.public_assignment(session)}, session}
     else
       {:error, code, message, data} -> {:error, code, message, data}
@@ -1182,8 +1182,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, secret} <- required_argument(arguments, "secret"),
          {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
          proof_hash = WorkKey.secret_hash(secret),
-         :ok <- require_worker_secret(config.repo, secret),
-         {:ok, session} <- claim_or_reconnect_worker_session(config.repo, secret, proof_hash, claimed_by) do
+         :ok <- require_full_secret(secret),
+         {:ok, session} <- claim_or_reconnect_session(config.repo, secret, proof_hash, claimed_by) do
       {:ok, %{"assignment" => Session.public_assignment(session)}, session}
     else
       {:error, code, message, data} -> {:error, code, message, data}
@@ -1194,34 +1194,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     _error -> {:error, -32_000, "Server error", %{"tool" => "claim_work_key", "reason" => "ledger_unavailable"}}
   end
 
-  defp revalidate_worker_session(repo, %Session{} = session, proof_hash) do
+  defp revalidate_bound_session(repo, %Session{} = session, proof_hash) do
     with {:ok, grant} <- AccessGrantRepository.get(repo, session.assignment.grant_id),
-         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash),
-         :ok <- require_worker_assignment(session.assignment) do
+         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash) do
       {:ok, session}
     end
   end
 
-  defp claim_or_reconnect_worker_session(repo, secret, proof_hash, claimed_by) do
+  defp claim_or_reconnect_session(repo, secret, proof_hash, claimed_by) do
     case AccessGrantService.claim(repo, secret, claimed_by: claimed_by) do
       {:ok, assignment} ->
-        with :ok <- require_worker_assignment(assignment) do
-          {:ok, Session.new(assignment, proof_hash: proof_hash)}
-        end
+        {:ok, Session.new(assignment, proof_hash: proof_hash)}
 
       {:error, :already_claimed} ->
-        reconnect_claimed_worker_session(repo, proof_hash, claimed_by)
+        reconnect_claimed_session(repo, proof_hash, claimed_by)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp reconnect_claimed_worker_session(repo, proof_hash, claimed_by) do
+  defp reconnect_claimed_session(repo, proof_hash, claimed_by) do
     with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, proof_hash),
          :ok <- require_same_claim_owner(grant, claimed_by),
-         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash),
-         :ok <- require_worker_assignment(session.assignment) do
+         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash) do
       {:ok, session}
     end
   end
@@ -1229,13 +1225,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_same_claim_owner(%{claimed_by: claimed_by}, claimed_by), do: :ok
   defp require_same_claim_owner(_grant, _claimed_by), do: {:error, :already_claimed}
 
-  defp require_worker_secret(repo, secret) do
+  defp require_full_secret(secret) do
     if String.length(secret) == 4 do
       {:error, :display_key_only}
     else
-      with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, WorkKey.secret_hash(secret)) do
-        require_worker_assignment(grant)
-      end
+      :ok
     end
   end
 

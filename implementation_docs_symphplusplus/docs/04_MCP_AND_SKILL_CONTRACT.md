@@ -39,9 +39,10 @@ mark_ready()
 ```
 
 `claim_work_key` intentionally requires both the one-time secret and a stable
-`claimed_by` worker identity. Symphony++ uses that identity as part of the
-worker MCP ownership contract: reconnects are accepted only when the same
-secret proof is presented by the same `claimed_by` owner.
+`claimed_by` owner identity. Symphony++ uses that identity as part of the MCP
+ownership contract. The call binds the session to an existing worker or
+architect grant and does not mint new grants. Reconnects are accepted only when
+the same secret proof is presented by the same `claimed_by` owner.
 
 For stateless MCP transports, an explicit `state_key` is continuity metadata for
 the initialized handshake only. It is not a bearer capability for a claimed

@@ -2015,7 +2015,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert server.session.assignment.work_package_id == package.id
   end
 
-  test "claim_work_key rejects non-worker grants and revalidates bound replays", %{repo: repo} do
+  test "claim_work_key binds worker and architect grants and revalidates bound replays", %{repo: repo} do
     assert {:ok, worker_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-CLAIM", kind: "mcp", status: "ready_for_worker"))
 
@@ -2023,10 +2023,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-CLAIM", kind: "mcp", status: "ready_for_worker"))
 
     assert {:ok, worker_minted} = AccessGrantService.mint_worker_grant(repo, worker_package.id)
-    assert {:ok, architect_work_key} = create_architect_work_key(repo, architect_package.id)
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, architect_package.id, ["read:child_progress", "read:child_findings"])
 
-    architect_response =
-      Server.handle(
+    {architect_response, architect_server} =
+      Server.handle_state(
         %{
           "jsonrpc" => "2.0",
           "id" => "architect-claim",
@@ -2036,9 +2036,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         Server.new(Config.default(repo: repo), initialized: true)
       )
 
-    assert get_in(architect_response, ["error", "data", "reason"]) == "worker_grant_required"
-    assert {:ok, architect_assignment} = AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
-    assert architect_assignment.grant_role == "architect"
+    assert get_in(architect_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-ARCHITECT-CLAIM"
+    assert get_in(architect_response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+    assert architect_server.session.assignment.grant_role == "architect"
+
+    architect_tools_response =
+      Server.handle(%{"jsonrpc" => "2.0", "id" => "architect-tools-after-claim", "method" => "tools/list", "params" => %{}}, architect_server)
+
+    architect_tools_by_name =
+      architect_tools_response
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
+
+    assert Map.has_key?(architect_tools_by_name, "read_child_status")
+    refute Map.has_key?(architect_tools_by_name, "append_progress")
 
     {claim_response, claimed_server} =
       Server.handle_state(
