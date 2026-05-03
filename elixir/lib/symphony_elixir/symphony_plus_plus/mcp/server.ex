@@ -684,12 +684,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp dispatch("tools/call", %{"name" => name} = params, %__MODULE__{} = server) when name in @architect_tools do
-    case architect_tool_arguments(params, name) do
-      {:ok, arguments} ->
-        architect_tool(name, arguments, server)
-
-      {:error, code, message, data} ->
-        {:error, code, message, data}
+    with :ok <- authorize_architect_tool_call(server, name),
+         {:ok, arguments} <- architect_tool_arguments(params, name) do
+      architect_tool(name, arguments, server)
+    else
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:error, reason} -> architect_error(reason, name)
     end
   end
 
@@ -959,7 +959,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp tool_specs_for_session(repo, session) do
     case Auth.require_session(session, repo) do
       {:ok, %Session{assignment: %{grant_role: "architect"}}} ->
-        {:ok, [health_tool_spec() | Enum.map(@architect_tools, &architect_tool_spec/1)]}
+        {:ok, [health_tool_spec() | architect_tool_specs_for_session(session)]}
 
       {:ok, %Session{assignment: %{grant_role: "worker"}}} ->
         {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
@@ -971,6 +971,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         {:error, reason}
     end
   end
+
+  defp architect_tool_specs_for_session(%Session{assignment: %{capabilities: capabilities}}) do
+    @architect_tools
+    |> Enum.filter(&(architect_tool_required_capabilities(&1) -- capabilities == []))
+    |> Enum.map(&architect_tool_spec/1)
+  end
+
+  defp architect_tool_specs_for_session(_session), do: []
 
   defp schema(properties, required) do
     %{"type" => "object", "additionalProperties" => false, "properties" => properties, "required" => required}
@@ -1182,6 +1190,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, secret} <- required_argument(arguments, "secret"),
          {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
          proof_hash = WorkKey.secret_hash(secret),
+         :ok <- require_mcp_claimable_secret(config.repo, proof_hash),
          :ok <- require_full_secret(secret),
          {:ok, session} <- claim_or_reconnect_session(config.repo, secret, proof_hash, claimed_by) do
       {:ok, %{"assignment" => Session.public_assignment(session)}, session}
@@ -1237,6 +1246,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp require_mcp_claimable_secret(repo, proof_hash) do
+    with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, proof_hash) do
+      require_mcp_claimable_assignment(grant)
+    end
+  end
+
   defp require_worker_assignment(%{grant_role: "worker"}), do: :ok
   defp require_worker_assignment(_assignment), do: {:error, :worker_grant_required}
 
@@ -1255,6 +1270,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp require_architect_capability(_assignment, _capability), do: {:error, :insufficient_capability}
+
+  defp authorize_architect_tool_call(%__MODULE__{config: config, session: session}, name) do
+    with {:ok, session} <- architect_session(config.repo, session, architect_tool_required_capabilities(name)) do
+      require_architect_work_package_scope(session, Session.work_package_id(session))
+    end
+  end
+
+  defp architect_tool_required_capabilities("read_child_status"), do: ["read:child_progress", "read:child_findings"]
+  defp architect_tool_required_capabilities(name), do: [architect_tool_capability(name)]
 
   defp claim_error(:database_busy), do: service_error(:database_busy, "claim_work_key")
   defp claim_error({:storage_failed, _reason} = reason), do: service_error(reason, "claim_work_key")

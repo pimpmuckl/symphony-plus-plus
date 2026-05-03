@@ -328,7 +328,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                "mint:child_worker_key",
                "read:phase",
                "merge:child_into_phase",
-               "split:work_package"
+               "split:child_work_package"
              ])
 
     assert {:ok, architect_assignment} =
@@ -343,6 +343,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert Map.has_key?(tools_by_name, "sympp.health")
     refute Map.has_key?(tools_by_name, "claim_work_key")
+    refute Map.has_key?(tools_by_name, "create_child_work_package")
+    refute Map.has_key?(tools_by_name, "revoke_child_worker_key")
     assert get_in(tools_by_name, ["read_child_status", "inputSchema", "required"]) == ["work_package_id"]
     assert get_in(tools_by_name, ["read_child_status", "inputSchema", "properties", "work_package_id", "type"]) == "string"
     assert get_in(tools_by_name, ["read_phase_board", "inputSchema", "required"]) == ["phase_id"]
@@ -2142,6 +2144,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(response, ["error", "code"]) == -32_001
     assert get_in(response, ["error", "data", "reason"]) == "unsupported_grant_role"
+
+    assert {:ok, grant} = AccessGrantRepository.get(repo, "ag_unsupported_claim_role")
+    assert grant.claimed_at == nil
+    assert grant.claimed_by == nil
   end
 
   test "worker tools reject injected non-worker sessions", %{repo: repo} do
@@ -2232,6 +2238,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(response, ["error", "code"]) == -32_001
     assert get_in(response, ["error", "data", "reason"]) == "architect_grant_required"
+
+    schema_probe_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "worker-denied-architect-schema-probe",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_phase_board", "arguments" => %{}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(schema_probe_response, ["error", "code"]) == -32_001
+    assert get_in(schema_probe_response, ["error", "data", "reason"]) == "architect_grant_required"
   end
 
   test "architect tools reject missing and insufficient grants", %{repo: repo} do
