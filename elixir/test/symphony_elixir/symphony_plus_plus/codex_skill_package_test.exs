@@ -5,8 +5,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   @skill_path Path.join(@repo_root, ".codex/skills/symphony-work-package/SKILL.md")
   @prompt_path Path.join(@repo_root, ".codex/skills/symphony-work-package/references/worker_prompt.md")
   @wiring_path Path.join(@repo_root, ".codex/skills/symphony-work-package/references/mcp_wiring.md")
+  @handoff_path Path.join(@repo_root, "implementation_docs_symphplusplus/docs/00_ARCHITECT_AGENT_HANDOFF.md")
+  @runbook_path Path.join(@repo_root, "implementation_docs_symphplusplus/docs/09_OPERATIONAL_RUNBOOK.md")
   @template_skill_path Path.join(@repo_root, "implementation_docs_symphplusplus/templates/SKILL.md")
   @template_prompt_path Path.join(@repo_root, "implementation_docs_symphplusplus/templates/worker_agent_prompt.md")
+  @template_references_dir Path.join(@repo_root, "implementation_docs_symphplusplus/templates/references")
   @contract_path Path.join(@repo_root, "implementation_docs_symphplusplus/mcp/mcp_tools_contract.json")
 
   @worker_tools [
@@ -49,7 +52,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     template_prompt = File.read!(@template_prompt_path)
 
     for content <- [prompt, template_prompt] do
-      assert content =~ "```text"
+      assert String.starts_with?(content, "You are assigned Symphony++ work package")
       assert content =~ "<WORK_PACKAGE_ID>"
       assert content =~ "claim_work_key(secret, claimed_by)"
       assert content =~ "update_task_plan(patch, expected_version)"
@@ -59,6 +62,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       assert content =~ "Do not create local planning files as the WorkPackage source of truth."
       assert content =~ "Do not use broad Linear/GitHub state as permission authority."
       refute content =~ "attach_pr(pr_url"
+      refute content =~ "```"
       refute content =~ "request_context"
     end
   end
@@ -78,6 +82,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     template_skill = File.read!(@template_skill_path)
 
     assert frontmatter(skill) == frontmatter(template_skill)
+
+    for file <- ["worker_prompt.md", "mcp_wiring.md", "handoff.md"] do
+      assert File.exists?(Path.join(@template_references_dir, file))
+    end
+  end
+
+  test "handoff docs include skill installation and MCP setup" do
+    handoff = File.read!(@handoff_path)
+    runbook = File.read!(@runbook_path)
+
+    for content <- [handoff, runbook] do
+      assert content =~ ".codex/skills/symphony-work-package/"
+      assert content =~ "mcp_wiring.md"
+      assert content =~ "templates/worker_agent_prompt.md"
+    end
   end
 
   test "MCP contract lists the current worker tools" do

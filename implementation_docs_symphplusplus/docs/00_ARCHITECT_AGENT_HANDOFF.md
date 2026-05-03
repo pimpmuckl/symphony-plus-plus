@@ -65,9 +65,14 @@ Must be true before architect delegation begins:
 For each work package, send the worker:
 
 1. The work-package markdown file.
-2. `templates/worker_agent_prompt.md`.
-3. Any dependency summaries from previously merged packages.
-4. The target branch and expected PR naming convention.
+2. The verbatim prompt in `templates/worker_agent_prompt.md`.
+3. The `symphony-work-package` skill package from
+   `.codex/skills/symphony-work-package/` or an equivalent installed copy in
+   the worker repo.
+4. MCP setup for the Symphony++ stdio server; see
+   `.codex/skills/symphony-work-package/references/mcp_wiring.md`.
+5. Any dependency summaries from previously merged packages.
+6. The target branch and expected PR naming convention.
 
 Worker PR title format:
 

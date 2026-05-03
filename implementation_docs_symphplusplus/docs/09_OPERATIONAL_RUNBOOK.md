@@ -6,10 +6,13 @@
 2. Set repo and base branch.
 3. Set acceptance criteria and review-suite requirement.
 4. Mint worker grant.
-5. Hand worker the key and `templates/worker_agent_prompt.md`.
-6. Watch dashboard/API for progress.
-7. Review PR and readiness evidence.
-8. Human merges after branch protection passes.
+5. Install or copy `.codex/skills/symphony-work-package/` into the worker repo.
+6. Configure the Symphony++ MCP stdio dependency; see
+   `.codex/skills/symphony-work-package/references/mcp_wiring.md`.
+7. Hand worker the key and the verbatim `templates/worker_agent_prompt.md`.
+8. Watch dashboard/API for progress.
+9. Review PR and readiness evidence.
+10. Human merges after branch protection passes.
 
 ## Starting a phase-based implementation
 

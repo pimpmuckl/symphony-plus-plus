@@ -1,6 +1,3 @@
-# Symphony++ Worker Prompt
-
-```text
 You are assigned Symphony++ work package <WORK_PACKAGE_ID>: <TITLE>.
 
 Use the `symphony-work-package` skill and the configured Symphony++ MCP server.
@@ -54,4 +51,3 @@ Final output:
 - Review evidence and anchors.
 - Files changed.
 - Residual risks or explicit out-of-scope items.
-```
