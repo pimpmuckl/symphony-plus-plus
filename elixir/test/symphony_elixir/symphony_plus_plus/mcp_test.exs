@@ -2149,7 +2149,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
   end
 
-  test "review package submitted before PR attach remains readiness evidence", %{repo: repo} do
+  test "review package submitted before PR attach does not satisfy later PR readiness", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PRE-PR-REVIEW", kind: "mcp", status: "ci_waiting"))
     append_done_plan(repo, package.id)
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -2175,7 +2175,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
-    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+    missing = get_in(ready_response, ["error", "data", "missing"])
+    assert "review_lanes_complete" in missing
+    assert "review_artifacts_attached" in missing
   end
 
   test "mark_ready rejects empty review packages and allows resolved blockers", %{repo: repo} do

@@ -136,6 +136,9 @@ Phase 3
 - [x] Run fresh full-diff T2 on pushed head `5a13229` and close valid findings gate.
 - [x] Fix thirty-second T2 head validation, pre-attach review evidence, and transactional grant revalidation findings locally.
 - [x] Commit and push thirty-second T2 fixes.
+- [x] Run fresh full-diff T2 on pushed head `e2e4c2f` and close valid findings gate.
+- [x] Fix thirty-third T2 headless-review evidence finding locally.
+- [ ] Commit and push thirty-third T2 fix.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
 - **Status:** thirty-second T2 fixes pushed; pending fresh full-diff T2 rerun and GitHub review if clean.
@@ -169,6 +172,8 @@ Phase 3
 - Overseer selected Option A on 2026-05-03: keep `claim_work_key.claimed_by` required and update the published MCP docs/templates/package docs as an intentional pre-production API decision.
 - Before the next T2, the approach remains coherent because the latest fixes only tighten worker grant revalidation inside existing write transactions and preserve already-accepted review evidence semantics.
 - Findings remain narrow correctness hardening around the same P3-002 MCP write/readiness surface, so continuing the T2/GitHub loop is still appropriate.
+- Before the next T2, the approach remains coherent because the latest change only narrows readiness evidence to review packages that explicitly match the current PR head once a PR head exists.
+- Findings are still converging as current-head evidence hardening inside the P3-002 review gates, not a broader package design or scope problem.
 
 ## Blockers
 

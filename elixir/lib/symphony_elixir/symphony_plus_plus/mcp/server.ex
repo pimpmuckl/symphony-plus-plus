@@ -1703,8 +1703,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp current_head_review_package?(%ProgressEvent{payload: payload}, nil) when is_map(payload), do: true
 
   defp current_head_review_package?(%ProgressEvent{payload: payload}, current_head_sha) when is_map(payload) do
-    head_sha = Map.get(payload, "head_sha")
-    is_nil(head_sha) or head_sha == current_head_sha
+    Map.get(payload, "head_sha") == current_head_sha
   end
 
   defp current_head_review_package?(%ProgressEvent{}, _current_head_sha), do: false
@@ -1714,7 +1713,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     payload_head_sha = Map.get(payload, "head_sha")
 
-    current_head_artifact? = current_head_sha == nil or is_nil(payload_head_sha) or payload_head_sha == current_head_sha
+    current_head_artifact? = current_head_sha == nil or payload_head_sha == current_head_sha
 
     if is_list(artifacts) and current_head_artifact? do
       Enum.filter(artifacts, &(is_binary(&1) and String.trim(&1) != ""))
@@ -1745,7 +1744,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       not is_list(reviews) ->
         []
 
-      current_head_sha != nil and not is_nil(Map.get(payload, "head_sha")) and Map.get(payload, "head_sha") != current_head_sha ->
+      current_head_sha != nil and Map.get(payload, "head_sha") != current_head_sha ->
         []
 
       true ->
