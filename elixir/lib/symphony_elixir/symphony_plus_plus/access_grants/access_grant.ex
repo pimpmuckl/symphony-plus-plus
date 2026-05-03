@@ -130,9 +130,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
         "read:child_progress",
         "read:phase",
         "request:child_replan",
-        "approve:child_ready",
+        "approve:child_ready_state",
         "merge:child_into_phase",
-        "split:work_package",
+        "split:child_work_package",
         "publish:phase_update"
       ]
   end

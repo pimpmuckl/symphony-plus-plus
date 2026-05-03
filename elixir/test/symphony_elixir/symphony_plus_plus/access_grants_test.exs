@@ -214,7 +214,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
   test "worker grant cannot include architect MCP tool capabilities", %{repo: repo} do
     assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
 
-    for capability <- ["read:phase", "read:child_progress", "read:child_findings", "mint:child_worker_key"] do
+    for capability <- [
+          "read:phase",
+          "read:child_progress",
+          "read:child_findings",
+          "mint:child_worker_key",
+          "approve:child_ready_state",
+          "split:child_work_package"
+        ] do
       assert {:error, %Ecto.Changeset{} = changeset} =
                Service.mint_worker_grant(repo, work_package.id, capabilities: ["worker:claim", capability])
 
