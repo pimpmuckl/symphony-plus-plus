@@ -309,7 +309,29 @@
 
 ### Next Steps
 
-- Commit and push forty-fourth T2 fixes, then rerun full-diff T2 and proceed to GitHub review if clean.
+- Pushed forty-fourth T2 fix head `e1f02c117c9d8e3dff8b36d6c0c906df0826cb24` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T022004Z-3f5a6e7c`; both reviewers reported valid findings, then the gate was closed as `findings`.
+
+### Forty-Fifth T2 Follow-up Actions
+
+- Fixed valid findings by serializing `update_task_plan` mutation on the work-package row before `expected_version` validation, rejecting mixed append/patch arguments, making the `review_package_submitted` readiness gate current-head aware, and exempting `brief`/`incident` planning-depth policies from the package plan-complete gate.
+- Added regression coverage for mixed task-plan update payloads, stale-head review-package missing-gate reporting, quick-fix plan-gate exemption, and hotfix readiness without package plan nodes.
+- High-pressure coherence check before the next same-tier T2: the fix remains inside P3-002 worker MCP contract/concurrency/readiness behavior and does not widen into sibling packages or broader runtime defaults.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after forty-fifth T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 77 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 272 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit and push forty-fifth T2 fixes, then rerun full-diff T2 and proceed to GitHub review if clean.
 
 ### Next Steps
 

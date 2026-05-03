@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @moduledoc false
 
+  import Ecto.Query, only: [from: 2]
+
   alias Ecto.Adapters.SQL
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
@@ -39,6 +41,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @handle_state_ttl_ms 86_400_000
   @default_handle_state_max_entries 128
   @handle_state_agent Module.concat(__MODULE__, HandleState)
+  @plan_append_argument_keys ["body", "expected_version", "id", "status", "title"]
+  @plan_patch_argument_keys ["expected_version", "patch"]
   @plan_node_patch_keys ["body", "id", "status", "title"]
 
   @enforce_keys [:config]
@@ -1155,10 +1159,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp apply_plan_update(repo, assignment, work_package_id, expected_version, %{"patch" => patch}) when is_map(patch) do
-    transaction_plan_update(repo, assignment, work_package_id, expected_version, fn ->
-      apply_plan_patch(repo, work_package_id, patch)
-    end)
+  defp apply_plan_update(repo, assignment, work_package_id, expected_version, %{"patch" => patch} = arguments) when is_map(patch) do
+    with :ok <- require_update_task_plan_keys(arguments, @plan_patch_argument_keys) do
+      transaction_plan_update(repo, assignment, work_package_id, expected_version, fn ->
+        apply_plan_patch(repo, work_package_id, patch)
+      end)
+    end
   end
 
   defp apply_plan_update(_repo, _assignment, _work_package_id, _expected_version, %{"patch" => _patch}) do
@@ -1166,9 +1172,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp apply_plan_update(repo, assignment, work_package_id, expected_version, arguments) do
-    transaction_plan_update(repo, assignment, work_package_id, expected_version, fn ->
-      append_plan_node_from_arguments(repo, work_package_id, arguments)
-    end)
+    with :ok <- require_update_task_plan_keys(arguments, @plan_append_argument_keys) do
+      transaction_plan_update(repo, assignment, work_package_id, expected_version, fn ->
+        append_plan_node_from_arguments(repo, work_package_id, arguments)
+      end)
+    end
   end
 
   defp transaction_plan_update(repo, assignment, work_package_id, expected_version, update_fun) do
@@ -1184,6 +1192,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp transaction_result(repo, assignment, work_package_id, expected_version, update_fun) do
     with :ok <- PlanningService.require_valid_assignment(repo, assignment),
+         :ok <- lock_plan_update(repo, work_package_id),
          {:ok, plan_nodes} <- PlanningRepository.list_plan_nodes(repo, work_package_id),
          :ok <- require_plan_version(plan_nodes, expected_version),
          {:ok, updated_plan_nodes} <- transaction_result(repo, update_fun.()),
@@ -1198,6 +1207,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp transaction_result(_repo, {:ok, result}), do: {:ok, result}
   defp transaction_result(repo, {:tool_error, reason}), do: repo.rollback({:tool_error, reason})
   defp transaction_result(repo, {:error, reason}), do: repo.rollback({:error, reason})
+
+  defp lock_plan_update(repo, work_package_id) do
+    query = from(work_package in WorkPackage, where: work_package.id == ^work_package_id)
+
+    case repo.update_all(query, set: [id: work_package_id]) do
+      {1, _rows} -> :ok
+      {0, _rows} -> {:error, :not_found}
+    end
+  end
 
   defp append_plan_node_from_arguments(repo, work_package_id, arguments) do
     with {:ok, title} <- required_argument(arguments, "title"),
@@ -1275,6 +1293,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_known_plan_node_patch_keys(attrs) do
     if Enum.all?(Map.keys(attrs), &(&1 in @plan_node_patch_keys)), do: :ok, else: {:tool_error, "invalid_patch_node"}
+  end
+
+  defp require_update_task_plan_keys(arguments, allowed_keys) do
+    if Enum.all?(Map.keys(arguments), &(&1 in allowed_keys)), do: :ok, else: {:tool_error, "invalid_update_task_plan"}
   end
 
   defp require_plan_node_updates(updates) when map_size(updates) == 0, do: {:tool_error, "invalid_patch_node"}
@@ -1816,8 +1838,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp review_package_missing?(state, required_review_lanes) do
+    current_head_sha = latest_current_head_sha(state.progress_events)
+
     merge_required?(state.work_package) and required_review_lanes != [] and
-      not metadata_present?(state.progress_events, "review_package")
+      current_head_review_package_events(state.progress_events, current_head_sha) == []
   end
 
   defp review_artifacts_missing?(state, required_review_lanes) do
@@ -2018,7 +2042,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp plan_required?(%WorkPackage{} = work_package) do
     case LifecycleService.policy_for(work_package) do
-      {:ok, policy} -> get_in(policy, [:constraints, :planning_depth]) != "findings"
+      {:ok, policy} -> get_in(policy, [:constraints, :planning_depth]) == "package"
       {:error, _reason} -> true
     end
   end
@@ -2062,8 +2086,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp pr_required?(%WorkPackage{kind: "investigation"}), do: false
   defp pr_required?(%WorkPackage{}), do: true
-
-  defp metadata_present?(progress_events, type), do: Enum.any?(progress_events, &payload_type?(&1, type, metadata_tool(type)))
 
   defp metadata_present?(progress_events, type, head_sha) when is_binary(head_sha) do
     Enum.any?(progress_events, fn

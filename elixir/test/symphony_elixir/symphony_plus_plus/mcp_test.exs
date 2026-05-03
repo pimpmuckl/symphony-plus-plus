@@ -1843,6 +1843,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, unchanged_after_bad_patch} = PlanningRepository.list_plan_nodes(repo, package.id)
     assert length(unchanged_after_bad_patch) == 2
 
+    mixed_patch_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "mixed-patch-plan",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "update_task_plan",
+            "arguments" => %{"expected_version" => version, "patch" => %{"nodes" => [%{"id" => plan_node.id, "status" => "done"}]}, "title" => "Ignored"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(mixed_patch_response, ["error", "data", "reason"]) == "invalid_update_task_plan"
+    assert {:ok, unchanged_after_mixed_patch} = PlanningRepository.list_plan_nodes(repo, package.id)
+    assert Enum.find(unchanged_after_mixed_patch, &(&1.id == plan_node.id)).status == "pending"
+
     malformed_id_response =
       MCPHarness.request(
         %{
@@ -2366,7 +2385,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
-    assert "review_lanes_complete" in get_in(stale_review_response, ["error", "data", "missing"])
+    stale_review_missing = get_in(stale_review_response, ["error", "data", "missing"])
+    assert "review_package_submitted" in stale_review_missing
+    assert "review_lanes_complete" in stale_review_missing
 
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Ready",
@@ -2673,7 +2694,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     missing = get_in(response, ["error", "data", "missing"])
     assert get_in(response, ["error", "data", "reason"]) == "readiness_failed"
+    refute "plan_complete" in missing
     refute "review_package_submitted" in missing
+  end
+
+  test "hotfix mark_ready accepts incident-depth review evidence without plan nodes", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-READY-HOTFIX", kind: "hotfix", status: "ci_waiting"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-HOTFIX/worker", "head_sha" => "hotfix-head"})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/812", "head_sha" => "hotfix-head"})
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready hotfix",
+      "tests" => ["mix test"],
+      "artifacts" => ["hotfix-review.txt"],
+      "head_sha" => "hotfix-head",
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-hotfix", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+    assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
   end
 
   test "investigation readiness does not require branch or review package", %{repo: repo} do

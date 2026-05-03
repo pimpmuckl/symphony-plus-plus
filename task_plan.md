@@ -171,10 +171,13 @@ Phase 3
 - [x] Commit and push forty-third T2 fix.
 - [x] Run fresh full-diff T2 on pushed head `a8f70e3` and close valid findings gate.
 - [x] Fix forty-fourth T2 default-state retention and progress replay race findings locally.
-- [ ] Commit and push forty-fourth T2 fix.
+- [x] Commit and push forty-fourth T2 fix.
+- [x] Run fresh full-diff T2 on pushed head `e1f02c1` and close valid findings gate.
+- [x] Fix forty-fifth T2 plan concurrency, mixed update arguments, current-head review-package gate, and brief/incident plan gate findings locally.
+- [ ] Commit and push forty-fifth T2 fix.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** forty-fourth T2 fixes validated locally; pending commit/push, fresh full-diff T2 rerun, and GitHub review if T2 is clean.
+- **Status:** forty-fifth T2 fixes validated locally; pending commit/push, fresh full-diff T2 rerun, and GitHub review if T2 is clean.
 
 ### High-Pressure Coherence Review
 
@@ -229,6 +232,8 @@ Phase 3
 - Findings remain localized to response-only transport isolation and nested input contract enforcement in P3-002.
 - Before the next T2, the approach remains coherent because the latest fix only bounds implicit default response-state retention and gives progress-event idempotency the same retry window already used for finding replays.
 - Findings remain localized to response-only memory hygiene and idempotent retry race hardening in P3-002.
+- Before the next T2, the approach remains coherent because the latest fix only serializes task-plan mutation, rejects ambiguous update shapes, and aligns readiness gates with current-head review evidence plus existing planning-depth policy.
+- Findings remain localized to worker MCP contract/concurrency/readiness edge cases within P3-002, not a broader scope or design blocker.
 
 ## Blockers
 
