@@ -637,10 +637,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp dispatch("tools/list", params, %__MODULE__{config: config, session: session}) when is_map(params) do
-    {:ok,
-     %{
-       "tools" => tool_specs_for_session(config.repo, session)
-     }}
+    case tool_specs_for_session(config.repo, session) do
+      {:ok, tools} -> {:ok, %{"tools" => tools}}
+      {:error, reason} -> worker_error(reason, "tools/list")
+    end
   end
 
   defp dispatch("tools/list", _params, _server) do
@@ -952,13 +952,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(%{"phase_id" => string_schema(), "update" => object_schema()}, ["phase_id", "update"])
   end
 
+  defp tool_specs_for_session(_repo, nil) do
+    {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
+  end
+
   defp tool_specs_for_session(repo, session) do
     case Auth.require_session(session, repo) do
       {:ok, %Session{assignment: %{grant_role: "architect"}}} ->
-        [health_tool_spec() | Enum.map(@architect_tools, &architect_tool_spec/1)]
+        {:ok, [health_tool_spec() | Enum.map(@architect_tools, &architect_tool_spec/1)]}
 
-      _not_live_architect_session ->
-        [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]
+      {:ok, %Session{}} ->
+        {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

@@ -352,7 +352,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["split_work_package", "inputSchema", "properties", "child_specs", "minItems"]) == 1
   end
 
-  test "tools list falls back to worker surface after architect grant revocation", %{repo: repo} do
+  test "tools list rejects stale architect sessions after grant revocation", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-TOOLS-REVOKED", kind: "mcp"))
     assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])
 
@@ -366,13 +366,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     response = Server.handle(%{"jsonrpc" => "2.0", "id" => "revoked-architect-tools", "method" => "tools/list", "params" => %{}}, server)
 
-    tools_by_name =
-      response
-      |> get_in(["result", "tools"])
-      |> Map.new(&{&1["name"], &1})
-
-    assert Map.has_key?(tools_by_name, "claim_work_key")
-    refute Map.has_key?(tools_by_name, "read_phase_board")
+    assert get_in(response, ["error", "code"]) == -32_001
+    assert get_in(response, ["error", "data", "resource"]) == "tools/list"
+    assert get_in(response, ["error", "data", "reason"]) == "revoked"
   end
 
   test "architect tools reject arguments outside their advertised schemas", %{repo: repo} do
