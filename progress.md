@@ -1428,3 +1428,25 @@
 ### Next Steps
 
 - Run GitHub review on PR #15 at pushed head `6037a764dfd610384143e90e66f7766c58a64a5f`.
+
+### Sixty-Second T2 Follow-up Actions
+
+- Pushed head before this follow-up: `234574c`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T053752Z-0d034f99`; closed it as `findings`.
+- Fixed valid findings by clearing explicit `state_key` handshake state when reconnect initialize fails, rejecting `update_task_plan` after `mark_ready`, and requiring investigation recommendation evidence to come from tool-owned `request_scope_expansion` events rather than caller-controlled generic progress payloads.
+- Updated public MCP docs/templates/package docs to document failed reconnect initialize behavior and the investigation recommendation evidence source.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after sixty-second T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 89 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 284 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Run focused validation, commit/push sixty-second T2 fixes, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.

@@ -42,6 +42,7 @@ stateless transports, but they do not restore claimed worker sessions. A
 reconnecting worker must call `claim_work_key(secret, claimed_by)` again. The
 continuity namespace is the active ledger, so a reconnect to the same SQLite
 ledger can restore handshake state even when the dynamic repo process changes.
+A failed explicit reconnect initialize clears the stored handshake state.
 
 `attach_branch` requires `branch` and `head_sha`. When no PR head is attached,
 review packages are matched to the latest attached branch head so stale
@@ -70,4 +71,5 @@ fallback gates. Merge-gated packages still use current-head
 `submit_review_package` evidence and persisted review artifacts.
 
 For investigation policies, `request_scope_expansion` records the required
-scope recommendation evidence but never approves the expansion itself.
+scope recommendation evidence but never approves the expansion itself. Generic
+`append_progress` payloads do not satisfy this recommendation gate.

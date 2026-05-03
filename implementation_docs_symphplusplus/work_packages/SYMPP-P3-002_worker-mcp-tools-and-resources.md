@@ -62,7 +62,8 @@ Explicit `state_key` values are continuity metadata for initialized stateless
 transports, not bearer capabilities. After reconnect initialize, workers must
 call `claim_work_key(secret, claimed_by)` again before assignment-scoped tools
 can run. The continuity namespace follows the active ledger, not a transient
-dynamic repo process.
+dynamic repo process. A failed explicit reconnect initialize clears the stored
+handshake state.
 
 ### Review package contract
 
@@ -88,7 +89,8 @@ After `mark_ready` succeeds, worker evidence writes for the package are frozen;
 new progress, findings, blockers, branch/PR metadata, scope requests, and review
 packages return `already_ready`. Investigation packages use
 `request_scope_expansion` as the worker's recorded scope recommendation evidence;
-the request itself does not approve any expanded scope.
+the request itself does not approve any expanded scope. Generic `append_progress`
+payloads do not satisfy the investigation recommendation gate.
 
 ## Deliverables
 

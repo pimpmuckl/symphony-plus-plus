@@ -304,6 +304,8 @@ Phase 3
 - Before the next T2, the approach remains coherent because this follow-up only applies bounded cleanup and helper-path/retry consistency to the same P3-002 response-state and idempotency mechanisms.
 - Fresh T2 on pushed head `ff9919a` produced valid findings around dynamic-ledger state namespaces, review-package idempotent replay after branch-head movement, update-task-plan schema precision, and review-package list normalization.
 - Before the next T2, the approach remains coherent because the latest follow-up only makes the published schemas and replay/normalization behavior match the existing P3-002 product contract while preserving the overseer-decided branch-head authority and handshake-only state model.
+- Fresh T2 on pushed head `234574c` produced valid findings around failed explicit reconnect initialize state, post-ready task-plan mutation, and caller-controlled investigation recommendation spoofing.
+- Before the next T2, the approach remains coherent because these fixes only close remaining readiness/state trust gaps inside the existing P3-002 MCP contract: reconnect initialize must succeed before worker tools, ready packages are immutable, and investigation recommendation evidence must come from the dedicated tool.
 
 ## Blockers
 

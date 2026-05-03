@@ -49,6 +49,7 @@ worker assignment. After reconnect initialize, workers must call
 `claim_work_key(secret, claimed_by)` again to bind the worker session. The
 state namespace follows the active ledger rather than a transient dynamic repo
 process, so handshake continuity survives reconnects to the same SQLite ledger.
+A failed explicit reconnect initialize clears the stored handshake state.
 
 `attach_branch` intentionally requires both the branch name and the current
 branch `head_sha`. Branch-only review evidence is matched to that head so a
@@ -80,7 +81,8 @@ artifacts.
 
 For investigation policies that require a scope recommendation,
 `request_scope_expansion` records the worker's recommendation evidence; it does
-not approve expanded scope.
+not approve expanded scope. Caller-controlled generic `append_progress`
+payloads are not recommendation evidence.
 
 ## Architect MCP tools
 

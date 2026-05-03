@@ -1128,7 +1128,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         Server.new(Config.default(repo: repo), state_key: state_key)
       )
 
-    assert get_in(reinit_response, ["error", "data", "reason"]) == "already_initialized"
+    assert get_in(reinit_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
     assert get_in(missing_assignment_response, ["error", "data", "reason"]) == "missing_session"
 
     assert %{"result" => _result} =
@@ -1149,6 +1149,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
+  end
+
+  test "failed explicit state key reinitialize clears prior handshake state", %{repo: repo} do
+    state_key = make_ref()
+
+    assert %{"result" => _result} =
+             Server.handle(
+               %{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()},
+               Server.new(Config.default(repo: repo), state_key: state_key)
+             )
+
+    invalid_init_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "invalid-init", "method" => "initialize", "params" => %{"protocolVersion" => "2025-03-26"}},
+        Server.new(Config.default(repo: repo), state_key: state_key)
+      )
+
+    tools_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "tools-after-failed-init", "method" => "tools/list", "params" => %{}},
+        Server.new(Config.default(repo: repo), state_key: state_key)
+      )
+
+    assert get_in(invalid_init_response, ["error", "data", "reason"]) == "invalid_initialize_params"
+    assert get_in(tools_response, ["error", "data", "reason"]) == "server_not_initialized"
   end
 
   test "stdio response-only line helper retains initialized worker session", %{repo: repo} do
@@ -2925,12 +2950,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
+    post_ready_plan_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "post-ready-plan",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "update_task_plan",
+            "arguments" => %{"expected_version" => 1, "title" => "Plan after ready"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
     assert get_in(post_ready_branch_response, ["error", "data", "reason"]) == "already_ready"
     assert get_in(post_ready_review_response, ["error", "data", "reason"]) == "already_ready"
     assert get_in(post_ready_blocker_response, ["error", "data", "reason"]) == "already_ready"
     assert get_in(post_ready_progress_response, ["error", "data", "reason"]) == "already_ready"
     assert get_in(post_ready_finding_response, ["error", "data", "reason"]) == "already_ready"
     assert get_in(post_ready_scope_response, ["error", "data", "reason"]) == "already_ready"
+    assert get_in(post_ready_plan_response, ["error", "data", "reason"]) == "already_ready"
     assert {:ok, ready_package} = WorkPackageRepository.get(repo, package.id)
     assert ready_package.status == "ready_for_human_merge"
   end
@@ -3357,6 +3398,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert "recommendation_recorded" in get_in(missing_recommendation_response, ["error", "data", "missing"])
+
+    attach_tool(repo, session, "append_progress", %{
+      "summary" => "Spoofed recommendation",
+      "payload" => %{"type" => "recommendation"},
+      "idempotency_key" => "investigation-spoofed-recommendation"
+    })
+
+    spoofed_recommendation_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-spoofed-recommendation", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "recommendation_recorded" in get_in(spoofed_recommendation_response, ["error", "data", "missing"])
 
     attach_tool(repo, session, "request_scope_expansion", %{
       "summary" => "No scope expansion needed",

@@ -99,7 +99,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     cleanup_default_handle_states()
     server = restore_handle_state(payload, server)
     {response, updated_server} = handle_state(payload, server)
-    persist_handle_state(server, updated_server)
+    persist_handle_state(payload, response, server, updated_server)
     {response, updated_server}
   end
 
@@ -160,7 +160,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp restore_handle_state(payload, %__MODULE__{initialized: false, session: nil, state_key_explicit: true} = server) do
     if initialize_request?(payload) do
-      restore_explicit_handle_state(server)
+      server
     else
       restore_explicit_handle_state(server)
     end
@@ -188,6 +188,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp persist_handle_state(payload, response, %__MODULE__{state_key_explicit: true} = server, %__MODULE__{} = updated_server) do
+    if initialize_request?(payload) do
+      case response do
+        %{"result" => _result} -> put_handle_state(updated_server)
+        _response -> delete_handle_state(server)
+      end
+    else
+      persist_handle_state(server, updated_server)
+    end
+  end
+
+  defp persist_handle_state(_payload, _response, %__MODULE__{} = server, %__MODULE__{} = updated_server) do
+    persist_handle_state(server, updated_server)
+  end
+
   defp persist_handle_state(%__MODULE__{} = server, %__MODULE__{} = updated_server) do
     cond do
       server.initialized != updated_server.initialized or server.session != updated_server.session ->
@@ -206,6 +221,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp put_handle_state(%__MODULE__{} = server) do
     stored_server = stored_handle_state_server(server)
     update_handle_state_store(&Map.put(&1, handle_state_store_key(server), {stored_server, monotonic_ms(), server.state_key_explicit}))
+    :ok
+  end
+
+  defp delete_handle_state(%__MODULE__{} = server) do
+    update_handle_state_store(&Map.delete(&1, handle_state_store_key(server)))
     :ok
   end
 
@@ -1278,7 +1298,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp transaction_result(repo, assignment, work_package_id, expected_version, update_fun) do
     with :ok <- PlanningService.require_valid_assignment(repo, assignment),
          :ok <- lock_work_package(repo, work_package_id),
-         {:ok, plan_nodes} <- PlanningRepository.list_plan_nodes(repo, work_package_id),
+         {:ok, state} <- PlanningRepository.get_state(repo, work_package_id),
+         :ok <- reject_ready_work_package(state.work_package),
+         plan_nodes = state.plan_nodes,
          :ok <- require_plan_version(plan_nodes, expected_version),
          {:ok, updated_plan_nodes} <- transaction_result(repo, update_fun.()),
          {:ok, refreshed_plan_nodes} <- PlanningRepository.list_plan_nodes(repo, work_package_id) do
@@ -2373,12 +2395,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp recommendation_recorded?(progress_events), do: Enum.any?(progress_events, &recommendation_event?/1)
 
-  defp recommendation_event?(%ProgressEvent{payload: payload}) when is_map(payload) do
-    Map.get(payload, "type") == "recommendation" or
-      (Map.get(payload, "type") == "scope_expansion_request" and Map.get(payload, "source_tool") == "request_scope_expansion")
-  end
-
-  defp recommendation_event?(%ProgressEvent{}), do: false
+  defp recommendation_event?(%ProgressEvent{} = event), do: payload_type?(event, "scope_expansion_request", "request_scope_expansion")
 
   defp metadata_tool("branch"), do: "attach_branch"
   defp metadata_tool("pr"), do: "attach_pr"
