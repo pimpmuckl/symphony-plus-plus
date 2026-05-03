@@ -102,13 +102,15 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
   test "preserves SQLite special database names" do
     file_uri = "file:sympp-create-work-#{System.unique_integer([:positive])}.sqlite3?mode=memory&cache=shared"
     filesystem_path = Path.join(System.tmp_dir!(), "sympp-create-work-#{System.unique_integer([:positive])}.sqlite3")
-    relative_path = "tmp/sympp-create-work-#{System.unique_integer([:positive])}.sqlite3"
-    relative_file_uri = "file:#{relative_path}?mode=rwc"
+    relative_path = "tmp/sympp create work #{System.unique_integer([:positive])}.sqlite3"
+    relative_file_uri = "file:#{URI.encode(relative_path, &sqlite_file_uri_path_char?/1)}?mode=rwc"
 
     assert CreateWorkTask.database_path_for_test(":memory:") == ":memory:"
     assert CreateWorkTask.database_path_for_test(file_uri) == file_uri
     assert CreateWorkTask.database_path_for_test(filesystem_path) == Path.expand(filesystem_path)
-    assert CreateWorkTask.database_path_for_test(relative_file_uri) == "file:" <> Path.expand(relative_path) <> "?mode=rwc"
+
+    assert CreateWorkTask.database_path_for_test(relative_file_uri) ==
+             "file:" <> encoded_expanded_uri_path(relative_path) <> "?mode=rwc"
   end
 
   test "defaults to the Mix project workflow ledger when database is omitted" do
@@ -146,4 +148,13 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
       end
     end
   end
+
+  defp encoded_expanded_uri_path(path) do
+    path
+    |> Path.expand()
+    |> String.replace("\\", "/")
+    |> URI.encode(&sqlite_file_uri_path_char?/1)
+  end
+
+  defp sqlite_file_uri_path_char?(char), do: URI.char_unreserved?(char) or char in [?/, ?:]
 end

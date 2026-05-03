@@ -155,11 +155,21 @@ defmodule Mix.Tasks.Sympp.CreateWork do
   end
 
   defp put_sqlite_file_uri_path("file:" <> uri, expanded_path) do
+    encoded_path = encode_sqlite_file_uri_path(expanded_path)
+
     case String.split(uri, "?", parts: 2) do
-      [_uri_path, query] -> "file:" <> expanded_path <> "?" <> query
-      [_uri_path] -> "file:" <> expanded_path
+      [_uri_path, query] -> "file:" <> encoded_path <> "?" <> query
+      [_uri_path] -> "file:" <> encoded_path
     end
   end
+
+  defp encode_sqlite_file_uri_path(path) do
+    path
+    |> String.replace("\\", "/")
+    |> URI.encode(&sqlite_file_uri_path_char?/1)
+  end
+
+  defp sqlite_file_uri_path_char?(char), do: URI.char_unreserved?(char) or char in [?/, ?:]
 
   defp use_mix_project_workflow do
     mix_project_workflow()

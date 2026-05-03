@@ -142,12 +142,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
   end
 
   defp validate_policy_template(changeset) do
-    validate_change(changeset, :policy_template, fn :policy_template, policy_template ->
-      case Templates.expand(policy_template) do
-        {:ok, _template} -> []
-        {:error, :unknown_policy_template} -> [policy_template: {"is invalid", validation: :policy_template}]
-      end
-    end)
+    case get_field(changeset, :policy_template) do
+      nil ->
+        changeset
+
+      policy_template ->
+        kind = get_field(changeset, :kind)
+
+        if policy_template == kind and canonical_policy_template?(policy_template) do
+          changeset
+        else
+          add_error(changeset, :policy_template, "is invalid", validation: :policy_template)
+        end
+    end
+  end
+
+  defp canonical_policy_template?(policy_template) do
+    match?({:ok, _template}, Templates.expand(policy_template))
   end
 
   defp normalize_keys(attrs) when is_map(attrs) do

@@ -112,6 +112,12 @@
 | `mise exec -- mix specs.check` | pass | Canonical-policy/SQLite file URI fix validation: all public functions have specs or exemption. |
 | `mise exec -- mix format --check-formatted` | pass | Canonical-policy/SQLite file URI fix validation: no formatting drift. |
 | `mise exec -- mix credo --strict lib/mix/tasks/sympp.create_work.ex lib/symphony_elixir/symphony_plus_plus/work_packages/work_package.ex lib/symphony_elixir/symphony_plus_plus/create_work.ex lib/symphony_elixir/symphony_plus_plus/policies/templates.ex lib/symphony_elixir/symphony_plus_plus/lifecycle/service.ex lib/symphony_elixir/symphony_plus_plus/planning/renderer.ex test/mix/tasks/sympp_create_work_test.exs test/symphony_elixir/symphony_plus_plus/work_packages_test.exs test/symphony_elixir/symphony_plus_plus/create_work_test.exs` | pass | Canonical-policy/SQLite file URI fix validation: touched files, no issues. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/work_packages_test.exs test/mix/tasks/sympp_create_work_test.exs test/symphony_elixir/symphony_plus_plus/create_work_test.exs` | pass | Same-kind-policy/encoded file URI fix validation: 32 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/lifecycle_test.exs test/symphony_elixir/symphony_plus_plus/create_work_test.exs` | pass | Same-kind-policy/encoded file URI fix validation: 40 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | Same-kind-policy/encoded file URI fix validation: 339 tests, 0 failures. |
+| `mise exec -- mix specs.check` | pass | Same-kind-policy/encoded file URI fix validation: all public functions have specs or exemption. |
+| `mise exec -- mix format --check-formatted` | pass | Same-kind-policy/encoded file URI fix validation: no formatting drift. |
+| `mise exec -- mix credo --strict lib/mix/tasks/sympp.create_work.ex lib/symphony_elixir/symphony_plus_plus/work_packages/work_package.ex lib/symphony_elixir/symphony_plus_plus/create_work.ex lib/symphony_elixir/symphony_plus_plus/policies/templates.ex lib/symphony_elixir/symphony_plus_plus/lifecycle/service.ex lib/symphony_elixir/symphony_plus_plus/planning/renderer.ex test/mix/tasks/sympp_create_work_test.exs test/symphony_elixir/symphony_plus_plus/work_packages_test.exs test/symphony_elixir/symphony_plus_plus/create_work_test.exs` | pass | Same-kind-policy/encoded file URI fix validation: touched files, no issues. |
 
 ## Review
 
@@ -142,7 +148,9 @@
 - Cached full-diff T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T191407Z-19ceeba8` found valid runtime consistency issues for lifecycle-unsupported kinds, cross-kind policy overrides, and single-field `worker_package` aliases. Closed the gate as findings and patched create-work to require lifecycle-supported standalone kinds, same-kind policy resolution, and kind-assisted alias disambiguation.
 - Cached follow-up `019def4a-89e7-7a10-9bfa-232f1fa6cd96` returned no findings for the lifecycle-kind/template consistency fix.
 - Cached full-diff T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T192326Z-b4c5f110` found valid canonical `policy_template` and relative SQLite `file:` URI issues. Closed the gate as findings and patched WorkPackage policy-template changeset validation plus create-work CLI file URI normalization.
+- Cached follow-up `019def53-c21e-73f1-95b7-a7f9984313e2` returned no findings for the canonical-policy/SQLite file URI fix.
+- Cached full-diff T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T193307Z-c69292cc` found valid same-kind policy-template and URI encoding issues. Closed the gate as findings and patched same-kind canonical validation plus encoded file URI path reconstruction.
 
 ## Outstanding
 
-- Commit/push canonical-policy/SQLite file URI fix, then rerun cached review-state/T2/GitHub lanes on the final pushed head.
+- Commit/push same-kind-policy/encoded file URI fix, then rerun cached review-state/T2/GitHub lanes on the final pushed head.
