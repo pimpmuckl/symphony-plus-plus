@@ -324,17 +324,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp handle_state_namespace(%Config{} = config), do: {config.mode, config.repo, ledger_namespace(config)}
 
   defp ledger_namespace(%Config{repo: repo, database: database}) do
-    case current_ledger_identity(repo) do
+    case current_ledger_identity(repo, database) do
       {:ok, identity} -> identity
       :error -> {:configured_database, repo_database_key(repo, database)}
     end
   end
 
-  defp current_ledger_identity(repo) when is_atom(repo) do
+  defp current_ledger_identity(repo, database) do
     case SQL.query(repo, "PRAGMA database_list", [], log: false) do
       {:ok, %{rows: rows}} ->
         case Enum.find(rows, &main_database_row?/1) do
-          [_seq, "main", path] -> {:ok, main_database_identity(repo, path)}
+          [_seq, "main", path] -> {:ok, main_database_identity(repo, path, database)}
           _row -> :error
         end
 
@@ -347,20 +347,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     _kind, _reason -> :error
   end
 
-  defp current_ledger_identity(_repo), do: :error
-
   defp main_database_row?([_seq, "main", _path]), do: true
   defp main_database_row?(_row), do: false
 
-  defp main_database_identity(repo, path) when is_binary(path) and path != "" do
+  defp main_database_identity(repo, path, _database) when is_binary(path) and path != "" do
     {:main_database, repo_database_key(repo, path)}
   end
 
-  defp main_database_identity(repo, _path), do: {:dynamic_repo, dynamic_repo_identity(repo)}
-
-  defp dynamic_repo_identity(repo) when is_atom(repo) do
-    if function_exported?(repo, :get_dynamic_repo, 0), do: repo.get_dynamic_repo(), else: nil
-  end
+  defp main_database_identity(repo, _path, database), do: {:configured_database, repo_database_key(repo, database)}
 
   defp repo_database_key(repo, database) when is_atom(repo) do
     if function_exported?(repo, :database_key, 1), do: repo.database_key(database), else: database
@@ -455,7 +449,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp handle_batch(payloads, %__MODULE__{} = server) do
-    items = Enum.map(payloads, &handle_batch_item(&1, server))
+    {items, _claimed?} =
+      Enum.map_reduce(payloads, false, fn payload, claimed? ->
+        if claimed? and batch_claim_work_key_request?(payload, server) do
+          {batch_claim_work_key_rebind_item(payload, server), true}
+        else
+          item = handle_batch_item(payload, server)
+          {item, claimed? or batch_claim_work_key_success?(item)}
+        end
+      end)
 
     responses =
       items
@@ -473,6 +475,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       _item, server -> server
     end)
   end
+
+  defp batch_claim_work_key_success?({_response, %__MODULE__{session: %Session{}}}), do: true
+  defp batch_claim_work_key_success?(_item), do: false
+
+  defp batch_claim_work_key_request?(
+         %{"jsonrpc" => "2.0", "id" => id, "method" => "tools/call", "params" => %{"name" => "claim_work_key"}},
+         %__MODULE__{initialized: true}
+       )
+       when valid_request_id(id),
+       do: true
+
+  defp batch_claim_work_key_request?(%{"jsonrpc" => "2.0", "id" => _id, "method" => "tools/call"}, %__MODULE__{initialized: true}),
+    do: false
+
+  defp batch_claim_work_key_request?(
+         %{"jsonrpc" => "2.0", "method" => "tools/call", "params" => %{"name" => "claim_work_key"}},
+         %__MODULE__{initialized: true}
+       ),
+       do: true
+
+  defp batch_claim_work_key_request?(_payload, %__MODULE__{}), do: false
+
+  defp batch_claim_work_key_rebind_item(%{"id" => id}, %__MODULE__{} = server) when valid_request_id(id) do
+    {error_response(id, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => "session_already_bound"}), server}
+  end
+
+  defp batch_claim_work_key_rebind_item(_payload, %__MODULE__{} = server), do: {nil, server}
 
   defp dispatch(
          "initialize",

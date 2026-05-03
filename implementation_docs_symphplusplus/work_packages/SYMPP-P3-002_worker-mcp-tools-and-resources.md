@@ -78,7 +78,9 @@ JSON-RPC batch items are evaluated independently against the batch's initial
 server/session state. Workers must not rely on `claim_work_key` or another
 stateful tool in one batch item to authorize later items in the same batch. A
 successful `claim_work_key` inside a batch still binds the returned server for
-later standalone requests.
+later standalone requests. After one claim succeeds in a batch, later
+`claim_work_key` entries in that same batch are rejected as rebinding attempts
+so a connection cannot claim multiple assignments.
 
 ### Review package contract
 

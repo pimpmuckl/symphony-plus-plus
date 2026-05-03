@@ -1446,6 +1446,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     end
   end
 
+  test "explicit response state key namespaces blank-path ledgers by configured database" do
+    first_database = "file:sympp_mcp_blank_state_#{System.unique_integer([:positive])}?mode=memory&cache=shared"
+    second_database = "file:sympp_mcp_blank_state_#{System.unique_integer([:positive])}?mode=memory&cache=shared"
+    original_repo = Repo.get_dynamic_repo()
+
+    {:ok, first_pid} =
+      Repo.start_link(database: first_database, name: :"sympp_mcp_blank_first_#{System.unique_integer([:positive])}", pool_size: 1, log: false)
+
+    {:ok, second_pid} =
+      Repo.start_link(database: second_database, name: :"sympp_mcp_blank_second_#{System.unique_integer([:positive])}", pool_size: 1, log: false)
+
+    try do
+      state_key = "blank-ledger-state"
+
+      assert {:ok, %{rows: first_rows}} = SQL.query(first_pid, "PRAGMA database_list", [], log: false)
+      assert Enum.any?(first_rows, &match?([_seq, "main", ""], &1))
+
+      {_initialize_response, _server} =
+        Server.handle_response_state(
+          %{"jsonrpc" => "2.0", "id" => "init-first-blank-ledger", "method" => "initialize", "params" => initialize_params()},
+          Server.new(Config.default(repo: first_pid, database: first_database), state_key: state_key)
+        )
+
+      assert {:ok, %{rows: second_rows}} = SQL.query(second_pid, "PRAGMA database_list", [], log: false)
+      assert Enum.any?(second_rows, &match?([_seq, "main", ""], &1))
+
+      {tools_response, _server} =
+        Server.handle_response_state(
+          %{"jsonrpc" => "2.0", "id" => "tools-second-blank-ledger", "method" => "tools/list", "params" => %{}},
+          Server.new(Config.default(repo: second_pid, database: second_database), state_key: state_key)
+        )
+
+      assert get_in(tools_response, ["error", "data", "reason"]) == "server_not_initialized"
+    after
+      Repo.put_dynamic_repo(original_repo)
+      if Process.alive?(first_pid), do: GenServer.stop(first_pid)
+      if Process.alive?(second_pid), do: GenServer.stop(second_pid)
+    end
+  end
+
   test "response-only handle does not retain unchanged one-shot server state", %{repo: repo} do
     server = Server.new(Config.default(repo: repo), initialized: true)
     delete_handle_state_entry(server)
@@ -1658,6 +1698,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(rebind_response, ["error", "data", "reason"]) == "session_already_bound"
     assert rebound_server.session.assignment.work_package_id == "SYMPP-FIRST-CLAIM"
+  end
+
+  test "batch claim_work_key rejects rebinding after an earlier batch claim succeeds", %{repo: repo} do
+    assert {:ok, first_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-FIRST-BATCH-CLAIM", kind: "mcp", status: "ready_for_worker"))
+
+    assert {:ok, second_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SECOND-BATCH-CLAIM", kind: "mcp", status: "ready_for_worker"))
+
+    assert {:ok, first_minted} = AccessGrantService.mint_worker_grant(repo, first_package.id)
+    assert {:ok, second_minted} = AccessGrantService.mint_worker_grant(repo, second_package.id)
+
+    {responses, server} =
+      Server.handle_state(
+        [
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "claim-first",
+            "method" => "tools/call",
+            "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => first_minted.work_key.secret, "claimed_by" => "worker-1"}}
+          },
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "claim-second",
+            "method" => "tools/call",
+            "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => second_minted.work_key.secret, "claimed_by" => "worker-2"}}
+          }
+        ],
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(Enum.at(responses, 0), ["result", "structuredContent", "assignment", "work_package_id"]) == first_package.id
+    assert get_in(Enum.at(responses, 1), ["error", "data", "reason"]) == "session_already_bound"
+    assert server.session.assignment.work_package_id == first_package.id
+    assert {:ok, second_grant} = AccessGrantRepository.get(repo, second_minted.grant.id)
+    refute second_grant.claimed_by
+    refute second_grant.claimed_at
   end
 
   test "claim_work_key rejects non-worker grants and revalidates bound replays", %{repo: repo} do
@@ -4272,17 +4349,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   defp handle_state_namespace(%Config{} = config), do: {config.mode, config.repo, ledger_namespace(config)}
 
   defp ledger_namespace(%Config{repo: repo, database: database}) do
-    case current_ledger_identity(repo) do
+    case current_ledger_identity(repo, database) do
       {:ok, identity} -> identity
       :error -> {:configured_database, repo_database_key(repo, database)}
     end
   end
 
-  defp current_ledger_identity(repo) do
+  defp current_ledger_identity(repo, database) do
     case SQL.query(repo, "PRAGMA database_list", [], log: false) do
       {:ok, %{rows: rows}} ->
         case Enum.find(rows, &main_database_row?/1) do
-          [_seq, "main", path] -> {:ok, main_database_identity(repo, path)}
+          [_seq, "main", path] -> {:ok, main_database_identity(repo, path, database)}
           _row -> :error
         end
 
@@ -4298,11 +4375,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   defp main_database_row?([_seq, "main", _path]), do: true
   defp main_database_row?(_row), do: false
 
-  defp main_database_identity(repo, path) when is_binary(path) and path != "" do
+  defp main_database_identity(repo, path, _database) when is_binary(path) and path != "" do
     {:main_database, repo_database_key(repo, path)}
   end
 
-  defp main_database_identity(repo, _path), do: {:dynamic_repo, repo.get_dynamic_repo()}
+  defp main_database_identity(repo, _path, database), do: {:configured_database, repo_database_key(repo, database)}
 
   defp repo_database_key(repo, database) do
     if function_exported?(repo, :database_key, 1), do: repo.database_key(database), else: database

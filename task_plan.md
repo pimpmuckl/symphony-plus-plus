@@ -325,6 +325,8 @@ Phase 3
 - Before the next T2, the approach remains coherent because these fixes refine the existing P3-002 worker protocol guarantees without changing package boundaries: batch items remain isolated within a batch, idempotency replay is backed by storage, readiness uses latest current-head evidence, and non-worker access is consistently unauthorized.
 - Fresh T2 on pushed head `ccc3624` produced two valid findings: successful batched `claim_work_key` should persist the final server session for later standalone requests even in multi-item batches, and the published `submit_review_package` schema should advertise non-empty nonblank `tests` and `artifacts`.
 - Before the next T2, the approach remains coherent because these are contract-precision fixes: batch items still do not authorize each other within the batch, but final claim state is retained for the connection, and the advertised schema now matches runtime validation.
+- Fresh T2 on pushed head `020cb19` produced two valid findings: multiple successful `claim_work_key` entries in one batch could bypass the one-assignment-per-connection guard, and blank-path SQLite ledgers could share explicit response-state namespaces.
+- Before the next T2, the approach remains coherent because the fixes narrow the existing protocol guarantees: a batch can retain one successful claim for later standalone requests but cannot claim multiple grants, and response-state continuity stays ledger-scoped even for blank-path SQLite databases.
 
 ## Blockers
 

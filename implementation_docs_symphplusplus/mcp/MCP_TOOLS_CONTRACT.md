@@ -60,6 +60,9 @@ evaluated against the batch's initial server/session state, so workers must not
 rely on `claim_work_key` or any other stateful call in one batch item to
 authorize later items in the same batch. A successful `claim_work_key` inside a
 batch still binds the returned server/session for later standalone requests.
+After one claim succeeds in a batch, later `claim_work_key` entries in that
+same batch are rejected as rebinding attempts so a connection cannot claim
+multiple assignments.
 
 `attach_branch` requires `branch` and `head_sha`. When no PR head is attached,
 review packages are matched to the latest attached branch head so stale
