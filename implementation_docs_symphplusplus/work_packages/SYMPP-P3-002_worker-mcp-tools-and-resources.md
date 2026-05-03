@@ -77,8 +77,8 @@ caller-supplied finding id returns `idempotency_conflict`.
 JSON-RPC batch items are evaluated independently against the batch's initial
 server/session state. Workers must not rely on `claim_work_key` or another
 stateful tool in one batch item to authorize later items in the same batch. A
-single-item batch has the same final server/session effect as the equivalent
-standalone request.
+successful `claim_work_key` inside a batch still binds the returned server for
+later standalone requests.
 
 ### Review package contract
 

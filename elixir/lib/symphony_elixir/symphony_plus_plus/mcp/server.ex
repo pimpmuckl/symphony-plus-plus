@@ -462,13 +462,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       |> Enum.map(fn {response, _server} -> response end)
       |> Enum.reject(&is_nil/1)
 
-    updated_server =
-      case items do
-        [{_response, %__MODULE__{} = updated_server}] -> updated_server
-        _items -> server
-      end
+    updated_server = batch_updated_server(items, server)
 
     {if(responses == [], do: nil, else: responses), updated_server}
+  end
+
+  defp batch_updated_server(items, %__MODULE__{} = server) do
+    Enum.reduce(items, server, fn
+      {_response, %__MODULE__{session: %Session{}} = updated_server}, _server -> updated_server
+      _item, server -> server
+    end)
   end
 
   defp dispatch(
@@ -758,8 +761,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(
       metadata_properties(%{
         "summary" => string_schema(),
-        "tests" => string_array_schema(),
-        "artifacts" => string_array_schema(),
+        "tests" => nonempty_string_array_schema(),
+        "artifacts" => nonempty_string_array_schema(),
         "reviews" => review_entries_schema(),
         "head_sha" => string_schema(),
         "acceptance_criteria_met" => boolean_schema()
@@ -797,11 +800,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp string_schema, do: %{"type" => "string"}
+  defp nonblank_string_schema, do: %{"type" => "string", "minLength" => 1, "pattern" => "\\S"}
   defp boolean_schema, do: %{"type" => "boolean"}
   defp integer_schema, do: %{"type" => "integer"}
   defp nullable_string_schema, do: %{"type" => ["string", "null"]}
   defp object_schema, do: %{"type" => "object", "additionalProperties" => true}
-  defp string_array_schema, do: %{"type" => "array", "items" => string_schema()}
+  defp nonempty_string_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => nonblank_string_schema()}
 
   defp plan_patch_schema do
     %{

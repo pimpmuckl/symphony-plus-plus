@@ -133,6 +133,29 @@
 | `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
 | `mise exec -- mix credo --strict` | pass | no issues. |
 
+### Seventy-First T2 Follow-up Actions
+
+- Pushed head before this follow-up: `ccc3624246e0a30cc7d3f14841598e220a566c5b`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T072120Z-ccbf42df`; both reviewers reported valid findings, so the gate was closed as `findings`.
+- Fixed batch final-state handling so a successful `claim_work_key` in a multi-item batch binds the returned server for later standalone requests while preserving per-item isolation inside the batch.
+- Tightened the published `submit_review_package` schema so `tests` and `artifacts` advertise `minItems: 1` with nonblank string item constraints, matching runtime validation.
+- Updated MCP contract docs and P3-002 package docs for batch final-state retention.
+
+### Next Steps
+
+- Commit/push seventy-first T2 fixes, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after seventy-first T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 94 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 289 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
 ### Seventieth T2 Follow-up Actions
 
 - Pushed head before this follow-up: `babe432bee2e51715f1e2bc7cb6eb5effb7a0fef`.

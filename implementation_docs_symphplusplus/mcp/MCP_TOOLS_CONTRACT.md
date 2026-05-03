@@ -58,8 +58,8 @@ id returns `idempotency_conflict`.
 JSON-RPC batch items are not an ordered session transaction. Each item is
 evaluated against the batch's initial server/session state, so workers must not
 rely on `claim_work_key` or any other stateful call in one batch item to
-authorize later items in the same batch. A single-item batch has the same final
-server/session effect as the equivalent standalone request.
+authorize later items in the same batch. A successful `claim_work_key` inside a
+batch still binds the returned server/session for later standalone requests.
 
 `attach_branch` requires `branch` and `head_sha`. When no PR head is attached,
 review packages are matched to the latest attached branch head so stale

@@ -286,8 +286,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == "string"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts", "head_sha"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "type"]) == "array"
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "tests", "minItems"]) == 1
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "tests", "items", "type"]) == "string"
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "tests", "items", "pattern"]) == "\\S"
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "artifacts", "minItems"]) == 1
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "artifacts", "items", "type"]) == "string"
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "artifacts", "items", "pattern"]) == "\\S"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "items", "required"]) == ["lane", "verdict"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "head_sha", "type"]) == "string"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "acceptance_criteria_met", "type"]) == "boolean"
@@ -1559,7 +1563,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert Enum.map(responses, & &1["id"]) == ["assignment"]
     assert get_in(List.first(responses), ["error", "data", "reason"]) == "missing_session"
-    assert is_nil(server.session)
+    assert server.session.assignment.work_package_id == "SYMPP-NOTIFY-CLAIM"
   end
 
   test "worker tool notifications execute without JSON-RPC responses", %{repo: repo} do
@@ -1861,7 +1865,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute inspect(responses) =~ minted.work_key.secret
     assert get_in(Enum.at(responses, 0), ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-BATCH-CLAIM"
     assert get_in(Enum.at(responses, 1), ["error", "data", "reason"]) == "missing_session"
-    assert is_nil(server.session)
+    assert server.session.assignment.work_package_id == "SYMPP-BATCH-CLAIM"
   end
 
   test "worker tools update only the scoped planning state and deny sibling mutations", %{repo: repo} do

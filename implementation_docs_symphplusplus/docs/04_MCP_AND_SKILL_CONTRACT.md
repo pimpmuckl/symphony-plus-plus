@@ -66,8 +66,8 @@ JSON-RPC batch items are not an ordered session transaction. Each item is
 evaluated against the batch's initial server/session state, so a `claim_work_key`
 call inside one batch item does not authorize later items in that same batch.
 Workers should claim in a prior request, or run dependent worker tools outside
-the batch. A single-item batch has the same final server/session effect as the
-equivalent standalone request.
+the batch. A successful `claim_work_key` inside a batch still binds the returned
+server/session for later standalone requests.
 
 `attach_branch` intentionally requires both the branch name and the current
 branch `head_sha`. Branch-only review evidence is matched to that head so a
