@@ -243,6 +243,29 @@
 
 - Commit and push forty-first T2 fixes, then rerun full-diff T2 and proceed to GitHub review if clean.
 
+### Forty-Second T2 Follow-up Actions
+
+- Pushed forty-first T2 fix head `f63106eb99043bce732cc4e372b85238ea052d68` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T015054Z-2559ddc3`; closed it as `findings`.
+- Fixed valid findings by replacing the global `:persistent_term` read/modify/write store with a named Agent, expiring stale explicit and default entries, and constraining nested JSON schemas for `update_task_plan.patch.nodes` plus `submit_review_package` arrays.
+- Added schema assertions for plan patch nodes, string test/artifact arrays, and review lane/verdict entries; extended cleanup coverage to stale explicit state keys.
+- High-pressure coherence check before the next same-tier T2: this remains P3-002 response-only state and tool-schema contract hardening, not a design or scope blocker.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after forty-second T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 75 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 270 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues after splitting cleanup predicate. |
+
+### Next Steps
+
+- Commit and push forty-second T2 fixes, then rerun full-diff T2 and proceed to GitHub review if clean.
+
 ### Next Steps
 
 - Commit and push the thirty-fourth T2 fix, then rerun fresh full-diff T2 against `symphony-plus-plus/beta`; run GitHub review on PR #15 if T2 is clean.

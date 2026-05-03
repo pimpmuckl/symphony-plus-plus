@@ -162,10 +162,13 @@ Phase 3
 - [x] Commit and push fortieth T2 fix.
 - [x] Run fresh full-diff T2 on pushed head `a31a410` and close valid findings gate.
 - [x] Fix forty-first T2 response-only state TTL/process-boundary findings locally.
-- [ ] Commit and push forty-first T2 fix.
+- [x] Commit and push forty-first T2 fix.
+- [x] Run fresh full-diff T2 on pushed head `f63106e` and close valid findings gate.
+- [x] Fix forty-second T2 serialized state-store and nested schema findings locally.
+- [ ] Commit and push forty-second T2 fix.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** forty-first T2 fixes validated locally; pending commit/push, fresh full-diff T2 rerun, and GitHub review if T2 is clean.
+- **Status:** forty-second T2 fixes validated locally; pending commit/push, fresh full-diff T2 rerun, and GitHub review if T2 is clean.
 
 ### High-Pressure Coherence Review
 
@@ -214,6 +217,8 @@ Phase 3
 - Findings remain localized to generated-client schema accuracy and response-only transport state edges inside P3-002.
 - Before the next T2, the approach remains coherent because the latest change only moves response-only continuation state to a BEAM-global store and refreshes active default sessions.
 - Findings remain localized to response-only transport durability for the same P3-002 MCP API.
+- Before the next T2, the approach remains coherent because the latest fix only serializes the response-only continuation registry and tightens nested JSON schemas to match existing tool validation.
+- Findings remain localized to concurrency/cleanup and schema-contract hardening in the same P3-002 worker MCP API.
 
 ## Blockers
 

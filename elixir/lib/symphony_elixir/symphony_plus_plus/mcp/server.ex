@@ -37,7 +37,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @assignment_resource "sympp://assignment/current"
   @finding_replay_retry_attempts 50
   @default_handle_state_ttl_ms 60_000
-  @handle_state_store_key {__MODULE__, :handle_state_store}
+  @handle_state_agent Module.concat(__MODULE__, HandleState)
 
   @enforce_keys [:config]
   defstruct [:config, :session, :state_key, state_key_explicit: false, initialized: false]
@@ -186,8 +186,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     update_handle_state_store(fn store ->
       Map.reject(store, fn
-        {_state_key, {%__MODULE__{}, timestamp_ms, false}} when now - timestamp_ms > @default_handle_state_ttl_ms ->
-          true
+        {_state_key, {%__MODULE__{}, timestamp_ms, _explicit?}} ->
+          now - timestamp_ms > @default_handle_state_ttl_ms
 
         _entry ->
           false
@@ -198,17 +198,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp update_handle_state_store(fun) do
-    store =
-      handle_state_store()
-      |> fun.()
-
-    :persistent_term.put(@handle_state_store_key, store)
+    ensure_handle_state_agent()
+    Agent.update(@handle_state_agent, fun)
   end
 
   defp handle_state_store do
-    case :persistent_term.get(@handle_state_store_key, %{}) do
-      store when is_map(store) -> store
-      _store -> %{}
+    ensure_handle_state_agent()
+    Agent.get(@handle_state_agent, & &1)
+  end
+
+  defp ensure_handle_state_agent do
+    case Process.whereis(@handle_state_agent) do
+      nil ->
+        case Agent.start_link(fn -> %{} end, name: @handle_state_agent) do
+          {:ok, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+        end
+
+      _pid ->
+        :ok
     end
   end
 
@@ -526,7 +534,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "body" => nullable_string_schema(),
         "expected_version" => integer_schema(),
         "id" => string_schema(),
-        "patch" => object_schema(),
+        "patch" => plan_patch_schema(),
         "status" => string_schema(),
         "title" => string_schema()
       }),
@@ -586,9 +594,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(
       metadata_properties(%{
         "summary" => string_schema(),
-        "tests" => array_schema(),
-        "artifacts" => array_schema(),
-        "reviews" => array_schema(),
+        "tests" => string_array_schema(),
+        "artifacts" => string_array_schema(),
+        "reviews" => review_entries_schema(),
         "head_sha" => nullable_string_schema(),
         "acceptance_criteria_met" => boolean_schema()
       }),
@@ -629,7 +637,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp integer_schema, do: %{"type" => "integer"}
   defp nullable_string_schema, do: %{"type" => ["string", "null"]}
   defp object_schema, do: %{"type" => "object", "additionalProperties" => true}
-  defp array_schema, do: %{"type" => "array", "items" => %{}}
+  defp string_array_schema, do: %{"type" => "array", "items" => string_schema()}
+
+  defp plan_patch_schema do
+    %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "properties" => %{
+        "nodes" => %{
+          "type" => "array",
+          "minItems" => 1,
+          "items" => %{
+            "type" => "object",
+            "additionalProperties" => false,
+            "properties" => %{
+              "id" => string_schema(),
+              "title" => string_schema(),
+              "body" => nullable_string_schema(),
+              "status" => string_schema()
+            }
+          }
+        }
+      },
+      "required" => ["nodes"]
+    }
+  end
+
+  defp review_entries_schema do
+    %{
+      "type" => "array",
+      "items" => %{
+        "type" => "object",
+        "additionalProperties" => false,
+        "properties" => %{"lane" => string_schema(), "verdict" => string_schema()},
+        "required" => ["lane", "verdict"]
+      }
+    }
+  end
 
   defp ledger_health(repo) when is_atom(repo) do
     case SQL.query(repo, "SELECT 1", [], log: false) do

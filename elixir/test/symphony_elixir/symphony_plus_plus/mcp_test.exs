@@ -255,6 +255,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["append_finding", "inputSchema", "required"]) == ["title", "body", "idempotency_key"]
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "required"]) == ["expected_version"]
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "expected_version", "type"]) == "integer"
+    assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "patch", "required"]) == ["nodes"]
+    assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "patch", "properties", "nodes", "minItems"]) == 1
 
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "oneOf"]) == [
              %{"required" => ["expected_version", "patch"]},
@@ -270,6 +272,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == "string"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "type"]) == "array"
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "tests", "items", "type"]) == "string"
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "artifacts", "items", "type"]) == "string"
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "items", "required"]) == ["lane", "verdict"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "head_sha", "type"]) == ["string", "null"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "acceptance_criteria_met", "type"]) == "boolean"
   end
@@ -1076,10 +1081,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute Map.has_key?(handle_state_store(), server.state_key)
   end
 
-  test "response-only handle cleans stale default state entries", %{repo: repo} do
+  test "response-only handle cleans stale state entries", %{repo: repo} do
     stale_key = make_ref()
+    stale_explicit_key = make_ref()
 
     put_handle_state_entry(stale_key, {Server.new(Config.default(repo: repo), initialized: true), System.monotonic_time(:millisecond) - 120_000, false})
+    put_handle_state_entry(stale_explicit_key, {Server.new(Config.default(repo: repo), initialized: true, state_key: stale_explicit_key), System.monotonic_time(:millisecond) - 120_000, true})
 
     response =
       Server.handle(
@@ -1089,6 +1096,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
     refute Map.has_key?(handle_state_store(), stale_key)
+    refute Map.has_key?(handle_state_store(), stale_explicit_key)
   end
 
   test "response-only handle refreshes active default state entries", %{repo: repo} do
@@ -3077,18 +3085,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     }
   end
 
-  defp handle_state_store_key, do: {Server, :handle_state_store}
+  defp handle_state_agent, do: Module.concat(Server, HandleState)
 
-  defp handle_state_store, do: :persistent_term.get(handle_state_store_key(), %{})
+  defp handle_state_store do
+    ensure_handle_state_agent()
+    Agent.get(handle_state_agent(), & &1)
+  end
 
   defp put_handle_state_entry(state_key, entry) do
-    handle_state_store_key()
-    |> :persistent_term.put(Map.put(handle_state_store(), state_key, entry))
+    ensure_handle_state_agent()
+    Agent.update(handle_state_agent(), &Map.put(&1, state_key, entry))
   end
 
   defp delete_handle_state_entry(state_key) do
-    handle_state_store_key()
-    |> :persistent_term.put(Map.delete(handle_state_store(), state_key))
+    ensure_handle_state_agent()
+    Agent.update(handle_state_agent(), &Map.delete(&1, state_key))
+  end
+
+  defp ensure_handle_state_agent do
+    case Process.whereis(handle_state_agent()) do
+      nil ->
+        case Agent.start_link(fn -> %{} end, name: handle_state_agent()) do
+          {:ok, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+        end
+
+      _pid ->
+        :ok
+    end
   end
 
   defp attach_tool(repo, session, name, arguments) do
