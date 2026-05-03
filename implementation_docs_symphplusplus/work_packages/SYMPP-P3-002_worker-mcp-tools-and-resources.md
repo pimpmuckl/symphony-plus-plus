@@ -68,6 +68,10 @@ shorter implicit default response state TTL. They remain continuity metadata
 until overwritten, cleared by a failed explicit reconnect initialize, or expired
 by the explicit state-key retention window.
 
+JSON-RPC batch items are evaluated independently against the batch's initial
+server/session state. Workers must not rely on `claim_work_key` or another
+stateful tool in one batch item to authorize later items in the same batch.
+
 ### Review package contract
 
 Workers must include `submit_review_package.head_sha` on every submission. The

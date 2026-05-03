@@ -1502,7 +1502,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Map.has_key?(store, handle_state_store_key(other_namespace_server))
   end
 
-  test "claim_work_key notification binds session inside a batch", %{repo: repo} do
+  test "batch items do not inherit session mutations from earlier notifications", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-NOTIFY-CLAIM", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
 
@@ -1520,22 +1520,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert Enum.map(responses, & &1["id"]) == ["assignment"]
-    assert get_in(List.first(responses), ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-NOTIFY-CLAIM"
-    assert server.session.assignment.work_package_id == "SYMPP-NOTIFY-CLAIM"
+    assert get_in(List.first(responses), ["error", "data", "reason"]) == "missing_session"
+    assert is_nil(server.session)
   end
 
   test "worker tool notifications execute without JSON-RPC responses", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-NOTIFY-WRITE", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
 
+    {_claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
     {responses, server} =
       Server.handle_state(
         [
-          %{
-            "jsonrpc" => "2.0",
-            "method" => "tools/call",
-            "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
-          },
           %{
             "jsonrpc" => "2.0",
             "method" => "tools/call",
@@ -1551,7 +1557,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           },
           %{"jsonrpc" => "2.0", "id" => "assignment", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}}
         ],
-        Server.new(Config.default(repo: repo), initialized: true)
+        claimed_server
       )
 
     assert Enum.map(responses, & &1["id"]) == ["assignment"]
@@ -1758,7 +1764,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(assignment_resource_response, ["error", "data", "reason"]) == "worker_grant_required"
   end
 
-  test "batch calls thread claim_work_key session to later worker tools", %{repo: repo} do
+  test "batch calls do not thread claim_work_key session to later worker tools", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BATCH-CLAIM", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
 
@@ -1781,8 +1787,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert Enum.map(responses, & &1["id"]) == ["claim", "assignment"]
     refute inspect(responses) =~ minted.work_key.secret
-    assert get_in(Enum.at(responses, 1), ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-BATCH-CLAIM"
-    assert server.session.assignment.work_package_id == "SYMPP-BATCH-CLAIM"
+    assert get_in(Enum.at(responses, 0), ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-BATCH-CLAIM"
+    assert get_in(Enum.at(responses, 1), ["error", "data", "reason"]) == "missing_session"
+    assert is_nil(server.session)
   end
 
   test "worker tools update only the scoped planning state and deny sibling mutations", %{repo: repo} do

@@ -133,6 +133,28 @@
 | `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
 | `mise exec -- mix credo --strict` | pass | no issues. |
 
+### Sixty-Eighth T2 Follow-up Actions
+
+- Pushed head before this follow-up: `90485d6416251f23528043ed06e87b48540e8a8d`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T064628Z-92baa9f8`; Alpha was clean and Bravo reported one valid batch-session finding, so the gate was closed as `findings`.
+- Fixed the valid finding by evaluating each JSON-RPC batch item against the batch's initial MCP server/session state instead of threading state mutations from prior batch items.
+- Updated MCP contract docs and P3-002 package docs to record that batches are not ordered session transactions; workers must claim in a prior request before batching dependent worker tools.
+
+### Next Steps
+
+- Run focused validation, commit/push sixty-eighth T2 fixes, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after sixty-eighth T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 92 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 287 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
 ### Sixty-Seventh T2 Follow-up Actions
 
 - Pushed head before this follow-up: `fdc2781`.

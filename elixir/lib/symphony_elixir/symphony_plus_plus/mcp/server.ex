@@ -431,11 +431,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp handle_batch(payloads, %__MODULE__{} = server) do
-    {responses, server} =
-      Enum.reduce(payloads, {[], server}, fn payload, {responses, server} ->
-        {response, server} = handle_batch_item(payload, server)
+    responses =
+      Enum.reduce(payloads, [], fn payload, responses ->
+        {response, _server} = handle_batch_item(payload, server)
         responses = if is_nil(response), do: responses, else: [response | responses]
-        {responses, server}
+        responses
       end)
 
     responses = Enum.reverse(responses)

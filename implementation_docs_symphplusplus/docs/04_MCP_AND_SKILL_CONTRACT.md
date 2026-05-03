@@ -55,6 +55,12 @@ default response-state TTL. They remain continuity metadata until overwritten,
 cleared by a failed explicit reconnect initialize, or expired by the explicit
 state-key retention window.
 
+JSON-RPC batch items are not an ordered session transaction. Each item is
+evaluated against the batch's initial server/session state, so a `claim_work_key`
+call inside one batch item does not authorize later items in that same batch.
+Workers should claim in a prior request, or run dependent worker tools outside
+the batch.
+
 `attach_branch` intentionally requires both the branch name and the current
 branch `head_sha`. Branch-only review evidence is matched to that head so a
 later branch update cannot reuse stale review-package evidence. When both

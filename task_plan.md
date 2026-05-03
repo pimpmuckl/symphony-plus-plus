@@ -317,6 +317,8 @@ Phase 3
 - Before the next T2, the approach remains coherent because the fix only reorders existing finding replay checks before the ready-state mutation guard, preserving post-ready immutability for new writes.
 - Fresh T2 on pushed head `fdc2781` produced valid findings that explicit `state_key` retention was now unbounded and existing plan-node patch updates could accept whitespace-only titles.
 - Before the next T2, the approach remains coherent because the fix bounds explicit handshake retention with a longer TTL than current worker grants and applies the existing nonblank title contract to patch updates.
+- Fresh T2 on pushed head `90485d6` produced one valid Bravo finding: JSON-RPC batch handling threaded session mutations from earlier items into later items.
+- Before the next T2, the approach remains coherent because the fix only isolates batch items against the batch's initial MCP server state while preserving standalone request/session behavior and fire-and-forget notification execution.
 
 ## Blockers
 
