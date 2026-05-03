@@ -284,6 +284,9 @@ Phase 3
 - Fresh T2 on pushed head `53df735` produced three valid findings: latest review packages inherited stale acceptance, idempotent finding insert-conflict replay lacked live-grant revalidation, and response-only state namespaces could collide across dynamic ledgers when `Config.database` was nil.
 - Before the next T2, the approach remains coherent because this follow-up only aligns acceptance evidence with the latest-package-authoritative decision, applies the existing live-grant replay rule to findings, and keys response-only continuation by resolved ledger identity.
 - Findings remain narrow correctness hardening inside the P3-002 MCP server; there is no current design or scope blocker.
+- Fresh T2 on pushed head `4e9bb4f` produced a valid non-merge policy finding: `quick_fix` readiness required review/test gates but could only satisfy them through merge-style review-package evidence.
+- Before the next T2, the approach remains coherent because the fix keeps merge-gated packages on current-head review-package evidence while allowing non-merge policies to use ordinary worker progress statuses for focused tests and review lanes.
+- Findings remain constrained to policy-gate evidence mapping inside P3-002, not a broader package design issue.
 
 ## Blockers
 

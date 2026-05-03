@@ -3023,6 +3023,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(response, ["error", "data", "reason"]) == "readiness_failed"
     refute "plan_complete" in missing
     refute "review_package_submitted" in missing
+    assert "tests_passed" in missing
+    assert "review_lanes_complete" in missing
+
+    attach_tool(repo, session, "append_progress", %{
+      "summary" => "Focused tests passed",
+      "status" => "tests_passed",
+      "idempotency_key" => "quick-fix-tests"
+    })
+
+    attach_tool(repo, session, "append_progress", %{
+      "summary" => "T1 review green",
+      "status" => "review_t1_green",
+      "idempotency_key" => "quick-fix-review-t1"
+    })
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-quick-fix-after-progress", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+    assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
   end
 
   test "hotfix mark_ready accepts incident-depth review evidence without plan nodes", %{repo: repo} do

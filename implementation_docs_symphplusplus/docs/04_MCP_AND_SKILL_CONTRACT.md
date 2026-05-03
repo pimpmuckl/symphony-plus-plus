@@ -51,6 +51,11 @@ later branch update cannot reuse stale review-package evidence.
 current-head review package is authoritative for review readiness; older
 packages for the same head are superseded rather than implicitly merged.
 
+For non-merge-gated policies such as `quick_fix`, workers may satisfy focused
+test and review-lane readiness with ordinary `append_progress` statuses:
+`tests_passed` and `<review_lane>_green` such as `review_t1_green`. Merge-gated
+packages still require current-head review package evidence and artifacts.
+
 ## Architect MCP tools
 
 ```text

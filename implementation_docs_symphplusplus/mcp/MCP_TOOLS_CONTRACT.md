@@ -44,3 +44,9 @@ branch-only reviews cannot satisfy readiness after new commits.
 `submit_review_package` requires explicit `head_sha` on every submission. For
 readiness, the latest review package for the current head is authoritative;
 older packages for that same head are superseded.
+
+For non-merge-gated policies such as `quick_fix`, `append_progress` can satisfy
+focused-test and review-lane readiness by recording statuses `tests_passed` and
+`<review_lane>_green`, for example `review_t1_green`. Merge-gated packages still
+use current-head `submit_review_package` evidence and persisted review
+artifacts.

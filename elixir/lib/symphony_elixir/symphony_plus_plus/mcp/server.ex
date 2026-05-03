@@ -1973,7 +1973,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp review_lanes_missing?(state, required_review_lanes) do
-    required_review_lanes != [] and not review_lanes_present?(state.progress_events, required_review_lanes)
+    required_review_lanes != [] and not review_lanes_present?(state, required_review_lanes)
   end
 
   defp investigation_findings_missing?(state), do: state.work_package.kind == "investigation" and state.findings == []
@@ -2001,9 +2001,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp review_lanes_present?(_progress_events, []), do: true
+  defp review_lanes_present?(_state, []), do: true
 
-  defp review_lanes_present?(progress_events, required_lanes) do
+  defp review_lanes_present?(state, required_lanes) do
+    if merge_required?(state.work_package) do
+      review_package_lanes_present?(state.progress_events, required_lanes)
+    else
+      review_package_lanes_present?(state.progress_events, required_lanes) or
+        progress_review_lanes_present?(state.progress_events, required_lanes)
+    end
+  end
+
+  defp review_package_lanes_present?(progress_events, required_lanes) do
     current_head_sha = latest_current_head_sha(progress_events)
 
     latest_verdicts =
@@ -2021,6 +2030,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       Map.get(latest_verdicts, lane) == "green"
     end)
   end
+
+  defp progress_review_lanes_present?(progress_events, required_lanes) do
+    Enum.all?(required_lanes, fn lane ->
+      Enum.any?(progress_events, &progress_review_lane_green?(&1, lane))
+    end)
+  end
+
+  defp progress_review_lane_green?(%ProgressEvent{status: status, payload: payload}, lane) do
+    normalized_status(status) == "#{lane}_green" or
+      progress_payload_review_green?(payload, lane)
+  end
+
+  defp progress_payload_review_green?(payload, lane) when is_map(payload) do
+    payload_lane = payload |> Map.get("lane", Map.get(payload, "review_lane")) |> normalized_status()
+    verdict = payload |> Map.get("verdict", Map.get(payload, "review_verdict")) |> normalized_status()
+    payload_lane == lane and verdict == "green"
+  end
+
+  defp progress_payload_review_green?(_payload, _lane), do: false
 
   defp review_artifacts_present?(progress_events, artifacts, work_package_id) do
     current_head_sha = latest_current_head_sha(progress_events)
@@ -2179,7 +2207,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp tests_missing?(state) do
-    required_gate?(state.work_package, "focused_tests") and not tests_recorded?(state.progress_events)
+    required_gate?(state.work_package, "focused_tests") and not tests_recorded?(state)
   end
 
   defp required_gate?(%WorkPackage{} = work_package, gate) do
@@ -2198,7 +2226,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp tests_recorded?(progress_events) do
+  defp tests_recorded?(state) do
+    if merge_required?(state.work_package) do
+      review_package_tests_recorded?(state.progress_events)
+    else
+      review_package_tests_recorded?(state.progress_events) or progress_status_recorded?(state.progress_events, "tests_passed")
+    end
+  end
+
+  defp review_package_tests_recorded?(progress_events) do
     current_head_sha = latest_current_head_sha(progress_events)
 
     case latest_review_package_event(progress_events, current_head_sha) do
@@ -2210,6 +2246,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         false
     end
   end
+
+  defp progress_status_recorded?(progress_events, expected_status) do
+    Enum.any?(progress_events, fn
+      %ProgressEvent{status: status} -> normalized_status(status) == expected_status
+      _event -> false
+    end)
+  end
+
+  defp normalized_status(status) when is_binary(status), do: status |> String.trim() |> String.downcase()
+  defp normalized_status(_status), do: ""
 
   defp pr_required?(%WorkPackage{kind: "investigation"}), do: false
   defp pr_required?(%WorkPackage{}), do: true
