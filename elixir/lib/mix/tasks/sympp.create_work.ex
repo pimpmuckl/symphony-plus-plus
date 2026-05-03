@@ -6,6 +6,7 @@ defmodule Mix.Tasks.Sympp.CreateWork do
   alias SymphonyElixir.SymphonyPlusPlus.CreateWork
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
+  alias SymphonyElixir.Workflow
 
   @shortdoc "Creates one standalone Symphony++ WorkPackage and worker grant"
   @switches [file: :string, database: :string, help: :boolean]
@@ -103,7 +104,10 @@ defmodule Mix.Tasks.Sympp.CreateWork do
   @spec database_path_for_test(String.t() | nil) :: String.t()
   def database_path_for_test(database), do: resolved_database(database)
 
-  defp resolved_database(nil), do: Repo.database_path()
+  defp resolved_database(nil) do
+    maybe_use_repo_root_workflow()
+    Repo.database_path()
+  end
 
   defp resolved_database(database) when is_binary(database) do
     cond do
@@ -135,6 +139,30 @@ defmodule Mix.Tasks.Sympp.CreateWork do
       _path ->
         :ok
     end
+  end
+
+  defp maybe_use_repo_root_workflow do
+    if Application.get_env(:symphony_elixir, :workflow_file_path) == nil do
+      mix_project_workflow()
+      |> case do
+        path when is_binary(path) -> Workflow.set_workflow_file_path(path)
+        nil -> :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp mix_project_workflow do
+    Mix.Project.project_file()
+    |> Path.dirname()
+    |> Path.expand()
+    |> Path.join("WORKFLOW.md")
+    |> existing_file()
+  end
+
+  defp existing_file(path) do
+    if File.exists?(path), do: path
   end
 
   defp blank?(value) when is_binary(value), do: String.trim(value) == ""

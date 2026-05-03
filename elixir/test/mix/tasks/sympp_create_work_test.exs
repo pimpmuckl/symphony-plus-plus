@@ -6,6 +6,7 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
   alias Mix.Tasks.Sympp.CreateWork, as: CreateWorkTask
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.Workflow
   alias SymphonyElixir.WorkPackageFactory
 
   setup do
@@ -88,5 +89,25 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
     assert CreateWorkTask.database_path_for_test(":memory:") == ":memory:"
     assert CreateWorkTask.database_path_for_test(file_uri) == file_uri
     assert CreateWorkTask.database_path_for_test(filesystem_path) == Path.expand(filesystem_path)
+  end
+
+  test "defaults to the Mix project workflow ledger when database is omitted" do
+    previous_workflow = Application.get_env(:symphony_elixir, :workflow_file_path)
+    Application.delete_env(:symphony_elixir, :workflow_file_path)
+
+    try do
+      database_path = CreateWorkTask.database_path_for_test(nil)
+
+      assert Workflow.workflow_file_path() ==
+               Path.expand("../../../WORKFLOW.md", __DIR__)
+
+      assert Repo.same_database_path?(database_path, Repo.database_path())
+    after
+      if previous_workflow do
+        Application.put_env(:symphony_elixir, :workflow_file_path, previous_workflow)
+      else
+        Application.delete_env(:symphony_elixir, :workflow_file_path)
+      end
+    end
   end
 end

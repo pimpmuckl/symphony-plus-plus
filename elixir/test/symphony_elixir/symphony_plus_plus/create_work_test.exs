@@ -87,6 +87,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
                title: "Bad acceptance",
                acceptance_criteria: ["  "]
              })
+
+    assert {:error, :missing_acceptance_criteria} =
+             CreateWork.parse_request(%{
+               kind: "mcp",
+               repo: "symphony-plus-plus",
+               base_branch: "symphony-plus-plus/beta",
+               title: "Missing gated acceptance"
+             })
   end
 
   test "rejects parented and phase-child work" do
