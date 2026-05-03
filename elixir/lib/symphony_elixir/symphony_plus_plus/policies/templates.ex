@@ -35,6 +35,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       readiness_requirements: ["acceptance_criteria_met", "tests_passed", "review_t1_green", "review_t2_green"],
       review_suite: %{required: ["review_t1", "review_t2"], optional: ["review_github"]}
     },
+    "mcp" => %{
+      template: "worker_package",
+      constraints: %{
+        expiry_seconds: 86_400,
+        planning_depth: "package",
+        terminal_readiness_status: "ready_for_human_merge"
+      },
+      required_gates: ["package_acceptance", "focused_tests", "review_t1", "review_t2", "human_merge"],
+      readiness_requirements: ["acceptance_criteria_met", "tests_passed", "review_t1_green", "review_t2_green"],
+      review_suite: %{required: ["review_t1", "review_t2"], optional: ["review_github"]}
+    },
+    "skill" => %{
+      template: "worker_package",
+      constraints: %{
+        expiry_seconds: 86_400,
+        planning_depth: "package",
+        terminal_readiness_status: "ready_for_human_merge"
+      },
+      required_gates: ["package_acceptance", "focused_tests", "review_t1", "review_t2", "human_merge"],
+      readiness_requirements: ["acceptance_criteria_met", "tests_passed", "review_t1_green", "review_t2_green"],
+      review_suite: %{required: ["review_t1", "review_t2"], optional: ["review_github"]}
+    },
+    "hooks" => %{
+      template: "worker_package",
+      constraints: %{
+        expiry_seconds: 86_400,
+        planning_depth: "package",
+        terminal_readiness_status: "ready_for_human_merge"
+      },
+      required_gates: ["package_acceptance", "focused_tests", "review_t1", "review_t2", "human_merge"],
+      readiness_requirements: ["acceptance_criteria_met", "tests_passed", "review_t1_green", "review_t2_green"],
+      review_suite: %{required: ["review_t1", "review_t2"], optional: ["review_github"]}
+    },
     "phase_child" => %{
       template: "phase_child",
       constraints: %{

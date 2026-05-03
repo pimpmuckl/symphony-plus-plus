@@ -20,6 +20,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Service do
           | :assignment_mismatch
           | :assignment_not_claimed
           | :assignment_revoked
+          | :expired
           | :conflicting_key_forms
           | :idempotency_key_conflict
           | :idempotency_scope_conflict
@@ -69,11 +70,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Service do
     {:error, :unauthenticated}
   end
 
+  @spec require_valid_assignment(Repository.repo(), Assignment.t()) :: :ok | {:error, error()}
+  def require_valid_assignment(repo, %Assignment{} = assignment) when is_atom(repo) do
+    lock_valid_assignment(repo, assignment)
+  end
+
+  def require_valid_assignment(repo, _assignment) when is_atom(repo), do: {:error, :unauthenticated}
+
   @spec append_artifact(Repository.repo(), map()) :: {:ok, Artifact.t()} | {:error, error()}
   def append_artifact(repo, attrs), do: Repository.append_artifact(repo, attrs)
 
   @spec update_plan_node_status(Repository.repo(), String.t(), String.t()) :: {:ok, PlanNode.t()} | {:error, error()}
   def update_plan_node_status(repo, plan_node_id, status), do: Repository.update_plan_node_status(repo, plan_node_id, status)
+
+  @spec update_plan_node(Repository.repo(), String.t(), map()) :: {:ok, PlanNode.t()} | {:error, Repository.error()}
+  def update_plan_node(repo, plan_node_id, attrs), do: Repository.update_plan_node(repo, plan_node_id, attrs)
 
   @spec get_state(Repository.repo(), String.t()) :: {:ok, State.t()} | {:error, error()}
   def get_state(repo, work_package_id), do: Repository.get_state(repo, work_package_id)
@@ -173,6 +184,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Service do
   end
 
   defp valid_assignment_query(%Assignment{} = assignment) do
+    now = DateTime.utc_now(:microsecond)
+
     from(grant in AccessGrant,
       where: grant.id == ^assignment.grant_id,
       where: grant.work_package_id == ^assignment.work_package_id,
@@ -183,14 +196,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Service do
       where: grant.claimed_by == ^assignment.claimed_by,
       where: not is_nil(grant.claimed_at),
       where: not is_nil(grant.claimed_by),
-      where: is_nil(grant.revoked_at)
+      where: is_nil(grant.revoked_at),
+      where: grant.expires_at > ^now
     )
   end
 
   defp assignment_error(repo, grant_id) do
     case AccessGrantRepository.get(repo, grant_id) do
       {:ok, %AccessGrant{revoked_at: %DateTime{}}} -> {:error, :assignment_revoked}
+      {:ok, %AccessGrant{expires_at: %DateTime{} = expires_at}} -> expired_assignment_error(expires_at)
       _grant -> {:error, :assignment_mismatch}
+    end
+  end
+
+  defp expired_assignment_error(%DateTime{} = expires_at) do
+    if DateTime.compare(expires_at, DateTime.utc_now(:microsecond)) == :gt do
+      {:error, :assignment_mismatch}
+    else
+      {:error, :expired}
     end
   end
 

@@ -20,7 +20,7 @@ sympp://work-packages/{id}/handoff.md
 ## Worker MCP tools
 
 ```text
-claim_work_key(secret)
+claim_work_key(secret, claimed_by)
 get_current_assignment()
 read_context()
 read_task_plan()
@@ -32,11 +32,88 @@ report_blocker(blocker)
 resolve_blocker(blocker_id, resolution)
 request_scope_expansion(request)
 request_context(request)
-attach_branch(branch)
+attach_branch(branch, head_sha)
 attach_pr(pr_url, head_sha)
-submit_review_package(summary, tests, artifacts)
+submit_review_package(summary, tests, artifacts, head_sha)
 mark_ready()
 ```
+
+`claim_work_key` intentionally requires both the one-time secret and a stable
+`claimed_by` worker identity. Symphony++ uses that identity as part of the
+worker MCP ownership contract: reconnects are accepted only when the same
+secret proof is presented by the same `claimed_by` owner.
+
+For stateless MCP transports, an explicit `state_key` is continuity metadata for
+the initialized handshake only. It is not a bearer capability for a claimed
+worker assignment. After reconnect initialize, workers must call
+`claim_work_key(secret, claimed_by)` again to bind the worker session. The
+state namespace follows the active ledger rather than a transient dynamic repo
+process, so handshake continuity survives reconnects to the same SQLite ledger.
+Explicit state-key handshakes use a bounded retention window longer than the
+current worker grant defaults and are not evicted by the shorter implicit
+default response-state TTL. They remain continuity metadata until overwritten,
+cleared by a failed explicit reconnect initialize, or expired by the explicit
+state-key retention window. A newer explicit initialize for the same state key
+invalidates stale live sessions claimed before that initialize.
+Duplicate initialize on the same active explicit-state connection is still
+rejected as already initialized and does not clear the live session.
+Implicit response-state continuity is for a single logical connection; a fresh
+implicit `initialize` clears stored session state before any new worker claim.
+
+`append_finding` idempotency is scoped to the work package, including at the
+database uniqueness boundary, for retry stability across grant renewal. A retry
+with the same idempotency key and same finding content replays the original
+success; changed content or a changed
+caller-supplied finding id returns `idempotency_conflict`.
+
+JSON-RPC batch items are not an ordered session transaction. Each item is
+evaluated against the batch's initial server/session state, so a `claim_work_key`
+call inside one batch item does not authorize later items in that same batch.
+Workers should claim in a prior request, or run dependent worker tools outside
+the batch. A successful `claim_work_key` inside a batch still binds the returned
+server/session for later standalone requests. After one claim succeeds in a
+batch, later `claim_work_key` entries in that same batch are rejected as
+rebinding attempts so a connection cannot claim multiple assignments.
+
+`attach_branch` intentionally requires both the branch name and the current
+branch `head_sha`. Branch-only review evidence is matched to that head so a
+later branch update cannot reuse stale review-package evidence. When both
+branch and PR metadata exist, the latest branch head is the worker-declared
+current code head; PR metadata proves that the PR is attached for that same
+head.
+
+`submit_review_package` must include `head_sha` on every submission. Merge
+readiness evidence can only bind to the current attached branch head. The latest
+current-head review package is authoritative for review readiness; older
+packages for the same head are superseded rather than implicitly merged. The
+`tests` and `artifacts` lists are normalized by trimming entries before
+persistence and default idempotency-key calculation. If an exact idempotent
+retry matches an already recorded review package, Symphony++ replays that
+success even after the current branch head has moved forward. The replay does
+not make older-head evidence current for readiness.
+
+After `mark_ready` succeeds, worker evidence is frozen. Evidence-mutating tools
+such as progress, findings, blockers, branch/PR metadata, scope requests, and
+review packages reject new writes for the ready package while preserving
+idempotent replay behavior for already-recorded operations.
+
+For non-merge-gated policies such as `quick_fix`, workers may satisfy focused
+test and review-lane readiness with ordinary generic `append_progress` statuses:
+`tests_passed` and `<review_lane>_green` such as `review_t1_green`. Tool-owned
+metadata, blocker, status, and scope events do not satisfy those gates. These
+non-merge policies may also count explicit-head `submit_review_package` evidence
+without branch metadata when branch metadata is not a required gate. Merge-gated
+packages still require current-head review package evidence and artifacts. If a
+branch head is attached, generic fallback evidence and review-package evidence
+must be current to the latest branch head. Generic fallback gates use the latest
+relevant status after that branch head: later `tests_failed`,
+`<review_lane>_red`, or `<review_lane>_failed` supersedes earlier green evidence
+until a newer pass/green status is recorded.
+
+For investigation policies that require a scope recommendation,
+`request_scope_expansion` records the worker's recommendation evidence; it does
+not approve expanded scope. Caller-controlled generic `append_progress`
+payloads are not recommendation evidence.
 
 ## Architect MCP tools
 

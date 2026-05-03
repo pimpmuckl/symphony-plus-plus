@@ -9,7 +9,7 @@ A WorkPackage can be marked ready only when all gates required by its policy tem
 - Required plan nodes are complete or skipped with rationale.
 - Acceptance criteria have evidence.
 - Required PR exists.
-- Required review-suite artifact exists and matches current head SHA.
+- Required review-suite artifact exists in the latest review package for the current head SHA.
 - Required CI/check status is green.
 - Changed files are within allowed scope.
 - Base branch matches package constraints.

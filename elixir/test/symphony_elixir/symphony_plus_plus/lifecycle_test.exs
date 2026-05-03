@@ -78,6 +78,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     assert investigation.constraints.expiry_seconds == 43_200
     assert investigation.constraints.planning_depth == "findings"
     assert investigation.required_gates == ["findings_documented", "scope_recommendation"]
+
+    for kind <- ["mcp", "skill", "hooks"] do
+      assert {:ok, policy} = Templates.expand(kind)
+      assert policy.template == "worker_package"
+      assert policy.review_suite.required == ["review_t1", "review_t2"]
+      assert policy.constraints.terminal_readiness_status == "ready_for_human_merge"
+    end
   end
 
   test "policy can be computed from a persisted work package", %{repo: repo} do
@@ -274,8 +281,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
              })
   end
 
-  test "transition rejects unsupported lifecycle kinds", %{repo: repo} do
-    package = insert_raw_package!(repo, kind: "standard_pr", status: "created")
+  test "transition supports declared standalone lifecycle kinds", %{repo: repo} do
+    package = insert_raw_package!(repo, kind: "mcp", status: "created")
+
+    assert {:ok, updated} = Service.transition(repo, package.id, "ready_for_worker", worker_actor!(repo, package))
+    assert updated.status == "ready_for_worker"
+  end
+
+  test "transition rejects unknown lifecycle kinds", %{repo: repo} do
+    package = insert_raw_package!(repo, kind: "legacy_kind", status: "created")
 
     assert {:error, :unsupported_work_package_kind} = Service.transition(repo, package.id, "ready_for_worker", worker_actor!(repo, package))
   end
@@ -300,6 +314,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     assert updated.status == "ci_waiting"
 
     assert {:error, :stale_status} = Repository.update_status(repo, package.id, "reviewing", "implementing")
+    assert {:ok, fetched} = Repository.get(repo, package.id)
+    assert fetched.status == "ci_waiting"
+  end
+
+  test "snapshot transitions fail when the stored status has changed", %{repo: repo} do
+    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "hotfix", status: "reviewing"))
+    actor = worker_actor!(repo, package)
+
+    assert {:ok, updated} = Repository.update_status(repo, package.id, "reviewing", "ci_waiting")
+    assert updated.status == "ci_waiting"
+
+    assert {:error, :stale_status} = Service.transition(repo, package, "ci_waiting", actor)
     assert {:ok, fetched} = Repository.get(repo, package.id)
     assert fetched.status == "ci_waiting"
   end

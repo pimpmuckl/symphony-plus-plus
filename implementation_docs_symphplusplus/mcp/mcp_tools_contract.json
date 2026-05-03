@@ -2,7 +2,9 @@
   "worker_tools": [
     {
       "name": "claim_work_key",
-      "purpose": "Claim a one-time work key/secret and bind it to the current agent run."
+      "purpose": "Claim a one-time work key/secret with required claimed_by owner identity and bind it to the current worker session.",
+      "required_arguments": ["secret", "claimed_by"],
+      "reconnect_policy": "Reconnects are accepted only when the same claimed_by owner presents the same secret proof. Explicit state_key values retain initialized handshake state only and do not restore claimed worker sessions."
     },
     {
       "name": "get_current_assignment",
@@ -26,7 +28,8 @@
     },
     {
       "name": "append_progress",
-      "purpose": "Append a progress event to the current work package."
+      "purpose": "Append a progress event to the current work package.",
+      "readiness_policy": "For non-merge-gated policies, generic append_progress statuses tests_passed and <review_lane>_green satisfy focused-test and review-lane readiness; tool-owned metadata/blocker/status/scope events are ignored."
     },
     {
       "name": "set_status",
@@ -38,11 +41,13 @@
     },
     {
       "name": "request_scope_expansion",
-      "purpose": "Request broader scope; does not approve it."
+      "purpose": "Request broader scope; does not approve it.",
+      "readiness_policy": "For investigation policies, this records the worker scope recommendation evidence."
     },
     {
       "name": "attach_branch",
-      "purpose": "Attach branch metadata."
+      "purpose": "Attach branch metadata with the current branch head SHA.",
+      "head_policy": "The latest branch head is the worker-declared current code head; PR metadata must match it for merge readiness."
     },
     {
       "name": "attach_pr",
@@ -50,11 +55,14 @@
     },
     {
       "name": "submit_review_package",
-      "purpose": "Attach summary/tests/artifacts for review."
+      "purpose": "Attach summary/tests/artifacts for the current head review package.",
+      "head_policy": "head_sha is required on every submit_review_package call and must match the latest attached branch head.",
+      "readiness_policy": "The latest review package for the current head is authoritative; older same-head packages are superseded."
     },
     {
       "name": "mark_ready",
-      "purpose": "Move to ready state only if gates pass."
+      "purpose": "Move to ready state only if gates pass.",
+      "post_ready_policy": "After mark_ready succeeds, new worker evidence writes are rejected as already_ready while idempotent replays remain available."
     }
   ],
   "resources": [

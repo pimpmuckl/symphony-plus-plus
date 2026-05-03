@@ -22,6 +22,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   @type error ::
           :assignment_mismatch
           | :assignment_revoked
+          | :expired
           | :conflicting_key_forms
           | :idempotency_scope_conflict
           | :database_busy
@@ -203,6 +204,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
       %PlanNode{} = plan_node ->
         plan_node
         |> PlanNode.status_changeset(%{status: status})
+        |> update(repo)
+    end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  @spec update_plan_node(repo(), String.t(), map()) :: {:ok, PlanNode.t()} | {:error, error()}
+  def update_plan_node(repo, plan_node_id, attrs)
+      when is_atom(repo) and is_binary(plan_node_id) and is_map(attrs) do
+    case repo.get(PlanNode, plan_node_id) do
+      nil ->
+        {:error, :not_found}
+
+      %PlanNode{} = plan_node ->
+        plan_node
+        |> PlanNode.update_changeset(attrs)
         |> update(repo)
     end
   rescue
@@ -510,6 +527,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   end
 
   defp valid_assignment_query(%Assignment{} = assignment) do
+    now = DateTime.utc_now(:microsecond)
+
     from(grant in AccessGrant,
       where: grant.id == ^assignment.grant_id,
       where: grant.work_package_id == ^assignment.work_package_id,
@@ -520,7 +539,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
       where: grant.claimed_by == ^assignment.claimed_by,
       where: not is_nil(grant.claimed_at),
       where: not is_nil(grant.claimed_by),
-      where: is_nil(grant.revoked_at)
+      where: is_nil(grant.revoked_at),
+      where: grant.expires_at > ^now
     )
   end
 
@@ -538,6 +558,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   end
 
   defp matching_assignment_query(%Assignment{} = assignment) do
+    now = DateTime.utc_now(:microsecond)
+
     from(grant in AccessGrant,
       where: grant.id == ^assignment.grant_id,
       where: grant.work_package_id == ^assignment.work_package_id,
@@ -549,6 +571,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
       where: not is_nil(grant.claimed_at),
       where: not is_nil(grant.claimed_by),
       where: is_nil(grant.revoked_at),
+      where: grant.expires_at > ^now,
       limit: 1
     )
   end
@@ -556,7 +579,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   defp assignment_error(repo, grant_id) do
     case repo.get(AccessGrant, grant_id) do
       %AccessGrant{revoked_at: %DateTime{}} -> {:error, :assignment_revoked}
+      %AccessGrant{expires_at: %DateTime{} = expires_at} -> expired_assignment_error(expires_at)
       _grant -> {:error, :assignment_mismatch}
+    end
+  end
+
+  defp expired_assignment_error(%DateTime{} = expires_at) do
+    if DateTime.compare(expires_at, DateTime.utc_now(:microsecond)) == :gt do
+      {:error, :assignment_mismatch}
+    else
+      {:error, :expired}
     end
   end
 
@@ -741,7 +773,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   end
 
   defp normalize_constraint_error(%Ecto.ConstraintError{constraint: constraint}) when is_binary(constraint) do
-    if progress_event_idempotency_constraint?(constraint) do
+    if idempotency_constraint?(constraint) do
       {:error, :idempotency_key_conflict}
     else
       if String.ends_with?(constraint, "_id_unique_index") or String.ends_with?(constraint, "_id_index") or
@@ -770,9 +802,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
          (String.contains?(constraint, "sequence") or String.contains?(constraint, "position")))
   end
 
-  defp progress_event_idempotency_constraint?(constraint) when is_binary(constraint) do
+  defp idempotency_constraint?(constraint) when is_binary(constraint) do
     constraint == "sympp_progress_events_work_package_idempotency_key_unique_index" or
-      (String.contains?(constraint, "sympp_progress_events") and String.contains?(constraint, "idempotency_key"))
+      (String.contains?(constraint, "sympp_progress_events") and String.contains?(constraint, "idempotency_key")) or
+      constraint == "sympp_findings_scoped_idempotency_key_unique_index" or
+      (String.contains?(constraint, "sympp_findings") and String.contains?(constraint, "idempotency_key"))
   end
 
   defp normalize_exqlite_error(error) do

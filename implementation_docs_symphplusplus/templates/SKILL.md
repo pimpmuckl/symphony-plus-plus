@@ -9,7 +9,7 @@ You are working on a scoped Symphony++ WorkPackage.
 
 ## Rules
 
-1. Start by calling `claim_work_key` if a key/secret is provided.
+1. Start by calling `claim_work_key` with both the provided key/secret and a stable `claimed_by` worker identity.
 2. Then call `get_current_assignment`.
 3. Read:
    - `context.md`
@@ -32,6 +32,31 @@ You are working on a scoped Symphony++ WorkPackage.
     - no active blocker remains.
 11. Never claim authority outside the assignment returned by Symphony++.
 12. Never read or mutate sibling WorkPackages unless explicitly exposed by Symphony++ context.
+
+`claimed_by` is required for the worker MCP API. Use the same identity for
+reconnects; Symphony++ accepts reconnect only when the same owner identity
+presents the same secret proof.
+
+An explicit `state_key` only preserves initialized MCP handshake state. It does
+not restore a claimed assignment, so reconnecting workers must call
+`claim_work_key` again with the secret and same `claimed_by` identity. Reuse the
+same `state_key` only when reconnecting to the same active ledger. Explicit
+state keys use a bounded retention window longer than the current worker grant
+defaults and are not evicted by the shorter implicit default response-state TTL.
+If reconnect initialize fails, initialize again successfully before calling
+worker tools.
+
+When calling `submit_review_package`, provide `head_sha` for the latest attached
+branch head. Symphony++ trims `tests` and `artifacts` entries and preserves
+idempotent replay for an already recorded package even after later commits move
+the branch head. That replay is for lost-response stability only; readiness
+still evaluates review evidence against the current branch head. Non-merge
+packages without a branch gate may submit explicit-head review evidence before
+attaching branch metadata.
+
+After `mark_ready` succeeds, the package evidence is frozen. Do not attempt to
+append new progress, findings, blockers, branch/PR metadata, scope requests, or
+review packages unless replaying a previously recorded idempotent write.
 
 ## Handoff summary format
 
