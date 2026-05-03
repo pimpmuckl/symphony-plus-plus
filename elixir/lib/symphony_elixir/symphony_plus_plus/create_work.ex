@@ -288,7 +288,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
 
   defp policy_for(kind, attrs) do
     with {:ok, policy} <- Templates.expand(kind),
-         :ok <- validate_policy_template(kind, attrs) do
+         :ok <- validate_policy_template(kind, policy.template, attrs) do
       {:ok, policy}
     else
       {:error, :unknown_policy_template} -> {:error, :unknown_policy_template}
@@ -296,7 +296,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     end
   end
 
-  defp validate_policy_template(kind, attrs) do
+  defp validate_policy_template(kind, resolved_template, attrs) do
     attrs
     |> Map.take(["policy_template", "review_suite_template"])
     |> Map.values()
@@ -306,23 +306,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     |> case do
       [] -> :ok
       [^kind] -> :ok
+      [^resolved_template] -> :ok
       _templates -> {:error, :policy_template_mismatch}
     end
   end
 
   defp normalize_acceptance_criteria(criteria) when is_list(criteria) do
-    criteria =
-      criteria
-      |> Enum.map(&normalize_acceptance_criterion/1)
-      |> Enum.reject(&(&1 == ""))
+    criteria = Enum.map(criteria, &normalize_acceptance_criterion/1)
 
-    if Enum.all?(criteria, &is_binary/1), do: {:ok, criteria}, else: {:error, :invalid_acceptance_criteria}
+    if Enum.all?(criteria, &valid_acceptance_criterion?/1) do
+      {:ok, criteria}
+    else
+      {:error, :invalid_acceptance_criteria}
+    end
   end
 
   defp normalize_acceptance_criteria(_criteria), do: {:error, :invalid_acceptance_criteria}
 
   defp normalize_acceptance_criterion(value) when is_binary(value), do: String.trim(value)
   defp normalize_acceptance_criterion(_value), do: :invalid
+
+  defp valid_acceptance_criterion?(value) when is_binary(value), do: value != ""
+  defp valid_acceptance_criterion?(_value), do: false
 
   defp normalize_nonblank_string(value) when is_binary(value) do
     value = String.trim(value)

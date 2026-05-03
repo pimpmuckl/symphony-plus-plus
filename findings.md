@@ -19,3 +19,7 @@
 
 - Real secret-dependent validation will be covered with generated test secrets only. No real worker secrets will be printed in planning, PR, or final text.
 - `mix credo --strict` currently reports three pre-existing findings in `lib/symphony_elixir/symphony_plus_plus/mcp/server.ex` outside this package's touched files. The touched-file Credo lane passes with no issues.
+
+## Review Findings
+
+- T1 Alpha found two valid request-validation issues. Invariant: explicit template fields should match the selected policy, and acceptance criteria should be nonblank if provided. Owner/source of truth: `CreateWork.parse_request/1` backed by `Policies.Templates.expand/1`. Sibling paths checked: Mix task parsing delegates to `CreateWork.parse_file/1`, and worker MCP rendering consumes the created ledger state. Structural fix: accept either the kind or resolved template name for template fields, and reject blank/non-string criteria instead of dropping them. Regression coverage: `create_work_test.exs` covers `mcp` with `policy_template: worker_package` and blank criteria rejection.

@@ -25,6 +25,12 @@
 | `mise exec -- mix credo --strict lib/symphony_elixir/symphony_plus_plus/create_work.ex lib/mix/tasks/sympp.create_work.ex test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | 4 touched source/test files, no issues. |
 | `mise exec -- mix credo --strict` | blocked | Reports three existing `mcp/server.ex` refactoring findings outside this package scope. |
 
+## Review
+
+- T1 round `phase_review-symphony-plus-plus-sympp-p4-001-1de35c-20260503T164350Z-62704a67`: Bravo clean; Alpha found valid template-name and blank-acceptance validation issues. Graded Alpha as winner for better bug coverage.
+- Applied narrow validation fixes and added regression coverage.
+- Post-fix validation: focused create-work tests now run 9 tests, 0 failures; `test/symphony_elixir/symphony_plus_plus` now runs 330 tests, 0 failures; touched-file strict Credo remains clean.
+
 ## Outstanding
 
-- Commit, push, PR, and required review cycle.
+- Re-run focused validation, commit/push the T1 fix, and continue review-state/T1/T2/GitHub review cycle.

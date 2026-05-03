@@ -66,6 +66,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
              CreateWork.parse_request(%{repo: "kraken", base_branch: "main"})
   end
 
+  test "accepts resolved policy template names and rejects blank acceptance criteria" do
+    assert {:ok, request} =
+             CreateWork.parse_request(%{
+               kind: "mcp",
+               repo: "symphony-plus-plus",
+               base_branch: "symphony-plus-plus/beta",
+               title: "Wire MCP package",
+               acceptance_criteria: ["MCP work is created."],
+               policy_template: "worker_package"
+             })
+
+    assert request["policy"].template == "worker_package"
+
+    assert {:error, :invalid_acceptance_criteria} =
+             CreateWork.parse_request(%{
+               repo: "kraken",
+               base_branch: "main",
+               title: "Bad acceptance",
+               acceptance_criteria: ["  "]
+             })
+  end
+
   test "creates a standalone quick fix with default policy, one grant, and initial virtual files", %{repo: repo} do
     assert {:ok, creation} =
              CreateWork.create(repo, %{
