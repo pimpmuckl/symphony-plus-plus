@@ -291,6 +291,9 @@ Phase 3
 - Fresh T2 on pushed head `3b8eeff` produced valid findings around explicit state retention on failed initialize, implicit response-state retention, investigation recommendation evidence, and post-ready evidence immutability.
 - Before the next T2, the approach remains coherent because the latest fix only preserves explicit response-only state until initialize succeeds, retains active implicit sessions by MCP namespace without count eviction, treats `request_scope_expansion` as investigation recommendation evidence, and freezes generic worker evidence writes after ready.
 - Findings remain narrow response-state and readiness-contract hardening within P3-002, not evidence of a broader design or scope problem.
+- Fresh T2 on pushed head `181b745` produced valid findings around explicit reconnect initialize continuity, stale PR metadata retry ordering, and source filtering for non-merge progress readiness evidence.
+- Before the next T2, the approach remains coherent because this follow-up only restores explicit `state_key` session continuity, prevents old PR metadata from overriding a newer branch head, and narrows non-merge readiness fallbacks to generic `append_progress` evidence.
+- Findings remain localized to response-state continuity and readiness evidence trust boundaries in the P3-002 worker MCP API.
 
 ## Blockers
 

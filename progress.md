@@ -1294,3 +1294,26 @@
 ### Next Steps
 
 - Commit and push fifty-sixth T2 fixes, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
+
+### Fifty-Seventh T2 Follow-up Actions
+
+- Pushed head before this follow-up: `181b745e1395f60b03ac2fb183653d80e3053f27`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T043426Z-78ce2672`; closed it as `findings`.
+- Fixed valid findings by restoring explicit `state_key` session continuity across reconnect initialize, preventing stale PR metadata retries from regressing the current review head after a newer branch attachment, and filtering non-merge focused-test/review-lane readiness fallbacks to generic `append_progress` events.
+- Updated public P3-002 MCP docs to clarify that tool-owned metadata, blocker, status, and scope events do not satisfy the non-merge progress readiness fallbacks.
+- High-pressure coherence check before the next same-tier T2: the fix stays in the existing worker MCP state/readiness contract and only tightens trust boundaries for persisted worker evidence.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after fifty-seventh T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 85 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 280 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit and push fifty-seventh T2 fixes, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.

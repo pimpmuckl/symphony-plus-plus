@@ -29,7 +29,7 @@
     {
       "name": "append_progress",
       "purpose": "Append a progress event to the current work package.",
-      "readiness_policy": "For non-merge-gated policies, statuses tests_passed and <review_lane>_green satisfy focused-test and review-lane readiness."
+      "readiness_policy": "For non-merge-gated policies, generic append_progress statuses tests_passed and <review_lane>_green satisfy focused-test and review-lane readiness; tool-owned metadata/blocker/status/scope events are ignored."
     },
     {
       "name": "set_status",

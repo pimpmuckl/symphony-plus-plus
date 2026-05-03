@@ -57,9 +57,11 @@ review packages reject new writes for the ready package while preserving
 idempotent replay behavior for already-recorded operations.
 
 For non-merge-gated policies such as `quick_fix`, workers may satisfy focused
-test and review-lane readiness with ordinary `append_progress` statuses:
-`tests_passed` and `<review_lane>_green` such as `review_t1_green`. Merge-gated
-packages still require current-head review package evidence and artifacts.
+test and review-lane readiness with ordinary generic `append_progress` statuses:
+`tests_passed` and `<review_lane>_green` such as `review_t1_green`. Tool-owned
+metadata, blocker, status, and scope events do not satisfy those gates.
+Merge-gated packages still require current-head review package evidence and
+artifacts.
 
 For investigation policies that require a scope recommendation,
 `request_scope_expansion` records the worker's recommendation evidence; it does

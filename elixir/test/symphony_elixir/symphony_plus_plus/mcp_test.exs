@@ -1056,7 +1056,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(other_repo_response, ["error", "data", "reason"]) == "server_not_initialized"
   end
 
-  test "response-only handle resets explicit state key on a new initialize", %{repo: repo} do
+  test "response-only handle preserves explicit state key session across reconnect initialize", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STATE-RESET", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     state_key = make_ref()
@@ -1105,7 +1105,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         Server.new(Config.default(repo: repo), state_key: state_key)
       )
 
-    assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
   end
 
   test "stdio response-only line helper retains initialized worker session", %{repo: repo} do
@@ -2895,6 +2895,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-BRANCH-HEAD/worker", "head_sha" => "head-a"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/789", "head_sha" => "head-a"})
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-BRANCH-HEAD/worker", "head_sha" => "head-b"})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/789", "head_sha" => "head-a"})
 
     stale_response =
       MCPHarness.request(
@@ -3088,6 +3089,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute "review_package_submitted" in missing
     assert "tests_passed" in missing
     assert "review_lanes_complete" in missing
+
+    attach_tool(repo, session, "request_scope_expansion", %{
+      "summary" => "Unrelated scope request",
+      "status" => "tests_passed",
+      "payload" => %{"lane" => "review_t1", "verdict" => "green"},
+      "idempotency_key" => "quick-fix-unrelated-status"
+    })
+
+    unrelated_status_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-quick-fix-unrelated-status", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    unrelated_missing = get_in(unrelated_status_response, ["error", "data", "missing"])
+    assert "tests_passed" in unrelated_missing
+    assert "review_lanes_complete" in unrelated_missing
 
     attach_tool(repo, session, "append_progress", %{
       "summary" => "Focused tests passed",

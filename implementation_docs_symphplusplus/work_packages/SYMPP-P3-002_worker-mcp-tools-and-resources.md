@@ -65,9 +65,10 @@ latest review package for that current head is authoritative for readiness;
 older same-head packages are superseded.
 
 For non-merge-gated package policies such as `quick_fix`, workers can satisfy
-focused-test and review-lane gates with `append_progress.status` values
-`tests_passed` and `<review_lane>_green`. Merge-gated package policies still use
-current-head review package evidence and review artifacts.
+focused-test and review-lane gates with generic `append_progress.status` values
+`tests_passed` and `<review_lane>_green`. Tool-owned metadata, blocker, status,
+and scope events do not satisfy those fallback gates. Merge-gated package
+policies still use current-head review package evidence and review artifacts.
 
 After `mark_ready` succeeds, worker evidence writes for the package are frozen;
 new progress, findings, blockers, branch/PR metadata, scope requests, and review
