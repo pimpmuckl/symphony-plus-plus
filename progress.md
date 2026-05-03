@@ -224,6 +224,29 @@
 | `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
 | `mise exec -- mix credo --strict` | pass | no issues. |
 
+### Seventy-Fifth T2 Follow-up Actions
+
+- Pushed head before this follow-up: `c671891`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T080344Z-bdf0d93d`; both reviewers reported valid findings, so the gate was closed as `findings`.
+- Fixed live implicit stdio duplicate initialize handling so active threaded server state returns `already_initialized` and preserves its worker session.
+- Fixed explicit state-key persistence so an `already_initialized` duplicate initialize response does not delete stored handshake continuity for later recreated-server reconnects.
+- Added regression coverage for threaded stdio duplicate initialize and explicit duplicate initialize preserving later state-key reconnect.
+
+### Next Steps
+
+- Commit/push seventy-fifth T2 fixes, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after seventy-fifth T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 98 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 293 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
 ### Seventieth T2 Follow-up Actions
 
 - Pushed head before this follow-up: `babe432bee2e51715f1e2bc7cb6eb5effb7a0fef`.

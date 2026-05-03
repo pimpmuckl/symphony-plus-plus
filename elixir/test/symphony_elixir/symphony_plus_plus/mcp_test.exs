@@ -1227,8 +1227,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         duplicate_server
       )
 
+    tools_after_reconnect =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "tools-after-duplicate-reconnect", "method" => "tools/list", "params" => %{}},
+        Server.new(Config.default(repo: repo), state_key: state_key)
+      )
+
     assert get_in(duplicate_init_response, ["error", "data", "reason"]) == "already_initialized"
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert is_list(get_in(tools_after_reconnect, ["result", "tools"]))
   end
 
   test "failed explicit state key reinitialize clears prior handshake state", %{repo: repo} do
@@ -1321,6 +1328,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+  end
+
+  test "stdio response-state preserves live session on duplicate initialize", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STDIO-DUP-INIT", kind: "mcp", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    server = Server.new(Config.default(repo: repo))
+
+    {init_response, initialized_server} =
+      %{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()}
+      |> Jason.encode!()
+      |> Stdio.line_response_state(server)
+
+    {claim_response, claimed_server} =
+      %{
+        "jsonrpc" => "2.0",
+        "id" => "claim",
+        "method" => "tools/call",
+        "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+      }
+      |> Jason.encode!()
+      |> Stdio.line_response_state(initialized_server)
+
+    {duplicate_init_response, duplicate_server} =
+      %{"jsonrpc" => "2.0", "id" => "init-again", "method" => "initialize", "params" => initialize_params()}
+      |> Jason.encode!()
+      |> Stdio.line_response_state(claimed_server)
+
+    {assignment_response, _server} =
+      %{"jsonrpc" => "2.0", "id" => "assignment", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}}
+      |> Jason.encode!()
+      |> Stdio.line_response_state(duplicate_server)
+
+    assert get_in(init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert get_in(duplicate_init_response, ["error", "data", "reason"]) == "already_initialized"
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
   end
 

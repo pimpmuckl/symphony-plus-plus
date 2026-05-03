@@ -331,6 +331,8 @@ Phase 3
 - Before the next T2, the approach remains coherent because the applied fixes stay within response-state isolation and lifecycle semantics; the finding idempotency scope is left unchanged unless the overseer reverses the prior work-package-scoped idempotency decision.
 - Fresh T2 on pushed head `08eb4ce` produced one valid finding: duplicate `initialize` on an already-live explicit-state server should return `already_initialized` and preserve the active worker session, while recreated explicit-state servers may still initialize for reconnect continuity.
 - Before the next T2, the approach remains coherent because this only separates active-connection duplicate-initialize semantics from recreated-server reconnect semantics.
+- Fresh T2 on pushed head `c671891` produced valid findings that live implicit stdio servers also need duplicate-initialize preservation, and explicit duplicate-initialize errors should not delete persisted handshake continuity.
+- Before the next T2, the approach remains coherent because this completes the same active-versus-recreated initialize distinction across both implicit stdio and explicit state-key transports.
 
 ## Blockers
 

@@ -183,8 +183,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp restore_handle_state(payload, %__MODULE__{state_key_explicit: false} = server) do
     if initialize_request?(payload) do
-      case lookup_handle_state(server) do
-        {%__MODULE__{}, _timestamp_ms, _explicit?} ->
+      case {server.initialized, lookup_handle_state(server)} do
+        {true, _stored} ->
+          server
+
+        {false, {%__MODULE__{}, _timestamp_ms, _explicit?}} ->
           delete_handle_state(server)
           %{server | initialized: false, session: nil}
 
@@ -236,6 +239,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         %{"result" => _result} ->
           timestamp_ms = put_handle_state(updated_server)
           %{updated_server | state_key_version: timestamp_ms}
+
+        %{"error" => %{"data" => %{"reason" => "already_initialized"}}} ->
+          persist_handle_state(server, updated_server)
 
         _response ->
           delete_handle_state(server)
