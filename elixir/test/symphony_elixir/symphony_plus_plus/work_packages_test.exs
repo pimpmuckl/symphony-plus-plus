@@ -108,6 +108,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
     assert fetched.acceptance_criteria == criteria
   end
 
+  test "stores allowed file globs through SQLite", %{repo: repo} do
+    globs = ["src/kraken/**", "test/kraken/**"]
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-P1-001", allowed_file_globs: globs))
+
+    assert {:ok, fetched} = Repository.get(repo, package.id)
+    assert fetched.allowed_file_globs == globs
+  end
+
   test "migration is idempotent", %{repo: repo} do
     assert :ok = Repository.migrate(repo)
   end

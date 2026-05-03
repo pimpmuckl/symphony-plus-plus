@@ -51,6 +51,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     assert request["base_branch"] == "beta"
     assert request["title"] == "Fix allocator outage"
     assert request["acceptance_criteria"] == ["Allocator claims recover."]
+    assert request["allowed_file_globs"] == []
     assert request["parent_id"] == nil
     assert request["policy"].template == "hotfix"
   end
@@ -148,6 +149,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
                title: "Implicit quick fix cannot request worker package",
                acceptance_criteria: ["Conflict is rejected."],
                policy_template: "worker_package"
+             })
+  end
+
+  test "preserves allowed file globs and rejects invalid scope constraints", %{repo: repo} do
+    assert {:ok, creation} =
+             CreateWork.create(repo, %{
+               kind: "hotfix",
+               repo: "kraken",
+               base_branch: "main",
+               title: "Fix scoped hotfix",
+               engineering_scope: "Touch only the balance path.",
+               acceptance_criteria: ["Balance regression is fixed."],
+               allowed_file_globs: [" src/kraken/** ", "test/kraken/**"]
+             })
+
+    assert creation.work_package.allowed_file_globs == ["src/kraken/**", "test/kraken/**"]
+    assert creation.virtual_files["context.md"] =~ "src/kraken/**"
+    assert creation.virtual_files["context.md"] =~ "test/kraken/**"
+
+    assert {:error, :invalid_allowed_file_globs} =
+             CreateWork.parse_request(%{
+               repo: "kraken",
+               base_branch: "main",
+               title: "Bad globs",
+               acceptance_criteria: ["Rejected."],
+               allowed_file_globs: ["   "]
              })
   end
 

@@ -71,7 +71,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
       "",
       "## Engineering Scope",
       "",
-      source_block(work_package.engineering_scope)
+      source_block(work_package.engineering_scope),
+      "",
+      "## Allowed File Globs",
+      "",
+      list_or_empty(work_package.allowed_file_globs)
     ]
     |> flatten_join()
   end
@@ -203,6 +207,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
       "- Repo: #{source_inline(work_package.repo)}",
       "- Base branch: #{source_inline(work_package.base_branch)}",
       "- Branch pattern: #{source_inline(work_package.branch_pattern)}",
+      "- Allowed file globs: #{inline_list(work_package.allowed_file_globs)}",
       "- Parent: #{source_inline(work_package.parent_id)}",
       "- Owner: #{source_inline(work_package.owner_id)}"
     ]

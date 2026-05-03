@@ -23,6 +23,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   @type error ::
           :empty_request_file
           | :invalid_acceptance_criteria
+          | :invalid_allowed_file_globs
           | :invalid_request
           | :invalid_work_package_id
           | :missing_acceptance_criteria
@@ -50,6 +51,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
          {:ok, kind} <- normalize_kind(attrs),
          {:ok, policy} <- policy_for(kind, attrs),
          {:ok, acceptance_criteria} <- normalize_acceptance_criteria(Map.get(attrs, "acceptance_criteria", [])),
+         {:ok, allowed_file_globs} <- normalize_allowed_file_globs(Map.get(attrs, "allowed_file_globs", [])),
          :ok <- require_acceptance_criteria(policy, acceptance_criteria) do
       {:ok,
        attrs
@@ -65,6 +67,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
        ])
        |> Map.put("kind", kind)
        |> Map.put("acceptance_criteria", acceptance_criteria)
+       |> Map.put("allowed_file_globs", allowed_file_globs)
        |> Map.put("parent_id", nil)
        |> Map.put("status", "ready_for_worker")
        |> Map.put("policy", policy)}
@@ -118,6 +121,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   def error_message({:missing_required_field, field}), do: "Missing required create-work field: #{field}"
   def error_message(:empty_request_file), do: "Create-work request file is empty"
   def error_message(:invalid_acceptance_criteria), do: "acceptance_criteria must be a list of nonblank strings"
+  def error_message(:invalid_allowed_file_globs), do: "allowed_file_globs must be a list of nonblank strings"
   def error_message(:invalid_request), do: "Create-work request must be a JSON/YAML object"
   def error_message(:invalid_work_package_id), do: "id must be a nonblank string when provided"
   def error_message(:missing_acceptance_criteria), do: "acceptance_criteria is required for this work kind"
@@ -233,6 +237,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
       branch_pattern: work_package.branch_pattern,
       product_description: work_package.product_description,
       engineering_scope: work_package.engineering_scope,
+      allowed_file_globs: work_package.allowed_file_globs,
       acceptance_criteria: work_package.acceptance_criteria,
       status: work_package.status,
       parent_id: work_package.parent_id,
@@ -378,11 +383,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   defp normalize_acceptance_criteria(nil), do: {:ok, []}
   defp normalize_acceptance_criteria(_criteria), do: {:error, :invalid_acceptance_criteria}
 
+  defp normalize_allowed_file_globs(globs), do: normalize_string_list(globs, :invalid_allowed_file_globs)
+
   defp normalize_acceptance_criterion(value) when is_binary(value), do: String.trim(value)
   defp normalize_acceptance_criterion(_value), do: :invalid
 
   defp valid_acceptance_criterion?(value) when is_binary(value), do: value != ""
   defp valid_acceptance_criterion?(_value), do: false
+
+  defp normalize_string_list(nil, _error), do: {:ok, []}
+
+  defp normalize_string_list(values, error) when is_list(values) do
+    values = Enum.map(values, &normalize_acceptance_criterion/1)
+
+    if Enum.all?(values, &valid_acceptance_criterion?/1) do
+      {:ok, values}
+    else
+      {:error, error}
+    end
+  end
+
+  defp normalize_string_list(_values, error), do: {:error, error}
 
   defp normalize_nonblank_string(value) when is_binary(value) do
     value = String.trim(value)
