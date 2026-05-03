@@ -554,6 +554,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp batch_updated_server(items, %__MODULE__{} = server) do
     Enum.reduce(items, server, fn
+      {_payload, {%{"error" => _error}, %__MODULE__{} = _updated_server}}, server ->
+        server
+
       {payload, {_response, %__MODULE__{session: %Session{}} = updated_server}}, server ->
         if batch_claim_work_key_request?(payload, server), do: updated_server, else: server
 
@@ -568,7 +571,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        ),
        do: true
 
-  defp batch_claim_work_key_success?({nil, %__MODULE__{session: %Session{}}}, %__MODULE__{session: nil}), do: true
+  defp batch_claim_work_key_success?({nil, %__MODULE__{session: %Session{} = updated_session}}, %__MODULE__{session: original_session}) do
+    original_session == nil or updated_session != original_session
+  end
+
   defp batch_claim_work_key_success?(_item, %__MODULE__{}), do: false
 
   defp batch_claim_work_key_request?(

@@ -2069,6 +2069,58 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert server.session.assignment.work_package_id == package.id
   end
 
+  test "batch claim_work_key counts notification refreshes on stale bound connections", %{repo: repo} do
+    assert {:ok, original_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BATCH-STALE-ORIGINAL", kind: "mcp", status: "ready_for_worker"))
+
+    assert {:ok, replacement_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BATCH-STALE-REPLACEMENT", kind: "mcp", status: "ready_for_worker"))
+
+    assert {:ok, second_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BATCH-STALE-SECOND", kind: "mcp", status: "ready_for_worker"))
+
+    assert {:ok, original_minted} = AccessGrantService.mint_worker_grant(repo, original_package.id)
+    assert {:ok, replacement_minted} = AccessGrantService.mint_worker_grant(repo, replacement_package.id)
+    assert {:ok, second_minted} = AccessGrantService.mint_worker_grant(repo, second_package.id)
+
+    {_claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-original",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => original_minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert {:ok, _revoked} = AccessGrantService.revoke(repo, original_minted.grant.id)
+
+    {responses, refreshed_server} =
+      Server.handle_state(
+        [
+          %{
+            "jsonrpc" => "2.0",
+            "method" => "tools/call",
+            "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => replacement_minted.work_key.secret, "claimed_by" => "worker-1"}}
+          },
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "claim-second-after-notification-refresh",
+            "method" => "tools/call",
+            "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => second_minted.work_key.secret, "claimed_by" => "worker-2"}}
+          }
+        ],
+        claimed_server
+      )
+
+    assert get_in(List.first(responses), ["error", "data", "reason"]) == "session_already_bound"
+    assert refreshed_server.session.assignment.work_package_id == replacement_package.id
+    assert {:ok, second_grant} = AccessGrantRepository.get(repo, second_minted.grant.id)
+    refute second_grant.claimed_by
+    refute second_grant.claimed_at
+  end
+
   test "claim_work_key binds worker and architect grants and revalidates bound replays", %{repo: repo} do
     assert {:ok, worker_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-CLAIM", kind: "mcp", status: "ready_for_worker"))
