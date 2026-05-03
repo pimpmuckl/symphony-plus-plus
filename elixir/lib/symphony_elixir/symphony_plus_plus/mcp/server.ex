@@ -660,10 +660,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "tests" => string_array_schema(),
         "artifacts" => string_array_schema(),
         "reviews" => review_entries_schema(),
-        "head_sha" => nullable_string_schema(),
+        "head_sha" => string_schema(),
         "acceptance_criteria_met" => boolean_schema()
       }),
-      ["summary", "tests", "artifacts"]
+      ["summary", "tests", "artifacts", "head_sha"]
     )
   end
 
@@ -1629,7 +1629,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp reject_ready_evidence_mutation(repo, %Session{} = session, tool) when tool in ["attach_branch", "attach_pr", "submit_review_package"] do
+  defp reject_ready_evidence_mutation(repo, %Session{} = session, tool) when tool in ["attach_branch", "attach_pr", "report_blocker", "submit_review_package"] do
     work_package_id = Session.work_package_id(session)
 
     with :ok <- lock_work_package(repo, work_package_id),
@@ -1722,7 +1722,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     current_head_sha = latest_current_head_sha(progress_events)
 
     case optional_head_sha(arguments) do
-      {:ok, nil} when is_binary(current_head_sha) ->
+      {:ok, nil} ->
         {:tool_error, "missing_head_sha"}
 
       {:ok, head_sha} when is_binary(current_head_sha) and head_sha != current_head_sha ->
@@ -1768,7 +1768,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp submit_review_package_transaction_body(repo, %Session{} = session, arguments, artifacts, payload) do
     work_package_id = Session.work_package_id(session)
 
-    with :ok <- lock_work_package(repo, work_package_id),
+    with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
+         :ok <- lock_work_package(repo, work_package_id),
          {:ok, state} <- PlanningRepository.get_state(repo, work_package_id),
          {:ok, head_sha} <- review_package_head_sha(arguments, state.progress_events) do
       payload =
@@ -2215,6 +2216,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp worker_error(:unauthorized, resource), do: auth_error(:unauthorized, resource)
   defp worker_error({:unauthorized, _reason} = reason, resource), do: auth_error(reason, resource)
+  defp worker_error(:expired, resource), do: auth_error({:unauthorized, :expired}, resource)
   defp worker_error(:forbidden, resource), do: auth_error(:forbidden, resource)
   defp worker_error({:service_unavailable, _reason} = reason, resource), do: auth_error(reason, resource)
   defp worker_error(:database_busy, tool), do: service_error(:database_busy, tool)

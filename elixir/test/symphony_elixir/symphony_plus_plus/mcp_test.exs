@@ -277,12 +277,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["attach_branch", "inputSchema", "properties", "head_sha", "type"]) == "string"
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "required"]) == ["url", "head_sha"]
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == "string"
-    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts"]
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts", "head_sha"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "type"]) == "array"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "tests", "items", "type"]) == "string"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "artifacts", "items", "type"]) == "string"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "items", "required"]) == ["lane", "verdict"]
-    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "head_sha", "type"]) == ["string", "null"]
+    assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "head_sha", "type"]) == "string"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "acceptance_criteria_met", "type"]) == "boolean"
   end
 
@@ -2192,6 +2192,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(missing_head_response, ["error", "data", "reason"]) == "missing_head_sha"
 
+    pre_metadata_review_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "pre-metadata-headless-review",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "submit_review_package",
+            "arguments" => %{
+              "summary" => "Headless review before metadata",
+              "tests" => ["mix test"],
+              "artifacts" => ["review-log.txt"],
+              "reviews" => []
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(pre_metadata_review_response, ["error", "data", "reason"]) == "missing_head_sha"
+
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-GATES/worker", "head_sha" => " abc123 ", "idempotency_key" => "shared-metadata-key"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => " abc123 "})
 
@@ -2642,8 +2664,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
+    post_ready_blocker_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "post-ready-blocker",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "report_blocker",
+            "arguments" => %{"summary" => "Blocked after ready", "idempotency_key" => "post-ready-blocker"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
     assert get_in(post_ready_branch_response, ["error", "data", "reason"]) == "already_ready"
     assert get_in(post_ready_review_response, ["error", "data", "reason"]) == "already_ready"
+    assert get_in(post_ready_blocker_response, ["error", "data", "reason"]) == "already_ready"
     assert {:ok, ready_package} = WorkPackageRepository.get(repo, package.id)
     assert ready_package.status == "ready_for_human_merge"
   end
@@ -3261,6 +3299,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                "summary" => "Should not write",
                "idempotency_key" => "expired-progress"
              })
+
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    progress_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "expired-progress",
+          "method" => "tools/call",
+          "params" => %{"name" => "append_progress", "arguments" => %{"summary" => "Should not write", "idempotency_key" => "expired-progress-mcp"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(progress_response, ["error", "code"]) == -32_001
+    assert get_in(progress_response, ["error", "data", "reason"]) == "expired"
+
+    review_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "expired-review",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "submit_review_package",
+            "arguments" => %{
+              "summary" => "Should not write",
+              "tests" => ["mix test"],
+              "artifacts" => ["review-log.txt"]
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(review_response, ["error", "code"]) == -32_001
+    assert get_in(review_response, ["error", "data", "reason"]) == "expired"
 
     assert {:ok, events} = PlanningRepository.list_progress_events(repo, work_package.id)
     assert events == []

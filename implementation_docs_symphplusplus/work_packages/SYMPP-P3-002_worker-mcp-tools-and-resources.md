@@ -21,7 +21,7 @@ Implement scoped worker MCP tools/resources for claim, virtual planning files, p
 - Implement update_task_plan, append_finding, append_progress.
 - Implement set_status/report_blocker/request_scope_expansion.
 - Implement attach_branch(branch, head_sha)/attach_pr/mark_ready with readiness checks.
-- Implement submit_review_package so `head_sha` is required after branch/PR metadata exists and the latest current-head review package is authoritative for readiness.
+- Implement submit_review_package so `head_sha` is required on every submission and the latest current-head review package is authoritative for readiness.
 - Add permission-denial tests.
 
 ## Acceptance criteria
@@ -60,9 +60,9 @@ only for the same owner identity and secret proof.
 
 ### Review package contract
 
-Workers must include `submit_review_package.head_sha` after branch or PR
-metadata establishes a current head. The latest review package for that current
-head is authoritative for readiness; older same-head packages are superseded.
+Workers must include `submit_review_package.head_sha` on every submission. The
+latest review package for that current head is authoritative for readiness;
+older same-head packages are superseded.
 
 ## Deliverables
 

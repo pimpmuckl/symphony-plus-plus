@@ -41,7 +41,6 @@ only when the same owner identity presents the same secret proof.
 review packages are matched to the latest attached branch head so stale
 branch-only reviews cannot satisfy readiness after new commits.
 
-`submit_review_package` requires explicit `head_sha` once branch or PR metadata
-has established a current head. For readiness, the latest review package for the
-current head is authoritative; older packages for that same head are
-superseded.
+`submit_review_package` requires explicit `head_sha` on every submission. For
+readiness, the latest review package for the current head is authoritative;
+older packages for that same head are superseded.

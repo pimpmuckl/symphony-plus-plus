@@ -278,6 +278,9 @@ Phase 3
 - Findings remain localized to protocol error handling and review-evidence race hardening inside the same P3-002 MCP surface.
 - Before the next T2, the approach remains coherent because the latest fix only treats nil/blank explicit `state_key` values as absent so response-only continuation cannot share a missing-token sentinel.
 - Findings remain localized to response-state isolation within P3-002.
+- Fresh T2 on pushed head `73de389` produced four valid edge findings: reject headless review packages before orphaning evidence, classify expired worker grants as auth failures, block `report_blocker` after ready, and revalidate assignment before reading review-package head state.
+- Before the next T2, the approach remains coherent because these fixes only tighten the existing P3-002 worker MCP write/readiness contract: review packages now always require explicit head proof, post-ready evidence remains immutable, and expired grants fail consistently as authorization errors.
+- Findings remain localized to worker MCP evidence and authorization edge cases, not a broader design or scope blocker.
 
 ## Blockers
 

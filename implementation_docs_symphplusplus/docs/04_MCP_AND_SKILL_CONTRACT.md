@@ -47,10 +47,9 @@ secret proof is presented by the same `claimed_by` owner.
 branch `head_sha`. Branch-only review evidence is matched to that head so a
 later branch update cannot reuse stale review-package evidence.
 
-`submit_review_package` must include `head_sha` after branch or PR metadata has
-established a current head. The latest current-head review package is
-authoritative for review readiness; older packages for the same head are
-superseded rather than implicitly merged.
+`submit_review_package` must include `head_sha` on every submission. The latest
+current-head review package is authoritative for review readiness; older
+packages for the same head are superseded rather than implicitly merged.
 
 ## Architect MCP tools
 
