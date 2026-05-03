@@ -105,8 +105,14 @@ defmodule Mix.Tasks.Sympp.CreateWork do
   def database_path_for_test(database), do: resolved_database(database)
 
   defp resolved_database(nil) do
-    use_mix_project_workflow()
-    Repo.database_path()
+    original_workflow = Application.get_env(:symphony_elixir, :workflow_file_path)
+
+    try do
+      use_mix_project_workflow()
+      Repo.database_path()
+    after
+      restore_workflow(original_workflow)
+    end
   end
 
   defp resolved_database(database) when is_binary(database) do
@@ -148,6 +154,9 @@ defmodule Mix.Tasks.Sympp.CreateWork do
       nil -> :ok
     end
   end
+
+  defp restore_workflow(nil), do: Workflow.clear_workflow_file_path()
+  defp restore_workflow(path) when is_binary(path), do: Workflow.set_workflow_file_path(path)
 
   defp mix_project_workflow do
     Mix.Project.project_file()

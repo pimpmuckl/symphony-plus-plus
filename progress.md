@@ -42,6 +42,11 @@
 | `mise exec -- mix format --check-formatted` | pass | Latest cached T2 fix validation: no formatting drift. |
 | `mise exec -- mix credo --strict lib/symphony_elixir/symphony_plus_plus/create_work.ex lib/mix/tasks/sympp.create_work.ex test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | Latest cached T2 fix validation: 4 touched source/test files, no issues. |
 | `mise exec -- mix credo --strict` | blocked | Latest cached T2 fix validation: same three existing `mcp/server.ex` refactoring findings outside package scope. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | Template-selection/workflow-restore fix validation: 14 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | Template-selection/workflow-restore fix validation: 333 tests, 0 failures. |
+| `mise exec -- mix specs.check` | pass | Template-selection/workflow-restore fix validation: all public functions have specs or exemption. |
+| `mise exec -- mix format --check-formatted` | pass | Template-selection/workflow-restore fix validation: no formatting drift. |
+| `mise exec -- mix credo --strict lib/symphony_elixir/symphony_plus_plus/create_work.ex lib/mix/tasks/sympp.create_work.ex test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | Template-selection/workflow-restore fix validation: 4 touched source/test files, no issues. |
 
 ## Review
 
@@ -53,6 +58,7 @@
 - Cached follow-up session `019deecd-c77a-7e53-900d-e437463df05b` returned no findings for the dispatchable-status/SQLite/dependency-startup fix.
 - Cached T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T170715Z-bee435ee` found valid workflow issues for omitted-`--database` default ledger selection and missing criteria on `package_acceptance` kinds. Closed the gate as findings and applied narrow fixes with regression coverage.
 - Cached T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T171824Z-1a29e29e` found valid edge cases for preconfigured workflow leakage and blank explicit IDs. Closed the gate as findings and applied narrow fixes with regression coverage.
+- Cached T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T172442Z-28f54e48` found valid issues for policy-template fields being no-ops and workflow path mutation leaking after default database resolution. Closed the gate as findings and applied narrow fixes with regression coverage.
 
 ## Outstanding
 

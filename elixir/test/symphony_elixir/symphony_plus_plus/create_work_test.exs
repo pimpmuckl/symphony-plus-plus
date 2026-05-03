@@ -90,7 +90,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
   test "accepts resolved policy template names and rejects blank acceptance criteria" do
     assert {:ok, request} =
              CreateWork.parse_request(%{
-               kind: "mcp",
                repo: "symphony-plus-plus",
                base_branch: "symphony-plus-plus/beta",
                title: "Wire MCP package",
@@ -100,6 +99,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
              })
 
     assert request["policy"].template == "worker_package"
+    assert request["kind"] == "quick_fix"
 
     assert {:error, :invalid_acceptance_criteria} =
              CreateWork.parse_request(%{
@@ -115,6 +115,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
                repo: "symphony-plus-plus",
                base_branch: "symphony-plus-plus/beta",
                title: "Missing gated acceptance"
+             })
+  end
+
+  test "rejects conflicting policy template fields" do
+    assert {:error, :policy_template_mismatch} =
+             CreateWork.parse_request(%{
+               repo: "symphony-plus-plus",
+               base_branch: "symphony-plus-plus/beta",
+               title: "Conflicting policy templates",
+               acceptance_criteria: ["Conflict is rejected."],
+               policy_template: "hotfix",
+               review_suite_template: "worker_package"
              })
   end
 
