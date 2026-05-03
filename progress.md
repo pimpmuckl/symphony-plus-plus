@@ -30,6 +30,7 @@
 - T1 round `phase_review-symphony-plus-plus-sympp-p4-001-1de35c-20260503T164350Z-62704a67`: Bravo clean; Alpha found valid template-name and blank-acceptance validation issues. Graded Alpha as winner for better bug coverage.
 - Applied narrow validation fixes and added regression coverage.
 - Post-fix validation: focused create-work tests now run 9 tests, 0 failures; `test/symphony_elixir/symphony_plus_plus` now runs 330 tests, 0 failures; touched-file strict Credo remains clean.
+- Follow-up review session `019deec0-2e7f-77a1-809e-cdbf253f2985` found one valid mixed-template-alias edge case. Applied a per-field alias validation fix and extended the regression test.
 
 ## Outstanding
 

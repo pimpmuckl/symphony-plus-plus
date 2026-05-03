@@ -74,6 +74,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
                base_branch: "symphony-plus-plus/beta",
                title: "Wire MCP package",
                acceptance_criteria: ["MCP work is created."],
+               review_suite_template: "mcp",
                policy_template: "worker_package"
              })
 

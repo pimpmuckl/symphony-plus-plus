@@ -297,17 +297,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   end
 
   defp validate_policy_template(kind, resolved_template, attrs) do
-    attrs
-    |> Map.take(["policy_template", "review_suite_template"])
-    |> Map.values()
-    |> Enum.reject(&(not present?(&1)))
-    |> Enum.map(&String.trim(to_string(&1)))
-    |> Enum.uniq()
-    |> case do
-      [] -> :ok
-      [^kind] -> :ok
-      [^resolved_template] -> :ok
-      _templates -> {:error, :policy_template_mismatch}
+    accepted_templates = MapSet.new([kind, resolved_template])
+
+    invalid_template? =
+      attrs
+      |> Map.take(["policy_template", "review_suite_template"])
+      |> Map.values()
+      |> Enum.reject(&(not present?(&1)))
+      |> Enum.map(&String.trim(to_string(&1)))
+      |> Enum.any?(&(not MapSet.member?(accepted_templates, &1)))
+
+    if invalid_template? do
+      {:error, :policy_template_mismatch}
+    else
+      :ok
     end
   end
 
