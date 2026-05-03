@@ -220,7 +220,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
           "read:child_findings",
           "mint:child_worker_key",
           "approve:child_ready_state",
-          "split:child_work_package"
+          "split:child_work_package",
+          "write:phase_plan",
+          "update:child_work_package"
         ] do
       assert {:error, %Ecto.Changeset{} = changeset} =
                Service.mint_worker_grant(repo, work_package.id, capabilities: ["worker:claim", capability])

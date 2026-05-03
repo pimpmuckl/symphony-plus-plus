@@ -352,6 +352,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["split_work_package", "inputSchema", "properties", "child_specs", "minItems"]) == 1
   end
 
+  test "tools list falls back to worker surface after architect grant revocation", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-TOOLS-REVOKED", kind: "mcp"))
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+    server = Server.new(Config.default(repo: repo), initialized: true, session: session)
+
+    assert {:ok, _revoked} = AccessGrantService.revoke(repo, architect_assignment.grant_id)
+
+    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "revoked-architect-tools", "method" => "tools/list", "params" => %{}}, server)
+
+    tools_by_name =
+      response
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
+
+    assert Map.has_key?(tools_by_name, "claim_work_key")
+    refute Map.has_key?(tools_by_name, "read_phase_board")
+  end
+
   test "architect tools reject arguments outside their advertised schemas", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-STRICT", kind: "mcp"))
     assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:child_progress", "read:child_findings"])

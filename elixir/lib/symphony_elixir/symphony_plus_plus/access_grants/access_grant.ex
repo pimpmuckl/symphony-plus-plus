@@ -124,11 +124,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
       String.starts_with?(capability, ["architect:", "architect."]) or
       capability in [
         "create:child_work_package",
+        "update:child_work_package",
         "mint:child_worker_key",
         "revoke:child_worker_key",
         "read:child_findings",
         "read:child_progress",
         "read:phase",
+        "write:phase_plan",
         "request:child_replan",
         "approve:child_ready_state",
         "merge:child_into_phase",
