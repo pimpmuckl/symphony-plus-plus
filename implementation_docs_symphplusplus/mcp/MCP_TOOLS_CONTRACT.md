@@ -42,7 +42,9 @@ stateless transports, but they do not restore claimed worker sessions. A
 reconnecting worker must call `claim_work_key(secret, claimed_by)` again. The
 continuity namespace is the active ledger, so a reconnect to the same SQLite
 ledger can restore handshake state even when the dynamic repo process changes.
-A failed explicit reconnect initialize clears the stored handshake state.
+Explicit state-key handshakes are not evicted by the implicit default response
+state TTL; they remain continuity metadata until overwritten or cleared by a
+failed explicit reconnect initialize.
 
 `attach_branch` requires `branch` and `head_sha`. When no PR head is attached,
 review packages are matched to the latest attached branch head so stale

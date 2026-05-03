@@ -62,8 +62,9 @@ Explicit `state_key` values are continuity metadata for initialized stateless
 transports, not bearer capabilities. After reconnect initialize, workers must
 call `claim_work_key(secret, claimed_by)` again before assignment-scoped tools
 can run. The continuity namespace follows the active ledger, not a transient
-dynamic repo process. A failed explicit reconnect initialize clears the stored
-handshake state.
+dynamic repo process. Explicit state-key handshakes are not evicted by the
+implicit default response state TTL; they remain continuity metadata until
+overwritten or cleared by a failed explicit reconnect initialize.
 
 ### Review package contract
 

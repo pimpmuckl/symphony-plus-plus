@@ -311,6 +311,8 @@ Phase 3
 - Fresh T2 on pushed head `45de223` produced three straightforward valid findings plus one product-contract conflict. `attach_branch`/`attach_pr` should revalidate session/scope, and non-merge review-package evidence should count when branch metadata is not required. The stale `submit_review_package` replay finding conflicts with the prior T2-required replay behavior after branch movement.
 - Overseer chose replay stability on 2026-05-03: an exact idempotent retry of a previously successful `submit_review_package(head_sha: A)` must replay the original success after branch head B is attached, but that replayed head-A evidence stays stale for readiness and cannot satisfy merge/readiness gates against head B.
 - Before the next T2, the approach remains coherent because the latest fix only separates lost-response idempotent replay semantics from readiness evidence freshness, scopes branch/PR metadata writes through the existing session guard, and allows branchless review-package evidence only for non-merge policies where branch metadata is not a required gate.
+- Fresh T2 on pushed head `4aef958` produced one valid finding: explicit `state_key` handshake continuity was being cleaned up by the implicit default response-state TTL before longer-lived worker grants could expire.
+- Before the next T2, the approach remains coherent because this follow-up only restores the intended distinction between implicit default response-state cleanup and explicit state-key handshake continuity; it does not restore claimed sessions from `state_key`.
 
 ## Blockers
 

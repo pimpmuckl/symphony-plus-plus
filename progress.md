@@ -133,6 +133,29 @@
 | `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
 | `mise exec -- mix credo --strict` | pass | no issues. |
 
+### Sixty-Fifth T2 Follow-up Actions
+
+- Pushed head before this follow-up: `4aef958`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T062018Z-a14f3ec0`; closed it as `findings`.
+- Alpha was clean. Bravo produced one valid finding: explicit `state_key` handshake continuity was being evicted by the fixed implicit response-state TTL before longer-lived grants could expire.
+- Fixed by preserving explicit state-key entries during default TTL cleanup while still storing them as handshake-only state with no claimed session restore.
+- Updated MCP docs/templates/package docs to clarify that explicit state keys are not evicted by the implicit default response-state TTL.
+
+### Next Steps
+
+- Run focused validation, commit/push sixty-fifth T2 fix, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after sixty-fifth T2 fix. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 92 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 287 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
 ### Fifty-Third T2 Follow-up Actions
 
 - Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T034617Z-acbccc00` on pushed head `73de389`; closed it as `findings`.

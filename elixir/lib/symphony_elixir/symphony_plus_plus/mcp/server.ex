@@ -258,7 +258,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     update_handle_state_store(fn store ->
       store
       |> Map.reject(fn
-        {_state_key, {%__MODULE__{}, timestamp_ms, _explicit?}} ->
+        {_state_key, {%__MODULE__{}, timestamp_ms, false}} ->
           now - timestamp_ms > @handle_state_ttl_ms
 
         _entry ->

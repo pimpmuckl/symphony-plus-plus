@@ -1414,7 +1414,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute Map.has_key?(handle_state_store(), handle_state_store_key(server))
   end
 
-  test "response-only handle cleans stale state entries", %{repo: repo} do
+  test "response-only handle cleans stale implicit entries while preserving explicit state keys", %{repo: repo} do
     stale_explicit_key = make_ref()
     stale_server = Server.new(Config.default(repo: repo), initialized: true)
     stale_explicit_server = Server.new(Config.default(repo: repo), initialized: true, state_key: stale_explicit_key)
@@ -1431,7 +1431,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
     refute Map.has_key?(handle_state_store(), handle_state_store_key(stale_server))
-    refute Map.has_key?(handle_state_store(), handle_state_store_key(stale_explicit_server))
+    assert Map.has_key?(handle_state_store(), handle_state_store_key(stale_explicit_server))
+
+    explicit_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "tools-after-cleanup", "method" => "tools/list", "params" => %{}},
+        Server.new(Config.default(repo: repo), state_key: stale_explicit_key)
+      )
+
+    assert is_list(get_in(explicit_response, ["result", "tools"]))
   end
 
   test "response-only handle refreshes active default state entries", %{repo: repo} do
