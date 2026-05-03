@@ -138,7 +138,10 @@ Phase 3
 - [x] Commit and push thirty-second T2 fixes.
 - [x] Run fresh full-diff T2 on pushed head `e2e4c2f` and close valid findings gate.
 - [x] Fix thirty-third T2 headless-review evidence finding locally.
-- [ ] Commit and push thirty-third T2 fix.
+- [x] Commit and push thirty-third T2 fix.
+- [x] Run fresh full-diff T2 on pushed head `5de9298` and close valid findings gate.
+- [x] Fix thirty-fourth T2 response-only state-key reset finding locally.
+- [ ] Commit and push thirty-fourth T2 fix.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
 - **Status:** thirty-second T2 fixes pushed; pending fresh full-diff T2 rerun and GitHub review if clean.
@@ -174,6 +177,8 @@ Phase 3
 - Findings remain narrow correctness hardening around the same P3-002 MCP write/readiness surface, so continuing the T2/GitHub loop is still appropriate.
 - Before the next T2, the approach remains coherent because the latest change only narrows readiness evidence to review packages that explicitly match the current PR head once a PR head exists.
 - Findings are still converging as current-head evidence hardening inside the P3-002 review gates, not a broader package design or scope problem.
+- Before the next T2, the approach remains coherent because the latest fix only separates a fresh response-only MCP initialize from intentional stateless continuation through an explicit `state_key`.
+- Findings remain localized to the worker MCP transport/session state surface; this is still edge-case hardening rather than a design or scope blocker.
 
 ## Blockers
 

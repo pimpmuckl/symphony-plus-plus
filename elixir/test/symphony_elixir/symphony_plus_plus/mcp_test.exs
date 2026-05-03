@@ -901,6 +901,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-STATELESS-HANDLE"
   end
 
+  test "response-only handle resets explicit state key on a new initialize", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STATE-RESET", kind: "mcp", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    state_key = make_ref()
+
+    assert %{"result" => _result} =
+             Server.handle(
+               %{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()},
+               Server.new(Config.default(repo: repo), state_key: state_key)
+             )
+
+    assert %{"result" => _result} =
+             Server.handle(
+               %{
+                 "jsonrpc" => "2.0",
+                 "id" => "claim",
+                 "method" => "tools/call",
+                 "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+               },
+               Server.new(Config.default(repo: repo), state_key: state_key)
+             )
+
+    assert %{"result" => _result} =
+             Server.handle(
+               %{"jsonrpc" => "2.0", "id" => "init-again", "method" => "initialize", "params" => initialize_params()},
+               Server.new(Config.default(repo: repo), state_key: state_key)
+             )
+
+    assignment_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "assignment", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        Server.new(Config.default(repo: repo), state_key: state_key)
+      )
+
+    assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
+  end
+
   test "response-only handle does not share default state between recreated servers", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STATE-ISOLATED", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)

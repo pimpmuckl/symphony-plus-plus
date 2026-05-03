@@ -57,7 +57,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   @spec handle(term(), t()) :: map() | [map()] | nil
   def handle(payload, %__MODULE__{} = server) do
-    server = restore_handle_state(server)
+    server = restore_handle_state(payload, server)
     {response, updated_server} = handle_state(payload, server)
     persist_handle_state(server, updated_server)
     response
@@ -112,6 +112,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   def handle_state(payload, %__MODULE__{} = server), do: {do_handle(payload, server), server}
+
+  defp restore_handle_state(payload, %__MODULE__{initialized: false, session: nil} = server) do
+    if initialize_request?(payload) do
+      Process.delete(handle_state_key(server))
+      server
+    else
+      restore_handle_state(server)
+    end
+  end
+
+  defp restore_handle_state(_payload, %__MODULE__{} = server), do: restore_handle_state(server)
 
   defp restore_handle_state(%__MODULE__{} = server) do
     case Process.get(handle_state_key(server)) do
