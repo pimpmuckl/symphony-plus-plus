@@ -163,7 +163,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     PlanningRepository.append_plan_node(repo, %{
       work_package_id: work_package.id,
       title: "Implement requested scope",
-      body: work_package.engineering_scope || "Use the engineering scope from context.md.",
+      body: nonblank_or(work_package.engineering_scope, "Use the engineering scope from context.md."),
       status: "pending"
     })
   end
@@ -179,9 +179,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
 
   defp review_plan_body(policy) do
     [
-      "Acceptance criteria:",
-      "- Satisfy the package acceptance criteria in acceptance.md.",
-      "",
+      acceptance_plan_line(policy),
       "Required review gates:",
       gates_line(policy.required_gates),
       "",
@@ -191,8 +189,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     |> Enum.join("\n")
   end
 
+  defp acceptance_plan_line(%{required_gates: required_gates}) do
+    if "package_acceptance" in required_gates do
+      "Acceptance criteria:\n- Satisfy the package acceptance criteria in acceptance.md.\n"
+    else
+      ""
+    end
+  end
+
   defp gates_line([]), do: "- None."
   defp gates_line(gates), do: Enum.map_join(gates, "\n", &("- " <> &1))
+
+  defp nonblank_or(value, fallback) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: fallback, else: value
+  end
+
+  defp nonblank_or(_value, fallback), do: fallback
 
   defp mint_worker_grant(repo, work_package_id, policy) do
     expires_at = DateTime.add(DateTime.utc_now(:microsecond), policy.constraints.expiry_seconds, :second)

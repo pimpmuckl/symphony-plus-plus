@@ -192,6 +192,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     refute Enum.any?(creation.virtual_files, fn {_name, markdown} -> String.contains?(markdown, secret) end)
   end
 
+  test "renders investigation and blank scope plan guidance correctly", %{repo: repo} do
+    assert {:ok, creation} =
+             CreateWork.create(repo, %{
+               kind: "investigation",
+               repo: "kraken",
+               base_branch: "main",
+               title: "Investigate queue stalls",
+               engineering_scope: "   "
+             })
+
+    assert creation.policy.template == "investigation"
+    assert creation.virtual_files["task_plan.md"] =~ "Use the engineering scope from context.md."
+    refute creation.virtual_files["task_plan.md"] =~ "Satisfy the package acceptance criteria"
+    assert creation.virtual_files["acceptance.md"] =~ "No acceptance criteria recorded."
+  end
+
   test "creates a hotfix package that a worker can claim and read through MCP", %{repo: repo} do
     assert {:ok, creation} =
              CreateWork.create(repo, %{
