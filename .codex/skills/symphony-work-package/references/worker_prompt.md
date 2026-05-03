@@ -1,4 +1,4 @@
-# Worker Agent Prompt Template
+# Symphony++ Worker Prompt
 
 ```text
 You are assigned Symphony++ work package <WORK_PACKAGE_ID>: <TITLE>.
