@@ -132,8 +132,7 @@ defmodule Mix.Tasks.Sympp.CreateWork do
         database
 
       sqlite_file_uri?(database) and not Repo.memory_database?(database) ->
-        prepare_sqlite_file_uri(database)
-        database
+        normalize_sqlite_file_uri(database)
 
       true ->
         database
@@ -143,16 +142,22 @@ defmodule Mix.Tasks.Sympp.CreateWork do
   defp sqlite_file_uri?("file:" <> _uri), do: true
   defp sqlite_file_uri?(_database), do: false
 
-  defp prepare_sqlite_file_uri(database) do
+  defp normalize_sqlite_file_uri(database) do
     case Repo.sqlite_file_uri_path(database) do
       uri_path when is_binary(uri_path) and uri_path != "" ->
-        uri_path
-        |> Path.expand()
-        |> Path.dirname()
-        |> File.mkdir_p!()
+        expanded_path = Path.expand(uri_path)
+        File.mkdir_p!(Path.dirname(expanded_path))
+        put_sqlite_file_uri_path(database, expanded_path)
 
       _path ->
-        :ok
+        database
+    end
+  end
+
+  defp put_sqlite_file_uri_path("file:" <> uri, expanded_path) do
+    case String.split(uri, "?", parts: 2) do
+      [_uri_path, query] -> "file:" <> expanded_path <> "?" <> query
+      [_uri_path] -> "file:" <> expanded_path
     end
   end
 

@@ -78,6 +78,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
     assert "is invalid" in errors_on(status_changeset).status
   end
 
+  test "rejects noncanonical policy templates", %{repo: repo} do
+    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "mcp", policy_template: "mcp"))
+    assert package.policy_template == "mcp"
+
+    assert {:error, %Ecto.Changeset{} = alias_changeset} =
+             Repository.create(repo, WorkPackageFactory.attrs(kind: "mcp", policy_template: "worker_package"))
+
+    assert "is invalid" in errors_on(alias_changeset).policy_template
+
+    assert {:error, %Ecto.Changeset{} = typo_changeset} =
+             Repository.create(repo, WorkPackageFactory.attrs(kind: "mcp", policy_template: "mc"))
+
+    assert "is invalid" in errors_on(typo_changeset).policy_template
+  end
+
   test "returns not found for missing work packages", %{repo: repo} do
     assert {:error, :not_found} = Repository.get(repo, "missing")
     assert {:error, :not_found} = Repository.update(repo, "missing", %{title: "Nope"})

@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
 
   import Ecto.Changeset
 
+  alias SymphonyElixir.SymphonyPlusPlus.Policies.Templates
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.StringList
 
   @primary_key {:id, :string, autogenerate: false}
@@ -137,6 +138,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
     |> validate_required([:id, :kind, :title, :repo, :base_branch, :acceptance_criteria, :status])
     |> validate_inclusion(:kind, @kinds)
     |> validate_inclusion(:status, @statuses)
+    |> validate_policy_template()
+  end
+
+  defp validate_policy_template(changeset) do
+    validate_change(changeset, :policy_template, fn :policy_template, policy_template ->
+      case Templates.expand(policy_template) do
+        {:ok, _template} -> []
+        {:error, :unknown_policy_template} -> [policy_template: {"is invalid", validation: :policy_template}]
+      end
+    end)
   end
 
   defp normalize_keys(attrs) when is_map(attrs) do
