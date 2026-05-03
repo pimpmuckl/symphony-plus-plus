@@ -24,6 +24,12 @@
 | `mise exec -- mix format --check-formatted` | pass | No formatting drift. |
 | `mise exec -- mix credo --strict lib/symphony_elixir/symphony_plus_plus/create_work.ex lib/mix/tasks/sympp.create_work.ex test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | 4 touched source/test files, no issues. |
 | `mise exec -- mix credo --strict` | blocked | Reports three existing `mcp/server.ex` refactoring findings outside this package scope. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | T2 fix validation: 11 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | T2 fix validation: 331 tests, 0 failures. |
+| `mise exec -- mix specs.check` | pass | T2 fix validation: all public functions have specs or exemption. |
+| `mise exec -- mix format --check-formatted` | pass | T2 fix validation: no formatting drift. |
+| `mise exec -- mix credo --strict lib/symphony_elixir/symphony_plus_plus/create_work.ex lib/mix/tasks/sympp.create_work.ex test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | T2 fix validation: 4 touched source/test files, no issues. |
+| `mise exec -- mix credo --strict` | blocked | T2 fix validation: same three existing `mcp/server.ex` refactoring findings outside package scope. |
 
 ## Review
 
@@ -31,7 +37,8 @@
 - Applied narrow validation fixes and added regression coverage.
 - Post-fix validation: focused create-work tests now run 9 tests, 0 failures; `test/symphony_elixir/symphony_plus_plus` now runs 330 tests, 0 failures; touched-file strict Credo remains clean.
 - Follow-up review session `019deec0-2e7f-77a1-809e-cdbf253f2985` found one valid mixed-template-alias edge case. Applied a per-field alias validation fix and extended the regression test.
+- T2 round `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T165448Z-9ac9450c` found valid readiness issues around dispatchable status, `phase_child` rejection, SQLite special database handling, and Mix task repo dependency startup. Applied narrow fixes in the create-work service and Mix task and added regression coverage.
 
 ## Outstanding
 
-- Re-run focused validation, commit/push the T1 fix, and continue review-state/T1/T2/GitHub review cycle.
+- Re-run validation, commit/push the T2 fix, and continue cached review-state/T2/GitHub review cycle.

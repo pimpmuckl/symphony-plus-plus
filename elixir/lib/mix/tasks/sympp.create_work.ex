@@ -71,31 +71,70 @@ defmodule Mix.Tasks.Sympp.CreateWork do
   end
 
   defp start_repo(database) do
-    database = database_path(database)
+    with :ok <- ensure_repo_dependencies_started() do
+      database = resolved_database(database)
 
-    case Repo.start_link(database: database, name: Repo.process_name(database), pool_size: 1, log: false) do
-      {:ok, pid} ->
-        Repo.put_dynamic_repo(pid)
-        {:ok, pid}
+      case Repo.start_link(database: database, name: Repo.process_name(database), pool_size: 1, log: false) do
+        {:ok, pid} ->
+          Repo.put_dynamic_repo(pid)
+          {:ok, pid}
 
-      {:error, {:already_started, pid}} ->
-        Repo.put_dynamic_repo(pid)
-        {:ok, nil}
+        {:error, {:already_started, pid}} ->
+          Repo.put_dynamic_repo(pid)
+          {:ok, nil}
 
-      {:error, reason} ->
-        {:error, {:repo_start_failed, reason}}
+        {:error, reason} ->
+          {:error, {:repo_start_failed, reason}}
+      end
     end
   end
 
   defp stop_repo(pid) when is_pid(pid), do: GenServer.stop(pid)
   defp stop_repo(_pid), do: :ok
 
-  defp database_path(nil), do: Repo.database_path()
+  defp ensure_repo_dependencies_started do
+    case Application.ensure_all_started(:ecto_sql) do
+      {:ok, _started} -> :ok
+      {:error, reason} -> {:error, {:ecto_start_failed, reason}}
+    end
+  end
 
-  defp database_path(path) when is_binary(path) do
-    path = Path.expand(path)
-    File.mkdir_p!(Path.dirname(path))
-    path
+  @doc false
+  @spec database_path_for_test(String.t() | nil) :: String.t()
+  def database_path_for_test(database), do: resolved_database(database)
+
+  defp resolved_database(nil), do: Repo.database_path()
+
+  defp resolved_database(database) when is_binary(database) do
+    cond do
+      Repo.filesystem_database_path?(database) ->
+        database = Path.expand(database)
+        File.mkdir_p!(Path.dirname(database))
+        database
+
+      sqlite_file_uri?(database) and not Repo.memory_database?(database) ->
+        prepare_sqlite_file_uri(database)
+        database
+
+      true ->
+        database
+    end
+  end
+
+  defp sqlite_file_uri?("file:" <> _uri), do: true
+  defp sqlite_file_uri?(_database), do: false
+
+  defp prepare_sqlite_file_uri(database) do
+    case Repo.sqlite_file_uri_path(database) do
+      uri_path when is_binary(uri_path) and uri_path != "" ->
+        uri_path
+        |> Path.expand()
+        |> Path.dirname()
+        |> File.mkdir_p!()
+
+      _path ->
+        :ok
+    end
   end
 
   defp blank?(value) when is_binary(value), do: String.trim(value) == ""

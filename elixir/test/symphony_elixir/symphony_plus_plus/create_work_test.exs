@@ -89,6 +89,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
              })
   end
 
+  test "rejects parented and phase-child work" do
+    assert {:error, :parent_not_supported} =
+             CreateWork.parse_request(%{
+               repo: "kraken",
+               base_branch: "main",
+               title: "Bad parent",
+               parent_id: "phase_123"
+             })
+
+    assert {:error, :standalone_kind_not_supported} =
+             CreateWork.parse_request(%{
+               kind: "phase_child",
+               repo: "kraken",
+               base_branch: "main",
+               title: "Bad kind"
+             })
+  end
+
   test "creates a standalone quick fix with default policy, one grant, and initial virtual files", %{repo: repo} do
     assert {:ok, creation} =
              CreateWork.create(repo, %{
@@ -102,6 +120,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
 
     assert creation.work_package.kind == "quick_fix"
     assert creation.work_package.parent_id == nil
+    assert creation.work_package.status == "ready_for_worker"
     assert creation.policy.template == "quick_fix"
     assert creation.policy.review_suite.required == ["review_t1"]
 

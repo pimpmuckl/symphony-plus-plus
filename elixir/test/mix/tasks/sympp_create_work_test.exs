@@ -50,6 +50,7 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
 
       assert payload["work_package"]["title"] == "Fix bad status label"
       assert payload["work_package"]["parent_id"] == nil
+      assert payload["work_package"]["status"] == "ready_for_worker"
       assert payload["worker_grant"]["secret"]
       assert payload["secret_returned_once"] == true
       assert payload["secret_not_persisted"] == true
@@ -78,5 +79,14 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
     assert_raise Mix.Error, ~r/Usage: mix sympp.create_work/, fn ->
       CreateWorkTask.run([])
     end
+  end
+
+  test "preserves SQLite special database names" do
+    file_uri = "file:sympp-create-work-#{System.unique_integer([:positive])}.sqlite3?mode=memory&cache=shared"
+    filesystem_path = Path.join(System.tmp_dir!(), "sympp-create-work-#{System.unique_integer([:positive])}.sqlite3")
+
+    assert CreateWorkTask.database_path_for_test(":memory:") == ":memory:"
+    assert CreateWorkTask.database_path_for_test(file_uri) == file_uri
+    assert CreateWorkTask.database_path_for_test(filesystem_path) == Path.expand(filesystem_path)
   end
 end

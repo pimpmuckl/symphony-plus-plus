@@ -26,6 +26,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
           | :invalid_request
           | :parent_not_supported
           | :policy_template_mismatch
+          | :standalone_kind_not_supported
           | :unknown_policy_template
           | {:invalid_json, term()}
           | {:invalid_yaml, term()}
@@ -61,6 +62,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
        |> Map.put("kind", kind)
        |> Map.put("acceptance_criteria", acceptance_criteria)
        |> Map.put("parent_id", nil)
+       |> Map.put("status", "ready_for_worker")
        |> Map.put("policy", policy)}
     end
   end
@@ -115,6 +117,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   def error_message(:invalid_request), do: "Create-work request must be a JSON/YAML object"
   def error_message(:parent_not_supported), do: "Standalone create-work does not accept parent_id"
   def error_message(:policy_template_mismatch), do: "policy_template/review_suite_template must match kind"
+  def error_message(:standalone_kind_not_supported), do: "Standalone create-work does not accept phase_child work"
   def error_message(:unknown_policy_template), do: "No policy template exists for requested kind"
   def error_message({:invalid_json, reason}), do: "Invalid JSON create-work request: #{inspect(reason)}"
   def error_message({:invalid_yaml, reason}), do: "Invalid YAML create-work request: #{inspect(reason)}"
@@ -281,6 +284,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     kind = Map.get(attrs, "kind", @default_kind)
 
     case normalize_nonblank_string(kind) do
+      {:ok, "phase_child"} -> {:error, :standalone_kind_not_supported}
       {:ok, kind} -> {:ok, kind}
       {:error, :blank} -> {:ok, @default_kind}
     end
