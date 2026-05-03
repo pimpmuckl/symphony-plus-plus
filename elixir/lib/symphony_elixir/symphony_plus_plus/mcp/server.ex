@@ -499,7 +499,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool_input_schema("attach_branch") do
-    schema(metadata_properties(%{"branch" => string_schema()}), ["branch"])
+    schema(metadata_properties(%{"branch" => string_schema(), "head_sha" => string_schema()}), ["branch", "head_sha"])
   end
 
   defp worker_tool_input_schema("attach_pr") do
@@ -854,10 +854,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool("attach_branch", arguments, %__MODULE__{config: config, session: session}) do
-    case required_argument(arguments, "branch") do
-      {:ok, branch} ->
-        append_metadata_event(config.repo, session, arguments, "attach_branch", "branch_attached", %{"type" => "branch", "branch" => branch})
-
+    with {:ok, branch} <- required_argument(arguments, "branch"),
+         {:ok, head_sha} <- required_argument(arguments, "head_sha") do
+      append_metadata_event(config.repo, session, arguments, "attach_branch", "branch_attached", %{"type" => "branch", "branch" => branch, "head_sha" => head_sha})
+    else
       {:tool_error, reason} ->
         {:error, -32_602, "Invalid params", %{"tool" => "attach_branch", "reason" => reason}}
     end
@@ -1427,7 +1427,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp review_package_head_sha(arguments, progress_events) do
-    current_head_sha = latest_pr_head_sha(progress_events)
+    current_head_sha = latest_current_head_sha(progress_events)
 
     case optional_head_sha(arguments) do
       {:ok, nil} when is_binary(current_head_sha) ->
@@ -1668,7 +1668,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp review_lanes_present?(_progress_events, []), do: true
 
   defp review_lanes_present?(progress_events, required_lanes) do
-    current_head_sha = latest_pr_head_sha(progress_events)
+    current_head_sha = latest_current_head_sha(progress_events)
 
     latest_verdicts =
       progress_events
@@ -1682,7 +1682,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp review_artifacts_present?(progress_events, artifacts, work_package_id) do
-    current_head_sha = latest_pr_head_sha(progress_events)
+    current_head_sha = latest_current_head_sha(progress_events)
     artifact_references = current_head_review_artifact_references(progress_events, current_head_sha)
 
     artifact_references != [] and
@@ -1783,21 +1783,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp valid_review_entry?(_review), do: false
 
-  defp latest_pr_head_sha(progress_events) do
+  defp latest_current_head_sha(progress_events) do
+    latest_metadata_head_sha(progress_events, "pr", "attach_pr") || latest_metadata_head_sha(progress_events, "branch", "attach_branch")
+  end
+
+  defp latest_metadata_head_sha(progress_events, type, source_tool) do
     progress_events
-    |> Enum.filter(&payload_type?(&1, "pr", "attach_pr"))
+    |> Enum.filter(&payload_type?(&1, type, source_tool))
     |> Enum.reverse()
     |> List.first()
     |> case do
-      %ProgressEvent{payload: payload} ->
-        latest_pr_payload_head_sha(payload)
-
-      nil ->
-        nil
+      %ProgressEvent{payload: payload} -> latest_metadata_payload_head_sha(payload)
+      nil -> nil
     end
   end
 
-  defp latest_pr_payload_head_sha(payload) do
+  defp latest_metadata_payload_head_sha(payload) do
     case Map.get(payload || %{}, "head_sha") do
       head_sha when is_binary(head_sha) and head_sha != "" -> head_sha
       _ -> nil
@@ -1852,7 +1853,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp acceptance_recorded?(progress_events) do
-    current_head_sha = latest_pr_head_sha(progress_events)
+    current_head_sha = latest_current_head_sha(progress_events)
 
     case latest_review_package_event(progress_events, current_head_sha) do
       %ProgressEvent{payload: payload} when is_map(payload) -> Map.get(payload, "acceptance_criteria_met") == true
@@ -1861,7 +1862,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp tests_recorded?(progress_events) do
-    current_head_sha = latest_pr_head_sha(progress_events)
+    current_head_sha = latest_current_head_sha(progress_events)
 
     case latest_review_package_event(progress_events, current_head_sha) do
       %ProgressEvent{payload: payload} when is_map(payload) ->
@@ -1934,7 +1935,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp required_argument(arguments, key) do
     case Map.get(arguments, key) do
       value when is_binary(value) ->
-        if String.trim(value) == "", do: {:tool_error, "missing_#{key}"}, else: {:ok, value}
+        case String.trim(value) do
+          "" -> {:tool_error, "missing_#{key}"}
+          trimmed -> {:ok, trimmed}
+        end
 
       _value ->
         {:tool_error, "missing_#{key}"}

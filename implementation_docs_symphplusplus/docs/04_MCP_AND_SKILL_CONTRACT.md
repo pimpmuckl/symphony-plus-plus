@@ -32,7 +32,7 @@ report_blocker(blocker)
 resolve_blocker(blocker_id, resolution)
 request_scope_expansion(request)
 request_context(request)
-attach_branch(branch)
+attach_branch(branch, head_sha)
 attach_pr(pr_url, head_sha)
 submit_review_package(summary, tests, artifacts)
 mark_ready()
@@ -42,6 +42,10 @@ mark_ready()
 `claimed_by` worker identity. Symphony++ uses that identity as part of the
 worker MCP ownership contract: reconnects are accepted only when the same
 secret proof is presented by the same `claimed_by` owner.
+
+`attach_branch` intentionally requires both the branch name and the current
+branch `head_sha`. Branch-only review evidence is matched to that head so a
+later branch update cannot reuse stale review-package evidence.
 
 ## Architect MCP tools
 

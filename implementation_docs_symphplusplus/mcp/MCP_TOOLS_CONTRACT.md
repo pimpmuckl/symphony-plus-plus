@@ -16,7 +16,7 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | set_status | Request a valid state transition. |
 | report_blocker | Record an active blocker. |
 | request_scope_expansion | Request broader scope; does not approve it. |
-| attach_branch | Attach branch metadata. |
+| attach_branch | Attach branch metadata with the current branch head SHA. |
 | attach_pr | Attach PR metadata. |
 | submit_review_package | Attach summary/tests/artifacts for review. |
 | mark_ready | Move to ready state only if gates pass. |
@@ -36,3 +36,7 @@ sympp://work-packages/{id}/handoff.md
 
 `claim_work_key` requires `secret` and `claimed_by`. Reconnects are accepted
 only when the same owner identity presents the same secret proof.
+
+`attach_branch` requires `branch` and `head_sha`. When no PR head is attached,
+review packages are matched to the latest attached branch head so stale
+branch-only reviews cannot satisfy readiness after new commits.

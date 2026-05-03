@@ -20,7 +20,7 @@ Implement scoped worker MCP tools/resources for claim, virtual planning files, p
 - Implement virtual planning file resources.
 - Implement update_task_plan, append_finding, append_progress.
 - Implement set_status/report_blocker/request_scope_expansion.
-- Implement attach_branch/attach_pr/mark_ready with readiness checks.
+- Implement attach_branch(branch, head_sha)/attach_pr/mark_ready with readiness checks.
 - Add permission-denial tests.
 
 ## Acceptance criteria

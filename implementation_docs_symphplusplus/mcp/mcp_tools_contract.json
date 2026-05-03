@@ -44,7 +44,7 @@
     },
     {
       "name": "attach_branch",
-      "purpose": "Attach branch metadata."
+      "purpose": "Attach branch metadata with the current branch head SHA."
     },
     {
       "name": "attach_pr",

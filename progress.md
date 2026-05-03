@@ -178,6 +178,30 @@
 
 - Commit and push the thirty-fourth T2 fix, then rerun fresh full-diff T2 against `symphony-plus-plus/beta`; run GitHub review on PR #15 if T2 is clean.
 
+### Thirty-Fifth T2 Follow-up Actions
+
+- Pushed thirty-fourth T2 fix head `9fee4d9` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T003222Z-b07c05e5`; Alpha reported stale branch-only review evidence and Bravo reported untrimmed required identifiers, then the gate was closed as `findings`.
+- Fixed the valid findings by making `attach_branch` require the current branch `head_sha`, using latest PR head or latest branch head as the review-evidence target, and trimming required string arguments before persistence/comparison.
+- Updated the P3-002 public MCP docs/contracts to publish `attach_branch(branch, head_sha)` and explain branch-only review freshness.
+- Added regression coverage that branch-only `quick_fix` readiness rejects review evidence from an older branch head, and that padded branch/PR heads are normalized before review-package matching.
+- High-pressure coherence check before the next same-tier T2: the fix keeps the existing head-based review evidence model and applies it consistently to branch-only P3-002 workflows; this is API contract hardening inside the worker MCP surface, not a broader design problem.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after thirty-fifth T2 fix. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 67 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 262 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit and push the thirty-fifth T2 fix, then rerun fresh full-diff T2 against `symphony-plus-plus/beta`; run GitHub review on PR #15 if T2 is clean.
+
 ### Next Steps
 
 - Pushed thirty-first T2 fix head `cb3b14757a8d7fe52ce3a637f05ffca1749059a8`; rerun full-diff T2, then proceed to GitHub review if clean.

@@ -258,6 +258,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["set_status", "inputSchema", "required"]) == ["status", "expected_status"]
     assert get_in(tools_by_name, ["report_blocker", "inputSchema", "properties", "blocker_id", "type"]) == "string"
     assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["blocker_id", "resolution", "summary", "idempotency_key"]
+    assert get_in(tools_by_name, ["attach_branch", "inputSchema", "required"]) == ["branch", "head_sha"]
+    assert get_in(tools_by_name, ["attach_branch", "inputSchema", "properties", "head_sha", "type"]) == "string"
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "required"]) == ["url", "head_sha"]
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == "string"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts"]
@@ -1431,8 +1433,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, second_assignment} = AccessGrantService.claim(repo, second_minted.work_key.secret, claimed_by: "worker-2")
     second_session = MCPHarness.session(second_assignment, proof_hash: second_minted.grant.secret_hash)
 
-    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-WORKER-OWN/worker"})
-    attach_tool(repo, second_session, "attach_branch", %{"branch" => "agent/SYMPP-WORKER-OWN/worker"})
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-WORKER-OWN/worker", "head_sha" => "own-head"})
+    attach_tool(repo, second_session, "attach_branch", %{"branch" => "agent/SYMPP-WORKER-OWN/worker", "head_sha" => "own-head"})
 
     finding_regrant_response =
       MCPHarness.request(
@@ -1795,8 +1797,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(missing_head_response, ["error", "data", "reason"]) == "missing_head_sha"
 
-    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-GATES/worker", "idempotency_key" => "shared-metadata-key"})
-    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => "abc123"})
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-GATES/worker", "head_sha" => " abc123 ", "idempotency_key" => "shared-metadata-key"})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => " abc123 "})
 
     headless_review_response =
       MCPHarness.request(
@@ -2193,7 +2195,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
 
-    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PRE-PR-REVIEW/worker"})
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PRE-PR-REVIEW/worker", "head_sha" => "pre-pr-head"})
 
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Pre-PR review",
@@ -2215,6 +2217,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     missing = get_in(ready_response, ["error", "data", "missing"])
     assert "review_lanes_complete" in missing
     assert "review_artifacts_attached" in missing
+  end
+
+  test "branch-only readiness rejects review evidence from an older branch head", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BRANCH-HEAD-REVIEW", kind: "quick_fix", status: "ci_waiting"))
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-BRANCH-HEAD-REVIEW/worker", "head_sha" => "old-head"})
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Old head review",
+      "tests" => ["mix test"],
+      "artifacts" => ["old-head-review.txt"],
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+    })
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-BRANCH-HEAD-REVIEW/worker", "head_sha" => "new-head"})
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    missing = get_in(ready_response, ["error", "data", "missing"])
+    assert "review_lanes_complete" in missing
   end
 
   test "mark_ready rejects empty review packages and allows resolved blockers", %{repo: repo} do
@@ -2270,7 +2301,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(blocker_response, ["result", "structuredContent", "progress_event", "payload", "active"]) == true
     assert get_in(blocker_response, ["result", "structuredContent", "progress_event", "payload", "blocker_id"]) == "blocker-1"
 
-    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-BLOCKER/worker"})
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-BLOCKER/worker", "head_sha" => "abc125"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/125", "head_sha" => "abc125"})
 
     attach_tool(repo, session, "submit_review_package", %{
@@ -2500,7 +2531,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
 
-    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-CAP/worker"})
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-CAP/worker", "head_sha" => "abc124"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/124", "head_sha" => "abc124"})
 
     attach_tool(repo, session, "submit_review_package", %{
