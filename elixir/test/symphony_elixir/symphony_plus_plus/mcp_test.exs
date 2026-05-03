@@ -722,6 +722,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(missing_owner_response, ["error", "data", "reason"]) == "missing_claimed_by"
 
+    {extra_argument_response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-extra-argument",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_work_key",
+            "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1", "work_package_id" => package.id}
+          }
+        },
+        server
+      )
+
+    assert get_in(extra_argument_response, ["error", "data", "reason"]) == "unexpected_argument"
+
     {claim_response, claimed_server} =
       Server.handle_state(
         %{
@@ -2148,6 +2164,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert "review_lanes_complete" in get_in(latest_findings_response, ["error", "data", "missing"])
 
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => "def456"})
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-GATES/worker", "head_sha" => "def456"})
 
     stale_submit_response =
       MCPHarness.request(
@@ -2338,6 +2355,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+  end
+
+  test "latest branch head requires matching PR metadata for merge-gated readiness", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-CURRENT-HEAD-PR", kind: "mcp", status: "ci_waiting"))
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-CURRENT-HEAD-PR/worker", "head_sha" => "head-a"})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/790", "head_sha" => "head-a"})
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-CURRENT-HEAD-PR/worker", "head_sha" => "head-b"})
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Latest branch head review",
+      "tests" => ["mix test"],
+      "artifacts" => ["latest-branch-head-review.txt"],
+      "head_sha" => "head-b",
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    missing = get_in(ready_response, ["error", "data", "missing"])
+    assert "pr_attached" in missing
   end
 
   test "mark_ready rejects empty review packages and allows resolved blockers", %{repo: repo} do

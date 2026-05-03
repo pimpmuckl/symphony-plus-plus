@@ -174,6 +174,29 @@
 | `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
 | `mise exec -- mix credo --strict` | pass | no issues. |
 
+### Thirty-Ninth T2 Follow-up Actions
+
+- Pushed thirty-eighth T2 fix head `0a1114ef44516be1cf8af37e5d54d0b27a809ae3` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T011830Z-4130f719`; both reviewers found valid strict-claim/current-head merge metadata issues, then the gate was closed as `findings`.
+- Fixed the valid findings by routing both `claim_work_key` stateful paths through the strict worker argument validator and making merge-required branch/PR metadata gates require the latest current head.
+- Added regressions for rejected extra `claim_work_key` arguments on the special stateful path and for stale PR metadata no longer satisfying merge-gated readiness after a later branch head.
+- High-pressure coherence check before the next same-tier T2: the fix remains inside the P3-002 worker MCP tool/readiness contract and is narrow contract/evidence hardening, not a package design or scope problem.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after thirty-ninth T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 71 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 266 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues after splitting the merge metadata predicate. |
+
+### Next Steps
+
+- Commit and push thirty-ninth T2 fixes, then rerun full-diff T2 and proceed to GitHub review if clean.
+
 ### Next Steps
 
 - Commit and push the thirty-fourth T2 fix, then rerun fresh full-diff T2 against `symphony-plus-plus/beta`; run GitHub review on PR #15 if T2 is clean.
