@@ -66,7 +66,12 @@ dynamic repo process. Explicit state-key handshakes use a bounded retention
 window longer than the current worker grant defaults and are not evicted by the
 shorter implicit default response state TTL. They remain continuity metadata
 until overwritten, cleared by a failed explicit reconnect initialize, or expired
-by the explicit state-key retention window.
+by the explicit state-key retention window. A newer explicit initialize for the
+same state key invalidates stale live sessions claimed before that initialize.
+
+`append_finding` idempotent retries replay by work package, idempotency key, and
+matching finding content, including after worker grant renewal. Changed content
+or a changed caller-supplied finding id returns `idempotency_conflict`.
 
 JSON-RPC batch items are evaluated independently against the batch's initial
 server/session state. Workers must not rely on `claim_work_key` or another

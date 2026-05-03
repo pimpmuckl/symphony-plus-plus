@@ -46,12 +46,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @plan_node_patch_keys ["body", "id", "status", "title"]
 
   @enforce_keys [:config]
-  defstruct [:config, :session, :state_key, state_key_explicit: false, initialized: false]
+  defstruct [:config, :session, :state_key, :state_key_version, state_key_explicit: false, initialized: false]
 
   @type t :: %__MODULE__{
           config: Config.t(),
           session: Session.t() | nil,
           state_key: term(),
+          state_key_version: integer() | nil,
           state_key_explicit: boolean(),
           initialized: boolean()
         }
@@ -67,6 +68,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       config: config,
       session: Keyword.get(opts, :session),
       state_key: state_key,
+      state_key_version: nil,
       state_key_explicit: state_key_explicit?,
       initialized: Keyword.get(opts, :initialized, false)
     }
@@ -100,7 +102,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     cleanup_default_handle_states()
     server = restore_handle_state(payload, server)
     {response, updated_server} = handle_state(payload, server)
-    persist_handle_state(payload, response, server, updated_server)
+    updated_server = persist_handle_state(payload, response, server, updated_server)
     {response, updated_server}
   end
 
@@ -179,8 +181,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp restore_explicit_handle_state(%__MODULE__{} = server) do
     case lookup_handle_state(server) do
-      {%__MODULE__{} = stored, _timestamp_ms, _explicit?} ->
-        %{server | initialized: server.initialized or stored.initialized}
+      {%__MODULE__{} = stored, timestamp_ms, _explicit?} ->
+        state_key_version = stored.state_key_version || timestamp_ms
+        session = if stale_explicit_session?(server, state_key_version), do: nil, else: server.session
+
+        %{
+          server
+          | initialized: server.initialized or stored.initialized,
+            session: session,
+            state_key_version: state_key_version
+        }
 
       _stored ->
         server
@@ -197,11 +207,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp stale_explicit_session?(%__MODULE__{session: nil}, _timestamp_ms), do: false
+  defp stale_explicit_session?(%__MODULE__{state_key_version: nil}, _timestamp_ms), do: true
+  defp stale_explicit_session?(%__MODULE__{state_key_version: state_key_version}, timestamp_ms), do: timestamp_ms > state_key_version
+
   defp persist_handle_state(payload, response, %__MODULE__{state_key_explicit: true} = server, %__MODULE__{} = updated_server) do
     if initialize_request?(payload) do
       case response do
-        %{"result" => _result} -> put_handle_state(updated_server)
-        _response -> delete_handle_state(server)
+        %{"result" => _result} ->
+          timestamp_ms = put_handle_state(updated_server)
+          %{updated_server | state_key_version: timestamp_ms}
+
+        _response ->
+          delete_handle_state(server)
+          %{updated_server | state_key_version: nil}
       end
     else
       persist_handle_state(server, updated_server)
@@ -213,24 +232,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp persist_handle_state(%__MODULE__{} = server, %__MODULE__{} = updated_server) do
-    cond do
-      server.initialized != updated_server.initialized or server.session != updated_server.session ->
-        put_handle_state(updated_server)
+    timestamp_ms =
+      cond do
+        server.initialized != updated_server.initialized or server.session != updated_server.session ->
+          put_handle_state(updated_server)
 
-      lookup_handle_state(updated_server) != nil ->
-        refresh_handle_state(updated_server)
+        lookup_handle_state(updated_server) != nil ->
+          refresh_handle_state(updated_server)
 
-      true ->
-        :ok
-    end
+        true ->
+          nil
+      end
 
-    :ok
+    if is_integer(timestamp_ms), do: %{updated_server | state_key_version: timestamp_ms}, else: updated_server
   end
 
   defp put_handle_state(%__MODULE__{} = server) do
-    stored_server = stored_handle_state_server(server)
-    update_handle_state_store(&Map.put(&1, handle_state_store_key(server), {stored_server, monotonic_ms(), server.state_key_explicit}))
-    :ok
+    timestamp_ms = monotonic_ms()
+    state_key_version = monotonic_state_key_version()
+    stored_server = %{stored_handle_state_server(server) | state_key_version: state_key_version}
+    update_handle_state_store(&Map.put(&1, handle_state_store_key(server), {stored_server, timestamp_ms, server.state_key_explicit}))
+    state_key_version
   end
 
   defp delete_handle_state(%__MODULE__{} = server) do
@@ -249,7 +271,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp refresh_handle_state(%__MODULE__{} = server) do
     case lookup_handle_state(server) do
       {%__MODULE__{} = stored_server, _timestamp_ms, _explicit?} -> put_handle_state(stored_server)
-      _state -> :ok
+      _state -> nil
     end
   end
 
@@ -272,6 +294,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     :ok
   end
+
+  defp monotonic_state_key_version, do: System.unique_integer([:monotonic, :positive])
 
   defp update_handle_state_store(fun) do
     ensure_handle_state_agent()
@@ -1050,7 +1074,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            "body" => body,
            "severity" => optional_argument(arguments, "severity", "info"),
            "idempotency_key" => idempotency_key,
-           "access_grant_id" => session.assignment.grant_id
+           "access_grant_id" => session.assignment.grant_id,
+           "caller_supplied_id" => Map.has_key?(arguments, "id")
          },
          {:ok, finding} <- append_authenticated_idempotent_finding(config.repo, session, finding_id, attrs) do
       {:ok, tool_result(%{"finding" => %{"id" => finding.id, "title" => finding.title, "severity" => finding.severity}})}
@@ -1575,12 +1600,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp find_existing_finding_by_idempotency({:error, reason}, _attrs), do: {:error, reason}
 
   defp finding_idempotency_match?(finding, attrs) do
-    finding.idempotency_key == Map.get(attrs, "idempotency_key") and finding.access_grant_id == Map.get(attrs, "access_grant_id")
+    finding.idempotency_key == Map.get(attrs, "idempotency_key")
   end
 
   defp idempotent_finding_result(finding, attrs) do
-    expected = Map.take(attrs, ["id", "title", "body", "severity"])
-    actual = %{"id" => finding.id, "title" => finding.title, "body" => finding.body, "severity" => finding.severity}
+    fields = if Map.get(attrs, "caller_supplied_id"), do: ["id", "title", "body", "severity"], else: ["title", "body", "severity"]
+    expected = Map.take(attrs, fields)
+    actual = Map.take(%{"id" => finding.id, "title" => finding.title, "body" => finding.body, "severity" => finding.severity}, fields)
 
     if expected == actual do
       {:ok, finding}

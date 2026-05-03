@@ -1151,6 +1151,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
   end
 
+  test "explicit state key reinitialize clears stale live server sessions", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STATE-STALE-LIVE", kind: "mcp", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    state_key = make_ref()
+
+    {_init_response, initialized_server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()},
+        Server.new(Config.default(repo: repo), state_key: state_key)
+      )
+
+    {_claim_response, claimed_server} =
+      Server.handle_response_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        initialized_server
+      )
+
+    reinit_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "init-again", "method" => "initialize", "params" => initialize_params()},
+        Server.new(Config.default(repo: repo), state_key: state_key)
+      )
+
+    {assignment_response, _server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "assignment-after-reinit", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        claimed_server
+      )
+
+    assert get_in(reinit_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
+    assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
+  end
+
   test "failed explicit state key reinitialize clears prior handshake state", %{repo: repo} do
     state_key = make_ref()
 
@@ -1987,7 +2025,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: second_session
       )
 
-    refute get_in(finding_regrant_response, ["result", "structuredContent", "finding", "id"]) ==
+    assert get_in(finding_regrant_response, ["result", "structuredContent", "finding", "id"]) ==
              get_in(finding_response, ["result", "structuredContent", "finding", "id"])
 
     conflicting_finding_response =

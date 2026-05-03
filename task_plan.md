@@ -319,6 +319,8 @@ Phase 3
 - Before the next T2, the approach remains coherent because the fix bounds explicit handshake retention with a longer TTL than current worker grants and applies the existing nonblank title contract to patch updates.
 - Fresh T2 on pushed head `90485d6` produced one valid Bravo finding: JSON-RPC batch handling threaded session mutations from earlier items into later items.
 - Before the next T2, the approach remains coherent because the fix only isolates batch items against the batch's initial MCP server state while preserving standalone request/session behavior and fire-and-forget notification execution.
+- Fresh T2 on pushed head `01b7da1` produced two valid Bravo findings: explicit state-key reinitialize could leave an older live server's cached session usable, and append-finding idempotency duplicated successful writes across worker grant renewal.
+- Before the next T2, the approach remains coherent because the fix only tightens the existing handshake-only state-key contract and aligns finding replay with the same lost-response stability expected of worker evidence tools.
 
 ## Blockers
 

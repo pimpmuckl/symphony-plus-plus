@@ -46,7 +46,13 @@ Explicit state-key handshakes use a bounded retention window longer than the
 current worker grant defaults and are not evicted by the shorter implicit
 default response-state TTL. They remain continuity metadata until overwritten,
 cleared by a failed explicit reconnect initialize, or expired by the explicit
-state-key retention window.
+state-key retention window. A newer explicit initialize for the same state key
+invalidates stale live sessions that were claimed before that initialize.
+
+`append_finding` idempotency is work-package scoped for retry stability. A
+matching idempotency key and finding content replays the original success even
+after worker grant renewal; changed content or a changed caller-supplied finding
+id returns `idempotency_conflict`.
 
 JSON-RPC batch items are not an ordered session transaction. Each item is
 evaluated against the batch's initial server/session state, so workers must not

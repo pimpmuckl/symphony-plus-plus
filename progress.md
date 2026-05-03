@@ -133,6 +133,29 @@
 | `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
 | `mise exec -- mix credo --strict` | pass | no issues. |
 
+### Sixty-Ninth T2 Follow-up Actions
+
+- Pushed head before this follow-up: `01b7da18067433e21af19d89760425cfb36c8e72`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T065710Z-a4159774`; Alpha was clean and Bravo reported two valid findings, so the gate was closed as `findings`.
+- Fixed explicit `state_key` stale live-session behavior by versioning persisted explicit handshake state and clearing an older live server's cached session after a newer initialize for the same state key.
+- Fixed `append_finding` retry behavior so matching idempotency keys and finding content replay across worker grant renewal instead of inserting duplicate findings.
+- Updated MCP contract docs and P3-002 package docs for stale explicit-session invalidation and finding idempotency across grant renewal.
+
+### Next Steps
+
+- Run focused validation, commit/push sixty-ninth T2 fixes, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after sixty-ninth T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 93 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 288 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
 ### Sixty-Eighth T2 Follow-up Actions
 
 - Pushed head before this follow-up: `90485d6416251f23528043ed06e87b48540e8a8d`.
