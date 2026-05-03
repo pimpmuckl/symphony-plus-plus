@@ -1800,3 +1800,25 @@
 ### Next Steps
 
 - Commit and push the current T2 fix, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
+
+### Current T2 Follow-up Actions
+
+- Pushed head before this follow-up: `974a8a5a78682b24a46b9ab14863a77b108ac242`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T083834Z-5a171d78`; Alpha was clean, Bravo reported a valid merge-gating drift risk, and the gate was closed as `findings`.
+- Fixed the valid finding by making merge metadata an explicit current-kind allowlist for `hotfix`, worker-package kinds, and `phase_child` instead of inferring from generic merge gate names.
+- Strengthened quick-fix readiness coverage to assert `branch_attached` and `pr_attached` are not missing gates for non-merge quick fixes.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after merge-gating fix. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 101 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 296 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Run focused validation, commit/push this merge-gating fix, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.

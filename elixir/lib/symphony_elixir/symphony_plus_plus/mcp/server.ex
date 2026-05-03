@@ -2261,15 +2261,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp merge_required?(%WorkPackage{} = work_package) do
-    case LifecycleService.policy_for(work_package) do
-      {:ok, policy} ->
-        required_gates = MapSet.new(Map.get(policy, :required_gates, []))
-        merge_gates = MapSet.new(["human_merge", "architect_merge"])
-        not MapSet.disjoint?(required_gates, merge_gates)
-
-      {:error, _reason} ->
-        false
-    end
+    work_package.kind in ["hotfix", "adapter", "mcp", "skill", "hooks", "phase_child"]
   end
 
   defp review_lanes_present?(_state, []), do: true

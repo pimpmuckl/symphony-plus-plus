@@ -3789,6 +3789,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     missing = get_in(response, ["error", "data", "missing"])
     assert get_in(response, ["error", "data", "reason"]) == "readiness_failed"
     refute "plan_complete" in missing
+    refute "branch_attached" in missing
+    refute "pr_attached" in missing
     refute "review_package_submitted" in missing
     assert "tests_passed" in missing
     assert "review_lanes_complete" in missing
