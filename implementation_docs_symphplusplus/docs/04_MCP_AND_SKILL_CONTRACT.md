@@ -197,4 +197,10 @@ claim call.
 
 ## Hook role
 
-Hooks may remind agents to keep state updated, inject assignment context, and detect missing handoff, but hooks must not be treated as the permission boundary.
+Hooks may remind agents to keep state updated, inject assignment context, and
+detect missing handoff, but hooks must not be treated as the permission
+boundary. Optional examples live under
+`implementation_docs_symphplusplus/templates/codex_hooks/`; they are
+operator-controlled templates, not runtime defaults. Keep hook behavior
+deterministic and non-secret-bearing, and do not parse private transcripts or
+chain-of-thought for security decisions.
