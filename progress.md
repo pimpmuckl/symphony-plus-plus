@@ -133,6 +133,29 @@
 | `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
 | `mise exec -- mix credo --strict` | pass | no issues. |
 
+### Sixty-Seventh T2 Follow-up Actions
+
+- Pushed head before this follow-up: `fdc2781`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T063727Z-af2fccf8`; closed it as `findings`.
+- Both reviewers flagged unbounded explicit `state_key` retention. Alpha also flagged whitespace-only plan-node titles through the patch path.
+- Fixed by adding a bounded seven-day TTL for explicit handshake entries, preserving the shorter implicit TTL for default response state, and rejecting blank titles in `PlanNode.update_changeset/2`.
+- Updated MCP docs/templates/package docs to describe bounded explicit-state retention rather than forever retention.
+
+### Next Steps
+
+- Run focused validation, commit/push sixty-seventh T2 fix, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after sixty-seventh T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 92 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 287 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
 ### Sixty-Sixth T2 Follow-up Actions
 
 - Pushed head before this follow-up: `94e5f16`.

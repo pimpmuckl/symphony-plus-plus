@@ -1416,12 +1416,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   test "response-only handle cleans stale implicit entries while preserving explicit state keys", %{repo: repo} do
     stale_explicit_key = make_ref()
+    expired_explicit_key = make_ref()
     stale_server = Server.new(Config.default(repo: repo), initialized: true)
     stale_explicit_server = Server.new(Config.default(repo: repo), initialized: true, state_key: stale_explicit_key)
+    expired_explicit_server = Server.new(Config.default(repo: repo), initialized: true, state_key: expired_explicit_key)
     stale_timestamp = System.monotonic_time(:millisecond) - 90_000_000
+    expired_explicit_timestamp = System.monotonic_time(:millisecond) - 700_000_000
 
     put_handle_state_entry(stale_server, {stale_server, stale_timestamp, false})
     put_handle_state_entry(stale_explicit_server, {stale_explicit_server, stale_timestamp, true})
+    put_handle_state_entry(expired_explicit_server, {expired_explicit_server, expired_explicit_timestamp, true})
 
     response =
       Server.handle(
@@ -1432,6 +1436,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
     refute Map.has_key?(handle_state_store(), handle_state_store_key(stale_server))
     assert Map.has_key?(handle_state_store(), handle_state_store_key(stale_explicit_server))
+    refute Map.has_key?(handle_state_store(), handle_state_store_key(expired_explicit_server))
 
     explicit_response =
       Server.handle(
@@ -2198,6 +2203,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(malformed_patch_shape_response, ["error", "data", "reason"]) == "invalid_patch"
     assert {:ok, unchanged_after_bad_patch} = PlanningRepository.list_plan_nodes(repo, package.id)
     assert length(unchanged_after_bad_patch) == 2
+
+    blank_title_patch_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "blank-title-patch-plan",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "update_task_plan",
+            "arguments" => %{"expected_version" => version, "patch" => %{"nodes" => [%{"id" => plan_node.id, "title" => "   "}]}}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(blank_title_patch_response, ["error", "code"]) == -32_602
+    assert {:ok, unchanged_after_blank_title} = PlanningRepository.list_plan_nodes(repo, package.id)
+    assert Enum.find(unchanged_after_blank_title, &(&1.id == plan_node.id)).title == "Original"
 
     mixed_patch_response =
       MCPHarness.request(

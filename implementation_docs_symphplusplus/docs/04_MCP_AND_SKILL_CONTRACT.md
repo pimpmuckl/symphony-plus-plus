@@ -49,9 +49,11 @@ worker assignment. After reconnect initialize, workers must call
 `claim_work_key(secret, claimed_by)` again to bind the worker session. The
 state namespace follows the active ledger rather than a transient dynamic repo
 process, so handshake continuity survives reconnects to the same SQLite ledger.
-Explicit state-key handshakes are not evicted by the implicit default response
-state TTL; they remain continuity metadata until overwritten or cleared by a
-failed explicit reconnect initialize.
+Explicit state-key handshakes use a bounded retention window longer than the
+current worker grant defaults and are not evicted by the shorter implicit
+default response-state TTL. They remain continuity metadata until overwritten,
+cleared by a failed explicit reconnect initialize, or expired by the explicit
+state-key retention window.
 
 `attach_branch` intentionally requires both the branch name and the current
 branch `head_sha`. Branch-only review evidence is matched to that head so a

@@ -73,7 +73,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode do
     plan_node
     |> cast(attrs, [:title, :body, :status])
     |> validate_required([:title, :status])
+    |> validate_nonblank(:title)
     |> validate_inclusion(:status, @statuses)
+  end
+
+  defp validate_nonblank(changeset, field) do
+    validate_change(changeset, field, fn ^field, value ->
+      if is_binary(value) and String.trim(value) == "" do
+        [{field, "cannot be blank"}]
+      else
+        []
+      end
+    end)
   end
 
   defp normalize_keys(attrs) when is_map(attrs) do

@@ -39,6 +39,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @assignment_resource "sympp://assignment/current"
   @finding_replay_retry_attempts 50
   @handle_state_ttl_ms 86_400_000
+  @explicit_handle_state_ttl_ms 604_800_000
   @handle_state_agent Module.concat(__MODULE__, HandleState)
   @plan_append_argument_keys ["body", "expected_version", "id", "status", "title", "work_package_id"]
   @plan_patch_argument_keys ["expected_version", "patch", "work_package_id"]
@@ -260,6 +261,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       |> Map.reject(fn
         {_state_key, {%__MODULE__{}, timestamp_ms, false}} ->
           now - timestamp_ms > @handle_state_ttl_ms
+
+        {_state_key, {%__MODULE__{}, timestamp_ms, true}} ->
+          now - timestamp_ms > @explicit_handle_state_ttl_ms
 
         _entry ->
           false

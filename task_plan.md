@@ -315,6 +315,8 @@ Phase 3
 - Before the next T2, the approach remains coherent because this follow-up only restores the intended distinction between implicit default response-state cleanup and explicit state-key handshake continuity; it does not restore claimed sessions from `state_key`.
 - Fresh T2 on pushed head `94e5f16` produced one valid finding: `append_finding` exact idempotent replay could be blocked after `mark_ready`, unlike the other evidence tools.
 - Before the next T2, the approach remains coherent because the fix only reorders existing finding replay checks before the ready-state mutation guard, preserving post-ready immutability for new writes.
+- Fresh T2 on pushed head `fdc2781` produced valid findings that explicit `state_key` retention was now unbounded and existing plan-node patch updates could accept whitespace-only titles.
+- Before the next T2, the approach remains coherent because the fix bounds explicit handshake retention with a longer TTL than current worker grants and applies the existing nonblank title contract to patch updates.
 
 ## Blockers
 
