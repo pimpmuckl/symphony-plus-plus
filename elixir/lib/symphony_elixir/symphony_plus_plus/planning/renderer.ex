@@ -75,7 +75,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
       "",
       "## Allowed File Globs",
       "",
-      list_or_empty(work_package.allowed_file_globs)
+      source_block(allowed_file_globs_text(work_package))
     ]
     |> flatten_join()
   end
@@ -207,7 +207,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
       "- Repo: #{source_inline(work_package.repo)}",
       "- Base branch: #{source_inline(work_package.base_branch)}",
       "- Branch pattern: #{source_inline(work_package.branch_pattern)}",
-      "- Allowed file globs: #{inline_list(work_package.allowed_file_globs)}",
+      "- Allowed file globs: #{source_inline(allowed_file_globs_text(work_package))}",
       "- Parent: #{source_inline(work_package.parent_id)}",
       "- Owner: #{source_inline(work_package.owner_id)}"
     ]
@@ -289,6 +289,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
     |> Enum.take(-3)
     |> Enum.map(fn progress_event -> "- #{timestamp(progress_event.created_at)}: #{source_inline(progress_event.summary)}" end)
   end
+
+  defp allowed_file_globs_text(%WorkPackage{allowed_file_globs: []}), do: nil
+  defp allowed_file_globs_text(%WorkPackage{} = work_package), do: Enum.join(work_package.allowed_file_globs, "\n")
 
   defp finding_summary_lines(%State{findings: []}), do: ["No findings recorded."]
 

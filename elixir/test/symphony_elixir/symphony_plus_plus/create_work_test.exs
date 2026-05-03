@@ -161,12 +161,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
                title: "Fix scoped hotfix",
                engineering_scope: "Touch only the balance path.",
                acceptance_criteria: ["Balance regression is fixed."],
-               allowed_file_globs: [" src/kraken/** ", "test/kraken/**"]
+               allowed_file_globs: [" src/[0-9]/** ", "# not a heading"]
              })
 
-    assert creation.work_package.allowed_file_globs == ["src/kraken/**", "test/kraken/**"]
-    assert creation.virtual_files["context.md"] =~ "src/kraken/**"
-    assert creation.virtual_files["context.md"] =~ "test/kraken/**"
+    assert creation.work_package.allowed_file_globs == ["src/[0-9]/**", "# not a heading"]
+    assert creation.virtual_files["context.md"] =~ "```text\nsrc/[0-9]/**\n# not a heading\n```"
 
     assert {:error, :invalid_allowed_file_globs} =
              CreateWork.parse_request(%{

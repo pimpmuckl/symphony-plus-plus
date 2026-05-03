@@ -48,26 +48,31 @@ defmodule Mix.Tasks.Sympp.CreateWork do
   defp run_create_work(opts) do
     original_repo = Repo.get_dynamic_repo()
 
-    case start_repo(Keyword.get(opts, :database)) do
-      {:ok, repo_pid} ->
-        try do
-          with :ok <- WorkPackageRepository.migrate(Repo),
-               {:ok, request} <- CreateWork.parse_file(Keyword.fetch!(opts, :file)),
-               {:ok, creation} <- CreateWork.create(Repo, request) do
-            creation
-            |> CreateWork.response_payload()
-            |> Jason.encode!(pretty: true)
-            |> Mix.shell().info()
-          else
-            {:error, reason} -> Mix.raise(CreateWork.error_message(reason))
-          end
-        after
-          stop_repo(repo_pid)
-          Repo.put_dynamic_repo(original_repo)
+    case CreateWork.parse_file(Keyword.fetch!(opts, :file)) do
+      {:ok, request} ->
+        case start_repo(Keyword.get(opts, :database)) do
+          {:ok, repo_pid} ->
+            try do
+              with :ok <- WorkPackageRepository.migrate(Repo),
+                   {:ok, creation} <- CreateWork.create(Repo, request) do
+                creation
+                |> CreateWork.response_payload()
+                |> Jason.encode!(pretty: true)
+                |> Mix.shell().info()
+              else
+                {:error, reason} -> Mix.raise(CreateWork.error_message(reason))
+              end
+            after
+              stop_repo(repo_pid)
+              Repo.put_dynamic_repo(original_repo)
+            end
+
+          {:error, reason} ->
+            Repo.put_dynamic_repo(original_repo)
+            Mix.raise(CreateWork.error_message(reason))
         end
 
       {:error, reason} ->
-        Repo.put_dynamic_repo(original_repo)
         Mix.raise(CreateWork.error_message(reason))
     end
   end

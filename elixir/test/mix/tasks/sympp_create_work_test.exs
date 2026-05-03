@@ -88,6 +88,17 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
     end
   end
 
+  test "does not create the ledger when the request file is invalid" do
+    database_path = WorkPackageFactory.database_path()
+    request_path = Path.join(System.tmp_dir!(), "missing-sympp-create-work-#{System.unique_integer([:positive])}.yaml")
+
+    assert_raise Mix.Error, ~r/Failed to read create-work request/, fn ->
+      CreateWorkTask.run(["--database", database_path, "--file", request_path])
+    end
+
+    refute File.exists?(database_path)
+  end
+
   test "preserves SQLite special database names" do
     file_uri = "file:sympp-create-work-#{System.unique_integer([:positive])}.sqlite3?mode=memory&cache=shared"
     filesystem_path = Path.join(System.tmp_dir!(), "sympp-create-work-#{System.unique_integer([:positive])}.sqlite3")
