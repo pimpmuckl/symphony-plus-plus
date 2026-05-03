@@ -2744,12 +2744,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp required_review_list(arguments, key) do
     with {:ok, values} <- required_list(arguments, key) do
-      if Enum.all?(values, &valid_review_entry?/1) do
+      if Enum.all?(values, &valid_review_entry?/1) and unique_review_lanes?(values) do
         {:ok, values}
       else
         {:tool_error, "invalid_#{key}"}
       end
     end
+  end
+
+  defp unique_review_lanes?(reviews) do
+    lanes =
+      Enum.map(reviews, fn %{"lane" => lane} ->
+        lane |> String.trim() |> String.downcase()
+      end)
+
+    Enum.uniq(lanes) == lanes
   end
 
   defp optional_review_list(arguments, key) do

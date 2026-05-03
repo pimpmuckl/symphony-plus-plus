@@ -2985,6 +2985,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(extra_review_key_response, ["error", "data", "reason"]) == "invalid_reviews"
 
+    duplicate_review_lane_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "duplicate-review-lane",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "submit_review_package",
+            "arguments" => %{
+              "summary" => "Duplicate review lane",
+              "tests" => ["mix test"],
+              "artifacts" => ["review-log.txt"],
+              "head_sha" => "abc123",
+              "acceptance_criteria_met" => true,
+              "reviews" => [
+                %{"lane" => " review_t1 ", "verdict" => "red"},
+                %{"lane" => "review_t1", "verdict" => "green"}
+              ]
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(duplicate_review_lane_response, ["error", "data", "reason"]) == "invalid_reviews"
+
     missing_artifacts_response =
       MCPHarness.request(
         %{
