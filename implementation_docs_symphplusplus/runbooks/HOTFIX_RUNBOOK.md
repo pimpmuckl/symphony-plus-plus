@@ -1,12 +1,24 @@
 # Hotfix Runbook
 
-1. Create hotfix work package.
+1. Create hotfix work package with one standalone command:
+   `cd elixir && mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../implementation_docs_symphplusplus/templates/create_work_package.hotfix.example.yaml`
 2. Confirm base branch is correct.
 3. Confirm acceptance criteria are narrow and testable.
-4. Mint worker grant with short expiry.
-5. Dispatch worker with key and worker prompt.
+4. Dispatch worker with the returned one-time `worker_grant.secret`; normal package reads and virtual file renders do not expose it again.
+5. Have the worker claim with `claim_work_key(secret, claimed_by)`.
 6. Watch progress timeline.
 7. Require PR and hotfix review-suite artifact.
 8. Review scope guard and changed files.
 9. Human merges after branch protection passes.
 10. Close package and archive evidence.
+
+## Quick-Fix Example
+
+Create a quick-fix package with:
+
+```bash
+cd elixir
+mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../implementation_docs_symphplusplus/templates/create_work_package.quick_fix.example.yaml
+```
+
+The command creates a parentless WorkPackage, applies the `quick_fix` policy, renders the initial virtual planning files, and returns the worker grant secret only in that creation response.

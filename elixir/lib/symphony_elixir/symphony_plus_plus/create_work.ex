@@ -1,0 +1,337 @@
+defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
+  @moduledoc false
+
+  alias Ecto.Changeset
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Renderer
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
+  alias SymphonyElixir.SymphonyPlusPlus.Policies.Templates
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+
+  @default_kind "quick_fix"
+  @required_fields ["repo", "base_branch", "title"]
+
+  @type request :: map()
+  @type creation :: %{
+          work_package: WorkPackage.t(),
+          worker_grant: map(),
+          virtual_files: %{String.t() => String.t()},
+          policy: Templates.template()
+        }
+
+  @type error ::
+          :empty_request_file
+          | :invalid_acceptance_criteria
+          | :invalid_request
+          | :parent_not_supported
+          | :policy_template_mismatch
+          | :unknown_policy_template
+          | {:invalid_json, term()}
+          | {:invalid_yaml, term()}
+          | {:missing_required_field, String.t()}
+          | {:read_failed, Path.t(), File.posix()}
+          | Changeset.t()
+          | WorkPackageRepository.error()
+          | PlanningRepository.error()
+          | AccessGrantService.error()
+          | Renderer.error()
+
+  @spec parse_request(term()) :: {:ok, request()} | {:error, error()}
+  def parse_request(raw_request) when is_map(raw_request) do
+    attrs = normalize_keys(raw_request)
+
+    with {:ok, attrs} <- require_standalone(attrs),
+         {:ok, attrs} <- normalize_required_fields(attrs),
+         {:ok, kind} <- normalize_kind(attrs),
+         {:ok, policy} <- policy_for(kind, attrs),
+         {:ok, acceptance_criteria} <- normalize_acceptance_criteria(Map.get(attrs, "acceptance_criteria", [])) do
+      {:ok,
+       attrs
+       |> Map.take([
+         "id",
+         "repo",
+         "base_branch",
+         "title",
+         "product_description",
+         "engineering_scope",
+         "branch_pattern",
+         "owner_id"
+       ])
+       |> Map.put("kind", kind)
+       |> Map.put("acceptance_criteria", acceptance_criteria)
+       |> Map.put("parent_id", nil)
+       |> Map.put("policy", policy)}
+    end
+  end
+
+  def parse_request(_raw_request), do: {:error, :invalid_request}
+
+  @spec parse_file(Path.t()) :: {:ok, request()} | {:error, error()}
+  def parse_file(path) when is_binary(path) do
+    case File.read(path) do
+      {:ok, content} -> parse_content(content, path)
+      {:error, reason} -> {:error, {:read_failed, path, reason}}
+    end
+  end
+
+  @spec parse_content(String.t(), Path.t() | nil) :: {:ok, request()} | {:error, error()}
+  def parse_content(content, path \\ nil) when is_binary(content) do
+    if String.trim(content) == "" do
+      {:error, :empty_request_file}
+    else
+      content
+      |> decode_content(path)
+      |> case do
+        {:ok, decoded} -> parse_request(decoded)
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @spec create(module(), map()) :: {:ok, creation()} | {:error, error()}
+  def create(repo, request) when is_atom(repo) and is_map(request) do
+    with {:ok, request} <- parse_request(request) do
+      create_parsed_request(repo, request)
+    end
+  end
+
+  @spec response_payload(creation()) :: map()
+  def response_payload(%{work_package: work_package, worker_grant: worker_grant, virtual_files: virtual_files, policy: policy}) do
+    %{
+      work_package: work_package_payload(work_package),
+      worker_grant: worker_grant,
+      policy: policy_payload(policy),
+      virtual_files: virtual_files,
+      secret_returned_once: true,
+      secret_not_persisted: true
+    }
+  end
+
+  @spec error_message(error()) :: String.t()
+  def error_message({:missing_required_field, field}), do: "Missing required create-work field: #{field}"
+  def error_message(:empty_request_file), do: "Create-work request file is empty"
+  def error_message(:invalid_acceptance_criteria), do: "acceptance_criteria must be a list of nonblank strings"
+  def error_message(:invalid_request), do: "Create-work request must be a JSON/YAML object"
+  def error_message(:parent_not_supported), do: "Standalone create-work does not accept parent_id"
+  def error_message(:policy_template_mismatch), do: "policy_template/review_suite_template must match kind"
+  def error_message(:unknown_policy_template), do: "No policy template exists for requested kind"
+  def error_message({:invalid_json, reason}), do: "Invalid JSON create-work request: #{inspect(reason)}"
+  def error_message({:invalid_yaml, reason}), do: "Invalid YAML create-work request: #{inspect(reason)}"
+  def error_message({:read_failed, path, reason}), do: "Failed to read create-work request #{path}: #{reason}"
+  def error_message(%Changeset{} = changeset), do: "Invalid create-work request: #{inspect(changeset.errors)}"
+  def error_message(reason), do: "Failed to create standalone work: #{inspect(reason)}"
+
+  defp create_parsed_request(repo, request) do
+    repo.transaction(fn ->
+      case create_transaction(repo, request) do
+        {:ok, creation} -> creation
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp create_transaction(repo, request) do
+    policy = Map.fetch!(request, "policy")
+    work_package_attrs = Map.drop(request, ["policy"])
+
+    with {:ok, work_package} <- WorkPackageRepository.create(repo, work_package_attrs),
+         {:ok, _scope_node} <- append_scope_plan_node(repo, work_package),
+         {:ok, _review_node} <- append_review_plan_node(repo, work_package, policy),
+         {:ok, minted} <- mint_worker_grant(repo, work_package.id, policy),
+         {:ok, virtual_files} <- Renderer.render_all(repo, work_package.id) do
+      {:ok,
+       %{
+         work_package: work_package,
+         worker_grant: worker_grant_payload(minted),
+         virtual_files: virtual_files,
+         policy: policy
+       }}
+    end
+  end
+
+  defp append_scope_plan_node(repo, %WorkPackage{} = work_package) do
+    PlanningRepository.append_plan_node(repo, %{
+      work_package_id: work_package.id,
+      title: "Implement requested scope",
+      body: work_package.engineering_scope || "Use the engineering scope from context.md.",
+      status: "pending"
+    })
+  end
+
+  defp append_review_plan_node(repo, %WorkPackage{} = work_package, policy) do
+    PlanningRepository.append_plan_node(repo, %{
+      work_package_id: work_package.id,
+      title: "Complete acceptance and review gates",
+      body: review_plan_body(policy),
+      status: "pending"
+    })
+  end
+
+  defp review_plan_body(policy) do
+    [
+      "Acceptance criteria:",
+      "- Satisfy the package acceptance criteria in acceptance.md.",
+      "",
+      "Required review gates:",
+      gates_line(policy.required_gates),
+      "",
+      "Required review lanes:",
+      gates_line(policy.review_suite.required)
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp gates_line([]), do: "- None."
+  defp gates_line(gates), do: Enum.map_join(gates, "\n", &("- " <> &1))
+
+  defp mint_worker_grant(repo, work_package_id, policy) do
+    expires_at = DateTime.add(DateTime.utc_now(:microsecond), policy.constraints.expiry_seconds, :second)
+    AccessGrantService.mint_worker_grant(repo, work_package_id, expires_at: expires_at)
+  end
+
+  defp worker_grant_payload(%{grant: grant, work_key: work_key}) do
+    %{
+      id: grant.id,
+      display_key: grant.display_key,
+      role: grant.grant_role,
+      capabilities: grant.capabilities,
+      expires_at: DateTime.to_iso8601(grant.expires_at),
+      secret: work_key.secret
+    }
+  end
+
+  defp work_package_payload(%WorkPackage{} = work_package) do
+    %{
+      id: work_package.id,
+      kind: work_package.kind,
+      title: work_package.title,
+      repo: work_package.repo,
+      base_branch: work_package.base_branch,
+      branch_pattern: work_package.branch_pattern,
+      product_description: work_package.product_description,
+      engineering_scope: work_package.engineering_scope,
+      acceptance_criteria: work_package.acceptance_criteria,
+      status: work_package.status,
+      parent_id: work_package.parent_id,
+      owner_id: work_package.owner_id
+    }
+  end
+
+  defp policy_payload(policy) do
+    %{
+      template: policy.template,
+      constraints: policy.constraints,
+      required_gates: policy.required_gates,
+      readiness_requirements: policy.readiness_requirements,
+      review_suite: policy.review_suite
+    }
+  end
+
+  defp decode_content(content, path) do
+    if json_path?(path) do
+      decode_json(content)
+    else
+      decode_yaml(content)
+    end
+  end
+
+  defp decode_json(content) do
+    case Jason.decode(content) do
+      {:ok, decoded} -> {:ok, decoded}
+      {:error, reason} -> {:error, {:invalid_json, reason}}
+    end
+  end
+
+  defp decode_yaml(content) do
+    case YamlElixir.read_from_string(content) do
+      {:ok, decoded} -> {:ok, decoded}
+      {:error, reason} -> {:error, {:invalid_yaml, reason}}
+    end
+  end
+
+  defp json_path?(path) when is_binary(path), do: path |> Path.extname() |> String.downcase() == ".json"
+  defp json_path?(_path), do: false
+
+  defp normalize_keys(attrs) do
+    Map.new(attrs, fn {key, value} -> {normalize_key(key), value} end)
+  end
+
+  defp normalize_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp normalize_key(key), do: to_string(key)
+
+  defp require_standalone(attrs) do
+    if present?(Map.get(attrs, "parent_id")) do
+      {:error, :parent_not_supported}
+    else
+      {:ok, attrs}
+    end
+  end
+
+  defp normalize_required_fields(attrs) do
+    Enum.reduce_while(@required_fields, {:ok, attrs}, fn field, {:ok, current_attrs} ->
+      case normalize_nonblank_string(Map.get(current_attrs, field)) do
+        {:ok, value} -> {:cont, {:ok, Map.put(current_attrs, field, value)}}
+        {:error, :blank} -> {:halt, {:error, {:missing_required_field, field}}}
+      end
+    end)
+  end
+
+  defp normalize_kind(attrs) do
+    kind = Map.get(attrs, "kind", @default_kind)
+
+    case normalize_nonblank_string(kind) do
+      {:ok, kind} -> {:ok, kind}
+      {:error, :blank} -> {:ok, @default_kind}
+    end
+  end
+
+  defp policy_for(kind, attrs) do
+    with {:ok, policy} <- Templates.expand(kind),
+         :ok <- validate_policy_template(kind, attrs) do
+      {:ok, policy}
+    else
+      {:error, :unknown_policy_template} -> {:error, :unknown_policy_template}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_policy_template(kind, attrs) do
+    attrs
+    |> Map.take(["policy_template", "review_suite_template"])
+    |> Map.values()
+    |> Enum.reject(&(not present?(&1)))
+    |> Enum.map(&String.trim(to_string(&1)))
+    |> Enum.uniq()
+    |> case do
+      [] -> :ok
+      [^kind] -> :ok
+      _templates -> {:error, :policy_template_mismatch}
+    end
+  end
+
+  defp normalize_acceptance_criteria(criteria) when is_list(criteria) do
+    criteria =
+      criteria
+      |> Enum.map(&normalize_acceptance_criterion/1)
+      |> Enum.reject(&(&1 == ""))
+
+    if Enum.all?(criteria, &is_binary/1), do: {:ok, criteria}, else: {:error, :invalid_acceptance_criteria}
+  end
+
+  defp normalize_acceptance_criteria(_criteria), do: {:error, :invalid_acceptance_criteria}
+
+  defp normalize_acceptance_criterion(value) when is_binary(value), do: String.trim(value)
+  defp normalize_acceptance_criterion(_value), do: :invalid
+
+  defp normalize_nonblank_string(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: {:error, :blank}, else: {:ok, value}
+  end
+
+  defp normalize_nonblank_string(_value), do: {:error, :blank}
+
+  defp present?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present?(nil), do: false
+  defp present?(_value), do: true
+end

@@ -1,0 +1,11 @@
+kind: quick_fix
+repo: kraken
+base_branch: beta
+title: Fix stale status label
+product_description: Operators should see the current worker status after a refresh.
+engineering_scope: Correct the status projection used by the worker detail view.
+acceptance_criteria:
+  - Worker detail status reflects the latest ledger state.
+  - Focused regression coverage exists for stale status projection.
+  - Required quick-fix review suite passes.
+policy_template: quick_fix
