@@ -321,6 +321,8 @@ Phase 3
 - Before the next T2, the approach remains coherent because the fix only isolates batch items against the batch's initial MCP server state while preserving standalone request/session behavior and fire-and-forget notification execution.
 - Fresh T2 on pushed head `01b7da1` produced two valid Bravo findings: explicit state-key reinitialize could leave an older live server's cached session usable, and append-finding idempotency duplicated successful writes across worker grant renewal.
 - Before the next T2, the approach remains coherent because the fix only tightens the existing handshake-only state-key contract and aligns finding replay with the same lost-response stability expected of worker evidence tools.
+- Fresh T2 on pushed head `babe432` produced four valid follow-up findings: single-item batch claims should persist for later requests, finding idempotency needs a work-package-scoped DB uniqueness boundary, non-merge fallback readiness must use the latest relevant status, and non-worker sessions should return authorization errors.
+- Before the next T2, the approach remains coherent because these fixes refine the existing P3-002 worker protocol guarantees without changing package boundaries: batch items remain isolated within a batch, idempotency replay is backed by storage, readiness uses latest current-head evidence, and non-worker access is consistently unauthorized.
 
 ## Blockers
 

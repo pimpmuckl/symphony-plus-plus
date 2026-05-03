@@ -1758,6 +1758,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
+    assert get_in(response, ["error", "code"]) == -32_001
     assert get_in(response, ["error", "data", "reason"]) == "worker_grant_required"
 
     assignment_tool_response =
@@ -1767,6 +1768,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
+    assert get_in(assignment_tool_response, ["error", "code"]) == -32_001
     assert get_in(assignment_tool_response, ["error", "data", "reason"]) == "worker_grant_required"
 
     read_tool_response =
@@ -1776,6 +1778,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
+    assert get_in(read_tool_response, ["error", "code"]) == -32_001
     assert get_in(read_tool_response, ["error", "data", "reason"]) == "worker_grant_required"
 
     resource_response =
@@ -1800,6 +1803,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(assignment_resource_response, ["error", "data", "reason"]) == "worker_grant_required"
+  end
+
+  test "single-item batch preserves claim_work_key session for later requests", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BATCH-SINGLE-CLAIM", kind: "mcp", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {responses, claimed_server} =
+      Server.handle_state(
+        [
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "claim",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "claim_work_key",
+              "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}
+            }
+          }
+        ],
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    {assignment_response, _server} =
+      Server.handle_state(
+        %{"jsonrpc" => "2.0", "id" => "assignment", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        claimed_server
+      )
+
+    assert Enum.map(responses, & &1["id"]) == ["claim"]
+    assert claimed_server.session.assignment.work_package_id == package.id
+    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
   end
 
   test "batch calls do not thread claim_work_key session to later worker tools", %{repo: repo} do
@@ -3550,6 +3584,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "summary" => "T1 review green for latest head",
       "status" => "review_t1_green",
       "idempotency_key" => "quick-fix-review-t1-head-b"
+    })
+
+    attach_tool(repo, session, "append_progress", %{
+      "summary" => "Focused tests failed after latest pass",
+      "status" => "tests_failed",
+      "idempotency_key" => "quick-fix-tests-head-b-failed"
+    })
+
+    attach_tool(repo, session, "append_progress", %{
+      "summary" => "T1 review red after latest green",
+      "status" => "review_t1_red",
+      "idempotency_key" => "quick-fix-review-t1-head-b-red"
+    })
+
+    stale_green_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-quick-fix-stale-green", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    stale_green_missing = get_in(stale_green_response, ["error", "data", "missing"])
+    assert "tests_passed" in stale_green_missing
+    assert "review_lanes_complete" in stale_green_missing
+
+    attach_tool(repo, session, "append_progress", %{
+      "summary" => "Focused tests passed after failure",
+      "status" => "tests_passed",
+      "idempotency_key" => "quick-fix-tests-head-b-repassed"
+    })
+
+    attach_tool(repo, session, "append_progress", %{
+      "summary" => "T1 review green after red",
+      "status" => "review_t1_green",
+      "idempotency_key" => "quick-fix-review-t1-head-b-regreen"
     })
 
     ready_response =

@@ -70,12 +70,15 @@ by the explicit state-key retention window. A newer explicit initialize for the
 same state key invalidates stale live sessions claimed before that initialize.
 
 `append_finding` idempotent retries replay by work package, idempotency key, and
-matching finding content, including after worker grant renewal. Changed content
-or a changed caller-supplied finding id returns `idempotency_conflict`.
+matching finding content, including after worker grant renewal. The database
+uniqueness boundary is also work-package scoped. Changed content or a changed
+caller-supplied finding id returns `idempotency_conflict`.
 
 JSON-RPC batch items are evaluated independently against the batch's initial
 server/session state. Workers must not rely on `claim_work_key` or another
-stateful tool in one batch item to authorize later items in the same batch.
+stateful tool in one batch item to authorize later items in the same batch. A
+single-item batch has the same final server/session effect as the equivalent
+standalone request.
 
 ### Review package contract
 
@@ -100,7 +103,10 @@ do not require branch metadata may also count explicit-head
 `submit_review_package` evidence before a branch head is attached. Merge-gated
 package policies still use current-head review package evidence and review
 artifacts. After a branch head is attached, fallback progress and review-package
-evidence must be current to the latest branch head.
+evidence must be current to the latest branch head. Fallback progress gates use
+the latest relevant generic status for the current head; later failing/red
+evidence supersedes earlier green evidence until a newer pass/green status is
+recorded.
 
 After `mark_ready` succeeds, worker evidence writes for the package are frozen;
 new progress, findings, blockers, branch/PR metadata, scope requests, and review

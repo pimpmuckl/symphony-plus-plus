@@ -56,16 +56,18 @@ cleared by a failed explicit reconnect initialize, or expired by the explicit
 state-key retention window. A newer explicit initialize for the same state key
 invalidates stale live sessions claimed before that initialize.
 
-`append_finding` idempotency is scoped to the work package for retry stability
-across grant renewal. A retry with the same idempotency key and same finding
-content replays the original success; changed content or a changed
+`append_finding` idempotency is scoped to the work package, including at the
+database uniqueness boundary, for retry stability across grant renewal. A retry
+with the same idempotency key and same finding content replays the original
+success; changed content or a changed
 caller-supplied finding id returns `idempotency_conflict`.
 
 JSON-RPC batch items are not an ordered session transaction. Each item is
 evaluated against the batch's initial server/session state, so a `claim_work_key`
 call inside one batch item does not authorize later items in that same batch.
 Workers should claim in a prior request, or run dependent worker tools outside
-the batch.
+the batch. A single-item batch has the same final server/session effect as the
+equivalent standalone request.
 
 `attach_branch` intentionally requires both the branch name and the current
 branch `head_sha`. Branch-only review evidence is matched to that head so a
@@ -97,7 +99,10 @@ non-merge policies may also count explicit-head `submit_review_package` evidence
 without branch metadata when branch metadata is not a required gate. Merge-gated
 packages still require current-head review package evidence and artifacts. If a
 branch head is attached, generic fallback evidence and review-package evidence
-must be current to the latest branch head.
+must be current to the latest branch head. Generic fallback gates use the latest
+relevant status after that branch head: later `tests_failed`,
+`<review_lane>_red`, or `<review_lane>_failed` supersedes earlier green evidence
+until a newer pass/green status is recorded.
 
 For investigation policies that require a scope recommendation,
 `request_scope_expansion` records the worker's recommendation evidence; it does

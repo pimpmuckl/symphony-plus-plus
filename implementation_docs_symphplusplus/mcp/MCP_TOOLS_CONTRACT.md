@@ -49,7 +49,8 @@ cleared by a failed explicit reconnect initialize, or expired by the explicit
 state-key retention window. A newer explicit initialize for the same state key
 invalidates stale live sessions that were claimed before that initialize.
 
-`append_finding` idempotency is work-package scoped for retry stability. A
+`append_finding` idempotency is work-package scoped, including at the database
+uniqueness boundary, for retry stability. A
 matching idempotency key and finding content replays the original success even
 after worker grant renewal; changed content or a changed caller-supplied finding
 id returns `idempotency_conflict`.
@@ -57,7 +58,8 @@ id returns `idempotency_conflict`.
 JSON-RPC batch items are not an ordered session transaction. Each item is
 evaluated against the batch's initial server/session state, so workers must not
 rely on `claim_work_key` or any other stateful call in one batch item to
-authorize later items in the same batch.
+authorize later items in the same batch. A single-item batch has the same final
+server/session effect as the equivalent standalone request.
 
 `attach_branch` requires `branch` and `head_sha`. When no PR head is attached,
 review packages are matched to the latest attached branch head so stale
@@ -87,10 +89,12 @@ Tool-owned metadata, blocker, status, and scope events are ignored for these
 fallback gates. Non-merge policies that do not require branch metadata may also
 count explicit-head `submit_review_package` evidence before a branch head is
 attached. Once a branch head is attached, readiness is evaluated against that
-current head and older review-package evidence is stale. Merge-gated packages
-still use current-head `submit_review_package` evidence and persisted review
-artifacts. When a branch head is attached, fallback progress evidence must be
-recorded after the latest branch head attachment.
+current head and older review-package evidence is stale. Fallback progress gates
+use the latest relevant generic status after the current branch head attachment:
+later `tests_failed`, `<review_lane>_red`, or `<review_lane>_failed` evidence
+supersedes earlier green evidence until a newer pass/green status is recorded.
+Merge-gated packages still use current-head `submit_review_package` evidence and
+persisted review artifacts.
 
 For investigation policies, `request_scope_expansion` records the required
 scope recommendation evidence but never approves the expansion itself. Generic

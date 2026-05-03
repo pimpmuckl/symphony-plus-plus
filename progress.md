@@ -133,6 +133,31 @@
 | `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
 | `mise exec -- mix credo --strict` | pass | no issues. |
 
+### Seventieth T2 Follow-up Actions
+
+- Pushed head before this follow-up: `babe432bee2e51715f1e2bc7cb6eb5effb7a0fef`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T070932Z-3877e5f3`; both reviewers reported valid findings, so the gate was closed as `findings`.
+- Fixed single-item batch `claim_work_key` persistence while preserving the product/API rule that multi-item batches do not let earlier item session mutations authorize later items in the same batch.
+- Changed finding idempotency storage uniqueness to work package plus idempotency key so grant-renewal races cannot duplicate a logical retry.
+- Made non-merge generic progress readiness use the latest relevant current-head status, so later test failures or red/failed review lane statuses supersede earlier green evidence.
+- Mapped non-worker sessions on worker tools to MCP authorization errors instead of invalid params.
+- Updated MCP contract docs and P3-002 package docs for single-item batch final state, storage-backed finding idempotency, and latest-status fallback readiness.
+
+### Next Steps
+
+- Run focused validation, commit/push seventieth T2 fixes, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after seventieth T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 94 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 289 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
 ### Sixty-Ninth T2 Follow-up Actions
 
 - Pushed head before this follow-up: `01b7da18067433e21af19d89760425cfb36c8e72`.
