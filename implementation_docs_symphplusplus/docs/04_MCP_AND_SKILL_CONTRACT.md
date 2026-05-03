@@ -130,6 +130,16 @@ split_work_package(work_package_id, child_specs)
 publish_phase_update(phase_id, update)
 ```
 
+P3-003 exposes this architect-facing tool surface but does not implement Phase
+7 delegation. Architect tools require a live architect grant and the matching
+architect capability; worker grants and insufficient architect grants are
+denied. `read_child_status(work_package_id)` is the only safe read-only tool
+implemented before Phase 7, and it is limited to the work package currently
+scoped to the architect grant because phase-child relationships do not exist
+yet. The remaining architect tools return explicit `phase7_not_implemented`
+errors after authorization and must not create child work, mint worker keys,
+approve ready children, merge into a phase, or publish phase state.
+
 ## Skill rules
 
 The Codex Skill must instruct workers to:

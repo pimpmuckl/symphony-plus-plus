@@ -35,6 +35,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "submit_review_package",
     "mark_ready"
   ]
+  @architect_tools [
+    "create_child_work_package",
+    "mint_child_worker_key",
+    "revoke_child_worker_key",
+    "read_child_status",
+    "read_phase_board",
+    "request_child_replan",
+    "approve_child_ready_state",
+    "merge_child_into_phase",
+    "split_work_package",
+    "publish_phase_update"
+  ]
+  @phase7_architect_tools [
+    "create_child_work_package",
+    "mint_child_worker_key",
+    "revoke_child_worker_key",
+    "read_phase_board",
+    "request_child_replan",
+    "approve_child_ready_state",
+    "merge_child_into_phase",
+    "split_work_package",
+    "publish_phase_update"
+  ]
   @version_resource "sympp://health/version"
   @assignment_resource "sympp://assignment/current"
   @finding_replay_retry_attempts 50
@@ -616,7 +639,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp dispatch("tools/list", params, _server) when is_map(params) do
     {:ok,
      %{
-       "tools" => [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]
+       "tools" => [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1) ++ Enum.map(@architect_tools, &architect_tool_spec/1)]
      }}
   end
 
@@ -654,6 +677,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case worker_tool_arguments(params, name) do
       {:ok, arguments} ->
         worker_tool(name, arguments, server)
+
+      {:error, code, message, data} ->
+        {:error, code, message, data}
+    end
+  end
+
+  defp dispatch("tools/call", %{"name" => name} = params, %__MODULE__{} = server) when name in @architect_tools do
+    case architect_tool_arguments(params, name) do
+      {:ok, arguments} ->
+        architect_tool(name, arguments, server)
 
       {:error, code, message, data} ->
         {:error, code, message, data}
@@ -774,6 +807,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
+  defp architect_tool_spec(name) do
+    %{
+      "name" => name,
+      "title" => name,
+      "description" => architect_tool_description(name),
+      "inputSchema" => architect_tool_input_schema(name)
+    }
+  end
+
+  defp architect_tool_description("read_child_status") do
+    "Read the architect grant's scoped child work-package status without Phase 7 delegation."
+  end
+
+  defp architect_tool_description(name) when name in @phase7_architect_tools do
+    "Phase 7 architect tool #{name}; authorization is enforced, but behavior is not implemented yet."
+  end
+
   defp worker_tool_input_schema("claim_work_key") do
     schema(%{"secret" => string_schema(), "claimed_by" => string_schema()}, ["secret", "claimed_by"])
   end
@@ -869,6 +919,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     )
   end
 
+  defp architect_tool_input_schema("create_child_work_package"), do: schema(%{"package" => object_schema()}, ["package"])
+
+  defp architect_tool_input_schema("mint_child_worker_key") do
+    schema(%{"work_package_id" => string_schema(), "template" => object_schema()}, ["work_package_id", "template"])
+  end
+
+  defp architect_tool_input_schema("revoke_child_worker_key") do
+    schema(%{"grant_id" => string_schema(), "reason" => string_schema()}, ["grant_id", "reason"])
+  end
+
+  defp architect_tool_input_schema("read_child_status"), do: schema(%{"work_package_id" => string_schema()}, ["work_package_id"])
+  defp architect_tool_input_schema("read_phase_board"), do: schema(%{"phase_id" => string_schema()}, ["phase_id"])
+
+  defp architect_tool_input_schema("request_child_replan") do
+    schema(%{"work_package_id" => string_schema(), "reason" => string_schema()}, ["work_package_id", "reason"])
+  end
+
+  defp architect_tool_input_schema("approve_child_ready_state") do
+    schema(%{"work_package_id" => string_schema(), "rationale" => string_schema()}, ["work_package_id", "rationale"])
+  end
+
+  defp architect_tool_input_schema("merge_child_into_phase") do
+    schema(%{"work_package_id" => string_schema(), "merge_artifact" => object_schema()}, ["work_package_id", "merge_artifact"])
+  end
+
+  defp architect_tool_input_schema("split_work_package") do
+    schema(%{"work_package_id" => string_schema(), "child_specs" => nonempty_object_array_schema()}, ["work_package_id", "child_specs"])
+  end
+
+  defp architect_tool_input_schema("publish_phase_update") do
+    schema(%{"phase_id" => string_schema(), "update" => object_schema()}, ["phase_id", "update"])
+  end
+
   defp schema(properties, required) do
     %{"type" => "object", "additionalProperties" => false, "properties" => properties, "required" => required}
   end
@@ -904,6 +987,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp nullable_string_schema, do: %{"type" => ["string", "null"]}
   defp object_schema, do: %{"type" => "object", "additionalProperties" => true}
   defp nonempty_string_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => nonblank_string_schema()}
+  defp nonempty_object_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => object_schema()}
 
   defp plan_patch_schema do
     %{
@@ -1138,10 +1222,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_worker_assignment(%{grant_role: "worker"}), do: :ok
   defp require_worker_assignment(_assignment), do: {:error, :worker_grant_required}
 
+  defp require_architect_assignment(%{grant_role: "architect"}), do: :ok
+  defp require_architect_assignment(_assignment), do: {:error, :architect_grant_required}
+
+  defp require_architect_capability(%{capabilities: capabilities}, capability) when is_list(capabilities) do
+    if capability in capabilities do
+      :ok
+    else
+      {:error, :insufficient_capability}
+    end
+  end
+
+  defp require_architect_capability(_assignment, _capability), do: {:error, :insufficient_capability}
+
   defp claim_error(:database_busy), do: service_error(:database_busy, "claim_work_key")
   defp claim_error({:storage_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
   defp claim_error({:migration_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
   defp claim_error(reason), do: {:error, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => reason_text(reason)}}
+
+  defp architect_tool("read_child_status", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "read:child_progress"),
+         {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
+         :ok <- require_architect_work_package_scope(session, work_package_id),
+         {:ok, state} <- PlanningRepository.get_state(config.repo, work_package_id) do
+      {:ok,
+       tool_result(%{
+         "work_package" => work_package_payload(state.work_package),
+         "plan_version" => plan_version(state.plan_nodes),
+         "finding_count" => length(state.findings),
+         "progress_event_count" => length(state.progress_events),
+         "artifact_count" => length(state.artifacts)
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_child_status", "reason" => reason}}
+      {:error, reason} -> architect_error(reason, "read_child_status")
+    end
+  end
+
+  defp architect_tool(name, _arguments, %__MODULE__{config: config, session: session}) when name in @phase7_architect_tools do
+    with {:ok, _session} <- architect_session(config.repo, session, architect_tool_capability(name)) do
+      phase7_not_implemented(name)
+    else
+      {:error, reason} -> architect_error(reason, name)
+    end
+  end
 
   defp worker_tool("get_current_assignment", _arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
@@ -1365,6 +1489,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp rollback_worker_transaction_result(repo, {:error, reason}), do: repo.rollback({:error, reason})
+
+  defp architect_session(repo, session, capability) do
+    with {:ok, session} <- Auth.require_session(session, repo),
+         :ok <- require_architect_assignment(session.assignment),
+         :ok <- require_architect_capability(session.assignment, capability) do
+      {:ok, session}
+    end
+  end
+
+  defp require_architect_work_package_scope(%Session{} = session, work_package_id) do
+    if Session.work_package_id(session) == work_package_id do
+      :ok
+    else
+      {:error, :phase_scope_not_available}
+    end
+  end
+
+  defp architect_tool_capability("create_child_work_package"), do: "create:child_work_package"
+  defp architect_tool_capability("mint_child_worker_key"), do: "mint:child_worker_key"
+  defp architect_tool_capability("revoke_child_worker_key"), do: "revoke:child_worker_key"
+  defp architect_tool_capability("read_phase_board"), do: "read:phase"
+  defp architect_tool_capability("request_child_replan"), do: "request:child_replan"
+  defp architect_tool_capability("approve_child_ready_state"), do: "approve:child_ready_state"
+  defp architect_tool_capability("merge_child_into_phase"), do: "merge:child_into_phase"
+  defp architect_tool_capability("split_work_package"), do: "split:child_work_package"
+  defp architect_tool_capability("publish_phase_update"), do: "publish:phase_update"
+
+  defp phase7_not_implemented(tool) do
+    {:error, -32_604, "Not implemented",
+     %{
+       "tool" => tool,
+       "reason" => "phase7_not_implemented",
+       "phase" => "Phase 7",
+       "detail" => "Phase entities and architect delegation are not implemented in SYMPP-P3-003."
+     }}
+  end
 
   defp read_current_virtual_file(repo, session, file_name) do
     with {:ok, session} <- Auth.require_session(session, repo),
@@ -2674,6 +2834,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp worker_error({:migration_failed, _reason} = reason, tool), do: service_error(reason, tool)
   defp worker_error(reason, tool), do: {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason_text(reason)}}
 
+  defp architect_error(:unauthorized, resource), do: auth_error(:unauthorized, resource)
+  defp architect_error({:unauthorized, _reason} = reason, resource), do: auth_error(reason, resource)
+  defp architect_error(:expired, resource), do: auth_error({:unauthorized, :expired}, resource)
+  defp architect_error(:assignment_revoked, resource), do: auth_error({:unauthorized, :revoked}, resource)
+  defp architect_error(:architect_grant_required, resource), do: auth_error({:unauthorized, :architect_grant_required}, resource)
+  defp architect_error(:insufficient_capability, resource), do: auth_error({:unauthorized, :insufficient_capability}, resource)
+  defp architect_error(:phase_scope_not_available, resource), do: auth_error(:forbidden, resource)
+  defp architect_error(:forbidden, resource), do: auth_error(:forbidden, resource)
+  defp architect_error({:service_unavailable, _reason} = reason, resource), do: auth_error(reason, resource)
+  defp architect_error(reason, tool), do: {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason_text(reason)}}
+
   defp scoped_session(repo, session, arguments) when is_map(arguments) do
     case Auth.require_session(session, repo) do
       {:ok, session} ->
@@ -2700,6 +2871,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp architect_tool_arguments(params, name) do
+    case Map.get(params, "arguments", %{}) do
+      arguments when is_map(arguments) ->
+        validate_architect_arguments(name, arguments)
+
+      _arguments ->
+        {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "invalid_tool_arguments"}}
+    end
+  end
+
   defp validate_worker_arguments(name, arguments) do
     allowed = MapSet.new(allowed_worker_argument_keys(name))
     unexpected = arguments |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1))
@@ -2711,11 +2892,64 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp validate_architect_arguments(name, arguments) do
+    allowed = MapSet.new(allowed_architect_argument_keys(name))
+    unexpected = arguments |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1))
+
+    cond do
+      unexpected != [] ->
+        {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "unexpected_argument", "arguments" => unexpected}}
+
+      true ->
+        case validate_architect_required_arguments(name, arguments) do
+          :ok -> {:ok, arguments}
+          {:error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => reason}}
+        end
+    end
+  end
+
   defp allowed_worker_argument_keys(name) do
     name
     |> worker_tool_input_schema()
     |> Map.get("properties", %{})
     |> Map.keys()
+  end
+
+  defp allowed_architect_argument_keys(name) do
+    name
+    |> architect_tool_input_schema()
+    |> Map.get("properties", %{})
+    |> Map.keys()
+  end
+
+  defp validate_architect_required_arguments(name, arguments) do
+    schema = architect_tool_input_schema(name)
+    properties = Map.get(schema, "properties", %{})
+
+    schema
+    |> Map.get("required", [])
+    |> Enum.find_value(:ok, fn key ->
+      case validate_required_architect_argument(arguments, properties, key) do
+        :ok -> nil
+        {:error, reason} -> {:error, reason}
+      end
+    end)
+  end
+
+  defp validate_required_architect_argument(arguments, properties, key) do
+    case {Map.get(arguments, key), get_in(properties, [key, "type"])} do
+      {value, "string"} when is_binary(value) ->
+        if String.trim(value) == "", do: {:error, "missing_#{key}"}, else: :ok
+
+      {value, "object"} when is_map(value) ->
+        :ok
+
+      {[_head | _tail] = values, "array"} ->
+        if Enum.all?(values, &is_map/1), do: :ok, else: {:error, "invalid_#{key}"}
+
+      {_value, _type} ->
+        {:error, "missing_#{key}"}
+    end
   end
 
   defp required_argument(arguments, key) do

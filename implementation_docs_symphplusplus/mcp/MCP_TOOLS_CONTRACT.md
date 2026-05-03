@@ -21,6 +21,31 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | submit_review_package | Attach summary/tests/artifacts for the current head review package. |
 | mark_ready | Move to ready state only if gates pass. |
 
+## Architect tools
+
+| Tool | Purpose |
+|---|---|
+| create_child_work_package | Phase 7 stub for creating phase-scoped child work; returns `phase7_not_implemented` after architect authorization. |
+| mint_child_worker_key | Phase 7 stub for minting child worker keys; returns `phase7_not_implemented` after architect authorization. |
+| revoke_child_worker_key | Phase 7 stub for revoking child worker keys; returns `phase7_not_implemented` after architect authorization. |
+| read_child_status | Read the architect grant's scoped work-package status without Phase 7 delegation. |
+| read_phase_board | Phase 7 stub for phase board reads; returns `phase7_not_implemented` after architect authorization. |
+| request_child_replan | Phase 7 stub for child replan requests; returns `phase7_not_implemented` after architect authorization. |
+| approve_child_ready_state | Phase 7 stub for child readiness approval; returns `phase7_not_implemented` after architect authorization. |
+| merge_child_into_phase | Phase 7 stub for merge-to-phase recording; returns `phase7_not_implemented` after architect authorization. |
+| split_work_package | Phase 7 stub for child package splitting; returns `phase7_not_implemented` after architect authorization. |
+| publish_phase_update | Phase 7 stub for phase updates; returns `phase7_not_implemented` after architect authorization. |
+
+Architect tools require a live architect grant session and the matching
+architect capability from the permission model. Worker grants and architect
+grants without the required capability are denied. Until Phase 7 introduces
+phase entities and phase-child scope checks, `read_child_status` is intentionally
+limited to the work package bound to the architect grant. Requests for unrelated
+work packages are denied rather than guessed from absent phase relationships.
+Phase 7-dependent tools perform authorization first and then return an explicit
+`phase7_not_implemented` error; they do not create children, mint grants,
+approve readiness, merge phase artifacts, or publish phase state in P3-003.
+
 ## Resources
 
 ```text
