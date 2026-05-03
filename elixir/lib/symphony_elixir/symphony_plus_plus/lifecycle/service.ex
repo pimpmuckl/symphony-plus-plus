@@ -36,7 +36,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service do
   end
 
   @spec policy_for(WorkPackage.t()) :: {:ok, Templates.template()} | {:error, :unknown_policy_template}
-  def policy_for(%WorkPackage{kind: kind}), do: Templates.expand(kind)
+  def policy_for(%WorkPackage{} = work_package), do: Templates.expand(policy_key(work_package))
+
+  defp policy_key(%WorkPackage{policy_template: policy_template}) when is_binary(policy_template) and policy_template != "" do
+    policy_template
+  end
+
+  defp policy_key(%WorkPackage{kind: kind}), do: kind
 
   @spec policy_for(Repository.repo(), String.t()) ::
           {:ok, Templates.template()} | {:error, Repository.error() | :unknown_policy_template}

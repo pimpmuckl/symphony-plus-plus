@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
 
   import Ecto.Changeset
 
+  alias SymphonyElixir.SymphonyPlusPlus.Policies.Templates
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.StringList
 
   @primary_key {:id, :string, autogenerate: false}
@@ -62,6 +63,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
           branch_pattern: String.t() | nil,
           product_description: String.t() | nil,
           engineering_scope: String.t() | nil,
+          allowed_file_globs: [String.t()],
+          policy_template: String.t() | nil,
           acceptance_criteria: [String.t()],
           status: String.t() | nil,
           parent_id: String.t() | nil,
@@ -78,6 +81,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
     field(:branch_pattern, :string)
     field(:product_description, :string)
     field(:engineering_scope, :string)
+    field(:allowed_file_globs, StringList, default: [])
+    field(:policy_template, :string)
     field(:acceptance_criteria, StringList, default: [])
     field(:status, :string)
     field(:parent_id, :string)
@@ -123,6 +128,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
       :branch_pattern,
       :product_description,
       :engineering_scope,
+      :allowed_file_globs,
+      :policy_template,
       :acceptance_criteria,
       :status,
       :parent_id,
@@ -131,6 +138,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
     |> validate_required([:id, :kind, :title, :repo, :base_branch, :acceptance_criteria, :status])
     |> validate_inclusion(:kind, @kinds)
     |> validate_inclusion(:status, @statuses)
+    |> validate_policy_template()
+  end
+
+  defp validate_policy_template(changeset) do
+    case get_field(changeset, :policy_template) do
+      nil ->
+        changeset
+
+      policy_template ->
+        kind = get_field(changeset, :kind)
+
+        if policy_template == kind and canonical_policy_template?(policy_template) do
+          changeset
+        else
+          add_error(changeset, :policy_template, "is invalid", validation: :policy_template)
+        end
+    end
+  end
+
+  defp canonical_policy_template?(policy_template) do
+    match?({:ok, _template}, Templates.expand(policy_template))
   end
 
   defp normalize_keys(attrs) when is_map(attrs) do
