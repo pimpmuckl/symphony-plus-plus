@@ -346,7 +346,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp handle_state_store_key(%__MODULE__{} = server), do: {handle_state_namespace(server.config), server.state_key}
-  defp handle_state_namespace(%Config{} = config), do: {config.mode, config.repo, ledger_namespace(config)}
+  defp handle_state_namespace(%Config{} = config), do: {config.mode, ledger_namespace(config)}
 
   defp ledger_namespace(%Config{repo: repo, database: database}) do
     case current_ledger_identity(repo, database) do
@@ -1786,12 +1786,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp append_progress_event_or_replay(repo, %Session{} = session, attrs, idempotency_key, tool) do
-    case PlanningRepository.get_progress_event_by_idempotency_key(
-           repo,
-           Session.work_package_id(session),
-           idempotency_key,
-           session.assignment.grant_id
-         ) do
+    case existing_progress_event(repo, session, idempotency_key) do
       {:ok, event} ->
         replay_progress_event(repo, session, event, attrs, tool)
 
@@ -1868,14 +1863,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp replay_progress_event(repo, %Session{} = session, attrs, idempotency_key, tool) do
+    case existing_progress_event(repo, session, idempotency_key) do
+      {:ok, event} -> replay_progress_event(repo, session, event, attrs, tool)
+      {:error, reason} -> worker_error(reason, tool)
+    end
+  end
+
+  defp existing_progress_event(repo, %Session{} = session, idempotency_key) do
     case PlanningRepository.get_progress_event_by_idempotency_key(
            repo,
            Session.work_package_id(session),
            idempotency_key,
            session.assignment.grant_id
          ) do
-      {:ok, event} -> replay_progress_event(repo, session, event, attrs, tool)
-      {:error, reason} -> worker_error(reason, tool)
+      {:ok, event} -> {:ok, event}
+      {:error, :not_found} -> existing_work_package_progress_event(repo, session, idempotency_key)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp existing_work_package_progress_event(repo, %Session{} = session, idempotency_key) do
+    case PlanningRepository.list_progress_events(repo, Session.work_package_id(session)) do
+      {:ok, progress_events} ->
+        matching_progress_event(progress_events, idempotency_key)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp matching_progress_event(progress_events, idempotency_key) do
+    case Enum.find(progress_events, fn event -> event.idempotency_key == idempotency_key end) do
+      %ProgressEvent{} = event -> {:ok, event}
+      nil -> {:error, :not_found}
     end
   end
 
@@ -2182,7 +2202,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp scoped_progress_idempotency_key(tool, idempotency_key, %Session{} = session) when tool in ["attach_branch", "attach_pr"] do
-    [tool, session.assignment.grant_id, idempotency_key] |> Enum.join(":")
+    [tool, session.assignment.work_package_id, idempotency_key] |> Enum.join(":")
   end
 
   defp scoped_progress_idempotency_key(tool, idempotency_key, %Session{}), do: tool <> ":" <> idempotency_key

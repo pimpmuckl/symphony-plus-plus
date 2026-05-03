@@ -4329,6 +4329,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(first_response, ["result", "structuredContent", "progress_event", "idempotency_key"]) == "append_progress:replay-progress"
+
+    first_event_id = get_in(first_response, ["result", "structuredContent", "progress_event", "id"])
+    assert {:ok, second_minted} = AccessGrantService.mint_worker_grant(repo, work_package.id)
+    assert {:ok, second_assignment} = AccessGrantService.claim(repo, second_minted.work_key.secret, claimed_by: "worker-2")
+    second_session = MCPHarness.session(second_assignment, proof_hash: second_minted.grant.secret_hash)
+
+    renewed_replay_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "renewed-replay-progress",
+          "method" => "tools/call",
+          "params" => %{"name" => "append_progress", "arguments" => %{"summary" => "Stored once", "idempotency_key" => "replay-progress"}}
+        },
+        repo: repo,
+        session: second_session
+      )
+
+    assert get_in(renewed_replay_response, ["result", "structuredContent", "progress_event", "id"]) == first_event_id
+
     assert {:ok, _revoked} = AccessGrantService.revoke(repo, minted.grant.id)
 
     replay_response =
@@ -4529,7 +4549,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   defp handle_state_store_key(server), do: {handle_state_namespace(server.config), server.state_key}
 
-  defp handle_state_namespace(%Config{} = config), do: {config.mode, config.repo, ledger_namespace(config)}
+  defp handle_state_namespace(%Config{} = config), do: {config.mode, ledger_namespace(config)}
 
   defp ledger_namespace(%Config{repo: repo, database: database}) do
     case current_ledger_identity(repo, database) do

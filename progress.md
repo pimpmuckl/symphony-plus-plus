@@ -1822,3 +1822,26 @@
 ### Next Steps
 
 - Run focused validation, commit/push this merge-gating fix, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
+
+### Current T2 Follow-up Actions
+
+- Pushed head before this follow-up: `8c1d92558c76276acda6358269c47fe325770a42`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T085038Z-71f2445e`; both reviewers reported findings and the gate was closed as `findings`.
+- Fixed PID-backed response-state namespace drift by removing transient `config.repo` from the stored handle-state namespace and relying on the resolved ledger identity.
+- Fixed MCP progress evidence replay after grant renewal by searching same-work-package progress events by idempotency key before appending a new event under the renewed grant.
+- Fixed finding-idempotency migration safety by deleting duplicate non-null `(work_package_id, idempotency_key)` rows before creating the unique index.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after current T2 fix. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 101 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 296 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues after flattening the replay helper. |
+
+### Next Steps
+
+- Run focused validation, commit/push this T2 fix, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
