@@ -281,7 +281,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp handle_state_store_key(%__MODULE__{} = server), do: {handle_state_namespace(server.config), server.state_key}
-  defp handle_state_namespace(%Config{} = config), do: {config.mode, config.repo, config.database}
+  defp handle_state_namespace(%Config{} = config), do: {config.mode, config.repo, ledger_namespace(config)}
+
+  defp ledger_namespace(%Config{repo: repo, database: database}) do
+    case current_ledger_identity(repo) do
+      {:ok, identity} -> identity
+      :error -> {:configured_database, repo_database_key(repo, database)}
+    end
+  end
+
+  defp current_ledger_identity(repo) when is_atom(repo) do
+    case SQL.query(repo, "PRAGMA database_list", [], log: false) do
+      {:ok, %{rows: rows}} ->
+        case Enum.find(rows, &main_database_row?/1) do
+          [_seq, "main", path] -> {:ok, main_database_identity(repo, path)}
+          _row -> :error
+        end
+
+      _result ->
+        :error
+    end
+  rescue
+    _error -> :error
+  catch
+    _kind, _reason -> :error
+  end
+
+  defp current_ledger_identity(_repo), do: :error
+
+  defp main_database_row?([_seq, "main", _path]), do: true
+  defp main_database_row?(_row), do: false
+
+  defp main_database_identity(repo, path) when is_binary(path) and path != "" do
+    {:main_database, repo_database_key(repo, path), dynamic_repo_identity(repo)}
+  end
+
+  defp main_database_identity(repo, _path), do: {:dynamic_repo, dynamic_repo_identity(repo)}
+
+  defp dynamic_repo_identity(repo) when is_atom(repo) do
+    if function_exported?(repo, :get_dynamic_repo, 0), do: repo.get_dynamic_repo(), else: nil
+  end
+
+  defp repo_database_key(repo, database) when is_atom(repo) do
+    if function_exported?(repo, :database_key, 1), do: repo.database_key(database), else: database
+  end
+
+  defp repo_database_key(_repo, database), do: database
 
   defp monotonic_ms, do: System.monotonic_time(:millisecond)
 
@@ -1396,7 +1441,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     case run_worker_transaction(repo, transaction_fun) do
       {:error, :finding_insert_conflict} ->
-        replay_finding_after_insert_conflict(repo, work_package_id, finding_id, attrs)
+        replay_finding_after_insert_conflict(repo, assignment, work_package_id, finding_id, attrs)
 
       result ->
         result
@@ -1422,13 +1467,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp replay_finding_after_insert_conflict(repo, work_package_id, finding_id, attrs) do
-    case find_existing_finding_with_retry(repo, work_package_id, finding_id, attrs, finding_replay_retry_attempts()) do
-      {:error, :id_already_exists} ->
-        find_existing_finding_by_idempotency_with_retry(repo, work_package_id, attrs, finding_replay_retry_attempts())
+  defp replay_finding_after_insert_conflict(repo, assignment, work_package_id, finding_id, attrs) do
+    with :ok <- PlanningService.require_valid_assignment(repo, assignment) do
+      replay_attempts = finding_replay_retry_attempts()
 
-      result ->
-        result
+      case find_existing_finding_with_retry(repo, work_package_id, finding_id, attrs, replay_attempts) do
+        {:error, :id_already_exists} ->
+          find_existing_finding_by_idempotency_with_retry(repo, work_package_id, attrs, replay_attempts)
+
+        result ->
+          result
+      end
     end
   end
 
@@ -1775,7 +1824,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       payload =
         payload
         |> Map.put("head_sha", head_sha)
-        |> put_review_package_acceptance(state.progress_events, head_sha)
 
       case append_metadata_event(repo, session, arguments, "submit_review_package", "review_package_submitted", payload) do
         {:ok, result} -> persist_review_artifacts_or_rollback(repo, session, artifacts, head_sha, result)
@@ -1787,21 +1835,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
       {:error, reason} ->
         repo.rollback(reason)
-    end
-  end
-
-  defp put_review_package_acceptance(%{"acceptance_criteria_met" => value} = payload, _progress_events, _head_sha) when is_boolean(value) do
-    payload
-  end
-
-  defp put_review_package_acceptance(payload, progress_events, head_sha) do
-    Map.put(payload, "acceptance_criteria_met", review_package_acceptance_recorded?(progress_events, head_sha))
-  end
-
-  defp review_package_acceptance_recorded?(progress_events, head_sha) do
-    case latest_review_package_event(progress_events, head_sha) do
-      %ProgressEvent{payload: payload} when is_map(payload) -> Map.get(payload, "acceptance_criteria_met") == true
-      _event -> false
     end
   end
 

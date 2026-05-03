@@ -281,6 +281,9 @@ Phase 3
 - Fresh T2 on pushed head `73de389` produced four valid edge findings: reject headless review packages before orphaning evidence, classify expired worker grants as auth failures, block `report_blocker` after ready, and revalidate assignment before reading review-package head state.
 - Before the next T2, the approach remains coherent because these fixes only tighten the existing P3-002 worker MCP write/readiness contract: review packages now always require explicit head proof, post-ready evidence remains immutable, and expired grants fail consistently as authorization errors.
 - Findings remain localized to worker MCP evidence and authorization edge cases, not a broader design or scope blocker.
+- Fresh T2 on pushed head `53df735` produced three valid findings: latest review packages inherited stale acceptance, idempotent finding insert-conflict replay lacked live-grant revalidation, and response-only state namespaces could collide across dynamic ledgers when `Config.database` was nil.
+- Before the next T2, the approach remains coherent because this follow-up only aligns acceptance evidence with the latest-package-authoritative decision, applies the existing live-grant replay rule to findings, and keys response-only continuation by resolved ledger identity.
+- Findings remain narrow correctness hardening inside the P3-002 MCP server; there is no current design or scope blocker.
 
 ## Blockers
 

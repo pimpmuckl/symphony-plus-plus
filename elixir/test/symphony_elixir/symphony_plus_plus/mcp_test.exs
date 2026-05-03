@@ -6,6 +6,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   import ExUnit.CaptureLog
   import ExUnit.CaptureIO
 
+  alias Ecto.Adapters.SQL
   alias Mix.Tasks.Sympp.Mcp, as: McpTask
   alias SymphonyElixir.MCPHarness
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
@@ -1179,6 +1180,62 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(blank_key_assignment_response, ["error", "data", "reason"]) == "missing_session"
   end
 
+  test "response-only state keys are isolated by the active ledger" do
+    first_database = WorkPackageFactory.database_path()
+    second_database = WorkPackageFactory.database_path()
+    original_repo = Repo.get_dynamic_repo()
+
+    {:ok, first_pid} =
+      Repo.start_link(database: first_database, name: Repo.process_name(first_database), pool_size: 1, log: false)
+
+    {:ok, second_pid} =
+      Repo.start_link(database: second_database, name: Repo.process_name(second_database), pool_size: 1, log: false)
+
+    try do
+      Repo.put_dynamic_repo(first_pid)
+      assert :ok = WorkPackageRepository.migrate(Repo)
+
+      assert {:ok, package} =
+               WorkPackageRepository.create(
+                 Repo,
+                 WorkPackageFactory.attrs(id: "SYMPP-LEDGER-STATE", kind: "mcp", status: "ready_for_worker")
+               )
+
+      assert {:ok, minted} = AccessGrantService.mint_worker_grant(Repo, package.id)
+
+      state_key = "shared-ledger-state"
+
+      claim_response =
+        Server.handle(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "claim-ledger-one",
+            "method" => "tools/call",
+            "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+          },
+          Server.new(Config.default(repo: Repo), initialized: true, state_key: state_key)
+        )
+
+      Repo.put_dynamic_repo(second_pid)
+      assert :ok = WorkPackageRepository.migrate(Repo)
+
+      assignment_response =
+        Server.handle(
+          %{"jsonrpc" => "2.0", "id" => "assignment-ledger-two", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+          Server.new(Config.default(repo: Repo), initialized: true, state_key: state_key)
+        )
+
+      assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+      assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
+    after
+      Repo.put_dynamic_repo(original_repo)
+      if Process.alive?(first_pid), do: GenServer.stop(first_pid)
+      if Process.alive?(second_pid), do: GenServer.stop(second_pid)
+      File.rm(first_database)
+      File.rm(second_database)
+    end
+  end
+
   test "response-only handle does not retain unchanged one-shot server state", %{repo: repo} do
     server = Server.new(Config.default(repo: repo), initialized: true)
     delete_handle_state_entry(server)
@@ -1250,10 +1307,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     store = handle_state_store()
+    namespace = handle_state_namespace(Config.default(repo: repo))
 
     repo_default_count =
       Enum.count(store, fn
-        {{{:stdio, ^repo, nil}, _state_key}, {%Server{}, _timestamp_ms, false}} -> true
+        {{^namespace, _state_key}, {%Server{}, _timestamp_ms, false}} -> true
         _entry -> false
       end)
 
@@ -2285,7 +2343,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     incremental_missing = get_in(incremental_review_lanes_response, ["error", "data", "missing"])
     assert "review_lanes_complete" in incremental_missing
-    refute "acceptance_criteria_met" in incremental_missing
+    assert "acceptance_criteria_met" in incremental_missing
     refute "review_artifacts_attached" in incremental_missing
     assert "plan_complete" in incremental_missing
 
@@ -3560,7 +3618,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   defp handle_state_agent, do: Module.concat(Server, HandleState)
 
-  defp handle_state_store_key(server), do: {{server.config.mode, server.config.repo, server.config.database}, server.state_key}
+  defp handle_state_store_key(server), do: {handle_state_namespace(server.config), server.state_key}
+
+  defp handle_state_namespace(%Config{} = config), do: {config.mode, config.repo, ledger_namespace(config)}
+
+  defp ledger_namespace(%Config{repo: repo, database: database}) do
+    case current_ledger_identity(repo) do
+      {:ok, identity} -> identity
+      :error -> {:configured_database, repo_database_key(repo, database)}
+    end
+  end
+
+  defp current_ledger_identity(repo) do
+    case SQL.query(repo, "PRAGMA database_list", [], log: false) do
+      {:ok, %{rows: rows}} ->
+        case Enum.find(rows, &main_database_row?/1) do
+          [_seq, "main", path] -> {:ok, main_database_identity(repo, path)}
+          _row -> :error
+        end
+
+      _result ->
+        :error
+    end
+  rescue
+    _error -> :error
+  catch
+    _kind, _reason -> :error
+  end
+
+  defp main_database_row?([_seq, "main", _path]), do: true
+  defp main_database_row?(_row), do: false
+
+  defp main_database_identity(repo, path) when is_binary(path) and path != "" do
+    {:main_database, repo_database_key(repo, path), repo.get_dynamic_repo()}
+  end
+
+  defp main_database_identity(repo, _path), do: {:dynamic_repo, repo.get_dynamic_repo()}
+
+  defp repo_database_key(repo, database) do
+    if function_exported?(repo, :database_key, 1), do: repo.database_key(database), else: database
+  end
 
   defp handle_state_store do
     ensure_handle_state_agent()
