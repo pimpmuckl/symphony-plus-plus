@@ -30,17 +30,20 @@ During coding:
 2. Append meaningful discoveries with `append_finding(finding, idempotency_key)`.
 3. Append implementation and validation events with
    `append_progress(event, idempotency_key)`.
-4. Use `report_blocker(blocker)` and `resolve_blocker(blocker_id, resolution)`
-   for blockers.
-5. Use `request_scope_expansion(request)` instead of silently expanding scope.
+4. Use `report_blocker(summary, idempotency_key, blocker_id?)` and
+   `resolve_blocker(blocker_id, resolution, summary, idempotency_key)` for blockers.
+5. Use `request_scope_expansion(summary, idempotency_key, payload)` instead of
+   silently expanding scope.
 6. Do not create local planning files as the WorkPackage source of truth.
 7. Do not use broad Linear/GitHub state as permission authority.
 
-Before PR:
+Before ready:
 1. Run relevant validation.
-2. Attach branch metadata with `attach_branch(branch, head_sha)`.
-3. Open the PR and attach it with `attach_pr(pr_url, head_sha)`.
-4. Submit review evidence with
+2. Attach branch metadata with `attach_branch(branch, head_sha)` when the policy
+   requires branch metadata.
+3. Open the PR and attach it with `attach_pr(url, head_sha)` when the policy
+   requires PR metadata.
+4. Submit review evidence when available with
    `submit_review_package(summary, tests, artifacts, head_sha)`.
 5. Call `mark_ready()` only after acceptance criteria, tests, review gates,
    progress, findings, branch/PR evidence, and blockers are settled.

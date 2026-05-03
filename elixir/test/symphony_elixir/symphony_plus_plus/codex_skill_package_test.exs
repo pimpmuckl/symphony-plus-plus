@@ -53,9 +53,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       assert content =~ "<WORK_PACKAGE_ID>"
       assert content =~ "claim_work_key(secret, claimed_by)"
       assert content =~ "update_task_plan(patch, expected_version)"
-      assert content =~ "resolve_blocker(blocker_id, resolution)"
+      assert content =~ "resolve_blocker(blocker_id, resolution, summary, idempotency_key)"
+      assert content =~ "request_scope_expansion(summary, idempotency_key, payload)"
+      assert content =~ "attach_pr(url, head_sha)"
       assert content =~ "Do not create local planning files as the WorkPackage source of truth."
       assert content =~ "Do not use broad Linear/GitHub state as permission authority."
+      refute content =~ "attach_pr(pr_url"
       refute content =~ "request_context"
     end
   end

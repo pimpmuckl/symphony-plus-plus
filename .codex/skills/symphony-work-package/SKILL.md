@@ -34,19 +34,22 @@ process aids when the operator explicitly asks for them.
 - Record durable discoveries with `append_finding(finding, idempotency_key)`.
 - Record meaningful implementation and validation events with
   `append_progress(event, idempotency_key)`.
-- Use `report_blocker(blocker)` for active blockers and
-  `resolve_blocker(blocker_id, resolution)` once the blocker is cleared.
+- Use `report_blocker(summary, idempotency_key, blocker_id?)` for active
+  blockers.
+- Use `resolve_blocker(blocker_id, resolution, summary, idempotency_key)` once
+  the blocker is cleared.
 - Use `set_status(status, reason, expected_status)` for allowed non-ready
   lifecycle transitions.
-- Use `request_scope_expansion(request)` when the needed work exceeds the
-  assignment. This records a request; it does not approve the expansion.
+- Use `request_scope_expansion(summary, idempotency_key, payload)` when the
+  needed work exceeds the assignment. This records a request; it does not
+  approve the expansion.
 - Stay inside the assigned WorkPackage. Do not inspect or mutate sibling
   WorkPackages unless Symphony++ exposes a specific context slice.
 
 ## Branch, PR, And Review Evidence
 
 - Attach the implementation branch with `attach_branch(branch, head_sha)`.
-- Attach the PR with `attach_pr(pr_url, head_sha)` after it exists.
+- Attach the PR with `attach_pr(url, head_sha)` after it exists.
 - Submit review evidence with
   `submit_review_package(summary, tests, artifacts, head_sha)`.
 - Include review lane verdicts in the review package when the package policy
