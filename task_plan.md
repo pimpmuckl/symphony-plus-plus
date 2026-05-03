@@ -165,10 +165,13 @@ Phase 3
 - [x] Commit and push forty-first T2 fix.
 - [x] Run fresh full-diff T2 on pushed head `f63106e` and close valid findings gate.
 - [x] Fix forty-second T2 serialized state-store and nested schema findings locally.
-- [ ] Commit and push forty-second T2 fix.
+- [x] Commit and push forty-second T2 fix.
+- [x] Run fresh full-diff T2 on pushed head `22d21f6` and close valid findings gate.
+- [x] Fix forty-third T2 config namespace, idle TTL, and nested strict-runtime findings locally.
+- [ ] Commit and push forty-third T2 fix.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** forty-second T2 fixes validated locally; pending commit/push, fresh full-diff T2 rerun, and GitHub review if T2 is clean.
+- **Status:** forty-third T2 fixes validated locally; pending commit/push, fresh full-diff T2 rerun, and GitHub review if T2 is clean.
 
 ### High-Pressure Coherence Review
 
@@ -219,6 +222,8 @@ Phase 3
 - Findings remain localized to response-only transport durability for the same P3-002 MCP API.
 - Before the next T2, the approach remains coherent because the latest fix only serializes the response-only continuation registry and tightens nested JSON schemas to match existing tool validation.
 - Findings remain localized to concurrency/cleanup and schema-contract hardening in the same P3-002 worker MCP API.
+- Before the next T2, the approach remains coherent because the latest fix only scopes response-only continuation state by MCP config, lengthens stale expiry for real worker idle gaps, and enforces nested schemas already advertised.
+- Findings remain localized to response-only transport isolation and nested input contract enforcement in P3-002.
 
 ## Blockers
 

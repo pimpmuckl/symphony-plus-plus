@@ -266,6 +266,29 @@
 
 - Commit and push forty-second T2 fixes, then rerun full-diff T2 and proceed to GitHub review if clean.
 
+### Forty-Third T2 Follow-up Actions
+
+- Pushed forty-second T2 fix head `22d21f68cf9e1bc51d537b3cecb1417955d09125` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T020024Z-ff71d1d1`; closed it as `findings`.
+- Fixed valid findings by namespacing stored response-only state with MCP config identity, extending stale expiry to 24 hours so normal worker idle gaps keep the session, and rejecting unknown nested task-plan patch/review keys at runtime.
+- Added regressions for config namespace isolation, unknown task-plan patch keys, extra review-entry fields, and stale explicit/default cleanup under the longer TTL.
+- High-pressure coherence check before the next same-tier T2: this remains P3-002 MCP response-state and nested input-contract hardening, not a broader design or scope problem.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after forty-third T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 76 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 271 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit and push forty-third T2 fixes, then rerun full-diff T2 and proceed to GitHub review if clean.
+
 ### Next Steps
 
 - Commit and push the thirty-fourth T2 fix, then rerun fresh full-diff T2 against `symphony-plus-plus/beta`; run GitHub review on PR #15 if T2 is clean.

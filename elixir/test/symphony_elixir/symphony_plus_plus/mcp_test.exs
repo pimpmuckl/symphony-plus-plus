@@ -1009,6 +1009,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert is_list(get_in(tools_response, ["result", "tools"]))
   end
 
+  test "response-only handle namespaces explicit state keys by config", %{repo: repo} do
+    state_key = make_ref()
+
+    init_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()},
+        Server.new(Config.default(repo: repo), state_key: state_key)
+      )
+
+    other_repo_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "tools", "method" => "tools/list", "params" => %{}},
+        Server.new(Config.default(repo: UnexpectedAuthRepo), state_key: state_key)
+      )
+
+    assert get_in(init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
+    assert get_in(other_repo_response, ["error", "data", "reason"]) == "server_not_initialized"
+  end
+
   test "response-only handle resets explicit state key on a new initialize", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STATE-RESET", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -1073,20 +1092,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   test "response-only handle does not retain unchanged one-shot server state", %{repo: repo} do
     server = Server.new(Config.default(repo: repo), initialized: true)
-    delete_handle_state_entry(server.state_key)
+    delete_handle_state_entry(server)
 
     response = Server.handle(%{"jsonrpc" => "2.0", "id" => "tools", "method" => "tools/list", "params" => %{}}, server)
 
     assert is_list(get_in(response, ["result", "tools"]))
-    refute Map.has_key?(handle_state_store(), server.state_key)
+    refute Map.has_key?(handle_state_store(), handle_state_store_key(server))
   end
 
   test "response-only handle cleans stale state entries", %{repo: repo} do
-    stale_key = make_ref()
     stale_explicit_key = make_ref()
+    stale_server = Server.new(Config.default(repo: repo), initialized: true)
+    stale_explicit_server = Server.new(Config.default(repo: repo), initialized: true, state_key: stale_explicit_key)
+    stale_timestamp = System.monotonic_time(:millisecond) - 90_000_000
 
-    put_handle_state_entry(stale_key, {Server.new(Config.default(repo: repo), initialized: true), System.monotonic_time(:millisecond) - 120_000, false})
-    put_handle_state_entry(stale_explicit_key, {Server.new(Config.default(repo: repo), initialized: true, state_key: stale_explicit_key), System.monotonic_time(:millisecond) - 120_000, true})
+    put_handle_state_entry(stale_server, {stale_server, stale_timestamp, false})
+    put_handle_state_entry(stale_explicit_server, {stale_explicit_server, stale_timestamp, true})
 
     response =
       Server.handle(
@@ -1095,8 +1116,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
-    refute Map.has_key?(handle_state_store(), stale_key)
-    refute Map.has_key?(handle_state_store(), stale_explicit_key)
+    refute Map.has_key?(handle_state_store(), handle_state_store_key(stale_server))
+    refute Map.has_key?(handle_state_store(), handle_state_store_key(stale_explicit_server))
   end
 
   test "response-only handle refreshes active default state entries", %{repo: repo} do
@@ -1108,13 +1129,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         server
       )
 
-    {stored_server, _timestamp_ms, false} = Map.fetch!(handle_state_store(), server.state_key)
+    {stored_server, _timestamp_ms, false} = Map.fetch!(handle_state_store(), handle_state_store_key(server))
     stale_but_active_timestamp = System.monotonic_time(:millisecond) - 59_000
-    put_handle_state_entry(server.state_key, {stored_server, stale_but_active_timestamp, false})
+    put_handle_state_entry(server, {stored_server, stale_but_active_timestamp, false})
 
     tools_response = Server.handle(%{"jsonrpc" => "2.0", "id" => "tools-refresh", "method" => "tools/list", "params" => %{}}, server)
 
-    {_stored_server, refreshed_timestamp, false} = Map.fetch!(handle_state_store(), server.state_key)
+    {_stored_server, refreshed_timestamp, false} = Map.fetch!(handle_state_store(), handle_state_store_key(server))
     assert get_in(init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
     assert is_list(get_in(tools_response, ["result", "tools"]))
     assert refreshed_timestamp > stale_but_active_timestamp
@@ -1858,6 +1879,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(no_op_patch_response, ["error", "data", "reason"]) == "invalid_patch_node"
 
+    unknown_patch_key_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "unknown-patch-key-plan",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "update_task_plan",
+            "arguments" => %{"expected_version" => version, "patch" => %{"nodes" => [%{"id" => plan_node.id, "titel" => "Typo", "status" => "done"}]}}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(unknown_patch_key_response, ["error", "data", "reason"]) == "invalid_patch_node"
+
     patch_response =
       MCPHarness.request(
         %{
@@ -2043,6 +2081,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(malformed_review_response, ["error", "data", "reason"]) == "invalid_reviews"
+
+    extra_review_key_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "extra-review-key",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "submit_review_package",
+            "arguments" => %{
+              "summary" => "Extra review key",
+              "tests" => ["mix test"],
+              "artifacts" => ["review-log.txt"],
+              "head_sha" => "abc123",
+              "acceptance_criteria_met" => true,
+              "reviews" => [%{"lane" => "review_t1", "verdict" => "green", "note" => "typo"}]
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(extra_review_key_response, ["error", "data", "reason"]) == "invalid_reviews"
 
     missing_artifacts_response =
       MCPHarness.request(
@@ -3087,19 +3149,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   defp handle_state_agent, do: Module.concat(Server, HandleState)
 
+  defp handle_state_store_key(server), do: {{server.config.mode, server.config.repo, server.config.database}, server.state_key}
+
   defp handle_state_store do
     ensure_handle_state_agent()
     Agent.get(handle_state_agent(), & &1)
   end
 
-  defp put_handle_state_entry(state_key, entry) do
+  defp put_handle_state_entry(server, entry) do
     ensure_handle_state_agent()
-    Agent.update(handle_state_agent(), &Map.put(&1, state_key, entry))
+    Agent.update(handle_state_agent(), &Map.put(&1, handle_state_store_key(server), entry))
   end
 
-  defp delete_handle_state_entry(state_key) do
+  defp delete_handle_state_entry(server) do
     ensure_handle_state_agent()
-    Agent.update(handle_state_agent(), &Map.delete(&1, state_key))
+    Agent.update(handle_state_agent(), &Map.delete(&1, handle_state_store_key(server)))
   end
 
   defp ensure_handle_state_agent do

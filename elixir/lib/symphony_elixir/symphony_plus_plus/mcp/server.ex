@@ -36,8 +36,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @version_resource "sympp://health/version"
   @assignment_resource "sympp://assignment/current"
   @finding_replay_retry_attempts 50
-  @default_handle_state_ttl_ms 60_000
+  @handle_state_ttl_ms 86_400_000
   @handle_state_agent Module.concat(__MODULE__, HandleState)
+  @plan_node_patch_keys ["body", "id", "status", "title"]
 
   @enforce_keys [:config]
   defstruct [:config, :session, :state_key, state_key_explicit: false, initialized: false]
@@ -125,7 +126,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp restore_handle_state(payload, %__MODULE__{initialized: false, session: nil, state_key_explicit: true} = server) do
     if initialize_request?(payload) do
-      delete_handle_state(server.state_key)
+      delete_handle_state(server)
       server
     else
       restore_handle_state(server)
@@ -135,7 +136,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp restore_handle_state(_payload, %__MODULE__{} = server), do: restore_handle_state(server)
 
   defp restore_handle_state(%__MODULE__{} = server) do
-    case lookup_handle_state(server.state_key) do
+    case lookup_handle_state(server) do
       {%__MODULE__{} = stored, _timestamp_ms, _explicit?} ->
         %{server | initialized: server.initialized or stored.initialized, session: server.session || stored.session}
 
@@ -149,8 +150,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       server.initialized != updated_server.initialized or server.session != updated_server.session ->
         put_handle_state(updated_server)
 
-      not updated_server.state_key_explicit and lookup_handle_state(updated_server.state_key) != nil ->
-        refresh_default_handle_state(updated_server.state_key)
+      lookup_handle_state(updated_server) != nil ->
+        refresh_handle_state(updated_server)
 
       true ->
         :ok
@@ -160,24 +161,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp put_handle_state(%__MODULE__{} = server) do
-    update_handle_state_store(&Map.put(&1, server.state_key, {server, monotonic_ms(), server.state_key_explicit}))
+    update_handle_state_store(&Map.put(&1, handle_state_store_key(server), {server, monotonic_ms(), server.state_key_explicit}))
     :ok
   end
 
-  defp lookup_handle_state(state_key) do
+  defp lookup_handle_state(%__MODULE__{} = server) do
     handle_state_store()
-    |> Map.get(state_key)
+    |> Map.get(handle_state_store_key(server))
   end
 
-  defp refresh_default_handle_state(state_key) do
-    case lookup_handle_state(state_key) do
-      {%__MODULE__{} = server, _timestamp_ms, false} -> put_handle_state(server)
+  defp refresh_handle_state(%__MODULE__{} = server) do
+    case lookup_handle_state(server) do
+      {%__MODULE__{} = stored_server, _timestamp_ms, _explicit?} -> put_handle_state(stored_server)
       _state -> :ok
     end
   end
 
-  defp delete_handle_state(state_key) do
-    update_handle_state_store(&Map.delete(&1, state_key))
+  defp delete_handle_state(%__MODULE__{} = server) do
+    update_handle_state_store(&Map.delete(&1, handle_state_store_key(server)))
     :ok
   end
 
@@ -187,7 +188,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     update_handle_state_store(fn store ->
       Map.reject(store, fn
         {_state_key, {%__MODULE__{}, timestamp_ms, _explicit?}} ->
-          now - timestamp_ms > @default_handle_state_ttl_ms
+          now - timestamp_ms > @handle_state_ttl_ms
 
         _entry ->
           false
@@ -219,6 +220,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         :ok
     end
   end
+
+  defp handle_state_store_key(%__MODULE__{} = server), do: {handle_state_namespace(server.config), server.state_key}
+  defp handle_state_namespace(%Config{} = config), do: {config.mode, config.repo, config.database}
 
   defp monotonic_ms, do: System.monotonic_time(:millisecond)
 
@@ -1222,7 +1226,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     id = String.trim(id)
     updates = Map.take(attrs, ["title", "body", "status"])
 
-    with true <- id != "" || {:tool_error, "invalid_patch_node"},
+    with :ok <- require_known_plan_node_patch_keys(attrs),
+         true <- id != "" || {:tool_error, "invalid_patch_node"},
          {:ok, existing_nodes} <- PlanningRepository.list_plan_nodes(repo, work_package_id),
          %PlanNode{} <- Enum.find(existing_nodes, &(&1.id == id)) || {:error, :forbidden},
          :ok <- require_plan_node_updates(updates),
@@ -1237,7 +1242,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp apply_plan_node_patch(_repo, _work_package_id, %{"id" => _id}), do: {:tool_error, "invalid_patch_node"}
 
   defp apply_plan_node_patch(repo, work_package_id, attrs) when is_map(attrs) do
-    with {:ok, title} <- required_argument(attrs, "title") do
+    with :ok <- require_known_plan_node_patch_keys(attrs),
+         {:ok, title} <- required_argument(attrs, "title") do
       PlanningRepository.append_plan_node(repo, %{
         "work_package_id" => work_package_id,
         "title" => title,
@@ -1248,6 +1254,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp apply_plan_node_patch(_repo, _work_package_id, _attrs), do: {:tool_error, "invalid_patch_node"}
+
+  defp require_known_plan_node_patch_keys(attrs) do
+    if Enum.all?(Map.keys(attrs), &(&1 in @plan_node_patch_keys)), do: :ok, else: {:tool_error, "invalid_patch_node"}
+  end
 
   defp require_plan_node_updates(updates) when map_size(updates) == 0, do: {:tool_error, "invalid_patch_node"}
   defp require_plan_node_updates(_updates), do: :ok
@@ -1914,8 +1924,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end)
   end
 
-  defp valid_review_entry?(%{"lane" => lane, "verdict" => verdict}) do
-    is_binary(lane) and String.trim(lane) != "" and is_binary(verdict) and String.trim(verdict) != ""
+  defp valid_review_entry?(%{"lane" => lane, "verdict" => verdict} = review) do
+    Map.keys(review) |> Enum.sort() == ["lane", "verdict"] and
+      is_binary(lane) and String.trim(lane) != "" and is_binary(verdict) and String.trim(verdict) != ""
   end
 
   defp valid_review_entry?(_review), do: false
