@@ -37,6 +37,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @assignment_resource "sympp://assignment/current"
   @finding_replay_retry_attempts 50
   @handle_state_ttl_ms 86_400_000
+  @default_handle_state_max_entries 128
   @handle_state_agent Module.concat(__MODULE__, HandleState)
   @plan_node_patch_keys ["body", "id", "status", "title"]
 
@@ -186,16 +187,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     now = monotonic_ms()
 
     update_handle_state_store(fn store ->
-      Map.reject(store, fn
+      store
+      |> Map.reject(fn
         {_state_key, {%__MODULE__{}, timestamp_ms, _explicit?}} ->
           now - timestamp_ms > @handle_state_ttl_ms
 
         _entry ->
           false
       end)
+      |> trim_default_handle_states()
     end)
 
     :ok
+  end
+
+  defp trim_default_handle_states(store) do
+    {explicit_entries, default_entries} =
+      Enum.split_with(store, fn
+        {_state_key, {%__MODULE__{}, _timestamp_ms, true}} -> true
+        _entry -> false
+      end)
+
+    default_entries =
+      default_entries
+      |> Enum.sort_by(fn {_state_key, {_server, timestamp_ms, _explicit?}} -> timestamp_ms end, :desc)
+      |> Enum.take(@default_handle_state_max_entries)
+
+    Map.new(explicit_entries ++ default_entries)
   end
 
   defp update_handle_state_store(fun) do
@@ -1427,6 +1445,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> max(0)
   end
 
+  defp progress_replay_retry_attempts, do: finding_replay_retry_attempts()
+
   defp append_scoped_progress(repo, session, arguments, tool, payload) do
     with {:ok, session} <- scoped_session(repo, session, arguments),
          {:ok, summary} <- required_argument(arguments, "summary"),
@@ -1511,10 +1531,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
 
     case run_worker_transaction(repo, transaction_fun) do
-      {:ok, event} -> {:ok, tool_result(%{"progress_event" => progress_event_payload(event)})}
-      {:error, :idempotency_key_conflict} -> replay_progress_event(repo, session, attrs, idempotency_key, tool)
-      {:error, reason} -> worker_error(reason, tool)
+      {:ok, event} ->
+        {:ok, tool_result(%{"progress_event" => progress_event_payload(event)})}
+
+      {:error, :idempotency_key_conflict} ->
+        replay_progress_event_with_retry(repo, session, attrs, idempotency_key, tool, progress_replay_retry_attempts())
+
+      {:error, reason} ->
+        worker_error(reason, tool)
     end
+  end
+
+  defp replay_progress_event_with_retry(repo, %Session{} = session, attrs, idempotency_key, tool, attempts_left) do
+    retry_fun = fn ->
+      replay_progress_event_with_retry(repo, session, attrs, idempotency_key, tool, attempts_left - 1)
+    end
+
+    repo
+    |> replay_progress_event(session, attrs, idempotency_key, tool)
+    |> retry_missing_progress_event(retry_fun, attempts_left)
   end
 
   defp replay_progress_event(repo, %Session{} = session, attrs, idempotency_key, tool) do
@@ -1528,6 +1563,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, reason} -> worker_error(reason, tool)
     end
   end
+
+  defp retry_missing_progress_event({:error, _code, _message, %{"reason" => "not_found"}}, retry_fun, attempts_left) when attempts_left > 0 do
+    Process.sleep(5)
+    retry_fun.()
+  end
+
+  defp retry_missing_progress_event(result, _retry_fun, _attempts_left), do: result
 
   defp replay_matching_progress_event(%ProgressEvent{} = event, attrs, tool) do
     if progress_replay_matches?(event, attrs) do

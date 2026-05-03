@@ -168,10 +168,13 @@ Phase 3
 - [x] Commit and push forty-second T2 fix.
 - [x] Run fresh full-diff T2 on pushed head `22d21f6` and close valid findings gate.
 - [x] Fix forty-third T2 config namespace, idle TTL, and nested strict-runtime findings locally.
-- [ ] Commit and push forty-third T2 fix.
+- [x] Commit and push forty-third T2 fix.
+- [x] Run fresh full-diff T2 on pushed head `a8f70e3` and close valid findings gate.
+- [x] Fix forty-fourth T2 default-state retention and progress replay race findings locally.
+- [ ] Commit and push forty-fourth T2 fix.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** forty-third T2 fixes validated locally; pending commit/push, fresh full-diff T2 rerun, and GitHub review if T2 is clean.
+- **Status:** forty-fourth T2 fixes validated locally; pending commit/push, fresh full-diff T2 rerun, and GitHub review if T2 is clean.
 
 ### High-Pressure Coherence Review
 
@@ -224,6 +227,8 @@ Phase 3
 - Findings remain localized to concurrency/cleanup and schema-contract hardening in the same P3-002 worker MCP API.
 - Before the next T2, the approach remains coherent because the latest fix only scopes response-only continuation state by MCP config, lengthens stale expiry for real worker idle gaps, and enforces nested schemas already advertised.
 - Findings remain localized to response-only transport isolation and nested input contract enforcement in P3-002.
+- Before the next T2, the approach remains coherent because the latest fix only bounds implicit default response-state retention and gives progress-event idempotency the same retry window already used for finding replays.
+- Findings remain localized to response-only memory hygiene and idempotent retry race hardening in P3-002.
 
 ## Blockers
 
