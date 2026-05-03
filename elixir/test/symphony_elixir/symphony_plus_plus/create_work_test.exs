@@ -9,6 +9,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.CreateWork
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Server}
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Renderer
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
@@ -239,6 +240,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     assert creation.work_package.kind == "quick_fix"
     assert creation.work_package.acceptance_criteria == []
     assert creation.virtual_files["acceptance.md"] =~ "No acceptance criteria recorded."
+
+    assert {:ok, persisted} = WorkPackageRepository.get(repo, creation.work_package.id)
+    assert persisted.acceptance_criteria == []
+
+    assert {:ok, acceptance_md} = Renderer.render(repo, creation.work_package.id, "acceptance.md")
+    assert acceptance_md =~ "No acceptance criteria recorded."
   end
 
   test "renders investigation and blank scope plan guidance correctly", %{repo: repo} do

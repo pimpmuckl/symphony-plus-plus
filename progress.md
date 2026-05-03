@@ -76,6 +76,10 @@
 | `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/symphony_elixir/symphony_plus_plus/work_packages_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | Acceptance-less quick-fix regression: 30 tests, 0 failures. |
 | `mise exec -- mix format --check-formatted` | pass | Acceptance-less quick-fix regression: no formatting drift. |
 | `mise exec -- mix credo --strict lib/symphony_elixir/symphony_plus_plus/create_work.ex test/symphony_elixir/symphony_plus_plus/create_work_test.exs` | pass | Acceptance-less quick-fix regression: touched files, no issues. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/create_work_test.exs` | pass | Acceptance-less quick-fix persistence/render strengthening: 12 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/symphony_elixir/symphony_plus_plus/work_packages_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | Acceptance-less quick-fix persistence/render strengthening: 30 tests, 0 failures. |
+| `mise exec -- mix format --check-formatted` | pass | Acceptance-less quick-fix persistence/render strengthening: no formatting drift. |
+| `mise exec -- mix credo --strict lib/symphony_elixir/symphony_plus_plus/create_work.ex test/symphony_elixir/symphony_plus_plus/create_work_test.exs` | pass | Acceptance-less quick-fix persistence/render strengthening: touched files, no issues. |
 
 ## Review
 
@@ -97,7 +101,8 @@
 - Cached GitHub review returned clean on PR #19 at `https://github.com/Pimpmuckl/symphony-plus-plus/pull/19#issuecomment-4366867995`.
 - Final cached `review_state` after GitHub review: `recommendation: none` for head `dff32133351ac6336223967a97fa74fda30a516e`.
 - Cached full-diff T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T183448Z-82b38779` flagged acceptance-less quick-fix persistence; added explicit regression coverage for the accepted/persisted quick-fix path.
+- Cached follow-up `019def24-cfe9-7d53-83c3-27c1c0042e2d` found the acceptance-less quick-fix regression needed to prove ledger reload/rendering. Updated the test to reload the persisted WorkPackage and render `acceptance.md` from repository state.
 
 ## Outstanding
 
-- Validate and rerun cached review-state/T2/GitHub review after the acceptance-less quick-fix regression commit.
+- Validate and rerun cached review-state after the acceptance-less quick-fix regression-strengthening commit.
