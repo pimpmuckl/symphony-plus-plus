@@ -297,12 +297,13 @@ Phase 3
 - Fresh T2 on pushed head `9a8c3cc` produced two valid Alpha findings: stale PR metadata could still override a fresh branch head on the first lagging sync, and explicit `state_key` entries were subject to the implicit 24-hour cleanup.
 - Before the next T2, the approach remains coherent because this fix only makes branch head the current-code authority for worker readiness and keeps explicit `state_key` retention aligned with grant lifetime instead of the implicit response-state TTL.
 - Findings remain narrow readiness-head and explicit reconnect retention hardening within P3-002.
-- Fresh T2 on pushed head `1c28dbd` is not converging: Bravo requires newest branch/PR metadata to win for current head selection, while Alpha flags explicit session restoration from `state_key` alone as a security issue and wants review-package evidence ignored without an attached current head.
-- Pause before more same-tier review. The remaining questions are product/security contract decisions for P3-002 stateless reconnect ownership and current-head authority, not just local implementation ambiguity.
+- Fresh T2 on pushed head `1c28dbd` was not converging: Bravo required newest branch/PR metadata to win for current head selection, while Alpha flagged explicit session restoration from `state_key` alone as a security issue and wanted review-package evidence ignored without an attached current head.
+- Overseer decided on 2026-05-03: explicit `state_key` retains initialized handshake state only and workers must re-run `claim_work_key(secret, claimed_by)` after reconnect initialize; latest attached branch head is the worker-declared current code head and PR metadata must match it for merge readiness; review packages require an attached current branch head and cannot satisfy readiness without one.
+- Before the next T2, the approach is coherent because the latest implementation applies those product/security decisions directly inside the existing P3-002 state and review-head gates without broadening scope.
 
 ## Blockers
 
-- Blocked on overseer decision after T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T045342Z-cd526540`: choose the explicit `state_key` reconnect security contract and current-head authority rule before continuing the T2 loop.
+- None currently. The explicit `state_key`, current-head authority, and no-head review-package readiness decisions are resolved by the overseer and implemented locally pending validation/commit.
 
 ## Boundaries
 

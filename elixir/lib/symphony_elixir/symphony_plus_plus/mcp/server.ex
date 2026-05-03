@@ -160,18 +160,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp restore_handle_state(payload, %__MODULE__{initialized: false, session: nil, state_key_explicit: true} = server) do
     if initialize_request?(payload) do
-      restore_explicit_handle_state_for_initialize(server)
+      restore_explicit_handle_state(server)
     else
-      restore_handle_state(server)
+      restore_explicit_handle_state(server)
     end
   end
 
   defp restore_handle_state(_payload, %__MODULE__{} = server), do: restore_handle_state(server)
 
-  defp restore_explicit_handle_state_for_initialize(%__MODULE__{} = server) do
+  defp restore_explicit_handle_state(%__MODULE__{} = server) do
     case lookup_handle_state(server) do
       {%__MODULE__{} = stored, _timestamp_ms, _explicit?} ->
-        %{server | session: server.session || stored.session}
+        %{server | initialized: server.initialized or stored.initialized}
 
       _stored ->
         server
@@ -204,9 +204,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp put_handle_state(%__MODULE__{} = server) do
-    update_handle_state_store(&Map.put(&1, handle_state_store_key(server), {server, monotonic_ms(), server.state_key_explicit}))
+    stored_server = stored_handle_state_server(server)
+    update_handle_state_store(&Map.put(&1, handle_state_store_key(server), {stored_server, monotonic_ms(), server.state_key_explicit}))
     :ok
   end
+
+  defp stored_handle_state_server(%__MODULE__{state_key_explicit: true} = server), do: %{server | session: nil}
+  defp stored_handle_state_server(%__MODULE__{} = server), do: server
 
   defp lookup_handle_state(%__MODULE__{} = server) do
     handle_state_store()
@@ -1767,6 +1771,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, nil} ->
         {:tool_error, "missing_head_sha"}
 
+      {:ok, _head_sha} when not is_binary(current_head_sha) ->
+        {:tool_error, "missing_current_head_sha"}
+
       {:ok, head_sha} when is_binary(current_head_sha) and head_sha != current_head_sha ->
         {:tool_error, "stale_head_sha"}
 
@@ -2073,7 +2080,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end)
   end
 
-  defp current_head_review_package?(%ProgressEvent{payload: payload}, nil) when is_map(payload), do: true
+  defp current_head_review_package?(%ProgressEvent{}, nil), do: false
 
   defp current_head_review_package?(%ProgressEvent{payload: payload}, current_head_sha) when is_map(payload) do
     Map.get(payload, "head_sha") == current_head_sha
@@ -2146,8 +2153,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp valid_review_entry?(_review), do: false
 
   defp latest_current_head_sha(progress_events) do
-    latest_metadata_head_sha(progress_events, "branch", "attach_branch") ||
-      latest_metadata_head_sha(progress_events, "pr", "attach_pr")
+    latest_metadata_head_sha(progress_events, "branch", "attach_branch")
   end
 
   defp latest_metadata_head_sha(progress_events, type, source_tool) do

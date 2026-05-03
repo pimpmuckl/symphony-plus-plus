@@ -43,6 +43,11 @@ mark_ready()
 worker MCP ownership contract: reconnects are accepted only when the same
 secret proof is presented by the same `claimed_by` owner.
 
+For stateless MCP transports, an explicit `state_key` is continuity metadata for
+the initialized handshake only. It is not a bearer capability for a claimed
+worker assignment. After reconnect initialize, workers must call
+`claim_work_key(secret, claimed_by)` again to bind the worker session.
+
 `attach_branch` intentionally requires both the branch name and the current
 branch `head_sha`. Branch-only review evidence is matched to that head so a
 later branch update cannot reuse stale review-package evidence. When both
@@ -50,7 +55,8 @@ branch and PR metadata exist, the latest branch head is the worker-declared
 current code head; PR metadata proves that the PR is attached for that same
 head.
 
-`submit_review_package` must include `head_sha` on every submission. The latest
+`submit_review_package` must include `head_sha` on every submission and can only
+record readiness evidence after a current branch head is attached. The latest
 current-head review package is authoritative for review readiness; older
 packages for the same head are superseded rather than implicitly merged.
 

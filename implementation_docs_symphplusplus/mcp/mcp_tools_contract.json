@@ -4,7 +4,7 @@
       "name": "claim_work_key",
       "purpose": "Claim a one-time work key/secret with required claimed_by owner identity and bind it to the current worker session.",
       "required_arguments": ["secret", "claimed_by"],
-      "reconnect_policy": "Reconnects are accepted only when the same claimed_by owner presents the same secret proof."
+      "reconnect_policy": "Reconnects are accepted only when the same claimed_by owner presents the same secret proof. Explicit state_key values retain initialized handshake state only and do not restore claimed worker sessions."
     },
     {
       "name": "get_current_assignment",
@@ -56,7 +56,7 @@
     {
       "name": "submit_review_package",
       "purpose": "Attach summary/tests/artifacts for the current head review package.",
-      "head_policy": "head_sha is required on every submit_review_package call.",
+      "head_policy": "head_sha is required on every submit_review_package call and must match the latest attached branch head.",
       "readiness_policy": "The latest review package for the current head is authoritative; older same-head packages are superseded."
     },
     {

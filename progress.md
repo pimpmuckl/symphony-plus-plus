@@ -1351,6 +1351,26 @@
 
 ### Decision Needed
 
-- Explicit `state_key` reconnect: either preserve session continuity as a bearer-like reconnect token, or require `claim_work_key(secret, claimed_by)` again after reconnect initialize and retain only initialized handshake state.
-- Current head authority: either newest metadata event wins, latest branch head wins until PR metadata matches, or define a stricter rule such as review packages require explicit current branch/PR metadata and stale PR attachments are rejected at `attach_pr`.
-- Review packages without attached head metadata: either reject/ignore them for readiness, or allow them only for non-merge policies with explicit `head_sha`.
+- Resolved by overseer on 2026-05-03: choose handshake-only explicit `state_key`, latest branch head as current-code authority, PR metadata required to match that branch head for merge readiness, and review packages requiring an attached current branch head before readiness.
+
+### Fifty-Ninth Decision Fix Actions
+
+- Implemented the overseer decision by stripping sessions from explicit `state_key` persistence/restoration; `state_key` now retains initialized handshake state only.
+- Review-package submission now rejects explicit `head_sha` evidence with `missing_current_head_sha` until a branch head is attached.
+- Current-head selection remains the latest attached branch head; PR metadata with a different head does not move readiness back to stale code and merge readiness reports missing matching PR metadata.
+- Updated public MCP docs/templates/package docs to document the `state_key`, branch-head, and review-package head contracts.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after fifty-ninth decision fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 85 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 280 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Run focused validation, commit/push the decision fix, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.

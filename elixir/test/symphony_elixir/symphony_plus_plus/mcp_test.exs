@@ -1009,7 +1009,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-STATELESS-HANDLE"
-    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-STATELESS-HANDLE"
+    assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
+
+    reconnect_claim_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-again",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), state_key: state_key)
+      )
+
+    assert get_in(reconnect_claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-STATELESS-HANDLE"
   end
 
   test "response-only handle supports explicit state keys across processes", %{repo: repo} do
@@ -1056,7 +1069,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(other_repo_response, ["error", "data", "reason"]) == "server_not_initialized"
   end
 
-  test "response-only handle preserves explicit state key session across reconnect initialize", %{repo: repo} do
+  test "response-only handle does not restore explicit state key session across reconnect initialize", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STATE-RESET", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     state_key = make_ref()
@@ -1078,24 +1091,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                Server.new(Config.default(repo: repo), state_key: state_key)
              )
 
-    malformed_init_response =
+    reinit_response =
       Server.handle(
-        %{"jsonrpc" => "2.0", "id" => "init-bad", "method" => "initialize", "params" => %{"protocolVersion" => "2025-03-26"}},
+        %{"jsonrpc" => "2.0", "id" => "init-again", "method" => "initialize", "params" => initialize_params()},
         Server.new(Config.default(repo: repo), state_key: state_key)
       )
 
-    retained_assignment_response =
+    missing_assignment_response =
       Server.handle(
-        %{"jsonrpc" => "2.0", "id" => "assignment-retained", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        %{"jsonrpc" => "2.0", "id" => "assignment-missing", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
         Server.new(Config.default(repo: repo), state_key: state_key)
       )
 
-    assert get_in(malformed_init_response, ["error", "data", "reason"]) == "invalid_initialize_params"
-    assert get_in(retained_assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert get_in(reinit_response, ["error", "data", "reason"]) == "already_initialized"
+    assert get_in(missing_assignment_response, ["error", "data", "reason"]) == "missing_session"
 
     assert %{"result" => _result} =
              Server.handle(
-               %{"jsonrpc" => "2.0", "id" => "init-again", "method" => "initialize", "params" => initialize_params()},
+               %{
+                 "jsonrpc" => "2.0",
+                 "id" => "claim-again",
+                 "method" => "tools/call",
+                 "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+               },
                Server.new(Config.default(repo: repo), state_key: state_key)
              )
 
@@ -1105,7 +1123,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         Server.new(Config.default(repo: repo), state_key: state_key)
       )
 
-    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
   end
 
   test "stdio response-only line helper retains initialized worker session", %{repo: repo} do
@@ -2286,6 +2304,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(pre_metadata_review_response, ["error", "data", "reason"]) == "missing_head_sha"
+
+    pre_branch_review_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "pre-branch-review",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "submit_review_package",
+            "arguments" => %{
+              "summary" => "Review before branch head",
+              "tests" => ["mix test"],
+              "artifacts" => ["pre-branch-review-log.txt"],
+              "head_sha" => "abc123",
+              "reviews" => []
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(pre_branch_review_response, ["error", "data", "reason"]) == "missing_current_head_sha"
 
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-GATES/worker", "head_sha" => " abc123 ", "idempotency_key" => "shared-metadata-key"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => " abc123 "})

@@ -58,6 +58,11 @@ Workers must call `claim_work_key(secret, claimed_by)`. The `claimed_by`
 identity is required so reconnect ownership is explicit; reconnects are accepted
 only for the same owner identity and secret proof.
 
+Explicit `state_key` values are continuity metadata for initialized stateless
+transports, not bearer capabilities. After reconnect initialize, workers must
+call `claim_work_key(secret, claimed_by)` again before assignment-scoped tools
+can run.
+
 ### Review package contract
 
 Workers must include `submit_review_package.head_sha` on every submission. The
@@ -66,7 +71,8 @@ older same-head packages are superseded.
 
 The latest attached branch head is the worker-declared current code head. PR
 metadata must match that head for merge readiness; stale PR metadata does not
-move readiness back to an older commit.
+move readiness back to an older commit. Review packages require an attached
+current branch head and must bind to that head.
 
 For non-merge-gated package policies such as `quick_fix`, workers can satisfy
 focused-test and review-lane gates with generic `append_progress.status` values
