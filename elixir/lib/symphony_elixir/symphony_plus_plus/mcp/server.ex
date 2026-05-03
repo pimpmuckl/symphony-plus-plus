@@ -912,7 +912,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp set_status_transaction(repo, %Session{} = session, expected_status, status, reason) do
     repo
     |> run_worker_transaction(fn ->
-      with {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)),
+      with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
+           {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)),
            :ok <- require_expected_status(state.work_package, expected_status),
            {:ok, _event} <- append_status_reason_event(repo, session, expected_status, status, reason) do
         LifecycleService.transition(repo, state.work_package, status, actor(session))
@@ -923,7 +924,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp mark_ready_transaction(repo, %Session{} = session) do
     repo
     |> run_worker_transaction(fn ->
-      with {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)),
+      with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
+           {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)),
            :ok <- readiness_gates(state) do
         ready_status = terminal_ready_status(state.work_package)
         LifecycleService.transition(repo, state.work_package, ready_status, actor(session))
@@ -1349,7 +1351,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp append_new_progress_event_or_replay(repo, %Session{} = session, attrs, idempotency_key, tool) do
-    case PlanningService.append_authenticated_progress_event(repo, session.assignment, attrs) do
+    transaction_fun = fn ->
+      with :ok <- PlanningService.require_valid_assignment(repo, session.assignment) do
+        PlanningService.append_authenticated_progress_event(repo, session.assignment, attrs)
+      end
+    end
+
+    case run_worker_transaction(repo, transaction_fun) do
       {:ok, event} -> {:ok, tool_result(%{"progress_event" => progress_event_payload(event)})}
       {:error, :idempotency_key_conflict} -> replay_progress_event(repo, session, attrs, idempotency_key, tool)
       {:error, reason} -> worker_error(reason, tool)
@@ -1410,10 +1418,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp review_package_head_sha(arguments, progress_events) do
     current_head_sha = latest_pr_head_sha(progress_events)
 
-    case optional_argument(arguments, "head_sha", nil) do
-      nil when is_binary(current_head_sha) -> {:ok, current_head_sha}
-      head_sha when is_binary(current_head_sha) and head_sha != current_head_sha -> {:tool_error, "stale_head_sha"}
-      head_sha -> {:ok, head_sha}
+    case optional_head_sha(arguments) do
+      {:ok, nil} when is_binary(current_head_sha) ->
+        {:ok, current_head_sha}
+
+      {:ok, head_sha} when is_binary(current_head_sha) and head_sha != current_head_sha ->
+        {:tool_error, "stale_head_sha"}
+
+      {:ok, head_sha} ->
+        {:ok, head_sha}
+
+      error ->
+        error
+    end
+  end
+
+  defp optional_head_sha(arguments) do
+    case Map.fetch(arguments, "head_sha") do
+      :error ->
+        {:ok, nil}
+
+      {:ok, nil} ->
+        {:ok, nil}
+
+      {:ok, head_sha} when is_binary(head_sha) ->
+        case String.trim(head_sha) do
+          "" -> {:ok, nil}
+          trimmed -> {:ok, trimmed}
+        end
+
+      {:ok, _head_sha} ->
+        {:tool_error, "invalid_head_sha"}
     end
   end
 
@@ -1637,16 +1672,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp review_artifacts_present?(progress_events, artifacts, work_package_id) do
     current_head_sha = latest_pr_head_sha(progress_events)
-    artifact_paths = current_head_review_artifact_paths(progress_events, current_head_sha)
+    artifact_references = current_head_review_artifact_references(progress_events, current_head_sha)
 
-    artifact_paths != [] and
-      Enum.all?(artifact_paths, &persisted_review_artifact?(artifacts, work_package_id, current_head_sha, &1))
+    artifact_references != [] and
+      Enum.all?(artifact_references, fn {path, artifact_head_sha} ->
+        persisted_review_artifact?(artifacts, work_package_id, artifact_head_sha, path)
+      end)
   end
 
-  defp current_head_review_artifact_paths(progress_events, current_head_sha) do
+  defp current_head_review_artifact_references(progress_events, current_head_sha) do
     progress_events
     |> current_head_review_package_events(current_head_sha)
-    |> Enum.flat_map(&review_package_artifact_paths(&1, current_head_sha))
+    |> Enum.flat_map(&review_package_artifact_references(&1, current_head_sha))
     |> Enum.uniq()
   end
 
@@ -1666,7 +1703,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp current_head_review_package?(%ProgressEvent{payload: payload}, nil) when is_map(payload), do: true
 
   defp current_head_review_package?(%ProgressEvent{payload: payload}, current_head_sha) when is_map(payload) do
-    Map.get(payload, "head_sha") == current_head_sha
+    head_sha = Map.get(payload, "head_sha")
+    is_nil(head_sha) or head_sha == current_head_sha
   end
 
   defp current_head_review_package?(%ProgressEvent{}, _current_head_sha), do: false
@@ -1674,7 +1712,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp review_package_artifact_paths(%ProgressEvent{payload: payload}, current_head_sha) when is_map(payload) do
     artifacts = Map.get(payload, "artifacts")
 
-    if is_list(artifacts) and (current_head_sha == nil or Map.get(payload, "head_sha") == current_head_sha) do
+    payload_head_sha = Map.get(payload, "head_sha")
+
+    current_head_artifact? = current_head_sha == nil or is_nil(payload_head_sha) or payload_head_sha == current_head_sha
+
+    if is_list(artifacts) and current_head_artifact? do
       Enum.filter(artifacts, &(is_binary(&1) and String.trim(&1) != ""))
     else
       []
@@ -1682,6 +1724,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp review_package_artifact_paths(%ProgressEvent{}, _current_head_sha), do: []
+
+  defp review_package_artifact_references(%ProgressEvent{payload: payload} = event, current_head_sha) when is_map(payload) do
+    event
+    |> review_package_artifact_paths(current_head_sha)
+    |> Enum.map(&{&1, Map.get(payload, "head_sha")})
+  end
+
+  defp review_package_artifact_references(%ProgressEvent{}, _current_head_sha), do: []
 
   defp persisted_review_artifact?(artifacts, work_package_id, head_sha, path) do
     expected_id = review_artifact_id(work_package_id, head_sha, path)
@@ -1695,7 +1745,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       not is_list(reviews) ->
         []
 
-      current_head_sha != nil and Map.get(payload, "head_sha") != current_head_sha ->
+      current_head_sha != nil and not is_nil(Map.get(payload, "head_sha")) and Map.get(payload, "head_sha") != current_head_sha ->
         []
 
       true ->

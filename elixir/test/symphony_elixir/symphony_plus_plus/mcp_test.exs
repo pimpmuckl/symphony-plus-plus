@@ -1975,6 +1975,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(invalid_tests_response, ["error", "data", "reason"]) == "invalid_tests"
 
+    invalid_head_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "invalid-head-sha",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "submit_review_package",
+            "arguments" => %{
+              "summary" => "Invalid head",
+              "tests" => ["mix test"],
+              "artifacts" => ["review-log.txt"],
+              "head_sha" => 123,
+              "reviews" => []
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(invalid_head_response, ["error", "data", "reason"]) == "invalid_head_sha"
+
     sibling_review_response =
       MCPHarness.request(
         %{
@@ -2124,6 +2147,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
     assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
+  end
+
+  test "review package submitted before PR attach remains readiness evidence", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PRE-PR-REVIEW", kind: "mcp", status: "ci_waiting"))
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PRE-PR-REVIEW/worker"})
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Pre-PR review",
+      "tests" => ["mix test"],
+      "artifacts" => ["pre-pr-review.txt"],
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
+
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/456", "head_sha" => "later-head"})
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-after-pr-attach", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
   end
 
   test "mark_ready rejects empty review packages and allows resolved blockers", %{repo: repo} do
@@ -2488,6 +2540,53 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     resource_uris = list_response |> get_in(["result", "resources"]) |> Enum.map(& &1["uri"])
     refute "sympp://assignment/current" in resource_uris
+
+    progress_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "revoked-progress",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_progress",
+            "arguments" => %{"summary" => "Should not write", "idempotency_key" => "revoked-progress"}
+          }
+        },
+        repo: repo,
+        session: MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+      )
+
+    assert get_in(progress_response, ["error", "data", "reason"]) == "revoked"
+
+    assert {:ok, status_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-REVOKED-STATUS", kind: "mcp", status: "planning"))
+
+    assert {:ok, status_minted} = AccessGrantService.mint_worker_grant(repo, status_package.id)
+    assert {:ok, status_assignment} = AccessGrantService.claim(repo, status_minted.work_key.secret, claimed_by: "worker-1")
+    assert {:ok, _revoked_status} = AccessGrantService.revoke(repo, status_minted.grant.id)
+
+    status_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "revoked-status",
+          "method" => "tools/call",
+          "params" => %{"name" => "set_status", "arguments" => %{"status" => "blocked", "expected_status" => "planning"}}
+        },
+        repo: repo,
+        session: MCPHarness.session(status_assignment, proof_hash: status_minted.grant.secret_hash)
+      )
+
+    assert get_in(status_response, ["error", "data", "reason"]) == "revoked"
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "revoked-ready", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: MCPHarness.session(status_assignment, proof_hash: status_minted.grant.secret_hash)
+      )
+
+    assert get_in(ready_response, ["error", "data", "reason"]) == "revoked"
   end
 
   test "protected resources require injected session proof of possession", %{repo: repo} do

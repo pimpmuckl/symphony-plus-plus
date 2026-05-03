@@ -133,9 +133,12 @@ Phase 3
 - [x] Resolve thirty-first T2 findings after architecture decision on `claim_work_key.claimed_by` compatibility.
 - [x] Validate thirty-first T2 fixes locally.
 - [x] Commit and push thirty-first T2 fixes.
+- [x] Run fresh full-diff T2 on pushed head `5a13229` and close valid findings gate.
+- [x] Fix thirty-second T2 head validation, pre-attach review evidence, and transactional grant revalidation findings locally.
+- [ ] Commit and push thirty-second T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** thirty-first T2 fixes pushed; pending fresh full-diff T2 rerun and GitHub review if clean.
+- **Status:** thirty-second T2 fixes validated locally; pending commit/push and fresh full-diff T2 rerun.
 
 ### High-Pressure Coherence Review
 
@@ -164,6 +167,8 @@ Phase 3
 - The current loop is blocked because T2 findings now conflict on the public `claim_work_key` contract: earlier review required explicit `claimed_by` for reconnect ownership, while the latest review says published docs/templates require `claim_work_key(secret)`.
 - This is a backward-compatibility-sensitive API decision for P3-002 consumers, so implementation should pause until the overseeing architecture agent chooses the contract.
 - Overseer selected Option A on 2026-05-03: keep `claim_work_key.claimed_by` required and update the published MCP docs/templates/package docs as an intentional pre-production API decision.
+- Before the next T2, the approach remains coherent because the latest fixes only tighten worker grant revalidation inside existing write transactions and preserve already-accepted review evidence semantics.
+- Findings remain narrow correctness hardening around the same P3-002 MCP write/readiness surface, so continuing the T2/GitHub loop is still appropriate.
 
 ## Blockers
 

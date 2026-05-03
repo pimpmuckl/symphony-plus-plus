@@ -137,6 +137,29 @@
 
 - Pushed thirty-first T2 fix head `cb3b14757a8d7fe52ce3a637f05ffca1749059a8`; rerun full-diff T2, then proceed to GitHub review if clean.
 
+### Thirty-Second T2 Follow-up Actions
+
+- Pushed planning head `5a13229beba90c58da1f7005071d431a61962651` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T000128Z-c1d0300d`; closed it as `findings`.
+- Fixed valid findings by validating optional review-package `head_sha`, preserving headless pre-PR review package evidence after later PR attachment, and revalidating worker assignments inside progress write and lifecycle transition transactions.
+- Added regressions for invalid non-string `head_sha`, pre-attach review package readiness, revoked `append_progress`, revoked `set_status`, and revoked `mark_ready`.
+- High-pressure coherence check before the next same-tier T2: changes remain constrained to P3-002 MCP validation, readiness evidence, and grant-scoped write enforcement.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after thirty-second T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 65 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 260 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues after line splitting. |
+
+### Next Steps
+
+- Commit and push thirty-second T2 fixes, rerun full-diff T2, then proceed to GitHub review if clean.
+
 ### Next Steps
 
 - Commit and push fourth T2 fixes, rerun T2, then proceed to GitHub review if clean.
