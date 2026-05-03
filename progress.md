@@ -133,6 +133,28 @@
 | `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
 | `mise exec -- mix credo --strict` | pass | no issues. |
 
+### Sixty-Sixth T2 Follow-up Actions
+
+- Pushed head before this follow-up: `94e5f16`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T062854Z-9f3d0fbe`; closed it as `findings`.
+- Bravo was clean. Alpha produced one valid finding: `append_finding` exact idempotent replay could be rejected by the post-ready write lock after the original finding had already succeeded.
+- Fixed by checking matching existing finding/idempotency evidence before enforcing the ready-state mutation guard, with regression coverage that post-ready finding replay succeeds while a new post-ready finding still fails.
+
+### Next Steps
+
+- Run focused validation, commit/push sixty-sixth T2 fix, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after sixty-sixth T2 fix. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 92 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 287 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
 ### Sixty-Fifth T2 Follow-up Actions
 
 - Pushed head before this follow-up: `4aef958`.

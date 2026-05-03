@@ -2892,6 +2892,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert "plan_complete" in get_in(empty_plan_response, ["error", "data", "missing"])
     append_done_plan(repo, package.id)
 
+    pre_ready_finding_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "pre-ready-finding",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_finding",
+            "arguments" => %{"title" => "Finding before ready", "body" => "Recorded before ready", "idempotency_key" => "pre-ready-finding"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
     ready_response =
       MCPHarness.request(
         %{"jsonrpc" => "2.0", "id" => "ready", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
@@ -2981,6 +2996,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
+    post_ready_finding_replay_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "pre-ready-finding-replay",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_finding",
+            "arguments" => %{"title" => "Finding before ready", "body" => "Recorded before ready", "idempotency_key" => "pre-ready-finding"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
     post_ready_scope_response =
       MCPHarness.request(
         %{
@@ -3016,6 +3046,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(post_ready_blocker_response, ["error", "data", "reason"]) == "already_ready"
     assert get_in(post_ready_progress_response, ["error", "data", "reason"]) == "already_ready"
     assert get_in(post_ready_finding_response, ["error", "data", "reason"]) == "already_ready"
+
+    assert get_in(pre_ready_finding_response, ["result", "structuredContent", "finding", "id"]) ==
+             get_in(post_ready_finding_replay_response, ["result", "structuredContent", "finding", "id"])
+
     assert get_in(post_ready_scope_response, ["error", "data", "reason"]) == "already_ready"
     assert get_in(post_ready_plan_response, ["error", "data", "reason"]) == "already_ready"
     assert {:ok, ready_package} = WorkPackageRepository.get(repo, package.id)

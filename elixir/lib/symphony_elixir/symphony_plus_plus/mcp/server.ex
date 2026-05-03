@@ -1483,11 +1483,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp append_authenticated_idempotent_finding_tx(repo, %Session{} = session, work_package_id, finding_id, attrs) do
     with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
-         :ok <- reject_ready_evidence_mutation(repo, session, "append_finding"),
          {:error, :id_already_exists} <-
            repo |> PlanningRepository.list_findings(work_package_id) |> find_existing_finding(finding_id, attrs),
          {:error, :id_already_exists} <-
-           repo |> PlanningRepository.list_findings(work_package_id) |> find_existing_finding_by_idempotency(attrs) do
+           repo |> PlanningRepository.list_findings(work_package_id) |> find_existing_finding_by_idempotency(attrs),
+         :ok <- reject_ready_evidence_mutation(repo, session, "append_finding") do
       case PlanningRepository.append_finding(repo, attrs) do
         {:ok, finding} ->
           {:ok, finding}

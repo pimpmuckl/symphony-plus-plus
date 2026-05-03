@@ -183,3 +183,5 @@
 - The valid scoped fixes are to route `attach_branch`/`attach_pr` through `scoped_session/3` and allow explicit-head review-package evidence for non-merge policies when branch metadata is not a required gate.
 - Fresh T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T062018Z-a14f3ec0` had Alpha clean and one valid Bravo finding: explicit `state_key` handshake-only entries should not be evicted by the fixed implicit response-state TTL because longer-lived grants can still need initialized stateless continuity.
 - The fix keeps explicit entries as handshake-only continuity metadata and only TTL-cleans implicit response-state entries; explicit `state_key` still never restores a claimed worker session.
+- Fresh T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T062854Z-9f3d0fbe` had Bravo clean and one valid Alpha finding: an `append_finding` lost-response retry after `mark_ready` was rejected as `already_ready` before the existing finding replay path could run.
+- The fix replays matching existing findings before enforcing the post-ready write lock, while new or conflicting finding writes after ready still reject.

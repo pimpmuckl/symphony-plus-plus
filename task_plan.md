@@ -313,6 +313,8 @@ Phase 3
 - Before the next T2, the approach remains coherent because the latest fix only separates lost-response idempotent replay semantics from readiness evidence freshness, scopes branch/PR metadata writes through the existing session guard, and allows branchless review-package evidence only for non-merge policies where branch metadata is not a required gate.
 - Fresh T2 on pushed head `4aef958` produced one valid finding: explicit `state_key` handshake continuity was being cleaned up by the implicit default response-state TTL before longer-lived worker grants could expire.
 - Before the next T2, the approach remains coherent because this follow-up only restores the intended distinction between implicit default response-state cleanup and explicit state-key handshake continuity; it does not restore claimed sessions from `state_key`.
+- Fresh T2 on pushed head `94e5f16` produced one valid finding: `append_finding` exact idempotent replay could be blocked after `mark_ready`, unlike the other evidence tools.
+- Before the next T2, the approach remains coherent because the fix only reorders existing finding replay checks before the ready-state mutation guard, preserving post-ready immutability for new writes.
 
 ## Blockers
 
