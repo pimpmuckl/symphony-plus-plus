@@ -28,4 +28,6 @@ Implement only SYMPP-P3-003: architect-facing MCP tool contracts on the existing
 - Planning status was committed and pushed in `962f96cbaf4abff4eb0530704ba86912133cfbe5`, then T1 was retried on that clean pushed head and still returned `review_interrupted`.
 - The active cached wrapper path was also retried and returned `review_interrupted` for both reviewers on round `phase_review-symphony-plus-plus-sympp-p3-003-2e5a78-20260503T104428Z-f183b6c0`.
 - Cached `review_state.py status` still recommends T1 as the current lane.
+- Clean-worktree cached base-lane T1 after planning commit `fc0c88f6cf8d98dde74fda7dbf649c6181b30511` also returned `review_interrupted` for both reviewers on round `phase_review-symphony-plus-plus-sympp-p3-003-2e5a78-20260503T104621Z-4e7d5512`.
+- Cached `review_state.py status` after the clean-worktree cached base-lane attempt still recommends T1 with reason `diff_churn_exceeded`.
 - Do not run T2 or GitHub review until T1 can complete cleanly or the overseer explicitly changes the review-gate instruction.
