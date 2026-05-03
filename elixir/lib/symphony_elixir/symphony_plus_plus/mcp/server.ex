@@ -2144,14 +2144,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp append_investigation_recommendation_artifact(_repo, %Session{}, _tool, %ProgressEvent{}), do: :ok
 
-  defp append_recommendation_artifact(repo, %Session{} = session, %ProgressEvent{} = event) do
+  defp append_recommendation_artifact(repo, %Session{} = session, %ProgressEvent{}) do
     work_package_id = session.assignment.work_package_id
 
     attrs = %{
       "id" => recommendation_artifact_id(work_package_id),
       "work_package_id" => work_package_id,
       "path" => "recommendation.md",
-      "title" => event.summary,
+      "title" => "Investigation recommendation",
       "kind" => "recommendation"
     }
 

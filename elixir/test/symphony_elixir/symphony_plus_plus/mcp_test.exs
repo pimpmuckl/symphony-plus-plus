@@ -4658,6 +4658,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
 
     assert Enum.count(artifacts, &(&1.kind == "recommendation" and &1.path == "recommendation.md")) == 1
+    assert Enum.any?(artifacts, &(&1.title == "Investigation recommendation"))
   end
 
   test "mark_ready rejects spoofed metadata and accepts skipped plan nodes", %{repo: repo} do
