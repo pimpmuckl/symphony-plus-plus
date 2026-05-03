@@ -731,10 +731,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp dispatch("resources/read", %{"uri" => @assignment_resource}, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
-         :ok <- require_worker_assignment(session.assignment) do
+         :ok <- require_assignment_introspection(session.assignment) do
       {:ok, json_resource(@assignment_resource, Session.public_assignment(session))}
     else
-      {:error, :worker_grant_required} -> auth_error({:unauthorized, :worker_grant_required}, @assignment_resource)
+      {:error, :unsupported_grant_role} -> auth_error({:unauthorized, :unsupported_grant_role}, @assignment_resource)
       {:error, reason} -> auth_error(reason, @assignment_resource)
     end
   end
@@ -958,8 +958,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp tool_specs_for_session(repo, session) do
     case Auth.require_session(session, repo) do
-      {:ok, %Session{assignment: %{grant_role: "architect"}}} ->
-        {:ok, [health_tool_spec() | architect_tool_specs_for_session(session)]}
+      {:ok, %Session{assignment: %{grant_role: "architect"}} = session} ->
+        {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs_for_session(session)]}
 
       {:ok, %Session{assignment: %{grant_role: "worker"}}} ->
         {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
@@ -967,10 +967,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, %Session{}} ->
         {:error, {:unauthorized, :unsupported_grant_role}}
 
-      {:error, reason} ->
+      {:error, {:service_unavailable, _reason} = reason} ->
         {:error, reason}
+
+      {:error, reason} ->
+        {:ok, claimable_tool_specs(reason)}
     end
   end
+
+  defp claimable_tool_specs(_reason), do: [health_tool_spec(), worker_tool_spec("claim_work_key")]
 
   defp architect_tool_specs_for_session(%Session{assignment: %{capabilities: capabilities}}) do
     @architect_tools
@@ -1092,7 +1097,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp assignment_resources(%Session{} = session, repo) do
     case Auth.require_session(session, repo) do
       {:ok, %Session{} = session} ->
-        assignment_resources_for_worker(session)
+        assignment_resources_for_session(session)
 
       {:error, {:service_unavailable, reason}} ->
         service_error(reason, @assignment_resource)
@@ -1104,16 +1109,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp assignment_resources(_session, _repo), do: {:ok, []}
 
-  defp assignment_resources_for_worker(%Session{} = session) do
+  defp assignment_resources_for_session(%Session{assignment: %{grant_role: "worker"}} = session) do
     case require_worker_assignment(session.assignment) do
       :ok -> listed_assignment_resources(session)
       {:error, _reason} -> {:ok, []}
     end
   end
 
+  defp assignment_resources_for_session(%Session{assignment: %{grant_role: "architect"}} = session) do
+    case require_assignment_introspection(session.assignment) do
+      :ok -> listed_current_assignment_resource(session)
+      {:error, _reason} -> {:ok, []}
+    end
+  end
+
+  defp assignment_resources_for_session(%Session{}), do: {:ok, []}
+
   defp listed_assignment_resources(%Session{} = session) do
     work_package_id = Session.work_package_id(session)
 
+    with {:ok, assignment_resources} <- listed_current_assignment_resource(session) do
+      {:ok, assignment_resources ++ work_package_resources(work_package_id)}
+    end
+  end
+
+  defp listed_current_assignment_resource(%Session{}) do
     {:ok,
      [
        %{
@@ -1121,7 +1141,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          "name" => "Current Symphony++ assignment",
          "mimeType" => "application/json"
        }
-     ] ++ work_package_resources(work_package_id)}
+     ]}
   end
 
   defp work_package_resources(work_package_id) do
@@ -1170,6 +1190,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, arguments} <- worker_tool_arguments(params, "claim_work_key"),
          {:ok, secret} <- required_argument(arguments, "secret"),
          {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
+         :ok <- require_full_secret(secret),
          proof_hash = WorkKey.secret_hash(secret),
          true <- session.proof_hash == proof_hash,
          :ok <- require_same_claim_owner(session.assignment, claimed_by),
@@ -1189,9 +1210,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, arguments} <- worker_tool_arguments(params, "claim_work_key"),
          {:ok, secret} <- required_argument(arguments, "secret"),
          {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
+         :ok <- require_full_secret(secret),
          proof_hash = WorkKey.secret_hash(secret),
          :ok <- require_mcp_claimable_secret(config.repo, proof_hash),
-         :ok <- require_full_secret(secret),
          {:ok, session} <- claim_or_reconnect_session(config.repo, secret, proof_hash, claimed_by) do
       {:ok, %{"assignment" => Session.public_assignment(session)}, session}
     else
@@ -1261,6 +1282,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_mcp_claimable_assignment(%{grant_role: role}) when role in ["worker", "architect"], do: :ok
   defp require_mcp_claimable_assignment(_assignment), do: {:error, :unsupported_grant_role}
 
+  defp require_assignment_introspection(%{grant_role: role}) when role in ["worker", "architect"], do: :ok
+  defp require_assignment_introspection(_assignment), do: {:error, :unsupported_grant_role}
+
   defp require_architect_capability(%{capabilities: capabilities}, capability) when is_list(capabilities) do
     if capability in capabilities do
       :ok
@@ -1314,7 +1338,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp worker_tool("get_current_assignment", _arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
-         :ok <- require_worker_assignment(session.assignment) do
+         :ok <- require_assignment_introspection(session.assignment) do
       {:ok, tool_result(%{"assignment" => Session.public_assignment(session)})}
     else
       {:error, reason} -> worker_error(reason, "get_current_assignment")

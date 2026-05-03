@@ -342,6 +342,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     tools_by_name = Map.new(tools, &{&1["name"], &1})
 
     assert Map.has_key?(tools_by_name, "sympp.health")
+    assert Map.has_key?(tools_by_name, "get_current_assignment")
     refute Map.has_key?(tools_by_name, "claim_work_key")
     refute Map.has_key?(tools_by_name, "create_child_work_package")
     refute Map.has_key?(tools_by_name, "revoke_child_worker_key")
@@ -354,7 +355,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["split_work_package", "inputSchema", "properties", "child_specs", "minItems"]) == 1
   end
 
-  test "tools list rejects stale architect sessions after grant revocation", %{repo: repo} do
+  test "tools list exposes only claim refresh for stale architect sessions after grant revocation", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-TOOLS-REVOKED", kind: "mcp"))
     assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])
 
@@ -367,10 +368,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, _revoked} = AccessGrantService.revoke(repo, architect_assignment.grant_id)
 
     response = Server.handle(%{"jsonrpc" => "2.0", "id" => "revoked-architect-tools", "method" => "tools/list", "params" => %{}}, server)
+    tools_by_name = response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
 
-    assert get_in(response, ["error", "code"]) == -32_001
-    assert get_in(response, ["error", "data", "resource"]) == "tools/list"
-    assert get_in(response, ["error", "data", "reason"]) == "revoked"
+    assert Map.keys(tools_by_name) |> Enum.sort() == ["claim_work_key", "sympp.health"]
   end
 
   test "architect tools reject arguments outside their advertised schemas", %{repo: repo} do
@@ -890,6 +890,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(missing_owner_response, ["error", "data", "reason"]) == "missing_claimed_by"
+
+    display_key_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-display-key",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.display_key, "claimed_by" => "worker-1"}}
+        },
+        server
+      )
+
+    assert get_in(display_key_response, ["error", "data", "reason"]) == "display_key_only"
 
     {extra_argument_response, _server} =
       Server.handle_state(
@@ -2181,8 +2194,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
-    assert get_in(assignment_tool_response, ["error", "code"]) == -32_001
-    assert get_in(assignment_tool_response, ["error", "data", "reason"]) == "worker_grant_required"
+    assert get_in(assignment_tool_response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+    assert get_in(assignment_tool_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
 
     read_tool_response =
       MCPHarness.request(
@@ -2215,7 +2228,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
-    assert get_in(assignment_resource_response, ["error", "data", "reason"]) == "worker_grant_required"
+    assert get_in(assignment_resource_response, ["result", "contents", Access.at(0), "uri"]) == "sympp://assignment/current"
+
+    assignment_resource_payload =
+      assignment_resource_response
+      |> get_in(["result", "contents", Access.at(0), "text"])
+      |> Jason.decode!()
+
+    assert assignment_resource_payload["grant_role"] == "architect"
+    assert assignment_resource_payload["work_package_id"] == package.id
   end
 
   test "worker grants are denied architect tools", %{repo: repo} do

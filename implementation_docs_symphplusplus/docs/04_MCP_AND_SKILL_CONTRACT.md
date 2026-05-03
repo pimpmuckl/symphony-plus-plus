@@ -137,8 +137,13 @@ architect capability; worker grants and insufficient architect grants are
 denied. Worker grants cannot be minted with architect-only MCP capabilities,
 including unprefixed P3/P7 capability strings such as `read:phase` or
 `mint:child_worker_key`. `tools/list` advertises architect tools only when an
-architect session is already bound; worker and anonymous sessions keep the
-worker-facing discovery surface. `read_child_status(work_package_id)` is the
+architect session is already bound and filters them to the live grant's
+capabilities. Stale sessions expose only health and `claim_work_key` for
+refresh, while worker and anonymous sessions keep the worker-facing discovery
+surface. Architect sessions may call `get_current_assignment()` and read
+`sympp://assignment/current` to recover their scoped `work_package_id` after
+reconnect, but they still cannot use worker package read/write tools.
+`read_child_status(work_package_id)` is the
 only safe read-only tool implemented before Phase 7. It requires both
 `read:child_progress` and `read:child_findings` because its status payload
 includes progress, finding, and artifact counts, and it is limited to the work

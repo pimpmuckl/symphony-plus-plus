@@ -41,8 +41,13 @@ architect capability from the permission model. Worker grants and architect
 grants without the required capability are denied. Worker grants cannot be
 minted with architect-only MCP capabilities such as `read:phase`,
 `read:child_progress`, or `mint:child_worker_key`. `tools/list` advertises
-architect tools only for an already-bound architect session; anonymous and
-worker sessions see the worker tool surface. Until Phase 7 introduces phase
+architect tools only for an already-bound architect session and filters them to
+the live grant's capabilities; stale sessions expose only health and
+`claim_work_key` for refresh. Anonymous and worker sessions see the
+worker-facing discovery surface. Architect sessions may call
+`get_current_assignment` and read `sympp://assignment/current` to recover their
+scoped `work_package_id` after reconnect, but architect sessions still cannot
+use worker package read/write tools. Until Phase 7 introduces phase
 entities and phase-child scope checks, `read_child_status` requires both
 `read:child_progress` and `read:child_findings` because its summary includes
 progress, findings, and artifact counts, and it is intentionally limited to the
