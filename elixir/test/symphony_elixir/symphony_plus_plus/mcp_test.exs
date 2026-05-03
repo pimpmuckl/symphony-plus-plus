@@ -535,6 +535,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     )
   end
 
+  test "initialized tools call rejects invalid ids without notification side effects", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BAD-ID-CLAIM", kind: "mcp", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => %{"bad" => "id"},
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert response["id"] == nil
+    assert get_in(response, ["error", "data", "reason"]) == "invalid_request_id"
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+  end
+
   test "JSON-RPC batches are handled consistently through direct server calls", %{repo: repo} do
     response =
       MCPHarness.request(

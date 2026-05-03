@@ -236,6 +236,25 @@
 
 - Commit and push fiftieth T2 fixes, rerun fresh full-diff T2 against `symphony-plus-plus/beta`, then run GitHub review on PR #15 if T2 is clean.
 
+### Fifty-First T2 Follow-up Actions
+
+- Pushed fiftieth T2 fix head `7204b5c` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T032657Z-6adde3da`; Bravo reported a valid malformed `tools/call` request-id protocol regression, and Alpha reported a valid stale-head review-package write race.
+- Closed the T2 gate as `findings`.
+- Fixed initialized `tools/call` invalid IDs by routing them through the normal request error path instead of the notification path, preserving JSON-RPC error responses and avoiding silent claim side effects.
+- Fixed the review-package head race by locking the work package before reading progress events/current head inside `submit_review_package`'s transaction.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format && mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 83 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus && mise exec -- mix specs.check && mise exec -- mix format --check-formatted && mise exec -- mix credo --strict` | pass | 278 tests, 0 failures; specs complete; formatting clean; Credo strict clean. Windows emitted known Phoenix LiveView symlink and migration redefinition warnings. |
+
+### Next Steps
+
+- Commit and push fifty-first T2 fixes, rerun fresh full-diff T2 against `symphony-plus-plus/beta`, then run GitHub review on PR #15 if T2 is clean.
+
 ### Thirty-Ninth T2 Follow-up Actions
 
 - Pushed thirty-eighth T2 fix head `0a1114ef44516be1cf8af37e5d54d0b27a809ae3` to PR #15.

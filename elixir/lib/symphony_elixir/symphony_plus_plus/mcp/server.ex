@@ -124,6 +124,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  def handle_state(%{"jsonrpc" => "2.0", "id" => id, "method" => "tools/call"} = payload, %__MODULE__{initialized: true} = server)
+      when invalid_request_id(id) do
+    {do_handle(payload, server), server}
+  end
+
   def handle_state(%{"jsonrpc" => "2.0", "method" => "tools/call"} = payload, %__MODULE__{initialized: true} = server) do
     case request_params(payload) do
       {:ok, %{"name" => "claim_work_key"} = params} ->
@@ -1744,7 +1749,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp submit_review_package_transaction_body(repo, %Session{} = session, arguments, artifacts, payload) do
-    with {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)),
+    work_package_id = Session.work_package_id(session)
+
+    with :ok <- lock_work_package(repo, work_package_id),
+         {:ok, state} <- PlanningRepository.get_state(repo, work_package_id),
          {:ok, head_sha} <- review_package_head_sha(arguments, state.progress_events) do
       payload =
         payload
