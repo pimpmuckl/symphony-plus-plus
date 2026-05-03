@@ -961,8 +961,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, %Session{assignment: %{grant_role: "architect"}}} ->
         {:ok, [health_tool_spec() | Enum.map(@architect_tools, &architect_tool_spec/1)]}
 
-      {:ok, %Session{}} ->
+      {:ok, %Session{assignment: %{grant_role: "worker"}}} ->
         {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
+
+      {:ok, %Session{}} ->
+        {:error, {:unauthorized, :unsupported_grant_role}}
 
       {:error, reason} ->
         {:error, reason}
