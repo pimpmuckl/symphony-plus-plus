@@ -158,7 +158,7 @@
 
 ### Next Steps
 
-- Commit and push thirty-second T2 fixes, rerun full-diff T2, then proceed to GitHub review if clean.
+- Pushed thirty-second T2 fix head `3a23b5f8344bd5a979e921cfa8975d4cce071e3f`; rerun full-diff T2, then proceed to GitHub review if clean.
 
 ### Next Steps
 

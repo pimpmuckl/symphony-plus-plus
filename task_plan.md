@@ -135,10 +135,10 @@ Phase 3
 - [x] Commit and push thirty-first T2 fixes.
 - [x] Run fresh full-diff T2 on pushed head `5a13229` and close valid findings gate.
 - [x] Fix thirty-second T2 head validation, pre-attach review evidence, and transactional grant revalidation findings locally.
-- [ ] Commit and push thirty-second T2 fixes.
+- [x] Commit and push thirty-second T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** thirty-second T2 fixes validated locally; pending commit/push and fresh full-diff T2 rerun.
+- **Status:** thirty-second T2 fixes pushed; pending fresh full-diff T2 rerun and GitHub review if clean.
 
 ### High-Pressure Coherence Review
 
