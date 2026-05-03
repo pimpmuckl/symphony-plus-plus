@@ -30,4 +30,5 @@ Implement only SYMPP-P3-003: architect-facing MCP tool contracts on the existing
 - Cached `review_state.py status` still recommends T1 as the current lane.
 - Clean-worktree cached base-lane T1 after planning commit `fc0c88f6cf8d98dde74fda7dbf649c6181b30511` also returned `review_interrupted` for both reviewers on round `phase_review-symphony-plus-plus-sympp-p3-003-2e5a78-20260503T104621Z-4e7d5512`.
 - Cached `review_state.py status` after the clean-worktree cached base-lane attempt still recommends T1 with reason `diff_churn_exceeded`.
+- Arena T1 sampling was attempted with 5.3 variants excluded. Fully non-5.3 sampled pairs also returned `review_interrupted` for both reviewers, most recently round `phase_review-symphony-plus-plus-sympp-p3-003-2e5a78-20260503T105320Z-c659a41e` with `gpt-5.5-medium` and `gpt-5.4-mini-medium`.
 - Do not run T2 or GitHub review until T1 can complete cleanly or the overseer explicitly changes the review-gate instruction.
