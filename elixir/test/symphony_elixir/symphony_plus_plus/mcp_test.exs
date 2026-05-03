@@ -244,7 +244,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert is_list(get_in(post_init_response, ["result", "tools"]))
   end
 
-  test "tools list advertises worker argument schemas", %{repo: repo} do
+  test "tools list advertises worker argument schemas and hides architect tools without architect session", %{repo: repo} do
     server = Server.new(Config.default(repo: repo), initialized: true)
 
     response = Server.handle(%{"jsonrpc" => "2.0", "id" => "tools", "method" => "tools/list", "params" => %{}}, server)
@@ -295,6 +295,146 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "items", "required"]) == ["lane", "verdict"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "head_sha", "type"]) == "string"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "acceptance_criteria_met", "type"]) == "boolean"
+
+    refute Map.has_key?(tools_by_name, "read_child_status")
+    refute Map.has_key?(tools_by_name, "mint_child_worker_key")
+
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-TOOLS-LIST", kind: "mcp"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    worker_session = MCPHarness.session(worker_assignment, proof_hash: minted.grant.secret_hash)
+    worker_server = Server.new(Config.default(repo: repo), initialized: true, session: worker_session)
+
+    worker_response =
+      Server.handle(%{"jsonrpc" => "2.0", "id" => "worker-tools", "method" => "tools/list", "params" => %{}}, worker_server)
+
+    worker_tools_by_name =
+      worker_response
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
+
+    assert Map.has_key?(worker_tools_by_name, "claim_work_key")
+    refute Map.has_key?(worker_tools_by_name, "read_child_status")
+    refute Map.has_key?(worker_tools_by_name, "mint_child_worker_key")
+  end
+
+  test "tools list advertises architect schemas only for architect sessions", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-TOOLS-LIST", kind: "mcp"))
+
+    assert {:ok, architect_work_key} =
+             create_architect_work_key(repo, package.id, [
+               "read:child_progress",
+               "read:child_findings",
+               "mint:child_worker_key",
+               "read:phase",
+               "merge:child_into_phase",
+               "split:child_work_package"
+             ])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+    server = Server.new(Config.default(repo: repo), initialized: true, session: session)
+
+    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "architect-tools", "method" => "tools/list", "params" => %{}}, server)
+    tools = get_in(response, ["result", "tools"])
+    tools_by_name = Map.new(tools, &{&1["name"], &1})
+
+    assert Map.has_key?(tools_by_name, "sympp.health")
+    assert Map.has_key?(tools_by_name, "get_current_assignment")
+    refute Map.has_key?(tools_by_name, "claim_work_key")
+    refute Map.has_key?(tools_by_name, "create_child_work_package")
+    refute Map.has_key?(tools_by_name, "revoke_child_worker_key")
+    assert get_in(tools_by_name, ["read_child_status", "inputSchema", "required"]) == ["work_package_id"]
+    assert get_in(tools_by_name, ["read_child_status", "inputSchema", "properties", "work_package_id", "type"]) == "string"
+    assert get_in(tools_by_name, ["read_phase_board", "inputSchema", "required"]) == ["phase_id"]
+    assert get_in(tools_by_name, ["mint_child_worker_key", "inputSchema", "required"]) == ["work_package_id", "template"]
+    assert get_in(tools_by_name, ["mint_child_worker_key", "inputSchema", "properties", "template", "type"]) == "object"
+    assert get_in(tools_by_name, ["merge_child_into_phase", "inputSchema", "required"]) == ["work_package_id", "merge_artifact"]
+    assert get_in(tools_by_name, ["split_work_package", "inputSchema", "properties", "child_specs", "minItems"]) == 1
+  end
+
+  test "tools list exposes only claim refresh for stale architect sessions after grant revocation", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-TOOLS-REVOKED", kind: "mcp"))
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+    server = Server.new(Config.default(repo: repo), initialized: true, session: session)
+
+    assert {:ok, _revoked} = AccessGrantService.revoke(repo, architect_assignment.grant_id)
+
+    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "revoked-architect-tools", "method" => "tools/list", "params" => %{}}, server)
+    tools_by_name = response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
+
+    assert Map.keys(tools_by_name) |> Enum.sort() == ["claim_work_key", "sympp.health"]
+  end
+
+  test "tools list preserves ledger failures while revalidating bound sessions" do
+    session =
+      Session.new(%Assignment{
+        grant_id: "grant-1",
+        work_package_id: "SYMPP-LEDGER-TOOLS-LIST",
+        display_key: "ABCD",
+        grant_role: "architect",
+        capabilities: ["read:phase"],
+        claimed_at: DateTime.utc_now(:microsecond),
+        claimed_by: "architect-1"
+      })
+
+    response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "tools-list-ledger-failure", "method" => "tools/list", "params" => %{}},
+        config: Config.default(repo: FailingAuthRepo),
+        session: session
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_000
+    assert get_in(response, ["error", "data", "reason"]) == "ledger_unavailable"
+  end
+
+  test "tools list does not treat lifecycle architect capabilities as MCP tool capabilities", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-LIFECYCLE-ONLY", kind: "mcp"))
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["architect:lifecycle.transition"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+    server = Server.new(Config.default(repo: repo), initialized: true, session: session)
+
+    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "lifecycle-only-architect-tools", "method" => "tools/list", "params" => %{}}, server)
+    tools_by_name = response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
+
+    assert Map.keys(tools_by_name) |> Enum.sort() == ["get_current_assignment", "sympp.health"]
+  end
+
+  test "architect tools reject arguments outside their advertised schemas", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-STRICT", kind: "mcp"))
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:child_progress", "read:child_findings"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "strict-architect-args",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_child_status", "arguments" => %{"work_package_id" => package.id, "unexpected" => "value"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "unexpected_argument"
+    assert get_in(response, ["error", "data", "arguments"]) == ["unexpected"]
   end
 
   test "worker tools reject arguments outside their advertised schemas", %{repo: repo} do
@@ -789,6 +929,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(missing_owner_response, ["error", "data", "reason"]) == "missing_claimed_by"
+
+    display_key_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-display-key",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.display_key, "claimed_by" => "worker-1"}}
+        },
+        server
+      )
+
+    assert get_in(display_key_response, ["error", "data", "reason"]) == "display_key_only"
 
     {extra_argument_response, _server} =
       Server.handle_state(
@@ -1916,7 +2069,59 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert server.session.assignment.work_package_id == package.id
   end
 
-  test "claim_work_key rejects non-worker grants and revalidates bound replays", %{repo: repo} do
+  test "batch claim_work_key counts notification refreshes on stale bound connections", %{repo: repo} do
+    assert {:ok, original_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BATCH-STALE-ORIGINAL", kind: "mcp", status: "ready_for_worker"))
+
+    assert {:ok, replacement_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BATCH-STALE-REPLACEMENT", kind: "mcp", status: "ready_for_worker"))
+
+    assert {:ok, second_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BATCH-STALE-SECOND", kind: "mcp", status: "ready_for_worker"))
+
+    assert {:ok, original_minted} = AccessGrantService.mint_worker_grant(repo, original_package.id)
+    assert {:ok, replacement_minted} = AccessGrantService.mint_worker_grant(repo, replacement_package.id)
+    assert {:ok, second_minted} = AccessGrantService.mint_worker_grant(repo, second_package.id)
+
+    {_claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-original",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => original_minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert {:ok, _revoked} = AccessGrantService.revoke(repo, original_minted.grant.id)
+
+    {responses, refreshed_server} =
+      Server.handle_state(
+        [
+          %{
+            "jsonrpc" => "2.0",
+            "method" => "tools/call",
+            "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => replacement_minted.work_key.secret, "claimed_by" => "worker-1"}}
+          },
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "claim-second-after-notification-refresh",
+            "method" => "tools/call",
+            "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => second_minted.work_key.secret, "claimed_by" => "worker-2"}}
+          }
+        ],
+        claimed_server
+      )
+
+    assert get_in(List.first(responses), ["error", "data", "reason"]) == "session_already_bound"
+    assert refreshed_server.session.assignment.work_package_id == replacement_package.id
+    assert {:ok, second_grant} = AccessGrantRepository.get(repo, second_minted.grant.id)
+    refute second_grant.claimed_by
+    refute second_grant.claimed_at
+  end
+
+  test "claim_work_key binds worker and architect grants and revalidates bound replays", %{repo: repo} do
     assert {:ok, worker_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-CLAIM", kind: "mcp", status: "ready_for_worker"))
 
@@ -1924,10 +2129,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-CLAIM", kind: "mcp", status: "ready_for_worker"))
 
     assert {:ok, worker_minted} = AccessGrantService.mint_worker_grant(repo, worker_package.id)
-    assert {:ok, architect_work_key} = create_architect_work_key(repo, architect_package.id)
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, architect_package.id, ["read:child_progress", "read:child_findings"])
 
-    architect_response =
-      Server.handle(
+    {architect_response, architect_server} =
+      Server.handle_state(
         %{
           "jsonrpc" => "2.0",
           "id" => "architect-claim",
@@ -1937,9 +2142,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         Server.new(Config.default(repo: repo), initialized: true)
       )
 
-    assert get_in(architect_response, ["error", "data", "reason"]) == "worker_grant_required"
-    assert {:ok, architect_assignment} = AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
-    assert architect_assignment.grant_role == "architect"
+    assert get_in(architect_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-ARCHITECT-CLAIM"
+    assert get_in(architect_response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+    assert architect_server.session.assignment.grant_role == "architect"
+
+    architect_tools_response =
+      Server.handle(%{"jsonrpc" => "2.0", "id" => "architect-tools-after-claim", "method" => "tools/list", "params" => %{}}, architect_server)
+
+    architect_tools_by_name =
+      architect_tools_response
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
+
+    assert Map.has_key?(architect_tools_by_name, "read_child_status")
+    refute Map.has_key?(architect_tools_by_name, "append_progress")
 
     {claim_response, claimed_server} =
       Server.handle_state(
@@ -1995,6 +2211,66 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(replay_response, ["error", "data", "reason"]) == "revoked"
     assert replay_server.session.assignment.work_package_id == "SYMPP-WORKER-CLAIM"
+
+    assert {:ok, replacement_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-CLAIM-REFRESH", kind: "mcp", status: "ready_for_worker"))
+
+    assert {:ok, replacement_minted} = AccessGrantService.mint_worker_grant(repo, replacement_package.id)
+
+    {refresh_response, refreshed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-refresh-after-revocation",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => replacement_minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        replay_server
+      )
+
+    assert get_in(refresh_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-WORKER-CLAIM-REFRESH"
+    assert refreshed_server.session.assignment.work_package_id == "SYMPP-WORKER-CLAIM-REFRESH"
+  end
+
+  test "claim_work_key rejects non-worker non-architect grant roles", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-UNSUPPORTED-CLAIM-ROLE", kind: "mcp", status: "ready_for_worker"))
+
+    work_key = WorkKey.generate()
+    now = DateTime.utc_now(:microsecond)
+
+    assert {1, nil} =
+             repo.insert_all(AccessGrant, [
+               %{
+                 id: "ag_unsupported_claim_role",
+                 work_package_id: package.id,
+                 display_key: work_key.display_key,
+                 secret_hash: WorkKey.secret_hash(work_key.secret),
+                 grant_role: "auditor",
+                 capabilities: [],
+                 expires_at: DateTime.add(now, 86_400, :second),
+                 inserted_at: now,
+                 updated_at: now
+               }
+             ])
+
+    response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "unsupported-role-claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => work_key.secret, "claimed_by" => "auditor-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_001
+    assert get_in(response, ["error", "data", "reason"]) == "unsupported_grant_role"
+
+    assert {:ok, grant} = AccessGrantRepository.get(repo, "ag_unsupported_claim_role")
+    assert grant.claimed_at == nil
+    assert grant.claimed_by == nil
   end
 
   test "worker tools reject injected non-worker sessions", %{repo: repo} do
@@ -2028,8 +2304,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
-    assert get_in(assignment_tool_response, ["error", "code"]) == -32_001
-    assert get_in(assignment_tool_response, ["error", "data", "reason"]) == "worker_grant_required"
+    assert get_in(assignment_tool_response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+    assert get_in(assignment_tool_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
 
     read_tool_response =
       MCPHarness.request(
@@ -2062,7 +2338,245 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
-    assert get_in(assignment_resource_response, ["error", "data", "reason"]) == "worker_grant_required"
+    assert get_in(assignment_resource_response, ["result", "contents", Access.at(0), "uri"]) == "sympp://assignment/current"
+
+    assignment_resource_payload =
+      assignment_resource_response
+      |> get_in(["result", "contents", Access.at(0), "text"])
+      |> Jason.decode!()
+
+    assert assignment_resource_payload["grant_role"] == "architect"
+    assert assignment_resource_payload["work_package_id"] == package.id
+  end
+
+  test "worker grants are denied architect tools", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-DENIED-ARCHITECT", kind: "mcp"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "worker-denied-architect",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_child_status", "arguments" => %{"work_package_id" => package.id}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_001
+    assert get_in(response, ["error", "data", "reason"]) == "architect_grant_required"
+
+    schema_probe_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "worker-denied-architect-schema-probe",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_phase_board", "arguments" => %{}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(schema_probe_response, ["error", "code"]) == -32_001
+    assert get_in(schema_probe_response, ["error", "data", "reason"]) == "architect_grant_required"
+  end
+
+  test "architect tools reject missing and insufficient grants", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-AUTHZ", kind: "mcp"))
+
+    missing_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "missing-architect",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_child_status", "arguments" => %{"work_package_id" => package.id}}
+        },
+        repo: repo
+      )
+
+    assert get_in(missing_response, ["error", "code"]) == -32_001
+    assert get_in(missing_response, ["error", "data", "reason"]) == "missing_session"
+
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+
+    insufficient_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "insufficient-architect",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_child_status", "arguments" => %{"work_package_id" => package.id}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(insufficient_response, ["error", "code"]) == -32_001
+    assert get_in(insufficient_response, ["error", "data", "reason"]) == "insufficient_capability"
+
+    assert {:ok, progress_only_work_key} = create_architect_work_key(repo, package.id, ["read:child_progress"])
+
+    assert {:ok, progress_only_assignment} =
+             AccessGrantRepository.claim(repo, progress_only_work_key.secret, %{claimed_by: "architect-2"}, DateTime.utc_now(:microsecond))
+
+    progress_only_session = MCPHarness.session(progress_only_assignment, proof_hash: WorkKey.secret_hash(progress_only_work_key.secret))
+
+    progress_only_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "progress-only-architect",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_child_status", "arguments" => %{"work_package_id" => package.id}}
+        },
+        repo: repo,
+        session: progress_only_session
+      )
+
+    assert get_in(progress_only_response, ["error", "code"]) == -32_001
+    assert get_in(progress_only_response, ["error", "data", "reason"]) == "insufficient_capability"
+  end
+
+  test "architect read_child_status reads only its scoped work package", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-READ-CHILD", kind: "mcp", status: "planning"))
+
+    assert {:ok, sibling} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-SIBLING", kind: "mcp"))
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:child_progress", "read:child_findings"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "read-child-status",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_child_status", "arguments" => %{"work_package_id" => package.id}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(response, ["result", "structuredContent", "work_package", "id"]) == package.id
+    assert get_in(response, ["result", "structuredContent", "work_package", "status"]) == "planning"
+    assert is_integer(get_in(response, ["result", "structuredContent", "plan_version"]))
+    assert get_in(response, ["result", "structuredContent", "finding_count"]) == 0
+    assert get_in(response, ["result", "structuredContent", "progress_event_count"]) == 0
+
+    sibling_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "read-sibling-status",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_child_status", "arguments" => %{"work_package_id" => sibling.id}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(sibling_response, ["error", "code"]) == -32_003
+    assert get_in(sibling_response, ["error", "data", "reason"]) == "outside_session_scope"
+  end
+
+  test "Phase 7 architect tools return explicit not-yet-implemented errors without minting grants", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-PHASE7", kind: "mcp"))
+    assert {:ok, sibling} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-PHASE7-SIBLING", kind: "mcp"))
+
+    assert {:ok, architect_work_key} =
+             create_architect_work_key(repo, package.id, ["mint:child_worker_key", "read:phase"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+    grants_before = repo.aggregate(AccessGrant, :count)
+
+    mint_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "mint-child",
+          "method" => "tools/call",
+          "params" => %{"name" => "mint_child_worker_key", "arguments" => %{"work_package_id" => package.id, "template" => %{}}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(mint_response, ["error", "code"]) == -32_604
+    assert get_in(mint_response, ["error", "data", "reason"]) == "phase7_not_implemented"
+    assert repo.aggregate(AccessGrant, :count) == grants_before
+
+    out_of_scope_mint_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "mint-child-sibling",
+          "method" => "tools/call",
+          "params" => %{"name" => "mint_child_worker_key", "arguments" => %{"work_package_id" => sibling.id, "template" => %{}}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(out_of_scope_mint_response, ["error", "code"]) == -32_003
+    assert get_in(out_of_scope_mint_response, ["error", "data", "reason"]) == "outside_session_scope"
+
+    board_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "phase-board",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_phase_board", "arguments" => %{"phase_id" => "phase-1"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(board_response, ["error", "code"]) == -32_604
+    assert get_in(board_response, ["error", "data", "phase"]) == "Phase 7"
+  end
+
+  test "Phase 7 architect stubs validate required arguments before not-implemented", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-STUB-ARGS", kind: "mcp"))
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "phase-board-missing-args",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_phase_board", "arguments" => %{}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "reason"]) == "missing_phase_id"
   end
 
   test "single-item batch preserves claim_work_key session for later requests", %{repo: repo} do
@@ -4777,7 +5291,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              })
   end
 
-  defp create_architect_work_key(repo, work_package_id) do
+  defp create_architect_work_key(repo, work_package_id, capabilities \\ ["architect:lifecycle.transition"]) do
     now = DateTime.utc_now(:microsecond)
     work_key = WorkKey.generate()
 
@@ -4787,7 +5301,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              display_key: work_key.display_key,
              secret_hash: WorkKey.secret_hash(work_key.secret),
              grant_role: "architect",
-             capabilities: ["architect:lifecycle.transition"],
+             capabilities: capabilities,
              expires_at: DateTime.add(now, 86_400, :second)
            }) do
       {:ok, work_key}

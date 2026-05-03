@@ -6,7 +6,7 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 
 | Tool | Purpose |
 |---|---|
-| claim_work_key | Claim a one-time work key/secret with required `claimed_by` owner identity and bind it to the current worker session. |
+| claim_work_key | Claim a one-time work key/secret with required `claimed_by` owner identity and bind the current MCP session to the grant role. |
 | get_current_assignment | Return the scoped assignment for the bound grant. |
 | read_context | Read context.md for the current work package. |
 | read_task_plan | Read task_plan.md for the current work package. |
@@ -21,6 +21,45 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | submit_review_package | Attach summary/tests/artifacts for the current head review package. |
 | mark_ready | Move to ready state only if gates pass. |
 
+## Architect tools
+
+| Tool | Purpose |
+|---|---|
+| create_child_work_package | Phase 7 stub for creating phase-scoped child work; returns `phase7_not_implemented` after architect authorization. |
+| mint_child_worker_key | Phase 7 stub for minting child worker keys; returns `phase7_not_implemented` after architect authorization. |
+| revoke_child_worker_key | Phase 7 stub for revoking child worker keys; returns `phase7_not_implemented` after architect authorization. |
+| read_child_status | Read the architect grant's scoped work-package status without Phase 7 delegation. |
+| read_phase_board | Phase 7 stub for phase board reads; returns `phase7_not_implemented` after architect authorization. |
+| request_child_replan | Phase 7 stub for child replan requests; returns `phase7_not_implemented` after architect authorization. |
+| approve_child_ready_state | Phase 7 stub for child readiness approval; returns `phase7_not_implemented` after architect authorization. |
+| merge_child_into_phase | Phase 7 stub for merge-to-phase recording; returns `phase7_not_implemented` after architect authorization. |
+| split_work_package | Phase 7 stub for child package splitting; returns `phase7_not_implemented` after architect authorization. |
+| publish_phase_update | Phase 7 stub for phase updates; returns `phase7_not_implemented` after architect authorization. |
+
+Architect tools require a live architect grant session and the matching
+architect capability from the permission model. Worker grants and architect
+grants without the required capability are denied. Worker grants cannot be
+minted with architect-only MCP capabilities such as `read:phase`,
+`read:child_progress`, or `mint:child_worker_key`. `tools/list` advertises
+architect tools only for an already-bound architect session and filters them to
+the live grant's capabilities; stale sessions expose only health and
+`claim_work_key` for refresh. Anonymous and worker sessions see the
+worker-facing discovery surface. Architect sessions may call
+`get_current_assignment` and read `sympp://assignment/current` to recover their
+scoped `work_package_id` after reconnect, but architect sessions still cannot
+use worker package read/write tools. Existing lifecycle capabilities such as
+`architect:lifecycle.transition` do not imply MCP architect tool capabilities;
+P3-003 requires the explicit MCP capability strings listed in the permission
+model. Until Phase 7 introduces phase
+entities and phase-child scope checks, `read_child_status` requires both
+`read:child_progress` and `read:child_findings` because its summary includes
+progress, findings, and artifact counts, and it is intentionally limited to the
+work package bound to the architect grant. Requests for unrelated work packages
+are denied rather than guessed from absent phase relationships.
+Phase 7-dependent tools perform authorization first and then return an explicit
+`phase7_not_implemented` error; they do not create children, mint grants,
+approve readiness, merge phase artifacts, or publish phase state in P3-003.
+
 ## Resources
 
 ```text
@@ -34,7 +73,8 @@ sympp://work-packages/{id}/review_suite.md
 sympp://work-packages/{id}/handoff.md
 ```
 
-`claim_work_key` requires `secret` and `claimed_by`. Reconnects are accepted
+`claim_work_key` requires `secret` and `claimed_by`. It can bind an existing
+worker or architect grant; it does not mint new grants. Reconnects are accepted
 only when the same owner identity presents the same secret proof.
 
 Explicit `state_key` values retain initialized handshake continuity for

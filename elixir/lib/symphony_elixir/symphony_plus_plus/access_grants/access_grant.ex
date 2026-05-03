@@ -120,7 +120,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
   end
 
   defp architect_capability?(capability) when is_binary(capability) do
-    capability == "architect" or String.starts_with?(capability, ["architect:", "architect."])
+    capability == "architect" or
+      String.starts_with?(capability, ["architect:", "architect."]) or
+      capability in [
+        "create:child_work_package",
+        "update:child_work_package",
+        "mint:child_worker_key",
+        "revoke:child_worker_key",
+        "read:child_findings",
+        "read:child_progress",
+        "read:phase",
+        "write:phase_plan",
+        "request:child_replan",
+        "approve:child_ready_state",
+        "merge:child_into_phase",
+        "split:child_work_package",
+        "publish:phase_update"
+      ]
   end
 
   defp architect_capability?(_capability), do: false

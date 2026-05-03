@@ -2,9 +2,9 @@
   "worker_tools": [
     {
       "name": "claim_work_key",
-      "purpose": "Claim a one-time work key/secret with required claimed_by owner identity and bind it to the current worker session.",
+      "purpose": "Claim a one-time work key/secret with required claimed_by owner identity and bind it to the current MCP session using the grant role.",
       "required_arguments": ["secret", "claimed_by"],
-      "reconnect_policy": "Reconnects are accepted only when the same claimed_by owner presents the same secret proof. Explicit state_key values retain initialized handshake state only and do not restore claimed worker sessions."
+      "reconnect_policy": "Reconnects are accepted only when the same claimed_by owner presents the same secret proof. Existing worker and architect grants can be bound; claim_work_key does not mint grants. Explicit state_key values retain initialized handshake state only and do not restore claimed sessions."
     },
     {
       "name": "get_current_assignment",
@@ -65,6 +65,52 @@
       "post_ready_policy": "After mark_ready succeeds, new worker evidence writes are rejected as already_ready while idempotent replays remain available."
     }
   ],
+  "architect_tools": [
+    {
+      "name": "create_child_work_package",
+      "purpose": "Phase 7 stub for creating phase-scoped child work; returns phase7_not_implemented after architect authorization."
+    },
+    {
+      "name": "mint_child_worker_key",
+      "purpose": "Phase 7 stub for minting child worker keys; returns phase7_not_implemented after architect authorization."
+    },
+    {
+      "name": "revoke_child_worker_key",
+      "purpose": "Phase 7 stub for revoking child worker keys; returns phase7_not_implemented after architect authorization."
+    },
+    {
+      "name": "read_child_status",
+      "purpose": "Read the architect grant's scoped work-package status without Phase 7 delegation.",
+      "required_capabilities": ["read:child_progress", "read:child_findings"],
+      "scope_policy": "Until Phase 7 phase-child relationships exist, this only reads the work package bound to the architect grant."
+    },
+    {
+      "name": "read_phase_board",
+      "purpose": "Phase 7 stub for phase board reads; returns phase7_not_implemented after architect authorization."
+    },
+    {
+      "name": "request_child_replan",
+      "purpose": "Phase 7 stub for child replan requests; returns phase7_not_implemented after architect authorization."
+    },
+    {
+      "name": "approve_child_ready_state",
+      "purpose": "Phase 7 stub for child readiness approval; returns phase7_not_implemented after architect authorization."
+    },
+    {
+      "name": "merge_child_into_phase",
+      "purpose": "Phase 7 stub for merge-to-phase recording; returns phase7_not_implemented after architect authorization."
+    },
+    {
+      "name": "split_work_package",
+      "purpose": "Phase 7 stub for child package splitting; returns phase7_not_implemented after architect authorization."
+    },
+    {
+      "name": "publish_phase_update",
+      "purpose": "Phase 7 stub for phase updates; returns phase7_not_implemented after architect authorization."
+    }
+  ],
+  "architect_authorization_policy": "Architect tools require a live architect grant session and the matching architect capability. Worker grants and architect grants without the required capability are denied. Worker grants cannot be minted with architect-only MCP capabilities.",
+  "architect_discovery_policy": "tools/list advertises architect tools only for already-bound architect sessions and filters them to the live grant capabilities. Stale sessions expose only health and claim_work_key for refresh. Anonymous and worker sessions receive the worker-facing tool surface. Architect sessions may call get_current_assignment and read sympp://assignment/current for scoped assignment introspection, but cannot use worker package read/write tools. Lifecycle capabilities such as architect:lifecycle.transition do not imply MCP architect tool capabilities; explicit MCP capability strings are required.",
   "resources": [
     "sympp://assignment/current",
     "sympp://work-packages/{id}/context.md",

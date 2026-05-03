@@ -35,6 +35,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "submit_review_package",
     "mark_ready"
   ]
+  @architect_tools [
+    "create_child_work_package",
+    "mint_child_worker_key",
+    "revoke_child_worker_key",
+    "read_child_status",
+    "read_phase_board",
+    "request_child_replan",
+    "approve_child_ready_state",
+    "merge_child_into_phase",
+    "split_work_package",
+    "publish_phase_update"
+  ]
+  @phase7_architect_tools [
+    "create_child_work_package",
+    "mint_child_worker_key",
+    "revoke_child_worker_key",
+    "read_phase_board",
+    "request_child_replan",
+    "approve_child_ready_state",
+    "merge_child_into_phase",
+    "split_work_package",
+    "publish_phase_update"
+  ]
   @version_resource "sympp://health/version"
   @assignment_resource "sympp://assignment/current"
   @finding_replay_retry_attempts 50
@@ -531,6 +554,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp batch_updated_server(items, %__MODULE__{} = server) do
     Enum.reduce(items, server, fn
+      {_payload, {%{"error" => _error}, %__MODULE__{} = _updated_server}}, server ->
+        server
+
       {payload, {_response, %__MODULE__{session: %Session{}} = updated_server}}, server ->
         if batch_claim_work_key_request?(payload, server), do: updated_server, else: server
 
@@ -545,7 +571,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        ),
        do: true
 
-  defp batch_claim_work_key_success?({nil, %__MODULE__{session: %Session{}}}, %__MODULE__{session: nil}), do: true
+  defp batch_claim_work_key_success?({nil, %__MODULE__{session: %Session{} = updated_session}}, %__MODULE__{session: original_session}) do
+    original_session == nil or updated_session != original_session
+  end
+
   defp batch_claim_work_key_success?(_item, %__MODULE__{}), do: false
 
   defp batch_claim_work_key_request?(
@@ -613,11 +642,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:error, -32_602, "Invalid params", %{"reason" => "missing_protocol_version", "supported" => @protocol_version}}
   end
 
-  defp dispatch("tools/list", params, _server) when is_map(params) do
-    {:ok,
-     %{
-       "tools" => [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]
-     }}
+  defp dispatch("tools/list", params, %__MODULE__{config: config, session: session}) when is_map(params) do
+    case tool_specs_for_session(config.repo, session) do
+      {:ok, tools} -> {:ok, %{"tools" => tools}}
+      {:error, reason} -> worker_error(reason, "tools/list")
+    end
   end
 
   defp dispatch("tools/list", _params, _server) do
@@ -660,6 +689,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp dispatch("tools/call", %{"name" => name} = params, %__MODULE__{} = server) when name in @architect_tools do
+    with :ok <- authorize_architect_tool_call(server, name),
+         {:ok, arguments} <- architect_tool_arguments(params, name) do
+      architect_tool(name, arguments, server)
+    else
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:error, reason} -> architect_error(reason, name)
+    end
+  end
+
   defp dispatch("tools/call", %{"name" => name}, _server) when is_binary(name) do
     {:error, -32_601, "Method not found", %{"tool" => name}}
   end
@@ -698,10 +737,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp dispatch("resources/read", %{"uri" => @assignment_resource}, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
-         :ok <- require_worker_assignment(session.assignment) do
+         :ok <- require_assignment_introspection(session.assignment) do
       {:ok, json_resource(@assignment_resource, Session.public_assignment(session))}
     else
-      {:error, :worker_grant_required} -> auth_error({:unauthorized, :worker_grant_required}, @assignment_resource)
+      {:error, :unsupported_grant_role} -> auth_error({:unauthorized, :unsupported_grant_role}, @assignment_resource)
       {:error, reason} -> auth_error(reason, @assignment_resource)
     end
   end
@@ -772,6 +811,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "description" => "Symphony++ worker tool #{name}.",
       "inputSchema" => worker_tool_input_schema(name)
     }
+  end
+
+  defp architect_tool_spec(name) do
+    %{
+      "name" => name,
+      "title" => name,
+      "description" => architect_tool_description(name),
+      "inputSchema" => architect_tool_input_schema(name)
+    }
+  end
+
+  defp architect_tool_description("read_child_status") do
+    "Read the architect grant's scoped child work-package status without Phase 7 delegation."
+  end
+
+  defp architect_tool_description(name) when name in @phase7_architect_tools do
+    "Phase 7 architect tool #{name}; authorization is enforced, but behavior is not implemented yet."
   end
 
   defp worker_tool_input_schema("claim_work_key") do
@@ -869,6 +925,72 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     )
   end
 
+  defp architect_tool_input_schema("create_child_work_package"), do: schema(%{"package" => object_schema()}, ["package"])
+
+  defp architect_tool_input_schema("mint_child_worker_key") do
+    schema(%{"work_package_id" => string_schema(), "template" => object_schema()}, ["work_package_id", "template"])
+  end
+
+  defp architect_tool_input_schema("revoke_child_worker_key") do
+    schema(%{"grant_id" => string_schema(), "reason" => string_schema()}, ["grant_id", "reason"])
+  end
+
+  defp architect_tool_input_schema("read_child_status"), do: schema(%{"work_package_id" => string_schema()}, ["work_package_id"])
+  defp architect_tool_input_schema("read_phase_board"), do: schema(%{"phase_id" => string_schema()}, ["phase_id"])
+
+  defp architect_tool_input_schema("request_child_replan") do
+    schema(%{"work_package_id" => string_schema(), "reason" => string_schema()}, ["work_package_id", "reason"])
+  end
+
+  defp architect_tool_input_schema("approve_child_ready_state") do
+    schema(%{"work_package_id" => string_schema(), "rationale" => string_schema()}, ["work_package_id", "rationale"])
+  end
+
+  defp architect_tool_input_schema("merge_child_into_phase") do
+    schema(%{"work_package_id" => string_schema(), "merge_artifact" => object_schema()}, ["work_package_id", "merge_artifact"])
+  end
+
+  defp architect_tool_input_schema("split_work_package") do
+    schema(%{"work_package_id" => string_schema(), "child_specs" => nonempty_object_array_schema()}, ["work_package_id", "child_specs"])
+  end
+
+  defp architect_tool_input_schema("publish_phase_update") do
+    schema(%{"phase_id" => string_schema(), "update" => object_schema()}, ["phase_id", "update"])
+  end
+
+  defp tool_specs_for_session(_repo, nil) do
+    {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
+  end
+
+  defp tool_specs_for_session(repo, session) do
+    case Auth.require_session(session, repo) do
+      {:ok, %Session{assignment: %{grant_role: "architect"}} = session} ->
+        {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs_for_session(session)]}
+
+      {:ok, %Session{assignment: %{grant_role: "worker"}}} ->
+        {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
+
+      {:ok, %Session{}} ->
+        {:error, {:unauthorized, :unsupported_grant_role}}
+
+      {:error, {:service_unavailable, _reason} = reason} ->
+        {:error, reason}
+
+      {:error, _reason} ->
+        {:ok, claimable_tool_specs()}
+    end
+  end
+
+  defp claimable_tool_specs, do: [health_tool_spec(), worker_tool_spec("claim_work_key")]
+
+  defp architect_tool_specs_for_session(%Session{assignment: %{capabilities: capabilities}}) do
+    @architect_tools
+    |> Enum.filter(&(architect_tool_required_capabilities(&1) -- capabilities == []))
+    |> Enum.map(&architect_tool_spec/1)
+  end
+
+  defp architect_tool_specs_for_session(_session), do: []
+
   defp schema(properties, required) do
     %{"type" => "object", "additionalProperties" => false, "properties" => properties, "required" => required}
   end
@@ -904,6 +1026,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp nullable_string_schema, do: %{"type" => ["string", "null"]}
   defp object_schema, do: %{"type" => "object", "additionalProperties" => true}
   defp nonempty_string_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => nonblank_string_schema()}
+  defp nonempty_object_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => object_schema()}
 
   defp plan_patch_schema do
     %{
@@ -980,7 +1103,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp assignment_resources(%Session{} = session, repo) do
     case Auth.require_session(session, repo) do
       {:ok, %Session{} = session} ->
-        assignment_resources_for_worker(session)
+        assignment_resources_for_session(session)
 
       {:error, {:service_unavailable, reason}} ->
         service_error(reason, @assignment_resource)
@@ -992,16 +1115,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp assignment_resources(_session, _repo), do: {:ok, []}
 
-  defp assignment_resources_for_worker(%Session{} = session) do
+  defp assignment_resources_for_session(%Session{assignment: %{grant_role: "worker"}} = session) do
     case require_worker_assignment(session.assignment) do
       :ok -> listed_assignment_resources(session)
       {:error, _reason} -> {:ok, []}
     end
   end
 
+  defp assignment_resources_for_session(%Session{assignment: %{grant_role: "architect"}} = session) do
+    case require_assignment_introspection(session.assignment) do
+      :ok -> listed_current_assignment_resource(session)
+      {:error, _reason} -> {:ok, []}
+    end
+  end
+
+  defp assignment_resources_for_session(%Session{}), do: {:ok, []}
+
   defp listed_assignment_resources(%Session{} = session) do
     work_package_id = Session.work_package_id(session)
 
+    with {:ok, assignment_resources} <- listed_current_assignment_resource(session) do
+      {:ok, assignment_resources ++ work_package_resources(work_package_id)}
+    end
+  end
+
+  defp listed_current_assignment_resource(%Session{}) do
     {:ok,
      [
        %{
@@ -1009,7 +1147,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          "name" => "Current Symphony++ assignment",
          "mimeType" => "application/json"
        }
-     ] ++ work_package_resources(work_package_id)}
+     ]}
   end
 
   defp work_package_resources(work_package_id) do
@@ -1058,11 +1196,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, arguments} <- worker_tool_arguments(params, "claim_work_key"),
          {:ok, secret} <- required_argument(arguments, "secret"),
          {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
-         proof_hash = WorkKey.secret_hash(secret),
-         true <- session.proof_hash == proof_hash,
-         :ok <- require_same_claim_owner(session.assignment, claimed_by),
-         {:ok, session} <- revalidate_worker_session(config.repo, session, proof_hash) do
-      {:ok, %{"assignment" => Session.public_assignment(session)}, session}
+         :ok <- require_full_secret(secret),
+         proof_hash = WorkKey.secret_hash(secret) do
+      case claim_work_key_with_bound_session(config.repo, session, secret, proof_hash, claimed_by) do
+        {:ok, _result, _session} = success -> success
+        {:error, reason} -> claim_error(reason)
+      end
     else
       {:error, code, message, data} -> {:error, code, message, data}
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "claim_work_key", "reason" => reason}}
@@ -1077,10 +1216,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, arguments} <- worker_tool_arguments(params, "claim_work_key"),
          {:ok, secret} <- required_argument(arguments, "secret"),
          {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
-         proof_hash = WorkKey.secret_hash(secret),
-         :ok <- require_worker_secret(config.repo, secret),
-         {:ok, session} <- claim_or_reconnect_worker_session(config.repo, secret, proof_hash, claimed_by) do
-      {:ok, %{"assignment" => Session.public_assignment(session)}, session}
+         :ok <- require_full_secret(secret),
+         proof_hash = WorkKey.secret_hash(secret) do
+      case claim_unbound_work_key(config.repo, secret, proof_hash, claimed_by) do
+        {:ok, _result, _session} = success -> success
+        {:error, reason} -> claim_error(reason)
+      end
     else
       {:error, code, message, data} -> {:error, code, message, data}
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "claim_work_key", "reason" => reason}}
@@ -1090,34 +1231,56 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     _error -> {:error, -32_000, "Server error", %{"tool" => "claim_work_key", "reason" => "ledger_unavailable"}}
   end
 
-  defp revalidate_worker_session(repo, %Session{} = session, proof_hash) do
+  defp claim_work_key_with_bound_session(repo, %Session{} = session, secret, proof_hash, claimed_by) do
+    if session.proof_hash == proof_hash do
+      with :ok <- require_same_claim_owner(session.assignment, claimed_by),
+           {:ok, session} <- revalidate_bound_session(repo, session, proof_hash) do
+        {:ok, %{"assignment" => Session.public_assignment(session)}, session}
+      end
+    else
+      case Auth.require_session(session, repo) do
+        {:ok, %Session{}} -> {:error, :session_already_bound}
+        {:error, {:service_unavailable, _reason} = reason} -> {:error, reason}
+        {:error, _reason} -> claim_unbound_work_key(repo, secret, proof_hash, claimed_by)
+      end
+    end
+  end
+
+  defp claim_unbound_work_key(repo, secret, proof_hash, claimed_by) do
+    with :ok <- require_mcp_claimable_secret(repo, proof_hash),
+         {:ok, session} <- claim_or_reconnect_session(repo, secret, proof_hash, claimed_by) do
+      {:ok, %{"assignment" => Session.public_assignment(session)}, session}
+    end
+  end
+
+  defp revalidate_bound_session(repo, %Session{} = session, proof_hash) do
     with {:ok, grant} <- AccessGrantRepository.get(repo, session.assignment.grant_id),
          {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash),
-         :ok <- require_worker_assignment(session.assignment) do
+         :ok <- require_mcp_claimable_assignment(session.assignment) do
       {:ok, session}
     end
   end
 
-  defp claim_or_reconnect_worker_session(repo, secret, proof_hash, claimed_by) do
+  defp claim_or_reconnect_session(repo, secret, proof_hash, claimed_by) do
     case AccessGrantService.claim(repo, secret, claimed_by: claimed_by) do
       {:ok, assignment} ->
-        with :ok <- require_worker_assignment(assignment) do
+        with :ok <- require_mcp_claimable_assignment(assignment) do
           {:ok, Session.new(assignment, proof_hash: proof_hash)}
         end
 
       {:error, :already_claimed} ->
-        reconnect_claimed_worker_session(repo, proof_hash, claimed_by)
+        reconnect_claimed_session(repo, proof_hash, claimed_by)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp reconnect_claimed_worker_session(repo, proof_hash, claimed_by) do
+  defp reconnect_claimed_session(repo, proof_hash, claimed_by) do
     with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, proof_hash),
          :ok <- require_same_claim_owner(grant, claimed_by),
          {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash),
-         :ok <- require_worker_assignment(session.assignment) do
+         :ok <- require_mcp_claimable_assignment(session.assignment) do
       {:ok, session}
     end
   end
@@ -1125,27 +1288,93 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_same_claim_owner(%{claimed_by: claimed_by}, claimed_by), do: :ok
   defp require_same_claim_owner(_grant, _claimed_by), do: {:error, :already_claimed}
 
-  defp require_worker_secret(repo, secret) do
+  defp require_full_secret(secret) do
     if String.length(secret) == 4 do
       {:error, :display_key_only}
     else
-      with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, WorkKey.secret_hash(secret)) do
-        require_worker_assignment(grant)
-      end
+      :ok
+    end
+  end
+
+  defp require_mcp_claimable_secret(repo, proof_hash) do
+    with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, proof_hash) do
+      require_mcp_claimable_assignment(grant)
     end
   end
 
   defp require_worker_assignment(%{grant_role: "worker"}), do: :ok
   defp require_worker_assignment(_assignment), do: {:error, :worker_grant_required}
 
+  defp require_architect_assignment(%{grant_role: "architect"}), do: :ok
+  defp require_architect_assignment(_assignment), do: {:error, :architect_grant_required}
+
+  defp require_mcp_claimable_assignment(%{grant_role: role}) when role in ["worker", "architect"], do: :ok
+  defp require_mcp_claimable_assignment(_assignment), do: {:error, :unsupported_grant_role}
+
+  defp require_assignment_introspection(%{grant_role: role}) when role in ["worker", "architect"], do: :ok
+  defp require_assignment_introspection(_assignment), do: {:error, :unsupported_grant_role}
+
+  defp require_architect_capability(%{capabilities: capabilities}, capability) when is_list(capabilities) do
+    if capability in capabilities do
+      :ok
+    else
+      {:error, :insufficient_capability}
+    end
+  end
+
+  defp require_architect_capability(_assignment, _capability), do: {:error, :insufficient_capability}
+
+  defp authorize_architect_tool_call(%__MODULE__{config: config, session: session}, name) do
+    with {:ok, _session} <- architect_session(config.repo, session, architect_tool_required_capabilities(name)) do
+      :ok
+    end
+  end
+
+  defp architect_tool_required_capabilities("read_child_status"), do: ["read:child_progress", "read:child_findings"]
+  defp architect_tool_required_capabilities(name), do: [architect_tool_capability(name)]
+
   defp claim_error(:database_busy), do: service_error(:database_busy, "claim_work_key")
   defp claim_error({:storage_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
   defp claim_error({:migration_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
   defp claim_error(reason), do: {:error, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => reason_text(reason)}}
 
+  defp architect_tool("read_child_status", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, ["read:child_progress", "read:child_findings"]),
+         {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
+         :ok <- require_architect_work_package_scope(session, work_package_id),
+         {:ok, summary} <- PlanningRepository.get_status_summary(config.repo, work_package_id) do
+      {:ok,
+       tool_result(%{
+         "work_package" => work_package_payload(summary.work_package),
+         "plan_version" => plan_version(summary.plan_nodes),
+         "finding_count" => summary.finding_count,
+         "progress_event_count" => summary.progress_event_count,
+         "artifact_count" => summary.artifact_count
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_child_status", "reason" => reason}}
+      {:error, reason} -> architect_error(reason, "read_child_status")
+    end
+  end
+
+  defp architect_tool(name, arguments, %__MODULE__{config: config, session: session}) when name in @phase7_architect_tools do
+    with {:ok, session} <- architect_session(config.repo, session, architect_tool_capability(name)),
+         :ok <- require_architect_target_scope(session, arguments) do
+      phase7_not_implemented(name)
+    else
+      {:error, reason} -> architect_error(reason, name)
+    end
+  end
+
+  defp require_architect_target_scope(%Session{} = session, %{"work_package_id" => work_package_id}) do
+    require_architect_work_package_scope(session, work_package_id)
+  end
+
+  defp require_architect_target_scope(%Session{}, _arguments), do: :ok
+
   defp worker_tool("get_current_assignment", _arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
-         :ok <- require_worker_assignment(session.assignment) do
+         :ok <- require_assignment_introspection(session.assignment) do
       {:ok, tool_result(%{"assignment" => Session.public_assignment(session)})}
     else
       {:error, reason} -> worker_error(reason, "get_current_assignment")
@@ -1365,6 +1594,59 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp rollback_worker_transaction_result(repo, {:error, reason}), do: repo.rollback({:error, reason})
+
+  defp architect_session(repo, session, capability) when is_binary(capability) do
+    with {:ok, session} <- Auth.require_session(session, repo),
+         :ok <- require_architect_assignment(session.assignment),
+         :ok <- require_architect_capability(session.assignment, capability) do
+      {:ok, session}
+    end
+  end
+
+  defp architect_session(repo, session, capabilities) when is_list(capabilities) do
+    with {:ok, session} <- Auth.require_session(session, repo),
+         :ok <- require_architect_assignment(session.assignment),
+         :ok <- require_architect_capabilities(session.assignment, capabilities) do
+      {:ok, session}
+    end
+  end
+
+  defp require_architect_capabilities(assignment, capabilities) do
+    Enum.reduce_while(capabilities, :ok, fn capability, :ok ->
+      case require_architect_capability(assignment, capability) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp require_architect_work_package_scope(%Session{} = session, work_package_id) do
+    if Session.work_package_id(session) == work_package_id do
+      :ok
+    else
+      {:error, :phase_scope_not_available}
+    end
+  end
+
+  defp architect_tool_capability("create_child_work_package"), do: "create:child_work_package"
+  defp architect_tool_capability("mint_child_worker_key"), do: "mint:child_worker_key"
+  defp architect_tool_capability("revoke_child_worker_key"), do: "revoke:child_worker_key"
+  defp architect_tool_capability("read_phase_board"), do: "read:phase"
+  defp architect_tool_capability("request_child_replan"), do: "request:child_replan"
+  defp architect_tool_capability("approve_child_ready_state"), do: "approve:child_ready_state"
+  defp architect_tool_capability("merge_child_into_phase"), do: "merge:child_into_phase"
+  defp architect_tool_capability("split_work_package"), do: "split:child_work_package"
+  defp architect_tool_capability("publish_phase_update"), do: "publish:phase_update"
+
+  defp phase7_not_implemented(tool) do
+    {:error, -32_604, "Not implemented",
+     %{
+       "tool" => tool,
+       "reason" => "phase7_not_implemented",
+       "phase" => "Phase 7",
+       "detail" => "Phase entities and architect delegation are not implemented in SYMPP-P3-003."
+     }}
+  end
 
   defp read_current_virtual_file(repo, session, file_name) do
     with {:ok, session} <- Auth.require_session(session, repo),
@@ -2674,6 +2956,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp worker_error({:migration_failed, _reason} = reason, tool), do: service_error(reason, tool)
   defp worker_error(reason, tool), do: {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason_text(reason)}}
 
+  defp architect_error(:unauthorized, resource), do: auth_error(:unauthorized, resource)
+  defp architect_error({:unauthorized, _reason} = reason, resource), do: auth_error(reason, resource)
+  defp architect_error(:expired, resource), do: auth_error({:unauthorized, :expired}, resource)
+  defp architect_error(:assignment_revoked, resource), do: auth_error({:unauthorized, :revoked}, resource)
+  defp architect_error(:architect_grant_required, resource), do: auth_error({:unauthorized, :architect_grant_required}, resource)
+  defp architect_error(:insufficient_capability, resource), do: auth_error({:unauthorized, :insufficient_capability}, resource)
+  defp architect_error(:phase_scope_not_available, resource), do: auth_error(:forbidden, resource)
+  defp architect_error(:forbidden, resource), do: auth_error(:forbidden, resource)
+  defp architect_error({:service_unavailable, _reason} = reason, resource), do: auth_error(reason, resource)
+  defp architect_error(:database_busy, tool), do: service_error(:database_busy, tool)
+  defp architect_error({:storage_failed, _reason} = reason, tool), do: service_error(reason, tool)
+  defp architect_error({:migration_failed, _reason} = reason, tool), do: service_error(reason, tool)
+  defp architect_error(reason, tool), do: {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason_text(reason)}}
+
   defp scoped_session(repo, session, arguments) when is_map(arguments) do
     case Auth.require_session(session, repo) do
       {:ok, session} ->
@@ -2700,6 +2996,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp architect_tool_arguments(params, name) do
+    case Map.get(params, "arguments", %{}) do
+      arguments when is_map(arguments) ->
+        validate_architect_arguments(name, arguments)
+
+      _arguments ->
+        {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "invalid_tool_arguments"}}
+    end
+  end
+
   defp validate_worker_arguments(name, arguments) do
     allowed = MapSet.new(allowed_worker_argument_keys(name))
     unexpected = arguments |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1))
@@ -2711,11 +3017,64 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp validate_architect_arguments(name, arguments) do
+    allowed = MapSet.new(allowed_architect_argument_keys(name))
+    unexpected = arguments |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1))
+
+    cond do
+      unexpected != [] ->
+        {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "unexpected_argument", "arguments" => unexpected}}
+
+      true ->
+        case validate_architect_required_arguments(name, arguments) do
+          :ok -> {:ok, arguments}
+          {:error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => reason}}
+        end
+    end
+  end
+
   defp allowed_worker_argument_keys(name) do
     name
     |> worker_tool_input_schema()
     |> Map.get("properties", %{})
     |> Map.keys()
+  end
+
+  defp allowed_architect_argument_keys(name) do
+    name
+    |> architect_tool_input_schema()
+    |> Map.get("properties", %{})
+    |> Map.keys()
+  end
+
+  defp validate_architect_required_arguments(name, arguments) do
+    schema = architect_tool_input_schema(name)
+    properties = Map.get(schema, "properties", %{})
+
+    schema
+    |> Map.get("required", [])
+    |> Enum.find_value(:ok, fn key ->
+      case validate_required_architect_argument(arguments, properties, key) do
+        :ok -> nil
+        {:error, reason} -> {:error, reason}
+      end
+    end)
+  end
+
+  defp validate_required_architect_argument(arguments, properties, key) do
+    case {Map.get(arguments, key), get_in(properties, [key, "type"])} do
+      {value, "string"} when is_binary(value) ->
+        if String.trim(value) == "", do: {:error, "missing_#{key}"}, else: :ok
+
+      {value, "object"} when is_map(value) ->
+        :ok
+
+      {[_head | _tail] = values, "array"} ->
+        if Enum.all?(values, &is_map/1), do: :ok, else: {:error, "invalid_#{key}"}
+
+      {_value, _type} ->
+        {:error, "missing_#{key}"}
+    end
   end
 
   defp required_argument(arguments, key) do

@@ -211,6 +211,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     assert "worker grants cannot include architect capabilities" in errors_on(changeset).capabilities
   end
 
+  test "worker grant cannot include architect MCP tool capabilities", %{repo: repo} do
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
+
+    for capability <- [
+          "read:phase",
+          "read:child_progress",
+          "read:child_findings",
+          "mint:child_worker_key",
+          "approve:child_ready_state",
+          "split:child_work_package",
+          "write:phase_plan",
+          "update:child_work_package"
+        ] do
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Service.mint_worker_grant(repo, work_package.id, capabilities: ["worker:claim", capability])
+
+      assert "worker grants cannot include architect capabilities" in errors_on(changeset).capabilities
+    end
+  end
+
   test "non-id constraint failures are not reported as duplicate ids", %{repo: repo} do
     work_key = WorkKey.generate()
 
