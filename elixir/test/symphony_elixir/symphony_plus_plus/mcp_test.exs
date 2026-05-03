@@ -4640,6 +4640,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "idempotency_key" => "investigation-recommendation"
     })
 
+    attach_tool(repo, session, "request_scope_expansion", %{
+      "summary" => "Updated recommendation",
+      "body" => "Recommendation remains recorded without duplicate canonical artifacts.",
+      "idempotency_key" => "investigation-recommendation-updated"
+    })
+
     ready_response =
       MCPHarness.request(
         %{"jsonrpc" => "2.0", "id" => "ready", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
@@ -4650,7 +4656,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
 
     assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
-    assert Enum.any?(artifacts, &(&1.kind == "recommendation" and &1.path == "recommendation.md"))
+
+    assert Enum.count(artifacts, &(&1.kind == "recommendation" and &1.path == "recommendation.md")) == 1
   end
 
   test "mark_ready rejects spoofed metadata and accepts skipped plan nodes", %{repo: repo} do

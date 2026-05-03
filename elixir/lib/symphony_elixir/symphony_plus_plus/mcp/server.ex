@@ -2145,23 +2145,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp append_investigation_recommendation_artifact(_repo, %Session{}, _tool, %ProgressEvent{}), do: :ok
 
   defp append_recommendation_artifact(repo, %Session{} = session, %ProgressEvent{} = event) do
+    work_package_id = session.assignment.work_package_id
+
     attrs = %{
-      "id" => recommendation_artifact_id(session.assignment.work_package_id, event.id),
-      "work_package_id" => session.assignment.work_package_id,
+      "id" => recommendation_artifact_id(work_package_id),
+      "work_package_id" => work_package_id,
       "path" => "recommendation.md",
       "title" => event.summary,
       "kind" => "recommendation"
     }
 
-    case PlanningService.append_artifact(repo, attrs) do
-      {:ok, _artifact} -> :ok
-      {:error, :id_already_exists} -> :ok
-      {:error, reason} -> {:error, reason}
+    with {:ok, artifacts} <- PlanningRepository.list_artifacts(repo, work_package_id) do
+      if recommendation_artifact_recorded?(artifacts) do
+        :ok
+      else
+        case PlanningService.append_artifact(repo, attrs) do
+          {:ok, _artifact} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+      end
     end
   end
 
-  defp recommendation_artifact_id(work_package_id, event_id) do
-    material = [work_package_id, "recommendation", event_id] |> Enum.join(":")
+  defp recommendation_artifact_id(work_package_id) do
+    material = [work_package_id, "recommendation", "recommendation.md"] |> Enum.join(":")
     "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
