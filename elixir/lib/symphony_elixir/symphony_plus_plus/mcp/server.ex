@@ -1097,9 +1097,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp reverse_plan_patch_result({:error, reason}), do: {:error, reason}
 
   defp apply_plan_node_patch(repo, work_package_id, %{"id" => id} = attrs) when is_binary(id) do
+    id = String.trim(id)
     updates = Map.take(attrs, ["title", "body", "status"])
 
-    with {:ok, existing_nodes} <- PlanningRepository.list_plan_nodes(repo, work_package_id),
+    with true <- id != "" || {:tool_error, "invalid_patch_node"},
+         {:ok, existing_nodes} <- PlanningRepository.list_plan_nodes(repo, work_package_id),
          %PlanNode{} <- Enum.find(existing_nodes, &(&1.id == id)) || {:error, :forbidden},
          :ok <- require_plan_node_updates(updates),
          {:ok, plan_node} <- PlanningService.update_plan_node(repo, id, updates) do
@@ -1268,9 +1270,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp optional_finding_id(arguments, session, idempotency_key) do
     case Map.get(arguments, "id") do
-      id when is_binary(id) -> if String.trim(id) == "", do: {:tool_error, "invalid_id"}, else: {:ok, id}
-      nil -> {:ok, generated_finding_id(session, idempotency_key)}
-      _id -> {:tool_error, "invalid_id"}
+      id when is_binary(id) ->
+        case String.trim(id) do
+          "" -> {:tool_error, "invalid_id"}
+          trimmed -> {:ok, trimmed}
+        end
+
+      nil ->
+        {:ok, generated_finding_id(session, idempotency_key)}
+
+      _id ->
+        {:tool_error, "invalid_id"}
     end
   end
 
@@ -1421,7 +1431,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     arguments =
       Map.put_new(arguments, "summary", status)
       |> Map.put_new("status", status)
-      |> Map.put("idempotency_key", metadata_idempotency_key(payload))
+      |> Map.put_new("idempotency_key", metadata_idempotency_key(payload))
 
     append_scoped_progress(repo, session, arguments, tool, payload)
   end
@@ -2029,8 +2039,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp maybe_put_id(attrs, arguments) do
     case Map.get(arguments, "id") do
-      id when is_binary(id) and id != "" -> Map.put(attrs, "id", id)
-      _id -> attrs
+      id when is_binary(id) ->
+        case String.trim(id) do
+          "" -> attrs
+          trimmed -> Map.put(attrs, "id", trimmed)
+        end
+
+      _id ->
+        attrs
     end
   end
 

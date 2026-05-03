@@ -225,6 +225,29 @@
 
 - Commit and push the thirty-sixth T2 fix, then rerun fresh full-diff T2 against `symphony-plus-plus/beta`; run GitHub review on PR #15 if T2 is clean.
 
+### Thirty-Seventh T2 Follow-up Actions
+
+- Pushed thirty-sixth T2 fix head `2ca972b` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T005543Z-32c9e7b6`; Alpha reported metadata idempotency-key overwrite, Bravo reported explicit plan/finding ID whitespace issues, then the gate was closed as `findings`.
+- Fixed the valid findings by using caller metadata `idempotency_key` when supplied, deriving the deterministic metadata key only when omitted, trimming explicit finding IDs, and trimming explicit plan-node IDs for both append and patch operations.
+- Added regression coverage for repeated matching metadata payloads with distinct caller keys, trimmed explicit finding IDs, trimmed explicit appended plan-node IDs, and trimmed plan-node patch IDs.
+- High-pressure coherence check before the next same-tier T2: the fix stays inside the P3-002 worker MCP idempotency/identifier contract and does not widen runtime behavior outside worker tools.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after thirty-seventh T2 fix. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 69 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 264 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit and push the thirty-seventh T2 fix, then rerun fresh full-diff T2 against `symphony-plus-plus/beta`; run GitHub review on PR #15 if T2 is clean.
+
 ### Next Steps
 
 - Pushed thirty-first T2 fix head `cb3b14757a8d7fe52ce3a637f05ffca1749059a8`; rerun full-diff T2, then proceed to GitHub review if clean.

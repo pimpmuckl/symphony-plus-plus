@@ -147,7 +147,10 @@ Phase 3
 - [x] Commit and push thirty-fifth T2 fix.
 - [x] Run fresh full-diff T2 on pushed head `d385aec` and close valid findings gate.
 - [x] Fix thirty-sixth T2 newest metadata head selection finding locally.
-- [ ] Commit and push thirty-sixth T2 fix.
+- [x] Commit and push thirty-sixth T2 fix.
+- [x] Run fresh full-diff T2 on pushed head `2ca972b` and close valid findings gate.
+- [x] Fix thirty-seventh T2 metadata idempotency and explicit ID normalization findings locally.
+- [ ] Commit and push thirty-seventh T2 fix.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
 - **Status:** thirty-second T2 fixes pushed; pending fresh full-diff T2 rerun and GitHub review if clean.
@@ -189,6 +192,8 @@ Phase 3
 - Findings remain narrow API-contract and normalization hardening inside P3-002 worker MCP metadata tools, not evidence of a broader package split.
 - Before the next T2, the approach remains coherent because the latest fix only changes current-head selection from PR-first to newest branch-or-PR metadata overall.
 - Findings remain converged on head freshness semantics for the same P3-002 metadata/review tools, not on broader design.
+- Before the next T2, the approach remains coherent because the latest fix only honors the already-advertised metadata idempotency key and applies the existing trim-normalization rule to explicit plan/finding IDs.
+- Findings are still localized to identifier/idempotency edges on the worker MCP tool contract.
 
 ## Blockers
 

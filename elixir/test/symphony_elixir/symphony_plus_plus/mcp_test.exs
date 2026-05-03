@@ -1282,6 +1282,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
             "name" => "update_task_plan",
             "arguments" => %{
               "expected_version" => get_in(read_plan_response, ["result", "structuredContent", "version"]),
+              "id" => " worker-plan-node ",
               "title" => "Implement MCP worker tools",
               "status" => "done"
             }
@@ -1292,6 +1293,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(plan_response, ["result", "structuredContent", "plan_nodes", Access.at(0), "status"]) == "done"
+    assert get_in(plan_response, ["result", "structuredContent", "plan_nodes", Access.at(0), "id"]) == "worker-plan-node"
 
     finding_response =
       MCPHarness.request(
@@ -1318,7 +1320,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "method" => "tools/call",
           "params" => %{
             "name" => "append_finding",
-            "arguments" => %{"id" => "custom-finding-id", "title" => "Explicit", "body" => "Caller supplied id", "idempotency_key" => "finding-explicit"}
+            "arguments" => %{"id" => " custom-finding-id ", "title" => "Explicit", "body" => "Caller supplied id", "idempotency_key" => "finding-explicit"}
           }
         },
         repo: repo,
@@ -1719,7 +1721,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "method" => "tools/call",
           "params" => %{
             "name" => "update_task_plan",
-            "arguments" => %{"expected_version" => version, "patch" => %{"nodes" => [%{"id" => plan_node.id, "status" => "done", "body" => "Complete"}]}}
+            "arguments" => %{"expected_version" => version, "patch" => %{"nodes" => [%{"id" => " #{plan_node.id} ", "status" => "done", "body" => "Complete"}]}}
           }
         },
         repo: repo,
@@ -2246,6 +2248,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     missing = get_in(ready_response, ["error", "data", "missing"])
     assert "review_lanes_complete" in missing
+  end
+
+  test "metadata tools honor caller idempotency keys for repeated matching payloads", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-METADATA-IDEMPOTENCY", kind: "quick_fix", status: "ci_waiting"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-METADATA-IDEMPOTENCY/worker", "head_sha" => "same-head", "idempotency_key" => "branch-key-1"})
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-METADATA-IDEMPOTENCY/worker", "head_sha" => "same-head", "idempotency_key" => "branch-key-2"})
+
+    assert {:ok, events} = PlanningRepository.list_progress_events(repo, package.id)
+
+    assert events
+           |> Enum.filter(&(get_in(&1.payload, ["type"]) == "branch" and get_in(&1.payload, ["head_sha"]) == "same-head"))
+           |> length() == 2
   end
 
   test "latest branch head supersedes earlier PR head for review evidence", %{repo: repo} do
