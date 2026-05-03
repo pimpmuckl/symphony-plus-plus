@@ -241,7 +241,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
           %{updated_server | state_key_version: timestamp_ms}
 
         %{"error" => %{"data" => %{"reason" => "already_initialized"}}} ->
-          persist_handle_state(server, updated_server)
+          updated_server
 
         _response ->
           delete_handle_state(server)
@@ -496,7 +496,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
           {{payload, batch_claim_work_key_rebind_item(payload, server)}, true}
         else
           item = handle_batch_item(payload, server)
-          claim_succeeded? = batch_claim_work_key_request?(payload, server) and batch_claim_work_key_success?(item)
+
+          claim_succeeded? =
+            batch_claim_work_key_request?(payload, server) and batch_claim_work_key_success?(item, server)
+
           {{payload, item}, claimed? or claim_succeeded?}
         end
       end)
@@ -521,8 +524,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end)
   end
 
-  defp batch_claim_work_key_success?({_response, %__MODULE__{session: %Session{}}}), do: true
-  defp batch_claim_work_key_success?(_item), do: false
+  defp batch_claim_work_key_success?(
+         {%{"result" => %{"structuredContent" => %{"assignment" => _assignment}}}, %__MODULE__{}},
+         %__MODULE__{}
+       ),
+       do: true
+
+  defp batch_claim_work_key_success?({nil, %__MODULE__{session: %Session{}}}, %__MODULE__{session: nil}), do: true
+  defp batch_claim_work_key_success?(_item, %__MODULE__{}), do: false
 
   defp batch_claim_work_key_request?(
          %{"jsonrpc" => "2.0", "id" => id, "method" => "tools/call", "params" => %{"name" => "claim_work_key"}},

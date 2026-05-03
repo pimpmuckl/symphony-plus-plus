@@ -1845,3 +1845,25 @@
 ### Next Steps
 
 - Run focused validation, commit/push this T2 fix, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
+
+### Current T2 Follow-up Actions
+
+- Pushed head before this follow-up: `fd7bea7db49d94a57032e1db1ca8ce1ac1d6ff65`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T090344Z-5907b4dc`; both reviewers reported findings and the gate was closed as `findings`.
+- Fixed stale explicit-session resurrection by keeping duplicate-initialize `already_initialized` responses local and not refreshing the server's `state_key_version`.
+- Fixed batch claim bookkeeping by counting `claim_work_key` as successful only when the response contains a successful assignment or when an unbound notification claim creates a session.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after the current T2 fix and the Credo line-length adjustment. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 102 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 297 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit/push this T2 fix, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.

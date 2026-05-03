@@ -1236,6 +1236,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(duplicate_init_response, ["error", "data", "reason"]) == "already_initialized"
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
     assert is_list(get_in(tools_after_reconnect, ["result", "tools"]))
+
+    assert %{"result" => _result} =
+             Server.handle(
+               %{"jsonrpc" => "2.0", "id" => "new-init", "method" => "initialize", "params" => initialize_params()},
+               Server.new(Config.default(repo: repo), state_key: state_key)
+             )
+
+    {stale_duplicate_response, stale_duplicate_server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "stale-init-again", "method" => "initialize", "params" => initialize_params()},
+        claimed_server
+      )
+
+    {stale_assignment_response, _server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "assignment-after-stale-duplicate", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        stale_duplicate_server
+      )
+
+    assert get_in(stale_duplicate_response, ["error", "data", "reason"]) == "already_initialized"
+    assert get_in(stale_assignment_response, ["error", "data", "reason"]) == "missing_session"
   end
 
   test "failed explicit state key reinitialize clears prior handshake state", %{repo: repo} do
@@ -1816,6 +1837,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, second_grant} = AccessGrantRepository.get(repo, second_minted.grant.id)
     refute second_grant.claimed_by
     refute second_grant.claimed_at
+  end
+
+  test "batch claim_work_key only counts successful claims on bound connections", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BOUND-BATCH-CLAIM", kind: "mcp", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {_claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    {responses, server} =
+      Server.handle_state(
+        [
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "claim-wrong-owner",
+            "method" => "tools/call",
+            "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-2"}}
+          },
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "claim-replay",
+            "method" => "tools/call",
+            "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+          }
+        ],
+        claimed_server
+      )
+
+    assert get_in(Enum.at(responses, 0), ["error", "data", "reason"]) == "already_claimed"
+    assert get_in(Enum.at(responses, 1), ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert server.session.assignment.work_package_id == package.id
   end
 
   test "claim_work_key rejects non-worker grants and revalidates bound replays", %{repo: repo} do
