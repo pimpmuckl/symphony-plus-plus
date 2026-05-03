@@ -41,7 +41,8 @@
     },
     {
       "name": "request_scope_expansion",
-      "purpose": "Request broader scope; does not approve it."
+      "purpose": "Request broader scope; does not approve it.",
+      "readiness_policy": "For investigation policies, this records the worker scope recommendation evidence."
     },
     {
       "name": "attach_branch",
@@ -59,7 +60,8 @@
     },
     {
       "name": "mark_ready",
-      "purpose": "Move to ready state only if gates pass."
+      "purpose": "Move to ready state only if gates pass.",
+      "post_ready_policy": "After mark_ready succeeds, new worker evidence writes are rejected as already_ready while idempotent replays remain available."
     }
   ],
   "resources": [

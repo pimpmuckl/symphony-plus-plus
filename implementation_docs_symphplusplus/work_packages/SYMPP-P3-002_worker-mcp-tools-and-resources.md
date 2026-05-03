@@ -69,6 +69,12 @@ focused-test and review-lane gates with `append_progress.status` values
 `tests_passed` and `<review_lane>_green`. Merge-gated package policies still use
 current-head review package evidence and review artifacts.
 
+After `mark_ready` succeeds, worker evidence writes for the package are frozen;
+new progress, findings, blockers, branch/PR metadata, scope requests, and review
+packages return `already_ready`. Investigation packages use
+`request_scope_expansion` as the worker's recorded scope recommendation evidence;
+the request itself does not approve any expanded scope.
+
 ## Deliverables
 
 - Implementation PR for `SYMPP-P3-002`.

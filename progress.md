@@ -1271,3 +1271,26 @@
 | `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
 | `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
 | `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Fifty-Sixth T2 Follow-up Actions
+
+- Pushed head before this follow-up: `3b8eeff` (`fix(mcp): support non-merge readiness evidence`).
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T042127Z-5c5b6c86`; closed it as `findings`.
+- Fixed valid findings by preserving explicit response-only handle state until a new `initialize` succeeds, retaining implicit response-only sessions per MCP namespace without count-based eviction, allowing `request_scope_expansion` to satisfy the investigation scope-recommendation gate, and rejecting generic worker evidence writes after a package is ready.
+- Updated P3-002 public MCP docs/templates/package docs to document post-ready evidence immutability and investigation recommendation evidence.
+- High-pressure coherence check before the next same-tier T2: the core approach remains the same P3-002 worker MCP server contract, with this pass limited to response-state durability and readiness-evidence immutability edge cases.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after fifty-sixth T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 85 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 280 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit and push fifty-sixth T2 fixes, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.

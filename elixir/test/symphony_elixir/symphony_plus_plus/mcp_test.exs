@@ -1078,6 +1078,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                Server.new(Config.default(repo: repo), state_key: state_key)
              )
 
+    malformed_init_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "init-bad", "method" => "initialize", "params" => %{"protocolVersion" => "2025-03-26"}},
+        Server.new(Config.default(repo: repo), state_key: state_key)
+      )
+
+    retained_assignment_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "assignment-retained", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        Server.new(Config.default(repo: repo), state_key: state_key)
+      )
+
+    assert get_in(malformed_init_response, ["error", "data", "reason"]) == "invalid_initialize_params"
+    assert get_in(retained_assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+
     assert %{"result" => _result} =
              Server.handle(
                %{"jsonrpc" => "2.0", "id" => "init-again", "method" => "initialize", "params" => initialize_params()},
@@ -1287,7 +1302,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert refreshed_timestamp > stale_but_active_timestamp
   end
 
-  test "response-only handle trims default state per namespace", %{repo: repo} do
+  test "response-only handle keeps active default state per namespace", %{repo: repo} do
     timestamp = System.monotonic_time(:millisecond)
     kept_repo_server = Server.new(Config.default(repo: repo), initialized: true)
     other_namespace_server = Server.new(Config.default(repo: UnexpectedAuthRepo), initialized: true)
@@ -1316,7 +1331,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       end)
 
     assert get_in(response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
-    assert repo_default_count == 129
+    assert repo_default_count == 132
     assert Map.has_key?(store, handle_state_store_key(kept_repo_server))
     assert Map.has_key?(store, handle_state_store_key(other_namespace_server))
   end
@@ -2737,9 +2752,57 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
+    post_ready_progress_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "post-ready-progress",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_progress",
+            "arguments" => %{"summary" => "Progress after ready", "idempotency_key" => "post-ready-progress"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    post_ready_finding_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "post-ready-finding",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_finding",
+            "arguments" => %{"title" => "Finding after ready", "body" => "Too late", "idempotency_key" => "post-ready-finding"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    post_ready_scope_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "post-ready-scope",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "request_scope_expansion",
+            "arguments" => %{"summary" => "Scope after ready", "idempotency_key" => "post-ready-scope"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
     assert get_in(post_ready_branch_response, ["error", "data", "reason"]) == "already_ready"
     assert get_in(post_ready_review_response, ["error", "data", "reason"]) == "already_ready"
     assert get_in(post_ready_blocker_response, ["error", "data", "reason"]) == "already_ready"
+    assert get_in(post_ready_progress_response, ["error", "data", "reason"]) == "already_ready"
+    assert get_in(post_ready_finding_response, ["error", "data", "reason"]) == "already_ready"
+    assert get_in(post_ready_scope_response, ["error", "data", "reason"]) == "already_ready"
     assert {:ok, ready_package} = WorkPackageRepository.get(repo, package.id)
     assert ready_package.status == "ready_for_human_merge"
   end
@@ -3109,11 +3172,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert "recommendation_recorded" in get_in(missing_recommendation_response, ["error", "data", "missing"])
 
-    attach_tool(repo, session, "append_progress", %{
+    attach_tool(repo, session, "request_scope_expansion", %{
       "summary" => "No scope expansion needed",
       "body" => "Recommendation recorded for the investigation package.",
-      "idempotency_key" => "investigation-recommendation",
-      "payload" => %{"type" => "recommendation", "recommendation" => "no_scope_expansion_needed"}
+      "idempotency_key" => "investigation-recommendation"
     })
 
     ready_response =

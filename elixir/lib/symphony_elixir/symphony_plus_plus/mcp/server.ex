@@ -39,7 +39,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @assignment_resource "sympp://assignment/current"
   @finding_replay_retry_attempts 50
   @handle_state_ttl_ms 86_400_000
-  @default_handle_state_max_entries 128
   @handle_state_agent Module.concat(__MODULE__, HandleState)
   @plan_append_argument_keys ["body", "expected_version", "id", "status", "title", "work_package_id"]
   @plan_patch_argument_keys ["expected_version", "patch", "work_package_id"]
@@ -161,7 +160,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp restore_handle_state(payload, %__MODULE__{initialized: false, session: nil, state_key_explicit: true} = server) do
     if initialize_request?(payload) do
-      delete_handle_state(server)
       server
     else
       restore_handle_state(server)
@@ -212,11 +210,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp delete_handle_state(%__MODULE__{} = server) do
-    update_handle_state_store(&Map.delete(&1, handle_state_store_key(server)))
-    :ok
-  end
-
   defp cleanup_default_handle_states do
     now = monotonic_ms()
 
@@ -229,33 +222,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         _entry ->
           false
       end)
-      |> trim_default_handle_states()
     end)
 
     :ok
   end
-
-  defp trim_default_handle_states(store) do
-    {explicit_entries, default_entries} =
-      Enum.split_with(store, fn
-        {_state_key, {%__MODULE__{}, _timestamp_ms, true}} -> true
-        _entry -> false
-      end)
-
-    default_entries =
-      default_entries
-      |> Enum.group_by(&handle_state_entry_namespace/1)
-      |> Enum.flat_map(fn {_namespace, entries} ->
-        entries
-        |> Enum.sort_by(fn {_state_key, {_server, timestamp_ms, _explicit?}} -> timestamp_ms end, :desc)
-        |> Enum.take(@default_handle_state_max_entries)
-      end)
-
-    Map.new(explicit_entries ++ default_entries)
-  end
-
-  defp handle_state_entry_namespace({{namespace, _state_key}, {%__MODULE__{}, _timestamp_ms, false}}), do: namespace
-  defp handle_state_entry_namespace(_entry), do: nil
 
   defp update_handle_state_store(fun) do
     ensure_handle_state_agent()
@@ -1025,7 +995,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            "idempotency_key" => idempotency_key,
            "access_grant_id" => session.assignment.grant_id
          },
-         {:ok, finding} <- append_authenticated_idempotent_finding(config.repo, session.assignment, Session.work_package_id(session), finding_id, attrs) do
+         {:ok, finding} <- append_authenticated_idempotent_finding(config.repo, session, finding_id, attrs) do
       {:ok, tool_result(%{"finding" => %{"id" => finding.id, "title" => finding.title, "severity" => finding.severity}})}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "append_finding", "reason" => reason}}
@@ -1434,22 +1404,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp timestamp_version_part(nil), do: nil
   defp timestamp_version_part(%DateTime{} = timestamp), do: DateTime.to_unix(timestamp, :microsecond)
 
-  defp append_authenticated_idempotent_finding(repo, assignment, work_package_id, finding_id, attrs) do
+  defp append_authenticated_idempotent_finding(repo, %Session{} = session, finding_id, attrs) do
+    work_package_id = Session.work_package_id(session)
+
     transaction_fun = fn ->
-      append_authenticated_idempotent_finding_tx(repo, assignment, work_package_id, finding_id, attrs)
+      append_authenticated_idempotent_finding_tx(repo, session, work_package_id, finding_id, attrs)
     end
 
     case run_worker_transaction(repo, transaction_fun) do
       {:error, :finding_insert_conflict} ->
-        replay_finding_after_insert_conflict(repo, assignment, work_package_id, finding_id, attrs)
+        replay_finding_after_insert_conflict(repo, session.assignment, work_package_id, finding_id, attrs)
 
       result ->
         result
     end
   end
 
-  defp append_authenticated_idempotent_finding_tx(repo, assignment, work_package_id, finding_id, attrs) do
-    with :ok <- PlanningService.require_valid_assignment(repo, assignment),
+  defp append_authenticated_idempotent_finding_tx(repo, %Session{} = session, work_package_id, finding_id, attrs) do
+    with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
+         :ok <- reject_ready_evidence_mutation(repo, session, "append_finding"),
          {:error, :id_already_exists} <-
            repo |> PlanningRepository.list_findings(work_package_id) |> find_existing_finding(finding_id, attrs),
          {:error, :id_already_exists} <-
@@ -1678,7 +1651,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp reject_ready_evidence_mutation(repo, %Session{} = session, tool) when tool in ["attach_branch", "attach_pr", "report_blocker", "submit_review_package"] do
+  defp reject_ready_evidence_mutation(repo, %Session{} = session, tool)
+       when tool in [
+              "append_finding",
+              "append_progress",
+              "attach_branch",
+              "attach_pr",
+              "report_blocker",
+              "request_scope_expansion",
+              "resolve_blocker",
+              "submit_review_package"
+            ] do
     work_package_id = Session.work_package_id(session)
 
     with :ok <- lock_work_package(repo, work_package_id),
@@ -2275,7 +2258,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp recommendation_recorded?(progress_events), do: Enum.any?(progress_events, &recommendation_event?/1)
 
   defp recommendation_event?(%ProgressEvent{payload: payload}) when is_map(payload) do
-    Map.get(payload, "type") == "recommendation"
+    Map.get(payload, "type") == "recommendation" or
+      (Map.get(payload, "type") == "scope_expansion_request" and Map.get(payload, "source_tool") == "request_scope_expansion")
   end
 
   defp recommendation_event?(%ProgressEvent{}), do: false

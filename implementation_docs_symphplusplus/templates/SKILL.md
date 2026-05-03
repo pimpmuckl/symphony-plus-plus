@@ -37,6 +37,10 @@ You are working on a scoped Symphony++ WorkPackage.
 reconnects; Symphony++ accepts reconnect only when the same owner identity
 presents the same secret proof.
 
+After `mark_ready` succeeds, the package evidence is frozen. Do not attempt to
+append new progress, findings, blockers, branch/PR metadata, scope requests, or
+review packages unless replaying a previously recorded idempotent write.
+
 ## Handoff summary format
 
 ```markdown

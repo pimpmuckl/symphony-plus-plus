@@ -45,8 +45,16 @@ branch-only reviews cannot satisfy readiness after new commits.
 readiness, the latest review package for the current head is authoritative;
 older packages for that same head are superseded.
 
+Once `mark_ready` succeeds, worker evidence for that package is immutable: new
+progress, finding, blocker, branch/PR, scope-request, and review-package writes
+return `already_ready`, while idempotent replays of previously recorded writes
+remain available.
+
 For non-merge-gated policies such as `quick_fix`, `append_progress` can satisfy
 focused-test and review-lane readiness by recording statuses `tests_passed` and
 `<review_lane>_green`, for example `review_t1_green`. Merge-gated packages still
 use current-head `submit_review_package` evidence and persisted review
 artifacts.
+
+For investigation policies, `request_scope_expansion` records the required
+scope recommendation evidence but never approves the expansion itself.
