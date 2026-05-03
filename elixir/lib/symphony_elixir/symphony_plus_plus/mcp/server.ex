@@ -1319,8 +1319,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_architect_capability(_assignment, _capability), do: {:error, :insufficient_capability}
 
   defp authorize_architect_tool_call(%__MODULE__{config: config, session: session}, name) do
-    with {:ok, session} <- architect_session(config.repo, session, architect_tool_required_capabilities(name)) do
-      require_architect_work_package_scope(session, Session.work_package_id(session))
+    with {:ok, _session} <- architect_session(config.repo, session, architect_tool_required_capabilities(name)) do
+      :ok
     end
   end
 
@@ -1351,13 +1351,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp architect_tool(name, _arguments, %__MODULE__{config: config, session: session}) when name in @phase7_architect_tools do
-    with {:ok, _session} <- architect_session(config.repo, session, architect_tool_capability(name)) do
+  defp architect_tool(name, arguments, %__MODULE__{config: config, session: session}) when name in @phase7_architect_tools do
+    with {:ok, session} <- architect_session(config.repo, session, architect_tool_capability(name)),
+         :ok <- require_architect_target_scope(session, arguments) do
       phase7_not_implemented(name)
     else
       {:error, reason} -> architect_error(reason, name)
     end
   end
+
+  defp require_architect_target_scope(%Session{} = session, %{"work_package_id" => work_package_id}) do
+    require_architect_work_package_scope(session, work_package_id)
+  end
+
+  defp require_architect_target_scope(%Session{}, _arguments), do: :ok
 
   defp worker_tool("get_current_assignment", _arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),

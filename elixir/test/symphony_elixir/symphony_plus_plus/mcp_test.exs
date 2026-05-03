@@ -2444,6 +2444,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   test "Phase 7 architect tools return explicit not-yet-implemented errors without minting grants", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-PHASE7", kind: "mcp"))
+    assert {:ok, sibling} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-PHASE7-SIBLING", kind: "mcp"))
 
     assert {:ok, architect_work_key} =
              create_architect_work_key(repo, package.id, ["mint:child_worker_key", "read:phase"])
@@ -2469,6 +2470,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(mint_response, ["error", "code"]) == -32_604
     assert get_in(mint_response, ["error", "data", "reason"]) == "phase7_not_implemented"
     assert repo.aggregate(AccessGrant, :count) == grants_before
+
+    out_of_scope_mint_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "mint-child-sibling",
+          "method" => "tools/call",
+          "params" => %{"name" => "mint_child_worker_key", "arguments" => %{"work_package_id" => sibling.id, "template" => %{}}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(out_of_scope_mint_response, ["error", "code"]) == -32_003
+    assert get_in(out_of_scope_mint_response, ["error", "data", "reason"]) == "outside_session_scope"
 
     board_response =
       MCPHarness.request(
