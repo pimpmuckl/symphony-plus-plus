@@ -177,6 +177,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp restore_handle_state(payload, %__MODULE__{state_key_explicit: false} = server) do
+    if initialize_request?(payload) do
+      case lookup_handle_state(server) do
+        {%__MODULE__{}, _timestamp_ms, _explicit?} ->
+          delete_handle_state(server)
+          %{server | initialized: false, session: nil}
+
+        _stored ->
+          server
+      end
+    else
+      restore_handle_state(server)
+    end
+  end
+
   defp restore_handle_state(_payload, %__MODULE__{} = server), do: restore_handle_state(server)
 
   defp restore_explicit_handle_state(%__MODULE__{} = server) do
@@ -354,7 +369,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:main_database, repo_database_key(repo, path)}
   end
 
+  defp main_database_identity(repo, _path, nil), do: blank_database_identity(repo)
   defp main_database_identity(repo, _path, database), do: {:configured_database, repo_database_key(repo, database)}
+
+  defp blank_database_identity(repo) when is_pid(repo), do: {:repo_process, repo}
+
+  defp blank_database_identity(repo) when is_atom(repo) do
+    case dynamic_repo_identity(repo) do
+      nil -> {:repo, repo}
+      dynamic_repo -> {:dynamic_repo, dynamic_repo}
+    end
+  end
+
+  defp blank_database_identity(repo), do: {:repo, repo}
+
+  defp dynamic_repo_identity(repo) when is_atom(repo) do
+    if function_exported?(repo, :get_dynamic_repo, 0), do: repo.get_dynamic_repo(), else: nil
+  end
 
   defp repo_database_key(repo, database) when is_atom(repo) do
     if function_exported?(repo, :database_key, 1), do: repo.database_key(database), else: database

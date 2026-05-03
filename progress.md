@@ -179,6 +179,29 @@
 | `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
 | `mise exec -- mix credo --strict` | pass | no issues. |
 
+### Seventy-Third T2 Follow-up Actions
+
+- Pushed head before this follow-up: `af3311a`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T074443Z-536b22d7`; closed it as `findings`.
+- Fixed valid response-state findings by assigning blank-path SQLite ledgers with nil configured database a non-nil repo-process/dynamic-repo namespace and clearing stored implicit response-state on a fresh initialize before any new worker claim.
+- Recorded but did not implement Bravo's `append_finding` grant-scope idempotency finding because it conflicts with prior T2-driven work-package-scoped idempotency across grant renewal and the current public contract docs.
+- Updated MCP contract docs and package docs for fresh implicit initialize behavior.
+
+### Next Steps
+
+- Commit/push seventy-third T2 fixes, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after seventy-third T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 96 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 291 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
 ### Seventieth T2 Follow-up Actions
 
 - Pushed head before this follow-up: `babe432bee2e51715f1e2bc7cb6eb5effb7a0fef`.

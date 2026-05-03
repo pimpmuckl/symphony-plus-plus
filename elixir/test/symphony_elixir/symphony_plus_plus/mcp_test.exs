@@ -976,7 +976,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert is_list(get_in(tools_response, ["result", "tools"]))
   end
 
-  test "response-only handle preserves already initialized state for repeated initialize", %{repo: repo} do
+  test "response-only handle resets implicit session for fresh initialize", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-REINIT-HANDLE", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     server = Server.new(Config.default(repo: repo))
@@ -1004,8 +1004,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-REINIT-HANDLE"
-    assert get_in(reinit_response, ["error", "data", "reason"]) == "already_initialized"
-    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-REINIT-HANDLE"
+    assert get_in(reinit_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
+    assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
   end
 
   test "response-only handle supports explicit state keys for recreated servers", %{repo: repo} do
@@ -1466,7 +1466,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       {_initialize_response, _server} =
         Server.handle_response_state(
           %{"jsonrpc" => "2.0", "id" => "init-first-blank-ledger", "method" => "initialize", "params" => initialize_params()},
-          Server.new(Config.default(repo: first_pid, database: first_database), state_key: state_key)
+          Server.new(Config.default(repo: first_pid), state_key: state_key)
         )
 
       assert {:ok, %{rows: second_rows}} = SQL.query(second_pid, "PRAGMA database_list", [], log: false)
@@ -1475,7 +1475,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       {tools_response, _server} =
         Server.handle_response_state(
           %{"jsonrpc" => "2.0", "id" => "tools-second-blank-ledger", "method" => "tools/list", "params" => %{}},
-          Server.new(Config.default(repo: second_pid, database: second_database), state_key: state_key)
+          Server.new(Config.default(repo: second_pid), state_key: state_key)
         )
 
       assert get_in(tools_response, ["error", "data", "reason"]) == "server_not_initialized"
@@ -4379,7 +4379,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     {:main_database, repo_database_key(repo, path)}
   end
 
+  defp main_database_identity(repo, _path, nil), do: blank_database_identity(repo)
   defp main_database_identity(repo, _path, database), do: {:configured_database, repo_database_key(repo, database)}
+
+  defp blank_database_identity(repo) when is_pid(repo), do: {:repo_process, repo}
+
+  defp blank_database_identity(repo) when is_atom(repo) do
+    case repo.get_dynamic_repo() do
+      nil -> {:repo, repo}
+      dynamic_repo -> {:dynamic_repo, dynamic_repo}
+    end
+  end
 
   defp repo_database_key(repo, database) do
     if function_exported?(repo, :database_key, 1), do: repo.database_key(database), else: database

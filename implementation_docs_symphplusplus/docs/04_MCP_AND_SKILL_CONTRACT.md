@@ -55,6 +55,8 @@ default response-state TTL. They remain continuity metadata until overwritten,
 cleared by a failed explicit reconnect initialize, or expired by the explicit
 state-key retention window. A newer explicit initialize for the same state key
 invalidates stale live sessions claimed before that initialize.
+Implicit response-state continuity is for a single logical connection; a fresh
+implicit `initialize` clears stored session state before any new worker claim.
 
 `append_finding` idempotency is scoped to the work package, including at the
 database uniqueness boundary, for retry stability across grant renewal. A retry
