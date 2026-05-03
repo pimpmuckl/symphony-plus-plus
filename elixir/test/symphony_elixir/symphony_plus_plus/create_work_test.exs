@@ -228,6 +228,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     refute Enum.any?(creation.virtual_files, fn {_name, markdown} -> String.contains?(markdown, secret) end)
   end
 
+  test "creates acceptance-less quick fix work when the policy does not require criteria", %{repo: repo} do
+    assert {:ok, creation} =
+             CreateWork.create(repo, %{
+               repo: "kraken",
+               base_branch: "main",
+               title: "Fix operator typo"
+             })
+
+    assert creation.work_package.kind == "quick_fix"
+    assert creation.work_package.acceptance_criteria == []
+    assert creation.virtual_files["acceptance.md"] =~ "No acceptance criteria recorded."
+  end
+
   test "renders investigation and blank scope plan guidance correctly", %{repo: repo} do
     assert {:ok, creation} =
              CreateWork.create(repo, %{

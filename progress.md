@@ -72,6 +72,10 @@
 | `mise exec -- mix specs.check` | pass | Invalid-request/no-ledger and inert-glob rendering fix validation: all public functions have specs or exemption. |
 | `mise exec -- mix format --check-formatted` | pass | Invalid-request/no-ledger and inert-glob rendering fix validation: no formatting drift. |
 | `mise exec -- mix credo --strict lib/symphony_elixir/symphony_plus_plus/create_work.ex lib/mix/tasks/sympp.create_work.ex lib/symphony_elixir/symphony_plus_plus/work_packages/work_package.ex lib/symphony_elixir/symphony_plus_plus/planning/renderer.ex test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/symphony_elixir/symphony_plus_plus/work_packages_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | Invalid-request/no-ledger and inert-glob rendering fix validation: 7 touched source/test files, no issues. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/create_work_test.exs` | pass | Acceptance-less quick-fix regression: 12 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/create_work_test.exs test/symphony_elixir/symphony_plus_plus/work_packages_test.exs test/mix/tasks/sympp_create_work_test.exs` | pass | Acceptance-less quick-fix regression: 30 tests, 0 failures. |
+| `mise exec -- mix format --check-formatted` | pass | Acceptance-less quick-fix regression: no formatting drift. |
+| `mise exec -- mix credo --strict lib/symphony_elixir/symphony_plus_plus/create_work.ex test/symphony_elixir/symphony_plus_plus/create_work_test.exs` | pass | Acceptance-less quick-fix regression: touched files, no issues. |
 
 ## Review
 
@@ -92,7 +96,8 @@
 - Cached full-diff T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T182047Z-024f3c39` returned clean and was anchored on head `dff32133351ac6336223967a97fa74fda30a516e`.
 - Cached GitHub review returned clean on PR #19 at `https://github.com/Pimpmuckl/symphony-plus-plus/pull/19#issuecomment-4366867995`.
 - Final cached `review_state` after GitHub review: `recommendation: none` for head `dff32133351ac6336223967a97fa74fda30a516e`.
+- Cached full-diff T2 rerun `phase_gate-symphony-plus-plus-sympp-p4-001-1de35c-20260503T183448Z-82b38779` flagged acceptance-less quick-fix persistence; added explicit regression coverage for the accepted/persisted quick-fix path.
 
 ## Outstanding
 
-- None.
+- Validate and rerun cached review-state/T2/GitHub review after the acceptance-less quick-fix regression commit.
