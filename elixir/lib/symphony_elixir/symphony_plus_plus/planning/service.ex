@@ -20,6 +20,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Service do
           | :assignment_mismatch
           | :assignment_not_claimed
           | :assignment_revoked
+          | :expired
           | :conflicting_key_forms
           | :idempotency_key_conflict
           | :idempotency_scope_conflict
@@ -183,6 +184,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Service do
   end
 
   defp valid_assignment_query(%Assignment{} = assignment) do
+    now = DateTime.utc_now(:microsecond)
+
     from(grant in AccessGrant,
       where: grant.id == ^assignment.grant_id,
       where: grant.work_package_id == ^assignment.work_package_id,
@@ -193,14 +196,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Service do
       where: grant.claimed_by == ^assignment.claimed_by,
       where: not is_nil(grant.claimed_at),
       where: not is_nil(grant.claimed_by),
-      where: is_nil(grant.revoked_at)
+      where: is_nil(grant.revoked_at),
+      where: grant.expires_at > ^now
     )
   end
 
   defp assignment_error(repo, grant_id) do
     case AccessGrantRepository.get(repo, grant_id) do
       {:ok, %AccessGrant{revoked_at: %DateTime{}}} -> {:error, :assignment_revoked}
+      {:ok, %AccessGrant{expires_at: %DateTime{} = expires_at}} -> expired_assignment_error(expires_at)
       _grant -> {:error, :assignment_mismatch}
+    end
+  end
+
+  defp expired_assignment_error(%DateTime{} = expires_at) do
+    if DateTime.compare(expires_at, DateTime.utc_now(:microsecond)) == :gt do
+      {:error, :assignment_mismatch}
+    else
+      {:error, :expired}
     end
   end
 

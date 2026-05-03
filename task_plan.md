@@ -174,10 +174,13 @@ Phase 3
 - [x] Commit and push forty-fourth T2 fix.
 - [x] Run fresh full-diff T2 on pushed head `e1f02c1` and close valid findings gate.
 - [x] Fix forty-fifth T2 plan concurrency, mixed update arguments, current-head review-package gate, and brief/incident plan gate findings locally.
-- [ ] Commit and push forty-fifth T2 fix.
+- [x] Commit and push forty-fifth T2 fix.
+- [x] Run fresh full-diff T2 on pushed head `564338f` and close valid findings gate.
+- [x] Fix forty-sixth T2 expired-grant transactional revalidation finding locally.
+- [ ] Commit and push forty-sixth T2 fix.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** forty-fifth T2 fixes validated locally; pending commit/push, fresh full-diff T2 rerun, and GitHub review if T2 is clean.
+- **Status:** forty-sixth T2 fix validated locally; pending commit/push, fresh full-diff T2 rerun, and GitHub review if T2 is clean.
 
 ### High-Pressure Coherence Review
 
@@ -234,6 +237,8 @@ Phase 3
 - Findings remain localized to response-only memory hygiene and idempotent retry race hardening in P3-002.
 - Before the next T2, the approach remains coherent because the latest fix only serializes task-plan mutation, rejects ambiguous update shapes, and aligns readiness gates with current-head review evidence plus existing planning-depth policy.
 - Findings remain localized to worker MCP contract/concurrency/readiness edge cases within P3-002, not a broader scope or design blocker.
+- Before the next T2, the approach remains coherent because the latest fix only makes the existing live-grant transactional revalidation enforce the same expiry rule as session creation.
+- Findings remain localized to worker authorization recheck hardening inside P3-002 write paths, not a broader package design issue.
 
 ## Blockers
 

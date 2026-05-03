@@ -3018,6 +3018,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(ready_response, ["error", "data", "reason"]) == "revoked"
   end
 
+  test "transactional assignment revalidation rejects expired grants", %{repo: repo} do
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-EXPIRED-TX"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, work_package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+
+    repo.update_all(AccessGrant, set: [expires_at: DateTime.add(DateTime.utc_now(:microsecond), -1, :second)])
+
+    assert {:error, :expired} =
+             PlanningRepository.append_audit_progress_event(repo, assignment, %{
+               "summary" => "Should not write",
+               "idempotency_key" => "expired-progress"
+             })
+
+    assert {:ok, events} = PlanningRepository.list_progress_events(repo, work_package.id)
+    assert events == []
+  end
+
   test "protected resources require injected session proof of possession", %{repo: repo} do
     assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-P3-001"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, work_package.id)

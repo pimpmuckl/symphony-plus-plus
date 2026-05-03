@@ -22,6 +22,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   @type error ::
           :assignment_mismatch
           | :assignment_revoked
+          | :expired
           | :conflicting_key_forms
           | :idempotency_scope_conflict
           | :database_busy
@@ -526,6 +527,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   end
 
   defp valid_assignment_query(%Assignment{} = assignment) do
+    now = DateTime.utc_now(:microsecond)
+
     from(grant in AccessGrant,
       where: grant.id == ^assignment.grant_id,
       where: grant.work_package_id == ^assignment.work_package_id,
@@ -536,7 +539,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
       where: grant.claimed_by == ^assignment.claimed_by,
       where: not is_nil(grant.claimed_at),
       where: not is_nil(grant.claimed_by),
-      where: is_nil(grant.revoked_at)
+      where: is_nil(grant.revoked_at),
+      where: grant.expires_at > ^now
     )
   end
 
@@ -554,6 +558,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   end
 
   defp matching_assignment_query(%Assignment{} = assignment) do
+    now = DateTime.utc_now(:microsecond)
+
     from(grant in AccessGrant,
       where: grant.id == ^assignment.grant_id,
       where: grant.work_package_id == ^assignment.work_package_id,
@@ -565,6 +571,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
       where: not is_nil(grant.claimed_at),
       where: not is_nil(grant.claimed_by),
       where: is_nil(grant.revoked_at),
+      where: grant.expires_at > ^now,
       limit: 1
     )
   end
@@ -572,7 +579,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   defp assignment_error(repo, grant_id) do
     case repo.get(AccessGrant, grant_id) do
       %AccessGrant{revoked_at: %DateTime{}} -> {:error, :assignment_revoked}
+      %AccessGrant{expires_at: %DateTime{} = expires_at} -> expired_assignment_error(expires_at)
       _grant -> {:error, :assignment_mismatch}
+    end
+  end
+
+  defp expired_assignment_error(%DateTime{} = expires_at) do
+    if DateTime.compare(expires_at, DateTime.utc_now(:microsecond)) == :gt do
+      {:error, :assignment_mismatch}
+    else
+      {:error, :expired}
     end
   end
 

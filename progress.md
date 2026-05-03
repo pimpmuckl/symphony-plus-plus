@@ -331,7 +331,29 @@
 
 ### Next Steps
 
-- Commit and push forty-fifth T2 fixes, then rerun full-diff T2 and proceed to GitHub review if clean.
+- Pushed forty-fifth T2 fix head `564338ff272e107e415ee4086578b949b4fc17f0` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T023031Z-257a9e37`; Alpha was clean and Bravo reported one valid expired-grant transactional revalidation finding, then the gate was closed as `findings`.
+
+### Forty-Sixth T2 Follow-up Actions
+
+- Fixed the valid finding by adding `expires_at > now` to transactional assignment revalidation for worker writes and replay checks, returning `:expired` when the live grant has expired.
+- Added regression coverage that a grant expired after assignment materialization cannot append an audited progress event.
+- High-pressure coherence check before the next same-tier T2: this stays inside live worker authorization revalidation for existing P3-002 write paths and aligns the transaction check with `Session.from_grant/3`.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after forty-sixth T2 fix. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 78 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 273 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit and push forty-sixth T2 fix, then rerun full-diff T2 and proceed to GitHub review if clean.
 
 ### Next Steps
 
