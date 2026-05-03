@@ -132,10 +132,10 @@ Phase 3
 - [x] Run fresh full-diff T2 on pushed head `7bb1915` and close valid findings gate.
 - [x] Resolve thirty-first T2 findings after architecture decision on `claim_work_key.claimed_by` compatibility.
 - [x] Validate thirty-first T2 fixes locally.
-- [ ] Commit and push thirty-first T2 fixes.
+- [x] Commit and push thirty-first T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** thirty-first T2 fixes validated locally; pending commit/push and fresh full-diff T2 rerun.
+- **Status:** thirty-first T2 fixes pushed; pending fresh full-diff T2 rerun and GitHub review if clean.
 
 ### High-Pressure Coherence Review
 
