@@ -46,7 +46,9 @@ secret proof is presented by the same `claimed_by` owner.
 For stateless MCP transports, an explicit `state_key` is continuity metadata for
 the initialized handshake only. It is not a bearer capability for a claimed
 worker assignment. After reconnect initialize, workers must call
-`claim_work_key(secret, claimed_by)` again to bind the worker session.
+`claim_work_key(secret, claimed_by)` again to bind the worker session. The
+state namespace follows the active ledger rather than a transient dynamic repo
+process, so handshake continuity survives reconnects to the same SQLite ledger.
 
 `attach_branch` intentionally requires both the branch name and the current
 branch `head_sha`. Branch-only review evidence is matched to that head so a
@@ -58,7 +60,11 @@ head.
 `submit_review_package` must include `head_sha` on every submission and can only
 record readiness evidence after a current branch head is attached. The latest
 current-head review package is authoritative for review readiness; older
-packages for the same head are superseded rather than implicitly merged.
+packages for the same head are superseded rather than implicitly merged. The
+`tests` and `artifacts` lists are normalized by trimming entries before
+persistence and default idempotency-key calculation. If an idempotent retry
+matches an already recorded review package, Symphony++ replays that event even
+after the current branch head has moved forward.
 
 After `mark_ready` succeeds, worker evidence is frozen. Evidence-mutating tools
 such as progress, findings, blockers, branch/PR metadata, scope requests, and

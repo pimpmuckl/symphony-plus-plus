@@ -261,14 +261,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "patch", "properties", "nodes", "minItems"]) == 1
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "work_package_id", "type"]) == "string"
 
+    update_plan_one_of = get_in(tools_by_name, ["update_task_plan", "inputSchema", "oneOf"])
+    patch_update_schema = Enum.find(update_plan_one_of, &(Map.get(&1, "required") == ["expected_version", "patch"]))
+    append_update_schema = Enum.find(update_plan_one_of, &(Map.get(&1, "required") == ["expected_version", "title"]))
+
+    assert patch_update_schema["additionalProperties"] == false
+    assert append_update_schema["additionalProperties"] == false
+    assert Map.has_key?(patch_update_schema["properties"], "patch")
+    refute Map.has_key?(patch_update_schema["properties"], "title")
+    assert Map.has_key?(append_update_schema["properties"], "title")
+    refute Map.has_key?(append_update_schema["properties"], "patch")
+
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "patch", "properties", "nodes", "items", "anyOf"]) == [
              %{"required" => ["title"]},
              %{"required" => ["id"], "anyOf" => [%{"required" => ["title"]}, %{"required" => ["body"]}, %{"required" => ["status"]}]}
-           ]
-
-    assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "oneOf"]) == [
-             %{"required" => ["expected_version", "patch"]},
-             %{"required" => ["expected_version", "title"]}
            ]
 
     assert get_in(tools_by_name, ["set_status", "inputSchema", "required"]) == ["status", "expected_status"]
@@ -1285,6 +1291,53 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       if Process.alive?(second_pid), do: GenServer.stop(second_pid)
       File.rm(first_database)
       File.rm(second_database)
+    end
+  end
+
+  test "explicit response state key follows the same dynamic ledger across repo processes" do
+    database = WorkPackageFactory.database_path()
+    original_repo = Repo.get_dynamic_repo()
+
+    {:ok, first_pid} =
+      Repo.start_link(database: database, name: :"sympp_mcp_same_#{System.unique_integer([:positive])}", pool_size: 1, log: false)
+
+    {:ok, second_pid} =
+      Repo.start_link(database: database, name: :"sympp_mcp_same_#{System.unique_integer([:positive])}", pool_size: 1, log: false)
+
+    try do
+      state_key = "same-ledger-state"
+
+      Repo.put_dynamic_repo(first_pid)
+
+      {_initialize_response, _server} =
+        Server.handle_response_state(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "init-first-ledger-process",
+            "method" => "initialize",
+            "params" => %{
+              "protocolVersion" => "2025-03-26",
+              "clientInfo" => %{"name" => "sympp-test-client", "version" => "0.1.0"},
+              "capabilities" => %{}
+            }
+          },
+          Server.new(Config.default(repo: Repo), state_key: state_key)
+        )
+
+      Repo.put_dynamic_repo(second_pid)
+
+      {tools_response, _server} =
+        Server.handle_response_state(
+          %{"jsonrpc" => "2.0", "id" => "tools-second-ledger-process", "method" => "tools/list", "params" => %{}},
+          Server.new(Config.default(repo: Repo), state_key: state_key)
+        )
+
+      assert is_list(get_in(tools_response, ["result", "tools"]))
+    after
+      Repo.put_dynamic_repo(original_repo)
+      if Process.alive?(first_pid), do: GenServer.stop(first_pid)
+      if Process.alive?(second_pid), do: GenServer.stop(second_pid)
+      File.rm(database)
     end
   end
 
@@ -2381,6 +2434,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert "acceptance_criteria_met" in get_in(missing_acceptance_response, ["error", "data", "missing"])
 
+    trimmed_review_response =
+      attach_tool(repo, session, "submit_review_package", %{
+        "summary" => "Trimmed review values",
+        "tests" => [" mix test "],
+        "artifacts" => [" review-log.txt "],
+        "head_sha" => " abc123 ",
+        "reviews" => []
+      })
+
+    assert get_in(trimmed_review_response, ["result", "structuredContent", "progress_event", "payload", "tests"]) == ["mix test"]
+    assert get_in(trimmed_review_response, ["result", "structuredContent", "progress_event", "payload", "artifacts"]) == ["review-log.txt"]
+
+    assert {:ok, trimmed_artifacts} = PlanningRepository.list_artifacts(repo, package.id)
+    assert Enum.any?(trimmed_artifacts, &(&1.path == "review-log.txt"))
+
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Ready",
       "tests" => ["mix test", "review_t1 green", "review_t2 green"],
@@ -2928,6 +2996,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     missing = get_in(ready_response, ["error", "data", "missing"])
     assert "review_lanes_complete" in missing
+  end
+
+  test "submit_review_package replay remains idempotent after branch head changes", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-REVIEW-REPLAY", kind: "mcp", status: "ci_waiting"))
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-REVIEW-REPLAY/worker", "head_sha" => "head-a"})
+
+    review_arguments = %{
+      "summary" => "Review head A",
+      "tests" => ["mix test"],
+      "artifacts" => ["review-head-a.txt"],
+      "head_sha" => "head-a",
+      "reviews" => []
+    }
+
+    first_response = attach_tool(repo, session, "submit_review_package", review_arguments)
+    first_event_id = get_in(first_response, ["result", "structuredContent", "progress_event", "id"])
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-REVIEW-REPLAY/worker", "head_sha" => "head-b"})
+
+    retry_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "retry-review-head-a",
+          "method" => "tools/call",
+          "params" => %{"name" => "submit_review_package", "arguments" => review_arguments}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(retry_response, ["result", "structuredContent", "progress_event", "id"]) == first_event_id
   end
 
   test "metadata tools honor caller idempotency keys for repeated matching payloads", %{repo: repo} do
@@ -3816,7 +3922,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   defp main_database_row?(_row), do: false
 
   defp main_database_identity(repo, path) when is_binary(path) and path != "" do
-    {:main_database, repo_database_key(repo, path), repo.get_dynamic_repo()}
+    {:main_database, repo_database_key(repo, path)}
   end
 
   defp main_database_identity(repo, _path), do: {:dynamic_repo, repo.get_dynamic_repo()}

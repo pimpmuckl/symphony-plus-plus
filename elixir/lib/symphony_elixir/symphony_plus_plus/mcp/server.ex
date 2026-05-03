@@ -297,7 +297,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp main_database_row?(_row), do: false
 
   defp main_database_identity(repo, path) when is_binary(path) and path != "" do
-    {:main_database, repo_database_key(repo, path), dynamic_repo_identity(repo)}
+    {:main_database, repo_database_key(repo, path)}
   end
 
   defp main_database_identity(repo, _path), do: {:dynamic_repo, dynamic_repo_identity(repo)}
@@ -621,6 +621,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool_input_schema("update_task_plan") do
+    patch_schema = schema(scoped_properties(%{"expected_version" => integer_schema(), "patch" => plan_patch_schema()}), ["expected_version", "patch"])
+
+    append_schema =
+      schema(
+        scoped_properties(%{
+          "body" => nullable_string_schema(),
+          "expected_version" => integer_schema(),
+          "id" => string_schema(),
+          "status" => string_schema(),
+          "title" => string_schema()
+        }),
+        ["expected_version", "title"]
+      )
+
     schema(
       scoped_properties(%{
         "body" => nullable_string_schema(),
@@ -632,10 +646,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       }),
       ["expected_version"]
     )
-    |> Map.put("oneOf", [
-      %{"required" => ["expected_version", "patch"]},
-      %{"required" => ["expected_version", "title"]}
-    ])
+    |> Map.put("oneOf", [patch_schema, append_schema])
   end
 
   defp worker_tool_input_schema("append_finding") do
@@ -1754,7 +1765,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> Map.get(:payload)
   end
 
-  defp append_metadata_event(repo, session, arguments, tool, status, payload) do
+  defp metadata_event_attrs(%Session{} = session, arguments, tool, status, payload) do
     payload = Map.put(payload, "source_tool", tool)
 
     arguments =
@@ -1762,27 +1773,49 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       |> Map.put_new("status", status)
       |> Map.put_new("idempotency_key", metadata_idempotency_key(payload))
 
-    append_scoped_progress(repo, session, arguments, tool, payload)
+    with {:ok, summary} <- required_argument(arguments, "summary"),
+         {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
+         {:ok, caller_payload} <- optional_payload(arguments) do
+      idempotency_key = scoped_progress_idempotency_key(tool, String.trim(idempotency_key), session)
+
+      {:ok, idempotency_key,
+       %{
+         "summary" => summary,
+         "body" => optional_argument(arguments, "body", nil),
+         "status" => optional_argument(arguments, "status", "recorded"),
+         "idempotency_key" => idempotency_key,
+         "payload" => merge_tool_payload(caller_payload, payload)
+       }}
+    end
   end
 
-  defp review_package_head_sha(arguments, progress_events) do
+  defp append_metadata_event(repo, session, arguments, tool, status, payload) do
+    case metadata_event_attrs(session, arguments, tool, status, payload) do
+      {:ok, idempotency_key, attrs} -> append_progress_event_or_replay(repo, session, attrs, idempotency_key, tool)
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason}}
+      {:error, reason} -> worker_error(reason, tool)
+    end
+  end
+
+  defp review_package_requested_head_sha(arguments) do
+    case optional_head_sha(arguments) do
+      {:ok, nil} -> {:tool_error, "missing_head_sha"}
+      result -> result
+    end
+  end
+
+  defp review_package_head_sha(head_sha, progress_events) do
     current_head_sha = latest_current_head_sha(progress_events)
 
-    case optional_head_sha(arguments) do
-      {:ok, nil} ->
-        {:tool_error, "missing_head_sha"}
-
-      {:ok, _head_sha} when not is_binary(current_head_sha) ->
+    case current_head_sha do
+      current_head_sha when not is_binary(current_head_sha) ->
         {:tool_error, "missing_current_head_sha"}
 
-      {:ok, head_sha} when is_binary(current_head_sha) and head_sha != current_head_sha ->
+      current_head_sha when head_sha != current_head_sha ->
         {:tool_error, "stale_head_sha"}
 
-      {:ok, head_sha} ->
+      _current_head_sha ->
         {:ok, head_sha}
-
-      error ->
-        error
     end
   end
 
@@ -1821,21 +1854,80 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
          :ok <- lock_work_package(repo, work_package_id),
          {:ok, state} <- PlanningRepository.get_state(repo, work_package_id),
-         {:ok, head_sha} <- review_package_head_sha(arguments, state.progress_events) do
-      payload =
-        payload
-        |> Map.put("head_sha", head_sha)
+         {:ok, requested_head_sha} <- review_package_requested_head_sha(arguments) do
+      payload = Map.put(payload, "head_sha", requested_head_sha)
 
-      case append_metadata_event(repo, session, arguments, "submit_review_package", "review_package_submitted", payload) do
-        {:ok, result} -> persist_review_artifacts_or_rollback(repo, session, artifacts, head_sha, result)
-        {:error, code, message, data} -> repo.rollback({:mcp_error, code, message, data})
-      end
+      submit_or_replay_review_package(
+        repo,
+        session,
+        arguments,
+        artifacts,
+        payload,
+        requested_head_sha,
+        state.progress_events
+      )
     else
       {:tool_error, reason} ->
         repo.rollback({:mcp_error, -32_602, "Invalid params", %{"tool" => "submit_review_package", "reason" => reason}})
 
       {:error, reason} ->
         repo.rollback(reason)
+    end
+  end
+
+  defp submit_or_replay_review_package(
+         repo,
+         %Session{} = session,
+         arguments,
+         artifacts,
+         payload,
+         requested_head_sha,
+         progress_events
+       ) do
+    case replay_existing_metadata_event(repo, session, arguments, "submit_review_package", "review_package_submitted", payload) do
+      {:ok, result} ->
+        result
+
+      :not_found ->
+        submit_new_review_package(repo, session, arguments, artifacts, payload, requested_head_sha, progress_events)
+
+      {:error, code, message, data} ->
+        repo.rollback({:mcp_error, code, message, data})
+    end
+  end
+
+  defp submit_new_review_package(repo, %Session{} = session, arguments, artifacts, payload, requested_head_sha, progress_events) do
+    case review_package_head_sha(requested_head_sha, progress_events) do
+      {:ok, head_sha} ->
+        case append_metadata_event(repo, session, arguments, "submit_review_package", "review_package_submitted", payload) do
+          {:ok, result} -> persist_review_artifacts_or_rollback(repo, session, artifacts, head_sha, result)
+          {:error, code, message, data} -> repo.rollback({:mcp_error, code, message, data})
+        end
+
+      {:tool_error, reason} ->
+        repo.rollback({:mcp_error, -32_602, "Invalid params", %{"tool" => "submit_review_package", "reason" => reason}})
+    end
+  end
+
+  defp replay_existing_metadata_event(repo, %Session{} = session, arguments, tool, status, payload) do
+    case metadata_event_attrs(session, arguments, tool, status, payload) do
+      {:ok, idempotency_key, attrs} ->
+        case PlanningRepository.get_progress_event_by_idempotency_key(
+               repo,
+               Session.work_package_id(session),
+               idempotency_key,
+               session.assignment.grant_id
+             ) do
+          {:ok, event} -> replay_progress_event(repo, session, event, attrs, tool)
+          {:error, :not_found} -> :not_found
+          {:error, reason} -> worker_error(reason, tool)
+        end
+
+      {:tool_error, reason} ->
+        {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason}}
+
+      {:error, reason} ->
+        worker_error(reason, tool)
     end
   end
 
@@ -2387,7 +2479,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp required_string_list(arguments, key) do
     with {:ok, values} <- required_list(arguments, key) do
       if Enum.all?(values, &(is_binary(&1) and String.trim(&1) != "")) do
-        {:ok, values}
+        {:ok, Enum.map(values, &String.trim/1)}
       else
         {:tool_error, "invalid_#{key}"}
       end

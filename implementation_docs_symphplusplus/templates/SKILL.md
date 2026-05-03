@@ -39,7 +39,13 @@ presents the same secret proof.
 
 An explicit `state_key` only preserves initialized MCP handshake state. It does
 not restore a claimed assignment, so reconnecting workers must call
-`claim_work_key` again with the secret and same `claimed_by` identity.
+`claim_work_key` again with the secret and same `claimed_by` identity. Reuse the
+same `state_key` only when reconnecting to the same active ledger.
+
+When calling `submit_review_package`, provide `head_sha` for the latest attached
+branch head. Symphony++ trims `tests` and `artifacts` entries and preserves
+idempotent replay for an already recorded package even after later commits move
+the branch head.
 
 After `mark_ready` succeeds, the package evidence is frozen. Do not attempt to
 append new progress, findings, blockers, branch/PR metadata, scope requests, or

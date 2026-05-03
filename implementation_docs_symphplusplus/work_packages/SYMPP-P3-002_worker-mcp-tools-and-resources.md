@@ -61,13 +61,17 @@ only for the same owner identity and secret proof.
 Explicit `state_key` values are continuity metadata for initialized stateless
 transports, not bearer capabilities. After reconnect initialize, workers must
 call `claim_work_key(secret, claimed_by)` again before assignment-scoped tools
-can run.
+can run. The continuity namespace follows the active ledger, not a transient
+dynamic repo process.
 
 ### Review package contract
 
 Workers must include `submit_review_package.head_sha` on every submission. The
 latest review package for that current head is authoritative for readiness;
-older same-head packages are superseded.
+older same-head packages are superseded. `tests` and `artifacts` values are
+trimmed before persistence and default idempotency-key calculation, and
+idempotent retries of an already recorded review package replay that event even
+after the branch head moves.
 
 The latest attached branch head is the worker-declared current code head. PR
 metadata must match that head for merge readiness; stale PR metadata does not

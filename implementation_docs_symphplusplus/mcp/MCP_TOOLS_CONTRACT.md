@@ -39,7 +39,9 @@ only when the same owner identity presents the same secret proof.
 
 Explicit `state_key` values retain initialized handshake continuity for
 stateless transports, but they do not restore claimed worker sessions. A
-reconnecting worker must call `claim_work_key(secret, claimed_by)` again.
+reconnecting worker must call `claim_work_key(secret, claimed_by)` again. The
+continuity namespace is the active ledger, so a reconnect to the same SQLite
+ledger can restore handshake state even when the dynamic repo process changes.
 
 `attach_branch` requires `branch` and `head_sha`. When no PR head is attached,
 review packages are matched to the latest attached branch head so stale
@@ -50,7 +52,10 @@ merge readiness waits for PR metadata for that head.
 `submit_review_package` requires explicit `head_sha` on every submission. For
 readiness, review packages require an attached current branch head, and the
 latest review package for that current head is authoritative; older packages for
-that same head are superseded.
+that same head are superseded. `tests` and `artifacts` entries are trimmed
+before persistence and default idempotency-key calculation. Idempotent retries
+of an already recorded review package replay the recorded event even if the
+branch head has since advanced.
 
 Once `mark_ready` succeeds, worker evidence for that package is immutable: new
 progress, finding, blocker, branch/PR, scope-request, and review-package writes
