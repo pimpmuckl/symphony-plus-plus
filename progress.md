@@ -41,3 +41,5 @@
 - Arena T1 sampled round `phase_review-symphony-plus-plus-sympp-p3-003-2e5a78-20260503T105248Z-e0743d8b` with `gpt-5.3-codex-spark-high` and `gpt-5.4-mini-xhigh`; skipped because it included a 5.3 variant.
 - Arena T1 sampling with all previously interrupted non-5.3 variants excluded failed with `usage_error: need at least two active variants for phase_review`, showing there were not enough unused active non-5.3 variants left.
 - Arena T1 sampled fully non-5.3 round `phase_review-symphony-plus-plus-sympp-p3-003-2e5a78-20260503T105320Z-c659a41e` with `gpt-5.5-medium` and `gpt-5.4-mini-medium`; both reviewers returned `review_interrupted`.
+- Committed and pushed arena interruption notes as `b6f3f9558ae508b371db43691a5607185afb4372`, leaving the worktree clean before the final-head T1 retry.
+- Final-head arena T1 sampled fully non-5.3 round `phase_review-symphony-plus-plus-sympp-p3-003-2e5a78-20260503T105447Z-b0bfb860` with `gpt-5.4-low` and `gpt-5.5-low`; both reviewers returned `review_interrupted` with `block=review_interrupted`.
