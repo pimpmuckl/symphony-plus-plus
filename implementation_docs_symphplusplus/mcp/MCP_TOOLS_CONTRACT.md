@@ -18,7 +18,7 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | request_scope_expansion | Request broader scope; does not approve it. |
 | attach_branch | Attach branch metadata with the current branch head SHA. |
 | attach_pr | Attach PR metadata. |
-| submit_review_package | Attach summary/tests/artifacts for review. |
+| submit_review_package | Attach summary/tests/artifacts for the current head review package. |
 | mark_ready | Move to ready state only if gates pass. |
 
 ## Resources
@@ -40,3 +40,8 @@ only when the same owner identity presents the same secret proof.
 `attach_branch` requires `branch` and `head_sha`. When no PR head is attached,
 review packages are matched to the latest attached branch head so stale
 branch-only reviews cannot satisfy readiness after new commits.
+
+`submit_review_package` requires explicit `head_sha` once branch or PR metadata
+has established a current head. For readiness, the latest review package for the
+current head is authoritative; older packages for that same head are
+superseded.

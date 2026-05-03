@@ -214,11 +214,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     default_entries =
       default_entries
-      |> Enum.sort_by(fn {_state_key, {_server, timestamp_ms, _explicit?}} -> timestamp_ms end, :desc)
-      |> Enum.take(@default_handle_state_max_entries)
+      |> Enum.group_by(&handle_state_entry_namespace/1)
+      |> Enum.flat_map(fn {_namespace, entries} ->
+        entries
+        |> Enum.sort_by(fn {_state_key, {_server, timestamp_ms, _explicit?}} -> timestamp_ms end, :desc)
+        |> Enum.take(@default_handle_state_max_entries)
+      end)
 
     Map.new(explicit_entries ++ default_entries)
   end
+
+  defp handle_state_entry_namespace({{namespace, _state_key}, {%__MODULE__{}, _timestamp_ms, false}}), do: namespace
+  defp handle_state_entry_namespace(_entry), do: nil
 
   defp update_handle_state_store(fun) do
     ensure_handle_state_agent()
@@ -1652,7 +1659,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     case optional_head_sha(arguments) do
       {:ok, nil} when is_binary(current_head_sha) ->
-        {:ok, current_head_sha}
+        {:tool_error, "missing_head_sha"}
 
       {:ok, head_sha} when is_binary(current_head_sha) and head_sha != current_head_sha ->
         {:tool_error, "stale_head_sha"}
@@ -1899,10 +1906,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     current_head_sha = latest_current_head_sha(progress_events)
 
     latest_verdicts =
-      progress_events
-      |> current_head_review_package_events(current_head_sha)
-      |> Enum.flat_map(&review_package_reviews(&1, current_head_sha))
-      |> Enum.reduce(%{}, fn review, verdicts -> Map.put(verdicts, Map.get(review, "lane"), Map.get(review, "verdict")) end)
+      case latest_review_package_event(progress_events, current_head_sha) do
+        %ProgressEvent{} = event ->
+          event
+          |> review_package_reviews(current_head_sha)
+          |> Enum.reduce(%{}, fn review, verdicts -> Map.put(verdicts, Map.get(review, "lane"), Map.get(review, "verdict")) end)
+
+        nil ->
+          %{}
+      end
 
     Enum.all?(required_lanes, fn lane ->
       Map.get(latest_verdicts, lane) == "green"
@@ -1920,10 +1932,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp current_head_review_artifact_references(progress_events, current_head_sha) do
-    progress_events
-    |> current_head_review_package_events(current_head_sha)
-    |> Enum.flat_map(&review_package_artifact_references(&1, current_head_sha))
-    |> Enum.uniq()
+    case latest_review_package_event(progress_events, current_head_sha) do
+      %ProgressEvent{} = event -> review_package_artifact_references(event, current_head_sha)
+      nil -> []
+    end
   end
 
   defp latest_review_package_event(progress_events, current_head_sha) do
@@ -1992,7 +2004,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp review_package_reviews(%ProgressEvent{}, _current_head_sha), do: []
-  defp review_package_reviews(nil, _current_head_sha), do: []
 
   defp normalize_review_entries(reviews) do
     reviews

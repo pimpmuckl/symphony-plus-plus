@@ -1147,6 +1147,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert refreshed_timestamp > stale_but_active_timestamp
   end
 
+  test "response-only handle trims default state per namespace", %{repo: repo} do
+    timestamp = System.monotonic_time(:millisecond)
+    kept_repo_server = Server.new(Config.default(repo: repo), initialized: true)
+    other_namespace_server = Server.new(Config.default(repo: UnexpectedAuthRepo), initialized: true)
+
+    Enum.each(1..130, fn offset ->
+      server = Server.new(Config.default(repo: repo), initialized: true)
+      put_handle_state_entry(server, {server, timestamp + offset, false})
+    end)
+
+    put_handle_state_entry(kept_repo_server, {kept_repo_server, timestamp + 1_000, false})
+    put_handle_state_entry(other_namespace_server, {other_namespace_server, timestamp - 1_000, false})
+
+    response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "init-trim-namespace", "method" => "initialize", "params" => initialize_params()},
+        Server.new(Config.default(repo: repo))
+      )
+
+    store = handle_state_store()
+
+    repo_default_count =
+      Enum.count(store, fn
+        {{{:stdio, ^repo, nil}, _state_key}, {%Server{}, _timestamp_ms, false}} -> true
+        _entry -> false
+      end)
+
+    assert get_in(response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
+    assert repo_default_count == 129
+    assert Map.has_key?(store, handle_state_store_key(kept_repo_server))
+    assert Map.has_key?(store, handle_state_store_key(other_namespace_server))
+  end
+
   test "claim_work_key notification binds session inside a batch", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-NOTIFY-CLAIM", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -2034,8 +2067,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
-    assert get_in(headless_review_response, ["result", "structuredContent", "progress_event", "payload", "head_sha"]) == "abc123"
-    assert get_in(headless_review_response, ["result", "structuredContent", "progress_event", "payload", "reviews"]) == []
+    assert get_in(headless_review_response, ["error", "data", "reason"]) == "missing_head_sha"
 
     missing_acceptance_response =
       MCPHarness.request(
@@ -2082,9 +2114,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     incremental_missing = get_in(incremental_review_lanes_response, ["error", "data", "missing"])
-    refute "review_lanes_complete" in incremental_missing
+    assert "review_lanes_complete" in incremental_missing
     refute "acceptance_criteria_met" in incremental_missing
-    assert "review_artifacts_attached" in incremental_missing
+    refute "review_artifacts_attached" in incremental_missing
     assert "plan_complete" in incremental_missing
 
     malformed_review_response =
@@ -2340,7 +2372,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     latest_missing_lane_missing = get_in(latest_missing_lane_response, ["error", "data", "missing"])
-    refute "review_lanes_complete" in latest_missing_lane_missing
+    assert "review_lanes_complete" in latest_missing_lane_missing
     assert "plan_complete" in latest_missing_lane_missing
 
     attach_tool(repo, session, "submit_review_package", %{
@@ -2442,6 +2474,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "summary" => "Pre-PR review",
       "tests" => ["mix test"],
       "artifacts" => ["pre-pr-review.txt"],
+      "head_sha" => "pre-pr-head",
       "acceptance_criteria_met" => true,
       "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
     })
@@ -2473,6 +2506,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "summary" => "Old head review",
       "tests" => ["mix test"],
       "artifacts" => ["old-head-review.txt"],
+      "head_sha" => "old-head",
       "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
     })
 

@@ -34,7 +34,7 @@ request_scope_expansion(request)
 request_context(request)
 attach_branch(branch, head_sha)
 attach_pr(pr_url, head_sha)
-submit_review_package(summary, tests, artifacts)
+submit_review_package(summary, tests, artifacts, head_sha)
 mark_ready()
 ```
 
@@ -46,6 +46,11 @@ secret proof is presented by the same `claimed_by` owner.
 `attach_branch` intentionally requires both the branch name and the current
 branch `head_sha`. Branch-only review evidence is matched to that head so a
 later branch update cannot reuse stale review-package evidence.
+
+`submit_review_package` must include `head_sha` after branch or PR metadata has
+established a current head. The latest current-head review package is
+authoritative for review readiness; older packages for the same head are
+superseded rather than implicitly merged.
 
 ## Architect MCP tools
 

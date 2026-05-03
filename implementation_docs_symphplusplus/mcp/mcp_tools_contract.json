@@ -52,7 +52,9 @@
     },
     {
       "name": "submit_review_package",
-      "purpose": "Attach summary/tests/artifacts for review."
+      "purpose": "Attach summary/tests/artifacts for the current head review package.",
+      "head_policy": "After branch or PR metadata establishes a current head, head_sha is required.",
+      "readiness_policy": "The latest review package for the current head is authoritative; older same-head packages are superseded."
     },
     {
       "name": "mark_ready",

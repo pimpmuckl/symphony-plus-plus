@@ -182,10 +182,13 @@ Phase 3
 - [x] Fix forty-seventh T2 replay authorization, task-plan schema/scope, and ready-lock findings locally.
 - [x] Commit and push forty-seventh T2 fix.
 - [x] Run fresh full-diff T2 on pushed head `6abb443` and close valid findings gate.
-- [ ] Resolve T2 artifact-aggregation conflict with overseer before changing review readiness semantics.
+- [x] Resolve T2 artifact-aggregation conflict with overseer before changing review readiness semantics.
+- [x] Implement overseer Option 2: latest current-head review package is authoritative, require explicit review `head_sha` once branch/PR metadata exists, and scope implicit response-only handle retention per MCP namespace.
+- [x] Validate Option 2 fixes locally.
+- [ ] Commit and push Option 2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** blocked on architecture/product decision: latest T2 requests changing review artifact readiness from overseer-directed aggregation across all current-head review packages to latest-only semantics.
+- **Status:** active: overseer selected Option 2, local code/docs/tests are validated and pending commit/push plus fresh T2.
 
 ### High-Pressure Coherence Review
 
@@ -248,10 +251,13 @@ Phase 3
 - Findings remain localized to worker MCP replay, schema, and readiness race hardening within P3-002.
 - The latest T2 includes fixable edge cases for per-namespace default handle retention and explicit `head_sha` once branch/PR metadata exists, but also conflicts with the overseer’s prior product/API decision to aggregate review artifacts across all current-head review-package submissions.
 - Pause before changing review artifact readiness semantics because this is a direct product-contract conflict, not an implementation ambiguity.
+- Overseer selected Option 2 on 2026-05-03: review readiness uses the latest current-head `submit_review_package` as the authoritative evidence package, and stale older same-head packages are superseded rather than implicitly merged.
+- Before the next T2, the approach remains coherent because the latest changes only align the review readiness contract with the current product decision and tighten response-only state retention within the existing P3-002 MCP server.
+- Findings remain localized to review evidence freshness and response-state hygiene inside P3-002, so continuing the mandated T2/GitHub loop is appropriate.
 
 ## Blockers
 
-- Decision needed: keep overseer-directed review artifact aggregation across all current-head `submit_review_package` events, or change readiness to latest-current-head review package artifact paths only as requested by latest T2.
+- None currently. Option 2 resolved the review artifact readiness contract decision.
 
 ## Boundaries
 
