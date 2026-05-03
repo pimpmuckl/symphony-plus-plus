@@ -636,10 +636,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:error, -32_602, "Invalid params", %{"reason" => "missing_protocol_version", "supported" => @protocol_version}}
   end
 
-  defp dispatch("tools/list", params, _server) when is_map(params) do
+  defp dispatch("tools/list", params, %__MODULE__{session: session}) when is_map(params) do
     {:ok,
      %{
-       "tools" => [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1) ++ Enum.map(@architect_tools, &architect_tool_spec/1)]
+       "tools" => tool_specs_for_session(session)
      }}
   end
 
@@ -952,6 +952,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(%{"phase_id" => string_schema(), "update" => object_schema()}, ["phase_id", "update"])
   end
 
+  defp tool_specs_for_session(%Session{assignment: %{grant_role: "architect"}}) do
+    [health_tool_spec() | Enum.map(@architect_tools, &architect_tool_spec/1)]
+  end
+
+  defp tool_specs_for_session(_session) do
+    [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]
+  end
+
   defp schema(properties, required) do
     %{"type" => "object", "additionalProperties" => false, "properties" => properties, "required" => required}
   end
@@ -1244,14 +1252,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- architect_session(config.repo, session, ["read:child_progress", "read:child_findings"]),
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
          :ok <- require_architect_work_package_scope(session, work_package_id),
-         {:ok, state} <- PlanningRepository.get_state(config.repo, work_package_id) do
+         {:ok, summary} <- PlanningRepository.get_status_summary(config.repo, work_package_id) do
       {:ok,
        tool_result(%{
-         "work_package" => work_package_payload(state.work_package),
-         "plan_version" => plan_version(state.plan_nodes),
-         "finding_count" => length(state.findings),
-         "progress_event_count" => length(state.progress_events),
-         "artifact_count" => length(state.artifacts)
+         "work_package" => work_package_payload(summary.work_package),
+         "plan_version" => plan_version(summary.plan_nodes),
+         "finding_count" => summary.finding_count,
+         "progress_event_count" => summary.progress_event_count,
+         "artifact_count" => summary.artifact_count
        })}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_child_status", "reason" => reason}}

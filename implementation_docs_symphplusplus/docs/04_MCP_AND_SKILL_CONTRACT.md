@@ -133,12 +133,17 @@ publish_phase_update(phase_id, update)
 P3-003 exposes this architect-facing tool surface but does not implement Phase
 7 delegation. Architect tools require a live architect grant and the matching
 architect capability; worker grants and insufficient architect grants are
-denied. `read_child_status(work_package_id)` is the only safe read-only tool
-implemented before Phase 7. It requires both `read:child_progress` and
-`read:child_findings` because its status payload includes progress, finding,
-and artifact counts, and it is limited to the work package currently scoped to
-the architect grant because phase-child relationships do not exist yet. The
-remaining architect tools return explicit `phase7_not_implemented`
+denied. Worker grants cannot be minted with architect-only MCP capabilities,
+including unprefixed P3/P7 capability strings such as `read:phase` or
+`mint:child_worker_key`. `tools/list` advertises architect tools only when an
+architect session is already bound; worker and anonymous sessions keep the
+worker-facing discovery surface. `read_child_status(work_package_id)` is the
+only safe read-only tool implemented before Phase 7. It requires both
+`read:child_progress` and `read:child_findings` because its status payload
+includes progress, finding, and artifact counts, and it is limited to the work
+package currently scoped to the architect grant because phase-child
+relationships do not exist yet. The remaining architect tools return explicit
+`phase7_not_implemented`
 errors after authorization and must not create child work, mint worker keys,
 approve ready children, merge into a phase, or publish phase state.
 

@@ -304,10 +304,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
     do_get_state(repo, work_package_id, :full, state_read_retry_attempts())
   end
 
+  @spec get_status_summary(repo(), String.t()) :: {:ok, map()} | {:error, error()}
+  def get_status_summary(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
+    do_get_status_summary(repo, work_package_id, state_read_retry_attempts())
+  end
+
   @spec get_render_state(repo(), String.t()) :: {:ok, State.t()} | {:error, error()}
   def get_render_state(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
     do_get_state(repo, work_package_id, :bounded, state_read_retry_attempts())
   end
+
+  defp do_get_status_summary(repo, work_package_id, attempts_left) do
+    repo.transaction(fn ->
+      with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
+           {:ok, plan_nodes} <- list_plan_nodes_version_material(repo, work_package_id) do
+        %{
+          work_package: work_package,
+          plan_nodes: plan_nodes,
+          finding_count: count_records(repo, Finding, work_package_id),
+          progress_event_count: count_records(repo, ProgressEvent, work_package_id),
+          artifact_count: count_records(repo, Artifact, work_package_id)
+        }
+      else
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+    |> retry_get_status_summary(repo, work_package_id, attempts_left)
+  rescue
+    error in Exqlite.Error ->
+      error
+      |> normalize_exqlite_error()
+      |> retry_get_status_summary(repo, work_package_id, attempts_left)
+  end
+
+  defp retry_get_status_summary({:error, :database_busy}, _repo, _work_package_id, 0), do: {:error, :database_busy}
+
+  defp retry_get_status_summary({:error, :database_busy}, repo, work_package_id, attempts_left) do
+    Process.sleep(retry_delay_ms(attempts_left, state_read_retry_attempts()))
+    do_get_status_summary(repo, work_package_id, attempts_left - 1)
+  end
+
+  defp retry_get_status_summary(result, _repo, _work_package_id, _attempts_left), do: result
 
   defp do_get_state(repo, work_package_id, mode, attempts_left) do
     repo.transaction(fn ->
@@ -386,6 +423,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
       )
 
     {rows, omitted_count(repo, PlanNode, work_package_id, rows)}
+  end
+
+  defp list_plan_nodes_version_material(repo, work_package_id) do
+    rows =
+      repo.all(
+        from(plan_node in PlanNode,
+          where: plan_node.work_package_id == ^work_package_id,
+          order_by: [asc: plan_node.position, asc: plan_node.created_at, asc: plan_node.id],
+          select: %{
+            id: plan_node.id,
+            title: plan_node.title,
+            body: plan_node.body,
+            status: plan_node.status,
+            position: plan_node.position,
+            updated_at: plan_node.updated_at
+          }
+        )
+      )
+
+    {:ok, rows}
   end
 
   defp list_findings_for_render(repo, work_package_id) do
@@ -602,15 +659,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   end
 
   defp omitted_count(repo, schema, work_package_id, loaded_rows) do
-    total =
-      repo.one(
-        from(row in schema,
-          where: row.work_package_id == ^work_package_id,
-          select: count(row.id)
-        )
-      )
+    total = count_records(repo, schema, work_package_id)
 
     max((total || 0) - length(loaded_rows), 0)
+  end
+
+  defp count_records(repo, schema, work_package_id) do
+    repo.one(
+      from(row in schema,
+        where: row.work_package_id == ^work_package_id,
+        select: count(row.id)
+      )
+    ) || 0
   end
 
   defp insert_with_allocated_value(repo, attrs, schema, field, changeset_fun) do

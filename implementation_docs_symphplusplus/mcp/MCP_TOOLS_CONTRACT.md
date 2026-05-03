@@ -38,8 +38,12 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 
 Architect tools require a live architect grant session and the matching
 architect capability from the permission model. Worker grants and architect
-grants without the required capability are denied. Until Phase 7 introduces
-phase entities and phase-child scope checks, `read_child_status` requires both
+grants without the required capability are denied. Worker grants cannot be
+minted with architect-only MCP capabilities such as `read:phase`,
+`read:child_progress`, or `mint:child_worker_key`. `tools/list` advertises
+architect tools only for an already-bound architect session; anonymous and
+worker sessions see the worker tool surface. Until Phase 7 introduces phase
+entities and phase-child scope checks, `read_child_status` requires both
 `read:child_progress` and `read:child_findings` because its summary includes
 progress, findings, and artifact counts, and it is intentionally limited to the
 work package bound to the architect grant. Requests for unrelated work packages
