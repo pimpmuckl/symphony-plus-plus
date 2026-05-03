@@ -2161,6 +2161,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       else
         case PlanningService.append_artifact(repo, attrs) do
           {:ok, _artifact} -> :ok
+          {:error, :id_already_exists} -> :ok
           {:error, reason} -> {:error, reason}
         end
       end
