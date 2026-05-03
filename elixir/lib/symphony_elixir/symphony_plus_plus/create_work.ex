@@ -3,6 +3,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
 
   alias Ecto.Changeset
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
+  alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Renderer
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Policies.Templates
@@ -133,7 +134,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   def error_message(:missing_acceptance_criteria), do: "acceptance_criteria is required for this work kind"
   def error_message(:parent_not_supported), do: "Standalone create-work does not accept parent_id"
   def error_message(:policy_template_mismatch), do: "policy_template/review_suite_template must select the same policy"
-  def error_message(:standalone_kind_not_supported), do: "Standalone create-work does not accept phase_child work"
+
+  def error_message(:standalone_kind_not_supported),
+    do: "Standalone create-work supports quick_fix, hotfix, investigation, adapter, mcp, skill, and hooks work only"
+
   def error_message(:unknown_policy_template), do: "No policy template exists for requested kind"
   def error_message({:invalid_json, reason}), do: "Invalid JSON create-work request: #{inspect(reason)}"
   def error_message({:invalid_yaml, reason}), do: "Invalid YAML create-work request: #{inspect(reason)}"
@@ -335,9 +339,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
       {:ok, kind} ->
         case normalize_nonblank_string(kind) do
           {:ok, "phase_child"} -> {:error, :standalone_kind_not_supported}
-          {:ok, kind} -> {:ok, kind}
+          {:ok, kind} -> ensure_standalone_kind(kind)
           {:error, :blank} -> {:error, :invalid_kind}
         end
+    end
+  end
+
+  defp ensure_standalone_kind(kind) do
+    if StateMachine.supported_kind?(kind) do
+      {:ok, kind}
+    else
+      {:error, :standalone_kind_not_supported}
     end
   end
 
@@ -361,22 +373,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   end
 
   defp policy_for(kind, policy_templates) do
-    with {:ok, policy_key, policy} <- Templates.resolve_key(policy_templates),
+    with {:ok, ^kind, policy} <- Templates.resolve_key([kind | policy_templates]),
          :ok <- reject_phase_child_policy(policy) do
-      {:ok, policy_key_for(kind, policy_key), policy}
+      {:ok, kind, policy}
+    else
+      {:ok, _policy_key, _policy} -> {:error, :policy_template_mismatch}
+      {:error, reason} -> {:error, reason}
     end
   end
 
   defp reject_phase_child_policy(%{template: "phase_child"}), do: {:error, :standalone_kind_not_supported}
   defp reject_phase_child_policy(_policy), do: :ok
-
-  defp policy_key_for(kind, policy_key) do
-    if kind == policy_key do
-      kind
-    else
-      policy_key
-    end
-  end
 
   defp explicit_policy_templates(attrs) do
     ["policy_template", "review_suite_template"]

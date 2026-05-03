@@ -125,7 +125,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
                base_branch: "symphony-plus-plus/beta",
                title: "Wire MCP package",
                acceptance_criteria: ["MCP work is created."],
-               review_suite_template: "mcp",
                policy_template: "worker_package"
              })
 
@@ -187,6 +186,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
                title: "Quick fix cannot request worker package",
                acceptance_criteria: ["Conflict is rejected."],
                policy_template: "worker_package"
+             })
+
+    assert {:error, :policy_template_mismatch} =
+             CreateWork.parse_request(%{
+               kind: "quick_fix",
+               repo: "symphony-plus-plus",
+               base_branch: "symphony-plus-plus/beta",
+               title: "Quick fix cannot request hotfix policy",
+               acceptance_criteria: ["Conflict is rejected."],
+               policy_template: "hotfix"
              })
   end
 
@@ -302,9 +311,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     assert acceptance_md =~ "No acceptance criteria recorded."
   end
 
-  test "creates standalone product work with an explicit policy template", %{repo: repo} do
-    assert {:ok, creation} =
-             CreateWork.create(repo, %{
+  test "rejects lifecycle-unsupported standalone kinds" do
+    assert {:error, :standalone_kind_not_supported} =
+             CreateWork.parse_request(%{
                kind: "product",
                repo: "kraken",
                base_branch: "main",
@@ -312,11 +321,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
                acceptance_criteria: ["Summary copy is updated."],
                policy_template: "hotfix"
              })
-
-    assert creation.work_package.kind == "product"
-    assert creation.work_package.policy_template == "hotfix"
-    assert creation.policy.template == "hotfix"
-    assert creation.virtual_files["review_suite.md"] =~ "Policy template: `hotfix`"
   end
 
   test "renders investigation and blank scope plan guidance correctly", %{repo: repo} do
