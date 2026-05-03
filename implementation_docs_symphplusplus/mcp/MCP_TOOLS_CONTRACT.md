@@ -15,6 +15,7 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | append_progress | Append a progress event to the current work package. |
 | set_status | Request a valid state transition. |
 | report_blocker | Record an active blocker. |
+| resolve_blocker | Record that an active blocker was cleared. |
 | request_scope_expansion | Request broader scope; does not approve it. |
 | attach_branch | Attach branch metadata with the current branch head SHA. |
 | attach_pr | Attach PR metadata. |

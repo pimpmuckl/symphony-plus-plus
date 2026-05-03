@@ -28,12 +28,11 @@ update_task_plan(patch, expected_version)
 append_finding(finding, idempotency_key)
 append_progress(event, idempotency_key)
 set_status(status, reason, expected_status)
-report_blocker(blocker)
-resolve_blocker(blocker_id, resolution)
-request_scope_expansion(request)
-request_context(request)
+report_blocker(summary, idempotency_key, blocker_id?)
+resolve_blocker(blocker_id, resolution, summary, idempotency_key)
+request_scope_expansion(summary, idempotency_key, payload)
 attach_branch(branch, head_sha)
-attach_pr(pr_url, head_sha)
+attach_pr(url, head_sha)
 submit_review_package(summary, tests, artifacts, head_sha)
 mark_ready()
 ```
@@ -170,6 +169,31 @@ The Codex Skill must instruct workers to:
 8. Mark ready only after evidence is present.
 9. Never create local planning files as the source of truth.
 10. Never inspect or mutate sibling work unless explicit context slices are provided.
+
+## Skill package and MCP wiring
+
+The repo-local skill package lives at:
+
+```text
+.codex/skills/symphony-work-package/SKILL.md
+```
+
+Install or copy that directory into the worker repository's `.codex/skills/`
+directory when Symphony++ runs against a downstream codebase. The skill expects a
+configured Symphony++ MCP stdio server. From this repository's Elixir
+implementation, the MCP server command is:
+
+```bash
+cd elixir
+mise exec -- mix sympp.mcp --mode stdio --database <ledger-path>
+```
+
+Codex MCP configuration should start that command from the `elixir/` directory
+as a stdio MCP dependency. Do not embed raw work-key secrets or bearer tokens in
+that configuration; workers claim assignments with
+`claim_work_key(secret, claimed_by)` after MCP initialize. For stateless
+transports, `state_key` is only handshake continuity and does not replace the
+claim call.
 
 ## Hook role
 

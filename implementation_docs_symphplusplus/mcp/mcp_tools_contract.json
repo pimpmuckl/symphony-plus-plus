@@ -40,6 +40,10 @@
       "purpose": "Record an active blocker."
     },
     {
+      "name": "resolve_blocker",
+      "purpose": "Record that an active blocker was cleared."
+    },
+    {
       "name": "request_scope_expansion",
       "purpose": "Request broader scope; does not approve it.",
       "readiness_policy": "For investigation policies, this records the worker scope recommendation evidence."

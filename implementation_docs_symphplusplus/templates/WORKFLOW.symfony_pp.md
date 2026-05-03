@@ -37,12 +37,12 @@ codex:
 
 You are running inside a Symphony++ unattended orchestration session.
 
-Your assignment is a single permissioned WorkPackage. Use the Symphony++ MCP server and the `Symphony-work-package` skill.
+Your assignment is a single permissioned WorkPackage. Use the Symphony++ MCP server and the `symphony-work-package` skill.
 
 Required behavior:
 
 1. Claim or load the current assignment.
-2. Read the virtual planning files.
+2. Read the virtual planning resources.
 3. Implement only the scoped package.
 4. Keep progress/findings/task plan synchronized through Symphony++.
 5. Attach branch, PR, and review evidence.
