@@ -1898,3 +1898,24 @@
 ### Next Steps
 
 - Commit/push this T2 fix, rerun full-diff T2 against `symphony-plus-plus/beta` on the new pushed head, then proceed to GitHub review only if that same-head T2 is clean.
+
+### Current T2 Follow-up Actions
+
+- Committed and pushed duplicate review-lane validation as `561e6527693e42b5c365c764856f0e69a311209c`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T093457Z-9cecdf0f` against `symphony-plus-plus/beta`; Alpha was clean, Bravo reported a valid failed explicit-state reconnect invalidation finding, and the gate was closed as `findings`.
+- Fixed the valid finding by writing a versioned explicit-state handshake tombstone on failed reconnect initialize, so stale same-key live servers drop cached worker sessions instead of restoring from a missing store entry.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after the explicit-state tombstone fix and after the Credo line-length adjustment. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 103 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 298 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues after wrapping the tombstone struct update. |
+
+### Next Steps
+
+- Commit/push this T2 fix, rerun full-diff T2 against `symphony-plus-plus/beta` on the new pushed head, then proceed to GitHub review only if that same-head T2 is clean.

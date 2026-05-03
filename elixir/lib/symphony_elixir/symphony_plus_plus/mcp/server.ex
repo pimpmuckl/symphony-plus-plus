@@ -244,7 +244,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
           updated_server
 
         _response ->
-          delete_handle_state(server)
+          invalidate_explicit_handle_state(server)
           %{updated_server | state_key_version: nil}
       end
     else
@@ -282,6 +282,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp delete_handle_state(%__MODULE__{} = server) do
     update_handle_state_store(&Map.delete(&1, handle_state_store_key(server)))
+    :ok
+  end
+
+  defp invalidate_explicit_handle_state(%__MODULE__{} = server) do
+    timestamp_ms = monotonic_ms()
+    state_key_version = monotonic_state_key_version()
+
+    tombstone = %{
+      stored_handle_state_server(server)
+      | initialized: false,
+        session: nil,
+        state_key_version: state_key_version
+    }
+
+    update_handle_state_store(&Map.put(&1, handle_state_store_key(server), {tombstone, timestamp_ms, true}))
     :ok
   end
 

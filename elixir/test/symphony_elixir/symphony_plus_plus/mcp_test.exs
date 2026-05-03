@@ -1284,6 +1284,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_response, ["error", "data", "reason"]) == "server_not_initialized"
   end
 
+  test "failed explicit state key reconnect invalidates stale live server sessions", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-FAILED-RECONNECT-LIVE", kind: "mcp", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    state_key = make_ref()
+
+    {_init_response, initialized_server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()},
+        Server.new(Config.default(repo: repo), state_key: state_key)
+      )
+
+    {_claim_response, claimed_server} =
+      Server.handle_response_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        initialized_server
+      )
+
+    invalid_reconnect_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "invalid-reconnect", "method" => "initialize", "params" => %{"protocolVersion" => "2025-03-26"}},
+        Server.new(Config.default(repo: repo), state_key: state_key)
+      )
+
+    {assignment_response, _server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "assignment-after-failed-reconnect", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        claimed_server
+      )
+
+    assert get_in(invalid_reconnect_response, ["error", "data", "reason"]) == "invalid_initialize_params"
+    assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
+  end
+
   test "failed duplicate explicit initialize preserves live server session", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-FAILED-REINIT-LIVE", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
