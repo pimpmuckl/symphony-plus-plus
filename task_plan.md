@@ -25,4 +25,7 @@ Implement only SYMPP-P3-003: architect-facing MCP tool contracts on the existing
 - Review-suite T1 is not green on current pushed head `9340ee2c46b4d5c6b8bc1ace6346e287c7a46fc2`.
 - Initial T1 found valid issues; those were fixed, committed, pushed, and revalidated locally.
 - Required fresh T1 reruns after the fix repeatedly returned `review_interrupted` for both reviewers before usable output, including base-review and explicit commit-range invocations.
+- Planning status was committed and pushed in `962f96cbaf4abff4eb0530704ba86912133cfbe5`, then T1 was retried on that clean pushed head and still returned `review_interrupted`.
+- The active cached wrapper path was also retried and returned `review_interrupted` for both reviewers on round `phase_review-symphony-plus-plus-sympp-p3-003-2e5a78-20260503T104428Z-f183b6c0`.
+- Cached `review_state.py status` still recommends T1 as the current lane.
 - Do not run T2 or GitHub review until T1 can complete cleanly or the overseer explicitly changes the review-gate instruction.
