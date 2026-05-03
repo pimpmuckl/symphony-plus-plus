@@ -72,11 +72,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   @spec handle(term(), t()) :: map() | [map()] | nil
   def handle(payload, %__MODULE__{} = server) do
+    payload
+    |> handle_response_state(server)
+    |> elem(0)
+  end
+
+  @doc false
+  @spec handle_response_state(term(), t()) :: {map() | [map()] | nil, t()}
+  def handle_response_state(payload, %__MODULE__{} = server) do
     cleanup_default_handle_states()
     server = restore_handle_state(payload, server)
     {response, updated_server} = handle_state(payload, server)
     persist_handle_state(server, updated_server)
-    response
+    {response, updated_server}
   end
 
   @spec handle_state(term(), t()) :: {map() | [map()] | nil, t()}
@@ -1279,11 +1287,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     with :ok <- require_known_plan_node_patch_keys(attrs),
          true <- id != "" || {:tool_error, "invalid_patch_node"},
-         {:ok, existing_nodes} <- PlanningRepository.list_plan_nodes(repo, work_package_id),
-         %PlanNode{} <- Enum.find(existing_nodes, &(&1.id == id)) || {:error, :forbidden},
-         :ok <- require_plan_node_updates(updates),
-         {:ok, plan_node} <- PlanningService.update_plan_node(repo, id, updates) do
-      {:ok, plan_node}
+         {:ok, existing_nodes} <- PlanningRepository.list_plan_nodes(repo, work_package_id) do
+      existing_node = Enum.find(existing_nodes, &(&1.id == id))
+      patch_existing_or_append_plan_node(repo, work_package_id, existing_node, id, attrs, updates)
     else
       {:tool_error, reason} -> {:tool_error, reason}
       {:error, reason} -> {:error, reason}
@@ -1305,6 +1311,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp apply_plan_node_patch(_repo, _work_package_id, _attrs), do: {:tool_error, "invalid_patch_node"}
+
+  defp patch_existing_or_append_plan_node(repo, _work_package_id, %PlanNode{}, id, _attrs, updates) do
+    with :ok <- require_plan_node_updates(updates) do
+      PlanningService.update_plan_node(repo, id, updates)
+    end
+  end
+
+  defp patch_existing_or_append_plan_node(repo, work_package_id, nil, id, attrs, _updates) do
+    with {:ok, title} <- required_argument(attrs, "title") do
+      PlanningRepository.append_plan_node(repo, %{
+        "id" => id,
+        "work_package_id" => work_package_id,
+        "title" => title,
+        "body" => optional_argument(attrs, "body", nil),
+        "status" => optional_argument(attrs, "status", "pending")
+      })
+    end
+  end
 
   defp require_known_plan_node_patch_keys(attrs) do
     if Enum.all?(Map.keys(attrs), &(&1 in @plan_node_patch_keys)), do: :ok, else: {:tool_error, "invalid_patch_node"}

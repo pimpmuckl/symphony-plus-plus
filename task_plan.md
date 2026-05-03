@@ -185,10 +185,14 @@ Phase 3
 - [x] Resolve T2 artifact-aggregation conflict with overseer before changing review readiness semantics.
 - [x] Implement overseer Option 2: latest current-head review package is authoritative, require explicit review `head_sha` once branch/PR metadata exists, and scope implicit response-only handle retention per MCP namespace.
 - [x] Validate Option 2 fixes locally.
-- [ ] Commit and push Option 2 fixes.
+- [x] Commit and push Option 2 fixes.
+- [x] Run fresh full-diff T2 on pushed head `facc90b` and close valid findings gate.
+- [x] Fix forty-ninth T2 explicit plan patch id and stdio response-state findings locally.
+- [x] Validate forty-ninth T2 fixes locally.
+- [ ] Commit and push forty-ninth T2 fixes.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** active: overseer selected Option 2, local code/docs/tests are validated and pending commit/push plus fresh T2.
+- **Status:** active: latest valid T2 findings are fixed and validated locally, pending commit/push plus fresh T2.
 
 ### High-Pressure Coherence Review
 
@@ -254,6 +258,8 @@ Phase 3
 - Overseer selected Option 2 on 2026-05-03: review readiness uses the latest current-head `submit_review_package` as the authoritative evidence package, and stale older same-head packages are superseded rather than implicitly merged.
 - Before the next T2, the approach remains coherent because the latest changes only align the review readiness contract with the current product decision and tighten response-only state retention within the existing P3-002 MCP server.
 - Findings remain localized to review evidence freshness and response-state hygiene inside P3-002, so continuing the mandated T2/GitHub loop is appropriate.
+- Before the next T2, the approach remains coherent because the latest follow-up only makes the advertised task-plan patch schema consistent with runtime append behavior and applies the existing response-only persistence helper to the stdio line-response path.
+- Findings remain narrow contract-consistency and helper-path state retention hardening inside P3-002, not a broader package design problem.
 
 ## Blockers
 

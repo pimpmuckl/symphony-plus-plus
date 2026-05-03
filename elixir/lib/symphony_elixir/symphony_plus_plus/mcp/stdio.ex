@@ -40,7 +40,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Stdio do
       {nil, server}
     else
       case Jason.decode(line) do
-        {:ok, payload} -> Server.handle_state(payload, server)
+        {:ok, payload} -> Server.handle_response_state(payload, server)
         {:error, _reason} -> {parse_error(), server}
       end
     end

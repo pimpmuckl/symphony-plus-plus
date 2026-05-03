@@ -45,6 +45,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   end
 
   setup %{repo: repo} do
+    reset_handle_state_store()
     repo.delete_all(AccessGrant)
     repo.delete_all(WorkPackage)
     :ok
@@ -1071,6 +1072,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
   end
 
+  test "stdio response-only line helper retains initialized worker session", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STDIO-STATE", kind: "mcp", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    server = Server.new(Config.default(repo: repo))
+
+    init_response =
+      %{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()}
+      |> Jason.encode!()
+      |> Stdio.line_response(server)
+
+    claim_response =
+      %{
+        "jsonrpc" => "2.0",
+        "id" => "claim",
+        "method" => "tools/call",
+        "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+      }
+      |> Jason.encode!()
+      |> Stdio.line_response(server)
+
+    assignment_response =
+      %{"jsonrpc" => "2.0", "id" => "assignment", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}}
+      |> Jason.encode!()
+      |> Stdio.line_response(server)
+
+    assert get_in(init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+  end
+
   test "response-only handle does not share default state between recreated servers", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STATE-ISOLATED", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -1994,6 +2025,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(stale_response, ["error", "data", "reason"]) == "stale_plan_version"
+  end
+
+  test "update_task_plan patch can append a new node with caller id", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PLAN-PATCH-ID", kind: "mcp"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    read_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "read-plan", "method" => "tools/call", "params" => %{"name" => "read_task_plan"}},
+        repo: repo,
+        session: session
+      )
+
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "patch-plan-with-id",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "update_task_plan",
+            "arguments" => %{
+              "expected_version" => get_in(read_response, ["result", "structuredContent", "version"]),
+              "patch" => %{"nodes" => [%{"id" => " caller-node-1 ", "title" => "Deterministic node", "status" => "pending"}]}
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(response, ["result", "structuredContent", "plan_nodes", Access.at(0), "id"]) == "caller-node-1"
+    assert {:ok, nodes} = PlanningRepository.list_plan_nodes(repo, package.id)
+    assert Enum.any?(nodes, &(&1.id == "caller-node-1" and &1.title == "Deterministic node"))
   end
 
   test "mark_ready enforces worker readiness gates", %{repo: repo} do
@@ -3306,6 +3373,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   defp put_handle_state_entry(server, entry) do
     ensure_handle_state_agent()
     Agent.update(handle_state_agent(), &Map.put(&1, handle_state_store_key(server), entry))
+  end
+
+  defp reset_handle_state_store do
+    ensure_handle_state_agent()
+    Agent.update(handle_state_agent(), fn _store -> %{} end)
   end
 
   defp delete_handle_state_entry(server) do

@@ -194,6 +194,28 @@
 
 - Commit and push Option 2 fixes, rerun fresh full-diff T2 against `symphony-plus-plus/beta`, then run GitHub review on PR #15 if T2 is clean.
 
+### Forty-Ninth T2 Follow-up Actions
+
+- Pushed Option 2 fix head `facc90bf82e45060fdeff9543ea9aa1b12de035d` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T030506Z-8509dfcf`; both reviewers reported the valid explicit-ID plan patch finding, and Alpha also reported a valid stdio response-only state helper finding.
+- Closed the T2 gate as `findings`.
+- Fixed explicit-ID plan patch handling so `patch.nodes[]` with a new trimmed caller ID and title appends a deterministic plan node, while existing IDs still update existing nodes.
+- Fixed stdio response-only helper state retention by routing decoded line payloads through `Server.handle_response_state/2`; `Stdio.run/2` still receives and threads the returned server state.
+- Added regressions for deterministic patch-node creation and `Stdio.line_response/2` retaining initialize/claim state when the caller discards returned server state.
+- Added per-test MCP handle-state Agent cleanup after the broad package suite exposed cross-test response-state leakage from global handle state.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format && mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 82 tests, 0 failures after initial follow-up fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus --trace` | fail then `mix test --failed --trace` pass | Broad suite first exposed one response-state cross-test leak; isolated failed MCP test passed. |
+| `mise exec -- mix format && mise exec -- mix test test/symphony_elixir/symphony_plus_plus && mise exec -- mix specs.check && mise exec -- mix format --check-formatted && mise exec -- mix credo --strict` | pass | 277 tests, 0 failures; specs complete; formatting clean; Credo strict clean. Windows emitted known Phoenix LiveView symlink and migration redefinition warnings. |
+
+### Next Steps
+
+- Commit and push forty-ninth T2 fixes, rerun fresh full-diff T2 against `symphony-plus-plus/beta`, then run GitHub review on PR #15 if T2 is clean.
+
 ### Thirty-Ninth T2 Follow-up Actions
 
 - Pushed thirty-eighth T2 fix head `0a1114ef44516be1cf8af37e5d54d0b27a809ae3` to PR #15.
