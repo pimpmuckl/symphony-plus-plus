@@ -81,6 +81,7 @@
     {
       "name": "read_child_status",
       "purpose": "Read the architect grant's scoped work-package status without Phase 7 delegation.",
+      "required_capabilities": ["read:child_progress", "read:child_findings"],
       "scope_policy": "Until Phase 7 phase-child relationships exist, this only reads the work package bound to the architect grant."
     },
     {

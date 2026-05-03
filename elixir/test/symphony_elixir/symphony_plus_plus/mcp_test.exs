@@ -307,7 +307,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   test "architect tools reject arguments outside their advertised schemas", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-STRICT", kind: "mcp"))
-    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:child_progress"])
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:child_progress", "read:child_findings"])
 
     assert {:ok, architect_assignment} =
              AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
@@ -2158,6 +2158,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(insufficient_response, ["error", "code"]) == -32_001
     assert get_in(insufficient_response, ["error", "data", "reason"]) == "insufficient_capability"
+
+    assert {:ok, progress_only_work_key} = create_architect_work_key(repo, package.id, ["read:child_progress"])
+
+    assert {:ok, progress_only_assignment} =
+             AccessGrantRepository.claim(repo, progress_only_work_key.secret, %{claimed_by: "architect-2"}, DateTime.utc_now(:microsecond))
+
+    progress_only_session = MCPHarness.session(progress_only_assignment, proof_hash: WorkKey.secret_hash(progress_only_work_key.secret))
+
+    progress_only_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "progress-only-architect",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_child_status", "arguments" => %{"work_package_id" => package.id}}
+        },
+        repo: repo,
+        session: progress_only_session
+      )
+
+    assert get_in(progress_only_response, ["error", "code"]) == -32_001
+    assert get_in(progress_only_response, ["error", "data", "reason"]) == "insufficient_capability"
   end
 
   test "architect read_child_status reads only its scoped work package", %{repo: repo} do
@@ -2165,7 +2187,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-READ-CHILD", kind: "mcp", status: "planning"))
 
     assert {:ok, sibling} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-SIBLING", kind: "mcp"))
-    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:child_progress"])
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:child_progress", "read:child_findings"])
 
     assert {:ok, architect_assignment} =
              AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))

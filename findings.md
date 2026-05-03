@@ -25,3 +25,11 @@
 - `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/access_grants_test.exs test/symphony_elixir/symphony_plus_plus/mcp_test.exs` passed with 125 tests and 0 failures.
 - `mise exec -- mix test` was attempted and failed with 57 unrelated Windows-environment failures across specs-check, SSH/fake-binary, workspace/temp-path, symlink, and app-server harness tests. The failure signatures do not involve the changed MCP architect-tool tests.
 - The focused test run emits existing Windows/Phoenix symlink and migration module redefinition warnings; no test failures are associated with those warnings.
+
+## Review Findings
+
+- T1 Alpha found valid issues in the initial PR head: `read_child_status` classified backend read failures as invalid params, and its summary returned finding/artifact counts with only `read:child_progress`.
+- Fix invariant: backend/storage failures must remain retryable service errors, and summary fields that reveal findings/artifacts need the corresponding architect finding capability.
+- Owner/source of truth: MCP server authorization/error mapping in `server.ex`; permission split in `docs/03_PERMISSION_MODEL.md`.
+- Structural fix: architect errors now map database/storage/migration failures to service errors, and `read_child_status` requires both `read:child_progress` and `read:child_findings`.
+- Regression coverage: added progress-only architect denial and retained stub/runtime argument validation coverage in `mcp_test.exs`.

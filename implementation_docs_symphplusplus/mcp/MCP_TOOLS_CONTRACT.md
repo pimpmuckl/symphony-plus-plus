@@ -39,9 +39,11 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 Architect tools require a live architect grant session and the matching
 architect capability from the permission model. Worker grants and architect
 grants without the required capability are denied. Until Phase 7 introduces
-phase entities and phase-child scope checks, `read_child_status` is intentionally
-limited to the work package bound to the architect grant. Requests for unrelated
-work packages are denied rather than guessed from absent phase relationships.
+phase entities and phase-child scope checks, `read_child_status` requires both
+`read:child_progress` and `read:child_findings` because its summary includes
+progress, findings, and artifact counts, and it is intentionally limited to the
+work package bound to the architect grant. Requests for unrelated work packages
+are denied rather than guessed from absent phase relationships.
 Phase 7-dependent tools perform authorization first and then return an explicit
 `phase7_not_implemented` error; they do not create children, mint grants,
 approve readiness, merge phase artifacts, or publish phase state in P3-003.

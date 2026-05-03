@@ -1241,7 +1241,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp claim_error(reason), do: {:error, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => reason_text(reason)}}
 
   defp architect_tool("read_child_status", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, session} <- architect_session(config.repo, session, "read:child_progress"),
+    with {:ok, session} <- architect_session(config.repo, session, ["read:child_progress", "read:child_findings"]),
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
          :ok <- require_architect_work_package_scope(session, work_package_id),
          {:ok, state} <- PlanningRepository.get_state(config.repo, work_package_id) do
@@ -1490,12 +1490,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp rollback_worker_transaction_result(repo, {:error, reason}), do: repo.rollback({:error, reason})
 
-  defp architect_session(repo, session, capability) do
+  defp architect_session(repo, session, capability) when is_binary(capability) do
     with {:ok, session} <- Auth.require_session(session, repo),
          :ok <- require_architect_assignment(session.assignment),
          :ok <- require_architect_capability(session.assignment, capability) do
       {:ok, session}
     end
+  end
+
+  defp architect_session(repo, session, capabilities) when is_list(capabilities) do
+    with {:ok, session} <- Auth.require_session(session, repo),
+         :ok <- require_architect_assignment(session.assignment),
+         :ok <- require_architect_capabilities(session.assignment, capabilities) do
+      {:ok, session}
+    end
+  end
+
+  defp require_architect_capabilities(assignment, capabilities) do
+    Enum.reduce_while(capabilities, :ok, fn capability, :ok ->
+      case require_architect_capability(assignment, capability) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
   end
 
   defp require_architect_work_package_scope(%Session{} = session, work_package_id) do
@@ -2843,6 +2860,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_error(:phase_scope_not_available, resource), do: auth_error(:forbidden, resource)
   defp architect_error(:forbidden, resource), do: auth_error(:forbidden, resource)
   defp architect_error({:service_unavailable, _reason} = reason, resource), do: auth_error(reason, resource)
+  defp architect_error(:database_busy, tool), do: service_error(:database_busy, tool)
+  defp architect_error({:storage_failed, _reason} = reason, tool), do: service_error(reason, tool)
+  defp architect_error({:migration_failed, _reason} = reason, tool), do: service_error(reason, tool)
   defp architect_error(reason, tool), do: {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason_text(reason)}}
 
   defp scoped_session(repo, session, arguments) when is_map(arguments) do
