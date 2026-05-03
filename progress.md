@@ -376,7 +376,19 @@
 
 ### Next Steps
 
-- Commit and push forty-seventh T2 fixes, then rerun full-diff T2 and proceed to GitHub review if clean.
+- Pushed forty-seventh T2 fix head `6abb443a37339df85cb72fb19175a2476cbb2176` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T025027Z-7de9819d`; both reviewers reported findings, then the gate was closed as `findings`.
+
+### Blocker
+
+- Latest T2 includes two straightforward implementation findings: apply implicit response-only handle-state retention per `{mode, repo, database}` namespace, and require explicit `submit_review_package.head_sha` once branch/PR metadata exists.
+- Latest T2 also asks to change review artifact readiness to only the latest current-head review package. That conflicts with the overseer’s explicit Option A follow-up instruction to aggregate review artifacts across all current-head `submit_review_package` events.
+- Stopping for an overseer decision before changing artifact readiness semantics.
+
+### Decision Needed
+
+- Option 1: Keep current overseer-directed aggregation across all current-head review-package events and treat the latest T2 artifact finding as rejected; implement only per-namespace handle retention and explicit `head_sha`.
+- Option 2: Change review artifact readiness to latest-current-head review package only, superseding the prior aggregation instruction.
 
 ### Next Steps
 

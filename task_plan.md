@@ -180,10 +180,12 @@ Phase 3
 - [x] Commit and push forty-sixth T2 fix.
 - [x] Run fresh full-diff T2 on pushed head `34aefd4` and close valid findings gate.
 - [x] Fix forty-seventh T2 replay authorization, task-plan schema/scope, and ready-lock findings locally.
-- [ ] Commit and push forty-seventh T2 fix.
+- [x] Commit and push forty-seventh T2 fix.
+- [x] Run fresh full-diff T2 on pushed head `6abb443` and close valid findings gate.
+- [ ] Resolve T2 artifact-aggregation conflict with overseer before changing review readiness semantics.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** forty-seventh T2 fixes validated locally; pending commit/push, fresh full-diff T2 rerun, and GitHub review if T2 is clean.
+- **Status:** blocked on architecture/product decision: latest T2 requests changing review artifact readiness from overseer-directed aggregation across all current-head review packages to latest-only semantics.
 
 ### High-Pressure Coherence Review
 
@@ -244,10 +246,12 @@ Phase 3
 - Findings remain localized to worker authorization recheck hardening inside P3-002 write paths, not a broader package design issue.
 - Before the next T2, the approach remains coherent because the latest fix only applies live-grant revalidation to progress replay, makes advertised task-plan schema/scope match runtime behavior, and locks ready checks before transition.
 - Findings remain localized to worker MCP replay, schema, and readiness race hardening within P3-002.
+- The latest T2 includes fixable edge cases for per-namespace default handle retention and explicit `head_sha` once branch/PR metadata exists, but also conflicts with the overseer’s prior product/API decision to aggregate review artifacts across all current-head review-package submissions.
+- Pause before changing review artifact readiness semantics because this is a direct product-contract conflict, not an implementation ambiguity.
 
 ## Blockers
 
-- None currently. The claim contract decision is resolved in favor of explicit `claimed_by` owner identity.
+- Decision needed: keep overseer-directed review artifact aggregation across all current-head `submit_review_package` events, or change readiness to latest-current-head review package artifact paths only as requested by latest T2.
 
 ## Boundaries
 
