@@ -1899,6 +1899,36 @@
 
 - Commit/push this T2 fix, rerun full-diff T2 against `symphony-plus-plus/beta` on the new pushed head, then proceed to GitHub review only if that same-head T2 is clean.
 
+### Current State
+
+- Latest pushed code head before planning-note commit: `79a154081da494892bd4541533f5dcb77c8e9a74`.
+- Latest T2 code-change finding is closed by the failed explicit reconnect invalidation fix already committed in that head.
+- The only outstanding T2 objection is the state-key-only claimed-session persistence request, which the overseer has explicitly ruled invalid/out-of-scope for P3-002.
+
+### Next Steps
+
+- Commit/push these planning notes, rerun full-diff T2 on the new pushed head with append-only reviewer instructions for the decided handshake-only `state_key` contract, then run GitHub review on PR #15 only if that same-head T2 is clean.
+
+### Blocker
+
+- Committed and pushed failed explicit reconnect invalidation as `79a154081da494892bd4541533f5dcb77c8e9a74`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T094632Z-580dcb60` against `symphony-plus-plus/beta`; Bravo was clean, Alpha reported a P1 asking explicit response-only `state_key` callers to preserve claimed worker sessions across requests, and the gate was closed as `findings`.
+- This conflicts with the current overseer product/security contract: explicit `state_key` is handshake/initialize continuity metadata only, not a bearer capability, and workers must call `claim_work_key(secret, claimed_by)` again after reconnect initialize.
+- Decision needed: either keep the current contract and treat the T2 finding as invalid/out of scope, or change the public MCP contract to allow explicit response-only `state_key` to persist claimed worker sessions across requests.
+
+### Next Steps
+
+- Await overseer decision on the explicit response-only `state_key` contract before changing code or rerunning T2.
+
+### Decision
+
+- Overseer decision: keep the current product/security contract. Explicit `state_key` is handshake/initialize continuity only; it must not preserve or restore claimed worker sessions or worker authorization across response-only calls.
+- Treat the Alpha P1 from T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T094632Z-580dcb60` as invalid/out-of-scope against the decided P3-002 contract.
+
+### Next Steps
+
+- Commit/push these planning notes, rerun full-diff T2 on the new pushed head with append-only reviewer instructions for the handshake-only `state_key` contract, then proceed to GitHub review only if that same-head T2 is clean.
+
 ### Current T2 Follow-up Actions
 
 - Committed and pushed duplicate review-lane validation as `561e6527693e42b5c365c764856f0e69a311209c`.
