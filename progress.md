@@ -1778,3 +1778,25 @@
 | `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
 | `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
 | `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Current T2 Follow-up Actions
+
+- Pushed head before this follow-up: `03a05b6abb3d4269c8b1874aabb568ec9c665f38`.
+- Recovered latest full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T082241Z-70dfb352`; the gate was closed as `findings`.
+- Fixed the valid review-package idempotency finding by making `submit_review_package` idempotency work-package-stable and replaying matching current-work-package review-package events before new submission/current-head validation, so exact retries survive worker grant renewal while readiness still depends on current-head evidence.
+- Recorded the repeated explicit `state_key` response-only session-continuity finding as a product/security conflict with the overseer’s handshake-only `state_key` decision; do not restore claimed sessions from `state_key` alone without a new overseer decision.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after current T2 fix. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 101 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 296 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit and push the current T2 fix, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.

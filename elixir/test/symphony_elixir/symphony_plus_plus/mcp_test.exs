@@ -3485,6 +3485,55 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert "review_package_submitted" in get_in(ready_response, ["error", "data", "missing"])
   end
 
+  test "submit_review_package exact replay survives worker grant renewal", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-REVIEW-REGRANT", kind: "mcp", status: "ci_waiting"))
+
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-REVIEW-REGRANT/worker", "head_sha" => "head-a"})
+
+    review_arguments = %{
+      "summary" => "Review head A",
+      "tests" => ["mix test"],
+      "artifacts" => ["review-head-a.txt"],
+      "head_sha" => "head-a",
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    }
+
+    first_response = attach_tool(repo, session, "submit_review_package", review_arguments)
+    first_event_id = get_in(first_response, ["result", "structuredContent", "progress_event", "id"])
+
+    assert {:ok, second_minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, second_assignment} = AccessGrantService.claim(repo, second_minted.work_key.secret, claimed_by: "worker-2")
+    second_session = MCPHarness.session(second_assignment, proof_hash: second_minted.grant.secret_hash)
+
+    retry_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "retry-review-regrant",
+          "method" => "tools/call",
+          "params" => %{"name" => "submit_review_package", "arguments" => review_arguments}
+        },
+        repo: repo,
+        session: second_session
+      )
+
+    assert get_in(retry_response, ["result", "structuredContent", "progress_event", "id"]) == first_event_id
+
+    assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, package.id)
+
+    assert 1 ==
+             Enum.count(progress_events, fn event ->
+               event.status == "review_package_submitted" and event.payload["head_sha"] == "head-a"
+             end)
+  end
+
   test "metadata attachments require a scoped live session", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-METADATA-SCOPE", kind: "quick_fix", status: "ci_waiting"))
     assert {:ok, sibling_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-METADATA-SIBLING", kind: "quick_fix", status: "ci_waiting"))

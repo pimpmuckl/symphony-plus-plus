@@ -2038,7 +2038,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          work_package,
          progress_events
        ) do
-    case replay_existing_metadata_event(repo, session, arguments, "submit_review_package", "review_package_submitted", payload) do
+    case replay_existing_metadata_event(repo, session, arguments, "submit_review_package", "review_package_submitted", payload, progress_events) do
       {:ok, result} ->
         result
 
@@ -2072,15 +2072,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp replay_existing_metadata_event(repo, %Session{} = session, arguments, tool, status, payload) do
+  defp replay_existing_metadata_event(repo, %Session{} = session, arguments, tool, status, payload, progress_events) do
     case metadata_event_attrs(session, arguments, tool, status, payload) do
       {:ok, idempotency_key, attrs} ->
-        case PlanningRepository.get_progress_event_by_idempotency_key(
-               repo,
-               Session.work_package_id(session),
-               idempotency_key,
-               session.assignment.grant_id
-             ) do
+        case existing_metadata_event(repo, session, idempotency_key, tool, progress_events) do
           {:ok, event} -> replay_progress_event(repo, session, event, attrs, tool)
           {:error, :not_found} -> :not_found
           {:error, reason} -> worker_error(reason, tool)
@@ -2092,6 +2087,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, reason} ->
         worker_error(reason, tool)
     end
+  end
+
+  defp existing_metadata_event(_repo, %Session{}, idempotency_key, "submit_review_package", progress_events) when is_list(progress_events) do
+    case Enum.find(progress_events, fn event -> event.idempotency_key == idempotency_key end) do
+      %ProgressEvent{} = event -> {:ok, event}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp existing_metadata_event(repo, %Session{} = session, idempotency_key, _tool, _progress_events) do
+    PlanningRepository.get_progress_event_by_idempotency_key(
+      repo,
+      Session.work_package_id(session),
+      idempotency_key,
+      session.assignment.grant_id
+    )
   end
 
   defp persist_review_artifacts_or_rollback(repo, %Session{} = session, artifacts, head_sha, result) do
@@ -2166,7 +2177,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if String.contains?(artifact, "://"), do: artifact, else: nil
   end
 
-  defp scoped_progress_idempotency_key(tool, idempotency_key, %Session{} = session) when tool in ["attach_branch", "attach_pr", "submit_review_package"] do
+  defp scoped_progress_idempotency_key("submit_review_package", idempotency_key, %Session{} = session) do
+    ["submit_review_package", session.assignment.work_package_id, idempotency_key] |> Enum.join(":")
+  end
+
+  defp scoped_progress_idempotency_key(tool, idempotency_key, %Session{} = session) when tool in ["attach_branch", "attach_pr"] do
     [tool, session.assignment.grant_id, idempotency_key] |> Enum.join(":")
   end
 

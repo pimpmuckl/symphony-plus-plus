@@ -338,7 +338,7 @@ Phase 3
 
 ## Blockers
 
-- None. The latest replay-vs-readiness conflict was resolved by the overseer on 2026-05-03.
+- Potential T2 conflict to watch: latest T2 Alpha asked public response-only `Server.handle/2` explicit `state_key` callers to preserve claimed sessions across calls, but the overseer previously decided explicit `state_key` is handshake/initialize continuity only and workers must call `claim_work_key(secret, claimed_by)` again after reconnect initialize. If this repeats after the valid review-package fix, pause for an overseeing product/security decision instead of making `state_key` a bearer session capability.
 
 ## Boundaries
 
