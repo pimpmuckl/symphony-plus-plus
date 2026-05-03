@@ -39,7 +39,9 @@ only when the same owner identity presents the same secret proof.
 
 `attach_branch` requires `branch` and `head_sha`. When no PR head is attached,
 review packages are matched to the latest attached branch head so stale
-branch-only reviews cannot satisfy readiness after new commits.
+branch-only reviews cannot satisfy readiness after new commits. If branch and
+PR metadata disagree, the latest branch head remains the current code head and
+merge readiness waits for PR metadata for that head.
 
 `submit_review_package` requires explicit `head_sha` on every submission. For
 readiness, the latest review package for the current head is authoritative;

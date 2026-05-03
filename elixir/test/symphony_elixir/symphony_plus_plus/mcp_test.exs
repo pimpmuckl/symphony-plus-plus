@@ -1261,7 +1261,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute Map.has_key?(handle_state_store(), handle_state_store_key(server))
   end
 
-  test "response-only handle cleans stale state entries", %{repo: repo} do
+  test "response-only handle cleans stale implicit state entries only", %{repo: repo} do
     stale_explicit_key = make_ref()
     stale_server = Server.new(Config.default(repo: repo), initialized: true)
     stale_explicit_server = Server.new(Config.default(repo: repo), initialized: true, state_key: stale_explicit_key)
@@ -1278,7 +1278,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
     refute Map.has_key?(handle_state_store(), handle_state_store_key(stale_server))
-    refute Map.has_key?(handle_state_store(), handle_state_store_key(stale_explicit_server))
+    assert Map.has_key?(handle_state_store(), handle_state_store_key(stale_explicit_server))
   end
 
   test "response-only handle refreshes active default state entries", %{repo: repo} do
@@ -2835,8 +2835,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     missing = get_in(ready_response, ["error", "data", "missing"])
-    assert "review_lanes_complete" in missing
-    assert "review_artifacts_attached" in missing
+    assert "pr_attached" in missing
+    refute "review_lanes_complete" in missing
+    refute "review_artifacts_attached" in missing
   end
 
   test "branch-only readiness rejects review evidence from an older branch head", %{repo: repo} do

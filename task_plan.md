@@ -294,6 +294,9 @@ Phase 3
 - Fresh T2 on pushed head `181b745` produced valid findings around explicit reconnect initialize continuity, stale PR metadata retry ordering, and source filtering for non-merge progress readiness evidence.
 - Before the next T2, the approach remains coherent because this follow-up only restores explicit `state_key` session continuity, prevents old PR metadata from overriding a newer branch head, and narrows non-merge readiness fallbacks to generic `append_progress` evidence.
 - Findings remain localized to response-state continuity and readiness evidence trust boundaries in the P3-002 worker MCP API.
+- Fresh T2 on pushed head `9a8c3cc` produced two valid Alpha findings: stale PR metadata could still override a fresh branch head on the first lagging sync, and explicit `state_key` entries were subject to the implicit 24-hour cleanup.
+- Before the next T2, the approach remains coherent because this fix only makes branch head the current-code authority for worker readiness and keeps explicit `state_key` retention aligned with grant lifetime instead of the implicit response-state TTL.
+- Findings remain narrow readiness-head and explicit reconnect retention hardening within P3-002.
 
 ## Blockers
 

@@ -45,7 +45,10 @@ secret proof is presented by the same `claimed_by` owner.
 
 `attach_branch` intentionally requires both the branch name and the current
 branch `head_sha`. Branch-only review evidence is matched to that head so a
-later branch update cannot reuse stale review-package evidence.
+later branch update cannot reuse stale review-package evidence. When both
+branch and PR metadata exist, the latest branch head is the worker-declared
+current code head; PR metadata proves that the PR is attached for that same
+head.
 
 `submit_review_package` must include `head_sha` on every submission. The latest
 current-head review package is authoritative for review readiness; older

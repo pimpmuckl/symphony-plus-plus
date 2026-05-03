@@ -1317,3 +1317,26 @@
 ### Next Steps
 
 - Commit and push fifty-seventh T2 fixes, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.
+
+### Fifty-Eighth T2 Follow-up Actions
+
+- Pushed head before this follow-up: `9a8c3cc`.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T044603Z-6752d4e3`; Bravo was clean and Alpha reported two valid findings, so the gate was closed as `findings`.
+- Fixed valid findings by making the latest attached branch head the authoritative worker-declared current code head with PR metadata required to match it for merge readiness, and by excluding explicit `state_key` entries from implicit TTL cleanup.
+- Updated public P3-002 MCP docs to document branch-head authority when branch and PR metadata disagree.
+- High-pressure coherence check before the next same-tier T2: this is still a narrow head-selection and reconnect-retention correction inside the existing P3-002 worker MCP contract.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after fifty-eighth T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 85 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 280 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit and push fifty-eighth T2 fixes, rerun full-diff T2 against `symphony-plus-plus/beta`, then proceed to GitHub review if T2 is clean.

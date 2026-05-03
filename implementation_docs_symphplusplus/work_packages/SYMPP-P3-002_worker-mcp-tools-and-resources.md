@@ -64,6 +64,10 @@ Workers must include `submit_review_package.head_sha` on every submission. The
 latest review package for that current head is authoritative for readiness;
 older same-head packages are superseded.
 
+The latest attached branch head is the worker-declared current code head. PR
+metadata must match that head for merge readiness; stale PR metadata does not
+move readiness back to an older commit.
+
 For non-merge-gated package policies such as `quick_fix`, workers can satisfy
 focused-test and review-lane gates with generic `append_progress.status` values
 `tests_passed` and `<review_lane>_green`. Tool-owned metadata, blocker, status,

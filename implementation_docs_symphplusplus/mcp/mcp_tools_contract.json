@@ -46,7 +46,8 @@
     },
     {
       "name": "attach_branch",
-      "purpose": "Attach branch metadata with the current branch head SHA."
+      "purpose": "Attach branch metadata with the current branch head SHA.",
+      "head_policy": "The latest branch head is the worker-declared current code head; PR metadata must match it for merge readiness."
     },
     {
       "name": "attach_pr",

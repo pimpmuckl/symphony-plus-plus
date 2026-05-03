@@ -226,7 +226,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     update_handle_state_store(fn store ->
       store
       |> Map.reject(fn
-        {_state_key, {%__MODULE__{}, timestamp_ms, _explicit?}} ->
+        {_state_key, {%__MODULE__{}, timestamp_ms, false}} ->
           now - timestamp_ms > @handle_state_ttl_ms
 
         _entry ->
@@ -2146,68 +2146,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp valid_review_entry?(_review), do: false
 
   defp latest_current_head_sha(progress_events) do
-    metadata_events =
-      progress_events
-      |> Enum.with_index()
-      |> Enum.filter(fn {event, _index} -> payload_type?(event, "pr", "attach_pr") or payload_type?(event, "branch", "attach_branch") end)
-
-    case List.last(metadata_events) do
-      {%ProgressEvent{} = event, index} -> latest_current_head_sha_from_event(metadata_events, event, index)
-      nil -> nil
-    end
+    latest_metadata_head_sha(progress_events, "branch", "attach_branch") ||
+      latest_metadata_head_sha(progress_events, "pr", "attach_pr")
   end
 
-  defp latest_current_head_sha_from_event(metadata_events, %ProgressEvent{} = event, index) do
-    if payload_type?(event, "branch", "attach_branch") do
-      latest_metadata_payload_head_sha(event.payload)
-    else
-      latest_current_pr_head_sha(metadata_events, event, index)
-    end
-  end
-
-  defp latest_current_pr_head_sha(metadata_events, %ProgressEvent{payload: payload}, index) do
-    pr_head_sha = latest_metadata_payload_head_sha(payload)
-
-    if stale_pr_metadata_retry?(metadata_events, index, pr_head_sha),
-      do: latest_metadata_head_sha_before(metadata_events, index, "branch", "attach_branch"),
-      else: pr_head_sha
-  end
-
-  defp stale_pr_metadata_retry?(metadata_events, pr_index, pr_head_sha) do
-    latest_branch_before_pr =
-      latest_metadata_entry_before(metadata_events, pr_index, "branch", "attach_branch")
-
-    prior_pr_before_latest_branch? =
-      case latest_branch_before_pr do
-        {%ProgressEvent{}, branch_index} ->
-          metadata_events
-          |> Enum.any?(fn {event, index} -> index < branch_index and payload_type?(event, "pr", "attach_pr") end)
-
-        nil ->
-          false
-      end
-
-    case latest_branch_before_pr do
-      {%ProgressEvent{payload: branch_payload}, _branch_index} ->
-        branch_head_sha = latest_metadata_payload_head_sha(branch_payload)
-        prior_pr_before_latest_branch? and is_binary(pr_head_sha) and branch_head_sha != pr_head_sha
-
-      nil ->
-        false
-    end
-  end
-
-  defp latest_metadata_head_sha_before(metadata_events, index, type, source_tool) do
-    case latest_metadata_entry_before(metadata_events, index, type, source_tool) do
-      {%ProgressEvent{payload: payload}, _index} -> latest_metadata_payload_head_sha(payload)
-      nil -> nil
-    end
-  end
-
-  defp latest_metadata_entry_before(metadata_events, index, type, source_tool) do
-    metadata_events
-    |> Enum.filter(fn {event, event_index} -> event_index < index and payload_type?(event, type, source_tool) end)
-    |> List.last()
+  defp latest_metadata_head_sha(progress_events, type, source_tool) do
+    progress_events
+    |> Enum.filter(&payload_type?(&1, type, source_tool))
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      %ProgressEvent{payload: payload} -> latest_metadata_payload_head_sha(payload)
+      _event -> nil
+    end)
   end
 
   defp latest_metadata_payload_head_sha(payload) do
