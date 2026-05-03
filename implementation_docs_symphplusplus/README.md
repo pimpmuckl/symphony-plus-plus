@@ -8,7 +8,8 @@ This package is meant to be handed to an architecture agent that will supervise 
 
 - `docs/` — product, architecture, permission, testing, dashboard, and operations documents.
 - `work_packages/` — PR-sized implementation packages with dependencies, acceptance criteria, and test plans.
-- `templates/` — prompts, `WORKFLOW.md`, Skill, AGENTS-style instructions, and status templates.
+- `templates/` — prompts, `WORKFLOW.md`, Skill, optional Codex hook nudges,
+  AGENTS-style instructions, and status templates.
 - `mcp/` — MCP tool/resource contracts for Symphony++.
 - `schemas/` — initial JSON schema sketches for core records.
 - `review/` — review-suite contract and readiness-gate definitions.
