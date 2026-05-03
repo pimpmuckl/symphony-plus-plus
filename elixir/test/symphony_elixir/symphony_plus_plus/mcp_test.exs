@@ -268,6 +268,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "acceptance_criteria_met", "type"]) == "boolean"
   end
 
+  test "worker tools reject arguments outside their advertised schemas", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STRICT-ARGS", kind: "mcp", status: "ci_waiting"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "strict-args",
+          "method" => "tools/call",
+          "params" => %{"name" => "mark_ready", "arguments" => %{"work_package_id" => package.id}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "unexpected_argument"
+    assert get_in(response, ["error", "data", "arguments"]) == ["work_package_id"]
+  end
+
   test "server rejects re-initialize after handshake", %{repo: repo} do
     server = Server.new(Config.default(repo: repo))
     initialize_request = %{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()}

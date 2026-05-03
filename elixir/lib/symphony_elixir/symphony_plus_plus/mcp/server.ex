@@ -310,19 +310,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp dispatch("tools/call", %{"name" => "claim_work_key"} = params, %__MODULE__{} = server) do
-    case claim_work_key(params, server) do
-      {:ok, result, _session} -> {:ok, tool_result(result)}
+    with {:ok, _arguments} <- worker_tool_arguments(params, "claim_work_key"),
+         {:ok, result, _session} <- claim_work_key(params, server) do
+      {:ok, tool_result(result)}
+    else
       {:error, code, message, data} -> {:error, code, message, data}
     end
   end
 
   defp dispatch("tools/call", %{"name" => name} = params, %__MODULE__{} = server) when name in @worker_tools do
-    case Map.get(params, "arguments", %{}) do
-      arguments when is_map(arguments) ->
+    case worker_tool_arguments(params, name) do
+      {:ok, arguments} ->
         worker_tool(name, arguments, server)
 
-      _arguments ->
-        {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "invalid_tool_arguments"}}
+      {:error, code, message, data} ->
+        {:error, code, message, data}
     end
   end
 
@@ -1930,6 +1932,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_argument_scope(session, nil), do: {:ok, session}
   defp require_argument_scope(session, work_package_id) when work_package_id == session.assignment.work_package_id, do: {:ok, session}
   defp require_argument_scope(_session, _work_package_id), do: {:error, :forbidden}
+
+  defp worker_tool_arguments(params, name) do
+    case Map.get(params, "arguments", %{}) do
+      arguments when is_map(arguments) ->
+        validate_worker_arguments(name, arguments)
+
+      _arguments ->
+        {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "invalid_tool_arguments"}}
+    end
+  end
+
+  defp validate_worker_arguments(name, arguments) do
+    allowed = MapSet.new(allowed_worker_argument_keys(name))
+    unexpected = arguments |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1))
+
+    if unexpected == [] do
+      {:ok, arguments}
+    else
+      {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "unexpected_argument", "arguments" => unexpected}}
+    end
+  end
+
+  defp allowed_worker_argument_keys(name) do
+    name
+    |> worker_tool_input_schema()
+    |> Map.get("properties", %{})
+    |> Map.keys()
+  end
 
   defp tool_arguments(params, tool) do
     case Map.get(params, "arguments", %{}) do

@@ -248,6 +248,30 @@
 
 - Commit and push the thirty-seventh T2 fix, then rerun fresh full-diff T2 against `symphony-plus-plus/beta`; run GitHub review on PR #15 if T2 is clean.
 
+### Thirty-Eighth T2 Follow-up Actions
+
+- Pushed thirty-seventh T2 fix head `e2d5809` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T010632Z-61bb42d3`; Alpha was clean, Bravo reported strict schema enforcement for undeclared worker arguments, then the gate was closed as `findings`.
+- Fixed the valid finding by validating worker `tools/call.arguments` keys against each tool's advertised schema property set before dispatch, including `claim_work_key` and no-argument tools.
+- Added regression coverage that `mark_ready` rejects stray `work_package_id` with `unexpected_argument` instead of applying the current assignment.
+- High-pressure coherence check before the next same-tier T2: this is a narrow dispatcher-level enforcement of the already-published P3-002 worker MCP schemas.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after thirty-eighth T2 fix. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 70 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/tracker_adapter_test.exs:632` | pass | 1 test, 0 failures; reran after the first full-suite attempt hit the adapter Repo cleanup race. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass after retry | First run had 265 tests, 1 failure in `tracker_adapter_test.exs:632`; targeted rerun passed, and full-suite retry passed with 265 tests, 0 failures. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues. |
+
+### Next Steps
+
+- Commit and push the thirty-eighth T2 fix, then rerun fresh full-diff T2 against `symphony-plus-plus/beta`; run GitHub review on PR #15 if T2 is clean.
+
 ### Next Steps
 
 - Pushed thirty-first T2 fix head `cb3b14757a8d7fe52ce3a637f05ffca1749059a8`; rerun full-diff T2, then proceed to GitHub review if clean.

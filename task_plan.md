@@ -150,7 +150,10 @@ Phase 3
 - [x] Commit and push thirty-sixth T2 fix.
 - [x] Run fresh full-diff T2 on pushed head `2ca972b` and close valid findings gate.
 - [x] Fix thirty-seventh T2 metadata idempotency and explicit ID normalization findings locally.
-- [ ] Commit and push thirty-seventh T2 fix.
+- [x] Commit and push thirty-seventh T2 fix.
+- [x] Run fresh full-diff T2 on pushed head `e2d5809` and close valid findings gate.
+- [x] Fix thirty-eighth T2 strict worker argument-schema finding locally.
+- [ ] Commit and push thirty-eighth T2 fix.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
 - **Status:** thirty-second T2 fixes pushed; pending fresh full-diff T2 rerun and GitHub review if clean.
@@ -194,6 +197,8 @@ Phase 3
 - Findings remain converged on head freshness semantics for the same P3-002 metadata/review tools, not on broader design.
 - Before the next T2, the approach remains coherent because the latest fix only honors the already-advertised metadata idempotency key and applies the existing trim-normalization rule to explicit plan/finding IDs.
 - Findings are still localized to identifier/idempotency edges on the worker MCP tool contract.
+- Before the next T2, the approach remains coherent because the latest fix only enforces the strict `additionalProperties: false` schemas already advertised by the worker MCP tools.
+- Findings remain localized to API contract enforcement for the same P3-002 tool dispatcher.
 
 ## Blockers
 
