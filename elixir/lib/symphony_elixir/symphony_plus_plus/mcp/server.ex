@@ -493,16 +493,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {items, _claimed?} =
       Enum.map_reduce(payloads, false, fn payload, claimed? ->
         if claimed? and batch_claim_work_key_request?(payload, server) do
-          {batch_claim_work_key_rebind_item(payload, server), true}
+          {{payload, batch_claim_work_key_rebind_item(payload, server)}, true}
         else
           item = handle_batch_item(payload, server)
-          {item, claimed? or batch_claim_work_key_success?(item)}
+          claim_succeeded? = batch_claim_work_key_request?(payload, server) and batch_claim_work_key_success?(item)
+          {{payload, item}, claimed? or claim_succeeded?}
         end
       end)
 
     responses =
       items
-      |> Enum.map(fn {response, _server} -> response end)
+      |> Enum.map(fn {_payload, {response, _server}} -> response end)
       |> Enum.reject(&is_nil/1)
 
     updated_server = batch_updated_server(items, server)
@@ -512,8 +513,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp batch_updated_server(items, %__MODULE__{} = server) do
     Enum.reduce(items, server, fn
-      {_response, %__MODULE__{session: %Session{}} = updated_server}, _server -> updated_server
-      _item, server -> server
+      {payload, {_response, %__MODULE__{session: %Session{}} = updated_server}}, server ->
+        if batch_claim_work_key_request?(payload, server), do: updated_server, else: server
+
+      _item, server ->
+        server
     end)
   end
 

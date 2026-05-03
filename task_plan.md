@@ -333,6 +333,8 @@ Phase 3
 - Before the next T2, the approach remains coherent because this only separates active-connection duplicate-initialize semantics from recreated-server reconnect semantics.
 - Fresh T2 on pushed head `c671891` produced valid findings that live implicit stdio servers also need duplicate-initialize preservation, and explicit duplicate-initialize errors should not delete persisted handshake continuity.
 - Before the next T2, the approach remains coherent because this completes the same active-versus-recreated initialize distinction across both implicit stdio and explicit state-key transports.
+- Fresh T2 on pushed head `29636e6` produced valid findings that batch claim bookkeeping should only count actual successful `claim_work_key` items and that later non-claim batch items must not overwrite a refreshed claim session.
+- Before the next T2, the approach remains coherent because this only refines the existing batch contract: non-claim items remain isolated, claim items can refresh the final connection state, and only successful claims trip the one-claim-per-batch guard.
 
 ## Blockers
 
