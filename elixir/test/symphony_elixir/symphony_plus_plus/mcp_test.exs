@@ -1147,6 +1147,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
   end
 
+  test "response-only handle treats nil and blank state keys as absent", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-EMPTY-STATE-KEY", kind: "mcp", status: "ready_for_worker"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    claim_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true, state_key: nil)
+      )
+
+    nil_key_assignment_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "assignment-nil", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        Server.new(Config.default(repo: repo), initialized: true, state_key: nil)
+      )
+
+    blank_key_assignment_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "assignment-blank", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        Server.new(Config.default(repo: repo), initialized: true, state_key: "  ")
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert get_in(nil_key_assignment_response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(blank_key_assignment_response, ["error", "data", "reason"]) == "missing_session"
+  end
+
   test "response-only handle does not retain unchanged one-shot server state", %{repo: repo} do
     server = Server.new(Config.default(repo: repo), initialized: true)
     delete_handle_state_entry(server)

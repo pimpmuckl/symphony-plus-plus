@@ -61,14 +61,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   @spec new(Config.t(), keyword()) :: t()
   def new(%Config{} = config, opts \\ []) do
+    {state_key, state_key_explicit?} = state_key_option(opts)
+
     %__MODULE__{
       config: config,
       session: Keyword.get(opts, :session),
-      state_key: Keyword.get(opts, :state_key, make_ref()),
-      state_key_explicit: Keyword.has_key?(opts, :state_key),
+      state_key: state_key,
+      state_key_explicit: state_key_explicit?,
       initialized: Keyword.get(opts, :initialized, false)
     }
   end
+
+  defp state_key_option(opts) do
+    case Keyword.fetch(opts, :state_key) do
+      {:ok, state_key} -> explicit_state_key_option(state_key)
+      :error -> {make_ref(), false}
+    end
+  end
+
+  defp explicit_state_key_option(nil), do: {make_ref(), false}
+
+  defp explicit_state_key_option(state_key) when is_binary(state_key) do
+    if String.trim(state_key) == "", do: {make_ref(), false}, else: {state_key, true}
+  end
+
+  defp explicit_state_key_option(state_key), do: {state_key, true}
 
   @spec handle(term(), t()) :: map() | [map()] | nil
   def handle(payload, %__MODULE__{} = server) do
