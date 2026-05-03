@@ -177,10 +177,13 @@ Phase 3
 - [x] Commit and push forty-fifth T2 fix.
 - [x] Run fresh full-diff T2 on pushed head `564338f` and close valid findings gate.
 - [x] Fix forty-sixth T2 expired-grant transactional revalidation finding locally.
-- [ ] Commit and push forty-sixth T2 fix.
+- [x] Commit and push forty-sixth T2 fix.
+- [x] Run fresh full-diff T2 on pushed head `34aefd4` and close valid findings gate.
+- [x] Fix forty-seventh T2 replay authorization, task-plan schema/scope, and ready-lock findings locally.
+- [ ] Commit and push forty-seventh T2 fix.
 - [ ] Run T2 follow-up/full T2 until green, then GitHub review.
 - [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** forty-sixth T2 fix validated locally; pending commit/push, fresh full-diff T2 rerun, and GitHub review if T2 is clean.
+- **Status:** forty-seventh T2 fixes validated locally; pending commit/push, fresh full-diff T2 rerun, and GitHub review if T2 is clean.
 
 ### High-Pressure Coherence Review
 
@@ -239,6 +242,8 @@ Phase 3
 - Findings remain localized to worker MCP contract/concurrency/readiness edge cases within P3-002, not a broader scope or design blocker.
 - Before the next T2, the approach remains coherent because the latest fix only makes the existing live-grant transactional revalidation enforce the same expiry rule as session creation.
 - Findings remain localized to worker authorization recheck hardening inside P3-002 write paths, not a broader package design issue.
+- Before the next T2, the approach remains coherent because the latest fix only applies live-grant revalidation to progress replay, makes advertised task-plan schema/scope match runtime behavior, and locks ready checks before transition.
+- Findings remain localized to worker MCP replay, schema, and readiness race hardening within P3-002.
 
 ## Blockers
 

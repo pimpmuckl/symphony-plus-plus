@@ -353,7 +353,30 @@
 
 ### Next Steps
 
-- Commit and push forty-sixth T2 fix, then rerun full-diff T2 and proceed to GitHub review if clean.
+- Pushed forty-sixth T2 fix head `34aefd4010aec26a23e8c6b579df7fa3ddce9b07` to PR #15.
+- Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T023835Z-aa97c312`; both reviewers reported valid findings, then the gate was closed as `findings`.
+
+### Forty-Seventh T2 Follow-up Actions
+
+- Fixed valid findings by revalidating live grants before progress idempotency replay, allowing the advertised scoped `work_package_id` on `update_task_plan`, tightening patch-node schema with `anyOf` requirements for create/update shapes, and locking the work package before `mark_ready` reads readiness evidence and transitions.
+- Added regression coverage for the task-plan patch schema, scoped `work_package_id` on patch updates, and idempotent replay after revocation.
+- High-pressure coherence check before the next same-tier T2: this remains schema/runtime alignment plus authorization/readiness race hardening inside the P3-002 worker MCP surface.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `mise exec -- mix format` | pass | Ran after forty-seventh T2 fixes. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs` | pass | 79 tests, 0 failures. Windows emitted the known Phoenix LiveView symlink warning and migration redefinition warnings. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus/audit_event_test.exs` | pass | 23 tests, 0 failures. |
+| `mise exec -- mix test test/symphony_elixir/symphony_plus_plus` | pass | 274 tests, 0 failures. Windows emitted known migration redefinition warnings. |
+| `mise exec -- mix specs.check` | pass | all public functions have specs or exemption. Windows emitted the known Phoenix LiveView symlink warning. |
+| `mise exec -- mix format --check-formatted` | pass | no formatting drift. |
+| `mise exec -- mix credo --strict` | pass | no issues after simplifying replay revalidation helper. |
+
+### Next Steps
+
+- Commit and push forty-seventh T2 fixes, then rerun full-diff T2 and proceed to GitHub review if clean.
 
 ### Next Steps
 

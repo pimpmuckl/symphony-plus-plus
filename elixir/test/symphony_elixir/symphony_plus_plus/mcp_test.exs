@@ -257,6 +257,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "expected_version", "type"]) == "integer"
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "patch", "required"]) == ["nodes"]
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "patch", "properties", "nodes", "minItems"]) == 1
+    assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "work_package_id", "type"]) == "string"
+
+    assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "patch", "properties", "nodes", "items", "anyOf"]) == [
+             %{"required" => ["title"]},
+             %{"required" => ["id"], "anyOf" => [%{"required" => ["title"]}, %{"required" => ["body"]}, %{"required" => ["status"]}]}
+           ]
 
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "oneOf"]) == [
              %{"required" => ["expected_version", "patch"]},
@@ -1923,7 +1929,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "method" => "tools/call",
           "params" => %{
             "name" => "update_task_plan",
-            "arguments" => %{"expected_version" => version, "patch" => %{"nodes" => [%{"id" => " #{plan_node.id} ", "status" => "done", "body" => "Complete"}]}}
+            "arguments" => %{
+              "expected_version" => version,
+              "work_package_id" => package.id,
+              "patch" => %{"nodes" => [%{"id" => " #{plan_node.id} ", "status" => "done", "body" => "Complete"}]}
+            }
           }
         },
         repo: repo,
@@ -3033,6 +3043,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert {:ok, events} = PlanningRepository.list_progress_events(repo, work_package.id)
     assert events == []
+  end
+
+  test "idempotent progress replay revalidates live grants", %{repo: repo} do
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-REPLAY-REVOKED"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, work_package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    first_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "first-progress",
+          "method" => "tools/call",
+          "params" => %{"name" => "append_progress", "arguments" => %{"summary" => "Stored once", "idempotency_key" => "replay-progress"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(first_response, ["result", "structuredContent", "progress_event", "idempotency_key"]) == "append_progress:replay-progress"
+    assert {:ok, _revoked} = AccessGrantService.revoke(repo, minted.grant.id)
+
+    replay_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "replay-progress",
+          "method" => "tools/call",
+          "params" => %{"name" => "append_progress", "arguments" => %{"summary" => "Stored once", "idempotency_key" => "replay-progress"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(replay_response, ["error", "data", "reason"]) == "revoked"
   end
 
   test "protected resources require injected session proof of possession", %{repo: repo} do

@@ -41,8 +41,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @handle_state_ttl_ms 86_400_000
   @default_handle_state_max_entries 128
   @handle_state_agent Module.concat(__MODULE__, HandleState)
-  @plan_append_argument_keys ["body", "expected_version", "id", "status", "title"]
-  @plan_patch_argument_keys ["expected_version", "patch"]
+  @plan_append_argument_keys ["body", "expected_version", "id", "status", "title", "work_package_id"]
+  @plan_patch_argument_keys ["expected_version", "patch", "work_package_id"]
   @plan_node_patch_keys ["body", "id", "status", "title"]
 
   @enforce_keys [:config]
@@ -681,7 +681,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
               "title" => string_schema(),
               "body" => nullable_string_schema(),
               "status" => string_schema()
-            }
+            },
+            "anyOf" => [
+              %{"required" => ["title"]},
+              %{
+                "required" => ["id"],
+                "anyOf" => [%{"required" => ["title"]}, %{"required" => ["body"]}, %{"required" => ["status"]}]
+              }
+            ]
           }
         }
       },
@@ -1084,6 +1091,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     repo
     |> run_worker_transaction(fn ->
       with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
+           :ok <- lock_work_package(repo, Session.work_package_id(session)),
            {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)),
            :ok <- readiness_gates(state) do
         ready_status = terminal_ready_status(state.work_package)
@@ -1192,7 +1200,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp transaction_result(repo, assignment, work_package_id, expected_version, update_fun) do
     with :ok <- PlanningService.require_valid_assignment(repo, assignment),
-         :ok <- lock_plan_update(repo, work_package_id),
+         :ok <- lock_work_package(repo, work_package_id),
          {:ok, plan_nodes} <- PlanningRepository.list_plan_nodes(repo, work_package_id),
          :ok <- require_plan_version(plan_nodes, expected_version),
          {:ok, updated_plan_nodes} <- transaction_result(repo, update_fun.()),
@@ -1208,7 +1216,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp transaction_result(repo, {:tool_error, reason}), do: repo.rollback({:tool_error, reason})
   defp transaction_result(repo, {:error, reason}), do: repo.rollback({:error, reason})
 
-  defp lock_plan_update(repo, work_package_id) do
+  defp lock_work_package(repo, work_package_id) do
     query = from(work_package in WorkPackage, where: work_package.id == ^work_package_id)
 
     case repo.update_all(query, set: [id: work_package_id]) do
@@ -1535,7 +1543,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            session.assignment.grant_id
          ) do
       {:ok, event} ->
-        replay_matching_progress_event(event, attrs, tool)
+        replay_progress_event(repo, session, event, attrs, tool)
 
       {:error, :not_found} ->
         append_new_progress_event_or_replay(repo, session, attrs, idempotency_key, tool)
@@ -1574,6 +1582,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> retry_missing_progress_event(retry_fun, attempts_left)
   end
 
+  defp replay_progress_event(repo, %Session{} = session, %ProgressEvent{} = event, attrs, tool) do
+    case PlanningService.require_valid_assignment(repo, session.assignment) do
+      :ok -> replay_matching_progress_event(event, attrs, tool)
+      {:error, reason} -> worker_error(reason, tool)
+    end
+  end
+
   defp replay_progress_event(repo, %Session{} = session, attrs, idempotency_key, tool) do
     case PlanningRepository.get_progress_event_by_idempotency_key(
            repo,
@@ -1581,7 +1596,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            idempotency_key,
            session.assignment.grant_id
          ) do
-      {:ok, event} -> replay_matching_progress_event(event, attrs, tool)
+      {:ok, event} -> replay_progress_event(repo, session, event, attrs, tool)
       {:error, reason} -> worker_error(reason, tool)
     end
   end
