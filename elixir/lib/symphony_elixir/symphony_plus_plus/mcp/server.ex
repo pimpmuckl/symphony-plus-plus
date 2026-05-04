@@ -1591,6 +1591,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
            :ok <- lock_work_package(repo, Session.work_package_id(session)),
            {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)),
+           :ok <- maybe_backfill_investigation_recommendation_artifact(repo, session, state),
+           {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)),
            :ok <- readiness_gates(state) do
         ready_status = terminal_ready_status(state.work_package)
         LifecycleService.transition(repo, state.work_package, ready_status, actor(session))
@@ -2228,6 +2230,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
+  defp maybe_backfill_investigation_recommendation_artifact(repo, %Session{} = session, state) do
+    if state.work_package.kind == "investigation" and not recommendation_artifact_recorded?(state.artifacts, state.work_package.id) and
+         protected_recommendation_event_recorded?(state.progress_events) do
+      case append_recommendation_artifact(repo, session, %ProgressEvent{}) do
+        :ok -> :ok
+        {:error, :id_already_exists} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      :ok
+    end
+  end
+
   defp reject_ready_evidence_mutation(repo, %Session{} = session, tool)
        when tool in [
               "append_finding",
@@ -2697,7 +2712,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp investigation_recommendation_missing?(state) do
     state.work_package.kind == "investigation" and
-      not recommendation_event_recorded?(state.progress_events, state.artifacts, state.work_package.id)
+      not recommendation_artifact_recorded?(state.artifacts, state.work_package.id)
   end
 
   defp required_review_lanes(%WorkPackage{} = work_package) do
@@ -3047,11 +3062,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp metadata_present?(_progress_events, _type, _head_sha), do: false
 
-  defp recommendation_event_recorded?(progress_events, artifacts, work_package_id) when is_list(progress_events) do
-    Enum.any?(progress_events, &recommendation_event_recorded?(&1, artifacts, work_package_id))
+  defp recommendation_artifact_recorded?(artifacts, work_package_id) do
+    artifact_id = recommendation_artifact_id(work_package_id)
+
+    Enum.any?(
+      artifacts,
+      &(&1.id == artifact_id and &1.work_package_id == work_package_id and &1.path == "recommendation.md" and
+          &1.title == "Investigation recommendation" and &1.kind == "recommendation")
+    )
   end
 
-  defp recommendation_event_recorded?(%ProgressEvent{payload: payload} = event, _artifacts, _work_package_id) when is_map(payload) do
+  defp protected_recommendation_event_recorded?(progress_events) when is_list(progress_events) do
+    Enum.any?(progress_events, &protected_recommendation_event_recorded?/1)
+  end
+
+  defp protected_recommendation_event_recorded?(%ProgressEvent{payload: payload} = event) when is_map(payload) do
     if payload_type?(event, "scope_expansion_request", "request_scope_expansion") do
       true
     else
@@ -3059,7 +3084,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp recommendation_event_recorded?(%ProgressEvent{}, _artifacts, _work_package_id) do
+  defp protected_recommendation_event_recorded?(%ProgressEvent{}) do
     false
   end
 

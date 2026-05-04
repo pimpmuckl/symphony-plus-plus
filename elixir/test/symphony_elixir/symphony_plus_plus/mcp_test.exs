@@ -4867,6 +4867,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
 
+    assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
+
+    assert Enum.any?(
+             artifacts,
+             &(&1.id == legacy_artifact_id and &1.work_package_id == package.id and &1.path == "recommendation.md" and
+                 &1.title == "Investigation recommendation" and &1.kind == "recommendation")
+           )
+
     replay_response =
       MCPHarness.request(
         %{
@@ -4891,6 +4899,57 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(replay_response, ["result", "structuredContent", "progress_event", "id"]) == event.id
+  end
+
+  test "mark_ready fails recommendation gate when legacy artifact cannot be repaired", %{repo: repo} do
+    assert {:ok, owner_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-INVESTIGATION-LEGACY-OWNER", kind: "investigation"))
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-INVESTIGATION-LEGACY-COLLISION", kind: "investigation", status: "ci_waiting"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    legacy_artifact_id =
+      "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, Enum.join([package.id, "recommendation", "recommendation.md"], ":")), padding: false)
+
+    assert {:ok, _artifact} =
+             PlanningRepository.append_artifact(repo, %{
+               "id" => legacy_artifact_id,
+               "work_package_id" => owner_package.id,
+               "path" => "recommendation.md",
+               "title" => "Other package recommendation",
+               "kind" => "recommendation"
+             })
+
+    assert {:ok, _finding} =
+             PlanningRepository.append_finding(repo, %{
+               "work_package_id" => package.id,
+               "title" => "Recommendation",
+               "body" => "No code change needed.",
+               "idempotency_key" => "investigation-legacy-collision-finding"
+             })
+
+    assert {:ok, _event} =
+             PlanningRepository.append_audit_progress_event(repo, assignment, %{
+               "work_package_id" => package.id,
+               "summary" => "Prior recommendation",
+               "body" => "Recommendation recorded before artifact markers existed.",
+               "idempotency_key" => "request_scope_expansion:investigation-legacy-collision-recommendation",
+               "payload" => %{
+                 "type" => "scope_expansion_request",
+                 "source_tool" => "request_scope_expansion",
+                 "approved" => false,
+                 "recommendation_artifact_id" => legacy_artifact_id
+               }
+             })
+
+    response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-legacy-collision", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "recommendation_artifact_recorded" in get_in(response, ["error", "data", "missing"])
   end
 
   test "recommendation artifact repair rejects cross-package id collisions", %{repo: repo} do
