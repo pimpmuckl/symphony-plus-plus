@@ -4702,7 +4702,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "payload" => %{
         "type" => "scope_expansion_request",
         "source_tool" => "request_scope_expansion",
-        "recommendation_artifact_id" => spoofed_artifact_id
+        "recommendation_artifact_id" => spoofed_artifact_id,
+        "approved" => false,
+        "requested_file_globs" => ["lib/spoof/**"]
       },
       "idempotency_key" => "investigation-spoofed-recommendation"
     })
@@ -4722,7 +4724,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "payload" => %{
         "type" => "scope_expansion_request",
         "source_tool" => "request_scope_expansion",
-        "recommendation_artifact_id" => spoofed_artifact_id
+        "recommendation_artifact_id" => spoofed_artifact_id,
+        "approved" => false,
+        "requested_file_globs" => ["lib/spoof/**"]
       },
       "idempotency_key" => "request_scope_expansion:investigation-spoofed-recommendation"
     })
@@ -4744,6 +4748,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       refute Map.has_key?(event.payload, "type")
       refute Map.has_key?(event.payload, "source_tool")
       refute Map.has_key?(event.payload, "recommendation_artifact_id")
+      refute Map.has_key?(event.payload, "approved")
+      refute Map.has_key?(event.payload, "requested_file_globs")
     end
 
     assert {:ok, _artifact} =

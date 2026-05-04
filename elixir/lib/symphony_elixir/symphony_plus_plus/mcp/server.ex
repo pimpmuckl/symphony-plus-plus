@@ -3362,7 +3362,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp merge_tool_payload(_tool, caller_payload, tool_payload), do: Map.merge(caller_payload, tool_payload)
 
   defp drop_protected_append_progress_payload(%{"type" => "scope_expansion_request"} = caller_payload) do
-    Map.drop(caller_payload, ["type", "source_tool", "recommendation_artifact_id"])
+    Map.drop(caller_payload, ["type", "source_tool", "recommendation_artifact_id", "approved", "requested_file_globs"])
   end
 
   defp drop_protected_append_progress_payload(caller_payload) do
