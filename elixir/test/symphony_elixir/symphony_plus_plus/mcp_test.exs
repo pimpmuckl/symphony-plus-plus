@@ -4709,6 +4709,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert "recommendation_artifact_recorded" in get_in(spoofed_recommendation_response, ["error", "data", "missing"])
 
+    assert {:ok, _artifact} =
+             PlanningRepository.append_artifact(repo, %{
+               "id" => "artifact_spoofed_recommendation",
+               "work_package_id" => package.id,
+               "path" => "recommendation.md",
+               "title" => "Spoofed recommendation artifact",
+               "kind" => "recommendation"
+             })
+
+    spoofed_artifact_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-spoofed-artifact", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "recommendation_artifact_recorded" in get_in(spoofed_artifact_response, ["error", "data", "missing"])
+
     attach_tool(repo, session, "request_scope_expansion", %{
       "summary" => "No scope expansion needed",
       "body" => "Recommendation recorded for the investigation package.",
@@ -4732,8 +4750,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
 
-    assert [%{title: "Investigation recommendation"}] =
-             Enum.filter(artifacts, &(&1.kind == "recommendation" and &1.path == "recommendation.md"))
+    assert Enum.any?(artifacts, &(&1.title == "Investigation recommendation" and &1.kind == "recommendation" and &1.path == "recommendation.md"))
   end
 
   test "investigation readiness accepts prior protected recommendation events without artifact", %{repo: repo} do

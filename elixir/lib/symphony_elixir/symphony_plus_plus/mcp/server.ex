@@ -2158,7 +2158,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
 
     with {:ok, artifacts} <- PlanningRepository.list_artifacts(repo, work_package_id),
-         false <- recommendation_artifact_recorded?(artifacts) do
+         false <- recommendation_artifact_recorded?(artifacts, work_package_id) do
       append_recommendation_artifact(attrs, repo)
     else
       true -> :ok
@@ -2629,7 +2629,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp investigation_recommendation_missing?(state) do
     state.work_package.kind == "investigation" and
-      not (recommendation_artifact_recorded?(state.artifacts) or recommendation_event_recorded?(state.progress_events))
+      not recommendation_event_recorded?(state.progress_events)
   end
 
   defp required_review_lanes(%WorkPackage{} = work_package) do
@@ -2979,8 +2979,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp metadata_present?(_progress_events, _type, _head_sha), do: false
 
-  defp recommendation_artifact_recorded?(artifacts) do
-    Enum.any?(artifacts, &(&1.kind == "recommendation" and &1.path == "recommendation.md"))
+  defp recommendation_artifact_recorded?(artifacts, work_package_id) do
+    artifact_id = recommendation_artifact_id(work_package_id)
+
+    Enum.any?(artifacts, &(&1.id == artifact_id and &1.kind == "recommendation" and &1.path == "recommendation.md"))
   end
 
   defp recommendation_event_recorded?(progress_events) do
