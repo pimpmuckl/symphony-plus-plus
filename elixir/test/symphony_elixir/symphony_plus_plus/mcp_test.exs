@@ -4743,6 +4743,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "idempotency_key" => "investigation-recommendation-updated"
     })
 
+    assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
+
+    assert Enum.any?(
+             artifacts,
+             &(&1.title == "Investigation recommendation" and &1.kind == "recommendation" and &1.path == "recommendation.md" and
+                 is_nil(&1.uri))
+           )
+
+    repo.get!(Artifact, spoofed_artifact_id)
+    |> Ecto.Changeset.change(uri: "sympp://artifacts/canonical-recommendation")
+    |> repo.update!()
+
+    attach_tool(repo, session, "request_scope_expansion", %{
+      "summary" => "Final recommendation",
+      "body" => "Recommendation remains recorded without clearing canonical artifact URI.",
+      "idempotency_key" => "investigation-recommendation-final"
+    })
+
+    assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
+
+    assert Enum.any?(
+             artifacts,
+             &(&1.title == "Investigation recommendation" and &1.kind == "recommendation" and &1.path == "recommendation.md" and
+                 &1.uri == "sympp://artifacts/canonical-recommendation")
+           )
+
     ready_response =
       MCPHarness.request(
         %{"jsonrpc" => "2.0", "id" => "ready", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
@@ -4751,14 +4777,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
-
-    assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
-
-    assert Enum.any?(
-             artifacts,
-             &(&1.title == "Investigation recommendation" and &1.kind == "recommendation" and &1.path == "recommendation.md" and
-                 is_nil(&1.uri))
-           )
   end
 
   test "non-investigation scope requests do not emit recommendation artifact references", %{repo: repo} do

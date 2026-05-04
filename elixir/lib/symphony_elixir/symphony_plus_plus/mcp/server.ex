@@ -2195,7 +2195,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp repair_recommendation_artifact(repo, attrs, %Artifact{} = artifact) do
     artifact
-    |> Ecto.Changeset.change(recommendation_artifact_repair_attrs(attrs))
+    |> Ecto.Changeset.change(recommendation_artifact_repair_attrs(attrs, artifact))
     |> repo.update()
     |> case do
       {:ok, _artifact} -> :ok
@@ -2203,14 +2203,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp recommendation_artifact_repair_attrs(attrs) do
+  defp recommendation_artifact_repair_attrs(attrs, %Artifact{} = artifact) do
     %{
       work_package_id: attrs["work_package_id"],
       path: attrs["path"],
       title: attrs["title"],
       kind: attrs["kind"],
-      uri: attrs["uri"]
+      uri: repaired_recommendation_artifact_uri(attrs, artifact)
     }
+  end
+
+  defp repaired_recommendation_artifact_uri(%{"uri" => uri}, %Artifact{}) when not is_nil(uri), do: uri
+
+  defp repaired_recommendation_artifact_uri(attrs, %Artifact{} = artifact) do
+    if artifact.work_package_id == attrs["work_package_id"] and artifact.path == attrs["path"] and artifact.title == attrs["title"] and artifact.kind == attrs["kind"] do
+      artifact.uri
+    else
+      nil
+    end
   end
 
   defp recommendation_artifact_id(work_package_id) do
