@@ -1202,6 +1202,17 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "path safety rejects Windows segments beyond UTF-16 code unit limits" do
+    if match?({:win32, _}, :os.type()) do
+      invalid_segment = String.duplicate("😀", 200)
+      path = Path.join(System.tmp_dir!(), invalid_segment)
+      expanded_path = Path.expand(path)
+
+      assert {:error, {:path_canonicalize_failed, ^expanded_path, :enametoolong}} =
+               SymphonyElixir.PathSafety.canonicalize(path)
+    end
+  end
+
   test "runtime sandbox policy resolution defaults when omitted and ignores workspace for explicit policies" do
     test_root =
       Path.join(

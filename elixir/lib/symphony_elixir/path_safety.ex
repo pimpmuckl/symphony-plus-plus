@@ -61,9 +61,16 @@ defmodule SymphonyElixir.PathSafety do
 
   defp segment_length(segment) do
     case :os.type() do
-      {:win32, _name} -> String.length(segment)
+      {:win32, _name} -> utf16_code_units(segment)
       _type -> byte_size(segment)
     end
+  end
+
+  defp utf16_code_units(segment) do
+    segment
+    |> :unicode.characters_to_binary(:utf8, {:utf16, :little})
+    |> byte_size()
+    |> div(2)
   end
 
   defp join_path(root, segments) when is_list(segments) do

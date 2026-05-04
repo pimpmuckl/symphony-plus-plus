@@ -41,5 +41,9 @@ defmodule SymphonyElixir.Shell do
     end
   end
 
-  defp executable_file?(path), do: is_binary(path) and File.exists?(path)
+  defp executable_file?(path), do: is_binary(path) and native_executable?(path) and File.exists?(path)
+
+  defp native_executable?(path) do
+    not match?({:win32, _name}, :os.type()) or Path.extname(String.downcase(path)) not in [".bat", ".cmd"]
+  end
 end
