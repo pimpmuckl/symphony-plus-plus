@@ -1554,7 +1554,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "approved" => false
     }
 
-    with {:ok, %{work_package: %WorkPackage{} = work_package}} <- PlanningRepository.get_state(repo, session.assignment.work_package_id) do
+    with {:ok, %{work_package: %WorkPackage{} = work_package}} <-
+           PlanningRepository.get_state(repo, session.assignment.work_package_id) do
       if work_package.kind == "investigation" do
         {:ok, Map.put(payload, "recommendation_artifact_id", recommendation_artifact_id(work_package.id))}
       else
