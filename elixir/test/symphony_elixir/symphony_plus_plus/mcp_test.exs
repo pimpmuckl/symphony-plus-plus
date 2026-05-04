@@ -14,7 +14,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
-  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Server, Session, Stdio}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Server, Session, Stdio}
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
@@ -52,12 +52,87 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     :ok
   end
 
+  test "session parsing reports malformed assignment fields" do
+    attrs = %{
+      "grant_id" => "grant-1",
+      "work_package_id" => "SYMPP-SESSION",
+      "display_key" => "ABCD",
+      "grant_role" => "worker",
+      "capabilities" => ["read:own"],
+      "claimed_by" => "worker-1",
+      "claimed_at" => "2026-05-04T12:00:00Z",
+      "proof_hash" => "proof"
+    }
+
+    assert {:ok, session} = Session.from_map(attrs)
+    assert session.proof_hash == "proof"
+    assert session.assignment.claimed_at == ~U[2026-05-04 12:00:00Z]
+
+    assert {:ok, nil_session} = Session.from_map(%{attrs | "claimed_at" => nil})
+    assert nil_session.assignment.claimed_at == nil
+
+    assert Session.from_map(%{attrs | "grant_id" => " "}) == {:error, {:blank, "grant_id"}}
+    assert Session.from_map(Map.delete(attrs, "work_package_id")) == {:error, {:missing, "work_package_id"}}
+    assert Session.from_map(%{attrs | "capabilities" => ["read:own", :bad]}) == {:error, {:invalid, "capabilities"}}
+    assert Session.from_map(%{attrs | "capabilities" => "read:own"}) == {:error, {:missing, "capabilities"}}
+    assert Session.from_map(%{attrs | "claimed_at" => "not-a-date"}) == {:error, {:invalid, "claimed_at", :invalid_format}}
+    assert Session.from_map(%{attrs | "claimed_at" => 123}) == {:error, {:invalid, "claimed_at"}}
+  end
+
+  test "session grant validation rejects inactive or unclaimed grants" do
+    now = ~U[2026-05-04 12:00:00Z]
+
+    grant = %AccessGrant{
+      id: "grant-1",
+      work_package_id: "SYMPP-SESSION-GRANT",
+      display_key: "ABCD",
+      grant_role: "worker",
+      capabilities: ["read:own"],
+      expires_at: DateTime.add(now, 60, :second),
+      claimed_at: now,
+      claimed_by: "worker-1"
+    }
+
+    assert {:ok, session} = Session.from_grant(grant, now, proof_hash: "proof")
+    assert session.assignment.work_package_id == "SYMPP-SESSION-GRANT"
+
+    assert Session.from_grant(%{grant | revoked_at: now}, now) == {:error, :revoked}
+    assert Session.from_grant(%{grant | expires_at: now}, now) == {:error, :expired}
+    assert Session.from_grant(%{grant | expires_at: nil}, now) == {:error, :missing_expiry}
+    assert Session.from_grant(%{grant | claimed_at: nil}, now) == {:error, :unclaimed}
+    assert Session.from_grant(%{grant | claimed_by: " "}, now) == {:error, :missing_claim_identity}
+  end
+
+  test "auth helpers reject missing invalid and mismatched sessions" do
+    session =
+      Session.new(%Assignment{
+        grant_id: "grant-1",
+        work_package_id: "SYMPP-AUTH",
+        display_key: "ABCD",
+        grant_role: "worker",
+        capabilities: [],
+        claimed_at: ~U[2026-05-04 12:00:00Z],
+        claimed_by: "worker-1"
+      })
+
+    assert Auth.require_session(session) == {:ok, session}
+    assert Auth.require_session(nil) == {:error, :unauthorized}
+    assert Auth.require_session(:bad) == {:error, {:unauthorized, :invalid_session}}
+
+    assert Auth.require_work_package(session, "SYMPP-OTHER", UnexpectedAuthRepo) ==
+             {:error, {:service_unavailable, {:unexpected_grant_lookup_result, :tuple}}}
+  end
+
   test "config parser defaults to stdio and rejects unsupported modes" do
     assert {:ok, %Config{mode: :stdio, database: nil}} = Config.parse([])
+    assert %Config{mode: :stdio, repo: Repo, version: version} = Config.default()
+    assert is_binary(version)
     assert {:ok, %Config{mode: :stdio, database: "tmp/sympp.sqlite3"}} = Config.parse(["--database", "tmp/sympp.sqlite3"])
     assert {:ok, %Config{work_key_secret_env: "SYMPP_MCP_SECRET"}} = Config.parse(["--work-key-secret-env", "SYMPP_MCP_SECRET"])
     assert {:error, message} = Config.parse(["--mode", "http"])
     assert message =~ "Only STDIO MCP mode is supported"
+    assert {:error, invalid_message} = Config.parse(["--unknown"])
+    assert invalid_message == Config.usage()
   end
 
   test "database-scoped repo binding reaches the requested ledger while the default repo is running" do

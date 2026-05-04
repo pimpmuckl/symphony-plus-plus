@@ -317,6 +317,16 @@ defmodule SymphonyElixir.ExtensionsTest do
     )
 
     assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Odd")
+
+    assert Adapter.dispatch_filters_match?(:issue)
+    assert Adapter.start_agent_run(:issue, []) == {:ok, nil}
+    assert Adapter.list_active_agent_runs() == {:ok, []}
+    assert Adapter.heartbeat_agent_run("run-1", %{}) == {:ok, nil}
+    assert Adapter.mark_agent_run_retrying("run-1", "retry") == {:ok, nil}
+    assert Adapter.mark_agent_run_running("run-1", nil) == {:ok, nil}
+    assert Adapter.mark_agent_run_completed("run-1", nil) == {:ok, nil}
+    assert Adapter.mark_agent_run_failed("run-1", "failed") == {:ok, nil}
+    assert Adapter.mark_agent_run_stopped("run-1", "stopped") == {:ok, nil}
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do
