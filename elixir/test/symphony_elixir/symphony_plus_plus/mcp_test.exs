@@ -4952,6 +4952,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert "recommendation_artifact_recorded" in get_in(response, ["error", "data", "missing"])
   end
 
+  test "mark_ready does not backfill recommendation artifact from unmarked legacy scope event", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-INVESTIGATION-LEGACY-UNMARKED", kind: "investigation", status: "ci_waiting"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    assert {:ok, _finding} =
+             PlanningRepository.append_finding(repo, %{
+               "work_package_id" => package.id,
+               "title" => "Recommendation",
+               "body" => "No code change needed.",
+               "idempotency_key" => "investigation-legacy-unmarked-finding"
+             })
+
+    assert {:ok, _event} =
+             PlanningRepository.append_audit_progress_event(repo, assignment, %{
+               "work_package_id" => package.id,
+               "summary" => "Prior scope request",
+               "body" => "Raw scope request without canonical recommendation marker.",
+               "idempotency_key" => "request_scope_expansion:investigation-legacy-unmarked",
+               "payload" => %{
+                 "type" => "scope_expansion_request",
+                 "source_tool" => "request_scope_expansion",
+                 "approved" => false
+               }
+             })
+
+    response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-legacy-unmarked", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "recommendation_artifact_recorded" in get_in(response, ["error", "data", "missing"])
+    assert {:ok, []} = PlanningRepository.list_artifacts(repo, package.id)
+  end
+
   test "recommendation artifact repair rejects cross-package id collisions", %{repo: repo} do
     assert {:ok, owner_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-INVESTIGATION-OWNER", kind: "investigation"))
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-INVESTIGATION-COLLISION", kind: "investigation"))

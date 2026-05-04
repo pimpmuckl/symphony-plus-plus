@@ -1555,12 +1555,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "approved" => false
     }
 
-    with {:ok, %WorkPackage{} = work_package} <- WorkPackageRepository.get(repo, session.assignment.work_package_id) do
-      if work_package.kind == "investigation" do
+    case WorkPackageRepository.get(repo, session.assignment.work_package_id) do
+      {:ok, %WorkPackage{kind: "investigation"} = work_package} ->
         {:ok, Map.put(payload, "recommendation_artifact_id", recommendation_artifact_id(work_package.id))}
-      else
+
+      {:ok, %WorkPackage{}} ->
         {:ok, payload}
-      end
+
+      {:ok, nil} ->
+        {:error, :not_found}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -2232,7 +2238,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp maybe_backfill_investigation_recommendation_artifact(repo, %Session{} = session, state) do
     if state.work_package.kind == "investigation" and not recommendation_artifact_recorded?(state.artifacts, state.work_package.id) and
-         protected_recommendation_event_recorded?(state.progress_events) do
+         protected_recommendation_event_recorded?(state.progress_events, state.work_package.id) do
       case append_recommendation_artifact(repo, session, %ProgressEvent{}) do
         :ok -> :ok
         {:error, :id_already_exists} -> :ok
@@ -3072,19 +3078,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     )
   end
 
-  defp protected_recommendation_event_recorded?(progress_events) when is_list(progress_events) do
-    Enum.any?(progress_events, &protected_recommendation_event_recorded?/1)
+  defp protected_recommendation_event_recorded?(progress_events, work_package_id) when is_list(progress_events) do
+    Enum.any?(progress_events, &protected_recommendation_event_recorded?(&1, work_package_id))
   end
 
-  defp protected_recommendation_event_recorded?(%ProgressEvent{payload: payload} = event) when is_map(payload) do
-    if payload_type?(event, "scope_expansion_request", "request_scope_expansion") do
-      true
-    else
-      false
-    end
+  defp protected_recommendation_event_recorded?(%ProgressEvent{payload: payload} = event, work_package_id) when is_map(payload) do
+    payload_type?(event, "scope_expansion_request", "request_scope_expansion") and
+      Map.get(payload, "recommendation_artifact_id") == recommendation_artifact_id(work_package_id)
   end
 
-  defp protected_recommendation_event_recorded?(%ProgressEvent{}) do
+  defp protected_recommendation_event_recorded?(%ProgressEvent{}, _work_package_id) do
     false
   end
 
