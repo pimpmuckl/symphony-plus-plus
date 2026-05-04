@@ -4952,7 +4952,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert "recommendation_artifact_recorded" in get_in(response, ["error", "data", "missing"])
   end
 
-  test "mark_ready does not backfill recommendation artifact from unmarked legacy scope event", %{repo: repo} do
+  test "unmarked legacy scope event must be retried before recommendation artifact readiness", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-INVESTIGATION-LEGACY-UNMARKED", kind: "investigation", status: "ci_waiting"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
@@ -4988,6 +4988,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert "recommendation_artifact_recorded" in get_in(response, ["error", "data", "missing"])
     assert {:ok, []} = PlanningRepository.list_artifacts(repo, package.id)
+
+    replay_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "replay-legacy-unmarked",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "request_scope_expansion",
+            "arguments" => %{
+              "summary" => "Prior scope request",
+              "body" => "Raw scope request without canonical recommendation marker.",
+              "idempotency_key" => "investigation-legacy-unmarked"
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(replay_response, ["result", "structuredContent", "progress_event", "id"])
+
+    assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
+
+    assert Enum.any?(
+             artifacts,
+             &(&1.work_package_id == package.id and &1.path == "recommendation.md" and
+                 &1.title == "Investigation recommendation" and &1.kind == "recommendation")
+           )
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-legacy-unmarked-after-replay", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
   end
 
   test "recommendation artifact repair rejects cross-package id collisions", %{repo: repo} do
