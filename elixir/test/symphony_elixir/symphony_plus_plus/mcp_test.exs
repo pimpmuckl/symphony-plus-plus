@@ -4761,6 +4761,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
            )
   end
 
+  test "non-investigation scope requests do not emit recommendation artifact references", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-HOTFIX-SCOPE-REQUEST", kind: "hotfix"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "request_scope_expansion", %{
+      "summary" => "Need extra file",
+      "body" => "Worker recommends expanding allowed files.",
+      "idempotency_key" => "hotfix-scope-request"
+    })
+
+    assert {:ok, [event]} = PlanningRepository.list_progress_events(repo, package.id)
+    assert event.payload["type"] == "scope_expansion_request"
+    refute Map.has_key?(event.payload, "recommendation_artifact_id")
+
+    assert {:ok, []} = PlanningRepository.list_artifacts(repo, package.id)
+  end
+
   test "investigation readiness accepts prior protected recommendation events without artifact", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-INVESTIGATION-LEGACY-READY", kind: "investigation", status: "ci_waiting"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)

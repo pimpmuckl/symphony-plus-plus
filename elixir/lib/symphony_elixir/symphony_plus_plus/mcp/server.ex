@@ -1474,12 +1474,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool("request_scope_expansion", arguments, %__MODULE__{config: config, session: session}) do
-    append_scoped_progress(config.repo, session, arguments, "request_scope_expansion", %{
-      "type" => "scope_expansion_request",
-      "source_tool" => "request_scope_expansion",
-      "recommendation_artifact_id" => recommendation_artifact_id(session.assignment.work_package_id),
-      "approved" => false
-    })
+    with {:ok, payload} <- request_scope_expansion_payload(config.repo, session) do
+      append_scoped_progress(config.repo, session, arguments, "request_scope_expansion", payload)
+    else
+      {:error, reason} -> worker_error(reason, "request_scope_expansion")
+    end
   end
 
   defp worker_tool("attach_branch", arguments, %__MODULE__{config: config, session: session}) do
@@ -1543,6 +1542,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
       {:error, reason} ->
         worker_error(reason, "mark_ready")
+    end
+  end
+
+  defp request_scope_expansion_payload(repo, %Session{} = session) do
+    payload = %{
+      "type" => "scope_expansion_request",
+      "source_tool" => "request_scope_expansion",
+      "approved" => false
+    }
+
+    with {:ok, %{work_package: %WorkPackage{} = work_package}} <- PlanningRepository.get_state(repo, session.assignment.work_package_id) do
+      if work_package.kind == "investigation" do
+        {:ok, Map.put(payload, "recommendation_artifact_id", recommendation_artifact_id(work_package.id))}
+      else
+        {:ok, payload}
+      end
     end
   end
 
