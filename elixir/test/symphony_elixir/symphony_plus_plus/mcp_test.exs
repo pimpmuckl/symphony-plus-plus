@@ -4909,6 +4909,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                  &1.title == "Investigation recommendation" and &1.kind == "recommendation")
            )
 
+    repo.get!(Artifact, legacy_artifact_id) |> repo.delete!()
+
     replay_response =
       MCPHarness.request(
         %{
@@ -4933,6 +4935,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(replay_response, ["result", "structuredContent", "progress_event", "id"]) == event.id
+    assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
+    refute Enum.any?(artifacts, &(&1.id == legacy_artifact_id))
   end
 
   test "mark_ready fails recommendation gate when legacy artifact cannot be repaired", %{repo: repo} do

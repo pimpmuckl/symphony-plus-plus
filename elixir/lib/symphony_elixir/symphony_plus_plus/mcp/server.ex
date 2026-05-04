@@ -2334,31 +2334,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp retry_missing_progress_event(result, _retry_fun, _attempts_left), do: result
 
-  defp replay_matching_progress_event(repo, %Session{} = session, %ProgressEvent{} = event, attrs, tool) do
+  defp replay_matching_progress_event(_repo, %Session{} = _session, %ProgressEvent{} = event, attrs, tool) do
     if progress_replay_matches?(event, attrs) do
-      case maybe_backfill_replayed_recommendation_artifact(repo, session, event, attrs, tool) do
-        :ok -> {:ok, tool_result(%{"progress_event" => progress_event_payload(event)})}
-        {:error, reason} -> worker_error(reason, tool)
-      end
+      {:ok, tool_result(%{"progress_event" => progress_event_payload(event)})}
     else
       {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => "idempotency_conflict"}}
     end
   end
-
-  defp maybe_backfill_replayed_recommendation_artifact(repo, %Session{} = session, %ProgressEvent{payload: existing_payload} = event, attrs, "request_scope_expansion")
-       when is_map(existing_payload) do
-    normalized_payload = normalized_progress_payload(event, attrs)
-
-    if request_scope_expansion_event?(event) and
-         Map.get(existing_payload, "recommendation_artifact_id") == recommendation_artifact_id(Session.work_package_id(session)) and
-         Map.get(normalized_payload, "recommendation_artifact_id") == recommendation_artifact_id(Session.work_package_id(session)) do
-      append_recommendation_artifact(repo, session, event)
-    else
-      :ok
-    end
-  end
-
-  defp maybe_backfill_replayed_recommendation_artifact(_repo, %Session{}, %ProgressEvent{}, _attrs, _tool), do: :ok
 
   defp progress_replay_matches?(%ProgressEvent{} = event, attrs) do
     normalized_payload = normalized_progress_payload(event, attrs)
