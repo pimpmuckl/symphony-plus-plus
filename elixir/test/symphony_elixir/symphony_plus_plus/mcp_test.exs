@@ -4846,7 +4846,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                "payload" => %{
                  "type" => "scope_expansion_request",
                  "source_tool" => "request_scope_expansion",
-                 "approved" => false
+                 "approved" => false,
+                 "requested_file_globs" => ["lib/legacy/**"],
+                 "recommendation_artifact_id" => "artifact_legacy_caller_payload"
                }
              })
 
@@ -4873,7 +4875,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
             "arguments" => %{
               "summary" => "Prior recommendation",
               "body" => "Recommendation recorded before artifact markers existed.",
-              "idempotency_key" => "investigation-legacy-recommendation"
+              "idempotency_key" => "investigation-legacy-recommendation",
+              "payload" => %{
+                "requested_file_globs" => ["lib/legacy/**"],
+                "recommendation_artifact_id" => "artifact_legacy_caller_payload"
+              }
             }
           }
         },
@@ -4882,6 +4888,49 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(replay_response, ["result", "structuredContent", "progress_event", "id"]) == event.id
+  end
+
+  test "recommendation artifact repair rejects cross-package id collisions", %{repo: repo} do
+    assert {:ok, owner_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-INVESTIGATION-OWNER", kind: "investigation"))
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-INVESTIGATION-COLLISION", kind: "investigation"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    colliding_artifact_id =
+      "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, Enum.join([package.id, "recommendation", "recommendation.md"], ":")), padding: false)
+
+    assert {:ok, _artifact} =
+             PlanningRepository.append_artifact(repo, %{
+               "id" => colliding_artifact_id,
+               "work_package_id" => owner_package.id,
+               "path" => "recommendation.md",
+               "title" => "Other package recommendation",
+               "kind" => "recommendation"
+             })
+
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "scope-artifact-collision",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "request_scope_expansion",
+            "arguments" => %{
+              "summary" => "Recommendation",
+              "body" => "Recommendation should not steal another package artifact.",
+              "idempotency_key" => "artifact-collision"
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "id_already_exists"
+    assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, owner_package.id)
+    assert Enum.any?(artifacts, &(&1.id == colliding_artifact_id and &1.work_package_id == owner_package.id))
   end
 
   test "mark_ready rejects spoofed metadata and accepts skipped plan nodes", %{repo: repo} do

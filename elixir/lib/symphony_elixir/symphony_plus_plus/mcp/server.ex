@@ -2197,9 +2197,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp repair_recommendation_artifact(repo, attrs, %Artifact{} = artifact) do
-    case PlanningRepository.update_artifact(repo, artifact, recommendation_artifact_repair_attrs(attrs, artifact)) do
-      {:ok, _artifact} -> :ok
-      {:error, reason} -> {:error, reason}
+    if artifact.work_package_id == attrs["work_package_id"] do
+      case PlanningRepository.update_artifact(repo, artifact, recommendation_artifact_repair_attrs(attrs, artifact)) do
+        {:ok, _artifact} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:error, :id_already_exists}
     end
   end
 
@@ -2332,11 +2336,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp progress_payload_replay_matches?(%{"type" => "scope_expansion_request", "source_tool" => "request_scope_expansion"} = existing, normalized) do
     existing == normalized or
-      (not Map.has_key?(existing, "recommendation_artifact_id") and
-         existing == Map.delete(normalized, "recommendation_artifact_id"))
+      legacy_scope_expansion_replay_matches?(existing, normalized)
   end
 
   defp progress_payload_replay_matches?(existing, normalized), do: existing == normalized
+
+  defp legacy_scope_expansion_replay_matches?(existing, normalized) do
+    legacy_normalized =
+      case Map.fetch(existing, "recommendation_artifact_id") do
+        {:ok, artifact_id} -> Map.put(normalized, "recommendation_artifact_id", artifact_id)
+        :error -> Map.delete(normalized, "recommendation_artifact_id")
+      end
+
+    existing == legacy_normalized
+  end
 
   defp normalized_progress_payload(%ProgressEvent{} = event, attrs) do
     attrs
@@ -3052,7 +3065,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if payload_type?(event, "scope_expansion_request", "request_scope_expansion") do
       case Map.get(payload, "recommendation_artifact_id") do
         nil -> true
-        artifact_id -> artifact_id == recommendation_artifact_id(work_package_id) and recommendation_artifact_recorded?(artifacts, work_package_id)
+        artifact_id -> recommendation_artifact_event_accepted?(artifact_id, artifacts, work_package_id)
       end
     else
       false
@@ -3061,6 +3074,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp recommendation_event_recorded?(%ProgressEvent{}, _artifacts, _work_package_id) do
     false
+  end
+
+  defp recommendation_artifact_event_accepted?(artifact_id, artifacts, work_package_id) do
+    if artifact_id == recommendation_artifact_id(work_package_id) do
+      recommendation_artifact_recorded?(artifacts, work_package_id)
+    else
+      true
+    end
   end
 
   defp metadata_tool("branch"), do: "attach_branch"
