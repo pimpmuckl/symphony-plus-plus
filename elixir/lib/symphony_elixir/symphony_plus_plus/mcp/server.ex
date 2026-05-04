@@ -2350,7 +2350,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     normalized_payload = normalized_progress_payload(event, attrs)
 
     if payload_type?(event, "scope_expansion_request", "request_scope_expansion") and
-         not Map.has_key?(existing_payload, "recommendation_artifact_id") and
+         Map.get(existing_payload, "recommendation_artifact_id") == recommendation_artifact_id(Session.work_package_id(session)) and
          Map.get(normalized_payload, "recommendation_artifact_id") == recommendation_artifact_id(Session.work_package_id(session)) do
       append_recommendation_artifact(repo, session, event)
     else

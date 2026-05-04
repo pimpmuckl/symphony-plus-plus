@@ -4952,7 +4952,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert "recommendation_artifact_recorded" in get_in(response, ["error", "data", "missing"])
   end
 
-  test "unmarked legacy scope event must be retried before recommendation artifact readiness", %{repo: repo} do
+  test "unmarked legacy scope event replay does not create recommendation artifact readiness", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-INVESTIGATION-LEGACY-UNMARKED", kind: "investigation", status: "ci_waiting"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
@@ -5009,6 +5009,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(replay_response, ["result", "structuredContent", "progress_event", "id"])
+    assert {:ok, []} = PlanningRepository.list_artifacts(repo, package.id)
+
+    replay_ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-legacy-unmarked-after-replay", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "recommendation_artifact_recorded" in get_in(replay_ready_response, ["error", "data", "missing"])
+
+    attach_tool(repo, session, "request_scope_expansion", %{
+      "summary" => "Canonical recommendation",
+      "body" => "Recommendation is now recorded through the current canonical path.",
+      "idempotency_key" => "investigation-legacy-unmarked-canonical"
+    })
 
     assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
 
@@ -5020,7 +5036,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     ready_response =
       MCPHarness.request(
-        %{"jsonrpc" => "2.0", "id" => "ready-legacy-unmarked-after-replay", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        %{"jsonrpc" => "2.0", "id" => "ready-legacy-unmarked-after-canonical", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
         repo: repo,
         session: session
       )
