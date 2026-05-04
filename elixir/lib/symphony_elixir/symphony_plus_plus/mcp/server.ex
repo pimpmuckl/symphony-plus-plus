@@ -3052,22 +3052,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp metadata_present?(_progress_events, _type, _head_sha), do: false
 
-  defp recommendation_artifact_recorded?(artifacts, work_package_id) do
-    artifact_id = recommendation_artifact_id(work_package_id)
-
-    Enum.any?(artifacts, &(&1.id == artifact_id and &1.kind == "recommendation" and &1.path == "recommendation.md"))
-  end
-
   defp recommendation_event_recorded?(progress_events, artifacts, work_package_id) when is_list(progress_events) do
     Enum.any?(progress_events, &recommendation_event_recorded?(&1, artifacts, work_package_id))
   end
 
-  defp recommendation_event_recorded?(%ProgressEvent{payload: payload} = event, artifacts, work_package_id) when is_map(payload) do
+  defp recommendation_event_recorded?(%ProgressEvent{payload: payload} = event, _artifacts, _work_package_id) when is_map(payload) do
     if payload_type?(event, "scope_expansion_request", "request_scope_expansion") do
-      case Map.get(payload, "recommendation_artifact_id") do
-        nil -> true
-        artifact_id -> recommendation_artifact_event_accepted?(artifact_id, artifacts, work_package_id)
-      end
+      true
     else
       false
     end
@@ -3075,14 +3066,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp recommendation_event_recorded?(%ProgressEvent{}, _artifacts, _work_package_id) do
     false
-  end
-
-  defp recommendation_artifact_event_accepted?(artifact_id, artifacts, work_package_id) do
-    if artifact_id == recommendation_artifact_id(work_package_id) do
-      recommendation_artifact_recorded?(artifacts, work_package_id)
-    else
-      true
-    end
   end
 
   defp metadata_tool("branch"), do: "attach_branch"

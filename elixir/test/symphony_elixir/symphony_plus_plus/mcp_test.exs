@@ -4829,6 +4829,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
 
+    legacy_artifact_id =
+      "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, Enum.join([package.id, "recommendation", "recommendation.md"], ":")), padding: false)
+
     assert {:ok, _finding} =
              PlanningRepository.append_finding(repo, %{
                "work_package_id" => package.id,
@@ -4848,7 +4851,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                  "source_tool" => "request_scope_expansion",
                  "approved" => false,
                  "requested_file_globs" => ["lib/legacy/**"],
-                 "recommendation_artifact_id" => "artifact_legacy_caller_payload"
+                 "recommendation_artifact_id" => legacy_artifact_id
                }
              })
 
@@ -4878,7 +4881,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "idempotency_key" => "investigation-legacy-recommendation",
               "payload" => %{
                 "requested_file_globs" => ["lib/legacy/**"],
-                "recommendation_artifact_id" => "artifact_legacy_caller_payload"
+                "recommendation_artifact_id" => legacy_artifact_id
               }
             }
           }
