@@ -15,6 +15,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Renderer, as: PlanningRenderer
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
   @protocol_version "2025-03-26"
@@ -1554,8 +1555,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "approved" => false
     }
 
-    with {:ok, %{work_package: %WorkPackage{} = work_package}} <-
-           PlanningRepository.get_state(repo, session.assignment.work_package_id) do
+    with {:ok, %WorkPackage{} = work_package} <- WorkPackageRepository.get(repo, session.assignment.work_package_id) do
       if work_package.kind == "investigation" do
         {:ok, Map.put(payload, "recommendation_artifact_id", recommendation_artifact_id(work_package.id))}
       else
@@ -2152,15 +2152,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp append_investigation_recommendation_artifact(repo, %Session{} = session, "request_scope_expansion", %ProgressEvent{} = event) do
-    case PlanningRepository.get_state(repo, Session.work_package_id(session)) do
-      {:ok, %{work_package: %WorkPackage{kind: "investigation"}}} ->
-        append_recommendation_artifact(repo, session, event)
-
-      {:ok, _state} ->
-        :ok
-
-      {:error, reason} ->
-        {:error, reason}
+    if Map.has_key?(event.payload || %{}, "recommendation_artifact_id") do
+      append_recommendation_artifact(repo, session, event)
+    else
+      :ok
     end
   end
 
