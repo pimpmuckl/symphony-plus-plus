@@ -69,7 +69,9 @@ defmodule SymphonyElixir.AppServerTest do
         labels: ["backend"]
       }
 
-      assert {:error, {:invalid_workspace_cwd, :symlink_escape, ^symlink_workspace, _root}} =
+      canonical_symlink_workspace = Path.expand(symlink_workspace)
+
+      assert {:error, {:invalid_workspace_cwd, :symlink_escape, ^canonical_symlink_workspace, _root}} =
                AppServer.run(symlink_workspace, "guard", issue)
     after
       File.rm_rf(test_root)

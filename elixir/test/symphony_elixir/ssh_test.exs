@@ -18,7 +18,7 @@ defmodule SymphonyElixir.SSHTest do
     assert {:ok, {"", 0}} =
              SSH.run("root@[::1]:2200", "printf ok", stderr_to_stdout: true)
 
-    trace = File.read!(trace_file)
+    trace = read_trace!(trace_file)
     assert trace =~ "-T -p 2200 root@[::1] bash -lc"
     assert trace =~ "printf ok"
   end
@@ -38,7 +38,7 @@ defmodule SymphonyElixir.SSHTest do
     assert {:ok, {"", 0}} =
              SSH.run("::1:2200", "printf ok", stderr_to_stdout: true)
 
-    trace = File.read!(trace_file)
+    trace = read_trace!(trace_file)
     assert trace =~ "-T ::1:2200 bash -lc"
     refute trace =~ "-p 2200"
   end
@@ -61,7 +61,7 @@ defmodule SymphonyElixir.SSHTest do
     assert {:ok, {"", 0}} =
              SSH.run("localhost:2222", "echo ready", stderr_to_stdout: true)
 
-    trace = File.read!(trace_file)
+    trace = read_trace!(trace_file)
     assert trace =~ "-F /tmp/symphony-test-ssh-config"
     assert trace =~ "-T -p 2222 localhost bash -lc"
     assert trace =~ "echo ready"
@@ -82,7 +82,7 @@ defmodule SymphonyElixir.SSHTest do
     assert {:ok, {"", 0}} =
              SSH.run("root@127.0.0.1:2200", "printf ok", stderr_to_stdout: true)
 
-    trace = File.read!(trace_file)
+    trace = read_trace!(trace_file)
     assert trace =~ "-T -p 2200 root@127.0.0.1 bash -lc"
     assert trace =~ "printf ok"
   end
@@ -127,7 +127,7 @@ defmodule SymphonyElixir.SSHTest do
     assert is_port(port)
     wait_for_trace!(trace_file)
 
-    trace = File.read!(trace_file)
+    trace = read_trace!(trace_file)
     assert trace =~ "-T localhost bash -lc"
     refute trace =~ " -F "
   end
@@ -153,7 +153,7 @@ defmodule SymphonyElixir.SSHTest do
     assert is_port(port)
     wait_for_trace!(trace_file)
 
-    trace = File.read!(trace_file)
+    trace = read_trace!(trace_file)
     assert trace =~ "-T -p 2222 localhost bash -lc"
   end
 
@@ -164,22 +164,45 @@ defmodule SymphonyElixir.SSHTest do
 
   defp install_fake_ssh!(test_root, trace_file, script \\ nil) do
     fake_bin_dir = Path.join(test_root, "bin")
-    fake_ssh = Path.join(fake_bin_dir, "ssh")
-
     File.mkdir_p!(fake_bin_dir)
 
-    File.write!(
-      fake_ssh,
-      script ||
-        """
-        #!/bin/sh
-        printf 'ARGV:%s\\n' "$*" >> "#{trace_file}"
-        exit 0
-        """
-    )
+    case :os.type() do
+      {:win32, _name} ->
+        fake_ssh = Path.join(fake_bin_dir, "ssh.cmd")
 
-    File.chmod!(fake_ssh, 0o755)
-    System.put_env("PATH", fake_bin_dir <> ":" <> (System.get_env("PATH") || ""))
+        output =
+          if is_nil(script) do
+            ""
+          else
+            "echo ready\r\n"
+          end
+
+        File.write!(fake_ssh, "@echo off\r\necho ARGV:%*>> \"#{trace_file}\"\r\n#{output}exit /b 0\r\n")
+
+      _type ->
+        fake_ssh = Path.join(fake_bin_dir, "ssh")
+
+        File.write!(
+          fake_ssh,
+          script ||
+            """
+            #!/bin/sh
+            printf 'ARGV:%s\\n' "$*" >> "#{trace_file}"
+            exit 0
+            """
+        )
+
+        File.chmod!(fake_ssh, 0o755)
+    end
+
+    System.put_env("PATH", fake_bin_dir <> path_separator() <> (System.get_env("PATH") || ""))
+  end
+
+  defp path_separator do
+    case :os.type() do
+      {:win32, _name} -> ";"
+      _type -> ":"
+    end
   end
 
   defp wait_for_trace!(trace_file, attempts \\ 20)
@@ -192,6 +215,12 @@ defmodule SymphonyElixir.SSHTest do
       Process.sleep(25)
       wait_for_trace!(trace_file, attempts - 1)
     end
+  end
+
+  defp read_trace!(trace_file) do
+    trace_file
+    |> File.read!()
+    |> String.replace("\"", "")
   end
 
   defp restore_env(key, nil), do: System.delete_env(key)

@@ -28,6 +28,8 @@ defmodule SymphonyElixir.SpecsCheck do
   end
 
   defp collect_elixir_files(path) do
+    path = Path.expand(path)
+
     cond do
       File.regular?(path) and String.ends_with?(path, ".ex") ->
         [path]
