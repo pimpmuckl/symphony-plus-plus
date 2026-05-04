@@ -2157,16 +2157,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "kind" => "recommendation"
     }
 
-    with {:ok, artifacts} <- PlanningRepository.list_artifacts(repo, work_package_id) do
-      if recommendation_artifact_recorded?(artifacts) do
-        :ok
-      else
-        case PlanningService.append_artifact(repo, attrs) do
-          {:ok, _artifact} -> :ok
-          {:error, :id_already_exists} -> :ok
-          {:error, reason} -> {:error, reason}
-        end
-      end
+    with {:ok, artifacts} <- PlanningRepository.list_artifacts(repo, work_package_id),
+         false <- recommendation_artifact_recorded?(artifacts) do
+      append_recommendation_artifact(attrs, repo)
+    else
+      true -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp append_recommendation_artifact(attrs, repo) do
+    case PlanningService.append_artifact(repo, attrs) do
+      {:ok, _artifact} -> :ok
+      {:error, :id_already_exists} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 
