@@ -22,7 +22,15 @@ defmodule SymphonyElixir.TestSupport do
       alias SymphonyElixir.Workspace
 
       import SymphonyElixir.TestSupport,
-        only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0]
+        only: [
+          write_workflow_file!: 1,
+          write_workflow_file!: 2,
+          restore_env: 2,
+          stop_default_http_server: 0,
+          path_with_prepended: 2,
+          shell_path: 1,
+          shell_script_command: 1
+        ]
 
       setup do
         workflow_root =
@@ -68,6 +76,23 @@ defmodule SymphonyElixir.TestSupport do
 
   def restore_env(key, nil), do: System.delete_env(key)
   def restore_env(key, value), do: System.put_env(key, value)
+
+  def shell_path(path) when is_binary(path) do
+    path
+    |> Path.expand()
+    |> windows_bash_path()
+    |> shell_escape()
+  end
+
+  def shell_script_command(path) when is_binary(path) do
+    "sh #{shell_path(path)}"
+  end
+
+  def path_with_prepended(path, nil), do: path
+
+  def path_with_prepended(path, existing_path) when is_binary(existing_path) do
+    Enum.join([path, existing_path], path_separator())
+  end
 
   def stop_default_http_server do
     case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn
@@ -211,6 +236,24 @@ defmodule SymphonyElixir.TestSupport do
       |> Enum.reject(&(&1 in [nil, ""]))
 
     Enum.join(sections, "\n") <> "\n"
+  end
+
+  defp windows_bash_path(<<drive::binary-size(1), ":", rest::binary>>) do
+    if match?({:win32, _}, :os.type()) do
+      "/#{String.downcase(drive)}#{String.replace(rest, "\\", "/")}"
+    else
+      <<drive::binary, ":", rest::binary>>
+    end
+  end
+
+  defp windows_bash_path(path), do: String.replace(path, "\\", "/")
+
+  defp shell_escape(value) do
+    "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
+  end
+
+  defp path_separator do
+    if match?({:win32, _}, :os.type()), do: ";", else: ":"
   end
 
   defp yaml_value(value) when is_binary(value) do
