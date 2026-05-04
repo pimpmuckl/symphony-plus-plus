@@ -4717,6 +4717,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert "recommendation_artifact_recorded" in get_in(spoofed_recommendation_response, ["error", "data", "missing"])
     assert {:ok, []} = PlanningRepository.list_artifacts(repo, package.id)
 
+    attach_tool(repo, session, "append_progress", %{
+      "summary" => "Spoofed recommendation with protected-looking key",
+      "payload" => %{
+        "type" => "scope_expansion_request",
+        "source_tool" => "request_scope_expansion",
+        "recommendation_artifact_id" => spoofed_artifact_id
+      },
+      "idempotency_key" => "request_scope_expansion:investigation-spoofed-recommendation"
+    })
+
+    protected_key_spoof_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-protected-key-spoof", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "recommendation_artifact_recorded" in get_in(protected_key_spoof_response, ["error", "data", "missing"])
+    assert {:ok, []} = PlanningRepository.list_artifacts(repo, package.id)
+
     assert {:ok, _artifact} =
              PlanningRepository.append_artifact(repo, %{
                "id" => spoofed_artifact_id,
