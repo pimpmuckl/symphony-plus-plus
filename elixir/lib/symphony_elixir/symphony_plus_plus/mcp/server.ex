@@ -2075,7 +2075,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "body" => optional_argument(arguments, "body", nil),
         "status" => optional_argument(arguments, "status", "recorded"),
         "idempotency_key" => idempotency_key,
-        "payload" => merge_tool_payload(caller_payload, payload)
+        "payload" => merge_tool_payload(tool, caller_payload, payload)
       }
 
       append_progress_event_or_replay(repo, session, attrs, idempotency_key, tool)
@@ -2418,7 +2418,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          "body" => optional_argument(arguments, "body", nil),
          "status" => optional_argument(arguments, "status", "recorded"),
          "idempotency_key" => idempotency_key,
-         "payload" => merge_tool_payload(caller_payload, payload)
+         "payload" => merge_tool_payload(tool, caller_payload, payload)
        }}
     end
   end
@@ -3361,17 +3361,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp merge_tool_payload(caller_payload, tool_payload) when tool_payload == %{} do
+  defp merge_tool_payload("append_progress", caller_payload, tool_payload) when tool_payload == %{} do
+    Map.drop(caller_payload, ["source_tool", "recommendation_artifact_id"])
+  end
+
+  defp merge_tool_payload(_tool, caller_payload, tool_payload) when tool_payload == %{} do
     Map.drop(caller_payload, ["source_tool"])
   end
 
-  defp merge_tool_payload(caller_payload, %{"type" => "scope_expansion_request", "source_tool" => "request_scope_expansion"} = tool_payload) do
+  defp merge_tool_payload(_tool, caller_payload, %{"type" => "scope_expansion_request", "source_tool" => "request_scope_expansion"} = tool_payload) do
     caller_payload
     |> Map.drop(["source_tool", "recommendation_artifact_id"])
     |> Map.merge(tool_payload)
   end
 
-  defp merge_tool_payload(caller_payload, tool_payload), do: Map.merge(caller_payload, tool_payload)
+  defp merge_tool_payload(_tool, caller_payload, tool_payload), do: Map.merge(caller_payload, tool_payload)
 
   defp maybe_put_id(attrs, arguments) do
     case Map.get(arguments, "id") do
