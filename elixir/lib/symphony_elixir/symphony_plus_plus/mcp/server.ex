@@ -3314,6 +3314,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     Map.drop(caller_payload, ["source_tool"])
   end
 
+  defp merge_tool_payload(caller_payload, %{"type" => "scope_expansion_request", "source_tool" => "request_scope_expansion"} = tool_payload) do
+    caller_payload
+    |> Map.drop(["source_tool", "recommendation_artifact_id"])
+    |> Map.merge(tool_payload)
+  end
+
   defp merge_tool_payload(caller_payload, tool_payload), do: Map.merge(caller_payload, tool_payload)
 
   defp maybe_put_id(attrs, arguments) do

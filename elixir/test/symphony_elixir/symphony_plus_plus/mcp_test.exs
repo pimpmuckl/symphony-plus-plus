@@ -4788,11 +4788,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     attach_tool(repo, session, "request_scope_expansion", %{
       "summary" => "Need extra file",
       "body" => "Worker recommends expanding allowed files.",
-      "idempotency_key" => "hotfix-scope-request"
+      "idempotency_key" => "hotfix-scope-request",
+      "payload" => %{
+        "requested_file_globs" => ["lib/other/**"],
+        "recommendation_artifact_id" => "artifact_spoofed",
+        "source_tool" => "caller"
+      }
     })
 
     assert {:ok, [event]} = PlanningRepository.list_progress_events(repo, package.id)
     assert event.payload["type"] == "scope_expansion_request"
+    assert event.payload["source_tool"] == "request_scope_expansion"
+    assert event.payload["requested_file_globs"] == ["lib/other/**"]
     refute Map.has_key?(event.payload, "recommendation_artifact_id")
 
     assert {:ok, []} = PlanningRepository.list_artifacts(repo, package.id)
