@@ -6,7 +6,7 @@ These templates are the current Phase 4 quick-work policies. They describe imple
 |---|---|---:|---|---|---|---|
 | `quick_fix` | `brief` | `86400` | `ready_for_human_merge` | `focused_tests, review_t1` | `review_t1` | No |
 | `hotfix` | `incident` | `21600` | `ready_for_human_merge` | `focused_tests, review_t1, review_t2, human_merge` | `review_t1, review_t2` | Yes |
-| `investigation` | `findings` | `43200` | `ready_for_human_merge` | `findings_documented, recommendation_artifact` | `` | No |
+| `investigation` | `findings` | `43200` | `ready_for_human_merge` | `findings_documented, recommendation_artifact_recorded` | `` | No |
 
 ## Behavior
 

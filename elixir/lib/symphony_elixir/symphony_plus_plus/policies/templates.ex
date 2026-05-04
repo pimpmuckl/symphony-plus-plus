@@ -92,7 +92,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
         planning_depth: "findings",
         terminal_readiness_status: "ready_for_human_merge"
       },
-      required_gates: ["findings_documented", "recommendation_artifact"],
+      required_gates: ["findings_documented", "recommendation_artifact_recorded"],
       readiness_requirements: ["findings_complete", "recommendation_artifact_recorded"],
       review_suite: %{required: [], optional: ["review_t1"]}
     }

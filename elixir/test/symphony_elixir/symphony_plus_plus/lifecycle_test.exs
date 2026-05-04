@@ -83,7 +83,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     assert {:ok, investigation} = Templates.expand("investigation")
     assert investigation.constraints.expiry_seconds == 43_200
     assert investigation.constraints.planning_depth == "findings"
-    assert investigation.required_gates == ["findings_documented", "recommendation_artifact"]
+    assert investigation.required_gates == ["findings_documented", "recommendation_artifact_recorded"]
     assert investigation.readiness_requirements == ["findings_complete", "recommendation_artifact_recorded"]
 
     for kind <- ["mcp", "skill", "hooks"] do
