@@ -4780,6 +4780,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, []} = PlanningRepository.list_artifacts(repo, package.id)
   end
 
+  test "request_scope_expansion without a session returns an auth error", %{repo: repo} do
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "scope-without-session",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "request_scope_expansion",
+            "arguments" => %{"summary" => "Need more scope", "idempotency_key" => "missing-session-scope"}
+          }
+        },
+        repo: repo
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "missing_session"
+  end
+
   test "investigation readiness accepts prior protected recommendation events without artifact", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-INVESTIGATION-LEGACY-READY", kind: "investigation", status: "ci_waiting"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -4794,12 +4812,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                "idempotency_key" => "investigation-legacy-finding"
              })
 
-    assert {:ok, _event} =
+    assert {:ok, event} =
              PlanningRepository.append_audit_progress_event(repo, assignment, %{
                "work_package_id" => package.id,
                "summary" => "Prior recommendation",
                "body" => "Recommendation recorded before artifact markers existed.",
-               "idempotency_key" => "investigation-legacy-recommendation",
+               "idempotency_key" => "request_scope_expansion:investigation-legacy-recommendation",
                "payload" => %{
                  "type" => "scope_expansion_request",
                  "source_tool" => "request_scope_expansion",
@@ -4818,6 +4836,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+
+    replay_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "replay-legacy-recommendation",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "request_scope_expansion",
+            "arguments" => %{
+              "summary" => "Prior recommendation",
+              "body" => "Recommendation recorded before artifact markers existed.",
+              "idempotency_key" => "investigation-legacy-recommendation"
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(replay_response, ["result", "structuredContent", "progress_event", "id"]) == event.id
   end
 
   test "mark_ready rejects spoofed metadata and accepts skipped plan nodes", %{repo: repo} do

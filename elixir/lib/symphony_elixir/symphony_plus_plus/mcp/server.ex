@@ -1474,7 +1474,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool("request_scope_expansion", arguments, %__MODULE__{config: config, session: session}) do
-    with {:ok, payload} <- request_scope_expansion_payload(config.repo, session) do
+    with {:ok, session} <- Auth.require_session(session, config.repo),
+         :ok <- require_worker_assignment(session.assignment),
+         {:ok, payload} <- request_scope_expansion_payload(config.repo, session) do
       append_scoped_progress(config.repo, session, arguments, "request_scope_expansion", payload)
     else
       {:error, reason} -> worker_error(reason, "request_scope_expansion")
@@ -2310,11 +2312,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp progress_replay_matches?(%ProgressEvent{} = event, attrs) do
+    normalized_payload = normalized_progress_payload(event, attrs)
+
     event.summary == Map.get(attrs, "summary") and
       event.body == Map.get(attrs, "body") and
       event.status == Map.get(attrs, "status") and
-      event.payload == normalized_progress_payload(event, attrs)
+      progress_payload_replay_matches?(event.payload, normalized_payload)
   end
+
+  defp progress_payload_replay_matches?(%{"type" => "scope_expansion_request", "source_tool" => "request_scope_expansion"} = existing, normalized) do
+    existing == normalized or
+      (not Map.has_key?(existing, "recommendation_artifact_id") and
+         existing == Map.delete(normalized, "recommendation_artifact_id"))
+  end
+
+  defp progress_payload_replay_matches?(existing, normalized), do: existing == normalized
 
   defp normalized_progress_payload(%ProgressEvent{} = event, attrs) do
     attrs
