@@ -305,12 +305,10 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       File.mkdir_p!(bin_dir)
       File.write!(log_path, "")
       original_path = System.get_env("PATH") || ""
-      path_with_binaries = Enum.join([bin_dir, original_path], ":")
+      path_with_binaries = Enum.join([bin_dir, original_path], path_separator())
 
       Enum.each(scripts, fn {name, script} ->
-        path = Path.join(bin_dir, name)
-        File.write!(path, script)
-        File.chmod!(path, 0o755)
+        write_fake_binary!(bin_dir, name, script)
       end)
 
       with_env(
@@ -328,7 +326,57 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
   end
 
   defp with_path(paths, fun) do
-    with_env(%{"PATH" => Enum.join(paths, ":")}, fun)
+    with_env(%{"PATH" => Enum.join(paths, path_separator())}, fun)
+  end
+
+  defp path_separator do
+    if match?({:win32, _}, :os.type()), do: ";", else: ":"
+  end
+
+  defp write_fake_binary!(bin_dir, name, script) do
+    if match?({:win32, _}, :os.type()) do
+      command_path = Path.join(bin_dir, "#{name}.cmd")
+      File.write!(command_path, windows_fake_binary_script(name, script))
+    else
+      path = Path.join(bin_dir, name)
+      File.write!(path, script)
+      File.chmod!(path, 0o755)
+    end
+  end
+
+  defp windows_fake_binary_script("git", script) do
+    branch_output =
+      if String.contains?(script, "feature/workpad") do
+        "echo feature/workpad\r\n"
+      else
+        "echo.\r\n"
+      end
+
+    """
+    @echo off
+    #{branch_output}exit /b 0
+    """
+  end
+
+  defp windows_fake_binary_script("gh", script) do
+    auth_status = if Regex.match?(~r/if \[ "\$1" = "auth" \][^\n]*\n\s*exit 1\s*\n\s*fi/, script), do: 1, else: 0
+    list_status = if Regex.match?(~r/if \[ "\$1" = "pr" \][^\n]*"list"[^\n]*\n\s*exit 1\s*\n\s*fi/, script), do: 1, else: 0
+
+    close_102_output = if String.contains?(script, "boom"), do: "echo boom 1>&2\r\n", else: ""
+
+    """
+    @echo off
+    echo %*>>"%GH_LOG%"
+    if "%1"=="auth" if "%2"=="status" exit /b #{auth_status}
+    if "%1"=="pr" if "%2"=="list" (
+      #{if list_status == 0, do: "echo 101\r\n  echo 102\r\n", else: ""}  exit /b #{list_status}
+    )
+    if "%1"=="pr" if "%2"=="close" if "%3"=="101" exit /b 0
+    if "%1"=="pr" if "%2"=="close" if "%3"=="102" (
+      #{close_102_output}  exit /b 17
+    )
+    exit /b 99
+    """
   end
 
   defp with_env(overrides, fun) do

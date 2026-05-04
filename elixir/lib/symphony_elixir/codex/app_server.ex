@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   """
 
   require Logger
-  alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, SSH}
+  alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, Shell, SSH}
 
   @initialize_id 1
   @thread_start_id 2
@@ -187,7 +187,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp start_port(workspace, nil) do
-    executable = System.find_executable("bash")
+    executable = Shell.find_posix_shell(["bash", "sh"])
 
     if is_nil(executable) do
       {:error, :bash_not_found}
