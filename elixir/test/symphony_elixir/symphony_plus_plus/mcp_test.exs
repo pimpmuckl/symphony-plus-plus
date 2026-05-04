@@ -4718,7 +4718,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                "work_package_id" => package.id,
                "path" => "recommendation.md",
                "title" => "Spoofed recommendation artifact",
-               "kind" => "reference"
+               "kind" => "reference",
+               "uri" => "sympp://artifacts/spoofed-recommendation"
              })
 
     spoofed_artifact_response =
@@ -4753,7 +4754,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
 
-    assert Enum.any?(artifacts, &(&1.title == "Investigation recommendation" and &1.kind == "recommendation" and &1.path == "recommendation.md"))
+    assert Enum.any?(
+             artifacts,
+             &(&1.title == "Investigation recommendation" and &1.kind == "recommendation" and &1.path == "recommendation.md" and
+                 &1.uri == "sympp://artifacts/spoofed-recommendation")
+           )
   end
 
   test "investigation readiness accepts prior protected recommendation events without artifact", %{repo: repo} do

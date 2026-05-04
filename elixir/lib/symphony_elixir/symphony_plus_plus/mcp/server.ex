@@ -1477,6 +1477,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     append_scoped_progress(config.repo, session, arguments, "request_scope_expansion", %{
       "type" => "scope_expansion_request",
       "source_tool" => "request_scope_expansion",
+      "recommendation_artifact_id" => recommendation_artifact_id(session.assignment.work_package_id),
       "approved" => false
     })
   end
@@ -2166,6 +2167,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       nil ->
         case PlanningService.append_artifact(repo, attrs) do
           {:ok, _artifact} -> :ok
+          {:error, :id_already_exists} -> :ok
           {:error, reason} -> {:error, reason}
         end
 
@@ -2176,19 +2178,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp repair_recommendation_artifact(repo, attrs, %Artifact{} = artifact) do
     artifact
-    |> Ecto.Changeset.change(%{
-      work_package_id: attrs["work_package_id"],
-      path: attrs["path"],
-      title: attrs["title"],
-      kind: attrs["kind"],
-      uri: attrs["uri"]
-    })
+    |> Ecto.Changeset.change(recommendation_artifact_repair_attrs(attrs))
     |> repo.update()
     |> case do
       {:ok, _artifact} -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp recommendation_artifact_repair_attrs(attrs) do
+    %{
+      work_package_id: attrs["work_package_id"],
+      path: attrs["path"],
+      title: attrs["title"],
+      kind: attrs["kind"]
+    }
+    |> maybe_put_uri(attrs)
+  end
+
+  defp maybe_put_uri(repair_attrs, %{"uri" => uri}) when not is_nil(uri), do: Map.put(repair_attrs, :uri, uri)
+  defp maybe_put_uri(repair_attrs, _attrs), do: repair_attrs
 
   defp recommendation_artifact_id(work_package_id) do
     material = [work_package_id, "recommendation", "recommendation.md"] |> Enum.join(":")
@@ -2645,7 +2654,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp investigation_recommendation_missing?(state) do
     state.work_package.kind == "investigation" and
-      not recommendation_event_recorded?(state.progress_events)
+      not recommendation_event_recorded?(state.progress_events, state.artifacts, state.work_package.id)
   end
 
   defp required_review_lanes(%WorkPackage{} = work_package) do
@@ -2995,8 +3004,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp metadata_present?(_progress_events, _type, _head_sha), do: false
 
-  defp recommendation_event_recorded?(progress_events) do
-    Enum.any?(progress_events, &payload_type?(&1, "scope_expansion_request", "request_scope_expansion"))
+  defp recommendation_artifact_recorded?(artifacts, work_package_id) do
+    artifact_id = recommendation_artifact_id(work_package_id)
+
+    Enum.any?(artifacts, &(&1.id == artifact_id and &1.kind == "recommendation" and &1.path == "recommendation.md"))
+  end
+
+  defp recommendation_event_recorded?(progress_events, artifacts, work_package_id) when is_list(progress_events) do
+    Enum.any?(progress_events, &recommendation_event_recorded?(&1, artifacts, work_package_id))
+  end
+
+  defp recommendation_event_recorded?(%ProgressEvent{payload: payload} = event, artifacts, work_package_id) when is_map(payload) do
+    if payload_type?(event, "scope_expansion_request", "request_scope_expansion") do
+      case Map.get(payload, "recommendation_artifact_id") do
+        nil -> true
+        artifact_id -> artifact_id == recommendation_artifact_id(work_package_id) and recommendation_artifact_recorded?(artifacts, work_package_id)
+      end
+    else
+      false
+    end
+  end
+
+  defp recommendation_event_recorded?(%ProgressEvent{}, _artifacts, _work_package_id) do
+    false
   end
 
   defp metadata_tool("branch"), do: "attach_branch"
