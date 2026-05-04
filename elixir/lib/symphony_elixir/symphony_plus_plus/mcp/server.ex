@@ -3101,12 +3101,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp protected_recommendation_event_recorded?(%ProgressEvent{payload: payload} = event, work_package_id) when is_map(payload) do
-    payload_type?(event, "scope_expansion_request", "request_scope_expansion") and
+    request_scope_expansion_event?(event) and
       Map.get(payload, "recommendation_artifact_id") == recommendation_artifact_id(work_package_id)
   end
 
   defp protected_recommendation_event_recorded?(%ProgressEvent{}, _work_package_id) do
     false
+  end
+
+  defp request_scope_expansion_event?(%ProgressEvent{} = event) do
+    payload_type?(event, "scope_expansion_request", "request_scope_expansion") and
+      String.starts_with?(event.idempotency_key || "", "request_scope_expansion:")
   end
 
   defp metadata_tool("branch"), do: "attach_branch"
