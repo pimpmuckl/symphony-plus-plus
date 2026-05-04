@@ -2191,13 +2191,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       work_package_id: attrs["work_package_id"],
       path: attrs["path"],
       title: attrs["title"],
-      kind: attrs["kind"]
+      kind: attrs["kind"],
+      uri: attrs["uri"]
     }
-    |> maybe_put_uri(attrs)
   end
-
-  defp maybe_put_uri(repair_attrs, %{"uri" => uri}) when not is_nil(uri), do: Map.put(repair_attrs, :uri, uri)
-  defp maybe_put_uri(repair_attrs, _attrs), do: repair_attrs
 
   defp recommendation_artifact_id(work_package_id) do
     material = [work_package_id, "recommendation", "recommendation.md"] |> Enum.join(":")

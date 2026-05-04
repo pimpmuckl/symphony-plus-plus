@@ -4757,7 +4757,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Enum.any?(
              artifacts,
              &(&1.title == "Investigation recommendation" and &1.kind == "recommendation" and &1.path == "recommendation.md" and
-                 &1.uri == "sympp://artifacts/spoofed-recommendation")
+                 is_nil(&1.uri))
            )
   end
 
