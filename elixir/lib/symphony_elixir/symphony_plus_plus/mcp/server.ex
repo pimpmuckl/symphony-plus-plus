@@ -2180,24 +2180,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp append_recommendation_artifact(attrs, repo) do
-    case repo.get(Artifact, attrs["id"]) do
-      nil ->
+    case PlanningRepository.get_artifact(repo, attrs["id"]) do
+      {:ok, nil} ->
         case PlanningService.append_artifact(repo, attrs) do
           {:ok, _artifact} -> :ok
           {:error, :id_already_exists} -> :ok
           {:error, reason} -> {:error, reason}
         end
 
-      %Artifact{} = artifact ->
+      {:ok, %Artifact{} = artifact} ->
         repair_recommendation_artifact(repo, attrs, artifact)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   defp repair_recommendation_artifact(repo, attrs, %Artifact{} = artifact) do
-    artifact
-    |> Ecto.Changeset.change(recommendation_artifact_repair_attrs(attrs, artifact))
-    |> repo.update()
-    |> case do
+    case PlanningRepository.update_artifact(repo, artifact, recommendation_artifact_repair_attrs(attrs, artifact)) do
       {:ok, _artifact} -> :ok
       {:error, reason} -> {:error, reason}
     end

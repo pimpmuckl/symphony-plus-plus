@@ -194,6 +194,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
     )
   end
 
+  @spec get_artifact(repo(), String.t()) :: {:ok, Artifact.t() | nil} | {:error, error()}
+  def get_artifact(repo, artifact_id) when is_atom(repo) and is_binary(artifact_id) do
+    {:ok, repo.get(Artifact, artifact_id)}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  @spec update_artifact(repo(), Artifact.t(), map()) :: {:ok, Artifact.t()} | {:error, error()}
+  def update_artifact(repo, %Artifact{} = artifact, attrs) when is_atom(repo) and is_map(attrs) do
+    artifact
+    |> Changeset.change(attrs)
+    |> update(repo)
+  end
+
   @spec update_plan_node_status(repo(), String.t(), String.t()) :: {:ok, PlanNode.t()} | {:error, error()}
   def update_plan_node_status(repo, plan_node_id, status)
       when is_atom(repo) and is_binary(plan_node_id) and is_binary(status) do
