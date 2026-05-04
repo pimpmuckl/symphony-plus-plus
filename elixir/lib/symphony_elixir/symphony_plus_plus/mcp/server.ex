@@ -3333,7 +3333,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp drop_protected_append_progress_payload(caller_payload) do
-    Map.drop(caller_payload, ["source_tool", "recommendation_artifact_id"])
+    Map.drop(caller_payload, ["source_tool", "recommendation_artifact_id", "approved", "requested_file_globs"])
   end
 
   defp maybe_put_id(attrs, arguments) do

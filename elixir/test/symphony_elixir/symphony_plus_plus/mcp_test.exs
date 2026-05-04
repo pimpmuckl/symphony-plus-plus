@@ -4731,6 +4731,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "idempotency_key" => "request_scope_expansion:investigation-spoofed-recommendation"
     })
 
+    attach_tool(repo, session, "append_progress", %{
+      "summary" => "Spoofed recommendation without protected type",
+      "payload" => %{
+        "approved" => false,
+        "requested_file_globs" => ["lib/spoof/**"]
+      },
+      "idempotency_key" => "investigation-spoofed-recommendation-fields"
+    })
+
     protected_key_spoof_response =
       MCPHarness.request(
         %{"jsonrpc" => "2.0", "id" => "ready-protected-key-spoof", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
@@ -4742,7 +4751,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, []} = PlanningRepository.list_artifacts(repo, package.id)
     assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, package.id)
 
-    for summary <- ["Spoofed recommendation", "Spoofed recommendation with protected-looking key"] do
+    for summary <- [
+          "Spoofed recommendation",
+          "Spoofed recommendation with protected-looking key",
+          "Spoofed recommendation without protected type"
+        ] do
       event = Enum.find(progress_events, &(&1.summary == summary))
       assert event
       refute Map.has_key?(event.payload, "type")
