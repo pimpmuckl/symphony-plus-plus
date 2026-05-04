@@ -2622,7 +2622,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp investigation_findings_missing?(state), do: state.work_package.kind == "investigation" and state.findings == []
 
   defp investigation_recommendation_missing?(state) do
-    state.work_package.kind == "investigation" and not recommendation_artifact_recorded?(state.artifacts)
+    state.work_package.kind == "investigation" and
+      not (recommendation_artifact_recorded?(state.artifacts) or recommendation_event_recorded?(state.progress_events))
   end
 
   defp required_review_lanes(%WorkPackage{} = work_package) do
@@ -2974,6 +2975,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp recommendation_artifact_recorded?(artifacts) do
     Enum.any?(artifacts, &(&1.kind == "recommendation" and &1.path == "recommendation.md"))
+  end
+
+  defp recommendation_event_recorded?(progress_events) do
+    Enum.any?(progress_events, &payload_type?(&1, "scope_expansion_request", "request_scope_expansion"))
   end
 
   defp metadata_tool("branch"), do: "attach_branch"

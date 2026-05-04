@@ -4661,6 +4661,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              Enum.filter(artifacts, &(&1.kind == "recommendation" and &1.path == "recommendation.md"))
   end
 
+  test "investigation readiness accepts prior protected recommendation events without artifact", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-INVESTIGATION-LEGACY-READY", kind: "investigation", status: "ci_waiting"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    assert {:ok, _finding} =
+             PlanningRepository.append_finding(repo, %{
+               "work_package_id" => package.id,
+               "title" => "Recommendation",
+               "body" => "No code change needed.",
+               "idempotency_key" => "investigation-legacy-finding"
+             })
+
+    assert {:ok, _event} =
+             PlanningRepository.append_audit_progress_event(repo, assignment, %{
+               "work_package_id" => package.id,
+               "summary" => "Prior recommendation",
+               "body" => "Recommendation recorded before artifact markers existed.",
+               "idempotency_key" => "investigation-legacy-recommendation",
+               "payload" => %{
+                 "type" => "scope_expansion_request",
+                 "source_tool" => "request_scope_expansion",
+                 "approved" => false
+               }
+             })
+
+    assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
+    refute Enum.any?(artifacts, &(&1.kind == "recommendation" and &1.path == "recommendation.md"))
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-legacy-recommendation", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+  end
+
   test "mark_ready rejects spoofed metadata and accepts skipped plan nodes", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-READY-SPOOF", kind: "mcp", status: "ci_waiting"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)

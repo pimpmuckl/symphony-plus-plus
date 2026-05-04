@@ -12,4 +12,4 @@ These templates are the current Phase 4 quick-work policies. They describe imple
 
 - `quick_fix` uses light planning. Readiness can be satisfied with focused test evidence plus `review_t1` green evidence, without forcing branch or PR metadata.
 - `hotfix` uses incident-depth planning. It expires sooner than `quick_fix`, requires branch and PR metadata, requires current-head review artifacts, and requires `review_t1` plus `review_t2` green evidence. Workers can mark it ready for human merge but cannot mark it merged.
-- `investigation` records findings and a recommendation artifact. It does not require a PR or review lane by default.
+- `investigation` records findings and protected recommendation evidence. New `request_scope_expansion` recommendations persist a canonical `recommendation.md` artifact; prior protected recommendation events remain valid readiness evidence. It does not require a PR or review lane by default.
