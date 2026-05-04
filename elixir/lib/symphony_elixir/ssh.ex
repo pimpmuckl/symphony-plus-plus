@@ -59,7 +59,7 @@ defmodule SymphonyElixir.SSH do
   end
 
   defp windows_command_script?(executable) when is_binary(executable) do
-    match?({:win32, _name}, :os.type()) and String.ends_with?(String.downcase(executable), ".cmd")
+    match?({:win32, _name}, :os.type()) and Path.extname(String.downcase(executable)) in [".bat", ".cmd"]
   end
 
   defp ssh_args(host, command) do

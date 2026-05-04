@@ -102,6 +102,25 @@ defmodule SymphonyElixir.SSHTest do
     assert {:error, :ssh_not_found} = SSH.run("localhost", "printf ok")
   end
 
+  test "run/3 preserves percent signs through Windows command shims" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-ssh-percent-test-#{System.unique_integer([:positive])}")
+    trace_file = Path.join(test_root, "ssh.trace")
+    previous_path = System.get_env("PATH")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    install_fake_ssh!(test_root, trace_file)
+
+    assert {:ok, {"", 0}} =
+             SSH.run("localhost", "printf '%s\\t%s\\t%s\\n'", stderr_to_stdout: true)
+
+    trace = read_trace!(trace_file)
+    assert trace =~ "%s\\t%s\\t%s\\n"
+  end
+
   test "start_port/3 supports binary output without line mode" do
     test_root = Path.join(System.tmp_dir!(), "symphony-ssh-port-test-#{System.unique_integer([:positive])}")
     trace_file = Path.join(test_root, "ssh.trace")
