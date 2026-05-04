@@ -4709,13 +4709,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert "recommendation_artifact_recorded" in get_in(spoofed_recommendation_response, ["error", "data", "missing"])
 
+    spoofed_artifact_id =
+      "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, Enum.join([package.id, "recommendation", "recommendation.md"], ":")), padding: false)
+
     assert {:ok, _artifact} =
              PlanningRepository.append_artifact(repo, %{
-               "id" => "artifact_spoofed_recommendation",
+               "id" => spoofed_artifact_id,
                "work_package_id" => package.id,
                "path" => "recommendation.md",
                "title" => "Spoofed recommendation artifact",
-               "kind" => "recommendation"
+               "kind" => "reference"
              })
 
     spoofed_artifact_response =

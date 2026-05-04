@@ -9,6 +9,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Session}
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Renderer, as: PlanningRenderer
@@ -2157,19 +2158,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "kind" => "recommendation"
     }
 
-    with {:ok, artifacts} <- PlanningRepository.list_artifacts(repo, work_package_id),
-         false <- recommendation_artifact_recorded?(artifacts, work_package_id) do
-      append_recommendation_artifact(attrs, repo)
-    else
-      true -> :ok
-      {:error, reason} -> {:error, reason}
-    end
+    append_recommendation_artifact(attrs, repo)
   end
 
   defp append_recommendation_artifact(attrs, repo) do
-    case PlanningService.append_artifact(repo, attrs) do
+    case repo.get(Artifact, attrs["id"]) do
+      nil ->
+        case PlanningService.append_artifact(repo, attrs) do
+          {:ok, _artifact} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      %Artifact{} = artifact ->
+        repair_recommendation_artifact(repo, attrs, artifact)
+    end
+  end
+
+  defp repair_recommendation_artifact(repo, attrs, %Artifact{} = artifact) do
+    artifact
+    |> Ecto.Changeset.change(%{
+      work_package_id: attrs["work_package_id"],
+      path: attrs["path"],
+      title: attrs["title"],
+      kind: attrs["kind"],
+      uri: attrs["uri"]
+    })
+    |> repo.update()
+    |> case do
       {:ok, _artifact} -> :ok
-      {:error, :id_already_exists} -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
@@ -2978,12 +2994,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp metadata_present?(_progress_events, _type, _head_sha), do: false
-
-  defp recommendation_artifact_recorded?(artifacts, work_package_id) do
-    artifact_id = recommendation_artifact_id(work_package_id)
-
-    Enum.any?(artifacts, &(&1.id == artifact_id and &1.kind == "recommendation" and &1.path == "recommendation.md"))
-  end
 
   defp recommendation_event_recorded?(progress_events) do
     Enum.any?(progress_events, &payload_type?(&1, "scope_expansion_request", "request_scope_expansion"))
