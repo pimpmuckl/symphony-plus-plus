@@ -1597,8 +1597,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
            :ok <- lock_work_package(repo, Session.work_package_id(session)),
            {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)),
-           :ok <- maybe_backfill_investigation_recommendation_artifact(repo, session, state),
-           {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)),
            :ok <- readiness_gates(state) do
         ready_status = terminal_ready_status(state.work_package)
         LifecycleService.transition(repo, state.work_package, ready_status, actor(session))
@@ -2234,19 +2232,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp recommendation_artifact_id(work_package_id) do
     material = [work_package_id, "recommendation", "recommendation.md"] |> Enum.join(":")
     "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
-  end
-
-  defp maybe_backfill_investigation_recommendation_artifact(repo, %Session{} = session, state) do
-    if state.work_package.kind == "investigation" and not recommendation_artifact_recorded?(state.artifacts, state.work_package.id) and
-         protected_recommendation_event_recorded?(state.progress_events, state.work_package.id) do
-      case append_recommendation_artifact(repo, session, %ProgressEvent{}) do
-        :ok -> :ok
-        {:error, :id_already_exists} -> :ok
-        {:error, reason} -> {:error, reason}
-      end
-    else
-      :ok
-    end
   end
 
   defp reject_ready_evidence_mutation(repo, %Session{} = session, tool)
@@ -3076,24 +3061,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       &(&1.id == artifact_id and &1.work_package_id == work_package_id and &1.path == "recommendation.md" and
           &1.title == "Investigation recommendation" and &1.kind == "recommendation")
     )
-  end
-
-  defp protected_recommendation_event_recorded?(progress_events, work_package_id) when is_list(progress_events) do
-    Enum.any?(progress_events, &protected_recommendation_event_recorded?(&1, work_package_id))
-  end
-
-  defp protected_recommendation_event_recorded?(%ProgressEvent{payload: payload} = event, work_package_id) when is_map(payload) do
-    request_scope_expansion_event?(event) and
-      Map.get(payload, "recommendation_artifact_id") == recommendation_artifact_id(work_package_id)
-  end
-
-  defp protected_recommendation_event_recorded?(%ProgressEvent{}, _work_package_id) do
-    false
-  end
-
-  defp request_scope_expansion_event?(%ProgressEvent{} = event) do
-    payload_type?(event, "scope_expansion_request", "request_scope_expansion") and
-      String.starts_with?(event.idempotency_key || "", "request_scope_expansion:")
   end
 
   defp metadata_tool("branch"), do: "attach_branch"

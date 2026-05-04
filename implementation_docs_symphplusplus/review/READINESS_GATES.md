@@ -28,6 +28,6 @@ A WorkPackage can be marked ready only when all gates required by its policy tem
 
 ## Investigation additional gates
 
-- Recommendation evidence exists. `request_scope_expansion` records the protected worker recommendation and persists the canonical `recommendation.md` artifact for new investigation packages; prior protected `request_scope_expansion` recommendation events also satisfy readiness. It does not approve expanded scope.
+- Recommendation evidence exists. `request_scope_expansion` records the protected worker recommendation and persists the canonical `recommendation.md` artifact for new investigation packages. Stored legacy `request_scope_expansion` rows do not satisfy readiness unless the canonical artifact already exists. It does not approve expanded scope.
 - Findings are summarized.
 - PR is not required unless package explicitly asks for one.

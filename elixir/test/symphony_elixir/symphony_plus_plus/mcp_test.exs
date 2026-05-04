@@ -4863,7 +4863,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(response, ["error", "data", "reason"]) == "missing_session"
   end
 
-  test "investigation readiness accepts prior protected recommendation events without artifact", %{repo: repo} do
+  test "investigation readiness rejects legacy recommendation event without artifact", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-INVESTIGATION-LEGACY-READY", kind: "investigation", status: "ci_waiting"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
@@ -4905,17 +4905,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
-    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
-
-    assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
-
-    assert Enum.any?(
-             artifacts,
-             &(&1.id == legacy_artifact_id and &1.work_package_id == package.id and &1.path == "recommendation.md" and
-                 &1.title == "Investigation recommendation" and &1.kind == "recommendation")
-           )
-
-    repo.get!(Artifact, legacy_artifact_id) |> repo.delete!()
+    assert "recommendation_artifact_recorded" in get_in(ready_response, ["error", "data", "missing"])
+    assert {:ok, []} = PlanningRepository.list_artifacts(repo, package.id)
 
     replay_response =
       MCPHarness.request(
@@ -4941,8 +4932,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(replay_response, ["result", "structuredContent", "progress_event", "id"]) == event.id
-    assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
-    refute Enum.any?(artifacts, &(&1.id == legacy_artifact_id))
+    assert {:ok, []} = PlanningRepository.list_artifacts(repo, package.id)
   end
 
   test "mark_ready fails recommendation gate when legacy artifact cannot be repaired", %{repo: repo} do

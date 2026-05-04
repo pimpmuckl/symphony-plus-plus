@@ -32,4 +32,4 @@ cd elixir
 mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../implementation_docs_symphplusplus/templates/create_work_package.investigation.example.yaml
 ```
 
-The investigation policy does not require a PR. It requires findings plus protected recommendation evidence recorded through `request_scope_expansion`; new recommendation events persist the canonical `recommendation.md` artifact, and prior protected recommendation events remain valid readiness evidence.
+The investigation policy does not require a PR. It requires findings plus the canonical `recommendation.md` artifact recorded through `request_scope_expansion`; stored legacy recommendation events do not satisfy readiness unless that canonical artifact already exists.
