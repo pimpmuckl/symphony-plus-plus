@@ -2349,7 +2349,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        when is_map(existing_payload) do
     normalized_payload = normalized_progress_payload(event, attrs)
 
-    if payload_type?(event, "scope_expansion_request", "request_scope_expansion") and
+    if request_scope_expansion_event?(event) and
          Map.get(existing_payload, "recommendation_artifact_id") == recommendation_artifact_id(Session.work_package_id(session)) and
          Map.get(normalized_payload, "recommendation_artifact_id") == recommendation_artifact_id(Session.work_package_id(session)) do
       append_recommendation_artifact(repo, session, event)
@@ -3362,7 +3362,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp merge_tool_payload("append_progress", caller_payload, tool_payload) do
-    Map.drop(caller_payload, ["source_tool", "recommendation_artifact_id"])
+    caller_payload
+    |> drop_protected_append_progress_payload()
     |> Map.merge(tool_payload)
   end
 
@@ -3377,6 +3378,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp merge_tool_payload(_tool, caller_payload, tool_payload), do: Map.merge(caller_payload, tool_payload)
+
+  defp drop_protected_append_progress_payload(%{"type" => "scope_expansion_request"} = caller_payload) do
+    Map.drop(caller_payload, ["type", "source_tool", "recommendation_artifact_id"])
+  end
+
+  defp drop_protected_append_progress_payload(caller_payload) do
+    Map.drop(caller_payload, ["source_tool", "recommendation_artifact_id"])
+  end
 
   defp maybe_put_id(attrs, arguments) do
     case Map.get(arguments, "id") do

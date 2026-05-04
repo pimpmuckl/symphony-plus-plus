@@ -4736,6 +4736,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert "recommendation_artifact_recorded" in get_in(protected_key_spoof_response, ["error", "data", "missing"])
     assert {:ok, []} = PlanningRepository.list_artifacts(repo, package.id)
+    assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, package.id)
+
+    for summary <- ["Spoofed recommendation", "Spoofed recommendation with protected-looking key"] do
+      event = Enum.find(progress_events, &(&1.summary == summary))
+      assert event
+      refute Map.has_key?(event.payload, "type")
+      refute Map.has_key?(event.payload, "source_tool")
+      refute Map.has_key?(event.payload, "recommendation_artifact_id")
+    end
 
     assert {:ok, _artifact} =
              PlanningRepository.append_artifact(repo, %{
