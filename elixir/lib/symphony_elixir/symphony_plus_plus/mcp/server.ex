@@ -3361,8 +3361,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp merge_tool_payload("append_progress", caller_payload, tool_payload) when tool_payload == %{} do
+  defp merge_tool_payload("append_progress", caller_payload, tool_payload) do
     Map.drop(caller_payload, ["source_tool", "recommendation_artifact_id"])
+    |> Map.merge(tool_payload)
   end
 
   defp merge_tool_payload(_tool, caller_payload, tool_payload) when tool_payload == %{} do
