@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Service
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.StringList
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
 
@@ -42,6 +43,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
     assert {:ok, second} = Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-P1-001-B", title: "Second"))
 
     assert {:ok, [^first, ^second]} = Repository.list(repo)
+    assert {:ok, [^first, ^second]} = Service.list(repo)
   end
 
   test "updates fields while preserving stable id and inserted timestamp", %{repo: repo} do
@@ -62,6 +64,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
     assert updated.updated_at != ~U[2000-01-01 00:00:00Z]
     assert updated.status == "implementing"
     assert updated.title == "Updated title"
+
+    assert {:ok, service_updated} = Service.update(repo, created.id, %{status: "ready_for_worker"})
+    assert service_updated.status == "ready_for_worker"
   end
 
   test "rejects invalid kind and status", %{repo: repo} do
@@ -136,6 +141,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
 
     assert {:ok, fetched} = Repository.get(repo, package.id)
     assert fetched.allowed_file_globs == globs
+  end
+
+  test "string list type rejects malformed values" do
+    assert StringList.type() == :string
+    assert StringList.embed_as(:json) == :self
+    assert StringList.equal?(["a"], ["a"])
+
+    assert StringList.cast(["a", "b"]) == {:ok, ["a", "b"]}
+    assert StringList.cast(["a", 1]) == :error
+    assert StringList.cast("not-list") == :error
+
+    assert StringList.load(~s(["a","b"])) == {:ok, ["a", "b"]}
+    assert StringList.load(~s(["a",1])) == :error
+    assert StringList.load(~s({"not":"list"})) == :error
+    assert StringList.load("not-json") == :error
+    assert StringList.load(123) == :error
+
+    assert StringList.dump(["a", "b"]) == {:ok, ~s(["a","b"])}
+    assert StringList.dump(["a", 1]) == :error
+    assert StringList.dump("not-list") == :error
   end
 
   test "migration is idempotent", %{repo: repo} do

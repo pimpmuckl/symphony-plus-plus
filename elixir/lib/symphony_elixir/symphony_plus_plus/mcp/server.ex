@@ -1196,8 +1196,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, arguments} <- worker_tool_arguments(params, "claim_work_key"),
          {:ok, secret} <- required_argument(arguments, "secret"),
          {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
-         :ok <- require_full_secret(secret),
-         proof_hash = WorkKey.secret_hash(secret) do
+         :ok <- require_full_secret(secret) do
+      proof_hash = WorkKey.secret_hash(secret)
+
       case claim_work_key_with_bound_session(config.repo, session, secret, proof_hash, claimed_by) do
         {:ok, _result, _session} = success -> success
         {:error, reason} -> claim_error(reason)
@@ -1216,8 +1217,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, arguments} <- worker_tool_arguments(params, "claim_work_key"),
          {:ok, secret} <- required_argument(arguments, "secret"),
          {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
-         :ok <- require_full_secret(secret),
-         proof_hash = WorkKey.secret_hash(secret) do
+         :ok <- require_full_secret(secret) do
+      proof_hash = WorkKey.secret_hash(secret)
+
       case claim_unbound_work_key(config.repo, secret, proof_hash, claimed_by) do
         {:ok, _result, _session} = success -> success
         {:error, reason} -> claim_error(reason)
@@ -3072,15 +3074,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     allowed = MapSet.new(allowed_architect_argument_keys(name))
     unexpected = arguments |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1))
 
-    cond do
-      unexpected != [] ->
-        {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "unexpected_argument", "arguments" => unexpected}}
-
-      true ->
-        case validate_architect_required_arguments(name, arguments) do
-          :ok -> {:ok, arguments}
-          {:error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => reason}}
-        end
+    if unexpected != [] do
+      {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "unexpected_argument", "arguments" => unexpected}}
+    else
+      case validate_architect_required_arguments(name, arguments) do
+        :ok -> {:ok, arguments}
+        {:error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => reason}}
+      end
     end
   end
 
