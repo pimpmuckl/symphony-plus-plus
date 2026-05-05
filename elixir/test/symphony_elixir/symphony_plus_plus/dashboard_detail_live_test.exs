@@ -574,7 +574,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
           },
           metadata: %{
             "branch" => %{"branch" => "agent/SYMPP-P5-HELPER", "head_sha" => "abcdef123456"},
-            "pr" => %{"url" => "https://github.com/example/repo/pull/55"}
+            "pr" => %{"url" => "https://github.com/example/repo/pull/55", "head_sha" => "oldhead123", "current_head_sha" => "abcdef123456", "stale" => true}
           },
           plan: [],
           findings: [],
@@ -593,6 +593,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert html =~ "1/1"
     assert html =~ "agent/SYMPP-P5-HELPER @ abcdef1"
     assert html =~ ~s(href="https://github.com/example/repo/pull/55")
+    assert html =~ "PR stale @ oldhead"
   end
 
   defp create_detail_package(opts \\ []) do

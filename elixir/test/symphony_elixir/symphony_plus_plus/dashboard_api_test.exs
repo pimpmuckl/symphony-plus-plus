@@ -738,6 +738,57 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert "review_lanes_complete" in missing["missing"]
   end
 
+  test "detail API exposes stale synced PR metadata without secrets", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-STALE-PR",
+                 kind: "mcp",
+                 status: "ready_for_human_merge",
+                 policy_template: "mcp"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    timestamp = ~U[2026-05-05 00:00:00Z]
+
+    assert {:ok, _branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Branch attached",
+               status: "branch_attached",
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "branch-head"},
+               created_at: DateTime.add(timestamp, 1, :second)
+             })
+
+    assert {:ok, _pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR synced",
+               status: "pr_synced",
+               payload: %{
+                 type: "pr",
+                 source_tool: "sync_pr",
+                 url: "https://github.com/example/repo/pull/44",
+                 repository: "example/repo",
+                 number: 44,
+                 head_sha: "old-pr-head",
+                 changed_files: [%{path: "elixir/lib/example.ex"}],
+                 check_summary: %{token: "ghp_should_be_redacted"}
+               },
+               created_at: DateTime.add(timestamp, 2, :second)
+             })
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+
+    assert payload["metadata"]["pr"]["url"] == "https://github.com/example/repo/pull/44"
+    assert payload["metadata"]["pr"]["stale"] == true
+    assert payload["metadata"]["pr"]["current_head_sha"] == "branch-head"
+    assert payload["metadata"]["pr"]["check_summary"]["token"] == "[REDACTED]"
+    refute inspect(payload) =~ "ghp_should_be_redacted"
+  end
+
   test "unknown policy lookup does not invent merge or review evidence requirements", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(

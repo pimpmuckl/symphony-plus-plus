@@ -950,7 +950,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     tool = metadata_tool(type)
 
     Enum.any?(progress_events, fn
-      %ProgressEvent{payload: payload} = event when is_map(payload) and is_binary(tool) ->
+      %ProgressEvent{payload: payload} = event when is_map(payload) ->
         payload_type?(event, type, tool) and Map.get(payload, "head_sha") == head_sha
 
       %ProgressEvent{} ->
@@ -961,7 +961,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp metadata_present?(_progress_events, _type, _head_sha), do: false
 
   defp metadata_tool("branch"), do: "attach_branch"
-  defp metadata_tool("pr"), do: "attach_pr"
+  defp metadata_tool("pr"), do: ["attach_pr", "sync_pr"]
   defp metadata_tool(_type), do: nil
 
   defp normalized_status(status) when is_binary(status), do: status |> String.trim() |> String.downcase()
@@ -970,13 +970,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp metadata(progress_events) do
     branch = latest_payload(progress_events, "branch", "attach_branch")
     head_filter = metadata_head_filter(progress_events, branch)
+    pr = latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"])
 
     %{
       branch: branch,
-      pr: latest_current_payload(progress_events, "pr", "attach_pr", head_filter),
+      pr: pr_metadata(pr, head_filter),
       review_package: latest_current_payload(progress_events, "review_package", "submit_review_package", head_filter)
     }
   end
+
+  defp pr_metadata(nil, _head_filter), do: nil
+
+  defp pr_metadata(%{} = pr, {:head, current_head_sha}) do
+    stale? = Map.get(pr, "head_sha") != current_head_sha
+
+    pr
+    |> Map.put("stale", stale?)
+    |> Map.put("current_head_sha", current_head_sha)
+  end
+
+  defp pr_metadata(%{} = _pr, _head_filter), do: nil
 
   defp latest_current_payload(progress_events, type, source_tool, :none) do
     latest_payload(progress_events, type, source_tool, :none)
@@ -1085,6 +1098,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp progress_event_order(%ProgressEvent{} = event) do
     {timestamp_sort_value(event.created_at), event.sequence || 0, event.id || ""}
+  end
+
+  defp payload_type?(%ProgressEvent{payload: payload}, type, source_tool) when is_map(payload) and is_list(source_tool) do
+    Map.get(payload, "type") == type and Map.get(payload, "source_tool") in source_tool
   end
 
   defp payload_type?(%ProgressEvent{payload: payload}, type, source_tool) when is_map(payload) do

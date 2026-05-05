@@ -7,6 +7,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.GitHub.{Client, DryClient, PullRequest}
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Session}
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
@@ -34,6 +35,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "request_scope_expansion",
     "attach_branch",
     "attach_pr",
+    "sync_pr",
     "submit_review_package",
     "mark_ready"
   ]
@@ -910,7 +912,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool_input_schema("attach_pr") do
-    schema(metadata_properties(%{"url" => string_schema(), "head_sha" => string_schema()}), ["url", "head_sha"])
+    schema(
+      metadata_properties(%{
+        "url" => string_schema(),
+        "number" => integer_schema(),
+        "repository" => string_schema(),
+        "head_sha" => string_schema(),
+        "metadata" => object_schema()
+      }),
+      []
+    )
+    |> Map.put("anyOf", [%{"required" => ["url"]}, %{"required" => ["number"]}])
+  end
+
+  defp worker_tool_input_schema("sync_pr") do
+    schema(
+      metadata_properties(%{
+        "url" => string_schema(),
+        "number" => integer_schema(),
+        "repository" => string_schema(),
+        "head_sha" => string_schema(),
+        "metadata" => object_schema()
+      }),
+      ["metadata"]
+    )
+    |> Map.put("anyOf", [%{"required" => ["url"]}, %{"required" => ["number"]}])
   end
 
   defp worker_tool_input_schema("submit_review_package") do
@@ -1500,12 +1526,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp worker_tool("attach_pr", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
-         {:ok, url} <- required_argument(arguments, "url"),
-         {:ok, head_sha} <- required_argument(arguments, "head_sha") do
-      append_metadata_event(config.repo, session, arguments, "attach_pr", "pr_attached", %{"type" => "pr", "url" => url, "head_sha" => head_sha})
+         {:ok, payload} <- pr_metadata_payload(config.repo, session, arguments, "attach_pr") do
+      append_pr_metadata(config.repo, session, arguments, "attach_pr", "pr_attached", payload)
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "attach_pr", "reason" => reason}}
       {:error, reason} -> worker_error(reason, "attach_pr")
+    end
+  end
+
+  defp worker_tool("sync_pr", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- scoped_session(config.repo, session, arguments),
+         {:ok, payload} <- pr_metadata_payload(config.repo, session, arguments, "sync_pr") do
+      append_pr_metadata(config.repo, session, arguments, "sync_pr", "pr_synced", payload)
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "sync_pr", "reason" => reason}}
+      {:error, reason} -> worker_error(reason, "sync_pr")
     end
   end
 
@@ -1546,6 +1581,89 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, reason} ->
         worker_error(reason, "mark_ready")
     end
+  end
+
+  defp pr_metadata_payload(repo, %Session{} = session, arguments, source_tool) do
+    with {:ok, %WorkPackage{} = work_package} <- WorkPackageRepository.get(repo, Session.work_package_id(session)),
+         {:ok, ref} <- PullRequest.parse(arguments, work_package.repo),
+         {:ok, metadata_input} <- pr_metadata_input(arguments, source_tool),
+         {:ok, metadata} <- Client.fetch_pull_request(DryClient, ref, metadata: metadata_input),
+         {:ok, payload} <- PullRequest.metadata(metadata, ref, Map.get(arguments, "head_sha")) do
+      {:ok, Map.put(payload, "source_tool", source_tool)}
+    else
+      {:ok, nil} -> {:error, :not_found}
+      {:error, reason} -> {:tool_error, reason_text(reason)}
+    end
+  end
+
+  defp pr_metadata_input(arguments, "attach_pr") do
+    case Map.get(arguments, "metadata") do
+      metadata when is_map(metadata) -> {:ok, metadata}
+      nil -> {:ok, %{"head_sha" => Map.get(arguments, "head_sha")}}
+      _metadata -> {:tool_error, "invalid_metadata"}
+    end
+  end
+
+  defp pr_metadata_input(arguments, "sync_pr") do
+    case Map.get(arguments, "metadata") do
+      metadata when is_map(metadata) -> {:ok, metadata}
+      _metadata -> {:tool_error, "missing_metadata"}
+    end
+  end
+
+  defp append_pr_metadata(repo, %Session{} = session, arguments, tool, status, payload) do
+    repo
+    |> run_worker_transaction(fn ->
+      with {:ok, event_result} <- append_metadata_event(repo, session, arguments, tool, status, payload),
+           :ok <- upsert_pr_artifact(repo, session, payload) do
+        {:ok, event_result}
+      end
+    end)
+  end
+
+  defp upsert_pr_artifact(repo, %Session{} = session, payload) do
+    attrs = %{
+      "id" => pr_artifact_id(session.assignment.work_package_id, Map.get(payload, "repository"), Map.get(payload, "number")),
+      "work_package_id" => session.assignment.work_package_id,
+      "path" => "github-pr.json",
+      "title" => pr_artifact_title(payload),
+      "kind" => "github_pr",
+      "uri" => Map.get(payload, "url")
+    }
+
+    case PlanningRepository.get_artifact(repo, attrs["id"]) do
+      {:ok, nil} -> append_pr_artifact(repo, attrs)
+      {:ok, %Artifact{} = artifact} -> update_pr_artifact(repo, artifact, attrs)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp append_pr_artifact(repo, attrs) do
+    case PlanningService.append_artifact(repo, attrs) do
+      {:ok, _artifact} -> :ok
+      {:error, :id_already_exists} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp update_pr_artifact(repo, %Artifact{} = artifact, attrs) do
+    attrs = Map.new(attrs, fn {key, value} -> {String.to_existing_atom(key), value} end)
+
+    case PlanningRepository.update_artifact(repo, artifact, attrs) do
+      {:ok, _artifact} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp pr_artifact_title(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_integer(number) do
+    "GitHub PR #{repository}##{number}"
+  end
+
+  defp pr_artifact_title(_payload), do: "GitHub PR metadata"
+
+  defp pr_artifact_id(work_package_id, repository, number) do
+    material = [work_package_id, repository || "unknown", number || "unknown", "github-pr.json"] |> Enum.join(":")
+    "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
   defp request_scope_expansion_payload(repo, %Session{} = session) do
@@ -2240,6 +2358,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
               "append_progress",
               "attach_branch",
               "attach_pr",
+              "sync_pr",
               "report_blocker",
               "request_scope_expansion",
               "resolve_blocker",
@@ -2633,7 +2752,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     ["submit_review_package", session.assignment.work_package_id, idempotency_key] |> Enum.join(":")
   end
 
-  defp scoped_progress_idempotency_key(tool, idempotency_key, %Session{} = session) when tool in ["attach_branch", "attach_pr"] do
+  defp scoped_progress_idempotency_key(tool, idempotency_key, %Session{} = session) when tool in ["attach_branch", "attach_pr", "sync_pr"] do
     [tool, session.assignment.work_package_id, idempotency_key] |> Enum.join(":")
   end
 
@@ -3064,8 +3183,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp metadata_tool("branch"), do: "attach_branch"
-  defp metadata_tool("pr"), do: "attach_pr"
+  defp metadata_tool("pr"), do: ["attach_pr", "sync_pr"]
   defp metadata_tool("review_package"), do: "submit_review_package"
+
+  defp payload_type?(%ProgressEvent{payload: payload}, type, source_tools) when is_map(payload) and is_list(source_tools) do
+    Map.get(payload, "type") == type and Map.get(payload, "source_tool") in source_tools
+  end
 
   defp payload_type?(%ProgressEvent{payload: payload}, type, source_tool) when is_map(payload) do
     Map.get(payload, "type") == type and Map.get(payload, "source_tool") == source_tool

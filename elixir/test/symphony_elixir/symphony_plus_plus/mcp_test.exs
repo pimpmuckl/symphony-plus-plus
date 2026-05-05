@@ -357,8 +357,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["blocker_id", "resolution", "summary", "idempotency_key"]
     assert get_in(tools_by_name, ["attach_branch", "inputSchema", "required"]) == ["branch", "head_sha"]
     assert get_in(tools_by_name, ["attach_branch", "inputSchema", "properties", "head_sha", "type"]) == "string"
-    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "required"]) == ["url", "head_sha"]
+    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "anyOf"]) == [%{"required" => ["url"]}, %{"required" => ["number"]}]
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == "string"
+    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "metadata", "type"]) == "object"
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "required"]) == ["metadata"]
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "anyOf"]) == [%{"required" => ["url"]}, %{"required" => ["number"]}]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts", "head_sha"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "type"]) == "array"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "tests", "minItems"]) == 1
@@ -4300,6 +4303,53 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert events
            |> Enum.filter(&(get_in(&1.payload, ["type"]) == "branch" and get_in(&1.payload, ["head_sha"]) == "same-head"))
            |> length() == 2
+  end
+
+  test "sync_pr stores dry GitHub metadata and deterministic artifact", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-PR-SYNC",
+                 kind: "mcp",
+                 repo: "nextide/symphony-plus-plus",
+                 status: "ci_waiting"
+               )
+             )
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    response =
+      attach_tool(repo, session, "sync_pr", %{
+        "number" => 42,
+        "metadata" => %{
+          "head_sha" => "sync-head",
+          "branch" => "agent/SYMPP-P6-001/github-pr-attachment-sync",
+          "changed_files" => [%{"filename" => "elixir/lib/symphony_elixir/symphony_plus_plus/github/client.ex", "status" => "added"}],
+          "check_summary" => %{"conclusion" => "success"},
+          "review_state" => %{"state" => "approved"},
+          "merge_state" => %{"state" => "clean"},
+          "token" => "ghp_should_not_surface"
+        }
+      })
+
+    payload = get_in(response, ["result", "structuredContent", "progress_event", "payload"])
+
+    assert payload["repository"] == "nextide/symphony-plus-plus"
+    assert payload["number"] == 42
+    assert payload["url"] == "https://github.com/nextide/symphony-plus-plus/pull/42"
+    assert payload["head_sha"] == "sync-head"
+
+    assert payload["changed_files"] == [
+             %{"path" => "elixir/lib/symphony_elixir/symphony_plus_plus/github/client.ex", "status" => "added"}
+           ]
+
+    refute inspect(payload) =~ "ghp_should_not_surface"
+
+    assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
+    assert Enum.any?(artifacts, &(&1.kind == "github_pr" and &1.path == "github-pr.json" and &1.uri == payload["url"]))
   end
 
   test "latest branch head supersedes earlier PR head for review evidence", %{repo: repo} do

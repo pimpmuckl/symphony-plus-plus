@@ -121,6 +121,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
             </a>
             <p :if={!pr_url(@detail.metadata)} class="sympp-empty-inline">No PR attached.</p>
             <p class="mono sympp-branch"><%= branch_label(@detail.metadata) %></p>
+            <p :if={pr_state_label(@detail.metadata)} class="mono sympp-branch"><%= pr_state_label(@detail.metadata) %></p>
           </aside>
         </section>
 
@@ -451,6 +452,19 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
   defp branch_label(_branch, _head_sha), do: "No branch attached"
 
   defp pr_url(metadata), do: metadata |> map_value(:pr) |> map_value(:url) |> public_http_url()
+
+  defp pr_state_label(metadata) do
+    pr = map_value(metadata, :pr)
+    stale? = map_value(pr, :stale)
+    head_sha = map_value(pr, :head_sha)
+    current_head_sha = map_value(pr, :current_head_sha)
+
+    cond do
+      stale? == true -> "PR stale @ #{short_sha(head_sha) || "unknown"}; branch @ #{short_sha(current_head_sha) || "unknown"}"
+      is_binary(head_sha) -> "PR head @ #{short_sha(head_sha) || head_sha}"
+      true -> nil
+    end
+  end
 
   defp map_value(%{} = map, key) when is_atom(key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
   defp map_value(_map, _key), do: nil
