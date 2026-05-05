@@ -296,25 +296,27 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp with_default_dashboard_repo(fun) do
-    case Repo.database_path_if_present() do
-      database_path when is_binary(database_path) ->
-        read_existing_dashboard_repo(database_path, fun)
-
-      _missing ->
-        read_running_default_dashboard_repo(fun)
+    if explicit_database_configured?() do
+      read_configured_default_dashboard_repo(fun)
+    else
+      case Process.whereis(Repo) do
+        pid when is_pid(pid) -> read_running_default_dashboard_repo(pid, fun)
+        nil -> read_configured_default_dashboard_repo(fun)
+      end
     end
   end
 
-  defp read_running_default_dashboard_repo(fun) do
-    case Process.whereis(Repo) do
-      pid when is_pid(pid) ->
-        case running_repo_database_path(pid) do
-          {:ok, database_path} -> call_dynamic_repo(pid, database_path, fun)
-          :error -> {:error, :not_found}
-        end
+  defp read_configured_default_dashboard_repo(fun) do
+    case Repo.database_path_if_present() do
+      database_path when is_binary(database_path) -> read_existing_dashboard_repo(database_path, fun)
+      _missing -> {:error, :not_found}
+    end
+  end
 
-      nil ->
-        {:error, :not_found}
+  defp read_running_default_dashboard_repo(pid, fun) do
+    case running_repo_database_path(pid) do
+      {:ok, database_path} -> call_dynamic_repo(pid, database_path, fun)
+      :error -> {:error, :not_found}
     end
   end
 
@@ -342,6 +344,18 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
         nil
     end)
   end
+
+  defp explicit_database_configured? do
+    Application.get_env(:symphony_elixir, :sympp_repo_database) != nil or
+      :symphony_elixir
+      |> Application.get_env(Repo, [])
+      |> Keyword.get(:database)
+      |> configured_database_value?()
+  end
+
+  defp configured_database_value?(database_path) when is_binary(database_path), do: String.trim(database_path) != ""
+  defp configured_database_value?(nil), do: false
+  defp configured_database_value?(_database_path), do: true
 
   defp existing_database_path(nil), do: nil
   defp existing_database_path(database_path) when not is_binary(database_path), do: nil

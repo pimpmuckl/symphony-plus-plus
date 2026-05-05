@@ -748,6 +748,20 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp with_dynamic_dashboard_repo(fun, migrate?) do
+    case Process.whereis(Repo) do
+      pid when is_pid(pid) ->
+        if explicit_database_configured?() do
+          with_started_dynamic_dashboard_repo(fun, migrate?)
+        else
+          with_running_dynamic_dashboard_repo(pid, fun, migrate?)
+        end
+
+      nil ->
+        with_started_dynamic_dashboard_repo(fun, migrate?)
+    end
+  end
+
+  defp with_started_dynamic_dashboard_repo(fun, migrate?) do
     database_path = Repo.database_path()
 
     with {:ok, pid, owner} <- ensure_repo_started(database_path) do
@@ -760,6 +774,19 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         fn -> call_dynamic_repo(pid, fun) end
       )
     end
+  end
+
+  defp with_running_dynamic_dashboard_repo(pid, fun, migrate?) do
+    database_path = local_repo_database_path(Repo.database_path())
+
+    with_optional_migrated_repo(
+      migrate?,
+      pid,
+      :local,
+      database_path,
+      fn -> ensure_repo_migrated(Repo, pid, database_path) end,
+      fn -> call_dynamic_repo(pid, fun) end
+    )
   end
 
   defp ensure_repo_started(database_path) do

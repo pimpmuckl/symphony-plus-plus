@@ -20,6 +20,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
+  alias SymphonyElixirWeb.Layouts
   alias SymphonyElixirWeb.SymppBoardLive
   alias SymphonyElixirWeb.SymppDashboardApiController
 
@@ -344,6 +345,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     end)
   end
 
+  test "prefers the running default repo over a stale default path" do
+    create_board_package(%{
+      id: "SYMPP-P5-027",
+      kind: "dashboard",
+      status: "implementing",
+      title: "Running default beats stale path package",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "symphony-plus-plus/beta"
+    })
+
+    secret = create_architect_grant_secret(Repo, "SYMPP-P5-027")
+    conn = board_session_conn(secret)
+
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+    Application.delete_env(:symphony_elixir, :sympp_repo_database)
+    stale_database_path = Repo.database_path()
+
+    refute File.exists?(stale_database_path)
+    with_transient_repo(stale_database_path, fn -> :ok end)
+
+    on_exit(fn ->
+      restore_database_env(original_database)
+      File.rm(stale_database_path)
+    end)
+
+    with_endpoint_repo(nil, fn ->
+      {:ok, _view, html} = live(conn, "/sympp/board")
+
+      assert html =~ "Running default beats stale path package"
+    end)
+  end
+
   test "does not create or migrate a missing ledger on board load" do
     missing_database_path = WorkPackageFactory.database_path()
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
@@ -639,6 +672,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     assert html =~ ~s(action="/app/sympp/board/session")
   end
 
+  test "root layout uses prefixed browser asset and socket paths" do
+    conn =
+      build_conn(:get, "/sympp/board")
+      |> Map.put(:script_name, ["app"])
+
+    html =
+      render_component(&Layouts.root/1,
+        conn: conn,
+        inner_content: ""
+      )
+
+    assert html =~ ~s(src="/app/vendor/phoenix_html/phoenix_html.js")
+    assert html =~ ~s(src="/app/vendor/phoenix/phoenix.js")
+    assert html =~ ~s(src="/app/vendor/phoenix_live_view/phoenix_live_view.js")
+    assert html =~ ~s(href="/app/dashboard.css")
+    assert html =~ ~s(content="/app/live")
+    assert html =~ ~s(var liveSocket = new window.LiveView.LiveSocket(liveSocketPath)
+  end
+
+  test "authorized board HTTP response includes package content before websocket connect" do
+    create_board_package(%{
+      id: "SYMPP-P5-028",
+      kind: "dashboard",
+      status: "implementing",
+      title: "Static board package",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "symphony-plus-plus/beta"
+    })
+
+    secret = create_architect_grant_secret(Repo, "SYMPP-P5-028")
+    conn = get(board_session_conn(secret), "/sympp/board")
+
+    html = response(conn, 200)
+
+    assert html =~ "Static board package"
+    refute html =~ "0 packages"
+  end
+
   test "browser board session trims pasted work keys" do
     create_board_package(%{
       id: "SYMPP-P5-025",
@@ -653,6 +724,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     conn = post(build_conn(), "/sympp/board/session", %{"work_key" => "  #{secret}\n"})
 
     assert redirected_to(conn) == "/sympp/board"
+  end
+
+  test "browser board session rejects unclaimed work keys without claiming them" do
+    create_board_package(%{
+      id: "SYMPP-P5-029",
+      kind: "dashboard",
+      status: "implementing",
+      title: "Unclaimed key package",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "symphony-plus-plus/beta"
+    })
+
+    {secret, grant_id} = create_unclaimed_grant_secret(Repo, "SYMPP-P5-029", "architect", ["read:phase"])
+    conn = post(build_conn(), "/sympp/board/session", %{"work_key" => secret})
+
+    assert response(conn, 401) =~ "Board access"
+    assert response(conn, 401) =~ "could not access"
+
+    assert {:ok, grant} = AccessGrantRepository.get(Repo, grant_id)
+    assert is_nil(grant.claimed_at)
+    assert is_nil(grant.claimed_by)
   end
 
   test "failed board login clears an existing board session" do
@@ -824,6 +916,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
 
   defp create_worker_grant_secret(repo, work_package_id) do
     create_claimed_grant_secret(repo, work_package_id, "worker", ["read:package"], "worker-1")
+  end
+
+  defp create_unclaimed_grant_secret(repo, work_package_id, role, capabilities) do
+    work_key = WorkKey.generate()
+
+    assert {:ok, grant} =
+             AccessGrantRepository.create(repo, %{
+               work_package_id: work_package_id,
+               display_key: work_key.display_key,
+               secret_hash: WorkKey.secret_hash(work_key.secret),
+               grant_role: role,
+               capabilities: capabilities,
+               expires_at: DateTime.add(DateTime.utc_now(:microsecond), 3600, :second)
+             })
+
+    {work_key.secret, grant.id}
   end
 
   defp create_claimed_grant_secret(repo, work_package_id, role, capabilities, claimed_by) do
