@@ -7,7 +7,6 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.Repo
-  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixirWeb.Endpoint
 
   @empty_filter "all"
@@ -159,25 +158,22 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       repo when is_atom(repo) and repo != Repo ->
         fun.(repo)
 
-      Repo ->
-        with_configured_default_repo(fun)
-
       _repo ->
         with_default_dashboard_repo(fun)
     end
   end
 
-  defp with_configured_default_repo(fun) do
-    if Application.get_env(:symphony_elixir, :sympp_repo_database) == nil and Process.whereis(Repo) != nil do
-      fun.(Repo)
-    else
-      with_default_dashboard_repo(fun)
+  defp with_default_dashboard_repo(fun) do
+    case Repo.database_path_if_present() do
+      database_path when is_binary(database_path) ->
+        read_existing_dashboard_repo(database_path, fun)
+
+      _missing ->
+        {:error, :not_found}
     end
   end
 
-  defp with_default_dashboard_repo(fun) do
-    database_path = Repo.database_path()
-
+  defp read_existing_dashboard_repo(database_path, fun) do
     case default_repo_pid(database_path) do
       pid when is_pid(pid) -> call_dynamic_repo(pid, fun)
       :undefined -> start_transient_repo(database_path, fun)
@@ -243,9 +239,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp call_owned_repo(pid, fun) do
-    call_dynamic_repo(pid, fn repo ->
-      with :ok <- WorkPackageRepository.migrate(repo), do: fun.(repo)
-    end)
+    call_dynamic_repo(pid, fun)
   after
     stop_transient_repo(pid)
   end

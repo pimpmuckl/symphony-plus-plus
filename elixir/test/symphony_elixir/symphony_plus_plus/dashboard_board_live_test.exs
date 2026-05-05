@@ -174,25 +174,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     assert html =~ "SYMPP-P5-010"
   end
 
-  test "uses the endpoint configured Repo when no database override is configured" do
+  test "does not create or migrate a missing ledger on board load" do
+    missing_database_path = WorkPackageFactory.database_path()
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
-    Application.delete_env(:symphony_elixir, :sympp_repo_database)
 
-    on_exit(fn -> restore_database_env(original_database) end)
+    File.rm(missing_database_path)
+    Application.put_env(:symphony_elixir, :sympp_repo_database, missing_database_path)
 
-    create_board_package(%{
-      id: "SYMPP-P5-012",
-      kind: "dashboard",
-      status: "implementing",
-      title: "Endpoint repo package",
-      repo: "nextide/symphony-plus-plus",
-      base_branch: "symphony-plus-plus/beta"
-    })
+    on_exit(fn ->
+      restore_database_env(original_database)
+      File.rm(missing_database_path)
+    end)
 
     {:ok, _view, html} = live(build_conn(), "/sympp/board")
 
-    assert html =~ "Endpoint repo package"
-    assert html =~ "SYMPP-P5-012"
+    assert html =~ "Board unavailable"
+    assert html =~ "No Symphony++ work package ledger was found."
+    refute File.exists?(missing_database_path)
   end
 
   test "renders DateTime timestamps and string-keyed metadata in board cards" do
