@@ -210,15 +210,41 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   defp start_custom_dashboard_repo(nil, _repo, _fun), do: {:error, :not_found}
 
   defp start_custom_dashboard_repo(database_path, repo, fun) do
-    case repo.start_link(database: database_path, name: repo) do
-      {:ok, pid} -> call_started_custom_repo(unlink_transient_repo(pid), repo, fun)
-      {:error, {:already_started, _pid}} -> fun.(repo)
+    case repo.start_link(database: database_path, name: nil) do
+      {:ok, pid} -> call_owned_custom_repo(unlink_transient_repo(pid), repo, fun)
+      {:error, {:already_started, pid}} -> call_existing_custom_repo(pid, repo, database_path, fun)
       {:error, reason} -> {:error, {:repo_start_failed, reason}}
     end
   end
 
-  defp call_started_custom_repo(_pid, repo, fun) do
-    fun.(repo)
+  defp call_existing_custom_repo(pid, repo, database_path, fun) do
+    if custom_repo_uses_database?(pid, repo, database_path) do
+      call_dynamic_custom_repo(pid, repo, fun)
+    else
+      {:error, {:repo_database_mismatch, repo}}
+    end
+  end
+
+  defp call_owned_custom_repo(pid, repo, fun) do
+    call_dynamic_custom_repo(pid, repo, fun)
+  after
+    stop_transient_repo(pid)
+  end
+
+  defp custom_repo_uses_database?(pid, repo, database_path) do
+    call_dynamic_custom_repo(pid, repo, fn dynamic_repo ->
+      custom_repo_uses_database?(dynamic_repo, database_path)
+    end)
+  end
+
+  defp call_dynamic_custom_repo(pid, repo, fun) do
+    original_repo = repo.put_dynamic_repo(pid)
+
+    try do
+      fun.(repo)
+    after
+      repo.put_dynamic_repo(original_repo)
+    end
   end
 
   defp with_default_dashboard_repo(fun) do
