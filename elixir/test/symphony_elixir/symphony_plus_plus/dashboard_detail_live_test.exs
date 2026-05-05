@@ -228,6 +228,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert redirected_to(session_conn) == "/sympp/work-packages/#{encoded_id}"
   end
 
+  test "package detail route round-trips reserved characters in package ids" do
+    raw_id = "SYMPP-P5-SLASH/ONE?x=1"
+    encoded_id = path_segment(raw_id)
+    %{worker_secret: worker_secret} = create_detail_package(id: raw_id)
+
+    login_conn = get(build_conn(), "/sympp/work-packages/#{encoded_id}")
+    login_html = response(login_conn, 401)
+
+    assert login_html =~ ~s(action="/sympp/work-packages/#{encoded_id}/session")
+    refute login_html =~ "%252F"
+    refute login_html =~ "%253F"
+
+    session_conn =
+      post(build_conn(), "/sympp/work-packages/#{encoded_id}/session", %{
+        "work_key" => worker_secret
+      })
+
+    assert redirected_to(session_conn) == "/sympp/work-packages/#{encoded_id}"
+
+    detail_conn =
+      session_conn
+      |> recycle()
+      |> get("/sympp/work-packages/#{encoded_id}")
+
+    assert response(detail_conn, 200) =~ raw_id
+  end
+
   test "package session redirect encodes dot-only package ids" do
     raw_id = "."
     %{worker_secret: worker_secret} = create_detail_package(id: raw_id)

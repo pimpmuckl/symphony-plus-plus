@@ -24,7 +24,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
 
   @impl true
   def mount(params, session, socket) do
-    work_package_id = Map.get(params, "work_package_id")
+    work_package_id = params |> Map.get("work_package_id") |> SymppDashboardApiController.normalize_package_route_id()
     package_grant_id = Map.get(session, "sympp_package_grant_id")
     board_grant_id = Map.get(session, "sympp_board_grant_id")
 
@@ -42,6 +42,8 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
 
   @impl true
   def handle_params(%{"work_package_id" => work_package_id}, _uri, socket) do
+    work_package_id = SymppDashboardApiController.normalize_package_route_id(work_package_id)
+
     case authorize_session(socket, work_package_id) do
       {:ok, %AccessGrant{} = grant} ->
         {:noreply,

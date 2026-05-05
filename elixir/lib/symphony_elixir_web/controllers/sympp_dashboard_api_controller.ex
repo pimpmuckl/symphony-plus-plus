@@ -31,7 +31,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @spec authorize_package_browser(Conn.t(), term()) :: Conn.t()
   def authorize_package_browser(conn, _opts) do
-    work_package_id = Map.get(conn.path_params, "work_package_id")
+    work_package_id = conn.path_params |> Map.get("work_package_id") |> normalize_package_route_id()
 
     case authorize_package_request(conn, work_package_id) do
       {:ok, %AccessGrant{} = grant} -> put_package_browser_session(conn, grant)
@@ -50,6 +50,10 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  @spec normalize_package_route_id(term()) :: term()
+  def normalize_package_route_id(work_package_id) when is_binary(work_package_id), do: URI.decode(work_package_id)
+  def normalize_package_route_id(work_package_id), do: work_package_id
 
   @spec board_session(Conn.t(), map()) :: Conn.t()
   def board_session(conn, %{"work_key" => secret}) when is_binary(secret) do
@@ -88,6 +92,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @spec package_session(Conn.t(), map()) :: Conn.t()
   def package_session(conn, %{"work_package_id" => work_package_id, "work_key" => secret})
       when is_binary(work_package_id) and is_binary(secret) do
+    work_package_id = normalize_package_route_id(work_package_id)
     secret = String.trim(secret)
 
     case authorize_package_secret(secret, work_package_id) do
@@ -135,6 +140,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   def package_session(conn, %{"work_package_id" => work_package_id}) do
+    work_package_id = normalize_package_route_id(work_package_id)
+
     if valid_package_route_id?(work_package_id) do
       conn
       |> clear_package_session()
@@ -161,32 +168,32 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @spec detail(Conn.t(), map()) :: Conn.t()
   def detail(conn, %{"work_package_id" => work_package_id}) do
-    send_package_response(conn, work_package_id, &Dashboard.detail/2)
+    send_package_response(conn, normalize_package_route_id(work_package_id), &Dashboard.detail/2)
   end
 
   @spec timeline(Conn.t(), map()) :: Conn.t()
   def timeline(conn, %{"work_package_id" => work_package_id}) do
-    send_package_response(conn, work_package_id, &Dashboard.timeline/2)
+    send_package_response(conn, normalize_package_route_id(work_package_id), &Dashboard.timeline/2)
   end
 
   @spec artifacts(Conn.t(), map()) :: Conn.t()
   def artifacts(conn, %{"work_package_id" => work_package_id}) do
-    send_package_response(conn, work_package_id, &Dashboard.artifacts/2)
+    send_package_response(conn, normalize_package_route_id(work_package_id), &Dashboard.artifacts/2)
   end
 
   @spec blockers(Conn.t(), map()) :: Conn.t()
   def blockers(conn, %{"work_package_id" => work_package_id}) do
-    send_package_response(conn, work_package_id, &Dashboard.blockers/2)
+    send_package_response(conn, normalize_package_route_id(work_package_id), &Dashboard.blockers/2)
   end
 
   @spec grants(Conn.t(), map()) :: Conn.t()
   def grants(conn, %{"work_package_id" => work_package_id}) do
-    send_package_response(conn, work_package_id, &Dashboard.grants/2)
+    send_package_response(conn, normalize_package_route_id(work_package_id), &Dashboard.grants/2)
   end
 
   @spec agent_runs(Conn.t(), map()) :: Conn.t()
   def agent_runs(conn, %{"work_package_id" => work_package_id}) do
-    send_package_response(conn, work_package_id, &Dashboard.agent_runs/2)
+    send_package_response(conn, normalize_package_route_id(work_package_id), &Dashboard.agent_runs/2)
   end
 
   defp send_package_response(conn, work_package_id, fetch_fun) do
