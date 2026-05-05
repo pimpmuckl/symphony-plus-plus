@@ -825,10 +825,15 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp package_sessions(_sessions), do: %{}
 
   defp put_limited_package_session(sessions, work_package_id, grant_id) do
-    if Map.has_key?(sessions, work_package_id) or map_size(sessions) < @max_package_sessions do
-      Map.put(sessions, work_package_id, grant_id)
-    else
-      %{work_package_id => grant_id}
+    cond do
+      map_size(sessions) > @max_package_sessions ->
+        %{work_package_id => grant_id}
+
+      Map.has_key?(sessions, work_package_id) or map_size(sessions) < @max_package_sessions ->
+        Map.put(sessions, work_package_id, grant_id)
+
+      true ->
+        %{work_package_id => grant_id}
     end
   end
 
