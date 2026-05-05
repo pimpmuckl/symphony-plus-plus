@@ -176,6 +176,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert response(detail_conn, 200) =~ "SYMPP-P5-LOGIN"
   end
 
+  test "failed package login clears the existing package session" do
+    %{work_package: work_package, worker_secret: worker_secret} = create_detail_package(id: "SYMPP-P5-CLEAR")
+
+    session_conn =
+      post(build_conn(), "/sympp/work-packages/#{work_package.id}/session", %{
+        "work_key" => worker_secret
+      })
+
+    assert redirected_to(session_conn) == "/sympp/work-packages/#{work_package.id}"
+
+    failed_conn =
+      session_conn
+      |> recycle()
+      |> post("/sympp/work-packages/#{work_package.id}/session", %{"work_key" => "not-a-real-key"})
+
+    assert response(failed_conn, 401) =~ "Package access"
+
+    detail_conn =
+      failed_conn
+      |> recycle()
+      |> get("/sympp/work-packages/#{work_package.id}")
+
+    assert response(detail_conn, 401) =~ "Package access"
+    refute response(detail_conn, 401) =~ "Product context"
+  end
+
   test "package login escapes user-controlled package id paths" do
     raw_id = ~S|SYMPP-" autofocus onfocus="alert(1)|
     encoded_id = path_segment(raw_id)
@@ -200,6 +226,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
       })
 
     assert redirected_to(session_conn) == "/sympp/work-packages/#{encoded_id}"
+  end
+
+  test "package session redirect encodes dot-only package ids" do
+    raw_id = "."
+    %{worker_secret: worker_secret} = create_detail_package(id: raw_id)
+
+    session_conn =
+      post(build_conn(), "/sympp/work-packages/%2E/session", %{
+        "work_key" => worker_secret
+      })
+
+    assert redirected_to(session_conn) == "/sympp/work-packages/%2E"
   end
 
   test "missing package detail and session return package not found" do
@@ -237,6 +275,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
 
     assert response(session_conn, 404) =~ "Package not found"
     refute response(session_conn, 404) =~ "work_key"
+
+    empty_session_conn = post(build_conn(), "/sympp/work-packages/SYMPP%0AID/session", %{})
+
+    assert response(empty_session_conn, 404) =~ "Package not found"
+    refute response(empty_session_conn, 404) =~ "work_key"
   end
 
   test "valid package bearer auth overrides a stale different-package browser session" do
@@ -406,7 +449,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
   end
 
   defp path_segment(value) do
-    URI.encode(value, &URI.char_unreserved?/1)
+    case value do
+      "." -> "%2E"
+      ".." -> "%2E%2E"
+      value -> URI.encode(value, &URI.char_unreserved?/1)
+    end
   end
 
   defp append_detail_state(work_package, secret_finding?) do

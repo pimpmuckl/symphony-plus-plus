@@ -737,7 +737,12 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   defp active_agent_run?(card), do: not is_nil(card.active_agent_run)
 
-  defp package_detail_path(%{id: id}), do: "work-packages/#{URI.encode(to_string(id), &URI.char_unreserved?/1)}"
+  defp package_detail_path(%{id: id}), do: "work-packages/#{path_segment(id)}"
+
+  defp path_segment("."), do: "%2E"
+  defp path_segment(".."), do: "%2E%2E"
+
+  defp path_segment(value), do: value |> to_string() |> URI.encode(&URI.char_unreserved?/1)
 
   defp relative_time(nil), do: "n/a"
 

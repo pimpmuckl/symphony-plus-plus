@@ -98,40 +98,54 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
       {:error, :forbidden} ->
         conn
+        |> clear_package_session()
         |> package_login_response(status: 403, message: "The work key is not allowed to open this package.", work_package_id: work_package_id)
         |> Conn.halt()
 
       {:error, :database_busy} ->
         conn
+        |> clear_package_session()
         |> package_login_response(status: 503, message: "The dashboard ledger is busy. Try again.", work_package_id: work_package_id)
         |> Conn.halt()
 
       {:error, {:storage_failed, _reason}} ->
         conn
+        |> clear_package_session()
         |> package_login_response(status: 503, message: "The package ledger could not be read.", work_package_id: work_package_id)
         |> Conn.halt()
 
       {:error, {:repo_start_failed, _reason}} ->
         conn
+        |> clear_package_session()
         |> package_login_response(status: 503, message: "The package ledger could not be opened.", work_package_id: work_package_id)
         |> Conn.halt()
 
       {:error, :not_found} ->
         conn
+        |> clear_package_session()
         |> package_not_found_response()
         |> Conn.halt()
 
       {:error, _reason} ->
         conn
+        |> clear_package_session()
         |> package_login_response(status: 401, message: "The work key could not access this package.", work_package_id: work_package_id)
         |> Conn.halt()
     end
   end
 
   def package_session(conn, %{"work_package_id" => work_package_id}) do
-    conn
-    |> package_login_response(status: 400, message: "Enter a work key to open this package.", work_package_id: work_package_id)
-    |> Conn.halt()
+    if valid_package_route_id?(work_package_id) do
+      conn
+      |> clear_package_session()
+      |> package_login_response(status: 400, message: "Enter a work key to open this package.", work_package_id: work_package_id)
+      |> Conn.halt()
+    else
+      conn
+      |> clear_package_session()
+      |> package_not_found_response()
+      |> Conn.halt()
+    end
   end
 
   @spec board(Conn.t(), map()) :: Conn.t()
@@ -763,6 +777,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp clear_board_session(conn), do: Conn.delete_session(conn, @board_session_key)
 
+  defp clear_package_session(conn), do: Conn.delete_session(conn, @package_session_key)
+
   defp error_response(conn, status, code, message) do
     conn
     |> put_status(status)
@@ -895,11 +911,10 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     prefixed_path(conn, "/sympp/work-packages/#{path_segment(work_package_id)}/session")
   end
 
-  defp path_segment(value) do
-    value
-    |> to_string()
-    |> URI.encode(&URI.char_unreserved?/1)
-  end
+  defp path_segment("."), do: "%2E"
+  defp path_segment(".."), do: "%2E%2E"
+
+  defp path_segment(value), do: value |> to_string() |> URI.encode(&URI.char_unreserved?/1)
 
   defp valid_package_route_id?(work_package_id) when is_binary(work_package_id) do
     String.trim(work_package_id) != "" and not String.contains?(work_package_id, ["\0", "\n", "\r", "\t"])

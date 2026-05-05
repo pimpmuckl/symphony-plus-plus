@@ -142,6 +142,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     refute html =~ ~s(href="work-packages/#{raw_id}")
   end
 
+  test "encodes dot-only package ids in board detail links" do
+    raw_id = ".."
+
+    create_board_package(%{
+      id: raw_id,
+      kind: "dashboard",
+      status: "implementing",
+      title: "Dot link package",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "symphony-plus-plus/beta"
+    })
+
+    secret = create_architect_grant_secret(Repo, raw_id)
+
+    {:ok, _view, html} = live(auth_conn(secret), "/sympp/board")
+
+    assert html =~ ~s(href="work-packages/%2E%2E")
+    refute html =~ ~s(href="work-packages/..")
+  end
+
   test "filters packages by kind repo and phase without mutating state" do
     create_board_package(%{
       id: "SYMPP-P5-002",
@@ -987,7 +1007,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
   end
 
   defp path_segment(value) do
-    URI.encode(value, &URI.char_unreserved?/1)
+    case value do
+      "." -> "%2E"
+      ".." -> "%2E%2E"
+      value -> URI.encode(value, &URI.char_unreserved?/1)
+    end
   end
 
   defp start_test_endpoint do
