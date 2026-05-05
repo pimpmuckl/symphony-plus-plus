@@ -491,6 +491,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     refute response(conn, 401) =~ secret
   end
 
+  test "live board navigation revalidates a revoked session grant before reading" do
+    work_package =
+      create_board_package(%{
+        id: "SYMPP-P5-019",
+        kind: "dashboard",
+        status: "implementing",
+        title: "Socket revalidation package",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "symphony-plus-plus/beta"
+      })
+
+    secret = create_architect_grant_secret(Repo, work_package.id)
+    conn = board_session_conn(secret)
+    {:ok, view, html} = live(conn, "/sympp/board")
+
+    assert html =~ "Socket revalidation package"
+
+    secret_hash = WorkKey.secret_hash(secret)
+    assert {:ok, grant} = AccessGrantRepository.find_by_secret_hash(Repo, secret_hash)
+    assert {:ok, _revoked} = AccessGrantRepository.revoke(Repo, grant.id, DateTime.utc_now(:microsecond))
+
+    html = render_patch(view, "/sympp/board?kind=dashboard")
+
+    assert html =~ "Board access expired"
+    refute html =~ "Socket revalidation package"
+  end
+
   defp append_pr(_work_package, nil, _timestamp), do: :ok
 
   defp append_pr(work_package, pr_url, timestamp) do

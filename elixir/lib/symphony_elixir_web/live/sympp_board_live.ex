@@ -14,10 +14,12 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   @impl true
   def mount(params, session, socket) do
-    authorized? = SymppDashboardApiController.authorize_board_session(session) == :ok
+    board_grant_id = Map.get(session, "sympp_board_grant_id")
+    authorized? = board_grant_authorized?(board_grant_id)
 
     {:ok,
      socket
+     |> assign(:board_grant_id, board_grant_id)
      |> assign(:authorized?, authorized?)
      |> assign(:empty_filter, @empty_filter)
      |> assign(:filters, filters(params))
@@ -28,10 +30,13 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   def handle_params(params, _uri, socket) do
     socket = assign(socket, :filters, filters(params))
 
-    if socket.assigns.authorized? do
-      {:noreply, assign_board(socket)}
+    if board_grant_authorized?(socket.assigns.board_grant_id) do
+      {:noreply, socket |> assign(:authorized?, true) |> assign_board()}
     else
-      {:noreply, assign(socket, :board, unauthorized_board(false))}
+      {:noreply,
+       socket
+       |> assign(:authorized?, false)
+       |> assign(:board, unauthorized_board(false))}
     end
   end
 
@@ -151,6 +156,10 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   defp assign_board(socket) do
     assign(socket, :board, load_board(socket.assigns.filters))
+  end
+
+  defp board_grant_authorized?(grant_id) do
+    match?({:ok, _grant}, SymppDashboardApiController.authorize_board_grant_id(grant_id))
   end
 
   defp load_board(filters) do

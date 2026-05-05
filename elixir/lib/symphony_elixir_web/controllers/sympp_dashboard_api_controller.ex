@@ -141,7 +141,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
-  defp authorize_board_grant_id(grant_id) when is_binary(grant_id) do
+  @spec authorize_board_grant_id(term()) :: {:ok, AccessGrant.t()} | {:error, term()}
+  def authorize_board_grant_id(grant_id) when is_binary(grant_id) do
     with true <- dashboard_storage_present?(),
          {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_grant_id_with_existing_repo(grant_id),
          :ok <- require_global_board(auth_context) do
@@ -152,7 +153,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
-  defp authorize_board_grant_id(_grant_id), do: {:error, :unauthorized}
+  def authorize_board_grant_id(_grant_id), do: {:error, :unauthorized}
 
   defp send_authenticated_repo_response(secret, fun) do
     if auth_storage_ready?(secret) do
