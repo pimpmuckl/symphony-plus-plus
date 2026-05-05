@@ -789,6 +789,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     refute inspect(payload) =~ "ghp_should_be_redacted"
   end
 
+  test "metadata prefers current-head PR over newer stale PR", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PR-CURRENT-PREFERRED", status: "planning"))
+
+    architect_secret = create_architect_grant_secret(repo, work_package.id)
+
+    assert {:ok, _branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Branch attached",
+               status: "branch_attached",
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "current-head"},
+               created_at: ~U[2026-05-05 00:00:00Z]
+             })
+
+    assert {:ok, _current_pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Current PR synced",
+               status: "pr_synced",
+               payload: %{type: "pr", source_tool: "sync_pr", url: "https://github.com/example/repo/pull/10", head_sha: "current-head"},
+               created_at: ~U[2026-05-05 00:00:01Z]
+             })
+
+    assert {:ok, _stale_pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Older PR sync arrived late",
+               status: "pr_synced",
+               payload: %{type: "pr", source_tool: "sync_pr", url: "https://github.com/example/repo/pull/10", head_sha: "old-head"},
+               created_at: ~U[2026-05-05 00:00:02Z]
+             })
+
+    payload = json_response(get(auth_conn(architect_secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+
+    assert payload["metadata"]["pr"]["head_sha"] == "current-head"
+    assert payload["metadata"]["pr"]["stale"] == false
+    assert payload["metadata"]["pr"]["current_head_sha"] == "current-head"
+  end
+
   test "unknown policy lookup does not invent merge or review evidence requirements", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(

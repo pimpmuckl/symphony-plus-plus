@@ -4387,6 +4387,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
     assert Enum.any?(artifacts, &(&1.kind == "github_pr" and &1.path == "github-pr.json" and &1.uri == payload["url"]))
+
+    attach_tool(repo, session, "sync_pr", %{
+      "number" => 43,
+      "metadata" => %{"head_sha" => "sync-head", "branch" => "agent/SYMPP-P6-001/github-pr-attachment-sync"}
+    })
+
+    assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
+    pr_artifacts = Enum.filter(artifacts, &(&1.kind == "github_pr" and &1.path == "github-pr.json"))
+
+    assert length(pr_artifacts) == 1
+    assert [%{uri: "https://github.com/nextide/symphony-plus-plus/pull/43"}] = pr_artifacts
   end
 
   test "sync_pr malformed metadata returns structured MCP error", %{repo: repo} do

@@ -970,7 +970,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp metadata(progress_events) do
     branch = latest_payload(progress_events, "branch", "attach_branch")
     head_filter = metadata_head_filter(progress_events, branch)
-    pr = latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"])
+    pr = latest_pr_payload(progress_events, head_filter)
 
     %{
       branch: branch,
@@ -991,6 +991,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp pr_metadata(%{} = pr, :none), do: pr
   defp pr_metadata(%{} = _pr, _head_filter), do: nil
+
+  defp latest_pr_payload(progress_events, :none), do: latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"])
+
+  defp latest_pr_payload(progress_events, head_filter) do
+    latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], head_filter) ||
+      latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"])
+  end
 
   defp latest_current_payload(progress_events, type, source_tool, :none) do
     latest_payload(progress_events, type, source_tool, :none)

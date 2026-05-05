@@ -1650,7 +1650,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp upsert_pr_artifact(repo, %Session{} = session, payload) do
     attrs = %{
-      "id" => pr_artifact_id(session.assignment.work_package_id, Map.get(payload, "repository"), Map.get(payload, "number")),
+      "id" => pr_artifact_id(session.assignment.work_package_id),
       "work_package_id" => session.assignment.work_package_id,
       "path" => "github-pr.json",
       "title" => pr_artifact_title(payload),
@@ -1688,8 +1688,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp pr_artifact_title(_payload), do: "GitHub PR metadata"
 
-  defp pr_artifact_id(work_package_id, repository, number) do
-    material = [work_package_id, repository || "unknown", number || "unknown", "github-pr.json"] |> Enum.join(":")
+  defp pr_artifact_id(work_package_id) do
+    material = [work_package_id, "github-pr.json"] |> Enum.join(":")
     "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
