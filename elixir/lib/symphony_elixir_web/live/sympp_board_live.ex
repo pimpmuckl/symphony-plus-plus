@@ -16,8 +16,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     {:ok,
      socket
      |> assign(:empty_filter, @empty_filter)
-     |> assign(:filters, filters(params))
-     |> assign_board()}
+     |> assign(:filters, filters(params))}
   end
 
   @impl true
@@ -154,13 +153,56 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp with_dashboard_repo(fun) when is_function(fun, 1) do
-    case Endpoint.config(:sympp_repo) do
+    case configured_dashboard_repo() do
       repo when is_atom(repo) and repo != Repo ->
-        fun.(repo)
+        with_custom_dashboard_repo(repo, fun)
 
       _repo ->
         with_default_dashboard_repo(fun)
     end
+  end
+
+  defp configured_dashboard_repo do
+    :symphony_elixir
+    |> Application.get_env(Endpoint, [])
+    |> Keyword.get(:sympp_repo)
+    |> Kernel.||(Endpoint.config(:sympp_repo))
+  end
+
+  defp with_custom_dashboard_repo(repo, fun) do
+    case Process.whereis(repo) do
+      pid when is_pid(pid) ->
+        fun.(repo)
+
+      nil ->
+        repo
+        |> custom_repo_database_path()
+        |> start_custom_dashboard_repo(repo, fun)
+    end
+  end
+
+  defp custom_repo_database_path(repo) do
+    repo.config()
+    |> Keyword.get(:database)
+    |> existing_database_path()
+  rescue
+    _error -> nil
+  end
+
+  defp start_custom_dashboard_repo(nil, _repo, _fun), do: {:error, :not_found}
+
+  defp start_custom_dashboard_repo(database_path, repo, fun) do
+    case repo.start_link(database: database_path, name: repo) do
+      {:ok, pid} -> call_owned_custom_repo(unlink_transient_repo(pid), repo, fun)
+      {:error, {:already_started, _pid}} -> fun.(repo)
+      {:error, reason} -> {:error, {:repo_start_failed, reason}}
+    end
+  end
+
+  defp call_owned_custom_repo(pid, repo, fun) do
+    fun.(repo)
+  after
+    stop_transient_repo(pid)
   end
 
   defp with_default_dashboard_repo(fun) do
@@ -172,6 +214,32 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
         {:error, :not_found}
     end
   end
+
+  defp existing_database_path(nil), do: nil
+  defp existing_database_path(database_path) when not is_binary(database_path), do: nil
+
+  defp existing_database_path(database_path) do
+    cond do
+      Repo.memory_database?(database_path) ->
+        database_path
+
+      Repo.filesystem_database_path?(database_path) ->
+        database_path = Path.expand(database_path)
+        if File.exists?(database_path), do: database_path
+
+      true ->
+        existing_sqlite_uri_path(database_path)
+    end
+  end
+
+  defp existing_sqlite_uri_path("file:" <> _uri = database_path) do
+    case Repo.sqlite_file_uri_path(database_path) do
+      path when is_binary(path) and path != "" -> if(File.exists?(path), do: database_path)
+      _missing -> nil
+    end
+  end
+
+  defp existing_sqlite_uri_path(database_path), do: database_path
 
   defp read_existing_dashboard_repo(database_path, fun) do
     case default_repo_pid(database_path) do

@@ -21,6 +21,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
 
   @endpoint SymphonyElixirWeb.Endpoint
 
+  defmodule CustomBoardRepo do
+    @moduledoc false
+
+    use Ecto.Repo, otp_app: :symphony_elixir, adapter: Ecto.Adapters.SQLite3
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
@@ -191,6 +197,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     assert html =~ "Board unavailable"
     assert html =~ "No Symphony++ work package ledger was found."
     refute File.exists?(missing_database_path)
+  end
+
+  test "starts a configured custom repo before reading the board" do
+    database_path = WorkPackageFactory.database_path()
+    original_custom_repo_config = Application.get_env(:symphony_elixir, CustomBoardRepo)
+
+    Application.put_env(:symphony_elixir, CustomBoardRepo, database: database_path)
+
+    seed_custom_repo(database_path, fn ->
+      assert {:ok, _work_package} =
+               WorkPackageRepository.create(
+                 CustomBoardRepo,
+                 WorkPackageFactory.attrs(
+                   id: "SYMPP-P5-013",
+                   kind: "dashboard",
+                   status: "implementing",
+                   title: "Custom repo board package",
+                   repo: "nextide/symphony-plus-plus",
+                   base_branch: "symphony-plus-plus/beta"
+                 )
+               )
+    end)
+
+    on_exit(fn ->
+      restore_custom_repo_env(original_custom_repo_config)
+      File.rm(database_path)
+    end)
+
+    with_endpoint_repo(CustomBoardRepo, fn ->
+      {:ok, _view, html} = live(build_conn(), "/sympp/board")
+
+      assert html =~ "Custom repo board package"
+      assert html =~ "SYMPP-P5-013"
+    end)
   end
 
   test "renders DateTime timestamps and string-keyed metadata in board cards" do
@@ -404,4 +444,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
 
   defp restore_database_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_repo_database)
   defp restore_database_env(database), do: Application.put_env(:symphony_elixir, :sympp_repo_database, database)
+
+  defp restore_custom_repo_env(nil), do: Application.delete_env(:symphony_elixir, CustomBoardRepo)
+  defp restore_custom_repo_env(config), do: Application.put_env(:symphony_elixir, CustomBoardRepo, config)
+
+  defp seed_custom_repo(database_path, fun) do
+    {:ok, pid} = CustomBoardRepo.start_link(database: database_path, name: CustomBoardRepo)
+    Process.unlink(pid)
+
+    try do
+      assert :ok = WorkPackageRepository.migrate(CustomBoardRepo)
+      fun.()
+    after
+      stop_transient_repo(pid)
+    end
+  end
+
+  defp with_endpoint_repo(repo, fun) do
+    endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
+
+    Application.put_env(
+      :symphony_elixir,
+      SymphonyElixirWeb.Endpoint,
+      Keyword.put(endpoint_config, :sympp_repo, repo)
+    )
+
+    try do
+      fun.()
+    after
+      Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
+    end
+  end
 end
