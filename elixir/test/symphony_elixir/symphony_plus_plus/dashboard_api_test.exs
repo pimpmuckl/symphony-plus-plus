@@ -978,7 +978,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert payload["metadata"]["pr"]["current_head_sha"] == "abcdef1234567890abcdef1234567890abcdef12"
   end
 
-  test "metadata treats abbreviated branch head as stale against full PR head", %{repo: repo} do
+  test "metadata treats abbreviated branch head as current against full PR head", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PR-SHORT-HEAD-STALE", status: "planning"))
 
@@ -1009,7 +1009,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     payload = json_response(get(auth_conn(architect_secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
 
-    assert payload["metadata"]["pr"]["stale"] == true
+    assert payload["metadata"]["pr"]["stale"] == false
     assert payload["metadata"]["pr"]["current_head_sha"] == "abcdef1"
   end
 

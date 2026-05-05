@@ -52,6 +52,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
     assert {:error, :invalid_pr_url} = PullRequest.parse(%{"url" => "https://example.com/nextide/repo/pull/1"}, nil)
     assert {:error, :missing_repository} = PullRequest.parse(%{"number" => 1}, nil)
     assert {:error, :invalid_pr_number} = PullRequest.parse(%{"number" => 0}, "nextide/repo")
+
+    assert {:error, :pr_reference_mismatch} =
+             PullRequest.parse(%{"url" => "https://github.com/nextide/repo/pull/1", "number" => 2}, nil)
+
+    assert {:error, :pr_reference_mismatch} =
+             PullRequest.parse(%{"url" => "https://github.com/nextide/repo/pull/1", "number" => 1, "repository" => "other/repo"}, nil)
   end
 
   test "maps dry metadata into a redaction-friendly PR payload" do
@@ -116,7 +122,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
 
   test "detects stale PR metadata by head sha" do
     refute PullRequest.stale?(%{"head_sha" => "abc123"}, "abc123")
-    assert PullRequest.stale?(%{"head_sha" => "abcdef1234567890abcdef1234567890abcdef12"}, "abcdef1")
+    refute PullRequest.stale?(%{"head_sha" => "abcdef1234567890abcdef1234567890abcdef12"}, "abcdef1")
+    assert PullRequest.stale?(%{"head_sha" => "abcdef1234567890abcdef1234567890abcdef12"}, "abcdef2")
     assert PullRequest.stale?(%{"head_sha" => "abc123"}, "def456")
   end
 

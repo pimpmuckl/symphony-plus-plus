@@ -402,7 +402,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     }
 
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "allOf"]) == [
-             %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]},
+             %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number", "repository"]}]},
              %{
                "anyOf" => [
                  %{"required" => ["head_sha"]},
@@ -417,7 +417,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == "string"
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "metadata", "type"]) == "object"
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "required"]) == ["metadata"]
-    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "anyOf"]) == [%{"required" => ["url"]}, %{"required" => ["number"]}]
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "anyOf"]) == [%{"required" => ["url"]}, %{"required" => ["number", "repository"]}]
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "metadata"]) == pr_metadata_schema
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts", "head_sha"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "type"]) == "array"
@@ -4924,7 +4924,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
   end
 
-  test "abbreviated branch head does not satisfy PR metadata readiness", %{repo: repo} do
+  test "abbreviated branch head satisfies full PR head readiness", %{repo: repo} do
     assert {:ok, package} =
              WorkPackageRepository.create(
                repo,
@@ -4962,7 +4962,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
-    assert "pr_attached" in get_in(ready_response, ["error", "data", "missing"])
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
   end
 
   test "mark_ready rejects empty review packages and allows resolved blockers", %{repo: repo} do

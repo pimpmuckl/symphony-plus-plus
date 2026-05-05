@@ -923,7 +923,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       []
     )
     |> Map.put("allOf", [
-      %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]},
+      %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number", "repository"]}]},
       %{
         "anyOf" => [
           %{"required" => ["head_sha"]},
@@ -944,7 +944,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       }),
       ["metadata"]
     )
-    |> Map.put("anyOf", [%{"required" => ["url"]}, %{"required" => ["number"]}])
+    |> Map.put("anyOf", [%{"required" => ["url"]}, %{"required" => ["number", "repository"]}])
   end
 
   defp worker_tool_input_schema("submit_review_package") do
@@ -3387,7 +3387,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     left = String.trim(left)
     right = String.trim(right)
 
-    left != "" and left == right
+    left != "" and right != "" and (String.starts_with?(left, right) or String.starts_with?(right, left))
   end
 
   defp head_sha_matches?(_left, _right), do: false

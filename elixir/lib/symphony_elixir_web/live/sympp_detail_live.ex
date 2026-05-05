@@ -478,7 +478,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     [
       {"Checks", pr_summary_value(pr, "check_summary", ["conclusion", "state", "status"])},
       {"Reviews", pr_summary_value(pr, "review_state", ["state", "decision", "status"])},
-      {"Merge", pr_summary_value(pr, "merge_state", ["state", "mergeable_state", "status"])}
+      {"Merge", pr_summary_value(pr, "merge_state", ["mergeable_state", "state", "status"])}
     ]
     |> Enum.reject(fn {_label, value} -> is_nil(value) end)
   end

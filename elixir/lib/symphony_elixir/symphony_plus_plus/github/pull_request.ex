@@ -15,7 +15,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
   def parse(arguments, package_repo) when is_map(arguments) do
     cond do
       filled_string?(Map.get(arguments, "url")) ->
-        parse_url(Map.get(arguments, "url"))
+        with {:ok, ref} <- parse_url(Map.get(arguments, "url")),
+             :ok <- validate_number_ref(arguments, ref),
+             :ok <- validate_repository_ref(arguments, ref) do
+          {:ok, ref}
+        end
 
       Map.has_key?(arguments, "number") ->
         parse_number(Map.get(arguments, "number"), repository_input(arguments, package_repo))
@@ -137,6 +141,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
 
   defp repository_from_url(_url), do: nil
 
+  defp validate_number_ref(%{"number" => number}, ref) do
+    case parse_positive_number(number) do
+      {:ok, number} when number == ref.number -> :ok
+      {:ok, _number} -> {:error, :pr_reference_mismatch}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_number_ref(_arguments, _ref), do: :ok
+
+  defp validate_repository_ref(%{"repository" => repository}, ref) do
+    case parse_repository(repository) do
+      {:ok, {owner, repo}} when owner == ref.owner and repo == ref.repo -> :ok
+      {:ok, {_owner, _repo}} -> {:error, :pr_reference_mismatch}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_repository_ref(_arguments, _ref), do: :ok
+
   defp parse_positive_number(number) when is_integer(number) and number > 0, do: {:ok, number}
 
   defp parse_positive_number(number) when is_binary(number) do
@@ -234,7 +258,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
     left = String.trim(left)
     right = String.trim(right)
 
-    left != "" and left == right
+    left != "" and right != "" and (String.starts_with?(left, right) or String.starts_with?(right, left))
   end
 
   defp head_sha_matches?(_left, _right), do: false

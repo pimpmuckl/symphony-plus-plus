@@ -581,7 +581,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
               "stale" => true,
               "check_summary" => %{"conclusion" => "success"},
               "review_state" => %{"state" => "approved"},
-              "merge_state" => %{"state" => "clean"}
+              "merge_state" => %{"state" => "open", "mergeable_state" => "clean"}
             }
           },
           plan: [],
@@ -608,6 +608,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert html =~ "approved"
     assert html =~ "Merge"
     assert html =~ "clean"
+    refute html =~ ">open<"
   end
 
   defp create_detail_package(opts \\ []) do

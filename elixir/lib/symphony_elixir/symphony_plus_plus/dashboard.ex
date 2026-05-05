@@ -1203,7 +1203,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     left = String.trim(left)
     right = String.trim(right)
 
-    left != "" and left == right
+    left != "" and right != "" and (String.starts_with?(left, right) or String.starts_with?(right, left))
   end
 
   defp head_sha_matches?(_left, _right), do: false
