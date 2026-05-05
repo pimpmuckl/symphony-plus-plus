@@ -31,6 +31,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
 
     assert metadata_ref.repository == "nextide/symphony-plus-plus"
     assert metadata_ref.url == "https://github.com/nextide/symphony-plus-plus/pull/78"
+
+    assert {:ok, repository_object_ref} =
+             PullRequest.parse(
+               %{
+                 "number" => 79,
+                 "metadata" => %{
+                   "repository" => %{"full_name" => "nextide/symphony-plus-plus"},
+                   "base" => %{"repo" => %{"full_name" => "ignored/base"}}
+                 }
+               },
+               "symphony-plus-plus"
+             )
+
+    assert repository_object_ref.repository == "nextide/symphony-plus-plus"
+    assert repository_object_ref.url == "https://github.com/nextide/symphony-plus-plus/pull/79"
   end
 
   test "rejects malformed PR references" do

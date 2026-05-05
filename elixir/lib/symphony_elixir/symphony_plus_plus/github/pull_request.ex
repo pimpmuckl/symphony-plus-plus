@@ -116,13 +116,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
   end
 
   defp metadata_repository(%{} = metadata) do
-    Map.get(metadata, "repository") ||
+    repository_full_name(Map.get(metadata, "repository")) ||
       get_in(metadata, ["base", "repo", "full_name"]) ||
       get_in(metadata, ["head", "repo", "full_name"]) ||
       repository_from_url(Map.get(metadata, "html_url") || Map.get(metadata, "url"))
   end
 
   defp metadata_repository(_metadata), do: nil
+
+  defp repository_full_name(value) when is_binary(value), do: value
+  defp repository_full_name(%{"full_name" => full_name}) when is_binary(full_name), do: full_name
+  defp repository_full_name(_value), do: nil
 
   defp repository_from_url(url) when is_binary(url) do
     case parse_url(url) do
