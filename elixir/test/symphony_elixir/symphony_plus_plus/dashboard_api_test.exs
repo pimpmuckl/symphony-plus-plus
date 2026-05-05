@@ -373,9 +373,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     refute "review_package_submitted" in missing["missing"]
     refute "branch_attached" in missing["missing"]
     refute "pr_attached" in missing["missing"]
-    refute "tests_passed" in missing["missing"]
-    refute "acceptance_criteria_met" in missing["missing"]
-    refute "review_lanes_complete" in missing["missing"]
+    assert "tests_passed" in missing["missing"]
+    assert "acceptance_criteria_met" in missing["missing"]
+    assert "review_lanes_complete" in missing["missing"]
   end
 
   test "generic readiness statuses before latest branch do not clear missing evidence", %{repo: repo} do

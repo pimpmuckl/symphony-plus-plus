@@ -111,6 +111,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     safe_read(fn ->
       with {:ok, status_summary} <- PlanningRepository.get_status_summary(repo, work_package.id),
            {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, work_package.id),
+           {:ok, artifacts} <- PlanningRepository.list_artifacts(repo, work_package.id),
+           {:ok, findings} <- PlanningRepository.list_findings(repo, work_package.id),
            {:ok, agent_runs} <- AgentRunRepository.list_for_work_package(repo, work_package.id) do
         blockers = blockers(progress_events)
         runtime = runtime_summary(agent_runs)
@@ -120,8 +122,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
             work_package,
             status_summary.plan_nodes,
             progress_events,
-            status_summary.artifact_count,
-            status_summary.finding_count
+            artifacts,
+            findings
           )
 
         {:ok,
@@ -512,23 +514,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp missing_detail([]), do: "No missing evidence detected"
   defp missing_detail(missing), do: Enum.join(missing, ", ")
 
-  defp readiness_context(%State{} = state, artifact_count, finding_count) do
-    readiness_context(state.work_package, state.plan_nodes, state.progress_events, artifact_count, finding_count)
+  defp readiness_context(%State{} = state, _artifact_count, _finding_count) do
+    readiness_context(state.work_package, state.plan_nodes, state.progress_events, state.artifacts, state.findings)
   end
 
-  defp readiness_context(%WorkPackage{} = work_package, plan_nodes, progress_events, artifact_count, finding_count) do
+  defp readiness_context(%WorkPackage{} = work_package, plan_nodes, progress_events, artifacts, findings) do
+    artifacts = artifacts || []
+    findings = findings || []
+
     %{
       work_package: work_package,
       plan_nodes: plan_nodes,
       progress_events: chronological_progress_events(progress_events),
-      artifact_count: artifact_count || 0,
-      finding_count: finding_count || 0
+      artifacts: artifacts,
+      findings: findings,
+      artifact_count: length(artifacts),
+      finding_count: length(findings)
     }
   end
 
   @spec missing_readiness_evidence(map()) :: [String.t()]
   def missing_readiness_evidence(%{work_package: %WorkPackage{}} = context) do
     [
+      {context.work_package.status != "ci_waiting", "status_ci_waiting"},
       {active_blocker?(context.progress_events), "no_active_blockers"},
       {incomplete_plan?(context), "plan_complete"},
       {acceptance_missing?(context), "acceptance_criteria_met"},
@@ -558,16 +566,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp review_package_missing?(context) do
-    merge_required?(context.work_package) and required_review_lanes(context.work_package) != [] and
-      latest_review_package_event(context.progress_events, review_head_sha_for_readiness(context)) == nil
-  end
-
-  defp review_artifacts_missing?(context) do
     readiness_head_sha = review_head_sha_for_readiness(context)
 
     merge_required?(context.work_package) and required_review_lanes(context.work_package) != [] and
-      latest_review_package_event(context.progress_events, readiness_head_sha) != nil and
-      latest_review_package_artifacts(context.progress_events, readiness_head_sha) == []
+      current_head_review_package_events(context.progress_events, readiness_head_sha) == []
+  end
+
+  defp review_artifacts_missing?(context) do
+    merge_required?(context.work_package) and required_review_lanes(context.work_package) != [] and
+      not review_artifacts_present?(context.progress_events, context.artifacts, context.work_package.id)
   end
 
   defp review_lanes_missing?(context) do
@@ -575,11 +582,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     required_lanes != [] and not review_lanes_present?(context, required_lanes)
   end
 
-  defp investigation_findings_missing?(context), do: context.work_package.kind == "investigation" and context.finding_count == 0
+  defp investigation_findings_missing?(context), do: context.work_package.kind == "investigation" and context.findings == []
 
   defp investigation_recommendation_missing?(context) do
     context.work_package.kind == "investigation" and
-      not Enum.any?(context.progress_events, &payload_type?(&1, "scope_expansion_request", "request_scope_expansion"))
+      not recommendation_artifact_recorded?(context.artifacts, context.work_package.id)
   end
 
   defp incomplete_plan?(context) do
@@ -747,18 +754,77 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp latest_review_package_event(progress_events, readiness_head_sha) do
     progress_events
-    |> Enum.filter(&(payload_type?(&1, "review_package", "submit_review_package") and review_head_matches?(&1.payload, readiness_head_sha)))
-    |> List.last()
+    |> current_head_review_package_events(readiness_head_sha)
+    |> Enum.reverse()
+    |> Enum.find(fn event -> review_package_artifact_paths(event, readiness_head_sha) != [] end)
   end
 
-  defp latest_review_package_artifacts(progress_events, readiness_head_sha) do
-    case latest_review_package_event(progress_events, readiness_head_sha) do
-      %ProgressEvent{payload: payload} when is_map(payload) ->
-        Enum.filter(Map.get(payload, "artifacts", []), &(is_binary(&1) and String.trim(&1) != ""))
+  defp current_head_review_package_events(progress_events, readiness_head_sha) do
+    Enum.filter(progress_events, fn event ->
+      payload_type?(event, "review_package", "submit_review_package") and review_head_matches?(event.payload, readiness_head_sha)
+    end)
+  end
 
-      _event ->
-        []
+  defp review_artifacts_present?(progress_events, artifacts, work_package_id) do
+    current_head_sha = latest_current_head_sha(progress_events)
+    artifact_references = current_head_review_artifact_references(progress_events, current_head_sha)
+
+    artifact_references != [] and
+      Enum.all?(artifact_references, fn {path, artifact_head_sha} ->
+        persisted_review_artifact?(artifacts, work_package_id, artifact_head_sha, path)
+      end)
+  end
+
+  defp current_head_review_artifact_references(progress_events, current_head_sha) do
+    case latest_review_package_event(progress_events, current_head_sha) do
+      %ProgressEvent{} = event -> review_package_artifact_references(event, current_head_sha)
+      nil -> []
     end
+  end
+
+  defp review_package_artifact_paths(%ProgressEvent{payload: payload}, readiness_head_sha) when is_map(payload) do
+    artifacts = Map.get(payload, "artifacts")
+
+    if is_list(artifacts) and review_head_matches?(payload, readiness_head_sha) do
+      Enum.filter(artifacts, &(is_binary(&1) and String.trim(&1) != ""))
+    else
+      []
+    end
+  end
+
+  defp review_package_artifact_paths(%ProgressEvent{}, _readiness_head_sha), do: []
+
+  defp review_package_artifact_references(%ProgressEvent{payload: payload} = event, readiness_head_sha) when is_map(payload) do
+    event
+    |> review_package_artifact_paths(readiness_head_sha)
+    |> Enum.map(&{&1, Map.get(payload, "head_sha")})
+  end
+
+  defp review_package_artifact_references(%ProgressEvent{}, _readiness_head_sha), do: []
+
+  defp persisted_review_artifact?(artifacts, work_package_id, head_sha, path) do
+    expected_id = review_artifact_id(work_package_id, head_sha, path)
+    Enum.any?(artifacts, &(&1.id == expected_id and &1.kind == "review" and &1.path == path))
+  end
+
+  defp review_artifact_id(work_package_id, head_sha, artifact) do
+    material = [work_package_id, head_sha || "no-head", artifact] |> Enum.join(":")
+    "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
+  end
+
+  defp recommendation_artifact_recorded?(artifacts, work_package_id) do
+    artifact_id = recommendation_artifact_id(work_package_id)
+
+    Enum.any?(
+      artifacts,
+      &(&1.id == artifact_id and &1.work_package_id == work_package_id and &1.path == "recommendation.md" and
+          &1.title == "Investigation recommendation" and &1.kind == "recommendation")
+    )
+  end
+
+  defp recommendation_artifact_id(work_package_id) do
+    material = [work_package_id, "recommendation", "recommendation.md"] |> Enum.join(":")
+    "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
   defp review_package_reviews(%ProgressEvent{payload: payload}, readiness_head_sha) when is_map(payload) do
