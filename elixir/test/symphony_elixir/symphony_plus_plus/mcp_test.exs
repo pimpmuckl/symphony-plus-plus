@@ -417,7 +417,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == "string"
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "metadata", "type"]) == "object"
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "required"]) == ["metadata"]
-    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "anyOf"]) == [%{"required" => ["url"]}, %{"required" => ["number", "repository"]}]
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "anyOf"]) == [%{"required" => ["url"]}, %{"required" => ["number"]}]
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "metadata"]) == pr_metadata_schema
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts", "head_sha"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "type"]) == "array"
@@ -4673,6 +4673,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert payload["repository"] == "nextide/symphony-plus-plus"
     assert payload["number"] == 43
     assert payload["merge_state"] == %{"mergeable_state" => "clean", "state" => "open"}
+
+    attached_ref_response =
+      attach_tool(repo, session, "sync_pr", %{
+        "number" => 43,
+        "metadata" => %{
+          "head_sha" => "head-a",
+          "check_summary" => %{"conclusion" => "success"}
+        },
+        "idempotency_key" => "number-only-from-attach"
+      })
+
+    assert get_in(attached_ref_response, ["result", "structuredContent", "progress_event", "payload", "repository"]) ==
+             "nextide/symphony-plus-plus"
   end
 
   test "latest branch head supersedes earlier PR head for review evidence", %{repo: repo} do
@@ -4869,6 +4882,56 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     ready_response =
       MCPHarness.request(
         %{"jsonrpc" => "2.0", "id" => "ready-synced-pr", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+  end
+
+  test "sync_pr refresh for current head satisfies PR attachment evidence", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-PR-SYNC-HEAD-READY",
+                 kind: "mcp",
+                 status: "ci_waiting",
+                 policy_template: "mcp_current_pr_state"
+               )
+             )
+
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-SYNC-HEAD-READY/worker", "head_sha" => "head-a"})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/790", "head_sha" => "head-a"})
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-SYNC-HEAD-READY/worker", "head_sha" => "head-b"})
+
+    attach_tool(repo, session, "sync_pr", %{
+      "number" => 790,
+      "metadata" => %{
+        "head_sha" => "head-b",
+        "check_summary" => %{"conclusion" => "success"},
+        "review_state" => %{"state" => "approved"},
+        "merge_state" => %{"state" => "clean"}
+      }
+    })
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready review after sync",
+      "tests" => ["mix test"],
+      "artifacts" => ["review-head-b.txt"],
+      "head_sha" => "head-b",
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-sync-head", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
         repo: repo,
         session: session
       )

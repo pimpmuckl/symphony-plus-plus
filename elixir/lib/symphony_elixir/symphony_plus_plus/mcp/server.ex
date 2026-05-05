@@ -945,7 +945,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       }),
       ["metadata"]
     )
-    |> Map.put("anyOf", [%{"required" => ["url"]}, %{"required" => ["number", "repository"]}])
+    |> Map.put("anyOf", [%{"required" => ["url"]}, %{"required" => ["number"]}])
   end
 
   defp worker_tool_input_schema("submit_review_package") do
@@ -1614,8 +1614,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp pr_metadata_payload(repo, %Session{} = session, arguments, source_tool) do
     with {:ok, %WorkPackage{} = work_package} <- WorkPackageRepository.get(repo, Session.work_package_id(session)),
-         {:ok, ref} <- PullRequest.parse(arguments, work_package.repo),
          {:ok, metadata_input} <- pr_metadata_input(arguments, source_tool),
+         {:ok, arguments} <- pr_reference_arguments(repo, session, arguments, source_tool),
+         {:ok, ref} <- PullRequest.parse(arguments, work_package.repo),
          {:ok, metadata} <- Client.fetch_pull_request(DryClient, ref, metadata: metadata_input),
          {:ok, payload} <- PullRequest.metadata(metadata, ref, pr_fallback_head_sha(arguments, source_tool)) do
       {:ok, Map.put(payload, "source_tool", source_tool)}
@@ -1643,6 +1644,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp pr_fallback_head_sha(arguments, "attach_pr"), do: Map.get(arguments, "head_sha")
   defp pr_fallback_head_sha(_arguments, "sync_pr"), do: nil
+
+  defp pr_reference_arguments(repo, %Session{} = session, arguments, "sync_pr") do
+    if Map.has_key?(arguments, "number") and not filled_string?(Map.get(arguments, "repository")) and not filled_string?(Map.get(arguments, "url")) do
+      with {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, Session.work_package_id(session)),
+           {:ok, {repository, _number}} <- latest_attached_pr_ref(progress_events) do
+        {:ok, Map.put(arguments, "repository", repository)}
+      end
+    else
+      {:ok, arguments}
+    end
+  end
+
+  defp pr_reference_arguments(_repo, %Session{}, arguments, _source_tool), do: {:ok, arguments}
 
   defp validate_pr_sync_target(_repo, %Session{}, _ref, "attach_pr"), do: :ok
 
@@ -1707,7 +1721,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp append_pr_metadata(repo, %Session{} = session, arguments, tool, status, payload) do
     with {:ok, idempotency_key, attrs} <- metadata_event_attrs(session, arguments, tool, status, payload),
          {:ok, replay?} <- progress_event_replay?(repo, session, idempotency_key),
-         :ok <- validate_pr_sync_target_unless_replay(repo, session, arguments, tool, replay?) do
+         :ok <- validate_pr_sync_target_unless_replay(repo, session, payload, tool, replay?) do
       run_worker_transaction(repo, fn ->
         append_pr_metadata_event(repo, session, attrs, idempotency_key, tool, payload, replay?)
       end)
@@ -1723,9 +1737,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp validate_pr_sync_target_unless_replay(_repo, %Session{}, _arguments, _tool, true), do: :ok
 
-  defp validate_pr_sync_target_unless_replay(repo, %Session{} = session, arguments, tool, false) do
-    with {:ok, %WorkPackage{} = work_package} <- WorkPackageRepository.get(repo, Session.work_package_id(session)),
-         {:ok, ref} <- PullRequest.parse(arguments, work_package.repo) do
+  defp validate_pr_sync_target_unless_replay(repo, %Session{} = session, payload, tool, false) do
+    with {:ok, ref} <- PullRequest.parse(payload, nil) do
       validate_pr_sync_target(repo, session, ref, tool)
     end
   end
@@ -3303,7 +3316,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, attached_ref} ->
         Enum.any?(progress_events, fn
           %ProgressEvent{payload: payload} = event when is_map(payload) ->
-            payload_type?(event, "pr", "attach_pr") and head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
+            payload_type?(event, "pr", ["attach_pr", "sync_pr"]) and head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
               pr_payload_ref(payload) == attached_ref
 
           %ProgressEvent{} ->

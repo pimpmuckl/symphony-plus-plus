@@ -960,7 +960,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       {:ok, attached_ref} ->
         Enum.any?(progress_events, fn
           %ProgressEvent{payload: payload} = event when is_map(payload) ->
-            payload_type?(event, "pr", "attach_pr") and head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
+            payload_type?(event, "pr", ["attach_pr", "sync_pr"]) and head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
               pr_payload_ref(payload) == attached_ref
 
           %ProgressEvent{} ->
