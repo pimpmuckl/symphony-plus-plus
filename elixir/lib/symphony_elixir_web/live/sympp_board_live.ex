@@ -170,14 +170,23 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp with_custom_dashboard_repo(repo, fun) do
+    case custom_repo_database_path(repo) do
+      database_path when is_binary(database_path) -> with_custom_dashboard_repo(repo, database_path, fun)
+      _missing -> {:error, :not_found}
+    end
+  end
+
+  defp with_custom_dashboard_repo(repo, database_path, fun) do
     case Process.whereis(repo) do
       pid when is_pid(pid) ->
-        fun.(repo)
+        if custom_repo_uses_database?(repo, database_path) do
+          fun.(repo)
+        else
+          {:error, {:repo_database_mismatch, repo}}
+        end
 
       nil ->
-        repo
-        |> custom_repo_database_path()
-        |> start_custom_dashboard_repo(repo, fun)
+        start_custom_dashboard_repo(database_path, repo, fun)
     end
   end
 
@@ -187,6 +196,15 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     |> existing_database_path()
   rescue
     _error -> nil
+  end
+
+  defp custom_repo_uses_database?(repo, database_path) do
+    case repo.query("PRAGMA database_list", []) do
+      {:ok, %{rows: rows}} -> Enum.any?(rows, &main_database_row?(&1, database_path))
+      {:error, _reason} -> false
+    end
+  rescue
+    _error in Exqlite.Error -> false
   end
 
   defp start_custom_dashboard_repo(nil, _repo, _fun), do: {:error, :not_found}
@@ -523,6 +541,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   defp error_message(:not_found), do: "No Symphony++ work package ledger was found."
   defp error_message(:database_busy), do: "The Symphony++ ledger is busy. Refresh shortly."
+  defp error_message({:repo_database_mismatch, _repo}), do: "The configured Symphony++ repo does not match the selected ledger."
   defp error_message({:storage_failed, _reason}), do: "The Symphony++ ledger could not be read."
   defp error_message(_reason), do: "The Symphony++ board could not be loaded."
 end

@@ -200,12 +200,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
   end
 
   test "starts a configured custom repo before reading the board" do
+    stop_named_repo(CustomBoardRepo)
+
     database_path = WorkPackageFactory.database_path()
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
     original_custom_repo_config = Application.get_env(:symphony_elixir, CustomBoardRepo)
 
     Application.put_env(:symphony_elixir, :sympp_repo_database, database_path)
     Application.put_env(:symphony_elixir, CustomBoardRepo, database: database_path)
+
+    on_exit(fn ->
+      stop_named_repo(CustomBoardRepo)
+      restore_database_env(original_database)
+      restore_custom_repo_env(original_custom_repo_config)
+      File.rm(database_path)
+    end)
 
     seed_custom_repo(database_path, fn ->
       assert {:ok, _work_package} =
@@ -222,18 +231,57 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
                )
     end)
 
-    on_exit(fn ->
-      stop_named_repo(CustomBoardRepo)
-      restore_database_env(original_database)
-      restore_custom_repo_env(original_custom_repo_config)
-      File.rm(database_path)
-    end)
-
     with_endpoint_repo(CustomBoardRepo, fn ->
       {:ok, _view, html} = live(build_conn(), "/sympp/board")
 
       assert html =~ "Custom repo board package"
       assert html =~ "SYMPP-P5-013"
+    end)
+  end
+
+  test "rejects an already-running custom repo for a different ledger" do
+    stop_named_repo(CustomBoardRepo)
+
+    wrong_database_path = WorkPackageFactory.database_path()
+    selected_database_path = WorkPackageFactory.database_path()
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+    original_custom_repo_config = Application.get_env(:symphony_elixir, CustomBoardRepo)
+
+    File.touch!(selected_database_path)
+    Application.put_env(:symphony_elixir, :sympp_repo_database, selected_database_path)
+    Application.put_env(:symphony_elixir, CustomBoardRepo, database: selected_database_path)
+
+    on_exit(fn ->
+      stop_named_repo(CustomBoardRepo)
+      restore_database_env(original_database)
+      restore_custom_repo_env(original_custom_repo_config)
+      File.rm(wrong_database_path)
+      File.rm(selected_database_path)
+    end)
+
+    {:ok, pid} = CustomBoardRepo.start_link(database: wrong_database_path, name: CustomBoardRepo)
+    Process.unlink(pid)
+    assert :ok = WorkPackageRepository.migrate(CustomBoardRepo)
+
+    assert {:ok, _wrong_package} =
+             WorkPackageRepository.create(
+               CustomBoardRepo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-P5-014",
+                 kind: "dashboard",
+                 status: "implementing",
+                 title: "Wrong custom repo package",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta"
+               )
+             )
+
+    with_endpoint_repo(CustomBoardRepo, fn ->
+      {:ok, _view, html} = live(build_conn(), "/sympp/board")
+
+      assert html =~ "Board unavailable"
+      assert html =~ "The configured Symphony++ repo does not match the selected ledger."
+      refute html =~ "Wrong custom repo package"
     end)
   end
 
@@ -447,10 +495,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
   end
 
   defp stop_named_repo(repo) do
-    case Process.whereis(repo) do
-      pid when is_pid(pid) -> stop_transient_repo(pid)
-      nil -> :ok
+    cond do
+      function_exported?(repo, :stop, 1) ->
+        repo.stop(1_000)
+
+      Process.whereis(repo) != nil ->
+        repo |> Process.whereis() |> stop_transient_repo()
+
+      true ->
+        :ok
     end
+  catch
+    :exit, _reason -> :ok
   end
 
   defp restore_database_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_repo_database)
