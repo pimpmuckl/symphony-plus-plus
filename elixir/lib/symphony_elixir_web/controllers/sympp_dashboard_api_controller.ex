@@ -24,7 +24,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     case authorize_board_request(conn) do
       {:ok, %AccessGrant{} = grant} -> Conn.put_session(conn, @board_session_key, grant.id)
       {:error, :unauthorized} -> conn |> board_login_response() |> Conn.halt()
-      {:error, reason} -> conn |> error_response(reason) |> Conn.halt()
+      {:error, reason} -> conn |> board_browser_error_response(reason) |> Conn.halt()
     end
   end
 
@@ -537,6 +537,26 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp error_response(conn, _reason), do: error_response(conn, 500, "dashboard_unavailable", "Dashboard API unavailable")
+
+  defp board_browser_error_response(conn, :forbidden) do
+    board_login_response(conn, status: 403, message: "The work key is not allowed to open the board.")
+  end
+
+  defp board_browser_error_response(conn, :database_busy) do
+    board_login_response(conn, status: 503, message: "The dashboard ledger is busy. Try again.")
+  end
+
+  defp board_browser_error_response(conn, {:storage_failed, _reason}) do
+    board_login_response(conn, status: 503, message: "The board ledger could not be read.")
+  end
+
+  defp board_browser_error_response(conn, {:repo_start_failed, _reason}) do
+    board_login_response(conn, status: 503, message: "The board ledger could not be opened.")
+  end
+
+  defp board_browser_error_response(conn, _reason) do
+    board_login_response(conn, status: 500, message: "The board is temporarily unavailable.")
+  end
 
   defp error_response(conn, status, code, message) do
     conn

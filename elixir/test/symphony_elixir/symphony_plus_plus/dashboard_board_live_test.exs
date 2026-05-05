@@ -611,7 +611,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     worker_secret = create_worker_grant_secret(Repo, work_package.id)
 
     assert get(build_conn(), "/sympp/board") |> response(401)
-    assert get(auth_conn(worker_secret), "/sympp/board") |> response(403)
+
+    conn = get(auth_conn(worker_secret), "/sympp/board")
+
+    assert response(conn, 403) =~ "Board access"
+    assert response(conn, 403) =~ "not allowed"
+    refute conn |> get_resp_header("content-type") |> Enum.join("") =~ "application/json"
 
     conn = post(build_conn(), "/sympp/board/session", %{"work_key" => worker_secret})
 

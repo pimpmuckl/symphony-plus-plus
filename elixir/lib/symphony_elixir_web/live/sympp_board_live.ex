@@ -18,28 +18,30 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   @impl true
   def mount(params, session, socket) do
     board_grant_id = Map.get(session, "sympp_board_grant_id")
-    authorized? = board_grant_authorized?(board_grant_id)
+    authorization = board_grant_authorization(board_grant_id)
 
     {:ok,
      socket
      |> assign(:board_grant_id, board_grant_id)
-     |> assign(:authorized?, authorized?)
+     |> assign(:authorized?, authorization == :ok)
      |> assign(:empty_filter, @empty_filter)
      |> assign(:filters, filters(params))
-     |> assign_new(:board, fn -> unauthorized_board(authorized?) end)}
+     |> assign_new(:board, fn -> unauthorized_board(authorization) end)}
   end
 
   @impl true
   def handle_params(params, _uri, socket) do
     socket = assign(socket, :filters, filters(params))
 
-    if board_grant_authorized?(socket.assigns.board_grant_id) do
-      {:noreply, socket |> assign(:authorized?, true) |> assign_board()}
-    else
-      {:noreply,
-       socket
-       |> assign(:authorized?, false)
-       |> assign(:board, unauthorized_board(false))}
+    case board_grant_authorization(socket.assigns.board_grant_id) do
+      :ok ->
+        {:noreply, socket |> assign(:authorized?, true) |> assign_board()}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:authorized?, false)
+         |> assign(:board, unauthorized_board({:error, reason}))}
     end
   end
 
@@ -161,8 +163,11 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     assign(socket, :board, load_board(socket.assigns.filters))
   end
 
-  defp board_grant_authorized?(grant_id) do
-    match?({:ok, _grant}, SymppDashboardApiController.authorize_board_grant_id(grant_id))
+  defp board_grant_authorization(grant_id) do
+    case SymppDashboardApiController.authorize_board_grant_id(grant_id) do
+      {:ok, _grant} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp load_board(filters) do
@@ -562,8 +567,13 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     }
   end
 
-  defp unauthorized_board(true), do: empty_board(nil)
-  defp unauthorized_board(false), do: empty_board("Board access expired. Reload and enter a current board work key.")
+  defp unauthorized_board(:ok), do: empty_board(nil)
+
+  defp unauthorized_board({:error, reason}) when reason in [:unauthorized, :forbidden] do
+    empty_board("Board access expired. Reload and enter a current board work key.")
+  end
+
+  defp unauthorized_board({:error, reason}), do: empty_board(error_message(reason))
 
   defp filters(params) when is_map(params) do
     %{
