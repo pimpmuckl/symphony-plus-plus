@@ -4483,6 +4483,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(headless, ["error", "data", "reason"]) == "missing_head_sha"
   end
 
+  test "sync_pr resolves URL-only attached PRs by chronology", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-PR-SYNC-CHRONOLOGY", kind: "standard_pr", repo: "nextide/symphony-plus-plus", status: "ci_waiting")
+             )
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    assert {:ok, _current_attach} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: package.id,
+               summary: "Current PR attached",
+               status: "pr_attached",
+               payload: %{type: "pr", source_tool: "attach_pr", url: "https://github.com/nextide/symphony-plus-plus/pull/43", head_sha: "head-a"},
+               created_at: ~U[2026-05-05 00:00:02Z]
+             })
+
+    assert {:ok, _backfilled_old_attach} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: package.id,
+               summary: "Backfilled old PR attached",
+               status: "pr_attached",
+               payload: %{type: "pr", source_tool: "attach_pr", url: "https://github.com/nextide/symphony-plus-plus/pull/42", head_sha: "head-a"},
+               created_at: ~U[2026-05-05 00:00:01Z]
+             })
+
+    response =
+      attach_tool(repo, session, "sync_pr", %{
+        "number" => 43,
+        "metadata" => %{"head_sha" => "head-a", "branch" => "agent/SYMPP-P6-001/github-pr-attachment-sync"}
+      })
+
+    assert get_in(response, ["result", "structuredContent", "progress_event", "payload", "number"]) == 43
+  end
+
   test "latest branch head supersedes earlier PR head for review evidence", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PR-BRANCH-HEAD", kind: "quick_fix", status: "ci_waiting"))
     append_done_plan(repo, package.id)

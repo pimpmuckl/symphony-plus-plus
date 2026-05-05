@@ -1165,8 +1165,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     refute Enum.any?(payload["grants"], &(&1["status"] == "unclaimed"))
     assert payload["metadata"]["branch"]["branch"] == "agent/#{work_package.id}-new"
     assert payload["metadata"]["branch"]["head_sha"] == ""
-    assert payload["metadata"]["pr"]["url"] == "https://github.com/example/repo/pull/old"
-    assert payload["metadata"]["pr"]["head_sha"] == "old123"
+    assert payload["metadata"]["pr"]["url"] == "https://github.com/example/repo/pull/1"
+    assert payload["metadata"]["pr"]["head_sha"] == "abc123"
     refute Map.has_key?(payload["metadata"]["pr"], "stale")
     assert payload["metadata"]["review_package"] == nil
   end

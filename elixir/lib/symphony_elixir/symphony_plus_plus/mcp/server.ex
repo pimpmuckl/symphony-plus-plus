@@ -1638,6 +1638,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp latest_attached_pr_ref(progress_events) do
     progress_events
+    |> chronological_progress_events()
     |> Enum.reverse()
     |> Enum.find_value(fn
       %ProgressEvent{payload: payload} when is_map(payload) ->
@@ -1655,7 +1656,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_integer(number), do: {repository, number}
+
+  defp pr_payload_ref(%{"url" => url}) when is_binary(url) do
+    case PullRequest.parse(%{"url" => url}, nil) do
+      {:ok, ref} -> {ref.repository, ref.number}
+      {:error, _reason} -> nil
+    end
+  end
+
   defp pr_payload_ref(_payload), do: nil
+
+  defp chronological_progress_events(progress_events) do
+    Enum.sort_by(progress_events, fn %ProgressEvent{created_at: created_at, sequence: sequence} ->
+      {created_at || DateTime.from_unix!(0), sequence || 0}
+    end)
+  end
 
   defp pr_metadata_input(arguments, "attach_pr") do
     case Map.get(arguments, "metadata") do

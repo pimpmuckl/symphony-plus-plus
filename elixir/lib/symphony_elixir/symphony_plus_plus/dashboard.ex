@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
+  alias SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Finding
@@ -1086,6 +1087,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_integer(number), do: {repository, number}
+
+  defp pr_payload_ref(%{"url" => url}) when is_binary(url) do
+    case PullRequest.parse(%{"url" => url}, nil) do
+      {:ok, ref} -> {ref.repository, ref.number}
+      {:error, _reason} -> nil
+    end
+  end
+
   defp pr_payload_ref(_payload), do: nil
 
   defp metadata_head_filter(_progress_events, nil), do: :none
