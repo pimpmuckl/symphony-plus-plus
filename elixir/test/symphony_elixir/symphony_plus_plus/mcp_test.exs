@@ -4981,25 +4981,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
 
-    timestamp = ~U[2026-05-05 00:00:00Z]
-
-    assert {:ok, _branch} =
-             PlanningRepository.append_progress_event(repo, %{
-               work_package_id: package.id,
-               summary: "Branch attached",
-               status: "branch_attached",
-               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{package.id}", head_sha: "legacy-head"},
-               created_at: timestamp
-             })
-
-    assert {:ok, _pr} =
-             PlanningRepository.append_progress_event(repo, %{
-               work_package_id: package.id,
-               summary: "PR attached",
-               status: "pr_attached",
-               payload: %{type: "pr", source_tool: "attach_pr", url: "https://git.example.com/org/repo/pulls/7", head_sha: "legacy-head"},
-               created_at: DateTime.add(timestamp, 1, :second)
-             })
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/#{package.id}", "head_sha" => "legacy-head"})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://git.example.com/org/repo/pulls/7", "head_sha" => "legacy-head"})
 
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Ready review",

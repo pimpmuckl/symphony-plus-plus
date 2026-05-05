@@ -917,6 +917,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     reattach_missing = Enum.find(reattach_payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
 
     assert "current_pr_state" in reattach_missing["missing"]
+    assert reattach_payload["metadata"]["pr"]["source_tool"] == "attach_pr"
+    refute Map.has_key?(reattach_payload["metadata"]["pr"], "check_summary")
 
     assert {:ok, _resync_after_reattach} =
              PlanningRepository.append_progress_event(repo, %{
@@ -1191,7 +1193,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert payload["metadata"]["pr"]["current_head_sha"] == "current-head"
   end
 
-  test "metadata prefers synced PR state over later bare reattach for display", %{repo: repo} do
+  test "metadata does not display stale synced PR state after later reattach", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PR-SYNC-DISPLAY-PREFERRED", status: "planning"))
 
@@ -1264,10 +1266,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     payload = json_response(get(auth_conn(architect_secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
 
-    assert payload["metadata"]["pr"]["source_tool"] == "sync_pr"
-    assert payload["metadata"]["pr"]["check_summary"]["conclusion"] == "success"
-    assert payload["metadata"]["pr"]["review_state"]["state"] == "approved"
-    assert payload["metadata"]["pr"]["merge_state"]["state"] == "clean"
+    assert payload["metadata"]["pr"]["source_tool"] == "attach_pr"
+    refute Map.has_key?(payload["metadata"]["pr"], "check_summary")
+    refute Map.has_key?(payload["metadata"]["pr"], "review_state")
+    refute Map.has_key?(payload["metadata"]["pr"], "merge_state")
 
     assert {:ok, _rich_reattach} =
              PlanningRepository.append_progress_event(repo, %{

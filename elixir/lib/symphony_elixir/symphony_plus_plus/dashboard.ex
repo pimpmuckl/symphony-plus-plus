@@ -1091,9 +1091,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp pr_metadata(%{} = _pr, _head_filter), do: nil
 
   defp latest_pr_payload(progress_events, :none) do
-    case latest_attached_pr_ref(progress_events) do
-      {:ok, attached_ref} ->
-        latest_preferred_pr_payload(progress_events, :any, attached_ref)
+    case latest_attached_pr_ref_with_sequence(progress_events) do
+      {:ok, attached_ref, attach_sequence} ->
+        latest_preferred_pr_payload(progress_events, :any, attached_ref, attach_sequence)
 
       {:error, :not_found} ->
         nil
@@ -1101,28 +1101,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp latest_pr_payload(progress_events, head_filter) do
-    case latest_attached_pr_ref(progress_events) do
-      {:ok, attached_ref} ->
-        latest_preferred_pr_payload(progress_events, head_filter, attached_ref) ||
-          latest_preferred_pr_payload(progress_events, :any, attached_ref)
+    case latest_attached_pr_ref_with_sequence(progress_events) do
+      {:ok, attached_ref, attach_sequence} ->
+        latest_preferred_pr_payload(progress_events, head_filter, attached_ref, attach_sequence) ||
+          latest_preferred_pr_payload(progress_events, :any, attached_ref, attach_sequence)
 
       {:error, :not_found} ->
         nil
     end
   end
 
-  defp latest_preferred_pr_payload(progress_events, head_filter, attached_ref) do
+  defp latest_preferred_pr_payload(progress_events, head_filter, attached_ref, attach_sequence) do
     latest_payload = latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], head_filter, attached_ref)
 
     cond do
       is_nil(latest_payload) ->
-        latest_current_pr_payload(progress_events, head_filter, attached_ref)
+        latest_current_pr_payload(progress_events, head_filter, attached_ref, attach_sequence)
 
       display_pr_payload?(latest_payload) ->
         latest_payload
 
       true ->
-        latest_current_pr_payload(progress_events, head_filter, attached_ref) || latest_payload
+        latest_current_pr_payload(progress_events, head_filter, attached_ref, attach_sequence) || latest_payload
     end
   end
 
@@ -1130,13 +1130,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp display_pr_payload?(%{"source_tool" => "attach_pr"} = payload), do: semantic_pr_payload?(payload)
   defp display_pr_payload?(_payload), do: false
 
-  defp latest_current_pr_payload(progress_events, head_filter, attached_ref) do
+  defp latest_current_pr_payload(progress_events, head_filter, attached_ref, attach_sequence) do
     progress_events
     |> chronological_progress_events()
     |> Enum.reverse()
     |> Enum.find(fn
       %ProgressEvent{payload: payload} = event when is_map(payload) ->
-        payload_type?(event, "pr", ["attach_pr", "sync_pr"]) and payload_head_matches?(payload, head_filter) and
+        payload_type?(event, "pr", "sync_pr") and progress_after_pr_attach_boundary?(event, attach_sequence) and
+          payload_head_matches?(payload, head_filter) and
           pr_ref_matches?(payload, attached_ref) and current_pr_state_payload?(payload)
 
       %ProgressEvent{} ->

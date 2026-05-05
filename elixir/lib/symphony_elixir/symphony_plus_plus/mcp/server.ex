@@ -1628,6 +1628,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp pr_metadata_payload(repo, %Session{} = session, arguments, source_tool) do
+    case legacy_attach_pr_payload(arguments, source_tool) do
+      {:ok, payload} -> {:ok, payload}
+      :error -> github_pr_metadata_payload(repo, session, arguments, source_tool)
+    end
+  end
+
+  defp github_pr_metadata_payload(repo, %Session{} = session, arguments, source_tool) do
     with {:ok, %WorkPackage{} = work_package} <- WorkPackageRepository.get(repo, Session.work_package_id(session)),
          {:ok, metadata_input} <- pr_metadata_input(arguments, source_tool),
          {:ok, arguments} <- pr_reference_arguments(repo, session, arguments, source_tool),
@@ -1655,6 +1662,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         {:tool_error, reason_text(reason)}
     end
   end
+
+  defp legacy_attach_pr_payload(arguments, "attach_pr") do
+    with url when is_binary(url) <- Map.get(arguments, "url"),
+         trimmed_url = String.trim(url),
+         true <- trimmed_url != "",
+         true <- non_github_url?(trimmed_url) do
+      payload =
+        %{"type" => "pr", "source_tool" => "attach_pr", "url" => trimmed_url}
+        |> maybe_put_filled_string("head_sha", Map.get(arguments, "head_sha"))
+
+      {:ok, payload}
+    else
+      _value -> :error
+    end
+  end
+
+  defp legacy_attach_pr_payload(_arguments, _source_tool), do: :error
+
+  defp non_github_url?(url) do
+    case URI.parse(url) do
+      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] and is_binary(host) ->
+        String.downcase(host) != "github.com"
+
+      _uri ->
+        false
+    end
+  rescue
+    _error in URI.Error -> false
+  end
+
+  defp maybe_put_filled_string(payload, key, value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> payload
+      trimmed -> Map.put(payload, key, trimmed)
+    end
+  end
+
+  defp maybe_put_filled_string(payload, _key, _value), do: payload
 
   defp metadata_tool_response({:ok, _result} = result, _tool), do: result
   defp metadata_tool_response({:tool_error, reason}, tool), do: {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason}}
@@ -1788,6 +1833,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp validate_pr_sync_target_unless_replay(_repo, %Session{}, _arguments, _tool, true), do: :ok
+  defp validate_pr_sync_target_unless_replay(_repo, %Session{}, _payload, "attach_pr", false), do: :ok
 
   defp validate_pr_sync_target_unless_replay(repo, %Session{} = session, payload, tool, false) do
     with {:ok, ref} <- PullRequest.parse(payload, nil) do
