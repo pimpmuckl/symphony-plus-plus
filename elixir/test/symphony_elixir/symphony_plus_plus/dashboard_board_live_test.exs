@@ -172,6 +172,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     refute html =~ "wk_"
   end
 
+  test "does not render non-http PR metadata as a board link" do
+    create_board_package(%{
+      id: "SYMPP-P5-022",
+      kind: "dashboard",
+      status: "planning",
+      title: "Unsafe PR metadata package",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "symphony-plus-plus/beta",
+      pr_url: "javascript:alert(1)"
+    })
+
+    secret = create_architect_grant_secret(Repo, "SYMPP-P5-022")
+
+    {:ok, _view, html} = live(auth_conn(secret), "/sympp/board")
+
+    assert html =~ "Unsafe PR metadata package"
+    refute html =~ "href=\"javascript:alert(1)\""
+    refute html =~ ">PR</a>"
+  end
+
   test "uses the configured ledger path instead of an unrelated named repo" do
     database_path = WorkPackageFactory.database_path()
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
@@ -201,6 +221,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
 
     assert html =~ "Selected ledger package"
     assert html =~ "SYMPP-P5-010"
+  end
+
+  test "migrates an existing configured ledger before rendering the browser board" do
+    database_path = WorkPackageFactory.database_path()
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+
+    Application.put_env(:symphony_elixir, :sympp_repo_database, database_path)
+
+    on_exit(fn ->
+      restore_database_env(original_database)
+      File.rm(database_path)
+    end)
+
+    secret =
+      seed_legacy_repo(database_path, fn ->
+        insert_legacy_work_package(Repo, %{
+          id: "SYMPP-P5-021",
+          kind: "dashboard",
+          status: "implementing",
+          title: "Legacy configured package",
+          repo: "nextide/symphony-plus-plus",
+          base_branch: "symphony-plus-plus/beta"
+        })
+
+        create_architect_grant_secret(Repo, "SYMPP-P5-021")
+      end)
+
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/board")
+
+    assert html =~ "Legacy configured package"
+    refute html =~ "The Symphony++ work package ledger could not be read."
   end
 
   test "uses a running default repo when no configured ledger path exists" do
@@ -412,6 +463,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
 
     append_package_state(work_package, attrs)
     work_package
+  end
+
+  defp insert_legacy_work_package(repo, attrs) do
+    now = DateTime.utc_now(:microsecond)
+
+    repo.query!(
+      """
+      INSERT INTO sympp_work_packages
+        (id, kind, title, repo, base_branch, acceptance_criteria, status, inserted_at, updated_at)
+      VALUES
+        (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+      """,
+      [
+        attrs.id,
+        attrs.kind,
+        attrs.title,
+        attrs.repo,
+        attrs.base_branch,
+        "[]",
+        attrs.status,
+        now,
+        now
+      ]
+    )
+
+    :ok
   end
 
   defp append_package_state(work_package, attrs) do
@@ -663,6 +740,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
 
     try do
       assert :ok = WorkPackageRepository.migrate(Repo)
+      fun.()
+    after
+      Repo.put_dynamic_repo(original_repo)
+      stop_transient_repo(pid)
+    end
+  end
+
+  defp seed_legacy_repo(database_path, fun) do
+    {:ok, pid} = Repo.start_link(Repo.child_options(database: database_path, name: nil))
+    Process.unlink(pid)
+    original_repo = Repo.put_dynamic_repo(pid)
+
+    try do
+      Ecto.Migrator.run(Repo, WorkPackageRepository.migrations_path(), :up,
+        dynamic_repo: pid,
+        log: false,
+        to: 20_260_430_173_000
+      )
+
       fun.()
     after
       Repo.put_dynamic_repo(original_repo)

@@ -7,6 +7,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixirWeb.Endpoint
   alias SymphonyElixirWeb.SymppDashboardApiController
 
@@ -229,7 +230,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   defp start_custom_dashboard_repo(database_path, repo, fun) do
     case repo.start_link(database: database_path, name: nil) do
-      {:ok, pid} -> call_owned_custom_repo(unlink_transient_repo(pid), repo, fun)
+      {:ok, pid} -> call_owned_custom_repo(unlink_transient_repo(pid), repo, database_path, fun)
       {:error, {:already_started, pid}} -> call_existing_custom_repo(pid, repo, database_path, fun)
       {:error, reason} -> {:error, {:repo_start_failed, reason}}
     end
@@ -237,29 +238,39 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   defp call_existing_custom_repo(pid, repo, database_path, fun) do
     if custom_repo_uses_database?(pid, repo, database_path) do
-      call_dynamic_custom_repo(pid, repo, fun)
+      call_dynamic_custom_repo(pid, repo, database_path, fun)
     else
       {:error, {:repo_database_mismatch, repo}}
     end
   end
 
-  defp call_owned_custom_repo(pid, repo, fun) do
-    call_dynamic_custom_repo(pid, repo, fun)
+  defp call_owned_custom_repo(pid, repo, database_path, fun) do
+    call_dynamic_custom_repo(pid, repo, database_path, fun)
   after
     stop_transient_repo(pid)
   end
 
   defp custom_repo_uses_database?(pid, repo, database_path) do
-    call_dynamic_custom_repo(pid, repo, fn dynamic_repo ->
+    call_dynamic_custom_repo(pid, repo, database_path, false, fn dynamic_repo ->
       custom_repo_uses_database?(dynamic_repo, database_path)
     end)
   end
 
-  defp call_dynamic_custom_repo(pid, repo, fun) do
+  defp call_dynamic_custom_repo(pid, repo, database_path, fun) do
+    call_dynamic_custom_repo(pid, repo, database_path, true, fun)
+  end
+
+  defp call_dynamic_custom_repo(pid, repo, database_path, migrate?, fun) do
     original_repo = repo.put_dynamic_repo(pid)
 
     try do
-      fun.(repo)
+      if migrate? do
+        with :ok <- migrate_dashboard_repo(repo, pid, database_path) do
+          fun.(repo)
+        end
+      else
+        fun.(repo)
+      end
     after
       repo.put_dynamic_repo(original_repo)
     end
@@ -278,33 +289,40 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   defp read_running_default_dashboard_repo(fun) do
     case Process.whereis(Repo) do
       pid when is_pid(pid) ->
-        if running_repo_has_storage?(pid), do: fun.(Repo), else: {:error, :not_found}
+        case running_repo_database_path(pid) do
+          {:ok, database_path} -> call_dynamic_repo(pid, database_path, fun)
+          :error -> {:error, :not_found}
+        end
 
       nil ->
         {:error, :not_found}
     end
   end
 
-  defp running_repo_has_storage?(pid) do
+  defp running_repo_database_path(pid) do
     original_repo = Repo.put_dynamic_repo(pid)
 
     try do
       case Repo.query("PRAGMA database_list", []) do
-        {:ok, %{rows: rows}} -> Enum.any?(rows, &persistent_main_database_row?/1)
-        {:error, _reason} -> false
+        {:ok, %{rows: rows}} -> persistent_main_database_path(rows)
+        {:error, _reason} -> :error
       end
     rescue
-      _error in Exqlite.Error -> false
+      _error in Exqlite.Error -> :error
     after
       Repo.put_dynamic_repo(original_repo)
     end
   end
 
-  defp persistent_main_database_row?([_seq, "main", path]) when is_binary(path) and path != "" do
-    File.exists?(path)
-  end
+  defp persistent_main_database_path(rows) do
+    Enum.find_value(rows, :error, fn
+      [_seq, "main", path] when is_binary(path) and path != "" ->
+        if File.exists?(path), do: {:ok, path}
 
-  defp persistent_main_database_row?(_row), do: false
+      _row ->
+        nil
+    end)
+  end
 
   defp existing_database_path(nil), do: nil
   defp existing_database_path(database_path) when not is_binary(database_path), do: nil
@@ -334,7 +352,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   defp read_existing_dashboard_repo(database_path, fun) do
     case default_repo_pid(database_path) do
-      pid when is_pid(pid) -> call_dynamic_repo(pid, fun)
+      pid when is_pid(pid) -> call_dynamic_repo(pid, database_path, fun)
       :undefined -> start_transient_repo(database_path, fun)
     end
   end
@@ -391,14 +409,14 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     options = Repo.child_options(database: database_path, name: nil)
 
     case Repo.start_link(options) do
-      {:ok, pid} -> call_owned_repo(unlink_transient_repo(pid), fun)
-      {:error, {:already_started, pid}} -> call_dynamic_repo(pid, fun)
+      {:ok, pid} -> call_owned_repo(unlink_transient_repo(pid), database_path, fun)
+      {:error, {:already_started, pid}} -> call_dynamic_repo(pid, database_path, fun)
       {:error, reason} -> {:error, {:repo_start_failed, reason}}
     end
   end
 
-  defp call_owned_repo(pid, fun) do
-    call_dynamic_repo(pid, fun)
+  defp call_owned_repo(pid, database_path, fun) do
+    call_dynamic_repo(pid, database_path, fun)
   after
     stop_transient_repo(pid)
   end
@@ -408,14 +426,29 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     pid
   end
 
-  defp call_dynamic_repo(pid, fun) do
+  defp call_dynamic_repo(pid, database_path, fun) do
     original_repo = Repo.put_dynamic_repo(pid)
 
     try do
-      fun.(Repo)
+      with :ok <- migrate_dashboard_repo(Repo, pid, database_path) do
+        fun.(Repo)
+      end
     after
       Repo.put_dynamic_repo(original_repo)
     end
+  end
+
+  defp migrate_dashboard_repo(repo, pid, _database_path) do
+    Ecto.Migrator.run(repo, WorkPackageRepository.migrations_path(), :up,
+      all: true,
+      dynamic_repo: pid,
+      log: false
+    )
+
+    :ok
+  rescue
+    error in Exqlite.Error -> {:error, {:migration_failed, error}}
+    error -> {:error, {:migration_failed, error}}
   end
 
   defp stop_transient_repo(pid) when is_pid(pid) do
@@ -582,9 +615,19 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       _missing -> nil
     end
     |> case do
-      url when is_binary(url) and url != "[REDACTED]" -> url
+      url when is_binary(url) and url != "[REDACTED]" -> public_http_url(url)
       _url -> nil
     end
+  end
+
+  defp public_http_url(url) do
+    uri = URI.parse(url)
+
+    if uri.scheme in ["http", "https"] and is_binary(uri.host) and uri.host != "" do
+      url
+    end
+  rescue
+    _error in URI.Error -> nil
   end
 
   defp metadata_value(%{metadata: %{} = metadata}, atom_key, string_key) do
