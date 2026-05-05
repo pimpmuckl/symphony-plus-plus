@@ -4426,6 +4426,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     refute inspect(decoded_key_payload) =~ "ghp_should_not_surface"
     assert payload["check_summary"]["token"] == "[REDACTED]"
+    event_id = get_in(response, ["result", "structuredContent", "progress_event", "id"])
+
     assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
     assert Enum.any?(artifacts, &(&1.kind == "github_pr" and &1.path == "github-pr.json" and &1.uri == payload["url"]))
 
@@ -4433,7 +4435,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     replay_response = MCPHarness.request(sync_request, repo: repo, session: session)
 
-    assert get_in(replay_response, ["error", "data", "reason"]) == "pr_mismatch"
+    assert get_in(replay_response, ["result", "structuredContent", "progress_event", "id"]) == event_id
 
     assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
     pr_artifacts = Enum.filter(artifacts, &(&1.kind == "github_pr" and &1.path == "github-pr.json"))

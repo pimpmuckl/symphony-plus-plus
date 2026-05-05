@@ -387,6 +387,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
       {:ok, policy_key} ->
         with {:ok, policy} <- Templates.expand(policy_key),
              true <- Templates.compatible_kind?(kind, policy_key),
+             :ok <- reject_exact_policy_alias_mismatch(kind, policy_key, policy, policy_templates),
              true <- Enum.all?(policy_templates, &Templates.matches?(policy_key, &1)) do
           {:ok, policy_key, policy}
         else
@@ -415,6 +416,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
       [] -> :none
       [policy_key] -> {:ok, policy_key}
       _multiple -> {:error, :policy_template_mismatch}
+    end
+  end
+
+  defp reject_exact_policy_alias_mismatch(kind, policy_key, policy, policy_templates) do
+    template_alias = Map.get(policy, :template)
+
+    if policy_key != kind and template_alias != policy_key and template_alias in policy_templates do
+      {:error, :policy_template_mismatch}
+    else
+      :ok
     end
   end
 
