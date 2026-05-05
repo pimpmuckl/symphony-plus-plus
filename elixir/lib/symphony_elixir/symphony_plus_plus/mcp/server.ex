@@ -1061,7 +1061,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp integer_schema, do: %{"type" => "integer"}
   defp nullable_string_schema, do: %{"type" => ["string", "null"]}
   defp object_schema, do: %{"type" => "object", "additionalProperties" => true}
-  defp metadata_head_schema, do: %{"type" => "object", "additionalProperties" => true, "properties" => %{"head_sha" => string_schema()}, "required" => ["head_sha"]}
+
+  defp metadata_head_schema do
+    %{
+      "type" => "object",
+      "additionalProperties" => true,
+      "properties" => %{
+        "head_sha" => string_schema(),
+        "head" => %{
+          "type" => "object",
+          "additionalProperties" => true,
+          "properties" => %{"sha" => string_schema()},
+          "required" => ["sha"]
+        }
+      },
+      "anyOf" => [%{"required" => ["head_sha"]}, %{"required" => ["head"]}]
+    }
+  end
+
   defp nonempty_string_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => nonblank_string_schema()}
   defp nonempty_object_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => object_schema()}
 

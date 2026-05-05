@@ -989,6 +989,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     |> Map.put("current_head_sha", current_head_sha)
   end
 
+  defp pr_metadata(%{} = pr, :none), do: pr
   defp pr_metadata(%{} = _pr, _head_filter), do: nil
 
   defp latest_current_payload(progress_events, type, source_tool, :none) do

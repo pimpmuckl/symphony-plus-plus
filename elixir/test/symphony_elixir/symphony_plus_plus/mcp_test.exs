@@ -358,6 +358,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["attach_branch", "inputSchema", "required"]) == ["branch", "head_sha"]
     assert get_in(tools_by_name, ["attach_branch", "inputSchema", "properties", "head_sha", "type"]) == "string"
 
+    pr_metadata_schema = %{
+      "type" => "object",
+      "additionalProperties" => true,
+      "properties" => %{
+        "head_sha" => %{"type" => "string"},
+        "head" => %{
+          "type" => "object",
+          "additionalProperties" => true,
+          "properties" => %{"sha" => %{"type" => "string"}},
+          "required" => ["sha"]
+        }
+      },
+      "anyOf" => [%{"required" => ["head_sha"]}, %{"required" => ["head"]}]
+    }
+
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "allOf"]) == [
              %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]},
              %{
@@ -365,14 +380,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                  %{"required" => ["head_sha"]},
                  %{
                    "required" => ["metadata"],
-                   "properties" => %{
-                     "metadata" => %{
-                       "type" => "object",
-                       "additionalProperties" => true,
-                       "properties" => %{"head_sha" => %{"type" => "string"}},
-                       "required" => ["head_sha"]
-                     }
-                   }
+                   "properties" => %{"metadata" => pr_metadata_schema}
                  }
                ]
              }
@@ -382,6 +390,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "metadata", "type"]) == "object"
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "required"]) == ["metadata"]
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "anyOf"]) == [%{"required" => ["url"]}, %{"required" => ["number"]}]
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "metadata"]) == pr_metadata_schema
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts", "head_sha"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "type"]) == "array"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "tests", "minItems"]) == 1

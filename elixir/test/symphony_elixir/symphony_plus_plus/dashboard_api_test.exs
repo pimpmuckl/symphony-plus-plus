@@ -868,7 +868,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert card.metadata.pr["url"] == "https://github.com/example/repo/pull/1"
   end
 
-  test "metadata suppresses PR and review payloads without a current branch head", %{repo: repo} do
+  test "metadata preserves PR and suppresses review payloads without a current branch head", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BRANCHLESS", status: "planning"))
 
@@ -893,7 +893,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     payload = json_response(get(auth_conn(architect_secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
 
     assert payload["metadata"]["branch"] == nil
-    assert payload["metadata"]["pr"] == nil
+    assert payload["metadata"]["pr"]["url"] == "https://github.com/example/repo/pull/99"
+    assert payload["metadata"]["pr"]["head_sha"] == "stale"
+    refute Map.has_key?(payload["metadata"]["pr"], "stale")
+    refute Map.has_key?(payload["metadata"]["pr"], "current_head_sha")
     assert payload["metadata"]["review_package"] == nil
   end
 
@@ -1063,7 +1066,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     refute Enum.any?(payload["grants"], &(&1["status"] == "unclaimed"))
     assert payload["metadata"]["branch"]["branch"] == "agent/#{work_package.id}-new"
     assert payload["metadata"]["branch"]["head_sha"] == ""
-    assert payload["metadata"]["pr"] == nil
+    assert payload["metadata"]["pr"]["url"] == "https://github.com/example/repo/pull/old"
+    assert payload["metadata"]["pr"]["head_sha"] == "old123"
+    refute Map.has_key?(payload["metadata"]["pr"], "stale")
     assert payload["metadata"]["review_package"] == nil
   end
 
