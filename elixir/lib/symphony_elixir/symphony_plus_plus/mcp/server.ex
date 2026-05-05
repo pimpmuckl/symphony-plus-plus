@@ -1070,7 +1070,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp nonblank_string_schema, do: %{"type" => "string", "minLength" => 1, "pattern" => "\\S"}
   defp boolean_schema, do: %{"type" => "boolean"}
   defp integer_schema, do: %{"type" => "integer"}
-  defp pr_number_schema, do: %{"type" => ["integer", "string"], "pattern" => "^[1-9][0-9]*$"}
+
+  defp pr_number_schema do
+    %{"anyOf" => [%{"type" => "integer", "minimum" => 1}, %{"type" => "string", "pattern" => "^[1-9][0-9]*$"}]}
+  end
+
   defp nullable_string_schema, do: %{"type" => ["string", "null"]}
   defp object_schema, do: %{"type" => "object", "additionalProperties" => true}
 

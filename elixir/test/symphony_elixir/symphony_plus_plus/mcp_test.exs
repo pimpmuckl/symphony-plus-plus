@@ -415,8 +415,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
            ]
 
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == "string"
-    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "number", "type"]) == ["integer", "string"]
-    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "number", "pattern"]) == "^[1-9][0-9]*$"
+
+    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "number", "anyOf"]) == [
+             %{"type" => "integer", "minimum" => 1},
+             %{"type" => "string", "pattern" => "^[1-9][0-9]*$"}
+           ]
+
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "metadata", "type"]) == "object"
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "required"]) == ["metadata"]
 
@@ -434,8 +438,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
            ]
 
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "metadata", "type"]) == "object"
-    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "number", "type"]) == ["integer", "string"]
-    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "number", "pattern"]) == "^[1-9][0-9]*$"
+
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "number", "anyOf"]) == [
+             %{"type" => "integer", "minimum" => 1},
+             %{"type" => "string", "pattern" => "^[1-9][0-9]*$"}
+           ]
+
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts", "head_sha"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "type"]) == "array"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "tests", "minItems"]) == 1
