@@ -716,7 +716,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp review_package_tests_recorded?(progress_events, readiness_head_sha) do
     case latest_review_package_event(progress_events, readiness_head_sha) do
       %ProgressEvent{payload: payload} when is_map(payload) ->
-        payload |> Map.get("tests", []) |> Enum.any?(&(is_binary(&1) and String.trim(&1) != ""))
+        case Map.get(payload, "tests") do
+          tests when is_list(tests) -> Enum.any?(tests, &(is_binary(&1) and String.trim(&1) != ""))
+          _tests -> false
+        end
 
       _event ->
         false

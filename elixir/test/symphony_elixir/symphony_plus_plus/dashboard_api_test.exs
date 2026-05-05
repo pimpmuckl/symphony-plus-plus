@@ -578,6 +578,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     refute "review_lanes_complete" in missing["missing"]
   end
 
+  test "malformed review package tests payload is treated as missing evidence", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-MALFORMED-TESTS",
+                 kind: "mcp",
+                 status: "ready_for_human_merge",
+                 policy_template: "mcp"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    append_ready_evidence_with_review_artifacts(repo, work_package, ["review-log.txt"])
+
+    assert {:ok, _malformed_review_package} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Malformed review package submitted",
+               status: "review_package_submitted",
+               payload: %{
+                 type: "review_package",
+                 source_tool: "submit_review_package",
+                 acceptance_criteria_met: true,
+                 tests: "mix test",
+                 artifacts: ["review-log.txt"],
+                 reviews: [
+                   %{lane: "review_t1", verdict: "green"},
+                   %{lane: "review_t2", verdict: "green"}
+                 ],
+                 head_sha: "abc123"
+               },
+               created_at: DateTime.add(~U[2026-05-05 00:00:00Z], 5, :second)
+             })
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert missing["active"] == true
+    assert "tests_passed" in missing["missing"]
+    refute "review_package_submitted" in missing["missing"]
+    refute "review_artifacts_attached" in missing["missing"]
+    refute "acceptance_criteria_met" in missing["missing"]
+    refute "review_lanes_complete" in missing["missing"]
+  end
+
   test "generic readiness statuses before latest branch do not clear missing evidence", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(
