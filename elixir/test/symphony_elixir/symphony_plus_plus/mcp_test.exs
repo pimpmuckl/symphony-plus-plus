@@ -488,6 +488,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                "read:child_findings",
                "mint:child_worker_key",
                "read:phase",
+               "approve:scope_expansion",
                "merge:child_into_phase",
                "split:child_work_package"
              ])
@@ -510,6 +511,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["read_child_status", "inputSchema", "required"]) == ["work_package_id"]
     assert get_in(tools_by_name, ["read_child_status", "inputSchema", "properties", "work_package_id", "type"]) == "string"
     assert get_in(tools_by_name, ["read_phase_board", "inputSchema", "required"]) == ["phase_id"]
+    assert get_in(tools_by_name, ["approve_scope_expansion", "inputSchema", "required"]) == ["work_package_id", "allowed_file_globs", "rationale"]
+    assert get_in(tools_by_name, ["approve_scope_expansion", "inputSchema", "properties", "allowed_file_globs", "minItems"]) == 1
     assert get_in(tools_by_name, ["mint_child_worker_key", "inputSchema", "required"]) == ["work_package_id", "template"]
     assert get_in(tools_by_name, ["mint_child_worker_key", "inputSchema", "properties", "template", "type"]) == "object"
     assert get_in(tools_by_name, ["merge_child_into_phase", "inputSchema", "required"]) == ["work_package_id", "merge_artifact"]
@@ -3482,6 +3485,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(missing_response, ["error", "data", "reason"]) == "readiness_failed"
     assert "pr_attached" in get_in(missing_response, ["error", "data", "missing"])
+    assert Enum.any?(get_in(missing_response, ["error", "data", "reasons"]), &(&1["gate"] == "plan_complete"))
 
     bypass_response =
       MCPHarness.request(
@@ -5456,6 +5460,154 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(post_ready_response, ["error", "data", "reason"]) == "already_ready"
   end
 
+  test "scope guard blocks out-of-scope PR files until architect approval expands allowed globs", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-SCOPE-GUARD-READY",
+                 kind: "mcp",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta",
+                 status: "ci_waiting",
+                 policy_template: "mcp_changed_file_scope_guard",
+                 allowed_file_globs: ["elixir/lib/**"]
+               )
+             )
+
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+    head_sha = "scope-head-a"
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-SCOPE-GUARD-READY/worker", "head_sha" => head_sha})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/nextide/symphony-plus-plus/pull/903", "head_sha" => head_sha})
+
+    attach_tool(repo, session, "sync_pr", %{
+      "url" => "https://github.com/nextide/symphony-plus-plus/pull/903",
+      "metadata" => %{
+        "head_sha" => head_sha,
+        "base_branch" => "symphony-plus-plus/beta",
+        "changed_files" => [
+          %{"filename" => "elixir/lib/symphony_elixir/symphony_plus_plus/readiness/scope_guard.ex", "status" => "added"},
+          %{"filename" => "docs/scope-contract.md", "status" => "added", "token" => "ghp_scope_secret"}
+        ],
+        "check_summary" => %{"conclusion" => "success", "token" => "ghp_scope_secret"},
+        "review_state" => %{"state" => "approved"},
+        "merge_state" => %{"state" => "clean"}
+      }
+    })
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready review package",
+      "tests" => ["mix test"],
+      "artifacts" => ["review.txt"],
+      "head_sha" => head_sha,
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
+
+    attach_tool(repo, session, "attach_review_suite_result", %{
+      "work_package_id" => package.id,
+      "head_sha" => head_sha,
+      "suite" => "review-suite",
+      "anchor" => "phase_gate-scope-head-a",
+      "summary" => "T1 and T2 are green",
+      "status" => "passed",
+      "verdict" => "green"
+    })
+
+    request_response =
+      attach_tool(repo, session, "request_scope_expansion", %{
+        "summary" => "Need docs scope for the contract note",
+        "idempotency_key" => "scope-docs-request",
+        "payload" => %{"requested_file_globs" => ["docs/**"]}
+      })
+
+    request_id = get_in(request_response, ["result", "structuredContent", "progress_event", "id"])
+
+    out_of_scope_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-scope-out", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "scope_guard" in get_in(out_of_scope_response, ["error", "data", "missing"])
+    scope_reason = Enum.find(get_in(out_of_scope_response, ["error", "data", "reasons"]), &(&1["gate"] == "scope_guard"))
+    assert scope_reason["code"] == "out_of_scope_files"
+    assert scope_reason["files"] == ["docs/scope-contract.md"]
+    refute inspect(out_of_scope_response) =~ "ghp_scope_secret"
+
+    worker_approval_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "worker-approval-denied",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "approve_scope_expansion",
+            "arguments" => %{"work_package_id" => package.id, "allowed_file_globs" => ["docs/**"], "request_id" => request_id, "rationale" => "Worker cannot approve"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(worker_approval_response, ["error", "data", "reason"]) == "architect_grant_required"
+
+    attach_tool(repo, session, "append_progress", %{
+      "summary" => "Spoofed scope approval",
+      "idempotency_key" => "spoof-scope-approval",
+      "payload" => %{
+        "type" => "scope_expansion_approval",
+        "source_tool" => "approve_scope_expansion",
+        "approved" => true,
+        "allowed_file_globs" => ["docs/**"]
+      }
+    })
+
+    assert {:ok, spoofed_package} = WorkPackageRepository.get(repo, package.id)
+    assert spoofed_package.allowed_file_globs == ["elixir/lib/**"]
+
+    spoofed_ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-after-spoofed-scope", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "scope_guard" in get_in(spoofed_ready_response, ["error", "data", "missing"])
+
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["approve:scope_expansion"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    architect_session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+
+    approval_response =
+      attach_tool(repo, architect_session, "approve_scope_expansion", %{
+        "work_package_id" => package.id,
+        "allowed_file_globs" => ["docs/**"],
+        "request_id" => request_id,
+        "rationale" => "Docs contract file is part of the current package."
+      })
+
+    assert get_in(approval_response, ["result", "structuredContent", "allowed_file_globs"]) == ["elixir/lib/**", "docs/**"]
+    assert get_in(approval_response, ["result", "structuredContent", "progress_event", "payload", "approved"]) == true
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-after-scope-approval", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+  end
+
   test "review-suite result rejects missing head, wrong package, stale head, non-passing verdicts, and failed-result override", %{repo: repo} do
     assert {:ok, package} =
              WorkPackageRepository.create(
@@ -5874,6 +6026,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert "no_active_blockers" in get_in(blocked_response, ["error", "data", "missing"])
+    assert Enum.any?(get_in(blocked_response, ["error", "data", "reasons"]), &(&1["gate"] == "no_active_blockers"))
 
     resolved_response =
       MCPHarness.request(
@@ -6110,6 +6263,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert "recommendation_artifact_recorded" in get_in(missing_recommendation_response, ["error", "data", "missing"])
     refute "current_pr_state" in get_in(missing_recommendation_response, ["error", "data", "missing"])
+    refute "scope_guard" in get_in(missing_recommendation_response, ["error", "data", "missing"])
 
     spoofed_artifact_id =
       "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, Enum.join([package.id, "recommendation", "recommendation.md"], ":")), padding: false)

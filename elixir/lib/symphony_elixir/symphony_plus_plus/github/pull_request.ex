@@ -66,7 +66,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
     with :ok <- validate_metadata_ref(metadata, ref),
          {:ok, head_sha} <- metadata_head_sha(metadata, fallback_head_sha),
          {:ok, branch} <- metadata_branch(metadata),
-         {:ok, changed_files, changed_files_count} <- metadata_changed_files(metadata),
+         {:ok, base_branch} <- metadata_base_branch(metadata),
+         {:ok, changed_files, changed_files_count, changed_files_available} <- metadata_changed_files(metadata),
          {:ok, check_summary} <- metadata_map(metadata, "check_summary", %{}),
          {:ok, review_state} <- metadata_map(metadata, "review_state", github_review_state(metadata)),
          {:ok, merge_state} <- metadata_map(metadata, "merge_state", github_merge_state(metadata)) do
@@ -80,9 +81,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
          "repo" => ref.repo,
          "number" => ref.number,
          "branch" => branch,
+         "base_branch" => base_branch,
          "head_sha" => head_sha,
          "changed_files" => changed_files,
          "changed_files_count" => changed_files_count,
+         "changed_files_available" => changed_files_available,
          "check_summary" => Redactor.redact(check_summary),
          "review_state" => Redactor.redact(review_state),
          "merge_state" => Redactor.redact(merge_state)
@@ -291,14 +294,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
     end
   end
 
+  defp metadata_base_branch(metadata) do
+    case Map.get(metadata, "base_branch") || get_in(metadata, ["base", "ref"]) do
+      value when is_binary(value) ->
+        value = String.trim(value)
+        if value == "", do: {:ok, nil}, else: {:ok, value}
+
+      _value ->
+        {:ok, nil}
+    end
+  end
+
   defp metadata_changed_files(metadata) do
-    case Map.get(metadata, "changed_files", []) do
+    case Map.get(metadata, "changed_files", :missing) do
       values when is_list(values) ->
         changed_files = Enum.map(values, &changed_file/1)
-        {:ok, changed_files, length(changed_files)}
+        {:ok, changed_files, length(changed_files), true}
 
       count when is_integer(count) and count >= 0 ->
-        {:ok, [], count}
+        {:ok, [], count, false}
+
+      :missing ->
+        {:ok, [], 0, false}
 
       _value ->
         {:error, :invalid_changed_files}

@@ -87,6 +87,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
     metadata = %{
       "head_sha" => "abc123",
       "branch" => "agent/SYMPP-P6-001/github-pr-attachment-sync",
+      "base_branch" => "symphony-plus-plus/beta",
       "changed_files" => [%{"filename" => "elixir/lib/example.ex", "status" => "modified"}],
       "check_summary" => %{"state" => "success", "token" => "ghp_should_not_surface"},
       "review_state" => %{"state" => "approved", "authorization" => "Bearer secret"},
@@ -99,8 +100,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
     assert payload["repository"] == "nextide/symphony-plus-plus"
     assert payload["number"] == 42
     assert payload["head_sha"] == "abc123"
+    assert payload["base_branch"] == "symphony-plus-plus/beta"
     assert payload["changed_files"] == [%{"path" => "elixir/lib/example.ex", "status" => "modified"}]
     assert payload["changed_files_count"] == 1
+    assert payload["changed_files_available"] == true
     assert payload["check_summary"] == %{"state" => "success", "token" => "[REDACTED]"}
     assert payload["review_state"] == %{"state" => "approved", "authorization" => "[REDACTED]"}
     assert payload["merge_state"] == %{"state" => "clean", "client_secret" => "[REDACTED]"}
@@ -156,6 +159,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
 
     assert payload["changed_files"] == []
     assert payload["changed_files_count"] == 3
+    assert payload["changed_files_available"] == false
   end
 
   test "detects stale PR metadata by head sha" do

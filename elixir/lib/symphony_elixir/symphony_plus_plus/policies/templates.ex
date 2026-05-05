@@ -82,6 +82,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       ],
       review_suite: %{required: ["review_t1", "review_t2"], optional: ["review_github"]}
     },
+    "mcp_changed_file_scope_guard" => %{
+      work_package_kind: "mcp",
+      template: "worker_package",
+      constraints: %{
+        expiry_seconds: 86_400,
+        planning_depth: "package",
+        terminal_readiness_status: "ready_for_human_merge"
+      },
+      required_gates: [
+        "package_acceptance",
+        "focused_tests",
+        "review_t1",
+        "review_t2",
+        "human_merge",
+        "current_pr_state",
+        "review_suite_result",
+        "scope_guard"
+      ],
+      readiness_requirements: [
+        "acceptance_criteria_met",
+        "tests_passed",
+        "review_t1_green",
+        "review_t2_green",
+        "current_pr_state",
+        "review_suite_result",
+        "scope_guard"
+      ],
+      review_suite: %{required: ["review_t1", "review_t2"], optional: ["review_github"]}
+    },
     "skill" => %{
       template: "worker_package",
       constraints: %{

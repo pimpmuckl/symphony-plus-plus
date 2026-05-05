@@ -16,6 +16,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Renderer, as: PlanningRenderer
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
+  alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
@@ -45,6 +46,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "mint_child_worker_key",
     "revoke_child_worker_key",
     "read_child_status",
+    "approve_scope_expansion",
     "read_phase_board",
     "request_child_replan",
     "approve_child_ready_state",
@@ -69,6 +71,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @handle_state_ttl_ms 86_400_000
   @explicit_handle_state_ttl_ms 604_800_000
   @handle_state_agent Module.concat(__MODULE__, HandleState)
+  @scope_guard_gate "scope_guard"
   @plan_append_argument_keys ["body", "expected_version", "id", "status", "title", "work_package_id"]
   @plan_patch_argument_keys ["expected_version", "patch", "work_package_id"]
   @plan_node_patch_keys ["body", "id", "status", "title"]
@@ -831,6 +834,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "Read the architect grant's scoped child work-package status without Phase 7 delegation."
   end
 
+  defp architect_tool_description("approve_scope_expansion") do
+    "Approve additional allowed file globs for this scoped work package."
+  end
+
   defp architect_tool_description(name) when name in @phase7_architect_tools do
     "Phase 7 architect tool #{name}; authorization is enforced, but behavior is not implemented yet."
   end
@@ -1002,6 +1009,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool_input_schema("read_child_status"), do: schema(%{"work_package_id" => string_schema()}, ["work_package_id"])
+
+  defp architect_tool_input_schema("approve_scope_expansion") do
+    schema(
+      %{
+        "work_package_id" => string_schema(),
+        "allowed_file_globs" => nonempty_string_array_schema(),
+        "request_id" => string_schema(),
+        "rationale" => string_schema()
+      },
+      ["work_package_id", "allowed_file_globs", "rationale"]
+    )
+  end
+
   defp architect_tool_input_schema("read_phase_board"), do: schema(%{"phase_id" => string_schema()}, ["phase_id"])
 
   defp architect_tool_input_schema("request_child_replan") do
@@ -1448,6 +1468,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp architect_tool("approve_scope_expansion", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "approve:scope_expansion"),
+         {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
+         :ok <- require_architect_work_package_scope(session, work_package_id),
+         {:ok, allowed_file_globs} <- required_string_list(arguments, "allowed_file_globs"),
+         {:ok, rationale} <- required_argument(arguments, "rationale"),
+         {:ok, result} <- approve_scope_expansion_transaction(config.repo, session, arguments, allowed_file_globs, rationale) do
+      {:ok, tool_result(result)}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "approve_scope_expansion", "reason" => reason}}
+      {:error, reason} -> architect_error(reason, "approve_scope_expansion")
+    end
+  end
+
   defp architect_tool(name, arguments, %__MODULE__{config: config, session: session}) when name in @phase7_architect_tools do
     with {:ok, session} <- architect_session(config.repo, session, architect_tool_capability(name)),
          :ok <- require_architect_target_scope(session, arguments) do
@@ -1668,6 +1702,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, work_package} <- mark_ready_transaction(config.repo, session) do
       {:ok, tool_result(%{"work_package" => work_package_payload(work_package), "ready" => true})}
     else
+      {:error, {:readiness_failed, missing, reasons}} ->
+        {:error, -32_602, "Invalid params", %{"tool" => "mark_ready", "reason" => "readiness_failed", "missing" => missing, "reasons" => reasons}}
+
       {:error, {:readiness_failed, missing}} ->
         {:error, -32_602, "Invalid params", %{"tool" => "mark_ready", "reason" => "readiness_failed", "missing" => missing}}
 
@@ -2004,6 +2041,81 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end)
   end
 
+  defp approve_scope_expansion_transaction(repo, %Session{} = session, arguments, allowed_file_globs, rationale) do
+    repo.transaction(fn ->
+      work_package_id = Session.work_package_id(session)
+
+      with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
+           :ok <- lock_work_package(repo, work_package_id),
+           {:ok, state} <- PlanningRepository.get_state(repo, work_package_id),
+           :ok <- reject_ready_work_package(state.work_package),
+           {:ok, effective_globs} <- ScopeGuard.approve_file_globs(state.work_package, allowed_file_globs),
+           {:ok, updated_work_package} <- WorkPackageRepository.update(repo, work_package_id, %{"allowed_file_globs" => effective_globs}),
+           {:ok, event} <-
+             PlanningRepository.append_audit_progress_event(
+               repo,
+               session.assignment,
+               scope_expansion_approval_attrs(
+                 state.work_package,
+                 updated_work_package,
+                 arguments,
+                 allowed_file_globs,
+                 rationale
+               )
+             ) do
+        %{
+          "work_package" => work_package_payload(updated_work_package),
+          "allowed_file_globs" => updated_work_package.allowed_file_globs,
+          "progress_event" => progress_event_payload(event)
+        }
+      else
+        {:tool_error, reason} -> repo.rollback({:tool_error, reason})
+        {:error, reason} -> repo.rollback({:error, reason})
+      end
+    end)
+    |> case do
+      {:ok, result} -> {:ok, result}
+      {:error, {:tool_error, reason}} -> {:tool_error, reason}
+      {:error, {:error, reason}} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp scope_expansion_approval_attrs(%WorkPackage{} = previous_work_package, %WorkPackage{} = updated_work_package, arguments, allowed_file_globs, rationale) do
+    request_id = optional_trimmed_string(arguments, "request_id")
+
+    payload =
+      %{
+        "type" => "scope_expansion_approval",
+        "source_tool" => "approve_scope_expansion",
+        "approved" => true,
+        "request_id" => request_id,
+        "approved_file_globs" => allowed_file_globs,
+        "previous_allowed_file_globs" => previous_work_package.allowed_file_globs || [],
+        "allowed_file_globs" => updated_work_package.allowed_file_globs || []
+      }
+      |> Map.reject(fn {_key, value} -> is_nil(value) end)
+
+    %{
+      "summary" => "Scope expansion approved",
+      "body" => rationale,
+      "status" => "scope_expansion_approved",
+      "idempotency_key" => metadata_idempotency_key(Map.put(payload, "rationale", rationale)),
+      "payload" => payload
+    }
+  end
+
+  defp optional_trimmed_string(arguments, key) do
+    case Map.get(arguments, key) do
+      value when is_binary(value) ->
+        value = String.trim(value)
+        if value == "", do: nil, else: value
+
+      _value ->
+        nil
+    end
+  end
+
   defp run_worker_transaction(repo, fun) do
     case repo.transaction(fn -> rollback_worker_transaction_result(repo, fun.()) end) do
       {:ok, result} -> {:ok, result}
@@ -2060,6 +2172,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool_capability("mint_child_worker_key"), do: "mint:child_worker_key"
   defp architect_tool_capability("revoke_child_worker_key"), do: "revoke:child_worker_key"
   defp architect_tool_capability("read_phase_board"), do: "read:phase"
+  defp architect_tool_capability("approve_scope_expansion"), do: "approve:scope_expansion"
   defp architect_tool_capability("request_child_replan"), do: "request:child_replan"
   defp architect_tool_capability("approve_child_ready_state"), do: "approve:child_ready_state"
   defp architect_tool_capability("merge_child_into_phase"), do: "merge:child_into_phase"
@@ -3258,12 +3371,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp readiness_gates(state) do
     required_review_lanes = required_review_lanes(state.work_package)
 
-    missing = missing_readiness_gates(state, required_review_lanes)
+    reasons = readiness_failure_reasons(state, required_review_lanes)
+    missing = missing_readiness_gates(reasons)
 
-    if missing == [], do: :ok, else: {:error, {:readiness_failed, Enum.reverse(missing)}}
+    if missing == [], do: :ok, else: {:error, {:readiness_failed, missing, reasons}}
   end
 
-  defp missing_readiness_gates(state, required_review_lanes) do
+  defp missing_readiness_gates(reasons) do
+    reasons
+    |> Enum.map(&Map.fetch!(&1, "gate"))
+    |> Enum.uniq()
+  end
+
+  defp readiness_failure_reasons(state, required_review_lanes) do
     [
       {state.work_package.status != "ci_waiting", "status_ci_waiting"},
       {active_blocker?(state.progress_events), "no_active_blockers"},
@@ -3274,17 +3394,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {merge_metadata_missing?(state, "pr"), "pr_attached"},
       {current_pr_state_missing?(state), "current_pr_state"},
       {review_suite_result_missing?(state), "review_suite_result"},
+      {ScopeGuard.missing?(state.work_package, state.progress_events), @scope_guard_gate},
       {review_package_missing?(state, required_review_lanes), "review_package_submitted"},
       {review_artifacts_missing?(state, required_review_lanes), "review_artifacts_attached"},
       {review_lanes_missing?(state, required_review_lanes), "review_lanes_complete"},
       {investigation_findings_missing?(state), "findings_documented"},
       {investigation_recommendation_missing?(state), "recommendation_artifact_recorded"}
     ]
-    |> Enum.reduce([], fn
-      {true, gate}, missing -> [gate | missing]
-      {false, _gate}, missing -> missing
+    |> Enum.flat_map(fn
+      {true, @scope_guard_gate} -> ScopeGuard.failure_reasons(state.work_package, state.progress_events)
+      {true, gate} -> [readiness_failure_reason(gate)]
+      {false, _gate} -> []
     end)
   end
+
+  defp readiness_failure_reason(gate) do
+    %{
+      "gate" => gate,
+      "code" => gate,
+      "message" => readiness_failure_message(gate)
+    }
+  end
+
+  defp readiness_failure_message("status_ci_waiting"), do: "Work package must be in ci_waiting before mark_ready."
+  defp readiness_failure_message("no_active_blockers"), do: "Active blockers must be resolved before mark_ready."
+  defp readiness_failure_message("plan_complete"), do: "Required package plan nodes must be complete."
+  defp readiness_failure_message("acceptance_criteria_met"), do: "Acceptance criteria evidence is missing."
+  defp readiness_failure_message("tests_passed"), do: "Focused test evidence is missing."
+  defp readiness_failure_message("branch_attached"), do: "Current branch metadata is missing."
+  defp readiness_failure_message("pr_attached"), do: "Current PR metadata is missing."
+  defp readiness_failure_message("current_pr_state"), do: "Current synced PR state is missing."
+  defp readiness_failure_message("review_suite_result"), do: "Current-head review-suite result evidence is missing."
+  defp readiness_failure_message("review_package_submitted"), do: "Current-head review package is missing."
+  defp readiness_failure_message("review_artifacts_attached"), do: "Current-head review artifacts are missing."
+  defp readiness_failure_message("review_lanes_complete"), do: "Required review lanes are not green."
+  defp readiness_failure_message("findings_documented"), do: "Investigation findings are missing."
+  defp readiness_failure_message("recommendation_artifact_recorded"), do: "Investigation recommendation artifact is missing."
+  defp readiness_failure_message(_gate), do: "Readiness gate is not satisfied."
 
   defp merge_metadata_missing?(state, "pr") do
     current_head_sha = latest_current_head_sha(state.progress_events)
@@ -3967,10 +4113,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         :ok
 
       {[_head | _tail] = values, "array"} ->
-        if Enum.all?(values, &is_map/1), do: :ok, else: {:error, "invalid_#{key}"}
+        validate_required_architect_array_argument(properties, key, values)
 
       {_value, _type} ->
         {:error, "missing_#{key}"}
+    end
+  end
+
+  defp validate_required_architect_array_argument(properties, key, values) do
+    case get_in(properties, [key, "items", "type"]) do
+      "string" ->
+        if Enum.all?(values, &(is_binary(&1) and String.trim(&1) != "")), do: :ok, else: {:error, "invalid_#{key}"}
+
+      _item_type ->
+        if Enum.all?(values, &is_map/1), do: :ok, else: {:error, "invalid_#{key}"}
     end
   end
 
@@ -4096,12 +4252,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp merge_tool_payload(_tool, caller_payload, tool_payload), do: Map.merge(caller_payload, tool_payload)
 
-  defp drop_protected_append_progress_payload(%{"type" => "scope_expansion_request"} = caller_payload) do
-    Map.drop(caller_payload, ["type", "source_tool", "recommendation_artifact_id", "approved", "requested_file_globs"])
+  defp drop_protected_append_progress_payload(%{"type" => type} = caller_payload) when type in ["scope_expansion_request", "scope_expansion_approval"] do
+    Map.drop(caller_payload, [
+      "type",
+      "source_tool",
+      "recommendation_artifact_id",
+      "approved",
+      "requested_file_globs",
+      "approved_file_globs",
+      "allowed_file_globs",
+      "previous_allowed_file_globs",
+      "request_id"
+    ])
   end
 
   defp drop_protected_append_progress_payload(caller_payload) do
-    Map.drop(caller_payload, ["source_tool", "recommendation_artifact_id", "approved", "requested_file_globs"])
+    Map.drop(caller_payload, [
+      "source_tool",
+      "recommendation_artifact_id",
+      "approved",
+      "requested_file_globs",
+      "approved_file_globs",
+      "allowed_file_globs",
+      "previous_allowed_file_globs",
+      "request_id"
+    ])
   end
 
   defp maybe_put_id(attrs, arguments) do

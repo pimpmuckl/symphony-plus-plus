@@ -13,6 +13,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.State
+  alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
@@ -21,6 +22,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   @complete_plan_statuses ["done", "completed", "skipped"]
   @merge_required_gates ["human_merge", "architect_merge"]
   @runtime_merge_required_kinds ["hotfix", "adapter", "mcp", "skill", "hooks", "phase_child"]
+  @scope_guard_gate "scope_guard"
 
   @type repo :: module()
   @type dashboard_error :: :not_found | :forbidden | :database_busy | {:storage_failed, String.t()} | term()
@@ -487,7 +489,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       stale_heartbeat_indicator(runtime),
       failed_run_indicator(runtime),
       missing_readiness_indicator(readiness_context),
-      scope_drift_indicator()
+      scope_drift_indicator(readiness_context)
     ]
   end
 
@@ -519,7 +521,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp missing_readiness_indicator(%{work_package: %WorkPackage{status: status}} = context) when status in @ready_statuses do
-    missing = missing_readiness_evidence(context)
+    reasons = readiness_failure_reasons(context)
+    missing = missing_readiness_gates(reasons)
 
     alert_indicator(
       "missing_readiness_evidence",
@@ -527,16 +530,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       "warning",
       missing != [],
       missing_detail(missing),
-      %{missing: missing}
+      %{missing: missing, reasons: reasons}
     )
   end
 
   defp missing_readiness_indicator(_context) do
-    alert_indicator("missing_readiness_evidence", "Missing readiness evidence", "info", false, "Package is not in a ready state", %{missing: []})
+    alert_indicator("missing_readiness_evidence", "Missing readiness evidence", "info", false, "Package is not in a ready state", %{missing: [], reasons: []})
   end
 
-  defp scope_drift_indicator do
-    alert_indicator("scope_drift", "Scope drift", "info", false, "Placeholder only; GitHub sync is not configured", %{placeholder: true})
+  defp scope_drift_indicator(%{work_package: %WorkPackage{} = work_package, progress_events: progress_events}) do
+    reasons = ScopeGuard.failure_reasons(work_package, progress_events)
+    active? = reasons != []
+    detail = if active?, do: missing_detail(Enum.map(reasons, &Map.get(&1, "code", @scope_guard_gate))), else: "Scope guard satisfied or not required"
+
+    alert_indicator("scope_drift", "Scope guard", if(active?, do: "critical", else: "info"), active?, detail, %{
+      placeholder: false,
+      reasons: reasons
+    })
   end
 
   defp alert_indicator(type, label, severity, active, detail, extra \\ %{}) do
@@ -567,6 +577,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   @spec missing_readiness_evidence(map()) :: [String.t()]
   def missing_readiness_evidence(%{work_package: %WorkPackage{}} = context) do
+    context
+    |> readiness_failure_reasons()
+    |> missing_readiness_gates()
+  end
+
+  defp missing_readiness_gates(reasons) do
+    reasons
+    |> Enum.map(&Map.fetch!(&1, "gate"))
+    |> Enum.uniq()
+  end
+
+  defp readiness_failure_reasons(%{work_package: %WorkPackage{}} = context) do
     [
       {active_blocker?(context.progress_events), "no_active_blockers"},
       {incomplete_plan?(context), "plan_complete"},
@@ -576,6 +598,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       {merge_metadata_missing?(context, "pr"), "pr_attached"},
       {current_pr_state_missing?(context), "current_pr_state"},
       {review_suite_result_missing?(context), "review_suite_result"},
+      {ScopeGuard.missing?(context.work_package, context.progress_events), @scope_guard_gate},
       {review_package_missing?(context), "review_package_submitted"},
       {review_artifacts_missing?(context), "review_artifacts_attached"},
       {review_lanes_missing?(context), "review_lanes_complete"},
@@ -583,10 +606,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       {investigation_recommendation_missing?(context), "recommendation_artifact_recorded"}
     ]
     |> Enum.flat_map(fn
-      {true, gate} -> [gate]
+      {true, @scope_guard_gate} -> ScopeGuard.failure_reasons(context.work_package, context.progress_events)
+      {true, gate} -> [readiness_failure_reason(gate)]
       {false, _gate} -> []
     end)
   end
+
+  defp readiness_failure_reason(gate) do
+    %{
+      "gate" => gate,
+      "code" => gate,
+      "message" => readiness_failure_message(gate)
+    }
+  end
+
+  defp readiness_failure_message("no_active_blockers"), do: "Active blockers must be resolved before readiness."
+  defp readiness_failure_message("plan_complete"), do: "Required package plan nodes must be complete."
+  defp readiness_failure_message("acceptance_criteria_met"), do: "Acceptance criteria evidence is missing."
+  defp readiness_failure_message("tests_passed"), do: "Focused test evidence is missing."
+  defp readiness_failure_message("branch_attached"), do: "Current branch metadata is missing."
+  defp readiness_failure_message("pr_attached"), do: "Current PR metadata is missing."
+  defp readiness_failure_message("current_pr_state"), do: "Current synced PR state is missing."
+  defp readiness_failure_message("review_suite_result"), do: "Current-head review-suite result evidence is missing."
+  defp readiness_failure_message("review_package_submitted"), do: "Current-head review package is missing."
+  defp readiness_failure_message("review_artifacts_attached"), do: "Current-head review artifacts are missing."
+  defp readiness_failure_message("review_lanes_complete"), do: "Required review lanes are not green."
+  defp readiness_failure_message("findings_documented"), do: "Investigation findings are missing."
+  defp readiness_failure_message("recommendation_artifact_recorded"), do: "Investigation recommendation artifact is missing."
+  defp readiness_failure_message(_gate), do: "Readiness gate is not satisfied."
 
   defp merge_metadata_missing?(context, "pr") do
     merge_required?(context.work_package) and pr_required?(context.work_package) and
