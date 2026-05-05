@@ -92,6 +92,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
       assert policy.review_suite.required == ["review_t1", "review_t2"]
       assert policy.constraints.terminal_readiness_status == "ready_for_human_merge"
     end
+
+    assert {:ok, current_pr_state_policy} = Templates.expand("mcp_current_pr_state")
+    assert current_pr_state_policy.template == "worker_package"
+    assert "current_pr_state" in current_pr_state_policy.required_gates
   end
 
   test "quick work policy template defaults match product docs" do

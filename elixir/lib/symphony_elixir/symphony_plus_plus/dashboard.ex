@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
+  alias SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Finding
@@ -553,6 +554,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       {tests_missing?(context), "tests_passed"},
       {merge_metadata_missing?(context, "branch"), "branch_attached"},
       {merge_metadata_missing?(context, "pr"), "pr_attached"},
+      {current_pr_state_missing?(context), "current_pr_state"},
       {review_package_missing?(context), "review_package_submitted"},
       {review_artifacts_missing?(context), "review_artifacts_attached"},
       {review_lanes_missing?(context), "review_lanes_complete"},
@@ -578,6 +580,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp merge_metadata_missing?(context, type) do
     merge_required?(context.work_package) and
       not metadata_present?(context.progress_events, type, latest_current_head_sha(context.progress_events))
+  end
+
+  defp current_pr_state_missing?(context) do
+    merge_required?(context.work_package) and pr_required?(context.work_package) and
+      required_gate?(context.work_package, "current_pr_state") and
+      not current_pr_state_present?(context.progress_events, latest_current_head_sha(context.progress_events))
   end
 
   defp review_package_missing?(context) do
@@ -946,12 +954,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end)
   end
 
+  defp metadata_present?(progress_events, "pr", head_sha) when is_binary(head_sha) do
+    case latest_attached_pr_ref(progress_events) do
+      {:ok, attached_ref} ->
+        Enum.any?(progress_events, fn
+          %ProgressEvent{payload: payload} = event when is_map(payload) ->
+            payload_type?(event, "pr", ["attach_pr", "sync_pr"]) and head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
+              pr_payload_ref(payload) == attached_ref
+
+          %ProgressEvent{} ->
+            false
+        end)
+
+      {:error, :not_found} ->
+        false
+    end
+  end
+
   defp metadata_present?(progress_events, type, head_sha) when is_binary(head_sha) do
     tool = metadata_tool(type)
 
     Enum.any?(progress_events, fn
-      %ProgressEvent{payload: payload} = event when is_map(payload) and is_binary(tool) ->
-        payload_type?(event, type, tool) and Map.get(payload, "head_sha") == head_sha
+      %ProgressEvent{payload: payload} = event when is_map(payload) ->
+        payload_type?(event, type, tool) and head_sha_matches?(Map.get(payload, "head_sha"), head_sha)
 
       %ProgressEvent{} ->
         false
@@ -960,8 +985,81 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp metadata_present?(_progress_events, _type, _head_sha), do: false
 
+  defp current_pr_state_present?(progress_events, head_sha) when is_binary(head_sha) do
+    case latest_attached_pr_ref_with_sequence(progress_events) do
+      {:ok, attached_ref, attach_sequence} ->
+        Enum.any?(progress_events, fn
+          %ProgressEvent{payload: payload} = event when is_map(payload) ->
+            payload_type?(event, "pr", "sync_pr") and progress_after_pr_attach_boundary?(event, attach_sequence) and
+              head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
+              pr_payload_ref(payload) == attached_ref and current_pr_state_payload?(payload)
+
+          %ProgressEvent{} ->
+            false
+        end)
+
+      {:error, :not_found} ->
+        false
+    end
+  end
+
+  defp current_pr_state_present?(_progress_events, _head_sha), do: false
+
+  defp progress_after_pr_attach_boundary?(%ProgressEvent{}, nil), do: true
+  defp progress_after_pr_attach_boundary?(%ProgressEvent{sequence: sequence}, attach_sequence) when is_integer(sequence), do: sequence > attach_sequence
+  defp progress_after_pr_attach_boundary?(%ProgressEvent{}, _attach_sequence), do: false
+
+  defp current_pr_state_payload?(%{"source_tool" => "sync_pr"} = payload), do: semantic_pr_payload?(payload)
+  defp current_pr_state_payload?(_payload), do: false
+
+  defp semantic_pr_payload?(payload) do
+    semantic_pr_state?(payload, "check_summary", ["conclusion", "state", "status"]) or
+      semantic_pr_state?(payload, "review_state", ["decision", "state", "status"]) or
+      semantic_pr_state?(payload, "merge_state", ["mergeable_state", "state", "status"]) or
+      semantic_pr_boolean?(payload, "merge_state", ["mergeable", "merged"])
+  end
+
+  defp semantic_pr_state?(payload, key, semantic_keys) do
+    case Map.get(payload, key) do
+      value when is_map(value) ->
+        Enum.any?(semantic_keys, fn semantic_key ->
+          semantic_pr_value?(value, semantic_key)
+        end)
+
+      _value ->
+        false
+    end
+  end
+
+  defp semantic_pr_value(value, key), do: Map.get(value, key) || Map.get(value, String.to_atom(key))
+
+  defp semantic_pr_value?(value, "state") do
+    case semantic_pr_value(value, "state") do
+      state when is_binary(state) ->
+        normalized = state |> String.trim() |> String.downcase()
+        normalized != "" and normalized not in ["open", "closed"]
+
+      _state ->
+        false
+    end
+  end
+
+  defp semantic_pr_value?(value, key), do: value |> semantic_pr_value(key) |> filled_string?()
+
+  defp semantic_pr_boolean?(payload, key, semantic_keys) do
+    case Map.get(payload, key) do
+      value when is_map(value) ->
+        Enum.any?(semantic_keys, fn semantic_key ->
+          is_boolean(Map.get(value, semantic_key)) or is_boolean(Map.get(value, String.to_atom(semantic_key)))
+        end)
+
+      _value ->
+        false
+    end
+  end
+
   defp metadata_tool("branch"), do: "attach_branch"
-  defp metadata_tool("pr"), do: "attach_pr"
+  defp metadata_tool("pr"), do: ["attach_pr", "sync_pr"]
   defp metadata_tool(_type), do: nil
 
   defp normalized_status(status) when is_binary(status), do: status |> String.trim() |> String.downcase()
@@ -970,12 +1068,116 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp metadata(progress_events) do
     branch = latest_payload(progress_events, "branch", "attach_branch")
     head_filter = metadata_head_filter(progress_events, branch)
+    pr = latest_pr_payload(progress_events, head_filter)
 
     %{
       branch: branch,
-      pr: latest_current_payload(progress_events, "pr", "attach_pr", head_filter),
+      pr: pr_metadata(pr, head_filter),
       review_package: latest_current_payload(progress_events, "review_package", "submit_review_package", head_filter)
     }
+  end
+
+  defp pr_metadata(nil, _head_filter), do: nil
+
+  defp pr_metadata(%{} = pr, {:head, current_head_sha}) do
+    stale? = not head_sha_matches?(Map.get(pr, "head_sha"), current_head_sha)
+
+    pr
+    |> Map.put("stale", stale?)
+    |> Map.put("current_head_sha", current_head_sha)
+  end
+
+  defp pr_metadata(%{} = pr, :none), do: pr
+  defp pr_metadata(%{} = _pr, _head_filter), do: nil
+
+  defp latest_pr_payload(progress_events, :none) do
+    case latest_attached_pr_ref_with_sequence(progress_events) do
+      {:ok, attached_ref, attach_sequence} ->
+        latest_preferred_pr_payload(progress_events, :any, attached_ref, attach_sequence)
+
+      {:error, :not_found} ->
+        nil
+    end
+  end
+
+  defp latest_pr_payload(progress_events, head_filter) do
+    case latest_attached_pr_ref_with_sequence(progress_events) do
+      {:ok, attached_ref, attach_sequence} ->
+        latest_preferred_pr_payload(progress_events, head_filter, attached_ref, attach_sequence) ||
+          latest_preferred_pr_payload(progress_events, :any, attached_ref, attach_sequence)
+
+      {:error, :not_found} ->
+        nil
+    end
+  end
+
+  defp latest_preferred_pr_payload(progress_events, head_filter, attached_ref, attach_sequence) do
+    latest_payload = latest_pr_display_payload(progress_events, head_filter, attached_ref, attach_sequence)
+
+    cond do
+      is_nil(latest_payload) ->
+        latest_current_pr_payload(progress_events, head_filter, attached_ref, attach_sequence)
+
+      display_pr_payload?(latest_payload) ->
+        latest_payload
+
+      true ->
+        latest_current_pr_payload(progress_events, head_filter, attached_ref, attach_sequence) || latest_payload
+    end
+  end
+
+  defp display_pr_payload?(%{"source_tool" => "sync_pr"}), do: true
+  defp display_pr_payload?(%{"source_tool" => "attach_pr"} = payload), do: semantic_pr_payload?(payload)
+  defp display_pr_payload?(_payload), do: false
+
+  defp latest_pr_display_payload(progress_events, head_filter, attached_ref, attach_sequence) do
+    progress_events
+    |> chronological_progress_events()
+    |> Enum.reverse()
+    |> Enum.find(fn
+      %ProgressEvent{payload: payload} = event when is_map(payload) ->
+        pr_display_payload?(event, payload, head_filter, attached_ref, attach_sequence)
+
+      %ProgressEvent{} ->
+        false
+    end)
+    |> case do
+      %ProgressEvent{payload: payload} -> redacted_json(payload || %{})
+      nil -> nil
+    end
+  end
+
+  defp pr_display_payload?(event, payload, head_filter, attached_ref, attach_sequence) do
+    cond do
+      payload_type?(event, "pr", "attach_pr") ->
+        payload_head_matches?(payload, head_filter) and pr_ref_matches?(payload, attached_ref)
+
+      payload_type?(event, "pr", "sync_pr") ->
+        progress_after_pr_attach_boundary?(event, attach_sequence) and payload_head_matches?(payload, head_filter) and
+          pr_ref_matches?(payload, attached_ref)
+
+      true ->
+        false
+    end
+  end
+
+  defp latest_current_pr_payload(progress_events, head_filter, attached_ref, attach_sequence) do
+    progress_events
+    |> chronological_progress_events()
+    |> Enum.reverse()
+    |> Enum.find(fn
+      %ProgressEvent{payload: payload} = event when is_map(payload) ->
+        payload_type?(event, "pr", "sync_pr") and progress_after_pr_attach_boundary?(event, attach_sequence) and
+          payload_head_matches?(payload, head_filter) and
+          pr_ref_matches?(payload, attached_ref) and current_pr_state_payload?(payload)
+
+      %ProgressEvent{} ->
+        false
+    end)
+    |> case do
+      %ProgressEvent{payload: payload} -> redacted_json(payload || %{})
+      nil -> nil
+    end
   end
 
   defp latest_current_payload(progress_events, type, source_tool, :none) do
@@ -999,6 +1201,66 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       %ProgressEvent{payload: payload} -> redacted_json(payload || %{})
       nil -> nil
     end
+  end
+
+  defp pr_ref_matches?(_payload, :any), do: true
+  defp pr_ref_matches?(payload, pr_ref), do: pr_payload_ref(payload) == pr_ref
+
+  defp latest_attached_pr_ref(progress_events) do
+    case latest_attached_pr_ref_with_sequence(progress_events) do
+      {:ok, ref, _sequence} -> {:ok, ref}
+      {:error, :not_found} -> {:error, :not_found}
+    end
+  end
+
+  defp latest_attached_pr_ref_with_sequence(progress_events) do
+    progress_events
+    |> chronological_progress_events()
+    |> Enum.reverse()
+    |> Enum.find_value(&attached_pr_ref_with_sequence/1)
+    |> case do
+      nil -> {:error, :not_found}
+      {ref, sequence} -> {:ok, ref, sequence}
+    end
+  end
+
+  defp attached_pr_ref_with_sequence(%ProgressEvent{payload: payload, sequence: sequence} = event) when is_map(payload) do
+    if payload_type?(event, "pr", "attach_pr"), do: pr_payload_ref_with_sequence(payload, sequence)
+  end
+
+  defp attached_pr_ref_with_sequence(_event), do: nil
+
+  defp pr_payload_ref_with_sequence(payload, sequence) do
+    case pr_payload_ref(payload) do
+      nil -> nil
+      ref -> {ref, sequence}
+    end
+  end
+
+  defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_integer(number), do: normalized_pr_ref(repository, number)
+  defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_binary(number), do: normalized_pr_ref(repository, number)
+
+  defp pr_payload_ref(%{"url" => url}) when is_binary(url) do
+    case PullRequest.parse(%{"url" => url}, nil) do
+      {:ok, ref} -> normalized_pr_ref(ref.repository, ref.number)
+      {:error, _reason} -> legacy_url_ref(url)
+    end
+  end
+
+  defp pr_payload_ref(_payload), do: nil
+
+  defp normalized_pr_ref(repository, number) when is_binary(repository), do: {String.downcase(repository), number}
+
+  defp legacy_url_ref(url) do
+    case URI.parse(url) do
+      %URI{host: host} when is_binary(host) ->
+        if String.downcase(host) == "github.com", do: nil, else: {:url, url}
+
+      _uri ->
+        {:url, url}
+    end
+  rescue
+    _error in URI.Error -> {:url, url}
   end
 
   defp metadata_head_filter(_progress_events, nil), do: :none
@@ -1028,8 +1290,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp payload_head_matches?(_payload, :any), do: true
   defp payload_head_matches?(_payload, :none), do: false
-  defp payload_head_matches?(payload, {:head, head_sha}) when is_map(payload), do: Map.get(payload, "head_sha") == head_sha
+  defp payload_head_matches?(payload, {:head, head_sha}) when is_map(payload), do: head_sha_matches?(Map.get(payload, "head_sha"), head_sha)
   defp payload_head_matches?(_payload, {:head, _head_sha}), do: false
+
+  defp head_sha_matches?(left, right), do: PullRequest.head_sha_matches?(left, right)
 
   defp payload_branch(%{} = payload) do
     case Map.get(payload, "branch") do
@@ -1085,6 +1349,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp progress_event_order(%ProgressEvent{} = event) do
     {timestamp_sort_value(event.created_at), event.sequence || 0, event.id || ""}
+  end
+
+  defp payload_type?(%ProgressEvent{payload: payload}, type, source_tool) when is_map(payload) and is_list(source_tool) do
+    Map.get(payload, "type") == type and Map.get(payload, "source_tool") in source_tool
   end
 
   defp payload_type?(%ProgressEvent{payload: payload}, type, source_tool) when is_map(payload) do

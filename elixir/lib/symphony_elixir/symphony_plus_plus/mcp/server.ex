@@ -7,6 +7,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.GitHub.{Client, DryClient, PullRequest}
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Session}
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
@@ -34,6 +35,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "request_scope_expansion",
     "attach_branch",
     "attach_pr",
+    "sync_pr",
     "submit_review_package",
     "mark_ready"
   ]
@@ -910,7 +912,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool_input_schema("attach_pr") do
-    schema(metadata_properties(%{"url" => string_schema(), "head_sha" => string_schema()}), ["url", "head_sha"])
+    schema(
+      metadata_properties(%{
+        "url" => string_schema(),
+        "number" => pr_number_schema(),
+        "repository" => string_schema(),
+        "head_sha" => string_schema(),
+        "metadata" => object_schema()
+      }),
+      []
+    )
+    |> Map.put("allOf", [
+      %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]},
+      %{
+        "anyOf" => [
+          %{"required" => ["head_sha"]},
+          %{"required" => ["metadata"], "properties" => %{"metadata" => metadata_head_schema()}}
+        ]
+      }
+    ])
+  end
+
+  defp worker_tool_input_schema("sync_pr") do
+    schema(
+      metadata_properties(%{
+        "url" => string_schema(),
+        "number" => pr_number_schema(),
+        "repository" => string_schema(),
+        "head_sha" => string_schema(),
+        "metadata" => object_schema()
+      }),
+      ["metadata"]
+    )
+    |> Map.put("allOf", [
+      %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]},
+      %{
+        "anyOf" => [
+          %{"required" => ["head_sha"]},
+          %{
+            "required" => ["metadata"],
+            "properties" => %{"metadata" => metadata_head_schema()}
+          }
+        ]
+      }
+    ])
   end
 
   defp worker_tool_input_schema("submit_review_package") do
@@ -1025,8 +1070,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp nonblank_string_schema, do: %{"type" => "string", "minLength" => 1, "pattern" => "\\S"}
   defp boolean_schema, do: %{"type" => "boolean"}
   defp integer_schema, do: %{"type" => "integer"}
+
+  defp pr_number_schema do
+    %{"anyOf" => [%{"type" => "integer", "minimum" => 1}, %{"type" => "string", "pattern" => "^[1-9][0-9]*$"}]}
+  end
+
   defp nullable_string_schema, do: %{"type" => ["string", "null"]}
   defp object_schema, do: %{"type" => "object", "additionalProperties" => true}
+
+  defp metadata_head_schema do
+    %{
+      "type" => "object",
+      "additionalProperties" => true,
+      "properties" => %{
+        "head_sha" => string_schema(),
+        "head" => %{
+          "type" => "object",
+          "additionalProperties" => true,
+          "properties" => %{"sha" => string_schema()},
+          "required" => ["sha"]
+        }
+      },
+      "anyOf" => [%{"required" => ["head_sha"]}, %{"required" => ["head"]}]
+    }
+  end
+
   defp nonempty_string_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => nonblank_string_schema()}
   defp nonempty_object_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => object_schema()}
 
@@ -1500,12 +1568,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp worker_tool("attach_pr", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
-         {:ok, url} <- required_argument(arguments, "url"),
-         {:ok, head_sha} <- required_argument(arguments, "head_sha") do
-      append_metadata_event(config.repo, session, arguments, "attach_pr", "pr_attached", %{"type" => "pr", "url" => url, "head_sha" => head_sha})
+         {:ok, payload} <- pr_metadata_payload(config.repo, session, arguments, "attach_pr") do
+      append_pr_metadata(config.repo, session, arguments, "attach_pr", "pr_attached", payload)
+      |> metadata_tool_response("attach_pr")
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "attach_pr", "reason" => reason}}
       {:error, reason} -> worker_error(reason, "attach_pr")
+    end
+  end
+
+  defp worker_tool("sync_pr", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- scoped_session(config.repo, session, arguments),
+         {:ok, payload} <- pr_metadata_payload(config.repo, session, arguments, "sync_pr") do
+      append_pr_metadata(config.repo, session, arguments, "sync_pr", "pr_synced", payload)
+      |> metadata_tool_response("sync_pr")
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "sync_pr", "reason" => reason}}
+      {:error, reason} -> worker_error(reason, "sync_pr")
     end
   end
 
@@ -1546,6 +1625,278 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, reason} ->
         worker_error(reason, "mark_ready")
     end
+  end
+
+  defp pr_metadata_payload(repo, %Session{} = session, arguments, source_tool) do
+    case legacy_attach_pr_payload(arguments, source_tool) do
+      {:ok, payload} -> {:ok, payload}
+      :error -> github_pr_metadata_payload(repo, session, arguments, source_tool)
+    end
+  end
+
+  defp github_pr_metadata_payload(repo, %Session{} = session, arguments, source_tool) do
+    with {:ok, %WorkPackage{} = work_package} <- WorkPackageRepository.get(repo, Session.work_package_id(session)),
+         {:ok, metadata_input} <- pr_metadata_input(arguments, source_tool),
+         {:ok, arguments} <- pr_reference_arguments(repo, session, arguments, source_tool),
+         {:ok, ref} <- PullRequest.parse(arguments, work_package.repo),
+         {:ok, metadata} <- Client.fetch_pull_request(DryClient, ref, metadata: metadata_input),
+         {:ok, payload} <- PullRequest.metadata(metadata, ref, pr_fallback_head_sha(arguments, source_tool)) do
+      {:ok, Map.put(payload, "source_tool", source_tool)}
+    else
+      {:tool_error, reason} ->
+        {:tool_error, reason}
+
+      {:ok, nil} ->
+        {:error, :not_found}
+
+      {:error, reason} when reason in [:database_busy] ->
+        {:error, reason}
+
+      {:error, {reason, _detail} = error} when reason in [:storage_failed, :migration_failed, :service_unavailable] ->
+        {:error, error}
+
+      {:error, :missing_repository} ->
+        {:tool_error, pr_missing_repository_reason(arguments, source_tool)}
+
+      {:error, reason} ->
+        {:tool_error, reason_text(reason)}
+    end
+  end
+
+  defp legacy_attach_pr_payload(arguments, "attach_pr") do
+    with url when is_binary(url) <- Map.get(arguments, "url"),
+         trimmed_url = String.trim(url),
+         true <- trimmed_url != "",
+         true <- non_github_url?(trimmed_url) do
+      payload =
+        %{"type" => "pr", "source_tool" => "attach_pr", "url" => trimmed_url}
+        |> maybe_put_filled_string("head_sha", Map.get(arguments, "head_sha"))
+
+      {:ok, payload}
+    else
+      _value -> :error
+    end
+  end
+
+  defp legacy_attach_pr_payload(_arguments, _source_tool), do: :error
+
+  defp non_github_url?(url) do
+    case URI.parse(url) do
+      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] and is_binary(host) ->
+        String.downcase(host) != "github.com"
+
+      _uri ->
+        false
+    end
+  rescue
+    _error in URI.Error -> false
+  end
+
+  defp maybe_put_filled_string(payload, key, value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> payload
+      trimmed -> Map.put(payload, key, trimmed)
+    end
+  end
+
+  defp maybe_put_filled_string(payload, _key, _value), do: payload
+
+  defp metadata_tool_response({:ok, _result} = result, _tool), do: result
+  defp metadata_tool_response({:tool_error, reason}, tool), do: {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason}}
+  defp metadata_tool_response({:error, reason}, tool), do: worker_error(reason, tool)
+
+  defp pr_fallback_head_sha(arguments, tool) when tool in ["attach_pr", "sync_pr"], do: Map.get(arguments, "head_sha")
+
+  defp pr_reference_arguments(repo, %Session{} = session, arguments, "sync_pr") do
+    if Map.has_key?(arguments, "number") and not filled_string?(Map.get(arguments, "repository")) and not filled_string?(Map.get(arguments, "url")) do
+      with {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, Session.work_package_id(session)),
+           {:ok, {repository, _number}} <- latest_attached_pr_ref(progress_events) do
+        {:ok, Map.put(arguments, "repository", repository)}
+      end
+    else
+      {:ok, arguments}
+    end
+  end
+
+  defp pr_reference_arguments(_repo, %Session{}, arguments, _source_tool), do: {:ok, arguments}
+
+  defp pr_missing_repository_reason(arguments, "attach_pr") do
+    if Map.has_key?(arguments, "number") and not filled_string?(Map.get(arguments, "url")) do
+      "missing_repository_use_url_or_owner_repo"
+    else
+      "missing_repository"
+    end
+  end
+
+  defp pr_missing_repository_reason(_arguments, _source_tool), do: "missing_repository"
+
+  defp validate_pr_sync_target(_repo, %Session{}, _ref, "attach_pr"), do: :ok
+
+  defp validate_pr_sync_target(repo, %Session{} = session, ref, "sync_pr") do
+    with {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, Session.work_package_id(session)),
+         {:ok, attached_ref} <- latest_attached_pr_ref(progress_events) do
+      if attached_ref == normalized_pr_ref(ref.repository, ref.number), do: :ok, else: {:tool_error, "pr_mismatch"}
+    end
+  end
+
+  defp latest_attached_pr_ref(progress_events) do
+    case latest_attached_pr_ref_with_sequence(progress_events) do
+      {:ok, ref, _sequence} -> {:ok, ref}
+      {:tool_error, reason} -> {:tool_error, reason}
+    end
+  end
+
+  defp latest_attached_pr_ref_with_sequence(progress_events) do
+    progress_events
+    |> chronological_progress_events()
+    |> Enum.reverse()
+    |> Enum.find_value(&attached_pr_ref_with_sequence/1)
+    |> case do
+      nil -> {:tool_error, "missing_attached_pr"}
+      {ref, sequence} -> {:ok, ref, sequence}
+    end
+  end
+
+  defp attached_pr_ref_with_sequence(%ProgressEvent{payload: payload, sequence: sequence} = event) when is_map(payload) do
+    if payload_type?(event, "pr", "attach_pr"), do: pr_payload_ref_with_sequence(payload, sequence)
+  end
+
+  defp attached_pr_ref_with_sequence(_event), do: nil
+
+  defp pr_payload_ref_with_sequence(payload, sequence) do
+    case pr_payload_ref(payload) do
+      nil -> nil
+      ref -> {ref, sequence}
+    end
+  end
+
+  defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_integer(number), do: normalized_pr_ref(repository, number)
+  defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_binary(number), do: normalized_pr_ref(repository, number)
+
+  defp pr_payload_ref(%{"url" => url}) when is_binary(url) do
+    case PullRequest.parse(%{"url" => url}, nil) do
+      {:ok, ref} -> normalized_pr_ref(ref.repository, ref.number)
+      {:error, _reason} -> legacy_url_ref(url)
+    end
+  end
+
+  defp pr_payload_ref(_payload), do: nil
+
+  defp normalized_pr_ref(repository, number) when is_binary(repository), do: {String.downcase(repository), number}
+
+  defp legacy_url_ref(url) do
+    case URI.parse(url) do
+      %URI{host: host} when is_binary(host) ->
+        if String.downcase(host) == "github.com", do: nil, else: {:url, url}
+
+      _uri ->
+        {:url, url}
+    end
+  rescue
+    _error in URI.Error -> {:url, url}
+  end
+
+  defp chronological_progress_events(progress_events) do
+    Enum.sort_by(progress_events, fn %ProgressEvent{created_at: created_at, sequence: sequence, id: id} ->
+      {created_at || DateTime.from_unix!(0), sequence || 0, id || ""}
+    end)
+  end
+
+  defp pr_metadata_input(arguments, "attach_pr") do
+    case Map.get(arguments, "metadata") do
+      metadata when is_map(metadata) -> {:ok, metadata}
+      nil -> {:ok, %{"head_sha" => Map.get(arguments, "head_sha")}}
+      _metadata -> {:tool_error, "invalid_metadata"}
+    end
+  end
+
+  defp pr_metadata_input(arguments, "sync_pr") do
+    case Map.get(arguments, "metadata") do
+      metadata when is_map(metadata) -> {:ok, metadata}
+      _metadata -> {:tool_error, "missing_metadata"}
+    end
+  end
+
+  defp append_pr_metadata(repo, %Session{} = session, arguments, tool, status, payload) do
+    with {:ok, idempotency_key, attrs} <- metadata_event_attrs(session, arguments, tool, status, payload),
+         {:ok, replay?} <- progress_event_replay?(repo, session, idempotency_key),
+         :ok <- validate_pr_sync_target_unless_replay(repo, session, payload, tool, replay?) do
+      run_worker_transaction(repo, fn ->
+        append_pr_metadata_event(repo, session, attrs, idempotency_key, tool, payload, replay?)
+      end)
+    end
+  end
+
+  defp append_pr_metadata_event(repo, session, attrs, idempotency_key, tool, payload, replay?) do
+    with {:ok, event_result} <- append_progress_event_or_replay(repo, session, attrs, idempotency_key, tool),
+         :ok <- maybe_upsert_pr_artifact(repo, session, payload, replay?) do
+      {:ok, event_result}
+    end
+  end
+
+  defp validate_pr_sync_target_unless_replay(_repo, %Session{}, _arguments, _tool, true), do: :ok
+  defp validate_pr_sync_target_unless_replay(_repo, %Session{}, _payload, "attach_pr", false), do: :ok
+
+  defp validate_pr_sync_target_unless_replay(repo, %Session{} = session, payload, tool, false) do
+    with {:ok, ref} <- PullRequest.parse(payload, nil) do
+      validate_pr_sync_target(repo, session, ref, tool)
+    end
+  end
+
+  defp progress_event_replay?(repo, %Session{} = session, idempotency_key) do
+    case existing_progress_event(repo, session, idempotency_key) do
+      {:ok, %ProgressEvent{}} -> {:ok, true}
+      {:error, :not_found} -> {:ok, false}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_upsert_pr_artifact(_repo, %Session{}, _payload, true), do: :ok
+  defp maybe_upsert_pr_artifact(repo, %Session{} = session, payload, false), do: upsert_pr_artifact(repo, session, payload)
+
+  defp upsert_pr_artifact(repo, %Session{} = session, payload) do
+    attrs = %{
+      "id" => pr_artifact_id(session.assignment.work_package_id),
+      "work_package_id" => session.assignment.work_package_id,
+      "path" => "github-pr.json",
+      "title" => pr_artifact_title(payload),
+      "kind" => "github_pr",
+      "uri" => Map.get(payload, "url")
+    }
+
+    case PlanningRepository.get_artifact(repo, attrs["id"]) do
+      {:ok, nil} -> append_pr_artifact(repo, attrs)
+      {:ok, %Artifact{} = artifact} -> update_pr_artifact(repo, artifact, attrs)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp append_pr_artifact(repo, attrs) do
+    case PlanningService.append_artifact(repo, attrs) do
+      {:ok, _artifact} -> :ok
+      {:error, :id_already_exists} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp update_pr_artifact(repo, %Artifact{} = artifact, attrs) do
+    attrs = Map.new(attrs, fn {key, value} -> {String.to_existing_atom(key), value} end)
+
+    case PlanningRepository.update_artifact(repo, artifact, attrs) do
+      {:ok, _artifact} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp pr_artifact_title(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_integer(number) do
+    "GitHub PR #{repository}##{number}"
+  end
+
+  defp pr_artifact_title(_payload), do: "GitHub PR metadata"
+
+  defp pr_artifact_id(work_package_id) do
+    material = [work_package_id, "github-pr.json"] |> Enum.join(":")
+    "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
   defp request_scope_expansion_payload(repo, %Session{} = session) do
@@ -2240,6 +2591,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
               "append_progress",
               "attach_branch",
               "attach_pr",
+              "sync_pr",
               "report_blocker",
               "request_scope_expansion",
               "resolve_blocker",
@@ -2341,6 +2693,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       legacy_scope_expansion_replay_matches?(existing, normalized)
   end
 
+  defp progress_payload_replay_matches?(%{"type" => "pr", "source_tool" => "attach_pr"} = existing, %{"type" => "pr", "source_tool" => "attach_pr"} = normalized) do
+    existing == normalized or legacy_attach_pr_replay_matches?(existing, normalized)
+  end
+
   defp progress_payload_replay_matches?(existing, normalized), do: existing == normalized
 
   defp legacy_scope_expansion_replay_matches?(existing, normalized) do
@@ -2351,6 +2707,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       end
 
     existing == legacy_normalized
+  end
+
+  defp legacy_attach_pr_replay_matches?(existing, normalized) do
+    existing == Map.take(normalized, ["type", "source_tool", "url", "head_sha"])
   end
 
   defp normalized_progress_payload(%ProgressEvent{} = event, attrs) do
@@ -2633,7 +2993,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     ["submit_review_package", session.assignment.work_package_id, idempotency_key] |> Enum.join(":")
   end
 
-  defp scoped_progress_idempotency_key(tool, idempotency_key, %Session{} = session) when tool in ["attach_branch", "attach_pr"] do
+  defp scoped_progress_idempotency_key(tool, idempotency_key, %Session{} = session) when tool in ["attach_branch", "attach_pr", "sync_pr"] do
     [tool, session.assignment.work_package_id, idempotency_key] |> Enum.join(":")
   end
 
@@ -2656,6 +3016,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {tests_missing?(state), "tests_passed"},
       {merge_metadata_missing?(state, "branch"), "branch_attached"},
       {merge_metadata_missing?(state, "pr"), "pr_attached"},
+      {current_pr_state_missing?(state), "current_pr_state"},
       {review_package_missing?(state, required_review_lanes), "review_package_submitted"},
       {review_artifacts_missing?(state, required_review_lanes), "review_artifacts_attached"},
       {review_lanes_missing?(state, required_review_lanes), "review_lanes_complete"},
@@ -2681,6 +3042,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     merge_required?(state.work_package) and
       not metadata_present?(state.progress_events, metadata_type, current_head_sha)
+  end
+
+  defp current_pr_state_missing?(state) do
+    current_head_sha = latest_current_head_sha(state.progress_events)
+
+    merge_required?(state.work_package) and
+      pr_required?(state.work_package) and
+      required_gate?(state.work_package, "current_pr_state") and
+      not current_pr_state_present?(state.progress_events, current_head_sha)
   end
 
   defp review_package_missing?(state, required_review_lanes) do
@@ -3041,10 +3411,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp pr_required?(%WorkPackage{kind: "investigation"}), do: false
   defp pr_required?(%WorkPackage{}), do: true
 
+  defp metadata_present?(progress_events, "pr", head_sha) when is_binary(head_sha) do
+    case latest_attached_pr_ref(progress_events) do
+      {:ok, attached_ref} ->
+        Enum.any?(progress_events, fn
+          %ProgressEvent{payload: payload} = event when is_map(payload) ->
+            payload_type?(event, "pr", ["attach_pr", "sync_pr"]) and head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
+              pr_payload_ref(payload) == attached_ref
+
+          %ProgressEvent{} ->
+            false
+        end)
+
+      {:tool_error, _reason} ->
+        false
+    end
+  end
+
   defp metadata_present?(progress_events, type, head_sha) when is_binary(head_sha) do
     Enum.any?(progress_events, fn
       %ProgressEvent{payload: payload} = event when is_map(payload) ->
-        payload_type?(event, type, metadata_tool(type)) and Map.get(payload, "head_sha") == head_sha
+        payload_type?(event, type, metadata_tool(type)) and head_sha_matches?(Map.get(payload, "head_sha"), head_sha)
 
       %ProgressEvent{} ->
         false
@@ -3052,6 +3439,80 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp metadata_present?(_progress_events, _type, _head_sha), do: false
+
+  defp current_pr_state_present?(progress_events, head_sha) when is_binary(head_sha) do
+    case latest_attached_pr_ref_with_sequence(progress_events) do
+      {:ok, attached_ref, attach_sequence} ->
+        Enum.any?(progress_events, fn
+          %ProgressEvent{payload: payload} = event when is_map(payload) ->
+            payload_type?(event, "pr", "sync_pr") and progress_after_pr_attach_boundary?(event, attach_sequence) and
+              head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
+              pr_payload_ref(payload) == attached_ref and current_pr_state_payload?(payload)
+
+          %ProgressEvent{} ->
+            false
+        end)
+
+      {:tool_error, _reason} ->
+        false
+    end
+  end
+
+  defp current_pr_state_present?(_progress_events, _head_sha), do: false
+
+  defp progress_after_pr_attach_boundary?(%ProgressEvent{}, nil), do: true
+  defp progress_after_pr_attach_boundary?(%ProgressEvent{sequence: sequence}, attach_sequence) when is_integer(sequence), do: sequence > attach_sequence
+  defp progress_after_pr_attach_boundary?(%ProgressEvent{}, _attach_sequence), do: false
+
+  defp current_pr_state_payload?(%{"source_tool" => "sync_pr"} = payload) do
+    semantic_pr_state?(payload, "check_summary", ["conclusion", "state", "status"]) or
+      semantic_pr_state?(payload, "review_state", ["decision", "state", "status"]) or
+      semantic_pr_state?(payload, "merge_state", ["mergeable_state", "state", "status"]) or
+      semantic_pr_boolean?(payload, "merge_state", ["mergeable", "merged"])
+  end
+
+  defp current_pr_state_payload?(_payload), do: false
+
+  defp semantic_pr_state?(payload, key, semantic_keys) do
+    case Map.get(payload, key) do
+      value when is_map(value) ->
+        Enum.any?(semantic_keys, fn semantic_key ->
+          semantic_pr_value?(value, semantic_key)
+        end)
+
+      _value ->
+        false
+    end
+  end
+
+  defp semantic_pr_value(value, key), do: Map.get(value, key) || Map.get(value, String.to_atom(key))
+
+  defp semantic_pr_value?(value, "state") do
+    case semantic_pr_value(value, "state") do
+      state when is_binary(state) ->
+        normalized = state |> String.trim() |> String.downcase()
+        normalized != "" and normalized not in ["open", "closed"]
+
+      _state ->
+        false
+    end
+  end
+
+  defp semantic_pr_value?(value, key), do: value |> semantic_pr_value(key) |> filled_string?()
+
+  defp semantic_pr_boolean?(payload, key, semantic_keys) do
+    case Map.get(payload, key) do
+      value when is_map(value) ->
+        Enum.any?(semantic_keys, fn semantic_key ->
+          is_boolean(Map.get(value, semantic_key)) or is_boolean(Map.get(value, String.to_atom(semantic_key)))
+        end)
+
+      _value ->
+        false
+    end
+  end
+
+  defp filled_string?(value), do: is_binary(value) and String.trim(value) != ""
 
   defp recommendation_artifact_recorded?(artifacts, work_package_id) do
     artifact_id = recommendation_artifact_id(work_package_id)
@@ -3066,6 +3527,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp metadata_tool("branch"), do: "attach_branch"
   defp metadata_tool("pr"), do: "attach_pr"
   defp metadata_tool("review_package"), do: "submit_review_package"
+
+  defp head_sha_matches?(left, right), do: PullRequest.head_sha_matches?(left, right)
+
+  defp payload_type?(%ProgressEvent{payload: payload}, type, source_tools) when is_map(payload) and is_list(source_tools) do
+    Map.get(payload, "type") == type and Map.get(payload, "source_tool") in source_tools
+  end
 
   defp payload_type?(%ProgressEvent{payload: payload}, type, source_tool) when is_map(payload) do
     Map.get(payload, "type") == type and Map.get(payload, "source_tool") == source_tool

@@ -149,7 +149,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
       policy_template ->
         kind = get_field(changeset, :kind)
 
-        if policy_template == kind and canonical_policy_template?(policy_template) do
+        if canonical_policy_template?(kind, policy_template) do
           changeset
         else
           add_error(changeset, :policy_template, "is invalid", validation: :policy_template)
@@ -157,9 +157,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
     end
   end
 
-  defp canonical_policy_template?(policy_template) do
-    match?({:ok, _template}, Templates.expand(policy_template))
-  end
+  defp canonical_policy_template?(kind, policy_template), do: Templates.compatible_kind?(kind, policy_template)
 
   defp normalize_keys(attrs) when is_map(attrs) do
     Map.new(attrs, fn {key, value} -> {normalize_key(key), value} end)

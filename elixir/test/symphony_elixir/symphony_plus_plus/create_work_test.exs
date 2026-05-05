@@ -131,6 +131,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     assert request["policy"].template == "worker_package"
     assert request["kind"] == "mcp"
 
+    assert {:ok, request} =
+             CreateWork.parse_request(%{
+               kind: "mcp",
+               repo: "symphony-plus-plus",
+               base_branch: "symphony-plus-plus/beta",
+               title: "Wire current PR policy",
+               acceptance_criteria: ["Current PR state is required."],
+               policy_template: "mcp_current_pr_state"
+             })
+
+    assert request["policy_template"] == "mcp_current_pr_state"
+    assert "current_pr_state" in request["policy"].required_gates
+
+    assert {:ok, request} =
+             CreateWork.parse_request(%{
+               repo: "symphony-plus-plus",
+               base_branch: "symphony-plus-plus/beta",
+               title: "Default current PR policy kind",
+               acceptance_criteria: ["Current PR state is required."],
+               policy_template: "mcp_current_pr_state"
+             })
+
+    assert request["kind"] == "mcp"
+    assert request["policy_template"] == "mcp_current_pr_state"
+
+    assert {:ok, request} =
+             CreateWork.parse_request(%{
+               repo: "symphony-plus-plus",
+               base_branch: "symphony-plus-plus/beta",
+               title: "Default current PR policy kind with MCP alias",
+               acceptance_criteria: ["Current PR state is required."],
+               policy_template: "mcp_current_pr_state",
+               review_suite_template: "mcp"
+             })
+
+    assert request["kind"] == "mcp"
+    assert request["policy_template"] == "mcp_current_pr_state"
+
     assert {:error, :invalid_acceptance_criteria} =
              CreateWork.parse_request(%{
                repo: "kraken",
@@ -196,6 +234,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
                title: "Quick fix cannot request hotfix policy",
                acceptance_criteria: ["Conflict is rejected."],
                policy_template: "hotfix"
+             })
+
+    assert {:ok, request} =
+             CreateWork.parse_request(%{
+               kind: "mcp",
+               repo: "symphony-plus-plus",
+               base_branch: "symphony-plus-plus/beta",
+               title: "MCP current PR state can be selected from review suite template",
+               acceptance_criteria: ["Current PR state is required."],
+               policy_template: "mcp",
+               review_suite_template: "mcp_current_pr_state"
+             })
+
+    assert request["policy_template"] == "mcp_current_pr_state"
+    assert "current_pr_state" in request["policy"].required_gates
+
+    assert {:ok, exact_alias_request} =
+             CreateWork.parse_request(%{
+               kind: "mcp",
+               repo: "symphony-plus-plus",
+               base_branch: "symphony-plus-plus/beta",
+               title: "MCP current PR state accepts exact policy and template alias",
+               acceptance_criteria: ["Current PR state is required."],
+               policy_template: "mcp_current_pr_state",
+               review_suite_template: "worker_package"
+             })
+
+    assert exact_alias_request["policy_template"] == "mcp_current_pr_state"
+    assert "current_pr_state" in exact_alias_request["policy"].required_gates
+
+    assert {:error, :policy_template_mismatch} =
+             CreateWork.parse_request(%{
+               kind: "mcp",
+               repo: "symphony-plus-plus",
+               base_branch: "symphony-plus-plus/beta",
+               title: "MCP cannot mix generic worker policy with current PR policy",
+               acceptance_criteria: ["Conflict is rejected."],
+               policy_template: "worker_package",
+               review_suite_template: "mcp_current_pr_state"
              })
   end
 

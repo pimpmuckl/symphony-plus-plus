@@ -574,7 +574,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
           },
           metadata: %{
             "branch" => %{"branch" => "agent/SYMPP-P5-HELPER", "head_sha" => "abcdef123456"},
-            "pr" => %{"url" => "https://github.com/example/repo/pull/55"}
+            "pr" => %{
+              "url" => "https://github.com/example/repo/pull/55",
+              "head_sha" => "old123",
+              "current_head_sha" => "abc123",
+              "stale" => true,
+              "check_summary" => %{"conclusion" => "success"},
+              "review_state" => %{"state" => "approved"},
+              "merge_state" => %{"state" => "open", "mergeable_state" => "clean"}
+            }
           },
           plan: [],
           findings: [],
@@ -593,6 +601,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert html =~ "1/1"
     assert html =~ "agent/SYMPP-P5-HELPER @ abcdef1"
     assert html =~ ~s(href="https://github.com/example/repo/pull/55")
+    assert html =~ "PR stale @ old123; branch @ abc123"
+    assert html =~ "Checks"
+    assert html =~ "success"
+    assert html =~ "Reviews"
+    assert html =~ "approved"
+    assert html =~ "Merge"
+    assert html =~ "clean"
+    refute html =~ ">open<"
   end
 
   defp create_detail_package(opts \\ []) do

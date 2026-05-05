@@ -33,6 +33,7 @@ resolve_blocker(blocker_id, resolution, summary, idempotency_key)
 request_scope_expansion(summary, idempotency_key, payload)
 attach_branch(branch, head_sha)
 attach_pr(url, head_sha)
+sync_pr(url_or_number, metadata)
 submit_review_package(summary, tests, artifacts, head_sha)
 mark_ready()
 ```

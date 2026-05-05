@@ -356,9 +356,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   defp default_kind([]), do: {:ok, @default_kind}
 
   defp default_kind(policy_templates) do
-    with {:ok, policy_key, policy} <- Templates.resolve_key(policy_templates),
+    with {:ok, policy_key, policy} <- default_policy_key(policy_templates),
+         {:ok, kind} <- Templates.work_package_kind(policy_key),
          :ok <- reject_phase_child_policy(policy) do
-      {:ok, policy_key}
+      {:ok, kind}
+    end
+  end
+
+  defp default_policy_key(policy_templates) do
+    case exact_policy_key(nil, policy_templates) do
+      {:ok, policy_key} ->
+        with {:ok, policy} <- Templates.expand(policy_key),
+             true <- Enum.all?(policy_templates, &Templates.matches?(policy_key, &1)) do
+          {:ok, policy_key, policy}
+        else
+          false -> {:error, :policy_template_mismatch}
+          {:error, reason} -> {:error, reason}
+        end
+
+      :none ->
+        Templates.resolve_key(policy_templates)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -373,12 +393,84 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   end
 
   defp policy_for(kind, policy_templates) do
-    with {:ok, ^kind, policy} <- Templates.resolve_key([kind | policy_templates]),
+    with {:ok, policy_key, policy} <- policy_key_for(kind, policy_templates),
          :ok <- reject_phase_child_policy(policy) do
-      {:ok, kind, policy}
+      {:ok, policy_key, policy}
     else
-      {:ok, _policy_key, _policy} -> {:error, :policy_template_mismatch}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp policy_key_for(kind, policy_templates) do
+    case exact_policy_key(kind, policy_templates) do
+      {:ok, policy_key} ->
+        with {:ok, policy} <- Templates.expand(policy_key),
+             true <- Templates.compatible_kind?(kind, policy_key),
+             :ok <- reject_exact_policy_alias_mismatch(kind, policy_key, policy, policy_templates),
+             true <- Enum.all?(policy_templates, &Templates.matches?(policy_key, &1)) do
+          {:ok, policy_key, policy}
+        else
+          false -> {:error, :policy_template_mismatch}
+          {:error, reason} -> {:error, reason}
+        end
+
+      :none ->
+        with {:ok, policy_key, policy} <- Templates.resolve_key([kind | policy_templates]),
+             true <- Templates.compatible_kind?(kind, policy_key) do
+          {:ok, policy_key, policy}
+        else
+          false -> {:error, :policy_template_mismatch}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp exact_policy_key(_kind, policy_templates) do
+    exact_keys = policy_templates |> Enum.filter(&Templates.key?/1) |> Enum.uniq()
+
+    case exact_keys do
+      [] -> :none
+      [policy_key] -> {:ok, policy_key}
+      _multiple -> exact_policy_key_with_kind_aliases(exact_keys)
+    end
+  end
+
+  defp exact_policy_key_with_kind_aliases(exact_keys) do
+    candidates =
+      Enum.filter(exact_keys, fn policy_key ->
+        case Templates.work_package_kind(policy_key) do
+          {:ok, kind} -> Enum.all?(exact_keys -- [policy_key], &(&1 == kind))
+          {:error, _reason} -> false
+        end
+      end)
+
+    case candidates do
+      [policy_key] -> {:ok, policy_key}
+      _candidates -> {:error, :policy_template_mismatch}
+    end
+  end
+
+  defp reject_exact_policy_alias_mismatch(kind, policy_key, policy, policy_templates) do
+    template_alias = Map.get(policy, :template)
+
+    if policy_key != kind and template_alias != policy_key and template_alias in policy_templates and
+         not explicit_policy_with_alias?(policy_templates, policy_key, template_alias) do
+      {:error, :policy_template_mismatch}
+    else
+      :ok
+    end
+  end
+
+  defp explicit_policy_with_alias?(policy_templates, policy_key, template_alias) do
+    with {:ok, %{template: ^template_alias}} <- Templates.expand(policy_key),
+         policy_index when is_integer(policy_index) <- Enum.find_index(policy_templates, &(&1 == policy_key)),
+         alias_index when is_integer(alias_index) <- Enum.find_index(policy_templates, &(&1 == template_alias)) do
+      policy_index < alias_index
+    else
+      _reason -> false
     end
   end
 

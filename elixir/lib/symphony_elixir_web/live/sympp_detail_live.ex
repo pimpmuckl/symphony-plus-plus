@@ -121,6 +121,13 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
             </a>
             <p :if={!pr_url(@detail.metadata)} class="sympp-empty-inline">No PR attached.</p>
             <p class="mono sympp-branch"><%= branch_label(@detail.metadata) %></p>
+            <p :if={pr_state_label(@detail.metadata)} class="mono sympp-branch"><%= pr_state_label(@detail.metadata) %></p>
+            <dl :if={pr_summary_items(@detail.metadata) != []} class="sympp-pr-state-list">
+              <div :for={{label, value} <- pr_summary_items(@detail.metadata)}>
+                <dt><%= label %></dt>
+                <dd><%= value %></dd>
+              </div>
+            </dl>
           </aside>
         </section>
 
@@ -452,7 +459,52 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
 
   defp pr_url(metadata), do: metadata |> map_value(:pr) |> map_value(:url) |> public_http_url()
 
+  defp pr_state_label(metadata) do
+    pr = map_value(metadata, :pr)
+    stale? = map_value(pr, :stale)
+    head_sha = map_value(pr, :head_sha)
+    current_head_sha = map_value(pr, :current_head_sha)
+
+    cond do
+      stale? == true -> "PR stale @ #{display_sha(head_sha) || "unknown"}; branch @ #{display_sha(current_head_sha) || "unknown"}"
+      is_binary(head_sha) -> "PR head @ #{display_sha(head_sha) || head_sha}"
+      true -> nil
+    end
+  end
+
+  defp pr_summary_items(metadata) do
+    pr = map_value(metadata, :pr)
+
+    [
+      {"Checks", pr_summary_value(pr, "check_summary", ["conclusion", "state", "status"])},
+      {"Reviews", pr_summary_value(pr, "review_state", ["state", "decision", "status"])},
+      {"Merge", pr_summary_value(pr, "merge_state", ["mergeable_state", "state", "status"])}
+    ]
+    |> Enum.reject(fn {_label, value} -> is_nil(value) end)
+  end
+
+  defp pr_summary_value(pr, key, fields) do
+    case map_value(pr, key) do
+      %{} = state when map_size(state) > 0 ->
+        Enum.find_value(fields, &compact_state_value(Map.get(state, &1))) || "recorded"
+
+      _state ->
+        nil
+    end
+  end
+
+  defp compact_state_value(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
+
+  defp compact_state_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp compact_state_value(value) when is_boolean(value), do: to_string(value)
+  defp compact_state_value(value) when is_number(value), do: to_string(value)
+  defp compact_state_value(_value), do: nil
+
   defp map_value(%{} = map, key) when is_atom(key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp map_value(%{} = map, key) when is_binary(key), do: Map.get(map, key)
   defp map_value(_map, _key), do: nil
 
   defp public_http_url(nil), do: nil
@@ -472,6 +524,18 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
 
   defp short_sha(head_sha) when is_binary(head_sha) and byte_size(head_sha) >= 7, do: String.slice(head_sha, 0, 7)
   defp short_sha(_head_sha), do: nil
+
+  defp display_sha(head_sha) when is_binary(head_sha) do
+    head_sha = String.trim(head_sha)
+
+    cond do
+      head_sha == "" -> nil
+      byte_size(head_sha) >= 7 -> String.slice(head_sha, 0, 7)
+      true -> head_sha
+    end
+  end
+
+  defp display_sha(_head_sha), do: nil
 
   defp timeline_title(%{type: "finding"} = event), do: event.title || "Finding"
   defp timeline_title(event), do: event.summary || event.status || "Progress"
