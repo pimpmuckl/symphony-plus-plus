@@ -145,6 +145,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     refute response(conn, 403) =~ "Sibling detail package"
   end
 
+  test "valid package bearer auth overrides a stale different-package browser session" do
+    %{work_package: first, worker_secret: first_secret} = create_detail_package(id: "SYMPP-P5-FIRST", title: "First package")
+    %{work_package: second, worker_secret: second_secret} = create_detail_package(id: "SYMPP-P5-SECOND", title: "Second package")
+
+    first_conn = get(auth_conn(first_secret), "/sympp/work-packages/#{first.id}")
+
+    assert response(first_conn, 200) =~ "First package"
+
+    second_conn =
+      first_conn
+      |> recycle()
+      |> put_req_header("authorization", "Bearer #{second_secret}")
+      |> get("/sympp/work-packages/#{second.id}")
+
+    assert response(second_conn, 200) =~ "Second package"
+    refute response(second_conn, 200) =~ "Package unavailable"
+  end
+
   test "renders DateTime timestamps and string-keyed payloads in render helpers" do
     html =
       %{

@@ -158,14 +158,15 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp authorize_package_request(_conn, nil), do: {:error, :not_found}
 
   defp authorize_package_request(conn, work_package_id) do
-    with {:error, :unauthorized} <-
-           conn
-           |> Conn.get_session(@board_session_key)
-           |> authorize_package_grant_id(work_package_id) do
-      case bearer_secret(conn) do
-        nil -> {:error, :unauthorized}
-        secret -> authorize_package_secret(secret, work_package_id)
-      end
+    session_result =
+      conn
+      |> Conn.get_session(@board_session_key)
+      |> authorize_package_grant_id(work_package_id)
+
+    case {session_result, bearer_secret(conn)} do
+      {{:ok, %AccessGrant{}} = authorized, _secret} -> authorized
+      {{:error, reason}, nil} -> {:error, reason}
+      {{:error, _reason}, secret} -> authorize_package_secret(secret, work_package_id)
     end
   end
 
