@@ -218,6 +218,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
   end
 
   @doc false
+  @spec run_with_migration_file_lock(Path.t(), (-> term())) :: term()
+  def run_with_migration_file_lock(database_path, fun) when is_binary(database_path) and is_function(fun, 0) do
+    with_migration_file_lock(database_path, fun)
+  end
+
+  @doc false
   @spec migration_file_lock_for_test(Path.t(), (-> term()), non_neg_integer() | :infinity) :: term()
   def migration_file_lock_for_test(database_path, fun, retries) when is_binary(database_path) and is_function(fun, 0) do
     with_migration_file_lock(database_path, fun, retries)
