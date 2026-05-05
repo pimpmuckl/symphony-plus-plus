@@ -174,11 +174,52 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp default_repo_pid(database_path) do
-    case Process.whereis(Repo) do
+    case :global.whereis_name(Repo.process_key(database_path)) do
       pid when is_pid(pid) -> pid
-      nil -> :global.whereis_name(Repo.process_key(database_path))
+      :undefined -> named_repo_pid(database_path)
     end
   end
+
+  defp named_repo_pid(database_path) do
+    case Process.whereis(Repo) do
+      pid when is_pid(pid) -> if(repo_uses_database?(pid, database_path), do: pid, else: :undefined)
+      nil -> :undefined
+    end
+  end
+
+  defp repo_uses_database?(pid, database_path) do
+    original_repo = Repo.put_dynamic_repo(pid)
+
+    try do
+      case Repo.query("PRAGMA database_list", []) do
+        {:ok, %{rows: rows}} -> Enum.any?(rows, &main_database_row?(&1, database_path))
+        {:error, _reason} -> false
+      end
+    rescue
+      _error in Exqlite.Error -> false
+    after
+      Repo.put_dynamic_repo(original_repo)
+    end
+  end
+
+  defp main_database_row?([_seq, "main", path], database_path) when is_binary(path) and is_binary(database_path) do
+    cond do
+      path == "" -> Repo.memory_database?(database_path)
+      Repo.filesystem_database_path?(database_path) -> Repo.same_database_path?(path, database_path)
+      true -> sqlite_database_uri_matches_path?(database_path, path)
+    end
+  end
+
+  defp main_database_row?(_row, _database_path), do: false
+
+  defp sqlite_database_uri_matches_path?("file:" <> _uri = database_path, path) do
+    case Repo.sqlite_file_uri_path(database_path) do
+      uri_path when is_binary(uri_path) and uri_path != "" -> Repo.same_database_path?(uri_path, path)
+      _missing -> false
+    end
+  end
+
+  defp sqlite_database_uri_matches_path?(_database_path, _path), do: false
 
   defp start_transient_repo(database_path, fun) do
     options = Repo.child_options(database: database_path, name: nil)
@@ -366,18 +407,30 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   defp review_state(card), do: if(review_present?(card), do: "attached", else: "none")
 
-  defp review_present?(card), do: not is_nil(get_in(card, [:metadata, :review_package]))
+  defp review_present?(card), do: not is_nil(metadata_value(card, :review_package, "review_package"))
 
   defp pr_url(card) do
-    case get_in(card, [:metadata, :pr, "url"]) || get_in(card, [:metadata, :pr, :url]) do
+    case metadata_value(card, :pr, "pr") do
+      %{} = pr -> Map.get(pr, "url") || Map.get(pr, :url)
+      _missing -> nil
+    end
+    |> case do
       url when is_binary(url) and url != "[REDACTED]" -> url
       _url -> nil
     end
   end
 
+  defp metadata_value(%{metadata: %{} = metadata}, atom_key, string_key) do
+    Map.get(metadata, atom_key) || Map.get(metadata, string_key)
+  end
+
+  defp metadata_value(_card, _atom_key, _string_key), do: nil
+
   defp active_agent_run?(card), do: not is_nil(card.active_agent_run)
 
   defp relative_time(nil), do: "n/a"
+
+  defp relative_time(%DateTime{} = datetime), do: relative_time(datetime, DateTime.utc_now())
 
   defp relative_time(timestamp) when is_binary(timestamp) do
     case DateTime.from_iso8601(timestamp) do

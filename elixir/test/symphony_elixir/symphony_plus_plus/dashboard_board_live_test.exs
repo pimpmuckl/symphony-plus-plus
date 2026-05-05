@@ -4,6 +4,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
+  alias Phoenix.HTML.Safe
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
@@ -16,6 +17,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
+  alias SymphonyElixirWeb.SymppBoardLive
 
   @endpoint SymphonyElixirWeb.Endpoint
 
@@ -142,6 +144,80 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     assert html =~ "[REDACTED]"
     refute html =~ "raw-secret-value"
     refute html =~ "wk_"
+  end
+
+  test "uses the configured ledger path instead of an unrelated named repo" do
+    database_path = WorkPackageFactory.database_path()
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+
+    Application.put_env(:symphony_elixir, :sympp_repo_database, database_path)
+
+    on_exit(fn ->
+      restore_database_env(original_database)
+      File.rm(database_path)
+    end)
+
+    with_transient_repo(database_path, fn ->
+      create_board_package(%{
+        id: "SYMPP-P5-010",
+        kind: "dashboard",
+        status: "implementing",
+        title: "Selected ledger package",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "symphony-plus-plus/beta"
+      })
+    end)
+
+    {:ok, _view, html} = live(build_conn(), "/sympp/board")
+
+    assert html =~ "Selected ledger package"
+    assert html =~ "SYMPP-P5-010"
+  end
+
+  test "renders DateTime timestamps and string-keyed metadata in board cards" do
+    html =
+      %{
+        empty_filter: "all",
+        filters: %{kind: "all", repo: "all", phase: "all"},
+        board: %{
+          error: nil,
+          total_count: 1,
+          visible_count: 1,
+          column_count: 1,
+          filter_options: %{kinds: [], repos: [], phases: []},
+          columns: [
+            %{
+              status: "implementing",
+              cards: [
+                %{
+                  id: "SYMPP-P5-011",
+                  kind: "dashboard",
+                  title: "String metadata package",
+                  repo: "nextide/symphony-plus-plus",
+                  base_branch: "symphony-plus-plus/beta",
+                  latest_progress_at: ~U[2026-05-05 00:00:00Z],
+                  updated_at: ~U[2026-05-04 00:00:00Z],
+                  active_blocker_count: 0,
+                  plan: %{total_count: 1, completed_count: 1, open_count: 0},
+                  metadata: %{
+                    "pr" => %{"url" => "https://github.com/example/symphony-plus-plus/pull/26"},
+                    "review_package" => %{"head_sha" => "abc123"}
+                  },
+                  active_agent_run: nil
+                }
+              ]
+            }
+          ]
+        }
+      }
+      |> SymppBoardLive.render()
+      |> Safe.to_iodata()
+      |> IO.iodata_to_binary()
+
+    assert html =~ "String metadata package"
+    assert html =~ "Review attached"
+    assert html =~ ~s(href="https://github.com/example/symphony-plus-plus/pull/26")
+    refute html =~ "n/a"
   end
 
   defp create_board_package(attrs) do
@@ -279,4 +355,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
     start_supervised!({SymphonyElixirWeb.Endpoint, []})
   end
+
+  defp with_transient_repo(database_path, fun) do
+    {:ok, pid} = Repo.start_link(Repo.child_options(database: database_path, name: nil))
+    Process.unlink(pid)
+    original_repo = Repo.put_dynamic_repo(pid)
+
+    try do
+      assert :ok = WorkPackageRepository.migrate(Repo)
+      fun.()
+    after
+      Repo.put_dynamic_repo(original_repo)
+      stop_transient_repo(pid)
+    end
+  end
+
+  defp stop_transient_repo(pid) do
+    ref = Process.monitor(pid)
+    Process.exit(pid, :shutdown)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+    after
+      1_000 ->
+        Process.demonitor(ref, [:flush])
+        :ok
+    end
+  end
+
+  defp restore_database_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_repo_database)
+  defp restore_database_env(database), do: Application.put_env(:symphony_elixir, :sympp_repo_database, database)
 end
