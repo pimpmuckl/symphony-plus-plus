@@ -205,15 +205,19 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
-  defp authorize_package_request(_conn, nil), do: {:error, :not_found}
+  defp authorize_package_request(_conn, work_package_id) when not is_binary(work_package_id), do: {:error, :not_found}
 
   defp authorize_package_request(conn, work_package_id) do
-    session_result = authorize_package_session(conn, work_package_id)
+    if valid_package_route_id?(work_package_id) do
+      session_result = authorize_package_session(conn, work_package_id)
 
-    case {session_result, bearer_secret(conn)} do
-      {{:ok, %AccessGrant{}} = authorized, _secret} -> authorized
-      {{:error, reason}, nil} -> {:error, reason}
-      {{:error, _reason}, secret} -> authorize_package_secret(secret, work_package_id)
+      case {session_result, bearer_secret(conn)} do
+        {{:ok, %AccessGrant{}} = authorized, _secret} -> authorized
+        {{:error, reason}, nil} -> {:error, reason}
+        {{:error, _reason}, secret} -> authorize_package_secret(secret, work_package_id)
+      end
+    else
+      {:error, :not_found}
     end
   end
 
@@ -264,14 +268,18 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp authorize_package_secret(secret, work_package_id) do
-    with true <- auth_storage_ready?(secret),
-         {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_with_existing_repo(secret),
-         :ok <- require_existing_work_package(work_package_id),
-         :ok <- require_work_package(auth_context, work_package_id) do
-      {:ok, grant}
+    if valid_package_route_id?(work_package_id) do
+      with true <- auth_storage_ready?(secret),
+           {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_with_existing_repo(secret),
+           :ok <- require_existing_work_package(work_package_id),
+           :ok <- require_work_package(auth_context, work_package_id) do
+        {:ok, grant}
+      else
+        false -> {:error, :unauthorized}
+        {:error, reason} -> {:error, reason}
+      end
     else
-      false -> {:error, :unauthorized}
-      {:error, reason} -> {:error, reason}
+      {:error, :not_found}
     end
   end
 
@@ -291,14 +299,18 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @spec authorize_package_grant_id(term(), String.t()) :: {:ok, AccessGrant.t()} | {:error, term()}
   def authorize_package_grant_id(grant_id, work_package_id) when is_binary(grant_id) and is_binary(work_package_id) do
-    with true <- dashboard_storage_present?(),
-         {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_grant_id_with_existing_repo(grant_id),
-         :ok <- require_existing_work_package(work_package_id),
-         :ok <- require_work_package(auth_context, work_package_id) do
-      {:ok, grant}
+    if valid_package_route_id?(work_package_id) do
+      with true <- dashboard_storage_present?(),
+           {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_grant_id_with_existing_repo(grant_id),
+           :ok <- require_existing_work_package(work_package_id),
+           :ok <- require_work_package(auth_context, work_package_id) do
+        {:ok, grant}
+      else
+        false -> {:error, :unauthorized}
+        {:error, reason} -> {:error, reason}
+      end
     else
-      false -> {:error, :unauthorized}
-      {:error, reason} -> {:error, reason}
+      {:error, :not_found}
     end
   end
 
@@ -880,6 +892,12 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     |> to_string()
     |> URI.encode(&URI.char_unreserved?/1)
   end
+
+  defp valid_package_route_id?(work_package_id) when is_binary(work_package_id) do
+    String.trim(work_package_id) != "" and not String.contains?(work_package_id, ["\0", "\n", "\r", "\t"])
+  end
+
+  defp valid_package_route_id?(_work_package_id), do: false
 
   defp html_escape(value) do
     value

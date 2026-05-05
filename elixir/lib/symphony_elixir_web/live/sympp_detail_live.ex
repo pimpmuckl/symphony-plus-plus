@@ -73,7 +73,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
           <h1 class="sympp-detail-title"><%= package_title(@detail.work_package) %></h1>
         </div>
 
-        <a :if={@phase_reader?} class="sympp-back-link" href="../board">Board</a>
+        <a :if={@phase_reader?} class="sympp-back-link" href="/sympp/board">Board</a>
       </header>
 
       <%= if @error do %>

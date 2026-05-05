@@ -213,6 +213,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     refute response(session_conn, 404) =~ "work_key"
   end
 
+  test "malformed package route ids return not found without prompting for credentials" do
+    detail_conn = get(build_conn(), "/sympp/work-packages/SYMPP%0AID")
+
+    assert response(detail_conn, 404) =~ "Package not found"
+    refute response(detail_conn, 404) =~ "work_key"
+
+    session_conn =
+      post(build_conn(), "/sympp/work-packages/SYMPP%0AID/session", %{
+        "work_key" => "not-a-real-key"
+      })
+
+    assert response(session_conn, 404) =~ "Package not found"
+    refute response(session_conn, 404) =~ "work_key"
+  end
+
   test "valid package bearer auth overrides a stale different-package browser session" do
     %{work_package: first, worker_secret: first_secret} = create_detail_package(id: "SYMPP-P5-FIRST", title: "First package")
     %{work_package: second, worker_secret: second_secret} = create_detail_package(id: "SYMPP-P5-SECOND", title: "Second package")
@@ -264,6 +279,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     detail_conn = get(auth_conn(architect_secret), "/sympp/work-packages/#{work_package.id}")
 
     assert response(detail_conn, 200) =~ ~s(class="sympp-back-link")
+    assert response(detail_conn, 200) =~ ~s(href="/sympp/board")
 
     board_conn =
       detail_conn
