@@ -358,6 +358,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     refute encoded =~ "Bearer "
   end
 
+  test "blocked packages do not show an active blocker alert after blockers are resolved", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUNTIME-RESOLVED-BLOCKER", status: "blocked"))
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    timestamp = ~U[2026-05-05 00:00:00Z]
+
+    assert {:ok, _reported} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Blocked",
+               status: "blocked",
+               payload: %{type: "blocker", source_tool: "report_blocker", blocker_id: "blocker-a", active: true},
+               created_at: timestamp
+             })
+
+    assert {:ok, _resolved} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Unblocked",
+               status: "unblocked",
+               payload: %{type: "blocker", source_tool: "resolve_blocker", blocker_id: "blocker-a", active: false},
+               created_at: DateTime.add(timestamp, 1, :second)
+             })
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    alerts = Map.new(payload["alert_indicators"], &{&1["type"], &1})
+
+    assert payload["summary"]["active_blocker_count"] == 0
+    refute alerts["blocker"]["active"]
+    assert alerts["blocker"]["detail"] == "0 active blockers"
+  end
+
   test "stale alert uses the latest active run heartbeat", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUNTIME-CURRENT", status: "implementing"))
@@ -583,7 +616,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     refute "branch_attached" in missing["missing"]
   end
 
-  test "latest PR and review package head are the readiness head after branch attach", %{repo: repo} do
+  test "readiness remains anchored to the latest branch head after PR attach", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(
                repo,
@@ -639,11 +672,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
     missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
 
-    refute missing["active"]
-    assert missing["missing"] == []
+    assert missing["active"] == true
+    refute "branch_attached" in missing["missing"]
+    assert "pr_attached" in missing["missing"]
+    assert "review_package_submitted" in missing["missing"]
+    assert "tests_passed" in missing["missing"]
+    assert "review_lanes_complete" in missing["missing"]
   end
 
-  test "unknown policy lookup keeps ready packages blocked on readiness evidence", %{repo: repo} do
+  test "unknown policy lookup does not invent merge or review evidence requirements", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(
                repo,
@@ -661,12 +698,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     assert missing["active"] == true
     assert "plan_complete" in missing["missing"]
-    assert "acceptance_criteria_met" in missing["missing"]
-    assert "tests_passed" in missing["missing"]
-    assert "branch_attached" in missing["missing"]
-    assert "pr_attached" in missing["missing"]
-    assert "review_package_submitted" in missing["missing"]
-    assert "review_lanes_complete" in missing["missing"]
+    refute "acceptance_criteria_met" in missing["missing"]
+    refute "tests_passed" in missing["missing"]
+    refute "branch_attached" in missing["missing"]
+    refute "pr_attached" in missing["missing"]
+    refute "review_package_submitted" in missing["missing"]
+    refute "review_lanes_complete" in missing["missing"]
   end
 
   test "card summaries use total counts and full progress metadata", %{repo: repo} do
