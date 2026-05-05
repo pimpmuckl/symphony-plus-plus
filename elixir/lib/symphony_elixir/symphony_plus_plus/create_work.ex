@@ -408,15 +408,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     end
   end
 
-  defp exact_policy_key(kind, policy_templates) do
+  defp exact_policy_key(_kind, policy_templates) do
     exact_keys = policy_templates |> Enum.filter(&Templates.key?/1) |> Enum.uniq()
-    non_kind_keys = Enum.reject(exact_keys, &(&1 == kind))
 
-    case {exact_keys, non_kind_keys} do
-      {[], []} -> :none
-      {[_kind], []} -> {:ok, kind}
-      {_keys, [policy_key]} -> {:ok, policy_key}
-      {_keys, _multiple} -> {:error, :policy_template_mismatch}
+    case exact_keys do
+      [] -> :none
+      [policy_key] -> {:ok, policy_key}
+      _multiple -> {:error, :policy_template_mismatch}
     end
   end
 

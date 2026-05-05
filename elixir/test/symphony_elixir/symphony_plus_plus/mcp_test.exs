@@ -4644,6 +4644,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(response, ["result", "structuredContent", "progress_event", "payload", "number"]) == 43
   end
 
+  test "sync_pr resolves PR numbers from standard metadata when package repo is short", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-PR-SYNC-SHORT-REPO", kind: "mcp", repo: "symphony-plus-plus", status: "ci_waiting")
+             )
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/nextide/symphony-plus-plus/pull/43", "head_sha" => "head-a"})
+
+    response =
+      attach_tool(repo, session, "sync_pr", %{
+        "number" => 43,
+        "metadata" => %{
+          "head" => %{"sha" => "head-a", "ref" => "agent/SYMPP-P6-001/github-pr-attachment-sync"},
+          "base" => %{"repo" => %{"full_name" => "nextide/symphony-plus-plus"}},
+          "state" => "open",
+          "mergeable_state" => "clean"
+        }
+      })
+
+    payload = get_in(response, ["result", "structuredContent", "progress_event", "payload"])
+
+    assert payload["repository"] == "nextide/symphony-plus-plus"
+    assert payload["number"] == 43
+    assert payload["merge_state"] == %{"mergeable_state" => "clean", "state" => "open"}
+  end
+
   test "latest branch head supersedes earlier PR head for review evidence", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PR-BRANCH-HEAD", kind: "quick_fix", status: "ci_waiting"))
     append_done_plan(repo, package.id)

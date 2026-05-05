@@ -18,7 +18,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
         parse_url(Map.get(arguments, "url"))
 
       Map.has_key?(arguments, "number") ->
-        parse_number(Map.get(arguments, "number"), Map.get(arguments, "repository") || package_repo)
+        parse_number(Map.get(arguments, "number"), repository_input(arguments, package_repo))
 
       true ->
         {:error, :missing_pr_reference}
@@ -60,9 +60,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
     with {:ok, head_sha} <- metadata_head_sha(metadata, fallback_head_sha),
          {:ok, branch} <- metadata_branch(metadata),
          {:ok, changed_files, changed_files_count} <- metadata_changed_files(metadata),
-         {:ok, check_summary} <- metadata_map(metadata, "check_summary"),
-         {:ok, review_state} <- metadata_map(metadata, "review_state"),
-         {:ok, merge_state} <- metadata_map(metadata, "merge_state") do
+         {:ok, check_summary} <- metadata_map(metadata, "check_summary", %{}),
+         {:ok, review_state} <- metadata_map(metadata, "review_state", github_review_state(metadata)),
+         {:ok, merge_state} <- metadata_map(metadata, "merge_state", github_merge_state(metadata)) do
       {:ok,
        %{
          "type" => "pr",
@@ -110,6 +110,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
   end
 
   defp parse_repository(_repository), do: {:error, :missing_repository}
+
+  defp repository_input(arguments, package_repo) do
+    Map.get(arguments, "repository") || metadata_repository(Map.get(arguments, "metadata")) || package_repo
+  end
+
+  defp metadata_repository(%{} = metadata) do
+    Map.get(metadata, "repository") ||
+      get_in(metadata, ["base", "repo", "full_name"]) ||
+      get_in(metadata, ["head", "repo", "full_name"]) ||
+      repository_from_url(Map.get(metadata, "html_url") || Map.get(metadata, "url"))
+  end
+
+  defp metadata_repository(_metadata), do: nil
+
+  defp repository_from_url(url) when is_binary(url) do
+    case parse_url(url) do
+      {:ok, ref} -> ref.repository
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp repository_from_url(_url), do: nil
 
   defp parse_positive_number(number) when is_integer(number) and number > 0, do: {:ok, number}
 
@@ -178,12 +200,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
   defp normalize_file_path(%{"filename" => path} = value) when is_binary(path), do: value |> Map.put("path", String.trim(path)) |> Map.delete("filename")
   defp normalize_file_path(value), do: value
 
-  defp metadata_map(metadata, key) do
-    case Map.get(metadata, key, %{}) do
+  defp metadata_map(metadata, key, fallback) do
+    case Map.get(metadata, key, fallback) do
       value when is_map(value) -> {:ok, value}
       nil -> {:ok, %{}}
       _value -> {:error, :"invalid_#{key}"}
     end
+  end
+
+  defp github_review_state(metadata) do
+    metadata
+    |> Map.take(["draft"])
+    |> reject_nil_values()
+  end
+
+  defp github_merge_state(metadata) do
+    metadata
+    |> Map.take(["state", "mergeable", "mergeable_state", "merged"])
+    |> reject_nil_values()
+  end
+
+  defp reject_nil_values(map) do
+    Map.reject(map, fn {_key, value} -> is_nil(value) end)
   end
 
   defp filled_string?(value), do: is_binary(value) and String.trim(value) != ""

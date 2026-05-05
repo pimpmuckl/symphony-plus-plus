@@ -22,6 +22,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
     assert ref.repository == "nextide/symphony-plus-plus"
     assert ref.number == 77
     assert ref.url == "https://github.com/nextide/symphony-plus-plus/pull/77"
+
+    assert {:ok, metadata_ref} =
+             PullRequest.parse(
+               %{"number" => 78, "metadata" => %{"base" => %{"repo" => %{"full_name" => "nextide/symphony-plus-plus"}}}},
+               "symphony-plus-plus"
+             )
+
+    assert metadata_ref.repository == "nextide/symphony-plus-plus"
+    assert metadata_ref.url == "https://github.com/nextide/symphony-plus-plus/pull/78"
   end
 
   test "rejects malformed PR references" do
@@ -61,13 +70,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
 
     metadata = %{
       "head" => %{"sha" => "abc123", "ref" => "agent/SYMPP-P6-001/github-pr-attachment-sync"},
-      "changed_files" => []
+      "changed_files" => [],
+      "state" => "open",
+      "mergeable" => true,
+      "mergeable_state" => "clean",
+      "draft" => false
     }
 
     assert {:ok, payload} = PullRequest.metadata(metadata, ref, nil)
 
     assert payload["head_sha"] == "abc123"
     assert payload["branch"] == "agent/SYMPP-P6-001/github-pr-attachment-sync"
+    assert payload["merge_state"] == %{"mergeable" => true, "mergeable_state" => "clean", "state" => "open"}
+    assert payload["review_state"] == %{"draft" => false}
   end
 
   test "tolerates canonical GitHub changed file counts" do

@@ -222,6 +222,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
                acceptance_criteria: ["Conflict is rejected."],
                policy_template: "hotfix"
              })
+
+    assert {:error, :policy_template_mismatch} =
+             CreateWork.parse_request(%{
+               kind: "mcp",
+               repo: "symphony-plus-plus",
+               base_branch: "symphony-plus-plus/beta",
+               title: "MCP cannot request two exact policy variants",
+               acceptance_criteria: ["Conflict is rejected."],
+               policy_template: "mcp",
+               review_suite_template: "mcp_current_pr_state"
+             })
   end
 
   test "preserves allowed file globs and rejects invalid scope constraints", %{repo: repo} do
