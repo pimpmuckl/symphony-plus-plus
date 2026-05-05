@@ -58,6 +58,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       }
     end
 
+    def one(_query), do: raise(%Exqlite.Error{message: "database is locked"})
     def all(_query), do: raise(%Exqlite.Error{message: "database is locked"})
   end
 
@@ -4416,11 +4417,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     refute inspect(decoded_key_payload) =~ "ghp_should_not_surface"
     assert payload["check_summary"]["token"] == "[REDACTED]"
+    event_id = get_in(response, ["result", "structuredContent", "progress_event", "id"])
 
     assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
     assert Enum.any?(artifacts, &(&1.kind == "github_pr" and &1.path == "github-pr.json" and &1.uri == payload["url"]))
 
     attach_tool(repo, session, "attach_pr", %{"number" => 43, "head_sha" => "sync-head"})
+
+    replay_response =
+      attach_tool(repo, session, "sync_pr", %{
+        "number" => 42,
+        "metadata" => %{
+          "head_sha" => "sync-head",
+          "branch" => "agent/SYMPP-P6-001/github-pr-attachment-sync",
+          "changed_files" => [%{"filename" => "elixir/lib/symphony_elixir/symphony_plus_plus/github/client.ex", "status" => "added"}],
+          "check_summary" => %{"conclusion" => "success", "token" => "ghp_should_not_surface_nested"},
+          "review_state" => %{"state" => "approved"},
+          "merge_state" => %{"state" => "clean"},
+          "token" => "ghp_should_not_surface"
+        }
+      })
+
+    assert get_in(replay_response, ["result", "structuredContent", "progress_event", "id"]) == event_id
+    assert get_in(replay_response, ["result", "structuredContent", "progress_event", "payload", "number"]) == 42
 
     assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
     pr_artifacts = Enum.filter(artifacts, &(&1.kind == "github_pr" and &1.path == "github-pr.json"))

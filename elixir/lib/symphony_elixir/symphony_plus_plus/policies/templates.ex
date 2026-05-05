@@ -172,6 +172,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
     end
   end
 
+  def compatible_kind?(_kind, _policy_key), do: false
+
   @spec work_package_kind(String.t()) :: {:ok, String.t()} | {:error, :unknown_policy_template}
   def work_package_kind(policy_key) when is_binary(policy_key) do
     case Map.fetch(@templates, policy_key) do

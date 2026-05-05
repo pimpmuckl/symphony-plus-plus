@@ -106,6 +106,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
              Repository.create(repo, WorkPackageFactory.attrs(kind: "mcp", policy_template: "mc"))
 
     assert "is invalid" in errors_on(typo_changeset).policy_template
+
+    assert {:error, %Ecto.Changeset{} = missing_kind_changeset} =
+             Repository.create(repo, WorkPackageFactory.attrs(policy_template: "mcp") |> Map.delete(:kind))
+
+    assert "can't be blank" in errors_on(missing_kind_changeset).kind
+    assert "is invalid" in errors_on(missing_kind_changeset).policy_template
   end
 
   test "returns not found for missing work packages", %{repo: repo} do

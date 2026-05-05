@@ -1554,6 +1554,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
          {:ok, payload} <- pr_metadata_payload(config.repo, session, arguments, "attach_pr") do
       append_pr_metadata(config.repo, session, arguments, "attach_pr", "pr_attached", payload)
+      |> metadata_tool_response("attach_pr")
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "attach_pr", "reason" => reason}}
       {:error, reason} -> worker_error(reason, "attach_pr")
@@ -1564,6 +1565,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
          {:ok, payload} <- pr_metadata_payload(config.repo, session, arguments, "sync_pr") do
       append_pr_metadata(config.repo, session, arguments, "sync_pr", "pr_synced", payload)
+      |> metadata_tool_response("sync_pr")
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "sync_pr", "reason" => reason}}
       {:error, reason} -> worker_error(reason, "sync_pr")
@@ -1613,7 +1615,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, %WorkPackage{} = work_package} <- WorkPackageRepository.get(repo, Session.work_package_id(session)),
          {:ok, ref} <- PullRequest.parse(arguments, work_package.repo),
          {:ok, metadata_input} <- pr_metadata_input(arguments, source_tool),
-         :ok <- validate_pr_sync_target(repo, session, ref, source_tool),
          {:ok, metadata} <- Client.fetch_pull_request(DryClient, ref, metadata: metadata_input),
          {:ok, payload} <- PullRequest.metadata(metadata, ref, pr_fallback_head_sha(arguments, source_tool)) do
       {:ok, Map.put(payload, "source_tool", source_tool)}
@@ -1634,6 +1635,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         {:tool_error, reason_text(reason)}
     end
   end
+
+  defp metadata_tool_response({:ok, _result} = result, _tool), do: result
+  defp metadata_tool_response({:tool_error, reason}, tool), do: {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason}}
+  defp metadata_tool_response({:error, reason}, tool), do: worker_error(reason, tool)
 
   defp pr_fallback_head_sha(arguments, "attach_pr"), do: Map.get(arguments, "head_sha")
   defp pr_fallback_head_sha(_arguments, "sync_pr"), do: nil
@@ -1699,15 +1704,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp append_pr_metadata(repo, %Session{} = session, arguments, tool, status, payload) do
-    repo
-    |> run_worker_transaction(fn ->
-      with {:ok, idempotency_key, attrs} <- metadata_event_attrs(session, arguments, tool, status, payload),
-           {:ok, replay?} <- progress_event_replay?(repo, session, idempotency_key),
-           {:ok, event_result} <- append_progress_event_or_replay(repo, session, attrs, idempotency_key, tool),
-           :ok <- maybe_upsert_pr_artifact(repo, session, payload, replay?) do
-        {:ok, event_result}
-      end
-    end)
+    with {:ok, idempotency_key, attrs} <- metadata_event_attrs(session, arguments, tool, status, payload),
+         {:ok, replay?} <- progress_event_replay?(repo, session, idempotency_key),
+         :ok <- validate_pr_sync_target_unless_replay(repo, session, arguments, tool, replay?) do
+      run_worker_transaction(repo, fn ->
+        append_pr_metadata_event(repo, session, attrs, idempotency_key, tool, payload, replay?)
+      end)
+    end
+  end
+
+  defp append_pr_metadata_event(repo, session, attrs, idempotency_key, tool, payload, replay?) do
+    with {:ok, event_result} <- append_progress_event_or_replay(repo, session, attrs, idempotency_key, tool),
+         :ok <- maybe_upsert_pr_artifact(repo, session, payload, replay?) do
+      {:ok, event_result}
+    end
+  end
+
+  defp validate_pr_sync_target_unless_replay(_repo, %Session{}, _arguments, _tool, true), do: :ok
+
+  defp validate_pr_sync_target_unless_replay(repo, %Session{} = session, arguments, tool, false) do
+    with {:ok, %WorkPackage{} = work_package} <- WorkPackageRepository.get(repo, Session.work_package_id(session)),
+         {:ok, ref} <- PullRequest.parse(arguments, work_package.repo) do
+      validate_pr_sync_target(repo, session, ref, tool)
+    end
   end
 
   defp progress_event_replay?(repo, %Session{} = session, idempotency_key) do
