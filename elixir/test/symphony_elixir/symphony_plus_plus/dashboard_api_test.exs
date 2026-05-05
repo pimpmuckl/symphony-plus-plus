@@ -843,6 +843,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     assert "current_pr_state" in invalid_missing["missing"]
 
+    assert {:ok, _boolean_sync} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR synced",
+               status: "pr_synced",
+               payload: %{
+                 type: "pr",
+                 source_tool: "sync_pr",
+                 url: "https://github.com/example/repo/pull/8",
+                 head_sha: "head-a",
+                 merge_state: %{mergeable: true, merged: false}
+               },
+               created_at: DateTime.add(timestamp, 4, :second)
+             })
+
+    boolean_payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    boolean_missing = Enum.find(boolean_payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    refute "current_pr_state" in boolean_missing["missing"]
+
     assert {:ok, _valid_sync} =
              PlanningRepository.append_progress_event(repo, %{
                work_package_id: work_package.id,
@@ -855,7 +875,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  head_sha: "head-a",
                  check_summary: %{conclusion: "success"}
                },
-               created_at: DateTime.add(timestamp, 4, :second)
+               created_at: DateTime.add(timestamp, 5, :second)
              })
 
     valid_payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
@@ -869,7 +889,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                summary: "Different PR attached",
                status: "pr_attached",
                payload: %{type: "pr", source_tool: "attach_pr", url: "https://github.com/example/repo/pull/9", head_sha: "head-a"},
-               created_at: DateTime.add(timestamp, 5, :second)
+               created_at: DateTime.add(timestamp, 6, :second)
              })
 
     different_pr_payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
@@ -885,7 +905,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                summary: "Branch advanced",
                status: "branch_attached",
                payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "head-b"},
-               created_at: DateTime.add(timestamp, 6, :second)
+               created_at: DateTime.add(timestamp, 7, :second)
              })
 
     stale_payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)

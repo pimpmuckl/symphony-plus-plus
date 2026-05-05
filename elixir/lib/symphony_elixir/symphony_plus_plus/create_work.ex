@@ -434,17 +434,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     case exact_keys do
       [] -> :none
       [policy_key] -> {:ok, policy_key}
-      [policy_key | aliases] -> exact_policy_key_with_kind_aliases(policy_key, aliases)
+      _multiple -> exact_policy_key_with_kind_aliases(exact_keys)
     end
   end
 
-  defp exact_policy_key_with_kind_aliases(policy_key, aliases) do
-    with {:ok, kind} <- Templates.work_package_kind(policy_key),
-         true <- Enum.all?(aliases, &(&1 == kind)) do
-      {:ok, policy_key}
-    else
-      false -> {:error, :policy_template_mismatch}
-      {:error, reason} -> {:error, reason}
+  defp exact_policy_key_with_kind_aliases(exact_keys) do
+    candidates =
+      Enum.filter(exact_keys, fn policy_key ->
+        case Templates.work_package_kind(policy_key) do
+          {:ok, kind} -> Enum.all?(exact_keys -- [policy_key], &(&1 == kind))
+          {:error, _reason} -> false
+        end
+      end)
+
+    case candidates do
+      [policy_key] -> {:ok, policy_key}
+      _candidates -> {:error, :policy_template_mismatch}
     end
   end
 

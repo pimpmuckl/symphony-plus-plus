@@ -236,16 +236,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
                policy_template: "hotfix"
              })
 
-    assert {:error, :policy_template_mismatch} =
+    assert {:ok, request} =
              CreateWork.parse_request(%{
                kind: "mcp",
                repo: "symphony-plus-plus",
                base_branch: "symphony-plus-plus/beta",
-               title: "MCP cannot request two exact policy variants",
-               acceptance_criteria: ["Conflict is rejected."],
+               title: "MCP current PR state can be selected from review suite template",
+               acceptance_criteria: ["Current PR state is required."],
                policy_template: "mcp",
                review_suite_template: "mcp_current_pr_state"
              })
+
+    assert request["policy_template"] == "mcp_current_pr_state"
+    assert "current_pr_state" in request["policy"].required_gates
 
     assert {:error, :policy_template_mismatch} =
              CreateWork.parse_request(%{

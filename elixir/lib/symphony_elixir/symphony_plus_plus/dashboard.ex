@@ -1007,7 +1007,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp current_pr_state_payload?(%{"source_tool" => "sync_pr"} = payload) do
     semantic_pr_state?(payload, "check_summary", ["conclusion", "state", "status"]) or
       semantic_pr_state?(payload, "review_state", ["decision", "state", "status"]) or
-      semantic_pr_state?(payload, "merge_state", ["mergeable_state", "state", "status"])
+      semantic_pr_state?(payload, "merge_state", ["mergeable_state", "state", "status"]) or
+      semantic_pr_boolean?(payload, "review_state", ["draft"]) or
+      semantic_pr_boolean?(payload, "merge_state", ["mergeable", "merged"])
   end
 
   defp current_pr_state_payload?(_payload), do: false
@@ -1025,6 +1027,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp semantic_pr_value(value, key), do: Map.get(value, key) || Map.get(value, String.to_atom(key))
+
+  defp semantic_pr_boolean?(payload, key, semantic_keys) do
+    case Map.get(payload, key) do
+      value when is_map(value) ->
+        Enum.any?(semantic_keys, fn semantic_key ->
+          is_boolean(Map.get(value, semantic_key)) or is_boolean(Map.get(value, String.to_atom(semantic_key)))
+        end)
+
+      _value ->
+        false
+    end
+  end
 
   defp metadata_tool("branch"), do: "attach_branch"
   defp metadata_tool("pr"), do: ["attach_pr", "sync_pr"]
