@@ -782,9 +782,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp metadata_present?(progress_events, type, head_sha) when is_binary(head_sha) do
+    tool = metadata_tool(type)
+
     Enum.any?(progress_events, fn
-      %ProgressEvent{payload: payload} = event when is_map(payload) ->
-        payload_type?(event, type, metadata_tool(type)) and Map.get(payload, "head_sha") == head_sha
+      %ProgressEvent{payload: payload} = event when is_map(payload) and is_binary(tool) ->
+        payload_type?(event, type, tool) and Map.get(payload, "head_sha") == head_sha
 
       %ProgressEvent{} ->
         false

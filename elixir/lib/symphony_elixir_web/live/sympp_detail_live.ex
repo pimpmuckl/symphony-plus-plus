@@ -491,8 +491,8 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
   defp alert_state(%{active: true}), do: "active"
   defp alert_state(_alert), do: "clear"
 
-  defp run_badge_class(%{stale: true}), do: "state-badge state-badge-warning"
   defp run_badge_class(%{status: "failed"}), do: "state-badge state-badge-danger"
+  defp run_badge_class(%{stale: true}), do: "state-badge state-badge-warning"
   defp run_badge_class(%{runtime_state: runtime_state}) when runtime_state in ["active", "queued"], do: "state-badge state-badge-active"
   defp run_badge_class(_run), do: "state-badge"
 
