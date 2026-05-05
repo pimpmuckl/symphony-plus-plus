@@ -52,7 +52,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   @spec normalize_package_route_id(term()) :: term()
-  def normalize_package_route_id(work_package_id) when is_binary(work_package_id), do: URI.decode(work_package_id)
+  def normalize_package_route_id(work_package_id) when is_binary(work_package_id), do: work_package_id
   def normalize_package_route_id(work_package_id), do: work_package_id
 
   @spec board_session(Conn.t(), map()) :: Conn.t()

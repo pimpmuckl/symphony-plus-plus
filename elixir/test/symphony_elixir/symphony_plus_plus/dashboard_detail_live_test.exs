@@ -255,6 +255,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert response(detail_conn, 200) =~ raw_id
   end
 
+  test "package detail route preserves literal percent escape text in package ids" do
+    raw_id = "SYMPP-%2F-RAW"
+    encoded_id = path_segment(raw_id)
+    %{worker_secret: worker_secret} = create_detail_package(id: raw_id)
+
+    session_conn =
+      post(build_conn(), "/sympp/work-packages/#{encoded_id}/session", %{
+        "work_key" => worker_secret
+      })
+
+    assert redirected_to(session_conn) == "/sympp/work-packages/#{encoded_id}"
+
+    detail_conn =
+      session_conn
+      |> recycle()
+      |> get("/sympp/work-packages/#{encoded_id}")
+
+    assert response(detail_conn, 200) =~ raw_id
+    refute response(detail_conn, 200) =~ "SYMPP-/-RAW"
+  end
+
   test "package session redirect encodes dot-only package ids" do
     raw_id = "."
     %{worker_secret: worker_secret} = create_detail_package(id: raw_id)
@@ -360,7 +381,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     detail_conn = get(auth_conn(architect_secret), "/sympp/work-packages/#{work_package.id}")
 
     assert response(detail_conn, 200) =~ ~s(class="sympp-back-link")
-    assert response(detail_conn, 200) =~ ~s(href="../../board")
+    assert response(detail_conn, 200) =~ ~s(href="../board")
 
     board_conn =
       detail_conn
@@ -390,7 +411,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
       |> get("/sympp/work-packages/#{work_package.id}")
 
     assert response(detail_conn, 200) =~ ~s(class="sympp-back-link")
-    assert response(detail_conn, 200) =~ ~s(href="../../board")
+    assert response(detail_conn, 200) =~ ~s(href="../board")
   end
 
   test "renders DateTime timestamps and string-keyed payloads in render helpers" do
