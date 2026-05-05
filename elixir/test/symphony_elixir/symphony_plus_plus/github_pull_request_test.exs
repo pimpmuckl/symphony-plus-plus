@@ -49,6 +49,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
     assert payload["number"] == 42
     assert payload["head_sha"] == "abc123"
     assert payload["changed_files"] == [%{"path" => "elixir/lib/example.ex", "status" => "modified"}]
+    assert payload["changed_files_count"] == 1
     assert payload["check_summary"] == %{"state" => "success", "token" => "[REDACTED]"}
     assert payload["review_state"] == %{"state" => "approved", "authorization" => "[REDACTED]"}
     assert payload["merge_state"] == %{"state" => "clean", "client_secret" => "[REDACTED]"}
@@ -80,6 +81,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
     assert {:ok, payload} = PullRequest.metadata(metadata, ref, nil)
 
     assert payload["changed_files"] == []
+    assert payload["changed_files_count"] == 3
   end
 
   test "detects stale PR metadata by head sha" do

@@ -738,6 +738,51 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert "review_lanes_complete" in missing["missing"]
   end
 
+  test "dashboard readiness does not accept PR sync without attached PR identity", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-SYNC-WITHOUT-ATTACH",
+                 kind: "mcp",
+                 status: "ready_for_human_merge",
+                 policy_template: "mcp"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    timestamp = ~U[2026-05-05 00:00:00Z]
+
+    assert {:ok, _branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Branch attached",
+               status: "branch_attached",
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "head-a"},
+               created_at: DateTime.add(timestamp, 1, :second)
+             })
+
+    assert {:ok, _pr_sync} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR synced without attach",
+               status: "pr_synced",
+               payload: %{
+                 type: "pr",
+                 source_tool: "sync_pr",
+                 url: "https://github.com/example/repo/pull/7",
+                 head_sha: "head-a",
+                 check_summary: %{conclusion: "success"}
+               },
+               created_at: DateTime.add(timestamp, 2, :second)
+             })
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert "pr_attached" in missing["missing"]
+  end
+
   test "detail API exposes stale synced PR metadata without secrets", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(
@@ -1601,6 +1646,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  source_tool: "attach_pr",
                  url: "https://github.com/example/repo/pull/7",
                  head_sha: "abc123"
+               },
+               created_at: DateTime.add(timestamp, 3, :second)
+             })
+
+    assert {:ok, _pr_sync} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR synced",
+               status: "pr_synced",
+               payload: %{
+                 type: "pr",
+                 source_tool: "sync_pr",
+                 url: "https://github.com/example/repo/pull/7",
+                 repository: "example/repo",
+                 number: 7,
+                 head_sha: "abc123",
+                 check_summary: %{conclusion: "success"},
+                 review_state: %{state: "approved"},
+                 merge_state: %{state: "clean"}
                },
                created_at: DateTime.add(timestamp, 3, :second)
              })

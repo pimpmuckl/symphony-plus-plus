@@ -3535,6 +3535,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-GATES/worker", "head_sha" => " abc123 ", "idempotency_key" => "shared-metadata-key"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => " abc123 "})
+    sync_pr_state(repo, session, "https://github.com/example/repo/pull/123", "abc123")
 
     headless_review_response =
       MCPHarness.request(
@@ -3925,6 +3926,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert "review_lanes_complete" in get_in(latest_findings_response, ["error", "data", "missing"])
 
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/123", "head_sha" => "def456"})
+    sync_pr_state(repo, session, "https://github.com/example/repo/pull/123", "def456")
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-GATES/worker", "head_sha" => "def456"})
 
     stale_submit_response =
@@ -4404,6 +4406,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              %{"path" => "elixir/lib/symphony_elixir/symphony_plus_plus/github/client.ex", "status" => "added"}
            ]
 
+    assert payload["changed_files_count"] == 1
     refute inspect(payload) =~ "ghp_should_not_surface"
     idempotency_key = get_in(response, ["result", "structuredContent", "progress_event", "idempotency_key"])
     refute idempotency_key =~ "ghp_should_not_surface"
@@ -4706,6 +4709,60 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert "pr_attached" in missing
   end
 
+  test "merge-gated readiness requires synced PR state for the attached head", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PR-SYNC-READY", kind: "mcp", status: "ci_waiting"))
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-SYNC-READY/worker", "head_sha" => "head-a"})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/790", "head_sha" => "head-a"})
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready review",
+      "tests" => ["mix test"],
+      "artifacts" => ["review.txt"],
+      "head_sha" => "head-a",
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
+
+    attach_only_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-attach-only", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "pr_attached" in get_in(attach_only_response, ["error", "data", "missing"])
+
+    attach_tool(repo, session, "sync_pr", %{
+      "url" => "https://github.com/example/repo/pull/790",
+      "metadata" => %{"head_sha" => "head-a"}
+    })
+
+    empty_sync_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-empty-sync", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "pr_attached" in get_in(empty_sync_response, ["error", "data", "missing"])
+
+    sync_pr_state(repo, session, "https://github.com/example/repo/pull/790", "head-a")
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-synced-pr", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+  end
+
   test "abbreviated branch head does not satisfy PR metadata readiness", %{repo: repo} do
     assert {:ok, package} =
              WorkPackageRepository.create(
@@ -4802,6 +4859,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-BLOCKER/worker", "head_sha" => "abc125"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/125", "head_sha" => "abc125"})
+    sync_pr_state(repo, session, "https://github.com/example/repo/pull/125", "abc125")
 
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Ready",
@@ -5003,6 +5061,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-HOTFIX/worker", "head_sha" => "hotfix-head"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/812", "head_sha" => "hotfix-head"})
+    sync_pr_state(repo, session, "https://github.com/example/repo/pull/812", "hotfix-head")
 
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Ready hotfix",
@@ -5612,6 +5671,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-CAP/worker", "head_sha" => "abc124"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/124", "head_sha" => "abc124"})
+    sync_pr_state(repo, session, "https://github.com/example/repo/pull/124", "abc124")
 
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Ready",
@@ -6125,6 +6185,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(response, ["result", "structuredContent", "progress_event", "id"])
     response
+  end
+
+  defp sync_pr_state(repo, session, url, head_sha) do
+    attach_tool(repo, session, "sync_pr", %{
+      "url" => url,
+      "metadata" => %{
+        "head_sha" => head_sha,
+        "check_summary" => %{"conclusion" => "success"},
+        "review_state" => %{"state" => "approved"},
+        "merge_state" => %{"state" => "clean"}
+      }
+    })
   end
 
   defp append_done_plan(repo, work_package_id) do

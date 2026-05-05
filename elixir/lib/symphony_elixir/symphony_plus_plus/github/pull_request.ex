@@ -59,7 +59,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
   def metadata(metadata, ref, fallback_head_sha) when is_map(metadata) and is_map(ref) do
     with {:ok, head_sha} <- metadata_head_sha(metadata, fallback_head_sha),
          {:ok, branch} <- metadata_branch(metadata),
-         {:ok, changed_files} <- metadata_changed_files(metadata),
+         {:ok, changed_files, changed_files_count} <- metadata_changed_files(metadata),
          {:ok, check_summary} <- metadata_map(metadata, "check_summary"),
          {:ok, review_state} <- metadata_map(metadata, "review_state"),
          {:ok, merge_state} <- metadata_map(metadata, "merge_state") do
@@ -75,6 +75,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
          "branch" => branch,
          "head_sha" => head_sha,
          "changed_files" => changed_files,
+         "changed_files_count" => changed_files_count,
          "check_summary" => Redactor.redact(check_summary),
          "review_state" => Redactor.redact(review_state),
          "merge_state" => Redactor.redact(merge_state)
@@ -152,10 +153,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
   defp metadata_changed_files(metadata) do
     case Map.get(metadata, "changed_files", []) do
       values when is_list(values) ->
-        {:ok, Enum.map(values, &changed_file/1)}
+        changed_files = Enum.map(values, &changed_file/1)
+        {:ok, changed_files, length(changed_files)}
 
       count when is_integer(count) and count >= 0 ->
-        {:ok, []}
+        {:ok, [], count}
 
       _value ->
         {:error, :invalid_changed_files}

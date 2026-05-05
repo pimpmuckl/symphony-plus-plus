@@ -3265,7 +3265,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         Enum.any?(progress_events, fn
           %ProgressEvent{payload: payload} = event when is_map(payload) ->
             payload_type?(event, "pr", ["attach_pr", "sync_pr"]) and head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
-              pr_payload_ref(payload) == attached_ref
+              pr_payload_ref(payload) == attached_ref and current_pr_state_payload?(payload)
 
           %ProgressEvent{} ->
             false
@@ -3287,6 +3287,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp metadata_present?(_progress_events, _type, _head_sha), do: false
+
+  defp current_pr_state_payload?(%{"source_tool" => "sync_pr"} = payload) do
+    Enum.any?(["check_summary", "review_state", "merge_state"], fn key ->
+      case Map.get(payload, key) do
+        value when is_map(value) -> map_size(value) > 0
+        value when is_list(value) -> value != []
+        value when is_binary(value) -> String.trim(value) != ""
+        nil -> false
+        _value -> true
+      end
+    end)
+  end
+
+  defp current_pr_state_payload?(_payload), do: false
 
   defp recommendation_artifact_recorded?(artifacts, work_package_id) do
     artifact_id = recommendation_artifact_id(work_package_id)

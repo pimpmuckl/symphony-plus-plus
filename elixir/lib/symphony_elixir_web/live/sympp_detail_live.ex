@@ -122,6 +122,12 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
             <p :if={!pr_url(@detail.metadata)} class="sympp-empty-inline">No PR attached.</p>
             <p class="mono sympp-branch"><%= branch_label(@detail.metadata) %></p>
             <p :if={pr_state_label(@detail.metadata)} class="mono sympp-branch"><%= pr_state_label(@detail.metadata) %></p>
+            <dl :if={pr_summary_items(@detail.metadata) != []} class="sympp-pr-state-list">
+              <div :for={{label, value} <- pr_summary_items(@detail.metadata)}>
+                <dt><%= label %></dt>
+                <dd><%= value %></dd>
+              </div>
+            </dl>
           </aside>
         </section>
 
@@ -466,7 +472,39 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     end
   end
 
+  defp pr_summary_items(metadata) do
+    pr = map_value(metadata, :pr)
+
+    [
+      {"Checks", pr_summary_value(pr, "check_summary", ["conclusion", "state", "status"])},
+      {"Reviews", pr_summary_value(pr, "review_state", ["state", "decision", "status"])},
+      {"Merge", pr_summary_value(pr, "merge_state", ["state", "mergeable_state", "status"])}
+    ]
+    |> Enum.reject(fn {_label, value} -> is_nil(value) end)
+  end
+
+  defp pr_summary_value(pr, key, fields) do
+    case map_value(pr, key) do
+      %{} = state when map_size(state) > 0 ->
+        Enum.find_value(fields, &compact_state_value(Map.get(state, &1))) || "recorded"
+
+      _state ->
+        nil
+    end
+  end
+
+  defp compact_state_value(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
+
+  defp compact_state_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp compact_state_value(value) when is_boolean(value), do: to_string(value)
+  defp compact_state_value(value) when is_number(value), do: to_string(value)
+  defp compact_state_value(_value), do: nil
+
   defp map_value(%{} = map, key) when is_atom(key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp map_value(%{} = map, key) when is_binary(key), do: Map.get(map, key)
   defp map_value(_map, _key), do: nil
 
   defp public_http_url(nil), do: nil
