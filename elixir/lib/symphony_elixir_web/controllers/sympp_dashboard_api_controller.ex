@@ -708,26 +708,48 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp scope_run_alerts(payload, runs) do
+    stale_threshold = runtime_stale_threshold(payload)
+
     payload
-    |> update_alert_indicator("stale_heartbeat", Enum.count(runs, &agent_run_stale?/1), "run(s) past")
-    |> update_alert_indicator("failed_run", Enum.count(runs, &agent_run_failed?/1), "failed run(s)")
+    |> update_alert_indicator(
+      "stale_heartbeat",
+      Enum.count(runs, &agent_run_stale?/1),
+      &"#{&1} run(s) past #{stale_threshold}s"
+    )
+    |> update_alert_indicator("failed_run", Enum.count(runs, &agent_run_failed?/1), &"#{&1} failed run(s)")
   end
 
-  defp update_alert_indicator(payload, type, count, detail_suffix) do
+  defp runtime_stale_threshold(payload) do
+    case fetch_payload_field(payload, :summary) do
+      {:ok, _key, summary} when is_map(summary) ->
+        case fetch_payload_field(summary, :runtime) do
+          {:ok, _key, runtime} when is_map(runtime) ->
+            Map.get(runtime, :stale_heartbeat_after_seconds) || Map.get(runtime, "stale_heartbeat_after_seconds") || 300
+
+          _missing ->
+            300
+        end
+
+      _missing ->
+        300
+    end
+  end
+
+  defp update_alert_indicator(payload, type, count, detail_fun) do
     case fetch_payload_field(payload, :alert_indicators) do
       {:ok, key, alerts} when is_list(alerts) ->
-        Map.put(payload, key, Enum.map(alerts, &update_run_alert(&1, type, count, detail_suffix)))
+        Map.put(payload, key, Enum.map(alerts, &update_run_alert(&1, type, count, detail_fun)))
 
       _missing ->
         payload
     end
   end
 
-  defp update_run_alert(alert, type, count, detail_suffix) when is_map(alert) do
+  defp update_run_alert(alert, type, count, detail_fun) when is_map(alert) do
     if Map.get(alert, :type) == type or Map.get(alert, "type") == type do
       alert
       |> put_alert_field(:active, count > 0)
-      |> put_alert_field(:detail, "#{count} #{detail_suffix}")
+      |> put_alert_field(:detail, detail_fun.(count))
     else
       alert
     end

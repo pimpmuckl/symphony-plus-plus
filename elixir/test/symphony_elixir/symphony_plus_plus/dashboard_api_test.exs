@@ -192,6 +192,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert encoded =~ "[REDACTED]"
   end
 
+  test "worker-scoped stale alerts keep the configured threshold", %{repo: repo} do
+    %{work_package: work_package, work_key_secret: secret, grant: grant} =
+      create_dashboard_fixture(repo, id: "SYMPP-RUNTIME-SCOPED-STALE")
+
+    assert {:ok, [run]} = AgentRunRepository.list_for_work_package(repo, work_package.id)
+    assert {:ok, _completed_run} = AgentRunRepository.mark_completed(repo, run.id)
+
+    assert {:ok, stale_run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: work_package.id,
+               access_grant_id: grant.id,
+               actor_id: "worker-1",
+               status: "starting",
+               attempt: 2,
+               worker_task_handle: "queued-task"
+             })
+
+    stale_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -600, :second)
+
+    assert {:ok, _stale_run} =
+             stale_run
+             |> AgentRun.update_changeset(%{last_seen_at: stale_seen_at})
+             |> repo.update()
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    alerts = Map.new(payload["alert_indicators"], &{&1["type"], &1})
+
+    assert payload["summary"]["runtime"]["stale_heartbeat_after_seconds"] == 300
+    assert payload["summary"]["runtime"]["stale_count"] == 1
+    assert alerts["stale_heartbeat"]["active"] == true
+    assert alerts["stale_heartbeat"]["detail"] == "1 run(s) past 300s"
+  end
+
   test "stale calculation only flags active or queued runs past the threshold", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUNTIME-STALE", status: "ready_for_worker"))
@@ -379,6 +412,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     refute "review_package_submitted" in missing["missing"]
     refute "branch_attached" in missing["missing"]
     refute "pr_attached" in missing["missing"]
+    refute "tests_passed" in missing["missing"]
+    refute "acceptance_criteria_met" in missing["missing"]
+    refute "review_lanes_complete" in missing["missing"]
+  end
+
+  test "latest no-artifact review package does not reuse older artifact evidence", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-STALE-ARTIFACT",
+                 kind: "mcp",
+                 status: "ready_for_human_merge",
+                 policy_template: "mcp"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    append_ready_evidence_with_review_artifacts(repo, work_package, ["review-log.txt"])
+    append_review_package(repo, work_package, [], DateTime.add(~U[2026-05-05 00:00:00Z], 5, :second))
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert missing["active"] == true
+    assert "review_artifacts_attached" in missing["missing"]
+    refute "review_package_submitted" in missing["missing"]
     refute "tests_passed" in missing["missing"]
     refute "acceptance_criteria_met" in missing["missing"]
     refute "review_lanes_complete" in missing["missing"]
@@ -1040,7 +1100,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              })
   end
 
-  defp append_ready_evidence_without_artifacts(repo, work_package) do
+  defp append_ready_evidence_with_review_artifacts(repo, work_package, artifacts) do
     timestamp = ~U[2026-05-05 00:00:00Z]
 
     assert {:ok, _plan_node} =
@@ -1080,6 +1140,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                created_at: DateTime.add(timestamp, 3, :second)
              })
 
+    append_review_package(repo, work_package, artifacts, DateTime.add(timestamp, 4, :second))
+
+    Enum.each(artifacts, fn artifact ->
+      assert {:ok, _artifact} =
+               PlanningRepository.append_artifact(repo, %{
+                 id: review_artifact_id(work_package.id, "abc123", artifact),
+                 work_package_id: work_package.id,
+                 path: artifact,
+                 title: artifact,
+                 kind: "review",
+                 uri: "file://#{artifact}"
+               })
+    end)
+  end
+
+  defp append_ready_evidence_without_artifacts(repo, work_package) do
+    append_ready_evidence_with_review_artifacts(repo, work_package, [])
+  end
+
+  defp append_review_package(repo, work_package, artifacts, created_at) do
     assert {:ok, _review_event} =
              PlanningRepository.append_progress_event(repo, %{
                work_package_id: work_package.id,
@@ -1090,15 +1170,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  source_tool: "submit_review_package",
                  acceptance_criteria_met: true,
                  tests: ["mix test test/symphony_elixir/symphony_plus_plus"],
-                 artifacts: [],
+                 artifacts: artifacts,
                  reviews: [
                    %{lane: "review_t1", verdict: "green"},
                    %{lane: "review_t2", verdict: "green"}
                  ],
                  head_sha: "abc123"
                },
-               created_at: DateTime.add(timestamp, 4, :second)
+               created_at: created_at
              })
+  end
+
+  defp review_artifact_id(work_package_id, head_sha, artifact) do
+    material = [work_package_id, head_sha || "no-head", artifact] |> Enum.join(":")
+    "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
   defp create_architect_grant_secret(repo, work_package_id) do

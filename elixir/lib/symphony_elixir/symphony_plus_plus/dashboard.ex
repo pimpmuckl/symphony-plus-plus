@@ -759,13 +759,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     |> List.last()
   end
 
-  defp latest_artifact_review_package_event(progress_events, readiness_head_sha) do
-    progress_events
-    |> current_head_review_package_events(readiness_head_sha)
-    |> Enum.reverse()
-    |> Enum.find(fn event -> review_package_artifact_paths(event, readiness_head_sha) != [] end)
-  end
-
   defp current_head_review_package_events(progress_events, readiness_head_sha) do
     Enum.filter(progress_events, fn event ->
       payload_type?(event, "review_package", "submit_review_package") and review_head_matches?(event.payload, readiness_head_sha)
@@ -783,7 +776,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp current_head_review_artifact_references(progress_events, current_head_sha) do
-    case latest_artifact_review_package_event(progress_events, current_head_sha) do
+    case latest_review_package_event(progress_events, current_head_sha) do
       %ProgressEvent{} = event -> review_package_artifact_references(event, current_head_sha)
       nil -> []
     end
