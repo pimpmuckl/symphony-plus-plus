@@ -182,8 +182,8 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp custom_repo_database_path(repo) do
-    repo.config()
-    |> Keyword.get(:database)
+    Application.get_env(:symphony_elixir, :sympp_repo_database)
+    |> Kernel.||(repo.config() |> Keyword.get(:database))
     |> existing_database_path()
   rescue
     _error -> nil
@@ -193,16 +193,14 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   defp start_custom_dashboard_repo(database_path, repo, fun) do
     case repo.start_link(database: database_path, name: repo) do
-      {:ok, pid} -> call_owned_custom_repo(unlink_transient_repo(pid), repo, fun)
+      {:ok, pid} -> call_started_custom_repo(unlink_transient_repo(pid), repo, fun)
       {:error, {:already_started, _pid}} -> fun.(repo)
       {:error, reason} -> {:error, {:repo_start_failed, reason}}
     end
   end
 
-  defp call_owned_custom_repo(pid, repo, fun) do
+  defp call_started_custom_repo(_pid, repo, fun) do
     fun.(repo)
-  after
-    stop_transient_repo(pid)
   end
 
   defp with_default_dashboard_repo(fun) do

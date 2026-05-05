@@ -201,8 +201,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
 
   test "starts a configured custom repo before reading the board" do
     database_path = WorkPackageFactory.database_path()
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
     original_custom_repo_config = Application.get_env(:symphony_elixir, CustomBoardRepo)
 
+    Application.put_env(:symphony_elixir, :sympp_repo_database, database_path)
     Application.put_env(:symphony_elixir, CustomBoardRepo, database: database_path)
 
     seed_custom_repo(database_path, fn ->
@@ -221,6 +223,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     end)
 
     on_exit(fn ->
+      stop_named_repo(CustomBoardRepo)
+      restore_database_env(original_database)
       restore_custom_repo_env(original_custom_repo_config)
       File.rm(database_path)
     end)
@@ -439,6 +443,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
       1_000 ->
         Process.demonitor(ref, [:flush])
         :ok
+    end
+  end
+
+  defp stop_named_repo(repo) do
+    case Process.whereis(repo) do
+      pid when is_pid(pid) -> stop_transient_repo(pid)
+      nil -> :ok
     end
   end
 
