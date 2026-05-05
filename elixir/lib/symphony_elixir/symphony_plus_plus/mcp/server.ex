@@ -924,7 +924,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       []
     )
     |> Map.put("allOf", [
-      %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number", "repository"]}]},
+      %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]},
       %{
         "anyOf" => [
           %{"required" => ["head_sha"]},
