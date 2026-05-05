@@ -4382,19 +4382,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     attach_tool(repo, session, "attach_pr", %{"number" => 42, "head_sha" => "sync-head"})
 
-    response =
-      attach_tool(repo, session, "sync_pr", %{
-        "number" => 42,
-        "metadata" => %{
-          "head_sha" => "sync-head",
-          "branch" => "agent/SYMPP-P6-001/github-pr-attachment-sync",
-          "changed_files" => [%{"filename" => "elixir/lib/symphony_elixir/symphony_plus_plus/github/client.ex", "status" => "added"}],
-          "check_summary" => %{"conclusion" => "success", "token" => "ghp_should_not_surface_nested"},
-          "review_state" => %{"state" => "approved"},
-          "merge_state" => %{"state" => "clean"},
-          "token" => "ghp_should_not_surface"
+    sync_request = %{
+      "jsonrpc" => "2.0",
+      "id" => "sync-pr-replay-mismatch",
+      "method" => "tools/call",
+      "params" => %{
+        "name" => "sync_pr",
+        "arguments" => %{
+          "number" => 42,
+          "metadata" => %{
+            "head_sha" => "sync-head",
+            "branch" => "agent/SYMPP-P6-001/github-pr-attachment-sync",
+            "changed_files" => [%{"filename" => "elixir/lib/symphony_elixir/symphony_plus_plus/github/client.ex", "status" => "added"}],
+            "check_summary" => %{"conclusion" => "success", "token" => "ghp_should_not_surface_nested"},
+            "review_state" => %{"state" => "approved"},
+            "merge_state" => %{"state" => "clean"},
+            "token" => "ghp_should_not_surface"
+          }
         }
-      })
+      }
+    }
+
+    response = MCPHarness.request(sync_request, repo: repo, session: session)
 
     payload = get_in(response, ["result", "structuredContent", "progress_event", "payload"])
 
@@ -4422,31 +4431,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     attach_tool(repo, session, "attach_pr", %{"number" => 43, "head_sha" => "sync-head"})
 
-    replay_response =
-      MCPHarness.request(
-        %{
-          "jsonrpc" => "2.0",
-          "id" => "sync-pr-replay-mismatch",
-          "method" => "tools/call",
-          "params" => %{
-            "name" => "sync_pr",
-            "arguments" => %{
-              "number" => 42,
-              "metadata" => %{
-                "head_sha" => "sync-head",
-                "branch" => "agent/SYMPP-P6-001/github-pr-attachment-sync",
-                "changed_files" => [%{"filename" => "elixir/lib/symphony_elixir/symphony_plus_plus/github/client.ex", "status" => "added"}],
-                "check_summary" => %{"conclusion" => "success", "token" => "ghp_should_not_surface_nested"},
-                "review_state" => %{"state" => "approved"},
-                "merge_state" => %{"state" => "clean"},
-                "token" => "ghp_should_not_surface"
-              }
-            }
-          }
-        },
-        repo: repo,
-        session: session
-      )
+    replay_response = MCPHarness.request(sync_request, repo: repo, session: session)
 
     assert get_in(replay_response, ["error", "data", "reason"]) == "pr_mismatch"
 
