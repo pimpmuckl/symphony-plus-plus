@@ -21,6 +21,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
+  alias SymphonyElixirWeb.SymppDashboardApiController
 
   @endpoint SymphonyElixirWeb.Endpoint
 
@@ -165,12 +166,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert payload["summary"]["grant_count"] == 1
     assert payload["summary"]["agent_run_count"] == 1
     assert payload["summary"]["active_agent_run_count"] == 0
+    assert payload["summary"]["runtime"]["active_count"] == 0
+    assert payload["summary"]["runtime"]["failed_count"] == 0
+    assert payload["summary"]["runtime"]["stale_count"] == 0
     assert [%{"path" => "[REDACTED]", "title" => "[REDACTED]", "kind" => "review"}] = payload["artifacts"]
     assert [%{"id" => "blocker-a", "active" => true}] = payload["blockers"]
     assert [%{"id" => grant_id, "display_key" => display_key, "status" => "active"}] = payload["grants"]
     assert grant_id == grant.id
     assert display_key == grant.display_key
     assert [%{"status" => "completed", "session_id" => "session-1"}] = payload["agent_runs"]
+    assert [%{"runtime_state" => "terminal", "stale" => false}] = payload["agent_runs"]
+    assert [%{"access_grant_id" => ^grant_id, "actor_id" => "worker-1"}] = payload["agent_runs"]
+    assert is_nil(payload["active_agent_run"])
+    alerts = Map.new(payload["alert_indicators"], &{&1["type"], &1})
+    refute alerts["stale_heartbeat"]["active"]
+    refute alerts["failed_run"]["active"]
 
     encoded = Jason.encode!(payload)
     assert encoded =~ "Sibling package progress"
@@ -183,6 +193,575 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     refute encoded =~ "other-workspace"
     refute encoded =~ "raw-secret-value"
     assert encoded =~ "[REDACTED]"
+  end
+
+  test "worker scoping classifies status-only run payloads", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUNTIME-STATUS-ONLY", status: "implementing"))
+
+    grant = create_claimed_worker_grant(repo, work_package.id, "worker-1")
+    stale_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -600, :second)
+
+    payload =
+      SymppDashboardApiController.scope_package_payload_for_grant(grant, %{
+        active_agent_run: %{id: "run-other", access_grant_id: "grant-other", status: "running"},
+        agent_runs: [
+          %{id: "run-owned", access_grant_id: grant.id, status: "running", last_seen_at: stale_seen_at},
+          %{id: "run-other", access_grant_id: "grant-other", status: "running"}
+        ],
+        runtime: %{
+          stale_heartbeat_after_seconds: 300,
+          active_count: 2,
+          queued_count: 0,
+          stopped_count: 0,
+          failed_count: 0,
+          completed_count: 0,
+          terminal_count: 0,
+          stale_count: 1
+        },
+        summary: %{runtime: %{stale_heartbeat_after_seconds: 300}},
+        alert_indicators: [
+          %{type: "stale_heartbeat", active: false, detail: "0 run(s) past 300s"},
+          %{type: "failed_run", active: false, detail: "0 failed run(s)"}
+        ]
+      })
+
+    alerts = Map.new(payload.alert_indicators, &{&1.type, &1})
+
+    assert [%{id: "run-owned"}] = payload.agent_runs
+    assert payload.active_agent_run.id == "run-owned"
+    assert payload.summary.active_agent_run_count == 1
+    assert payload.summary.stale_agent_run_count == 1
+    assert payload.summary.runtime.active_count == 1
+    assert payload.summary.runtime.stale_count == 1
+    assert payload.runtime.active_count == 1
+    assert payload.runtime.stale_count == 1
+    assert alerts["stale_heartbeat"].active == true
+    assert alerts["stale_heartbeat"].detail == "1 run(s) past 300s"
+  end
+
+  test "worker-scoped stale alerts keep the configured threshold", %{repo: repo} do
+    %{work_package: work_package, work_key_secret: secret, grant: grant} =
+      create_dashboard_fixture(repo, id: "SYMPP-RUNTIME-SCOPED-STALE")
+
+    assert {:ok, [run]} = AgentRunRepository.list_for_work_package(repo, work_package.id)
+    assert {:ok, _completed_run} = AgentRunRepository.mark_completed(repo, run.id)
+
+    assert {:ok, stale_run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: work_package.id,
+               access_grant_id: grant.id,
+               actor_id: "worker-1",
+               status: "starting",
+               attempt: 2,
+               worker_task_handle: "queued-task"
+             })
+
+    stale_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -600, :second)
+
+    assert {:ok, _stale_run} =
+             stale_run
+             |> AgentRun.update_changeset(%{last_seen_at: stale_seen_at})
+             |> repo.update()
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    alerts = Map.new(payload["alert_indicators"], &{&1["type"], &1})
+
+    assert payload["summary"]["runtime"]["stale_heartbeat_after_seconds"] == 300
+    assert payload["summary"]["active_agent_run_count"] == 1
+    assert payload["summary"]["queued_agent_run_count"] == 1
+    assert payload["summary"]["runtime"]["stale_count"] == 1
+    assert payload["active_agent_run"]["runtime_state"] == "queued"
+    assert alerts["stale_heartbeat"]["active"] == true
+    assert alerts["stale_heartbeat"]["detail"] == "1 run(s) past 300s"
+  end
+
+  test "stale calculation only flags active or queued runs past the threshold", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUNTIME-STALE", status: "ready_for_worker"))
+
+    now = DateTime.utc_now(:microsecond)
+
+    fresh_run =
+      %AgentRun{
+        work_package_id: work_package.id,
+        status: "running",
+        last_seen_at: DateTime.add(now, -299, :second)
+      }
+
+    stale_run =
+      %AgentRun{
+        work_package_id: work_package.id,
+        status: "starting",
+        last_seen_at: DateTime.add(now, -300, :second)
+      }
+
+    stopped_run =
+      %AgentRun{
+        work_package_id: work_package.id,
+        status: "stopped",
+        last_seen_at: DateTime.add(now, -900, :second)
+      }
+
+    refute Dashboard.stale_agent_run?(fresh_run, now, 300)
+    assert Dashboard.stale_agent_run?(stale_run, now, 300)
+    refute Dashboard.stale_agent_run?(stopped_run, now, 300)
+  end
+
+  test "runtime alert indicators expose stale, blocker, failed, stopped, and queued states without secrets", %{repo: repo} do
+    %{work_package: work_package, work_key_secret: secret, grant: grant} =
+      create_dashboard_fixture(repo, id: "SYMPP-RUNTIME-API", status: "blocked")
+
+    assert {:ok, [run]} = AgentRunRepository.list_for_work_package(repo, work_package.id)
+    assert {:ok, failed_run} = AgentRunRepository.mark_failed(repo, run.id, "failed with Bearer raw-secret-value")
+
+    assert {:ok, stopped_run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: work_package.id,
+               access_grant_id: grant.id,
+               actor_id: "worker-1",
+               status: "running",
+               attempt: 2,
+               worker_task_handle: "stopped-task"
+             })
+
+    assert {:ok, _stopped_run} = AgentRunRepository.mark_stopped(repo, stopped_run.id, "operator stopped raw-secret-value")
+
+    assert {:ok, queued_run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: work_package.id,
+               access_grant_id: grant.id,
+               actor_id: "worker-1",
+               status: "starting",
+               attempt: 3,
+               worker_task_handle: "queued-task",
+               session_id: "session-queued"
+             })
+
+    stale_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -600, :second)
+
+    assert {:ok, _stale_queued_run} =
+             queued_run
+             |> AgentRun.update_changeset(%{last_seen_at: stale_seen_at})
+             |> repo.update()
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+
+    assert payload["summary"]["active_agent_run_count"] == 1
+    assert payload["summary"]["queued_agent_run_count"] == 1
+    assert payload["summary"]["stopped_agent_run_count"] == 1
+    assert payload["summary"]["failed_agent_run_count"] == 1
+    assert payload["summary"]["stale_agent_run_count"] == 1
+    assert payload["summary"]["runtime"]["stale_heartbeat_after_seconds"] == 300
+
+    assert Enum.any?(payload["agent_runs"], &(&1["id"] == failed_run.id and &1["runtime_state"] == "terminal"))
+    assert Enum.any?(payload["agent_runs"], &(&1["runtime_state"] == "stopped"))
+    assert Enum.any?(payload["agent_runs"], &(&1["runtime_state"] == "queued" and &1["stale"] == true))
+
+    alerts = Map.new(payload["alert_indicators"], &{&1["type"], &1})
+    assert alerts["blocker"]["active"] == true
+    assert alerts["stale_heartbeat"]["active"] == true
+    assert alerts["failed_run"]["active"] == true
+    assert alerts["scope_drift"]["placeholder"] == true
+    refute alerts["scope_drift"]["active"]
+
+    encoded = Jason.encode!(payload)
+    refute encoded =~ "raw-secret-value"
+    refute encoded =~ "Bearer "
+  end
+
+  test "blocked packages do not show an active blocker alert after blockers are resolved", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUNTIME-RESOLVED-BLOCKER", status: "blocked"))
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    timestamp = ~U[2026-05-05 00:00:00Z]
+
+    assert {:ok, _reported} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Blocked",
+               status: "blocked",
+               payload: %{type: "blocker", source_tool: "report_blocker", blocker_id: "blocker-a", active: true},
+               created_at: timestamp
+             })
+
+    assert {:ok, _resolved} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Unblocked",
+               status: "unblocked",
+               payload: %{type: "blocker", source_tool: "resolve_blocker", blocker_id: "blocker-a", active: false},
+               created_at: DateTime.add(timestamp, 1, :second)
+             })
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    alerts = Map.new(payload["alert_indicators"], &{&1["type"], &1})
+
+    assert payload["summary"]["active_blocker_count"] == 0
+    refute alerts["blocker"]["active"]
+    assert alerts["blocker"]["detail"] == "0 active blockers"
+  end
+
+  test "stale alert uses the latest active run heartbeat", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUNTIME-CURRENT", status: "implementing"))
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    now = DateTime.utc_now(:microsecond)
+
+    assert {:ok, _older_stale_run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: work_package.id,
+               status: "running",
+               attempt: 1,
+               worker_task_handle: "older-stale",
+               last_seen_at: DateTime.add(now, -600, :second)
+             })
+
+    assert {:ok, [older_stale_run]} = AgentRunRepository.list_for_work_package(repo, work_package.id)
+    assert {:ok, _stopped_run} = AgentRunRepository.mark_stopped(repo, older_stale_run.id, "superseded")
+
+    assert {:ok, _fresh_run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: work_package.id,
+               status: "running",
+               attempt: 2,
+               worker_task_handle: "fresh-active",
+               last_seen_at: now
+             })
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    alerts = Map.new(payload["alert_indicators"], &{&1["type"], &1})
+
+    assert payload["summary"]["active_agent_run_count"] == 1
+    assert payload["summary"]["stale_agent_run_count"] == 0
+    refute alerts["stale_heartbeat"]["active"]
+  end
+
+  test "ready packages missing readiness evidence are flagged in API", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-MISSING",
+                 kind: "mcp",
+                 status: "ready_for_human_merge",
+                 policy_template: "mcp"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert missing["active"] == true
+    assert "plan_complete" in missing["missing"]
+    assert "acceptance_criteria_met" in missing["missing"]
+    assert "tests_passed" in missing["missing"]
+    assert "branch_attached" in missing["missing"]
+    assert "pr_attached" in missing["missing"]
+    assert "review_package_submitted" in missing["missing"]
+  end
+
+  test "ready packages with in-progress plan nodes flag missing plan evidence", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-IN-PROGRESS-PLAN",
+                 kind: "mcp",
+                 status: "ready_for_human_merge",
+                 policy_template: "mcp"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    append_ready_evidence_with_review_artifacts(repo, work_package, ["review-log.txt"])
+
+    timestamp = DateTime.utc_now(:microsecond)
+
+    repo.query!(
+      """
+      INSERT INTO sympp_plan_nodes
+        (id, work_package_id, title, body, status, position, created_at, inserted_at, updated_at)
+      VALUES
+        (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+      """,
+      [
+        "plan_in_progress",
+        work_package.id,
+        "Still running",
+        "Not done",
+        "in_progress",
+        2,
+        timestamp,
+        timestamp,
+        timestamp
+      ]
+    )
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert missing["active"] == true
+    assert "plan_complete" in missing["missing"]
+    refute "review_artifacts_attached" in missing["missing"]
+    refute "review_package_submitted" in missing["missing"]
+    refute "tests_passed" in missing["missing"]
+    refute "acceptance_criteria_met" in missing["missing"]
+    refute "review_lanes_complete" in missing["missing"]
+  end
+
+  test "ready packages with review package but no artifacts flag artifact evidence", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-NO-ARTIFACTS",
+                 kind: "mcp",
+                 status: "ready_for_human_merge",
+                 policy_template: "mcp"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    append_ready_evidence_without_artifacts(repo, work_package)
+
+    assert {:ok, _unrelated_artifact} =
+             PlanningService.append_artifact(repo, %{
+               work_package_id: work_package.id,
+               path: "notes.txt",
+               title: "Unrelated notes",
+               kind: "note",
+               uri: "file://notes.txt"
+             })
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert missing["active"] == true
+    assert "review_artifacts_attached" in missing["missing"]
+    refute "review_package_submitted" in missing["missing"]
+    refute "branch_attached" in missing["missing"]
+    refute "pr_attached" in missing["missing"]
+    refute "tests_passed" in missing["missing"]
+    refute "acceptance_criteria_met" in missing["missing"]
+    refute "review_lanes_complete" in missing["missing"]
+  end
+
+  test "latest no-artifact review package does not reuse older artifact evidence", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-STALE-ARTIFACT",
+                 kind: "mcp",
+                 status: "ready_for_human_merge",
+                 policy_template: "mcp"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    append_ready_evidence_with_review_artifacts(repo, work_package, ["review-log.txt"])
+    append_review_package(repo, work_package, [], DateTime.add(~U[2026-05-05 00:00:00Z], 5, :second))
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert missing["active"] == true
+    assert "review_artifacts_attached" in missing["missing"]
+    refute "review_package_submitted" in missing["missing"]
+    refute "tests_passed" in missing["missing"]
+    refute "acceptance_criteria_met" in missing["missing"]
+    refute "review_lanes_complete" in missing["missing"]
+  end
+
+  test "malformed review package tests payload is treated as missing evidence", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-MALFORMED-TESTS",
+                 kind: "mcp",
+                 status: "ready_for_human_merge",
+                 policy_template: "mcp"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    append_ready_evidence_with_review_artifacts(repo, work_package, ["review-log.txt"])
+
+    assert {:ok, _malformed_review_package} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Malformed review package submitted",
+               status: "review_package_submitted",
+               payload: %{
+                 type: "review_package",
+                 source_tool: "submit_review_package",
+                 acceptance_criteria_met: true,
+                 tests: "mix test",
+                 artifacts: ["review-log.txt"],
+                 reviews: [
+                   %{lane: "review_t1", verdict: "green"},
+                   %{lane: "review_t2", verdict: "green"}
+                 ],
+                 head_sha: "abc123"
+               },
+               created_at: DateTime.add(~U[2026-05-05 00:00:00Z], 5, :second)
+             })
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert missing["active"] == true
+    assert "tests_passed" in missing["missing"]
+    refute "review_package_submitted" in missing["missing"]
+    refute "review_artifacts_attached" in missing["missing"]
+    refute "acceptance_criteria_met" in missing["missing"]
+    refute "review_lanes_complete" in missing["missing"]
+  end
+
+  test "generic readiness statuses before latest branch do not clear missing evidence", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-BRANCH-BOUND",
+                 kind: "quick_fix",
+                 status: "ready_for_human_merge",
+                 policy_template: "quick_fix"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    timestamp = ~U[2026-05-05 00:00:00Z]
+
+    assert {:ok, _old_tests} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Old tests passed",
+               status: "tests_passed",
+               payload: %{},
+               created_at: DateTime.add(timestamp, 1, :second)
+             })
+
+    assert {:ok, _old_review} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Old review green",
+               status: "review_t1_green",
+               payload: %{},
+               created_at: DateTime.add(timestamp, 2, :second)
+             })
+
+    assert {:ok, _new_branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "New branch attached",
+               status: "branch_attached",
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "new-head"},
+               created_at: DateTime.add(timestamp, 3, :second)
+             })
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert "tests_passed" in missing["missing"]
+    assert "review_lanes_complete" in missing["missing"]
+    refute "branch_attached" in missing["missing"]
+  end
+
+  test "readiness remains anchored to the latest branch head after PR attach", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-PR-HEAD",
+                 kind: "mcp",
+                 status: "ready_for_human_merge",
+                 policy_template: "mcp"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    timestamp = ~U[2026-05-05 00:00:00Z]
+
+    assert {:ok, _plan_node} =
+             PlanningRepository.append_plan_node(repo, %{
+               work_package_id: work_package.id,
+               title: "Implement package",
+               status: "done",
+               created_at: DateTime.add(timestamp, 1, :second)
+             })
+
+    assert {:ok, _branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Branch attached",
+               status: "branch_attached",
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "old-head"},
+               created_at: DateTime.add(timestamp, 2, :second)
+             })
+
+    assert {:ok, _pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR attached",
+               status: "pr_attached",
+               payload: %{type: "pr", source_tool: "attach_pr", url: "https://github.com/example/repo/pull/7", head_sha: "new-head"},
+               created_at: DateTime.add(timestamp, 3, :second)
+             })
+
+    append_review_package(repo, work_package, ["review-log.txt"], DateTime.add(timestamp, 4, :second), "new-head")
+
+    assert {:ok, _artifact} =
+             PlanningRepository.append_artifact(repo, %{
+               id: review_artifact_id(work_package.id, "new-head", "review-log.txt"),
+               work_package_id: work_package.id,
+               path: "review-log.txt",
+               title: "review-log.txt",
+               kind: "review",
+               uri: "file://review-log.txt"
+             })
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert missing["active"] == true
+    refute "branch_attached" in missing["missing"]
+    assert "pr_attached" in missing["missing"]
+    assert "review_package_submitted" in missing["missing"]
+    assert "tests_passed" in missing["missing"]
+    assert "review_lanes_complete" in missing["missing"]
+  end
+
+  test "unknown policy lookup does not invent merge or review evidence requirements", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-UNKNOWN-POLICY",
+                 kind: "dashboard",
+                 status: "ready_for_human_merge"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert missing["active"] == true
+    assert "plan_complete" in missing["missing"]
+    refute "acceptance_criteria_met" in missing["missing"]
+    refute "tests_passed" in missing["missing"]
+    refute "branch_attached" in missing["missing"]
+    refute "pr_attached" in missing["missing"]
+    refute "review_package_submitted" in missing["missing"]
+    refute "review_lanes_complete" in missing["missing"]
   end
 
   test "card summaries use total counts and full progress metadata", %{repo: repo} do
@@ -789,6 +1368,96 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                workspace_path: "C:/tmp/workspace",
                session_id: "session-1"
              })
+  end
+
+  defp append_ready_evidence_with_review_artifacts(repo, work_package, artifacts) do
+    timestamp = ~U[2026-05-05 00:00:00Z]
+
+    assert {:ok, _plan_node} =
+             PlanningRepository.append_plan_node(repo, %{
+               work_package_id: work_package.id,
+               title: "Implement package",
+               body: "Done",
+               status: "done",
+               created_at: DateTime.add(timestamp, 1, :second)
+             })
+
+    assert {:ok, _branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Branch attached",
+               status: "branch_attached",
+               payload: %{
+                 type: "branch",
+                 source_tool: "attach_branch",
+                 branch: "agent/#{work_package.id}",
+                 head_sha: "abc123"
+               },
+               created_at: DateTime.add(timestamp, 2, :second)
+             })
+
+    assert {:ok, _pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR attached",
+               status: "pr_attached",
+               payload: %{
+                 type: "pr",
+                 source_tool: "attach_pr",
+                 url: "https://github.com/example/repo/pull/7",
+                 head_sha: "abc123"
+               },
+               created_at: DateTime.add(timestamp, 3, :second)
+             })
+
+    append_review_package(repo, work_package, artifacts, DateTime.add(timestamp, 4, :second))
+
+    Enum.each(artifacts, fn artifact ->
+      assert {:ok, _artifact} =
+               PlanningRepository.append_artifact(repo, %{
+                 id: review_artifact_id(work_package.id, "abc123", artifact),
+                 work_package_id: work_package.id,
+                 path: artifact,
+                 title: artifact,
+                 kind: "review",
+                 uri: "file://#{artifact}"
+               })
+    end)
+  end
+
+  defp append_ready_evidence_without_artifacts(repo, work_package) do
+    append_ready_evidence_with_review_artifacts(repo, work_package, [])
+  end
+
+  defp append_review_package(repo, work_package, artifacts, created_at) do
+    append_review_package(repo, work_package, artifacts, created_at, "abc123")
+  end
+
+  defp append_review_package(repo, work_package, artifacts, created_at, head_sha) do
+    assert {:ok, _review_event} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Review package submitted",
+               status: "review_package_submitted",
+               payload: %{
+                 type: "review_package",
+                 source_tool: "submit_review_package",
+                 acceptance_criteria_met: true,
+                 tests: ["mix test test/symphony_elixir/symphony_plus_plus"],
+                 artifacts: artifacts,
+                 reviews: [
+                   %{lane: "review_t1", verdict: "green"},
+                   %{lane: "review_t2", verdict: "green"}
+                 ],
+                 head_sha: head_sha
+               },
+               created_at: created_at
+             })
+  end
+
+  defp review_artifact_id(work_package_id, head_sha, artifact) do
+    material = [work_package_id, head_sha || "no-head", artifact] |> Enum.join(":")
+    "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
   defp create_architect_grant_secret(repo, work_package_id) do

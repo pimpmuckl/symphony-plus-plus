@@ -644,8 +644,16 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
         payload
         |> Map.put(runs_key, runs)
+        |> put_active_agent_run(runs)
         |> put_summary_count("agent_run_count", length(runs))
-        |> put_summary_count("active_agent_run_count", Enum.count(runs, &agent_run_active?/1))
+        |> put_summary_count("active_agent_run_count", Enum.count(runs, &agent_run_in_flight?/1))
+        |> put_summary_count("queued_agent_run_count", Enum.count(runs, &(runtime_state(&1) == "queued")))
+        |> put_summary_count("stopped_agent_run_count", Enum.count(runs, &(runtime_state(&1) == "stopped")))
+        |> put_summary_count("failed_agent_run_count", Enum.count(runs, &agent_run_failed?/1))
+        |> put_summary_count("stale_agent_run_count", Enum.count(runs, &agent_run_stale?/1))
+        |> put_runtime_summary(runs)
+        |> put_top_level_runtime_summary(runs)
+        |> scope_run_alerts(runs)
 
       _missing ->
         payload
@@ -670,12 +678,158 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp put_summary_count(payload, _key, _count), do: payload
 
+  defp put_active_agent_run(payload, runs) do
+    active_agent_run = runs |> Enum.filter(&(runtime_state(&1) in ["active", "queued"])) |> List.last()
+
+    case fetch_payload_field(payload, :active_agent_run) do
+      {:ok, key, _run} -> Map.put(payload, key, active_agent_run)
+      _missing -> Map.put(payload, :active_agent_run, active_agent_run)
+    end
+  end
+
+  defp put_runtime_summary(%{"summary" => summary} = payload, runs) when is_map(summary) do
+    runtime = runtime_summary(runs, Map.get(summary, "runtime"))
+    put_in(payload, ["summary", "runtime"], runtime)
+  end
+
+  defp put_runtime_summary(%{summary: summary} = payload, runs) when is_map(summary) do
+    runtime = runtime_summary(runs, Map.get(summary, :runtime))
+    Map.update!(payload, :summary, &Map.put(&1, :runtime, runtime))
+  end
+
+  defp put_runtime_summary(payload, _runs), do: payload
+
+  defp put_top_level_runtime_summary(%{"runtime" => runtime} = payload, runs) when is_map(runtime) do
+    Map.put(payload, "runtime", runtime_summary(runs, runtime))
+  end
+
+  defp put_top_level_runtime_summary(%{runtime: runtime} = payload, runs) when is_map(runtime) do
+    Map.put(payload, :runtime, runtime_summary(runs, runtime))
+  end
+
+  defp put_top_level_runtime_summary(payload, _runs), do: payload
+
+  defp runtime_summary(runs, existing_runtime) do
+    threshold =
+      case existing_runtime do
+        %{} -> Map.get(existing_runtime, :stale_heartbeat_after_seconds) || Map.get(existing_runtime, "stale_heartbeat_after_seconds") || 300
+        _runtime -> 300
+      end
+
+    %{
+      stale_heartbeat_after_seconds: threshold,
+      active_count: Enum.count(runs, &(runtime_state(&1) == "active")),
+      queued_count: Enum.count(runs, &(runtime_state(&1) == "queued")),
+      stopped_count: Enum.count(runs, &(runtime_state(&1) == "stopped")),
+      failed_count: Enum.count(runs, &agent_run_failed?/1),
+      completed_count: Enum.count(runs, &agent_run_completed?/1),
+      terminal_count: Enum.count(runs, &(runtime_state(&1) in ["stopped", "terminal"])),
+      stale_count: Enum.count(runs, &agent_run_stale?(&1, threshold))
+    }
+  end
+
+  defp scope_run_alerts(payload, runs) do
+    stale_threshold = runtime_stale_threshold(payload)
+
+    payload
+    |> update_alert_indicator(
+      "stale_heartbeat",
+      Enum.count(runs, &agent_run_stale?(&1, stale_threshold)),
+      &"#{&1} run(s) past #{stale_threshold}s"
+    )
+    |> update_alert_indicator("failed_run", Enum.count(runs, &agent_run_failed?/1), &"#{&1} failed run(s)")
+  end
+
+  defp runtime_stale_threshold(payload) do
+    case fetch_payload_field(payload, :summary) do
+      {:ok, _key, summary} when is_map(summary) ->
+        case fetch_payload_field(summary, :runtime) do
+          {:ok, _key, runtime} when is_map(runtime) ->
+            Map.get(runtime, :stale_heartbeat_after_seconds) || Map.get(runtime, "stale_heartbeat_after_seconds") || 300
+
+          _missing ->
+            300
+        end
+
+      _missing ->
+        300
+    end
+  end
+
+  defp update_alert_indicator(payload, type, count, detail_fun) do
+    case fetch_payload_field(payload, :alert_indicators) do
+      {:ok, key, alerts} when is_list(alerts) ->
+        Map.put(payload, key, Enum.map(alerts, &update_run_alert(&1, type, count, detail_fun)))
+
+      _missing ->
+        payload
+    end
+  end
+
+  defp update_run_alert(alert, type, count, detail_fun) when is_map(alert) do
+    if Map.get(alert, :type) == type or Map.get(alert, "type") == type do
+      alert
+      |> put_alert_field(:active, count > 0)
+      |> put_alert_field(:detail, detail_fun.(count))
+    else
+      alert
+    end
+  end
+
+  defp put_alert_field(alert, field, value) do
+    cond do
+      Map.has_key?(alert, field) -> Map.put(alert, field, value)
+      Map.has_key?(alert, Atom.to_string(field)) -> Map.put(alert, Atom.to_string(field), value)
+      true -> Map.put(alert, field, value)
+    end
+  end
+
   defp grant_active?(grant), do: Map.get(grant, :status) == "active" or Map.get(grant, "status") == "active"
 
-  defp agent_run_active?(run) do
+  defp agent_run_in_flight?(run) do
     status = Map.get(run, :status) || Map.get(run, "status")
-    status in AgentRun.active_statuses()
+    status in AgentRun.active_statuses() or runtime_state(run) in ["active", "queued"]
   end
+
+  defp agent_run_failed?(run), do: (Map.get(run, :status) || Map.get(run, "status")) == "failed"
+  defp agent_run_completed?(run), do: (Map.get(run, :status) || Map.get(run, "status")) == "completed"
+  defp agent_run_stale?(run), do: agent_run_stale?(run, 300)
+
+  defp agent_run_stale?(run, threshold_seconds) do
+    cond do
+      Map.get(run, :stale) == true or Map.get(run, "stale") == true ->
+        true
+
+      runtime_state(run) in ["active", "queued"] ->
+        stale_last_seen?(Map.get(run, :last_seen_at) || Map.get(run, "last_seen_at"), threshold_seconds)
+
+      true ->
+        false
+    end
+  end
+
+  defp stale_last_seen?(%DateTime{} = last_seen_at, threshold_seconds) do
+    DateTime.diff(DateTime.utc_now(:microsecond), last_seen_at, :second) >= threshold_seconds
+  end
+
+  defp stale_last_seen?(last_seen_at, threshold_seconds) when is_binary(last_seen_at) do
+    case DateTime.from_iso8601(last_seen_at) do
+      {:ok, datetime, _offset} -> stale_last_seen?(datetime, threshold_seconds)
+      {:error, _reason} -> false
+    end
+  end
+
+  defp stale_last_seen?(_last_seen_at, _threshold_seconds), do: false
+
+  defp runtime_state(run) do
+    Map.get(run, :runtime_state) || Map.get(run, "runtime_state") || runtime_state_from_status(Map.get(run, :status) || Map.get(run, "status"))
+  end
+
+  defp runtime_state_from_status("starting"), do: "queued"
+  defp runtime_state_from_status(status) when status in ["running", "retrying"], do: "active"
+  defp runtime_state_from_status("stopped"), do: "stopped"
+  defp runtime_state_from_status(status) when status in ["completed", "failed"], do: "terminal"
+  defp runtime_state_from_status(_status), do: nil
 
   defp redact_worker_activity_identifiers(payload) do
     [:progress, :findings, :events, :blockers]

@@ -575,13 +575,18 @@ pre,
   border-left-color: var(--accent);
 }
 
+.sympp-work-card-warning {
+  border-left-color: #d09200;
+}
+
 .sympp-work-card-blocked {
   border-left-color: var(--danger);
 }
 
 .sympp-card-header,
 .sympp-card-footer,
-.sympp-readiness-row {
+.sympp-readiness-row,
+.sympp-alert-row {
   display: flex;
   align-items: center;
   gap: 0.45rem;
@@ -660,6 +665,32 @@ pre,
 
 .sympp-readiness-muted {
   color: var(--muted);
+}
+
+.sympp-alert-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.45rem;
+  padding: 0.2rem 0.46rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.sympp-alert-warning {
+  background: #fff7e8;
+  border-color: #f1d8a6;
+  color: #8a5a00;
+}
+
+.sympp-alert-critical {
+  background: var(--danger-soft);
+  border-color: #f6d3cf;
+  color: var(--danger);
 }
 
 .sympp-card-footer {

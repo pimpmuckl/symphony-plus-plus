@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
+  alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Finding
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
@@ -13,6 +14,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.State
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+
+  @stale_heartbeat_after_seconds 300
+  @ready_statuses ["ready_for_human_merge", "ready_for_architect_merge"]
+  @complete_plan_statuses ["done", "completed", "skipped"]
+  @merge_required_gates ["human_merge", "architect_merge"]
+  @runtime_merge_required_kinds ["hotfix", "adapter", "mcp", "skill", "hooks", "phase_child"]
 
   @type repo :: module()
   @type dashboard_error :: :not_found | :forbidden | :database_busy | {:storage_failed, String.t()} | term()
@@ -29,11 +36,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            {:ok, grants} <- AccessGrantRepository.list_for_work_package(repo, work_package_id),
            {:ok, agent_runs} <- AgentRunRepository.list_for_work_package(repo, work_package_id) do
         blockers = blockers(state.progress_events)
+        summary = summary(state, grants, agent_runs, blockers)
 
         {:ok,
          %{
            work_package: work_package_detail(state.work_package),
-           summary: summary(state, grants, agent_runs, blockers),
+           summary: summary,
            plan: Enum.map(state.plan_nodes, &plan_node/1),
            findings: Enum.map(state.findings, &finding/1),
            progress: Enum.map(state.progress_events, &progress_event/1),
@@ -41,7 +49,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            blockers: blockers,
            grants: Enum.map(grants, &grant/1),
            agent_runs: Enum.map(agent_runs, &agent_run/1),
-           metadata: metadata(state.progress_events)
+           metadata: metadata(state.progress_events),
+           alert_indicators: alert_indicators(state, summary.runtime)
          }}
       end
     end)
@@ -104,8 +113,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     safe_read(fn ->
       with {:ok, status_summary} <- PlanningRepository.get_status_summary(repo, work_package.id),
            {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, work_package.id),
+           {:ok, readiness_collections} <- readiness_collections(repo, work_package),
            {:ok, agent_runs} <- AgentRunRepository.list_for_work_package(repo, work_package.id) do
+        %{artifacts: artifacts, findings: findings} = readiness_collections
         blockers = blockers(progress_events)
+        runtime = runtime_summary(agent_runs)
+
+        readiness_context =
+          readiness_context(
+            work_package,
+            status_summary.plan_nodes,
+            progress_events,
+            artifacts,
+            findings
+          )
 
         {:ok,
          %{
@@ -117,18 +138,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            base_branch: work_package.base_branch,
            owner_id: work_package.owner_id,
            active_agent_run: latest_active_agent_run(agent_runs),
+           runtime: runtime,
            latest_progress_at: latest_progress_at(progress_events),
            active_blocker_count: Enum.count(blockers, & &1.active),
            artifact_count: status_summary.artifact_count,
            finding_count: status_summary.finding_count,
            plan: plan_summary(status_summary.plan_nodes),
            metadata: metadata(progress_events),
+           alert_indicators: alert_indicators(readiness_context, blockers, runtime),
            inserted_at: timestamp(work_package.inserted_at),
            updated_at: timestamp(work_package.updated_at)
          }}
       end
     end)
   end
+
+  defp readiness_collections(repo, %WorkPackage{status: status} = work_package) when status in @ready_statuses do
+    with {:ok, artifacts} <- PlanningRepository.list_artifacts(repo, work_package.id),
+         {:ok, findings} <- PlanningRepository.list_findings(repo, work_package.id) do
+      {:ok, %{artifacts: artifacts, findings: findings}}
+    end
+  end
+
+  defp readiness_collections(_repo, %WorkPackage{}), do: {:ok, %{artifacts: [], findings: []}}
 
   @spec work_package_detail(WorkPackage.t()) :: map()
   def work_package_detail(%WorkPackage{} = work_package) do
@@ -225,6 +257,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp summary(%State{} = state, grants, agent_runs, blockers) do
+    runtime = runtime_summary(agent_runs)
+
     %{
       artifact_count: length(state.artifacts),
       finding_count: length(state.findings),
@@ -234,6 +268,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       active_grant_count: Enum.count(grants, &active_grant?/1),
       agent_run_count: length(agent_runs),
       active_agent_run_count: Enum.count(agent_runs, &(&1.status in AgentRun.active_statuses())),
+      queued_agent_run_count: runtime.queued_count,
+      stopped_agent_run_count: runtime.stopped_count,
+      failed_agent_run_count: runtime.failed_count,
+      stale_agent_run_count: runtime.stale_count,
+      runtime: runtime,
       latest_progress_at: latest_progress_at(state.progress_events),
       plan: plan_summary(state.plan_nodes)
     }
@@ -327,11 +366,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       access_grant_id: run.access_grant_id,
       actor_id: run.actor_id,
       status: run.status,
+      runtime_state: runtime_state(run),
+      stale: stale_agent_run?(run),
+      stale_after_seconds: @stale_heartbeat_after_seconds,
       attempt: run.attempt,
-      worker_host: run.worker_host,
-      worker_task_handle: run.worker_task_handle,
-      workspace_path: run.workspace_path,
-      session_id: run.session_id,
+      worker_host: redacted_text(run.worker_host),
+      worker_task_handle: redacted_text(run.worker_task_handle),
+      workspace_path: redacted_text(run.workspace_path),
+      session_id: redacted_text(run.session_id),
       codex_input_tokens: run.codex_input_tokens,
       codex_output_tokens: run.codex_output_tokens,
       codex_total_tokens: run.codex_total_tokens,
@@ -339,18 +381,57 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       started_at: timestamp(run.started_at),
       last_seen_at: timestamp(run.last_seen_at),
       finished_at: timestamp(run.finished_at),
-      reason: run.reason
+      reason: redacted_text(run.reason)
     }
   end
 
+  defp runtime_summary(agent_runs) do
+    runs = Enum.map(agent_runs, &agent_run/1)
+
+    %{
+      stale_heartbeat_after_seconds: @stale_heartbeat_after_seconds,
+      active_count: Enum.count(runs, &(&1.runtime_state == "active")),
+      queued_count: Enum.count(runs, &(&1.runtime_state == "queued")),
+      stopped_count: Enum.count(runs, &(&1.runtime_state == "stopped")),
+      failed_count: Enum.count(runs, &(&1.status == "failed")),
+      completed_count: Enum.count(runs, &(&1.status == "completed")),
+      terminal_count: Enum.count(runs, &(&1.runtime_state in ["stopped", "terminal"])),
+      stale_count: Enum.count(runs, & &1.stale)
+    }
+  end
+
+  @spec stale_agent_run?(AgentRun.t()) :: boolean()
+  def stale_agent_run?(%AgentRun{} = run) do
+    stale_agent_run?(run, DateTime.utc_now(:microsecond), @stale_heartbeat_after_seconds)
+  end
+
+  @spec stale_agent_run?(AgentRun.t(), DateTime.t(), non_neg_integer()) :: boolean()
+  def stale_agent_run?(%AgentRun{status: status, last_seen_at: %DateTime{} = last_seen_at}, %DateTime{} = now, threshold_seconds)
+      when status in ["starting", "running", "retrying"] and is_integer(threshold_seconds) and threshold_seconds >= 0 do
+    DateTime.diff(now, last_seen_at, :second) >= threshold_seconds
+  end
+
+  def stale_agent_run?(%AgentRun{}, %DateTime{}, _threshold_seconds), do: false
+
+  defp runtime_state(%AgentRun{status: "starting"}), do: "queued"
+  defp runtime_state(%AgentRun{status: status}) when status in ["running", "retrying"], do: "active"
+  defp runtime_state(%AgentRun{status: "stopped"}), do: "stopped"
+  defp runtime_state(%AgentRun{status: status}) when status in ["completed", "failed"], do: "terminal"
+  defp runtime_state(%AgentRun{}), do: "unknown"
+
   defp latest_active_agent_run(agent_runs) do
     agent_runs
-    |> Enum.filter(&(&1.status in AgentRun.active_statuses()))
-    |> List.last()
+    |> latest_active_run()
     |> case do
       %AgentRun{} = run -> agent_run(run)
       nil -> nil
     end
+  end
+
+  defp latest_active_run(agent_runs) do
+    agent_runs
+    |> Enum.filter(&(runtime_state(&1) in ["active", "queued"]))
+    |> List.last()
   end
 
   defp latest_progress_at(progress_events) do
@@ -372,6 +453,519 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       open_count: max(total - completed, 0)
     }
   end
+
+  defp alert_indicators(%State{} = state, runtime) do
+    state
+    |> readiness_context(length(state.artifacts), length(state.findings))
+    |> alert_indicators(blockers(state.progress_events), runtime)
+  end
+
+  defp alert_indicators(readiness_context, blockers, runtime) do
+    [
+      blocker_indicator(readiness_context.work_package, blockers),
+      stale_heartbeat_indicator(runtime),
+      failed_run_indicator(runtime),
+      missing_readiness_indicator(readiness_context),
+      scope_drift_indicator()
+    ]
+  end
+
+  defp blocker_indicator(%WorkPackage{status: "blocked"}, blockers) do
+    active_count = Enum.count(blockers, & &1.active)
+    alert_indicator("blocker", "Blocked", "critical", active_count > 0, blocker_detail(active_count))
+  end
+
+  defp blocker_indicator(%WorkPackage{}, blockers) do
+    active_count = Enum.count(blockers, & &1.active)
+    alert_indicator("blocker", "Blockers", "critical", active_count > 0, blocker_detail(active_count))
+  end
+
+  defp blocker_detail(1), do: "1 active blocker"
+  defp blocker_detail(count), do: "#{count} active blockers"
+
+  defp stale_heartbeat_indicator(%{stale_count: stale_count, stale_heartbeat_after_seconds: threshold}) do
+    alert_indicator(
+      "stale_heartbeat",
+      "Stale heartbeat",
+      "warning",
+      stale_count > 0,
+      "#{stale_count} run(s) past #{threshold}s"
+    )
+  end
+
+  defp failed_run_indicator(%{failed_count: failed_count}) do
+    alert_indicator("failed_run", "Failed runs", "warning", failed_count > 0, "#{failed_count} failed run(s)")
+  end
+
+  defp missing_readiness_indicator(%{work_package: %WorkPackage{status: status}} = context) when status in @ready_statuses do
+    missing = missing_readiness_evidence(context)
+
+    alert_indicator(
+      "missing_readiness_evidence",
+      "Missing readiness evidence",
+      "warning",
+      missing != [],
+      missing_detail(missing),
+      %{missing: missing}
+    )
+  end
+
+  defp missing_readiness_indicator(_context) do
+    alert_indicator("missing_readiness_evidence", "Missing readiness evidence", "info", false, "Package is not in a ready state", %{missing: []})
+  end
+
+  defp scope_drift_indicator do
+    alert_indicator("scope_drift", "Scope drift", "info", false, "Placeholder only; GitHub sync is not configured", %{placeholder: true})
+  end
+
+  defp alert_indicator(type, label, severity, active, detail, extra \\ %{}) do
+    Map.merge(%{type: type, label: label, severity: severity, active: active, detail: detail}, extra)
+  end
+
+  defp missing_detail([]), do: "No missing evidence detected"
+  defp missing_detail(missing), do: Enum.join(missing, ", ")
+
+  defp readiness_context(%State{} = state, _artifact_count, _finding_count) do
+    readiness_context(state.work_package, state.plan_nodes, state.progress_events, state.artifacts, state.findings)
+  end
+
+  defp readiness_context(%WorkPackage{} = work_package, plan_nodes, progress_events, artifacts, findings) do
+    artifacts = artifacts || []
+    findings = findings || []
+
+    %{
+      work_package: work_package,
+      plan_nodes: plan_nodes,
+      progress_events: chronological_progress_events(progress_events),
+      artifacts: artifacts,
+      findings: findings,
+      artifact_count: length(artifacts),
+      finding_count: length(findings)
+    }
+  end
+
+  @spec missing_readiness_evidence(map()) :: [String.t()]
+  def missing_readiness_evidence(%{work_package: %WorkPackage{}} = context) do
+    [
+      {active_blocker?(context.progress_events), "no_active_blockers"},
+      {incomplete_plan?(context), "plan_complete"},
+      {acceptance_missing?(context), "acceptance_criteria_met"},
+      {tests_missing?(context), "tests_passed"},
+      {merge_metadata_missing?(context, "branch"), "branch_attached"},
+      {merge_metadata_missing?(context, "pr"), "pr_attached"},
+      {review_package_missing?(context), "review_package_submitted"},
+      {review_artifacts_missing?(context), "review_artifacts_attached"},
+      {review_lanes_missing?(context), "review_lanes_complete"},
+      {investigation_findings_missing?(context), "findings_documented"},
+      {investigation_recommendation_missing?(context), "recommendation_artifact_recorded"}
+    ]
+    |> Enum.flat_map(fn
+      {true, gate} -> [gate]
+      {false, _gate} -> []
+    end)
+  end
+
+  defp merge_metadata_missing?(context, "pr") do
+    merge_required?(context.work_package) and pr_required?(context.work_package) and
+      not metadata_present?(context.progress_events, "pr", latest_current_head_sha(context.progress_events))
+  end
+
+  defp merge_metadata_missing?(context, "branch") do
+    merge_required?(context.work_package) and
+      not metadata_present?(context.progress_events, "branch", latest_current_head_sha(context.progress_events))
+  end
+
+  defp merge_metadata_missing?(context, type) do
+    merge_required?(context.work_package) and
+      not metadata_present?(context.progress_events, type, latest_current_head_sha(context.progress_events))
+  end
+
+  defp review_package_missing?(context) do
+    readiness_head_sha = review_head_sha_for_readiness(context)
+    required_lanes = required_review_lanes(context.work_package)
+
+    merge_required?(context.work_package) and review_lanes_required?(required_lanes) and
+      current_head_review_package_events(context.progress_events, readiness_head_sha) == []
+  end
+
+  defp review_artifacts_missing?(context) do
+    required_lanes = required_review_lanes(context.work_package)
+
+    merge_required?(context.work_package) and review_lanes_required?(required_lanes) and
+      not review_artifacts_present?(context.progress_events, context.artifacts, context.work_package.id)
+  end
+
+  defp review_lanes_missing?(context) do
+    required_lanes = required_review_lanes(context.work_package)
+    review_lanes_required?(required_lanes) and not review_lanes_present?(context, required_lanes)
+  end
+
+  defp investigation_findings_missing?(context), do: context.work_package.kind == "investigation" and context.findings == []
+
+  defp investigation_recommendation_missing?(context) do
+    context.work_package.kind == "investigation" and
+      not recommendation_artifact_recorded?(context.artifacts, context.work_package.id)
+  end
+
+  defp incomplete_plan?(context) do
+    plan_required?(context.work_package) and
+      (context.plan_nodes == [] or Enum.any?(context.plan_nodes, &(&1.status not in @complete_plan_statuses)))
+  end
+
+  defp acceptance_missing?(context) do
+    required_gate?(context.work_package, "package_acceptance") and not acceptance_recorded?(context)
+  end
+
+  defp tests_missing?(context) do
+    required_gate?(context.work_package, "focused_tests") and not tests_recorded?(context)
+  end
+
+  defp active_blocker?(progress_events) do
+    progress_events
+    |> Enum.filter(&blocker_event?/1)
+    |> Enum.reduce(%{}, fn event, active_by_id ->
+      Map.put(active_by_id, blocker_id(event), Map.get(event.payload || %{}, "active") == true)
+    end)
+    |> Map.values()
+    |> Enum.any?(& &1)
+  end
+
+  defp blocker_id(%ProgressEvent{payload: payload, idempotency_key: idempotency_key, id: id}) do
+    normalize_blocker_id(Map.get(payload || %{}, "blocker_id") || idempotency_key || id)
+  end
+
+  defp plan_required?(%WorkPackage{} = work_package) do
+    case policy_for(work_package) do
+      {:ok, policy} -> get_in(policy, [:constraints, :planning_depth]) == "package"
+      {:error, _reason} -> true
+    end
+  end
+
+  defp required_gate?(%WorkPackage{} = work_package, gate) do
+    case policy_for(work_package) do
+      {:ok, policy} -> gate in Map.get(policy, :required_gates, [])
+      {:error, _reason} -> false
+    end
+  end
+
+  defp required_review_lanes(%WorkPackage{} = work_package) do
+    case policy_for(work_package) do
+      {:ok, policy} -> get_in(policy, [:review_suite, :required]) || []
+      {:error, _reason} -> []
+    end
+  end
+
+  defp policy_for(%WorkPackage{} = work_package), do: LifecycleService.policy_for(work_package)
+
+  defp review_lanes_required?(required_lanes), do: required_lanes != []
+
+  defp merge_required?(%WorkPackage{} = work_package) do
+    case policy_for(work_package) do
+      {:ok, policy} ->
+        required_gates = Map.get(policy, :required_gates, [])
+        Enum.any?(@merge_required_gates, &(&1 in required_gates))
+
+      {:error, _reason} ->
+        work_package.kind in @runtime_merge_required_kinds
+    end
+  end
+
+  defp pr_required?(%WorkPackage{}), do: true
+
+  defp acceptance_recorded?(context) do
+    progress_events = progress_events_for_review_payload(context)
+
+    if merge_required?(context.work_package) do
+      review_package_acceptance_recorded?(progress_events, review_head_sha_for_readiness(context))
+    else
+      review_package_acceptance_recorded?(progress_events, review_head_sha_for_readiness(context)) or
+        current_branch_acceptance_recorded?(progress_events)
+    end
+  end
+
+  defp review_package_acceptance_recorded?(progress_events, readiness_head_sha) do
+    case latest_review_package_event(progress_events, readiness_head_sha) do
+      %ProgressEvent{payload: payload} when is_map(payload) -> Map.get(payload, "acceptance_criteria_met") == true
+      _event -> false
+    end
+  end
+
+  defp current_branch_acceptance_recorded?(progress_events) do
+    progress_events
+    |> Enum.reverse()
+    |> Enum.any?(fn
+      %ProgressEvent{payload: payload} = event when is_map(payload) ->
+        payload_type?(event, "review_package", "submit_review_package") and Map.get(payload, "acceptance_criteria_met") == true
+
+      %ProgressEvent{} ->
+        false
+    end)
+  end
+
+  defp tests_recorded?(context) do
+    if merge_required?(context.work_package) do
+      review_package_tests_recorded?(context.progress_events, review_head_sha_for_readiness(context))
+    else
+      progress_events = current_branch_progress_events(context.progress_events)
+
+      review_package_tests_recorded?(progress_events, review_head_sha_for_readiness(context)) or
+        progress_status_recorded?(progress_events, "tests_passed")
+    end
+  end
+
+  defp review_package_tests_recorded?(progress_events, readiness_head_sha) do
+    case latest_review_package_event(progress_events, readiness_head_sha) do
+      %ProgressEvent{payload: payload} when is_map(payload) ->
+        case Map.get(payload, "tests") do
+          tests when is_list(tests) -> Enum.any?(tests, &(is_binary(&1) and String.trim(&1) != ""))
+          _tests -> false
+        end
+
+      _event ->
+        false
+    end
+  end
+
+  defp review_lanes_present?(context, required_lanes) do
+    if merge_required?(context.work_package) do
+      review_package_lanes_present?(
+        context.progress_events,
+        required_lanes,
+        review_head_sha_for_readiness(context)
+      )
+    else
+      progress_events = current_branch_progress_events(context.progress_events)
+
+      review_package_lanes_present?(progress_events, required_lanes, review_head_sha_for_readiness(context)) or
+        progress_review_lanes_present?(progress_events, required_lanes)
+    end
+  end
+
+  defp review_package_lanes_present?(progress_events, required_lanes, readiness_head_sha) do
+    latest_verdicts =
+      case latest_review_package_event(progress_events, readiness_head_sha) do
+        %ProgressEvent{} = event ->
+          event
+          |> review_package_reviews(readiness_head_sha)
+          |> Enum.reduce(%{}, fn review, verdicts -> Map.put(verdicts, Map.get(review, "lane"), Map.get(review, "verdict")) end)
+
+        nil ->
+          %{}
+      end
+
+    Enum.all?(required_lanes, &(Map.get(latest_verdicts, &1) == "green"))
+  end
+
+  defp progress_review_lanes_present?(progress_events, required_lanes) do
+    Enum.all?(required_lanes, fn lane ->
+      latest_generic_progress_status(progress_events, ["#{lane}_green", "#{lane}_red", "#{lane}_failed"]) ==
+        "#{lane}_green"
+    end)
+  end
+
+  defp progress_status_recorded?(progress_events, expected_status) do
+    latest_generic_progress_status(progress_events, [expected_status, failed_status(expected_status)]) ==
+      expected_status
+  end
+
+  defp current_branch_progress_events(progress_events) do
+    case latest_branch_event_index(progress_events) do
+      nil -> progress_events
+      index -> Enum.drop(progress_events, index + 1)
+    end
+  end
+
+  defp latest_branch_event_index(progress_events) do
+    progress_events
+    |> Enum.with_index()
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      {%ProgressEvent{} = event, index} ->
+        if payload_type?(event, "branch", "attach_branch"), do: index
+
+      _entry ->
+        nil
+    end)
+  end
+
+  defp latest_generic_progress_status(progress_events, statuses) do
+    statuses = MapSet.new(statuses)
+
+    progress_events
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      %ProgressEvent{status: status} = event ->
+        status = normalized_status(status)
+        if generic_append_progress_event?(event) and MapSet.member?(statuses, status), do: status
+
+      _event ->
+        nil
+    end)
+  end
+
+  defp generic_append_progress_event?(%ProgressEvent{payload: payload}) when is_map(payload), do: Map.get(payload, "source_tool") == nil
+  defp generic_append_progress_event?(%ProgressEvent{payload: nil}), do: true
+  defp generic_append_progress_event?(%ProgressEvent{}), do: false
+
+  defp failed_status("tests_passed"), do: "tests_failed"
+  defp failed_status(status), do: status <> "_failed"
+
+  defp latest_review_package_event(progress_events, readiness_head_sha) do
+    progress_events
+    |> current_head_review_package_events(readiness_head_sha)
+    |> List.last()
+  end
+
+  defp current_head_review_package_events(progress_events, readiness_head_sha) do
+    Enum.filter(progress_events, fn event ->
+      payload_type?(event, "review_package", "submit_review_package") and review_head_matches?(event.payload, readiness_head_sha)
+    end)
+  end
+
+  defp review_artifacts_present?(progress_events, artifacts, work_package_id) do
+    current_head_sha = latest_current_head_sha(progress_events)
+    artifact_references = current_head_review_artifact_references(progress_events, current_head_sha)
+
+    artifact_references != [] and
+      Enum.all?(artifact_references, fn {path, artifact_head_sha} ->
+        persisted_review_artifact?(artifacts, work_package_id, artifact_head_sha, path)
+      end)
+  end
+
+  defp current_head_review_artifact_references(progress_events, current_head_sha) do
+    case latest_review_package_event(progress_events, current_head_sha) do
+      %ProgressEvent{} = event -> review_package_artifact_references(event, current_head_sha)
+      nil -> []
+    end
+  end
+
+  defp review_package_artifact_paths(%ProgressEvent{payload: payload}, readiness_head_sha) when is_map(payload) do
+    artifacts = Map.get(payload, "artifacts")
+
+    if is_list(artifacts) and review_head_matches?(payload, readiness_head_sha) do
+      Enum.filter(artifacts, &(is_binary(&1) and String.trim(&1) != ""))
+    else
+      []
+    end
+  end
+
+  defp review_package_artifact_paths(%ProgressEvent{}, _readiness_head_sha), do: []
+
+  defp review_package_artifact_references(%ProgressEvent{payload: payload} = event, readiness_head_sha) when is_map(payload) do
+    event
+    |> review_package_artifact_paths(readiness_head_sha)
+    |> Enum.map(&{&1, Map.get(payload, "head_sha")})
+  end
+
+  defp review_package_artifact_references(%ProgressEvent{}, _readiness_head_sha), do: []
+
+  defp persisted_review_artifact?(artifacts, work_package_id, head_sha, path) do
+    expected_id = review_artifact_id(work_package_id, head_sha, path)
+    Enum.any?(artifacts, &(&1.id == expected_id and &1.kind == "review" and &1.path == path))
+  end
+
+  defp review_artifact_id(work_package_id, head_sha, artifact) do
+    material = [work_package_id, head_sha || "no-head", artifact] |> Enum.join(":")
+    "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
+  end
+
+  defp recommendation_artifact_recorded?(artifacts, work_package_id) do
+    artifact_id = recommendation_artifact_id(work_package_id)
+
+    Enum.any?(
+      artifacts,
+      &(&1.id == artifact_id and &1.work_package_id == work_package_id and &1.path == "recommendation.md" and
+          &1.title == "Investigation recommendation" and &1.kind == "recommendation")
+    )
+  end
+
+  defp recommendation_artifact_id(work_package_id) do
+    material = [work_package_id, "recommendation", "recommendation.md"] |> Enum.join(":")
+    "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
+  end
+
+  defp review_package_reviews(%ProgressEvent{payload: payload}, readiness_head_sha) when is_map(payload) do
+    reviews = Map.get(payload, "reviews")
+
+    if is_list(reviews) and review_head_matches?(payload, readiness_head_sha) do
+      Enum.flat_map(reviews, &normalize_review_entry/1)
+    else
+      []
+    end
+  end
+
+  defp normalize_review_entry(%{} = review) do
+    keys = review |> Map.keys() |> Enum.map(&to_string/1) |> Enum.sort()
+    lane = Map.get(review, "lane")
+    verdict = Map.get(review, "verdict")
+
+    if keys == ["lane", "verdict"] and filled_string?(lane) and filled_string?(verdict) do
+      [%{"lane" => lane |> String.trim() |> String.downcase(), "verdict" => verdict |> String.trim() |> String.downcase()}]
+    else
+      []
+    end
+  end
+
+  defp normalize_review_entry(_review), do: []
+
+  defp filled_string?(value), do: is_binary(value) and String.trim(value) != ""
+
+  defp review_head_matches?(payload, :any_head) when is_map(payload) do
+    head_sha = Map.get(payload, "head_sha")
+    is_binary(head_sha) and String.trim(head_sha) != ""
+  end
+
+  defp review_head_matches?(payload, head_sha) when is_map(payload) and is_binary(head_sha), do: Map.get(payload, "head_sha") == head_sha
+  defp review_head_matches?(_payload, _head_sha), do: false
+
+  defp review_head_sha_for_readiness(context) do
+    current_head_sha = latest_current_head_sha(context.progress_events)
+
+    cond do
+      is_binary(current_head_sha) -> current_head_sha
+      merge_required?(context.work_package) -> nil
+      true -> :any_head
+    end
+  end
+
+  defp progress_events_for_review_payload(context) do
+    if merge_required?(context.work_package) do
+      context.progress_events
+    else
+      current_branch_progress_events(context.progress_events)
+    end
+  end
+
+  defp latest_current_head_sha(progress_events) do
+    progress_events
+    |> Enum.filter(&payload_type?(&1, "branch", "attach_branch"))
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      %ProgressEvent{payload: payload} -> payload_head_sha(payload)
+      _event -> nil
+    end)
+  end
+
+  defp metadata_present?(progress_events, type, head_sha) when is_binary(head_sha) do
+    tool = metadata_tool(type)
+
+    Enum.any?(progress_events, fn
+      %ProgressEvent{payload: payload} = event when is_map(payload) and is_binary(tool) ->
+        payload_type?(event, type, tool) and Map.get(payload, "head_sha") == head_sha
+
+      %ProgressEvent{} ->
+        false
+    end)
+  end
+
+  defp metadata_present?(_progress_events, _type, _head_sha), do: false
+
+  defp metadata_tool("branch"), do: "attach_branch"
+  defp metadata_tool("pr"), do: "attach_pr"
+  defp metadata_tool(_type), do: nil
+
+  defp normalized_status(status) when is_binary(status), do: status |> String.trim() |> String.downcase()
+  defp normalized_status(_status), do: ""
 
   defp metadata(progress_events) do
     branch = latest_payload(progress_events, "branch", "attach_branch")
@@ -570,9 +1164,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp sensitive_key?(key) when is_binary(key) do
     key = String.downcase(key)
+
     String.contains?(key, "secret") or String.contains?(key, "token") or String.contains?(key, "hash")
   end
 
+  defp sensitive_key?(key) when is_atom(key), do: key |> Atom.to_string() |> sensitive_key?()
   defp sensitive_key?(_key), do: false
 
   defp url_key?(key) when is_binary(key), do: String.downcase(key) in ["href", "link", "links", "uri", "url", "urls"]

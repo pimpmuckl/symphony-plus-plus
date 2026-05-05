@@ -76,6 +76,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert html =~ "architect"
     assert html =~ "Agent Runs"
     assert html =~ "task-1"
+    assert html =~ "Runtime Alerts"
+    assert html =~ "Queued"
+    assert html =~ "Stopped"
     assert html =~ ~s(href="https://github.com/example/symphony-plus-plus/pull/33")
     assert html =~ "Open PR"
   end
@@ -124,6 +127,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     refute html =~ ~r/<button[^>]*>\s*Merge\s*<\/button>/
     refute html =~ ~r/<button[^>]*>\s*Revoke\s*<\/button>/
     refute html =~ ~r/<button[^>]*>\s*Claim\s*<\/button>/
+    refute html =~ ~r/<button[^>]*>\s*(Stop|Retry|Notify)\s*<\/button>/
+  end
+
+  test "renders stale runtime and missing-readiness indicators in package detail" do
+    %{work_package: work_package, architect_secret: secret} =
+      create_detail_package(id: "SYMPP-P5-004-DETAIL", title: "Runtime detail package")
+
+    assert {:ok, [run]} = AgentRunRepository.list_for_work_package(Repo, work_package.id)
+    stale_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -600, :second)
+
+    assert {:ok, _stale_run} =
+             run
+             |> AgentRun.update_changeset(%{last_seen_at: stale_seen_at})
+             |> Repo.update()
+
+    {:ok, _view, html} = live(auth_conn(secret), "/sympp/work-packages/#{work_package.id}")
+
+    assert html =~ "Runtime Alerts"
+    assert html =~ "Stale heartbeat"
+    assert html =~ "active"
+    assert html =~ "active</span>"
+    assert html =~ "last seen"
+    assert html =~ "Stale runs"
+  end
+
+  test "renders concrete terminal run statuses in package detail" do
+    %{work_package: work_package, architect_secret: secret} =
+      create_detail_package(id: "SYMPP-P5-004-TERMINAL", title: "Terminal runtime package")
+
+    assert {:ok, [run]} = AgentRunRepository.list_for_work_package(Repo, work_package.id)
+    assert {:ok, _completed_run} = AgentRunRepository.mark_completed(Repo, run.id)
+
+    {:ok, _view, html} = live(auth_conn(secret), "/sympp/work-packages/#{work_package.id}")
+
+    assert html =~ "completed"
+    refute html =~ ">terminal</span>"
   end
 
   test "worker-scoped browser viewer can see own package but not sibling package" do
@@ -525,7 +564,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
             active_grant_count: 0,
             agent_run_count: 0,
             active_agent_run_count: 0,
+            queued_agent_run_count: 0,
+            stopped_agent_run_count: 0,
+            failed_agent_run_count: 0,
+            stale_agent_run_count: 0,
             latest_progress_at: ~U[2026-05-05 00:00:00Z],
+            runtime: %{},
             plan: %{total_count: 1, completed_count: 1, open_count: 0}
           },
           metadata: %{
@@ -536,7 +580,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
           findings: [],
           artifacts: [],
           grants: [],
-          agent_runs: []
+          agent_runs: [],
+          alert_indicators: []
         },
         timeline: %{events: []}
       }

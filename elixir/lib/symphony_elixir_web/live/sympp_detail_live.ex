@@ -12,13 +12,17 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
 
   @known_keys ~w(
     access_grant_id active_agent_run_count active_blocker_count active_grant_count
-    agent_run_count agent_runs artifact_count artifacts base_branch body branch
-    branch_pattern capabilities claimed_at claimed_by codex_total_tokens created_at
-    display_key engineering_scope events expires_at finding_count findings finished_at
-    grant_count grant_role grants head_sha id inserted_at kind latest_progress_at
-    metadata open_count path plan position pr product_description progress_event_count
-    repo revoked_at sequence session_id severity status summary timeline_order title
-    total_count turn_count type updated_at uri url work_package worker_task_handle
+    active alert_indicators agent_run_count agent_runs artifact_count artifacts base_branch
+    body branch branch_pattern capabilities claimed_at claimed_by codex_total_tokens
+    completed_count created_at detail display_key engineering_scope events expires_at
+    failed_count finding_count findings finished_at grant_count grant_role grants
+    head_sha id inserted_at kind label latest last_seen_at latest_progress_at metadata
+    missing open_count path placeholder plan position pr product_description progress_event_count
+    queued_agent_run_count reason repo revoked_at runtime runtime_state scope severity
+    sequence session_id stale stale_after_seconds stale_agent_run_count
+    stale_heartbeat_after_seconds status stopped_agent_run_count summary terminal_count
+    timeline_order title total_count turn_count type updated_at uri url work_package
+    worker_host worker_task_handle workspace_path
   )
   @known_key_atoms Map.new(@known_keys, &{&1, String.to_atom(&1)})
 
@@ -156,7 +160,20 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
               <div><dt>Artifacts</dt><dd class="numeric"><%= @detail.summary.artifact_count %></dd></div>
               <div><dt>Active blockers</dt><dd class="numeric"><%= @detail.summary.active_blocker_count %></dd></div>
               <div><dt>Active runs</dt><dd class="numeric"><%= @detail.summary.active_agent_run_count %></dd></div>
+              <div><dt>Queued runs</dt><dd class="numeric"><%= @detail.summary.queued_agent_run_count %></dd></div>
+              <div><dt>Stale runs</dt><dd class="numeric"><%= @detail.summary.stale_agent_run_count %></dd></div>
             </dl>
+          </article>
+
+          <article class="sympp-panel">
+            <h2>Runtime Alerts</h2>
+            <div class="sympp-stack-list">
+              <div :for={alert <- @detail.alert_indicators} class="sympp-mini-row">
+                <span class={alert_badge_class(alert)}><%= alert.label %></span>
+                <span><%= alert_state(alert) %></span>
+                <span class="muted"><%= alert.detail %></span>
+              </div>
+            </div>
           </article>
 
           <article class="sympp-panel sympp-panel-wide">
@@ -233,13 +250,17 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
             <dl class="sympp-count-grid">
               <div><dt>Total</dt><dd class="numeric"><%= @detail.summary.agent_run_count %></dd></div>
               <div><dt>Active</dt><dd class="numeric"><%= @detail.summary.active_agent_run_count %></dd></div>
+              <div><dt>Queued</dt><dd class="numeric"><%= @detail.summary.queued_agent_run_count %></dd></div>
+              <div><dt>Stopped</dt><dd class="numeric"><%= @detail.summary.stopped_agent_run_count %></dd></div>
             </dl>
             <div :if={@detail.agent_runs != []} class="sympp-stack-list">
               <div :for={run <- @detail.agent_runs} class="sympp-stack-item">
-                <span class="state-badge"><%= run.status %></span>
+                <span class={run_badge_class(run)}><%= run_status_label(run) %></span>
                 <h3><%= present(run.worker_task_handle) %></h3>
                 <p class="mono"><%= run.session_id || run.id %></p>
-                <p class="muted"><%= token_summary(run) %></p>
+                <p class="mono"><%= present(run.workspace_path) %></p>
+                <p class="muted"><%= token_summary(run) %> / last seen <%= present(run.last_seen_at) %></p>
+                <p :if={run.status == "failed"} class="muted"><%= present(run.reason) %></p>
               </div>
             </div>
             <p :if={@detail.agent_runs == []} class="sympp-empty-inline">No agent runs recorded.</p>
@@ -316,6 +337,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     |> Map.put_new(:artifacts, [])
     |> Map.put_new(:grants, [])
     |> Map.put_new(:agent_runs, [])
+    |> Map.put_new(:alert_indicators, [])
     |> then(fn detail ->
       detail
       |> Map.update!(:work_package, &atomize_payload/1)
@@ -326,6 +348,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
       |> Map.update!(:artifacts, &atomize_list/1)
       |> Map.update!(:grants, &atomize_list/1)
       |> Map.update!(:agent_runs, &atomize_list/1)
+      |> Map.update!(:alert_indicators, &atomize_list/1)
     end)
   end
 
@@ -340,7 +363,12 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     |> Map.put_new(:active_grant_count, 0)
     |> Map.put_new(:agent_run_count, 0)
     |> Map.put_new(:active_agent_run_count, 0)
+    |> Map.put_new(:queued_agent_run_count, 0)
+    |> Map.put_new(:stopped_agent_run_count, 0)
+    |> Map.put_new(:failed_agent_run_count, 0)
+    |> Map.put_new(:stale_agent_run_count, 0)
     |> Map.put_new(:latest_progress_at, nil)
+    |> Map.update(:runtime, %{}, &atomize_payload/1)
     |> Map.update(:plan, %{total_count: 0, completed_count: 0, open_count: 0}, &atomize_payload/1)
   end
 
@@ -363,7 +391,8 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
       findings: [],
       artifacts: [],
       grants: [],
-      agent_runs: []
+      agent_runs: [],
+      alert_indicators: []
     })
   end
 
@@ -455,6 +484,23 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     turns = run.turn_count || 0
     "#{total} tokens / #{turns} turns"
   end
+
+  defp alert_badge_class(%{active: true, severity: "critical"}), do: "state-badge state-badge-danger"
+  defp alert_badge_class(%{active: true, severity: "warning"}), do: "state-badge state-badge-warning"
+  defp alert_badge_class(%{active: true}), do: "state-badge state-badge-active"
+  defp alert_badge_class(_alert), do: "state-badge"
+
+  defp alert_state(%{active: true}), do: "active"
+  defp alert_state(_alert), do: "clear"
+
+  defp run_badge_class(%{status: "failed"}), do: "state-badge state-badge-danger"
+  defp run_badge_class(%{stale: true}), do: "state-badge state-badge-warning"
+  defp run_badge_class(%{runtime_state: runtime_state}) when runtime_state in ["active", "queued"], do: "state-badge state-badge-active"
+  defp run_badge_class(_run), do: "state-badge"
+
+  defp run_status_label(%{status: status}) when status in ["completed", "failed"], do: status
+  defp run_status_label(%{runtime_state: runtime_state}) when is_binary(runtime_state), do: runtime_state
+  defp run_status_label(%{status: status}), do: status
 
   defp status_label(nil), do: "n/a"
 
