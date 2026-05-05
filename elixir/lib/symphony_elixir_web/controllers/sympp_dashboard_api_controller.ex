@@ -36,7 +36,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     case authorize_package_request(conn, work_package_id) do
       {:ok, %AccessGrant{} = grant} -> put_package_browser_session(conn, grant)
       {:error, :unauthorized} -> conn |> package_login_response(work_package_id: work_package_id) |> Conn.halt()
-      {:error, reason} -> conn |> board_browser_error_response(reason) |> Conn.halt()
+      {:error, reason} -> conn |> package_browser_error_response(reason, work_package_id) |> Conn.halt()
     end
   end
 
@@ -114,6 +114,11 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       {:error, {:repo_start_failed, _reason}} ->
         conn
         |> package_login_response(status: 503, message: "The package ledger could not be opened.", work_package_id: work_package_id)
+        |> Conn.halt()
+
+      {:error, :not_found} ->
+        conn
+        |> package_not_found_response()
         |> Conn.halt()
 
       {:error, _reason} ->
@@ -261,6 +266,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp authorize_package_secret(secret, work_package_id) do
     with true <- auth_storage_ready?(secret),
          {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_with_existing_repo(secret),
+         :ok <- require_existing_work_package(work_package_id),
          :ok <- require_work_package(auth_context, work_package_id) do
       {:ok, grant}
     else
@@ -287,6 +293,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   def authorize_package_grant_id(grant_id, work_package_id) when is_binary(grant_id) and is_binary(work_package_id) do
     with true <- dashboard_storage_present?(),
          {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_grant_id_with_existing_repo(grant_id),
+         :ok <- require_existing_work_package(work_package_id),
          :ok <- require_work_package(auth_context, work_package_id) do
       {:ok, grant}
     else
@@ -521,6 +528,20 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
+  defp require_existing_work_package(work_package_id) when is_binary(work_package_id) do
+    with_dashboard_repo(
+      fn repo ->
+        case WorkPackageRepository.get(repo, work_package_id) do
+          {:ok, _work_package} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+      end,
+      migrate?: false
+    )
+  end
+
+  defp require_existing_work_package(_work_package_id), do: {:error, :not_found}
+
   defp require_capability(capabilities, capability) when is_list(capabilities) do
     if capability in capabilities, do: :ok, else: {:error, :forbidden}
   end
@@ -694,6 +715,32 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     board_login_response(conn, status: 500, message: "The board is temporarily unavailable.")
   end
 
+  defp package_browser_error_response(conn, :forbidden, work_package_id) do
+    package_login_response(conn,
+      status: 403,
+      message: "The current work key is not allowed to open this package.",
+      work_package_id: work_package_id
+    )
+  end
+
+  defp package_browser_error_response(conn, :not_found, _work_package_id), do: package_not_found_response(conn)
+
+  defp package_browser_error_response(conn, :database_busy, work_package_id) do
+    package_login_response(conn, status: 503, message: "The dashboard ledger is busy. Try again.", work_package_id: work_package_id)
+  end
+
+  defp package_browser_error_response(conn, {:storage_failed, _reason}, work_package_id) do
+    package_login_response(conn, status: 503, message: "The package ledger could not be read.", work_package_id: work_package_id)
+  end
+
+  defp package_browser_error_response(conn, {:repo_start_failed, _reason}, work_package_id) do
+    package_login_response(conn, status: 503, message: "The package ledger could not be opened.", work_package_id: work_package_id)
+  end
+
+  defp package_browser_error_response(conn, _reason, work_package_id) do
+    package_login_response(conn, status: 500, message: "The package is temporarily unavailable.", work_package_id: work_package_id)
+  end
+
   defp clear_board_session(conn), do: Conn.delete_session(conn, @board_session_key)
 
   defp error_response(conn, status, code, message) do
@@ -783,6 +830,35 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     conn
     |> Conn.put_resp_content_type("text/html")
     |> Conn.send_resp(status, body)
+  end
+
+  defp package_not_found_response(conn) do
+    dashboard_css_path = prefixed_path(conn, "/dashboard.css")
+
+    body = """
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>Symphony++ package not found</title>
+      <link rel="stylesheet" href="#{html_escape(dashboard_css_path)}">
+    </head>
+    <body>
+      <main class="sympp-board-shell sympp-auth-shell">
+        <section class="error-card">
+          <p class="eyebrow">Symphony++</p>
+          <h1 class="error-title">Package not found</h1>
+          <p class="error-copy">The requested work package could not be found.</p>
+        </section>
+      </main>
+    </body>
+    </html>
+    """
+
+    conn
+    |> Conn.put_resp_content_type("text/html")
+    |> Conn.send_resp(404, body)
   end
 
   defp prefixed_path(%Conn{script_name: []}, path), do: path

@@ -122,6 +122,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     refute html =~ "Filtered auth package"
   end
 
+  test "encodes package ids in board detail links" do
+    raw_id = "SYMPP-P5-LINK/ONE?x=1"
+
+    create_board_package(%{
+      id: raw_id,
+      kind: "dashboard",
+      status: "implementing",
+      title: "Encoded link package",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "symphony-plus-plus/beta"
+    })
+
+    secret = create_architect_grant_secret(Repo, raw_id)
+
+    {:ok, _view, html} = live(auth_conn(secret), "/sympp/board")
+
+    assert html =~ ~s(href="work-packages/#{path_segment(raw_id)}")
+    refute html =~ ~s(href="work-packages/#{raw_id}")
+  end
+
   test "filters packages by kind repo and phase without mutating state" do
     create_board_package(%{
       id: "SYMPP-P5-002",
@@ -964,6 +984,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     conn = post(build_conn(), "/sympp/board/session", %{"work_key" => secret})
     assert redirected_to(conn) == "/sympp/board"
     recycle(conn)
+  end
+
+  defp path_segment(value) do
+    URI.encode(value, &URI.char_unreserved?/1)
   end
 
   defp start_test_endpoint do

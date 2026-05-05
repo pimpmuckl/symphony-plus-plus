@@ -142,7 +142,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
 
     conn = get(auth_conn(worker_secret), "/sympp/work-packages/#{sibling.id}")
 
-    assert response(conn, 403) =~ "Board access"
+    assert response(conn, 403) =~ "Package access"
+    assert response(conn, 403) =~ ~s(action="/sympp/work-packages/#{sibling.id}/session")
     refute response(conn, 403) =~ "Sibling detail package"
   end
 
@@ -193,6 +194,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
       })
 
     assert redirected_to(session_conn) == "/sympp/work-packages/#{encoded_id}"
+  end
+
+  test "missing package detail and session return package not found" do
+    %{architect_secret: architect_secret} = create_detail_package(id: "SYMPP-P5-EXISTS")
+
+    detail_conn = get(auth_conn(architect_secret), "/sympp/work-packages/SYMPP-P5-MISSING")
+
+    assert response(detail_conn, 404) =~ "Package not found"
+    refute response(detail_conn, 404) =~ "Board access"
+
+    session_conn =
+      post(build_conn(), "/sympp/work-packages/SYMPP-P5-MISSING/session", %{
+        "work_key" => architect_secret
+      })
+
+    assert response(session_conn, 404) =~ "Package not found"
+    refute response(session_conn, 404) =~ "work_key"
   end
 
   test "valid package bearer auth overrides a stale different-package browser session" do
