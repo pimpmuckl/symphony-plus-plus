@@ -34,9 +34,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
       "head_sha" => "abc123",
       "branch" => "agent/SYMPP-P6-001/github-pr-attachment-sync",
       "changed_files" => [%{"filename" => "elixir/lib/example.ex", "status" => "modified"}],
-      "check_summary" => %{"state" => "success"},
-      "review_state" => %{"state" => "approved"},
-      "merge_state" => %{"state" => "clean"}
+      "check_summary" => %{"state" => "success", "token" => "ghp_should_not_surface"},
+      "review_state" => %{"state" => "approved", "authorization" => "Bearer secret"},
+      "merge_state" => %{"state" => "clean", "client_secret" => "secret"}
     }
 
     assert {:ok, fetched} = Client.fetch_pull_request(DryClient, ref, metadata: metadata)
@@ -46,7 +46,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
     assert payload["number"] == 42
     assert payload["head_sha"] == "abc123"
     assert payload["changed_files"] == [%{"path" => "elixir/lib/example.ex", "status" => "modified"}]
-    assert payload["check_summary"] == %{"state" => "success"}
+    assert payload["check_summary"] == %{"state" => "success", "token" => "[REDACTED]"}
+    assert payload["review_state"] == %{"state" => "approved", "authorization" => "[REDACTED]"}
+    assert payload["merge_state"] == %{"state" => "clean", "client_secret" => "[REDACTED]"}
     refute Map.has_key?(payload, "authorization")
   end
 

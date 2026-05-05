@@ -357,6 +357,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["blocker_id", "resolution", "summary", "idempotency_key"]
     assert get_in(tools_by_name, ["attach_branch", "inputSchema", "required"]) == ["branch", "head_sha"]
     assert get_in(tools_by_name, ["attach_branch", "inputSchema", "properties", "head_sha", "type"]) == "string"
+    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "required"]) == ["head_sha"]
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "anyOf"]) == [%{"required" => ["url"]}, %{"required" => ["number"]}]
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == "string"
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "metadata", "type"]) == "object"
@@ -4328,7 +4329,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "head_sha" => "sync-head",
           "branch" => "agent/SYMPP-P6-001/github-pr-attachment-sync",
           "changed_files" => [%{"filename" => "elixir/lib/symphony_elixir/symphony_plus_plus/github/client.ex", "status" => "added"}],
-          "check_summary" => %{"conclusion" => "success"},
+          "check_summary" => %{"conclusion" => "success", "token" => "ghp_should_not_surface_nested"},
           "review_state" => %{"state" => "approved"},
           "merge_state" => %{"state" => "clean"},
           "token" => "ghp_should_not_surface"
@@ -4347,6 +4348,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
            ]
 
     refute inspect(payload) =~ "ghp_should_not_surface"
+    idempotency_key = get_in(response, ["result", "structuredContent", "progress_event", "idempotency_key"])
+    refute idempotency_key =~ "ghp_should_not_surface"
+
+    [_prefix, encoded_key_payload] = String.split(idempotency_key, "mcp:pr:", parts: 2)
+    decoded_key_payload = encoded_key_payload |> Base.url_decode64!(padding: false) |> :erlang.binary_to_term()
+
+    refute inspect(decoded_key_payload) =~ "ghp_should_not_surface"
+    assert payload["check_summary"]["token"] == "[REDACTED]"
 
     assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
     assert Enum.any?(artifacts, &(&1.kind == "github_pr" and &1.path == "github-pr.json" and &1.uri == payload["url"]))

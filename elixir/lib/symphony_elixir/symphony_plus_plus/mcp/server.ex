@@ -920,7 +920,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "head_sha" => string_schema(),
         "metadata" => object_schema()
       }),
-      []
+      ["head_sha"]
     )
     |> Map.put("anyOf", [%{"required" => ["url"]}, %{"required" => ["number"]}])
   end

@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
   @moduledoc false
 
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
+
   @type ref :: %{
           owner: String.t(),
           repo: String.t(),
@@ -72,9 +74,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
          "branch" => branch,
          "head_sha" => head_sha,
          "changed_files" => changed_files,
-         "check_summary" => check_summary,
-         "review_state" => review_state,
-         "merge_state" => merge_state
+         "check_summary" => Redactor.redact(check_summary),
+         "review_state" => Redactor.redact(review_state),
+         "merge_state" => Redactor.redact(merge_state)
        }}
     end
   end
