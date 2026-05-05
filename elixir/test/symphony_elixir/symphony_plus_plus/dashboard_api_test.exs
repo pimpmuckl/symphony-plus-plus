@@ -800,7 +800,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                work_package_id: work_package.id,
                summary: "Branch attached",
                status: "branch_attached",
-               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "abcdef1"},
+               payload: %{
+                 type: "branch",
+                 source_tool: "attach_branch",
+                 branch: "agent/#{work_package.id}",
+                 head_sha: "abcdef1234567890abcdef1234567890abcdef12"
+               },
                created_at: ~U[2026-05-05 00:00:00Z]
              })
 
@@ -831,6 +836,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     assert payload["metadata"]["pr"]["head_sha"] == "abcdef1234567890abcdef1234567890abcdef12"
     assert payload["metadata"]["pr"]["stale"] == false
+    assert payload["metadata"]["pr"]["current_head_sha"] == "abcdef1234567890abcdef1234567890abcdef12"
+  end
+
+  test "metadata treats abbreviated branch head as stale against full PR head", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PR-SHORT-HEAD-STALE", status: "planning"))
+
+    architect_secret = create_architect_grant_secret(repo, work_package.id)
+
+    assert {:ok, _branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Branch attached",
+               status: "branch_attached",
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "abcdef1"},
+               created_at: ~U[2026-05-05 00:00:00Z]
+             })
+
+    assert {:ok, _pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR synced",
+               status: "pr_synced",
+               payload: %{
+                 type: "pr",
+                 source_tool: "sync_pr",
+                 url: "https://github.com/example/repo/pull/10",
+                 head_sha: "abcdef1234567890abcdef1234567890abcdef12"
+               },
+               created_at: ~U[2026-05-05 00:00:01Z]
+             })
+
+    payload = json_response(get(auth_conn(architect_secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+
+    assert payload["metadata"]["pr"]["stale"] == true
     assert payload["metadata"]["pr"]["current_head_sha"] == "abcdef1"
   end
 

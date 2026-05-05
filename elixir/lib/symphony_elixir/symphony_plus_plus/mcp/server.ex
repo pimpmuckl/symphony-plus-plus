@@ -2549,6 +2549,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       legacy_scope_expansion_replay_matches?(existing, normalized)
   end
 
+  defp progress_payload_replay_matches?(%{"type" => "pr", "source_tool" => "attach_pr"} = existing, %{"type" => "pr", "source_tool" => "attach_pr"} = normalized) do
+    existing == normalized or legacy_attach_pr_replay_matches?(existing, normalized)
+  end
+
   defp progress_payload_replay_matches?(existing, normalized), do: existing == normalized
 
   defp legacy_scope_expansion_replay_matches?(existing, normalized) do
@@ -2559,6 +2563,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       end
 
     existing == legacy_normalized
+  end
+
+  defp legacy_attach_pr_replay_matches?(existing, normalized) do
+    existing == Map.take(normalized, ["type", "source_tool", "url", "head_sha"])
   end
 
   defp normalized_progress_payload(%ProgressEvent{} = event, attrs) do
@@ -3296,17 +3304,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     left = String.trim(left)
     right = String.trim(right)
 
-    cond do
-      left == "" or right == "" -> false
-      left == right -> true
-      hex_sha?(left) and hex_sha?(right) -> String.starts_with?(left, right) or String.starts_with?(right, left)
-      true -> false
-    end
+    left != "" and left == right
   end
 
   defp head_sha_matches?(_left, _right), do: false
-
-  defp hex_sha?(value), do: String.match?(value, ~r/^[0-9a-fA-F]{7,40}$/)
 
   defp payload_type?(%ProgressEvent{payload: payload}, type, source_tools) when is_map(payload) and is_list(source_tools) do
     Map.get(payload, "type") == type and Map.get(payload, "source_tool") in source_tools

@@ -81,7 +81,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
 
   test "detects stale PR metadata by head sha" do
     refute PullRequest.stale?(%{"head_sha" => "abc123"}, "abc123")
-    refute PullRequest.stale?(%{"head_sha" => "abcdef1234567890abcdef1234567890abcdef12"}, "abcdef1")
+    assert PullRequest.stale?(%{"head_sha" => "abcdef1234567890abcdef1234567890abcdef12"}, "abcdef1")
     assert PullRequest.stale?(%{"head_sha" => "abc123"}, "def456")
   end
 

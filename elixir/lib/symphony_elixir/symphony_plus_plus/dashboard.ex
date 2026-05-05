@@ -1131,17 +1131,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     left = String.trim(left)
     right = String.trim(right)
 
-    cond do
-      left == "" or right == "" -> false
-      left == right -> true
-      hex_sha?(left) and hex_sha?(right) -> String.starts_with?(left, right) or String.starts_with?(right, left)
-      true -> false
-    end
+    left != "" and left == right
   end
 
   defp head_sha_matches?(_left, _right), do: false
-
-  defp hex_sha?(value), do: String.match?(value, ~r/^[0-9a-fA-F]{7,40}$/)
 
   defp payload_branch(%{} = payload) do
     case Map.get(payload, "branch") do
