@@ -402,7 +402,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     }
 
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "allOf"]) == [
-             %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number", "repository"]}]},
+             %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]},
              %{
                "anyOf" => [
                  %{"required" => ["head_sha"]},

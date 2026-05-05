@@ -55,13 +55,13 @@
     },
     {
       "name": "attach_pr",
-      "purpose": "Attach PR metadata."
+      "purpose": "Attach PR metadata by URL or by number when the package or request supplies unambiguous owner/repo context."
     },
     {
       "name": "sync_pr",
       "purpose": "Refresh metadata for the already attached PR.",
       "required_arguments": ["metadata"],
-      "sync_policy": "sync_pr must target the latest attached PR and must carry the synced head SHA in metadata.head_sha or metadata.head.sha."
+      "sync_policy": "sync_pr must target the latest attached PR and must carry the synced head SHA in head_sha, metadata.head_sha, or metadata.head.sha."
     },
     {
       "name": "submit_review_package",
