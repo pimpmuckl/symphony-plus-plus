@@ -4,26 +4,21 @@ Review-suite results are first-class artifacts. They must be attached to a WorkP
 
 ## JSON shape
 
+`attach_review_suite_result` records the canonical result shape workers may use
+for readiness policies that require `review_suite_result`:
+
 ```json
 {
   "work_package_id": "SYMPP-P6-002",
-  "pr_url": "https://github.com/example/repo/pull/123",
   "head_sha": "abc123",
-  "result": "passed",
-  "checks": [
-    {
-      "name": "unit_tests",
-      "status": "passed",
-      "details": "mix test passed"
-    },
-    {
-      "name": "scope_guard",
-      "status": "passed",
-      "details": "All changed files are inside allowed scope."
-    }
-  ],
-  "summary": "All required checks passed.",
-  "created_by": "agent-run-id"
+  "suite": "review-suite",
+  "anchor": "phase_gate-abc123",
+  "status": "passed",
+  "verdict": "green",
+  "summary": "T1/T2/GitHub review requirements passed.",
+  "lane": "review_t2",
+  "reviewer": "review-suite",
+  "round_id": "phase_gate-abc123"
 }
 ```
 
@@ -31,6 +26,13 @@ Review-suite results are first-class artifacts. They must be attached to a WorkP
 
 - Artifact must match WorkPackage ID.
 - Artifact must match current PR head SHA when PR is required.
-- Required checks must pass.
+- Required status/verdict must pass.
 - Stale artifacts cannot satisfy readiness.
 - Worker cannot override failed review-suite result.
+- Generic `append_progress` JSON does not satisfy `review_suite_result`; the
+  result must be recorded through `attach_review_suite_result`, which also
+  persists a canonical `review_suite` artifact row for the same head SHA.
+- Review-suite result payloads intentionally expose only suite, lane, anchor,
+  reviewer, round id, status/verdict, summary, work package id, and head SHA.
+  They must not include tokens, auth headers, raw prompts, sensitive logs,
+  signed URLs, or reviewer internals.

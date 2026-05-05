@@ -17,6 +17,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Server, Session, Stdio}
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
@@ -5361,6 +5362,444 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert "pr_attached" in get_in(ready_response, ["error", "data", "missing"])
   end
 
+  test "validated review-suite result satisfies explicit readiness gate", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-REVIEW-SUITE-READY",
+                 kind: "mcp",
+                 status: "ci_waiting",
+                 policy_template: "mcp_review_suite_artifact"
+               )
+             )
+
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-REVIEW-SUITE-READY/worker", "head_sha" => "suite-head"})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/900", "head_sha" => "suite-head"})
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready review package",
+      "tests" => ["mix test"],
+      "artifacts" => ["review.txt"],
+      "head_sha" => "suite-head",
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
+
+    missing_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "missing-review-suite", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "review_suite_result" in get_in(missing_response, ["error", "data", "missing"])
+
+    result_response =
+      attach_tool(repo, session, "attach_review_suite_result", %{
+        "work_package_id" => package.id,
+        "head_sha" => "suite-head",
+        "suite" => "review-suite",
+        "anchor" => "phase_gate-suite-head",
+        "summary" => "T1 and T2 are green",
+        "status" => "passed",
+        "verdict" => "green",
+        "lane" => "review_t2",
+        "round_id" => "phase_gate-suite-head"
+      })
+
+    assert get_in(result_response, ["result", "structuredContent", "progress_event", "status"]) == "review_suite_passed"
+    assert get_in(result_response, ["result", "structuredContent", "progress_event", "payload", "type"]) == "review_suite_result"
+    assert get_in(result_response, ["result", "structuredContent", "progress_event", "payload", "status"]) == "passed"
+
+    assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
+    assert Enum.any?(artifacts, &(&1.kind == "review_suite" and &1.path == "review-suite-result.json"))
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-review-suite", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+
+    post_ready_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "post-ready-review-suite",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "attach_review_suite_result",
+            "arguments" => %{
+              "work_package_id" => package.id,
+              "head_sha" => "suite-head",
+              "suite" => "review-suite",
+              "anchor" => "phase_gate-suite-head-rerun",
+              "summary" => "Late review suite rerun",
+              "status" => "passed",
+              "verdict" => "green",
+              "idempotency_key" => "late-review-suite-rerun"
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(post_ready_response, ["error", "data", "reason"]) == "already_ready"
+  end
+
+  test "review-suite result rejects missing head, wrong package, stale head, non-passing verdicts, and failed-result override", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-REVIEW-SUITE-INVALID",
+                 kind: "mcp",
+                 status: "ci_waiting",
+                 policy_template: "mcp_review_suite_artifact"
+               )
+             )
+
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    base_args = %{
+      "work_package_id" => package.id,
+      "head_sha" => "head-a",
+      "suite" => "review-suite",
+      "anchor" => "phase_gate-head-a",
+      "summary" => "Review suite result",
+      "status" => "passed",
+      "verdict" => "green"
+    }
+
+    missing_head_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "missing-head",
+          "method" => "tools/call",
+          "params" => %{"name" => "attach_review_suite_result", "arguments" => Map.delete(base_args, "head_sha")}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(missing_head_response, ["error", "data", "reason"]) == "missing_head_sha"
+
+    wrong_package_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "wrong-package",
+          "method" => "tools/call",
+          "params" => %{"name" => "attach_review_suite_result", "arguments" => Map.put(base_args, "work_package_id", "SYMPP-OTHER")}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(wrong_package_response, ["error", "data", "reason"]) == "outside_session_scope"
+
+    non_passing_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "non-passing",
+          "method" => "tools/call",
+          "params" => %{"name" => "attach_review_suite_result", "arguments" => %{base_args | "status" => "failed", "verdict" => "red"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(non_passing_response, ["error", "data", "reason"]) == "non_passing_review_suite_result"
+
+    arbitrary_payload_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "arbitrary-review-suite-payload",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "attach_review_suite_result",
+            "arguments" => Map.put(base_args, "payload", %{"raw_prompt" => "do not expose", "reviewer_internal" => %{"trace" => "hidden"}})
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(arbitrary_payload_response, ["error", "data", "reason"]) == "unexpected_argument"
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-REVIEW-SUITE-INVALID/worker", "head_sha" => "head-a"})
+
+    assert {:ok, _failed_event} =
+             PlanningService.append_authenticated_progress_event(repo, assignment, %{
+               idempotency_key: "attach_review_suite_result:#{package.id}:failed-review-suite-head-a",
+               summary: "Failed review-suite result",
+               status: "review_suite_failed",
+               payload: %{
+                 "type" => "review_suite_result",
+                 "source_tool" => "attach_review_suite_result",
+                 "work_package_id" => package.id,
+                 "head_sha" => "head-a",
+                 "suite" => "review-suite",
+                 "anchor" => "phase_gate-head-a-failed",
+                 "summary" => "Review suite failed",
+                 "status" => "failed",
+                 "verdict" => "red"
+               }
+             })
+
+    failed_override_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "failed-override",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "attach_review_suite_result",
+            "arguments" => Map.put(base_args, "idempotency_key", "failed-override-green")
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(failed_override_response, ["error", "data", "reason"]) == "failed_review_suite_result_exists"
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-REVIEW-SUITE-INVALID/worker", "head_sha" => "head-b"})
+
+    stale_head_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "stale-head",
+          "method" => "tools/call",
+          "params" => %{"name" => "attach_review_suite_result", "arguments" => base_args}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(stale_head_response, ["error", "data", "reason"]) == "stale_head_sha"
+  end
+
+  test "review-suite result idempotent retry replays after current head advances", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-REVIEW-SUITE-REPLAY", kind: "mcp", status: "ci_waiting", policy_template: "mcp_review_suite_artifact")
+             )
+
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    args = %{
+      "work_package_id" => package.id,
+      "head_sha" => "head-a",
+      "suite" => "review-suite",
+      "anchor" => "phase_gate-head-a",
+      "summary" => "Review suite result",
+      "status" => "passed",
+      "verdict" => "green",
+      "lane" => "review_t2",
+      "reviewer" => "review-suite",
+      "round_id" => "phase_gate-head-a",
+      "idempotency_key" => "review-suite-head-a"
+    }
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-REVIEW-SUITE-REPLAY/worker", "head_sha" => "head-a"})
+    first_response = attach_tool(repo, session, "attach_review_suite_result", args)
+    first_event_id = get_in(first_response, ["result", "structuredContent", "progress_event", "id"])
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-REVIEW-SUITE-REPLAY/worker", "head_sha" => "head-b"})
+
+    replay_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "review-suite-replay", "method" => "tools/call", "params" => %{"name" => "attach_review_suite_result", "arguments" => args}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(replay_response, ["result", "structuredContent", "progress_event", "id"]) == first_event_id
+
+    assert {:ok, _revoked} = AccessGrantService.revoke(repo, minted.grant.id)
+
+    revoked_replay_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "review-suite-revoked-replay", "method" => "tools/call", "params" => %{"name" => "attach_review_suite_result", "arguments" => args}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(revoked_replay_response, ["error", "data", "reason"]) == "revoked"
+  end
+
+  test "review-suite readiness uses chronological latest result for the current head", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-REVIEW-SUITE-ORDER", kind: "mcp", status: "ci_waiting", policy_template: "mcp_review_suite_artifact")
+             )
+
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-REVIEW-SUITE-ORDER/worker", "head_sha" => "head-a"})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/901", "head_sha" => "head-a"})
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready review package",
+      "tests" => ["mix test"],
+      "artifacts" => ["review.txt"],
+      "head_sha" => "head-a",
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
+
+    assert {:ok, _artifact} =
+             PlanningRepository.append_artifact(repo, %{
+               "id" => review_suite_artifact_id(package.id, "head-a"),
+               "work_package_id" => package.id,
+               "path" => "review-suite-result.json",
+               "title" => "Review-suite result",
+               "kind" => "review_suite"
+             })
+
+    assert {:ok, _newer_passed_event} =
+             PlanningRepository.append_progress_event(repo, %{
+               "work_package_id" => package.id,
+               "idempotency_key" => "attach_review_suite_result:#{package.id}:chronological-pass",
+               "summary" => "Newer review-suite result passed",
+               "status" => "review_suite_passed",
+               "created_at" => ~U[2026-05-05 00:00:10Z],
+               "payload" => %{
+                 "type" => "review_suite_result",
+                 "source_tool" => "attach_review_suite_result",
+                 "work_package_id" => package.id,
+                 "head_sha" => "head-a",
+                 "suite" => "review-suite",
+                 "anchor" => "phase_gate-head-a-pass",
+                 "summary" => "Newer review suite passed",
+                 "status" => "passed",
+                 "verdict" => "green"
+               }
+             })
+
+    assert {:ok, _older_failed_event} =
+             PlanningRepository.append_progress_event(repo, %{
+               "work_package_id" => package.id,
+               "idempotency_key" => "attach_review_suite_result:#{package.id}:chronological-fail",
+               "summary" => "Older review-suite result failed",
+               "status" => "review_suite_failed",
+               "created_at" => ~U[2026-05-05 00:00:00Z],
+               "payload" => %{
+                 "type" => "review_suite_result",
+                 "source_tool" => "attach_review_suite_result",
+                 "work_package_id" => package.id,
+                 "head_sha" => "head-a",
+                 "suite" => "review-suite",
+                 "anchor" => "phase_gate-head-a-fail",
+                 "summary" => "Older review suite failed",
+                 "status" => "failed",
+                 "verdict" => "red"
+               }
+             })
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-review-suite-order", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+  end
+
+  test "stale and spoofed review-suite evidence cannot satisfy required readiness", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-REVIEW-SUITE-SPOOF",
+                 kind: "mcp",
+                 status: "ci_waiting",
+                 policy_template: "mcp_review_suite_artifact"
+               )
+             )
+
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-REVIEW-SUITE-SPOOF/worker", "head_sha" => "head-a"})
+
+    attach_tool(repo, session, "attach_review_suite_result", %{
+      "work_package_id" => package.id,
+      "head_sha" => "head-a",
+      "suite" => "review-suite",
+      "anchor" => "phase_gate-head-a",
+      "summary" => "Old head review suite",
+      "status" => "passed",
+      "verdict" => "green"
+    })
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-REVIEW-SUITE-SPOOF/worker", "head_sha" => "head-b"})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/901", "head_sha" => "head-b"})
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready review package",
+      "tests" => ["mix test"],
+      "artifacts" => ["review.txt"],
+      "head_sha" => "head-b",
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
+
+    attach_tool(repo, session, "append_progress", %{
+      "summary" => "Spoofed review-suite JSON",
+      "idempotency_key" => "spoof-review-suite-json",
+      "payload" => %{
+        "type" => "review_suite_result",
+        "source_tool" => "attach_review_suite_result",
+        "work_package_id" => package.id,
+        "head_sha" => "head-b",
+        "suite" => "review-suite",
+        "anchor" => "phase_gate-head-b",
+        "status" => "passed",
+        "verdict" => "green"
+      }
+    })
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-spoofed-review-suite", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    missing = get_in(ready_response, ["error", "data", "missing"])
+    assert "review_suite_result" in missing
+    refute "review_package_submitted" in missing
+  end
+
   test "mark_ready rejects empty review packages and allows resolved blockers", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-READY-BLOCKER", kind: "mcp", status: "ci_waiting"))
     append_done_plan(repo, package.id)
@@ -6764,6 +7203,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                "title" => "Complete implementation",
                "status" => "done"
              })
+  end
+
+  defp review_suite_artifact_id(work_package_id, head_sha) do
+    material = [work_package_id, head_sha, "review-suite-result.json"] |> Enum.join(":")
+    "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
   defp create_architect_work_key(repo, work_package_id, capabilities \\ ["architect:lifecycle.transition"]) do

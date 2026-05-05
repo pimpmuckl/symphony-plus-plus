@@ -50,7 +50,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            blockers: blockers,
            grants: Enum.map(grants, &grant/1),
            agent_runs: Enum.map(agent_runs, &agent_run/1),
-           metadata: metadata(state.progress_events),
+           metadata: metadata(state.progress_events, state.artifacts, state.work_package.id),
            alert_indicators: alert_indicators(state, summary.runtime)
          }}
       end
@@ -145,7 +145,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            artifact_count: status_summary.artifact_count,
            finding_count: status_summary.finding_count,
            plan: plan_summary(status_summary.plan_nodes),
-           metadata: metadata(progress_events),
+           metadata: metadata(progress_events, artifacts, work_package.id),
            alert_indicators: alert_indicators(readiness_context, blockers, runtime),
            inserted_at: timestamp(work_package.inserted_at),
            updated_at: timestamp(work_package.updated_at)
@@ -154,14 +154,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end)
   end
 
-  defp readiness_collections(repo, %WorkPackage{status: status} = work_package) when status in @ready_statuses do
-    with {:ok, artifacts} <- PlanningRepository.list_artifacts(repo, work_package.id),
-         {:ok, findings} <- PlanningRepository.list_findings(repo, work_package.id) do
+  defp readiness_collections(repo, %WorkPackage{} = work_package) do
+    with {:ok, artifacts} <- readiness_artifacts(repo, work_package),
+         {:ok, findings} <- readiness_findings(repo, work_package) do
       {:ok, %{artifacts: artifacts, findings: findings}}
     end
   end
 
-  defp readiness_collections(_repo, %WorkPackage{}), do: {:ok, %{artifacts: [], findings: []}}
+  defp readiness_artifacts(repo, %WorkPackage{status: status} = work_package) when status in @ready_statuses do
+    PlanningRepository.list_artifacts(repo, work_package.id)
+  end
+
+  defp readiness_artifacts(repo, %WorkPackage{} = work_package) do
+    if artifact_backed_readiness_gate_required?(work_package) do
+      PlanningRepository.list_artifacts(repo, work_package.id)
+    else
+      {:ok, []}
+    end
+  end
+
+  defp artifact_backed_readiness_gate_required?(%WorkPackage{} = work_package) do
+    Enum.any?(["recommendation_artifact_recorded", "review_artifacts_attached", "review_suite_result"], &required_gate?(work_package, &1))
+  end
+
+  defp readiness_findings(repo, %WorkPackage{status: status, id: work_package_id}) when status in @ready_statuses do
+    PlanningRepository.list_findings(repo, work_package_id)
+  end
+
+  defp readiness_findings(_repo, %WorkPackage{}), do: {:ok, []}
 
   @spec work_package_detail(WorkPackage.t()) :: map()
   def work_package_detail(%WorkPackage{} = work_package) do
@@ -555,6 +575,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       {merge_metadata_missing?(context, "branch"), "branch_attached"},
       {merge_metadata_missing?(context, "pr"), "pr_attached"},
       {current_pr_state_missing?(context), "current_pr_state"},
+      {review_suite_result_missing?(context), "review_suite_result"},
       {review_package_missing?(context), "review_package_submitted"},
       {review_artifacts_missing?(context), "review_artifacts_attached"},
       {review_lanes_missing?(context), "review_lanes_complete"},
@@ -586,6 +607,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     merge_required?(context.work_package) and pr_required?(context.work_package) and
       required_gate?(context.work_package, "current_pr_state") and
       not current_pr_state_present?(context.progress_events, latest_current_head_sha(context.progress_events))
+  end
+
+  defp review_suite_result_missing?(context) do
+    required_gate?(context.work_package, "review_suite_result") and
+      not review_suite_result_present?(context.progress_events, context.artifacts, context.work_package.id, review_head_sha_for_readiness(context))
+  end
+
+  defp review_suite_result_present?(_progress_events, _artifacts, _work_package_id, nil), do: false
+
+  defp review_suite_result_present?(progress_events, artifacts, work_package_id, readiness_head_sha) do
+    case latest_review_suite_result_event(progress_events, work_package_id, readiness_head_sha) do
+      %ProgressEvent{payload: payload} ->
+        valid_review_suite_result_payload?(payload, work_package_id, readiness_head_sha) and
+          persisted_review_suite_artifact?(artifacts, work_package_id, Map.fetch!(payload, "head_sha"))
+
+      nil ->
+        false
+    end
   end
 
   defp review_package_missing?(context) do
@@ -872,6 +911,53 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     Enum.any?(artifacts, &(&1.id == expected_id and &1.kind == "review" and &1.path == path))
   end
 
+  defp latest_review_suite_result_event(progress_events, work_package_id, readiness_head_sha) do
+    progress_events
+    |> chronological_progress_events()
+    |> Enum.filter(&(dedicated_review_suite_result_event?(&1, work_package_id) and review_head_matches?(&1.payload, readiness_head_sha)))
+    |> List.last()
+  end
+
+  defp dedicated_review_suite_result_event?(%ProgressEvent{idempotency_key: idempotency_key} = event, work_package_id) do
+    payload_type?(event, "review_suite_result", "attach_review_suite_result") and
+      is_binary(idempotency_key) and String.starts_with?(idempotency_key, "attach_review_suite_result:#{work_package_id}:")
+  end
+
+  defp valid_review_suite_result_payload?(%{} = payload, work_package_id, readiness_head_sha) do
+    Map.get(payload, "work_package_id") == work_package_id and
+      review_head_matches?(payload, readiness_head_sha) and
+      review_suite_status_passed?(Map.get(payload, "status")) and
+      review_suite_verdict_passed?(Map.get(payload, "verdict")) and
+      filled_string?(Map.get(payload, "suite")) and
+      filled_string?(Map.get(payload, "anchor")) and
+      filled_string?(Map.get(payload, "summary"))
+  end
+
+  defp valid_review_suite_result_payload?(_payload, _work_package_id, _readiness_head_sha), do: false
+
+  defp review_suite_status_passed?(status) when is_binary(status), do: normalized_status(status) in ["passed", "pass", "green", "success"]
+  defp review_suite_status_passed?(_status), do: false
+
+  defp review_suite_verdict_passed?(verdict) when is_binary(verdict) do
+    normalized_status(verdict) in ["green", "passed", "pass", "success", "approved"]
+  end
+
+  defp review_suite_verdict_passed?(_verdict), do: false
+
+  defp persisted_review_suite_artifact?(artifacts, work_package_id, head_sha) do
+    expected_id = review_suite_artifact_id(work_package_id, head_sha)
+
+    Enum.any?(
+      artifacts,
+      &(&1.id == expected_id and &1.work_package_id == work_package_id and &1.kind == "review_suite" and &1.path == "review-suite-result.json")
+    )
+  end
+
+  defp review_suite_artifact_id(work_package_id, head_sha) do
+    material = [work_package_id, head_sha, "review-suite-result.json"] |> Enum.join(":")
+    "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
+  end
+
   defp review_artifact_id(work_package_id, head_sha, artifact) do
     material = [work_package_id, head_sha || "no-head", artifact] |> Enum.join(":")
     "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
@@ -1065,7 +1151,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp normalized_status(status) when is_binary(status), do: status |> String.trim() |> String.downcase()
   defp normalized_status(_status), do: ""
 
-  defp metadata(progress_events) do
+  defp metadata(progress_events, artifacts, work_package_id) do
     branch = latest_payload(progress_events, "branch", "attach_branch")
     head_filter = metadata_head_filter(progress_events, branch)
     pr = latest_pr_payload(progress_events, head_filter)
@@ -1073,9 +1159,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     %{
       branch: branch,
       pr: pr_metadata(pr, head_filter),
-      review_package: latest_current_payload(progress_events, "review_package", "submit_review_package", head_filter)
+      review_package: latest_current_payload(progress_events, "review_package", "submit_review_package", head_filter),
+      review_suite_result: review_suite_result_payload(progress_events, artifacts, work_package_id, head_filter)
     }
   end
+
+  defp review_suite_result_payload(progress_events, artifacts, work_package_id, {:head, head_sha}) do
+    case latest_review_suite_result_event(progress_events, work_package_id, head_sha) do
+      %ProgressEvent{payload: payload} ->
+        if valid_review_suite_result_payload?(payload, work_package_id, head_sha) and
+             persisted_review_suite_artifact?(artifacts, work_package_id, Map.fetch!(payload, "head_sha")) do
+          redacted_json(payload || %{})
+        else
+          nil
+        end
+
+      nil ->
+        nil
+    end
+  end
+
+  defp review_suite_result_payload(_progress_events, _artifacts, _work_package_id, _head_filter), do: nil
 
   defp pr_metadata(nil, _head_filter), do: nil
 

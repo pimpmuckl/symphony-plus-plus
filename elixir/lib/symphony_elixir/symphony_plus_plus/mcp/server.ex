@@ -37,6 +37,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "attach_pr",
     "sync_pr",
     "submit_review_package",
+    "attach_review_suite_result",
     "mark_ready"
   ]
   @architect_tools [
@@ -972,6 +973,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     )
   end
 
+  defp worker_tool_input_schema("attach_review_suite_result") do
+    schema(
+      scoped_properties(%{
+        "anchor" => string_schema(),
+        "head_sha" => string_schema(),
+        "idempotency_key" => string_schema(),
+        "lane" => string_schema(),
+        "reviewer" => string_schema(),
+        "round_id" => string_schema(),
+        "status" => string_schema(),
+        "suite" => string_schema(),
+        "summary" => string_schema(),
+        "verdict" => string_schema()
+      }),
+      ["work_package_id", "head_sha", "status", "verdict", "suite", "anchor", "summary"]
+    )
+  end
+
   defp architect_tool_input_schema("create_child_work_package"), do: schema(%{"package" => object_schema()}, ["package"])
 
   defp architect_tool_input_schema("mint_child_worker_key") do
@@ -1610,6 +1629,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "submit_review_package", "reason" => reason}}
       {:error, _code, _message, _data} = error -> error
       {:error, reason} -> worker_error(reason, "submit_review_package")
+    end
+  end
+
+  defp worker_tool("attach_review_suite_result", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- scoped_session(config.repo, session, arguments),
+         {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
+         {:ok, requested_head_sha} <- required_argument(arguments, "head_sha"),
+         {:ok, suite} <- required_argument(arguments, "suite"),
+         {:ok, anchor} <- required_argument(arguments, "anchor"),
+         {:ok, summary} <- required_argument(arguments, "summary"),
+         {:ok, status} <- required_argument(arguments, "status"),
+         {:ok, verdict} <- required_argument(arguments, "verdict"),
+         :ok <- require_passing_review_suite_result(status, verdict),
+         {:ok, result} <-
+           attach_review_suite_result_transaction(config.repo, session, arguments, %{
+             "type" => "review_suite_result",
+             "source_tool" => "attach_review_suite_result",
+             "work_package_id" => work_package_id,
+             "head_sha" => requested_head_sha,
+             "suite" => suite,
+             "anchor" => anchor,
+             "summary" => summary,
+             "status" => normalized_review_suite_status(status),
+             "verdict" => normalized_review_suite_verdict(verdict)
+           }) do
+      {:ok, result}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "attach_review_suite_result", "reason" => reason}}
+      {:error, _code, _message, _data} = error -> error
+      {:error, reason} -> worker_error(reason, "attach_review_suite_result")
     end
   end
 
@@ -2595,7 +2644,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
               "report_blocker",
               "request_scope_expansion",
               "resolve_blocker",
-              "submit_review_package"
+              "submit_review_package",
+              "attach_review_suite_result"
             ] do
     work_package_id = Session.work_package_id(session)
 
@@ -2733,10 +2783,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       Map.put_new(arguments, "summary", status)
       |> Map.put_new("status", status)
       |> Map.put_new("idempotency_key", metadata_idempotency_key(payload))
+      |> canonical_metadata_event_status(tool, status)
 
     with {:ok, summary} <- required_argument(arguments, "summary"),
          {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
-         {:ok, caller_payload} <- optional_payload(arguments) do
+         {:ok, caller_payload} <- optional_payload(arguments),
+         :ok <- validate_metadata_caller_payload(tool, caller_payload) do
       idempotency_key = scoped_progress_idempotency_key(tool, String.trim(idempotency_key), session)
 
       {:ok, idempotency_key,
@@ -2749,6 +2801,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        }}
     end
   end
+
+  defp canonical_metadata_event_status(arguments, "attach_review_suite_result", status), do: Map.put(arguments, "status", status)
+  defp canonical_metadata_event_status(arguments, _tool, _status), do: arguments
+
+  defp validate_metadata_caller_payload("attach_review_suite_result", caller_payload) when map_size(caller_payload) == 0, do: :ok
+  defp validate_metadata_caller_payload("attach_review_suite_result", _caller_payload), do: {:tool_error, "unexpected_payload"}
+  defp validate_metadata_caller_payload(_tool, _caller_payload), do: :ok
 
   defp append_metadata_event(repo, session, arguments, tool, status, payload) do
     case metadata_event_attrs(session, arguments, tool, status, payload) do
@@ -2989,8 +3048,205 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if String.contains?(artifact, "://"), do: artifact, else: nil
   end
 
+  defp attach_review_suite_result_transaction(repo, %Session{} = session, arguments, payload) do
+    case repo.transaction(fn ->
+           attach_review_suite_result_transaction_body(repo, session, arguments, payload)
+         end) do
+      {:ok, result} -> {:ok, result}
+      {:error, {:mcp_error, code, message, data}} -> {:error, code, message, data}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp attach_review_suite_result_transaction_body(repo, %Session{} = session, arguments, payload) do
+    case replay_existing_review_suite_result(repo, session, arguments, payload) do
+      {:ok, result} ->
+        result
+
+      :new ->
+        append_new_review_suite_result(repo, session, arguments, payload)
+
+      {:error, code, message, data} ->
+        repo.rollback({:mcp_error, code, message, data})
+
+      {:error, reason} ->
+        repo.rollback(reason)
+    end
+  end
+
+  defp replay_existing_review_suite_result(repo, %Session{} = session, arguments, payload) do
+    case PlanningService.require_valid_assignment(repo, session.assignment) do
+      :ok -> replay_existing_review_suite_result_for_valid_assignment(repo, session, arguments, payload)
+      {:error, reason} -> worker_error(reason, "attach_review_suite_result")
+    end
+  end
+
+  defp replay_existing_review_suite_result_for_valid_assignment(repo, %Session{} = session, arguments, payload) do
+    replay_payload = review_suite_payload(payload, arguments, Map.fetch!(payload, "head_sha"))
+
+    case metadata_event_attrs(session, arguments, "attach_review_suite_result", "review_suite_passed", replay_payload) do
+      {:ok, idempotency_key, attrs} -> replay_existing_review_suite_result_event(repo, session, idempotency_key, attrs)
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "attach_review_suite_result", "reason" => reason}}
+      {:error, reason} -> worker_error(reason, "attach_review_suite_result")
+    end
+  end
+
+  defp replay_existing_review_suite_result_event(repo, %Session{} = session, idempotency_key, attrs) do
+    case existing_progress_event(repo, session, idempotency_key) do
+      {:ok, event} -> replay_progress_event(repo, session, event, attrs, "attach_review_suite_result")
+      {:error, :not_found} -> :new
+      {:error, reason} -> worker_error(reason, "attach_review_suite_result")
+    end
+  end
+
+  defp append_new_review_suite_result(repo, %Session{} = session, arguments, payload) do
+    work_package_id = Session.work_package_id(session)
+    requested_head_sha = Map.fetch!(payload, "head_sha")
+
+    with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
+         :ok <- lock_work_package(repo, work_package_id),
+         {:ok, state} <- PlanningRepository.get_state(repo, work_package_id),
+         {:ok, head_sha} <- review_package_head_sha(requested_head_sha, state.progress_events, state.work_package),
+         :ok <- reject_failed_review_suite_result_override(state.progress_events, work_package_id, head_sha),
+         payload <- review_suite_payload(payload, arguments, head_sha),
+         {:ok, result} <- append_metadata_event(repo, session, arguments, "attach_review_suite_result", "review_suite_passed", payload),
+         :ok <- append_review_suite_artifact(repo, work_package_id, head_sha) do
+      result
+    else
+      {:tool_error, reason} ->
+        repo.rollback({:mcp_error, -32_602, "Invalid params", %{"tool" => "attach_review_suite_result", "reason" => reason}})
+
+      {:error, code, message, data} ->
+        repo.rollback({:mcp_error, code, message, data})
+
+      {:error, reason} ->
+        repo.rollback(reason)
+    end
+  end
+
+  defp review_suite_payload(payload, arguments, head_sha) do
+    payload
+    |> Map.put("head_sha", head_sha)
+    |> maybe_put_review_suite_field(arguments, "lane")
+    |> maybe_put_review_suite_field(arguments, "reviewer")
+    |> maybe_put_review_suite_field(arguments, "round_id")
+  end
+
+  defp maybe_put_review_suite_field(payload, arguments, key) do
+    case Map.get(arguments, key) do
+      value when is_binary(value) ->
+        value = String.trim(value)
+        if value == "", do: payload, else: Map.put(payload, key, value)
+
+      _value ->
+        payload
+    end
+  end
+
+  defp reject_failed_review_suite_result_override(progress_events, work_package_id, head_sha) do
+    if Enum.any?(progress_events, &failed_review_suite_result_event?(&1, work_package_id, head_sha)) do
+      {:tool_error, "failed_review_suite_result_exists"}
+    else
+      :ok
+    end
+  end
+
+  defp failed_review_suite_result_event?(event, work_package_id, head_sha) do
+    payload = event.payload
+
+    dedicated_review_suite_result_event?(event, work_package_id) and
+      review_head_matches?(payload, head_sha) and
+      Map.get(payload, "work_package_id") == work_package_id and
+      not (review_suite_status_passed?(Map.get(payload, "status")) and review_suite_verdict_passed?(Map.get(payload, "verdict")))
+  end
+
+  defp require_passing_review_suite_result(status, verdict) do
+    if review_suite_status_passed?(status) and review_suite_verdict_passed?(verdict) do
+      :ok
+    else
+      {:tool_error, "non_passing_review_suite_result"}
+    end
+  end
+
+  defp normalized_review_suite_status(status) when is_binary(status), do: status |> String.trim() |> String.downcase()
+  defp normalized_review_suite_status(_status), do: ""
+  defp normalized_review_suite_verdict(verdict) when is_binary(verdict), do: verdict |> String.trim() |> String.downcase()
+  defp normalized_review_suite_verdict(_verdict), do: ""
+
+  defp review_suite_status_passed?(status) do
+    normalized_review_suite_status(status) in ["passed", "pass", "green", "success"]
+  end
+
+  defp review_suite_verdict_passed?(verdict) do
+    normalized_review_suite_verdict(verdict) in ["green", "passed", "pass", "success", "approved"]
+  end
+
+  defp append_review_suite_artifact(repo, work_package_id, head_sha) do
+    case PlanningRepository.list_artifacts(repo, work_package_id) do
+      {:ok, artifacts} -> maybe_append_review_suite_artifact(repo, work_package_id, head_sha, artifacts)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_append_review_suite_artifact(repo, work_package_id, head_sha, artifacts) do
+    if persisted_review_suite_artifact?(artifacts, work_package_id, head_sha) do
+      :ok
+    else
+      insert_review_suite_artifact(repo, work_package_id, head_sha)
+    end
+  end
+
+  defp insert_review_suite_artifact(repo, work_package_id, head_sha) do
+    attrs = %{
+      "id" => review_suite_artifact_id(work_package_id, head_sha),
+      "work_package_id" => work_package_id,
+      "path" => "review-suite-result.json",
+      "title" => "Review-suite result",
+      "kind" => "review_suite"
+    }
+
+    case PlanningService.append_artifact(repo, attrs) do
+      {:ok, _artifact} -> :ok
+      {:error, :id_already_exists} -> replay_review_suite_artifact(repo, work_package_id, head_sha)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp replay_review_suite_artifact(repo, work_package_id, head_sha) do
+    case PlanningRepository.list_artifacts(repo, work_package_id) do
+      {:ok, artifacts} -> replay_review_suite_artifact_result(work_package_id, head_sha, artifacts)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp replay_review_suite_artifact_result(work_package_id, head_sha, artifacts) do
+    if persisted_review_suite_artifact?(artifacts, work_package_id, head_sha) do
+      :ok
+    else
+      {:error, :id_already_exists}
+    end
+  end
+
+  defp review_suite_artifact_id(work_package_id, head_sha) do
+    material = [work_package_id, head_sha, "review-suite-result.json"] |> Enum.join(":")
+    "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
+  end
+
+  defp persisted_review_suite_artifact?(artifacts, work_package_id, head_sha) do
+    expected_id = review_suite_artifact_id(work_package_id, head_sha)
+
+    Enum.any?(
+      artifacts,
+      &(&1.id == expected_id and &1.work_package_id == work_package_id and &1.kind == "review_suite" and &1.path == "review-suite-result.json")
+    )
+  end
+
   defp scoped_progress_idempotency_key("submit_review_package", idempotency_key, %Session{} = session) do
     ["submit_review_package", session.assignment.work_package_id, idempotency_key] |> Enum.join(":")
+  end
+
+  defp scoped_progress_idempotency_key("attach_review_suite_result", idempotency_key, %Session{} = session) do
+    ["attach_review_suite_result", session.assignment.work_package_id, idempotency_key] |> Enum.join(":")
   end
 
   defp scoped_progress_idempotency_key(tool, idempotency_key, %Session{} = session) when tool in ["attach_branch", "attach_pr", "sync_pr"] do
@@ -3017,6 +3273,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {merge_metadata_missing?(state, "branch"), "branch_attached"},
       {merge_metadata_missing?(state, "pr"), "pr_attached"},
       {current_pr_state_missing?(state), "current_pr_state"},
+      {review_suite_result_missing?(state), "review_suite_result"},
       {review_package_missing?(state, required_review_lanes), "review_package_submitted"},
       {review_artifacts_missing?(state, required_review_lanes), "review_artifacts_attached"},
       {review_lanes_missing?(state, required_review_lanes), "review_lanes_complete"},
@@ -3052,6 +3309,48 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       required_gate?(state.work_package, "current_pr_state") and
       not current_pr_state_present?(state.progress_events, current_head_sha)
   end
+
+  defp review_suite_result_missing?(state) do
+    required_gate?(state.work_package, "review_suite_result") and
+      not review_suite_result_present?(state.progress_events, state.artifacts, state.work_package.id, review_head_sha_for_readiness(state))
+  end
+
+  defp review_suite_result_present?(_progress_events, _artifacts, _work_package_id, nil), do: false
+
+  defp review_suite_result_present?(progress_events, artifacts, work_package_id, readiness_head_sha) do
+    case latest_review_suite_result_event(progress_events, work_package_id, readiness_head_sha) do
+      %ProgressEvent{payload: payload} ->
+        valid_review_suite_result_payload?(payload, work_package_id, readiness_head_sha) and
+          persisted_review_suite_artifact?(artifacts, work_package_id, Map.fetch!(payload, "head_sha"))
+
+      nil ->
+        false
+    end
+  end
+
+  defp latest_review_suite_result_event(progress_events, work_package_id, readiness_head_sha) do
+    progress_events
+    |> chronological_progress_events()
+    |> Enum.filter(&(dedicated_review_suite_result_event?(&1, work_package_id) and review_head_matches?(&1.payload, readiness_head_sha)))
+    |> List.last()
+  end
+
+  defp dedicated_review_suite_result_event?(%ProgressEvent{idempotency_key: idempotency_key} = event, work_package_id) do
+    payload_type?(event, "review_suite_result", "attach_review_suite_result") and
+      is_binary(idempotency_key) and String.starts_with?(idempotency_key, "attach_review_suite_result:#{work_package_id}:")
+  end
+
+  defp valid_review_suite_result_payload?(%{} = payload, work_package_id, readiness_head_sha) do
+    Map.get(payload, "work_package_id") == work_package_id and
+      review_head_matches?(payload, readiness_head_sha) and
+      review_suite_status_passed?(Map.get(payload, "status")) and
+      review_suite_verdict_passed?(Map.get(payload, "verdict")) and
+      filled_string?(Map.get(payload, "suite")) and
+      filled_string?(Map.get(payload, "anchor")) and
+      filled_string?(Map.get(payload, "summary"))
+  end
+
+  defp valid_review_suite_result_payload?(_payload, _work_package_id, _readiness_head_sha), do: false
 
   defp review_package_missing?(state, required_review_lanes) do
     readiness_head_sha = review_head_sha_for_readiness(state)
@@ -3782,6 +4081,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> drop_protected_append_progress_payload()
     |> Map.merge(tool_payload)
   end
+
+  defp merge_tool_payload("attach_review_suite_result", _caller_payload, tool_payload), do: tool_payload
 
   defp merge_tool_payload(_tool, caller_payload, tool_payload) when tool_payload == %{} do
     Map.drop(caller_payload, ["source_tool"])
