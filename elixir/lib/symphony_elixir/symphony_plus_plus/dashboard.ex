@@ -1112,7 +1112,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp latest_preferred_pr_payload(progress_events, head_filter, attached_ref, attach_sequence) do
-    latest_payload = latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], head_filter, attached_ref)
+    latest_payload = latest_pr_display_payload(progress_events, head_filter, attached_ref, attach_sequence)
 
     cond do
       is_nil(latest_payload) ->
@@ -1129,6 +1129,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp display_pr_payload?(%{"source_tool" => "sync_pr"}), do: true
   defp display_pr_payload?(%{"source_tool" => "attach_pr"} = payload), do: semantic_pr_payload?(payload)
   defp display_pr_payload?(_payload), do: false
+
+  defp latest_pr_display_payload(progress_events, head_filter, attached_ref, attach_sequence) do
+    progress_events
+    |> chronological_progress_events()
+    |> Enum.reverse()
+    |> Enum.find(fn
+      %ProgressEvent{payload: payload} = event when is_map(payload) ->
+        pr_display_payload?(event, payload, head_filter, attached_ref, attach_sequence)
+
+      %ProgressEvent{} ->
+        false
+    end)
+    |> case do
+      %ProgressEvent{payload: payload} -> redacted_json(payload || %{})
+      nil -> nil
+    end
+  end
+
+  defp pr_display_payload?(event, payload, head_filter, attached_ref, attach_sequence) do
+    cond do
+      payload_type?(event, "pr", "attach_pr") ->
+        payload_head_matches?(payload, head_filter) and pr_ref_matches?(payload, attached_ref)
+
+      payload_type?(event, "pr", "sync_pr") ->
+        progress_after_pr_attach_boundary?(event, attach_sequence) and payload_head_matches?(payload, head_filter) and
+          pr_ref_matches?(payload, attached_ref)
+
+      true ->
+        false
+    end
+  end
 
   defp latest_current_pr_payload(progress_events, head_filter, attached_ref, attach_sequence) do
     progress_events
@@ -1166,17 +1197,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     |> chronological_progress_events()
     |> Enum.reverse()
     |> Enum.find(&(payload_type?(&1, type, source_tool) and payload_head_matches?(&1.payload, head_filter)))
-    |> case do
-      %ProgressEvent{payload: payload} -> redacted_json(payload || %{})
-      nil -> nil
-    end
-  end
-
-  defp latest_payload(progress_events, type, source_tool, head_filter, pr_ref) do
-    progress_events
-    |> chronological_progress_events()
-    |> Enum.reverse()
-    |> Enum.find(&(payload_type?(&1, type, source_tool) and payload_head_matches?(&1.payload, head_filter) and pr_payload_ref(&1.payload) == pr_ref))
     |> case do
       %ProgressEvent{payload: payload} -> redacted_json(payload || %{})
       nil -> nil

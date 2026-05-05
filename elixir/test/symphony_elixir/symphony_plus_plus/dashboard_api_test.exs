@@ -1223,8 +1223,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  source_tool: "attach_pr",
                  repository: "example/repo",
                  number: 10,
-                 url: "https://github.com/example/repo/pull/10",
-                 head_sha: "current-head"
+                 url: "https://github.com/example/repo/pull/10"
                },
                created_at: ~U[2026-05-05 00:00:01Z]
              })
