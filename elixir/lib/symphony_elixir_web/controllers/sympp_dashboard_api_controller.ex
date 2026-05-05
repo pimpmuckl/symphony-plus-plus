@@ -34,7 +34,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     work_package_id = Map.get(conn.path_params, "work_package_id")
 
     case authorize_package_request(conn, work_package_id) do
-      {:ok, %AccessGrant{} = grant} -> Conn.put_session(conn, @package_session_key, grant.id)
+      {:ok, %AccessGrant{} = grant} -> put_package_browser_session(conn, grant)
       {:error, :unauthorized} -> conn |> board_login_response() |> Conn.halt()
       {:error, reason} -> conn |> board_browser_error_response(reason) |> Conn.halt()
     end
@@ -186,6 +186,22 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       {{:error, reason}, _board_result} -> {:error, reason}
     end
   end
+
+  defp put_package_browser_session(conn, %AccessGrant{} = grant) do
+    conn
+    |> Conn.put_session(@package_session_key, grant.id)
+    |> maybe_put_board_session(grant)
+  end
+
+  defp maybe_put_board_session(conn, %AccessGrant{capabilities: capabilities} = grant) when is_list(capabilities) do
+    if "read:phase" in capabilities do
+      Conn.put_session(conn, @board_session_key, grant.id)
+    else
+      conn
+    end
+  end
+
+  defp maybe_put_board_session(conn, %AccessGrant{}), do: conn
 
   defp authorize_board_secret(secret) do
     with true <- auth_storage_ready?(secret),

@@ -191,6 +191,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert response(board_after_package_conn, 200) =~ first.id
   end
 
+  test "phase-reader bearer auth on detail preserves board navigation" do
+    %{work_package: work_package, architect_secret: architect_secret} = create_detail_package(id: "SYMPP-P5-PHASE")
+
+    detail_conn = get(auth_conn(architect_secret), "/sympp/work-packages/#{work_package.id}")
+
+    assert response(detail_conn, 200) =~ ~s(class="sympp-back-link")
+
+    board_conn =
+      detail_conn
+      |> recycle()
+      |> get("/sympp/board")
+
+    assert response(board_conn, 200) =~ work_package.id
+  end
+
   test "renders DateTime timestamps and string-keyed payloads in render helpers" do
     html =
       %{
