@@ -254,6 +254,62 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     refute html =~ "The Symphony++ work package ledger could not be read."
   end
 
+  test "uses the default repo when endpoint sympp_repo is unset" do
+    create_board_package(%{
+      id: "SYMPP-P5-023",
+      kind: "dashboard",
+      status: "implementing",
+      title: "Unset endpoint repo package",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "symphony-plus-plus/beta"
+    })
+
+    secret = create_architect_grant_secret(Repo, "SYMPP-P5-023")
+
+    with_endpoint_repo(nil, fn ->
+      {:ok, _view, html} = live(board_session_conn(secret), "/sympp/board")
+
+      assert html =~ "Unset endpoint repo package"
+      refute html =~ "No Symphony++ work package ledger was found."
+    end)
+  end
+
+  test "migrates a running custom repo before rendering the browser board" do
+    stop_named_repo(CustomBoardRepo)
+
+    database_path = WorkPackageFactory.database_path()
+    original_custom_repo_config = Application.get_env(:symphony_elixir, CustomBoardRepo)
+
+    Application.put_env(:symphony_elixir, CustomBoardRepo, database: database_path)
+
+    on_exit(fn ->
+      stop_named_repo(CustomBoardRepo)
+      restore_custom_repo_env(original_custom_repo_config)
+      File.rm(database_path)
+    end)
+
+    secret =
+      seed_running_legacy_custom_repo(database_path, fn ->
+        insert_legacy_work_package(CustomBoardRepo, %{
+          id: "SYMPP-P5-024",
+          kind: "dashboard",
+          status: "implementing",
+          title: "Running legacy custom package",
+          repo: "nextide/symphony-plus-plus",
+          base_branch: "symphony-plus-plus/beta"
+        })
+
+        create_architect_grant_secret(CustomBoardRepo, "SYMPP-P5-024")
+      end)
+
+    with_endpoint_repo(CustomBoardRepo, fn ->
+      {:ok, _view, html} = live(board_session_conn(secret), "/sympp/board")
+
+      assert html =~ "Running legacy custom package"
+      refute html =~ "The Symphony++ work package ledger could not be read."
+    end)
+  end
+
   test "uses a running default repo when no configured ledger path exists" do
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
 
@@ -810,6 +866,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     after
       stop_transient_repo(pid)
     end
+  end
+
+  defp seed_running_legacy_custom_repo(database_path, fun) do
+    {:ok, pid} = CustomBoardRepo.start_link(database: database_path, name: CustomBoardRepo)
+    Process.unlink(pid)
+
+    Ecto.Migrator.run(CustomBoardRepo, WorkPackageRepository.migrations_path(), :up,
+      log: false,
+      to: 20_260_430_173_000
+    )
+
+    fun.()
   end
 
   defp with_endpoint_repo(repo, fun) do

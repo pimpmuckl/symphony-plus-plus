@@ -50,6 +50,15 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       {:error, :forbidden} ->
         conn |> error_response(:forbidden) |> Conn.halt()
 
+      {:error, :database_busy} ->
+        conn |> board_login_response(status: 503, message: "The dashboard ledger is busy. Try again.") |> Conn.halt()
+
+      {:error, {:storage_failed, _reason}} ->
+        conn |> board_login_response(status: 503, message: "The board ledger could not be read.") |> Conn.halt()
+
+      {:error, {:repo_start_failed, _reason}} ->
+        conn |> board_login_response(status: 503, message: "The board ledger could not be opened.") |> Conn.halt()
+
       {:error, _reason} ->
         conn |> board_login_response(status: 401, message: "The work key could not access the board.") |> Conn.halt()
     end

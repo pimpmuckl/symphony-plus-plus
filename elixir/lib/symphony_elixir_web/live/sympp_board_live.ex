@@ -7,11 +7,13 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.TrackerAdapter
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixirWeb.Endpoint
   alias SymphonyElixirWeb.SymppDashboardApiController
 
   @empty_filter "all"
+  @migrated_databases_key :sympp_board_live_migrated_databases
 
   @impl true
   def mount(params, session, socket) do
@@ -172,7 +174,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   defp with_dashboard_repo(fun) when is_function(fun, 1) do
     case configured_dashboard_repo() do
-      repo when is_atom(repo) and repo != Repo ->
+      repo when is_atom(repo) and not is_nil(repo) and repo != Repo ->
         with_custom_dashboard_repo(repo, fun)
 
       _repo ->
@@ -198,7 +200,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     case Process.whereis(repo) do
       pid when is_pid(pid) ->
         if custom_repo_uses_database?(repo, database_path) do
-          fun.(repo)
+          call_dynamic_custom_repo(pid, repo, database_path, fun)
         else
           {:error, {:repo_database_mismatch, repo}}
         end
@@ -438,17 +440,48 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     end
   end
 
-  defp migrate_dashboard_repo(repo, pid, _database_path) do
-    Ecto.Migrator.run(repo, WorkPackageRepository.migrations_path(), :up,
-      all: true,
-      dynamic_repo: pid,
-      log: false
-    )
+  defp migrate_dashboard_repo(repo, pid, database_path) do
+    database_key = {repo, Repo.database_key(database_path)}
 
-    :ok
+    if migrated_dashboard_database?(database_key) do
+      :ok
+    else
+      TrackerAdapter.run_with_migration_file_lock(database_path, fn ->
+        migrate_dashboard_repo_if_needed(repo, pid, database_key)
+      end)
+    end
+  end
+
+  defp migrate_dashboard_repo_if_needed(repo, pid, database_key) do
+    if migrated_dashboard_database?(database_key) do
+      :ok
+    else
+      Ecto.Migrator.run(repo, WorkPackageRepository.migrations_path(), :up,
+        all: true,
+        dynamic_repo: pid,
+        log: false
+      )
+
+      mark_dashboard_database_migrated(database_key)
+    end
   rescue
     error in Exqlite.Error -> {:error, {:migration_failed, error}}
     error -> {:error, {:migration_failed, error}}
+  end
+
+  defp migrated_dashboard_database?(database_key), do: MapSet.member?(migrated_dashboard_databases(), database_key)
+
+  defp mark_dashboard_database_migrated(database_key) do
+    migrated_databases = MapSet.put(migrated_dashboard_databases(), database_key)
+    Application.put_env(:symphony_elixir, @migrated_databases_key, migrated_databases)
+    :ok
+  end
+
+  defp migrated_dashboard_databases do
+    case Application.get_env(:symphony_elixir, @migrated_databases_key, MapSet.new()) do
+      %MapSet{} = migrated_databases -> migrated_databases
+      _invalid -> MapSet.new()
+    end
   end
 
   defp stop_transient_repo(pid) when is_pid(pid) do
