@@ -402,7 +402,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     }
 
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "allOf"]) == [
-             %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]},
+             %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number", "repository"]}]},
              %{
                "anyOf" => [
                  %{"required" => ["head_sha"]},
@@ -4446,6 +4446,61 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert length(pr_artifacts) == 1
     assert [%{uri: "https://github.com/nextide/symphony-plus-plus/pull/43"}] = pr_artifacts
+  end
+
+  test "attach_pr number requires unambiguous repository context for short package repos", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-PR-NUMBER-SHORT-REPO",
+                 kind: "mcp",
+                 repo: "symphony-plus-plus",
+                 status: "ci_waiting"
+               )
+             )
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    missing_context =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "attach_pr",
+          "method" => "tools/call",
+          "params" => %{"name" => "attach_pr", "arguments" => %{"number" => 42, "head_sha" => "head-a"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(missing_context, ["error", "data", "reason"]) == "missing_repository_use_url_or_owner_repo"
+
+    explicit_repository =
+      attach_tool(repo, session, "attach_pr", %{"number" => 42, "repository" => "nextide/symphony-plus-plus", "head_sha" => "head-a"})
+
+    assert get_in(explicit_repository, ["result", "structuredContent", "progress_event", "payload", "url"]) ==
+             "https://github.com/nextide/symphony-plus-plus/pull/42"
+
+    url_package =
+      WorkPackageFactory.attrs(
+        id: "SYMPP-PR-URL-SHORT-REPO",
+        kind: "mcp",
+        repo: "symphony-plus-plus",
+        status: "ci_waiting"
+      )
+
+    assert {:ok, url_package} = WorkPackageRepository.create(repo, url_package)
+    assert {:ok, url_minted} = AccessGrantService.mint_worker_grant(repo, url_package.id)
+    assert {:ok, url_assignment} = AccessGrantService.claim(repo, url_minted.work_key.secret, claimed_by: "worker-1")
+    url_session = MCPHarness.session(url_assignment, proof_hash: url_minted.grant.secret_hash)
+
+    url_response =
+      attach_tool(repo, url_session, "attach_pr", %{"url" => "https://github.com/nextide/symphony-plus-plus/pull/43", "head_sha" => "head-a"})
+
+    assert get_in(url_response, ["result", "structuredContent", "progress_event", "payload", "number"]) == 43
   end
 
   test "attach_pr idempotency replay accepts legacy URL-only payload shape", %{repo: repo} do

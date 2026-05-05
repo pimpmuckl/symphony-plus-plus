@@ -924,7 +924,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       []
     )
     |> Map.put("allOf", [
-      %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]},
+      %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number", "repository"]}]},
       %{
         "anyOf" => [
           %{"required" => ["head_sha"]},
@@ -1633,6 +1633,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, {reason, _detail} = error} when reason in [:storage_failed, :migration_failed, :service_unavailable] ->
         {:error, error}
 
+      {:error, :missing_repository} ->
+        {:tool_error, pr_missing_repository_reason(arguments, source_tool)}
+
       {:error, reason} ->
         {:tool_error, reason_text(reason)}
     end
@@ -1657,6 +1660,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp pr_reference_arguments(_repo, %Session{}, arguments, _source_tool), do: {:ok, arguments}
+
+  defp pr_missing_repository_reason(arguments, "attach_pr") do
+    if Map.has_key?(arguments, "number") and not filled_string?(Map.get(arguments, "url")) do
+      "missing_repository_use_url_or_owner_repo"
+    else
+      "missing_repository"
+    end
+  end
+
+  defp pr_missing_repository_reason(_arguments, _source_tool), do: "missing_repository"
 
   defp validate_pr_sync_target(_repo, %Session{}, _ref, "attach_pr"), do: :ok
 
