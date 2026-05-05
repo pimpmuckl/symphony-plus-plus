@@ -35,7 +35,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
     case authorize_package_request(conn, work_package_id) do
       {:ok, %AccessGrant{} = grant} -> put_package_browser_session(conn, grant)
-      {:error, :unauthorized} -> conn |> board_login_response() |> Conn.halt()
+      {:error, :unauthorized} -> conn |> package_login_response(work_package_id: work_package_id) |> Conn.halt()
       {:error, reason} -> conn |> board_browser_error_response(reason) |> Conn.halt()
     end
   end
@@ -83,6 +83,50 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   def board_session(conn, _params) do
     conn |> board_login_response(status: 400, message: "Enter a work key to open the board.") |> Conn.halt()
+  end
+
+  @spec package_session(Conn.t(), map()) :: Conn.t()
+  def package_session(conn, %{"work_package_id" => work_package_id, "work_key" => secret})
+      when is_binary(work_package_id) and is_binary(secret) do
+    secret = String.trim(secret)
+
+    case authorize_package_secret(secret, work_package_id) do
+      {:ok, %AccessGrant{} = grant} ->
+        conn
+        |> put_package_browser_session(grant)
+        |> redirect(to: prefixed_path(conn, "/sympp/work-packages/#{work_package_id}"))
+
+      {:error, :forbidden} ->
+        conn
+        |> package_login_response(status: 403, message: "The work key is not allowed to open this package.", work_package_id: work_package_id)
+        |> Conn.halt()
+
+      {:error, :database_busy} ->
+        conn
+        |> package_login_response(status: 503, message: "The dashboard ledger is busy. Try again.", work_package_id: work_package_id)
+        |> Conn.halt()
+
+      {:error, {:storage_failed, _reason}} ->
+        conn
+        |> package_login_response(status: 503, message: "The package ledger could not be read.", work_package_id: work_package_id)
+        |> Conn.halt()
+
+      {:error, {:repo_start_failed, _reason}} ->
+        conn
+        |> package_login_response(status: 503, message: "The package ledger could not be opened.", work_package_id: work_package_id)
+        |> Conn.halt()
+
+      {:error, _reason} ->
+        conn
+        |> package_login_response(status: 401, message: "The work key could not access this package.", work_package_id: work_package_id)
+        |> Conn.halt()
+    end
+  end
+
+  def package_session(conn, %{"work_package_id" => work_package_id}) do
+    conn
+    |> package_login_response(status: 400, message: "Enter a work key to open this package.", work_package_id: work_package_id)
+    |> Conn.halt()
   end
 
   @spec board(Conn.t(), map()) :: Conn.t()
@@ -687,6 +731,48 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
               <input type="password" name="work_key" autocomplete="current-password" required>
             </label>
             <button class="subtle-button" type="submit">Open board</button>
+          </form>
+        </section>
+      </main>
+    </body>
+    </html>
+    """
+
+    conn
+    |> Conn.put_resp_content_type("text/html")
+    |> Conn.send_resp(status, body)
+  end
+
+  defp package_login_response(conn, opts) do
+    status = Keyword.get(opts, :status, 401)
+    message = Keyword.get(opts, :message, "Enter a package work key to continue.")
+    work_package_id = Keyword.fetch!(opts, :work_package_id)
+    csrf_token = Plug.CSRFProtection.get_csrf_token()
+    dashboard_css_path = prefixed_path(conn, "/dashboard.css")
+    package_session_path = prefixed_path(conn, "/sympp/work-packages/#{work_package_id}/session")
+
+    body = """
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>Symphony++ package access</title>
+      <link rel="stylesheet" href="#{dashboard_css_path}">
+    </head>
+    <body>
+      <main class="sympp-board-shell sympp-auth-shell">
+        <section class="error-card">
+          <p class="eyebrow">Symphony++</p>
+          <h1 class="error-title">Package access</h1>
+          <p class="error-copy">#{html_escape(message)}</p>
+          <form class="sympp-board-filters" method="post" action="#{package_session_path}">
+            <input type="hidden" name="_csrf_token" value="#{csrf_token}">
+            <label>
+              <span>Work key</span>
+              <input type="password" name="work_key" autocomplete="current-password" required>
+            </label>
+            <button class="subtle-button" type="submit">Open package</button>
           </form>
         </section>
       </main>

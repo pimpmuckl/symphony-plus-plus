@@ -34,6 +34,7 @@ defmodule SymphonyElixirWeb.Router do
 
     live("/", DashboardLive, :index)
     post("/sympp/board/session", SymppDashboardApiController, :board_session)
+    post("/sympp/work-packages/:work_package_id/session", SymppDashboardApiController, :package_session)
   end
 
   scope "/", SymphonyElixirWeb do

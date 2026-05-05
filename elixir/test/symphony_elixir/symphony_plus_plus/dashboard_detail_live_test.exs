@@ -146,6 +146,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     refute response(conn, 403) =~ "Sibling detail package"
   end
 
+  test "package-scoped work key can create a browser detail session" do
+    %{work_package: work_package, worker_secret: worker_secret} = create_detail_package(id: "SYMPP-P5-LOGIN")
+
+    login_conn = get(build_conn(), "/sympp/work-packages/#{work_package.id}")
+    login_html = response(login_conn, 401)
+
+    assert login_html =~ "Package access"
+    assert login_html =~ ~s(action="/sympp/work-packages/#{work_package.id}/session")
+
+    session_conn =
+      post(build_conn(), "/sympp/work-packages/#{work_package.id}/session", %{
+        "work_key" => "  #{worker_secret}\n"
+      })
+
+    assert redirected_to(session_conn) == "/sympp/work-packages/#{work_package.id}"
+
+    detail_conn =
+      session_conn
+      |> recycle()
+      |> get("/sympp/work-packages/#{work_package.id}")
+
+    assert response(detail_conn, 200) =~ "SYMPP-P5-LOGIN"
+  end
+
   test "valid package bearer auth overrides a stale different-package browser session" do
     %{work_package: first, worker_secret: first_secret} = create_detail_package(id: "SYMPP-P5-FIRST", title: "First package")
     %{work_package: second, worker_secret: second_secret} = create_detail_package(id: "SYMPP-P5-SECOND", title: "Second package")
