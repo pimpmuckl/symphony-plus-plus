@@ -652,6 +652,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         |> put_summary_count("failed_agent_run_count", Enum.count(runs, &agent_run_failed?/1))
         |> put_summary_count("stale_agent_run_count", Enum.count(runs, &agent_run_stale?/1))
         |> put_runtime_summary(runs)
+        |> put_top_level_runtime_summary(runs)
         |> scope_run_alerts(runs)
 
       _missing ->
@@ -697,6 +698,16 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp put_runtime_summary(payload, _runs), do: payload
+
+  defp put_top_level_runtime_summary(%{"runtime" => runtime} = payload, runs) when is_map(runtime) do
+    Map.put(payload, "runtime", runtime_summary(runs, runtime))
+  end
+
+  defp put_top_level_runtime_summary(%{runtime: runtime} = payload, runs) when is_map(runtime) do
+    Map.put(payload, :runtime, runtime_summary(runs, runtime))
+  end
+
+  defp put_top_level_runtime_summary(payload, _runs), do: payload
 
   defp runtime_summary(runs, existing_runtime) do
     threshold =

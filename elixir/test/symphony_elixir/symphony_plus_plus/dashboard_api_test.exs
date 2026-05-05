@@ -209,6 +209,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
           %{id: "run-owned", access_grant_id: grant.id, status: "running", last_seen_at: stale_seen_at},
           %{id: "run-other", access_grant_id: "grant-other", status: "running"}
         ],
+        runtime: %{
+          stale_heartbeat_after_seconds: 300,
+          active_count: 2,
+          queued_count: 0,
+          stopped_count: 0,
+          failed_count: 0,
+          completed_count: 0,
+          terminal_count: 0,
+          stale_count: 1
+        },
         summary: %{runtime: %{stale_heartbeat_after_seconds: 300}},
         alert_indicators: [
           %{type: "stale_heartbeat", active: false, detail: "0 run(s) past 300s"},
@@ -224,6 +234,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert payload.summary.stale_agent_run_count == 1
     assert payload.summary.runtime.active_count == 1
     assert payload.summary.runtime.stale_count == 1
+    assert payload.runtime.active_count == 1
+    assert payload.runtime.stale_count == 1
     assert alerts["stale_heartbeat"].active == true
     assert alerts["stale_heartbeat"].detail == "1 run(s) past 300s"
   end

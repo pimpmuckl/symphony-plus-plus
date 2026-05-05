@@ -113,9 +113,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     safe_read(fn ->
       with {:ok, status_summary} <- PlanningRepository.get_status_summary(repo, work_package.id),
            {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, work_package.id),
-           {:ok, artifacts} <- PlanningRepository.list_artifacts(repo, work_package.id),
-           {:ok, findings} <- PlanningRepository.list_findings(repo, work_package.id),
+           {:ok, readiness_collections} <- readiness_collections(repo, work_package),
            {:ok, agent_runs} <- AgentRunRepository.list_for_work_package(repo, work_package.id) do
+        %{artifacts: artifacts, findings: findings} = readiness_collections
         blockers = blockers(progress_events)
         runtime = runtime_summary(agent_runs)
 
@@ -152,6 +152,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       end
     end)
   end
+
+  defp readiness_collections(repo, %WorkPackage{status: status} = work_package) when status in @ready_statuses do
+    with {:ok, artifacts} <- PlanningRepository.list_artifacts(repo, work_package.id),
+         {:ok, findings} <- PlanningRepository.list_findings(repo, work_package.id) do
+      {:ok, %{artifacts: artifacts, findings: findings}}
+    end
+  end
+
+  defp readiness_collections(_repo, %WorkPackage{}), do: {:ok, %{artifacts: [], findings: []}}
 
   @spec work_package_detail(WorkPackage.t()) :: map()
   def work_package_detail(%WorkPackage{} = work_package) do

@@ -152,6 +152,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert html =~ "Stale runs"
   end
 
+  test "renders concrete terminal run statuses in package detail" do
+    %{work_package: work_package, architect_secret: secret} =
+      create_detail_package(id: "SYMPP-P5-004-TERMINAL", title: "Terminal runtime package")
+
+    assert {:ok, [run]} = AgentRunRepository.list_for_work_package(Repo, work_package.id)
+    assert {:ok, _completed_run} = AgentRunRepository.mark_completed(Repo, run.id)
+
+    {:ok, _view, html} = live(auth_conn(secret), "/sympp/work-packages/#{work_package.id}")
+
+    assert html =~ "completed"
+    refute html =~ ">terminal</span>"
+  end
+
   test "worker-scoped browser viewer can see own package but not sibling package" do
     %{work_package: work_package, worker_secret: worker_secret} = create_detail_package()
 

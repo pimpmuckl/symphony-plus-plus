@@ -255,7 +255,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
             </dl>
             <div :if={@detail.agent_runs != []} class="sympp-stack-list">
               <div :for={run <- @detail.agent_runs} class="sympp-stack-item">
-                <span class={run_badge_class(run)}><%= run.runtime_state || run.status %></span>
+                <span class={run_badge_class(run)}><%= run_status_label(run) %></span>
                 <h3><%= present(run.worker_task_handle) %></h3>
                 <p class="mono"><%= run.session_id || run.id %></p>
                 <p class="mono"><%= present(run.workspace_path) %></p>
@@ -497,6 +497,10 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
   defp run_badge_class(%{stale: true}), do: "state-badge state-badge-warning"
   defp run_badge_class(%{runtime_state: runtime_state}) when runtime_state in ["active", "queued"], do: "state-badge state-badge-active"
   defp run_badge_class(_run), do: "state-badge"
+
+  defp run_status_label(%{status: status}) when status in ["completed", "failed"], do: status
+  defp run_status_label(%{runtime_state: runtime_state}) when is_binary(runtime_state), do: runtime_state
+  defp run_status_label(%{status: status}), do: status
 
   defp status_label(nil), do: "n/a"
 
