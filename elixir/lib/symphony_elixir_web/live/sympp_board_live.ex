@@ -191,8 +191,9 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp custom_repo_database_path(repo) do
-    Application.get_env(:symphony_elixir, :sympp_repo_database)
-    |> Kernel.||(repo.config() |> Keyword.get(:database))
+    repo.config()
+    |> Keyword.get(:database)
+    |> Kernel.||(Repo.database_path())
     |> existing_database_path()
   rescue
     _error -> nil

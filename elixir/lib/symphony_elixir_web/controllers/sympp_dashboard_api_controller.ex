@@ -18,6 +18,14 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @type auth_context :: {:grant, AccessGrant.t()}
 
+  @spec authorize_board_browser(Conn.t(), term()) :: Conn.t()
+  def authorize_board_browser(conn, _opts) do
+    case authorize_global_board(conn) do
+      :ok -> conn
+      {:error, reason} -> conn |> error_response(reason) |> Conn.halt()
+    end
+  end
+
   @spec board(Conn.t(), map()) :: Conn.t()
   def board(conn, _params) do
     send_repo_response(conn, fn repo, secret ->
@@ -77,6 +85,23 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     |> case do
       {:error, reason} -> error_response(conn, reason)
       %Conn{} = conn -> conn
+    end
+  end
+
+  defp authorize_global_board(conn) do
+    case bearer_secret(conn) do
+      nil ->
+        {:error, :unauthorized}
+
+      secret ->
+        with true <- auth_storage_ready?(secret),
+             {:ok, auth_context} <- authenticate_with_existing_repo(secret),
+             :ok <- require_global_board(auth_context) do
+          :ok
+        else
+          false -> {:error, :unauthorized}
+          {:error, reason} -> {:error, reason}
+        end
     end
   end
 
@@ -645,7 +670,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp with_ecto_custom_repo(repo, fun, migrate?) do
-    :global.trans({__MODULE__, :custom_repo, repo}, fn ->
+    :global.trans({{__MODULE__, :custom_repo, repo}, self()}, fn ->
       with_ecto_custom_repo_locked(repo, fun, migrate?)
     end)
   end

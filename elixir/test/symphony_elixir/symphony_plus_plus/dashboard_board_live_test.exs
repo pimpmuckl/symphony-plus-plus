@@ -3,9 +3,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
+  import Plug.Conn, only: [put_req_header: 3]
 
   alias Phoenix.HTML.Safe
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
@@ -80,7 +83,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
       base_branch: "symphony-plus-plus/beta"
     })
 
-    {:ok, _view, html} = live(build_conn(), "/sympp/board")
+    secret = create_architect_grant_secret(Repo, "SYMPP-P5-002")
+
+    {:ok, _view, html} = live(auth_conn(secret), "/sympp/board")
 
     assert html =~ "Work package board"
     assert html =~ "Implementing"
@@ -97,10 +102,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
   end
 
   test "renders empty board state" do
-    {:ok, _view, html} = live(build_conn(), "/sympp/board")
+    create_board_package(%{
+      id: "SYMPP-P5-012",
+      kind: "dashboard",
+      status: "implementing",
+      title: "Filtered auth package",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "symphony-plus-plus/beta"
+    })
 
-    assert html =~ "0"
+    secret = create_architect_grant_secret(Repo, "SYMPP-P5-012")
+
+    {:ok, _view, html} = live(auth_conn(secret), "/sympp/board?kind=not-present")
+
     assert html =~ "No work packages match the current board filters."
+    refute html =~ "Filtered auth package"
   end
 
   test "filters packages by kind repo and phase without mutating state" do
@@ -122,8 +138,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
       base_branch: "main"
     })
 
+    secret = create_architect_grant_secret(Repo, "SYMPP-P5-002")
+
     {:ok, _view, html} =
-      live(build_conn(), "/sympp/board?kind=dashboard&repo=nextide/symphony-plus-plus&phase=P5")
+      live(auth_conn(secret), "/sympp/board?kind=dashboard&repo=nextide/symphony-plus-plus&phase=P5")
 
     assert html =~ "Visible dashboard package"
     refute html =~ "Hidden integration package"
@@ -144,7 +162,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
       pr_url: nil
     })
 
-    {:ok, _view, html} = live(build_conn(), "/sympp/board")
+    secret = create_architect_grant_secret(Repo, "SYMPP-P5-009")
+
+    {:ok, _view, html} = live(auth_conn(secret), "/sympp/board")
 
     assert html =~ "SYMPP-P5-009"
     assert html =~ "[REDACTED]"
@@ -163,18 +183,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
       File.rm(database_path)
     end)
 
-    with_transient_repo(database_path, fn ->
-      create_board_package(%{
-        id: "SYMPP-P5-010",
-        kind: "dashboard",
-        status: "implementing",
-        title: "Selected ledger package",
-        repo: "nextide/symphony-plus-plus",
-        base_branch: "symphony-plus-plus/beta"
-      })
-    end)
+    secret =
+      with_transient_repo(database_path, fn ->
+        create_board_package(%{
+          id: "SYMPP-P5-010",
+          kind: "dashboard",
+          status: "implementing",
+          title: "Selected ledger package",
+          repo: "nextide/symphony-plus-plus",
+          base_branch: "symphony-plus-plus/beta"
+        })
 
-    {:ok, _view, html} = live(build_conn(), "/sympp/board")
+        create_architect_grant_secret(Repo, "SYMPP-P5-010")
+      end)
+
+    {:ok, _view, html} = live(auth_conn(secret), "/sympp/board")
 
     assert html =~ "Selected ledger package"
     assert html =~ "SYMPP-P5-010"
@@ -192,10 +215,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
       File.rm(missing_database_path)
     end)
 
-    {:ok, _view, html} = live(build_conn(), "/sympp/board")
+    conn = get(build_conn(), "/sympp/board")
 
-    assert html =~ "Board unavailable"
-    assert html =~ "No Symphony++ work package ledger was found."
+    assert response(conn, 401) =~ "Unauthorized"
     refute File.exists?(missing_database_path)
   end
 
@@ -216,23 +238,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
       File.rm(database_path)
     end)
 
-    seed_custom_repo(database_path, fn ->
-      assert {:ok, _work_package} =
-               WorkPackageRepository.create(
-                 CustomBoardRepo,
-                 WorkPackageFactory.attrs(
-                   id: "SYMPP-P5-013",
-                   kind: "dashboard",
-                   status: "implementing",
-                   title: "Custom repo board package",
-                   repo: "nextide/symphony-plus-plus",
-                   base_branch: "symphony-plus-plus/beta"
+    secret =
+      seed_custom_repo(database_path, fn ->
+        assert {:ok, _work_package} =
+                 WorkPackageRepository.create(
+                   CustomBoardRepo,
+                   WorkPackageFactory.attrs(
+                     id: "SYMPP-P5-013",
+                     kind: "dashboard",
+                     status: "implementing",
+                     title: "Custom repo board package",
+                     repo: "nextide/symphony-plus-plus",
+                     base_branch: "symphony-plus-plus/beta"
+                   )
                  )
-               )
-    end)
+
+        create_architect_grant_secret(CustomBoardRepo, "SYMPP-P5-013")
+      end)
 
     with_endpoint_repo(CustomBoardRepo, fn ->
-      {:ok, _view, html} = live(build_conn(), "/sympp/board")
+      {:ok, _view, html} = live(auth_conn(secret), "/sympp/board")
 
       assert html =~ "Custom repo board package"
       assert html =~ "SYMPP-P5-013"
@@ -247,7 +272,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
     original_custom_repo_config = Application.get_env(:symphony_elixir, CustomBoardRepo)
 
-    File.touch!(selected_database_path)
     Application.put_env(:symphony_elixir, :sympp_repo_database, selected_database_path)
     Application.put_env(:symphony_elixir, CustomBoardRepo, database: selected_database_path)
 
@@ -258,6 +282,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
       File.rm(wrong_database_path)
       File.rm(selected_database_path)
     end)
+
+    secret =
+      seed_custom_repo(selected_database_path, fn ->
+        assert {:ok, _selected_package} =
+                 WorkPackageRepository.create(
+                   CustomBoardRepo,
+                   WorkPackageFactory.attrs(
+                     id: "SYMPP-P5-016",
+                     kind: "dashboard",
+                     status: "implementing",
+                     title: "Selected custom repo package",
+                     repo: "nextide/symphony-plus-plus",
+                     base_branch: "symphony-plus-plus/beta"
+                   )
+                 )
+
+        create_architect_grant_secret(CustomBoardRepo, "SYMPP-P5-016")
+      end)
 
     {:ok, pid} = CustomBoardRepo.start_link(database: wrong_database_path, name: CustomBoardRepo)
     Process.unlink(pid)
@@ -277,11 +319,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
              )
 
     with_endpoint_repo(CustomBoardRepo, fn ->
-      {:ok, _view, html} = live(build_conn(), "/sympp/board")
+      conn = get(auth_conn(secret), "/sympp/board")
 
-      assert html =~ "Board unavailable"
-      assert html =~ "The configured Symphony++ repo does not match the selected ledger."
-      refute html =~ "Wrong custom repo package"
+      assert response(conn, 401) =~ "Unauthorized"
+      refute response(conn, 401) =~ "Wrong custom repo package"
     end)
   end
 
@@ -390,6 +431,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     append_agent_run(work_package, Map.get(attrs, :blocker?, false))
   end
 
+  test "requires a claimed read phase grant for the browser board" do
+    work_package =
+      create_board_package(%{
+        id: "SYMPP-P5-015",
+        kind: "dashboard",
+        status: "implementing",
+        title: "Protected board package",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "symphony-plus-plus/beta"
+      })
+
+    worker_secret = create_worker_grant_secret(Repo, work_package.id)
+
+    assert get(build_conn(), "/sympp/board") |> response(401)
+    assert get(auth_conn(worker_secret), "/sympp/board") |> response(403)
+  end
+
   defp append_pr(_work_package, nil, _timestamp), do: :ok
 
   defp append_pr(work_package, pr_url, timestamp) do
@@ -455,6 +513,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
              })
 
     :ok
+  end
+
+  defp create_architect_grant_secret(repo, work_package_id) do
+    create_claimed_grant_secret(repo, work_package_id, "architect", ["read:phase"], "architect-1")
+  end
+
+  defp create_worker_grant_secret(repo, work_package_id) do
+    create_claimed_grant_secret(repo, work_package_id, "worker", ["read:package"], "worker-1")
+  end
+
+  defp create_claimed_grant_secret(repo, work_package_id, role, capabilities, claimed_by) do
+    work_key = WorkKey.generate()
+
+    assert {:ok, grant} =
+             AccessGrantRepository.create(repo, %{
+               work_package_id: work_package_id,
+               display_key: work_key.display_key,
+               secret_hash: WorkKey.secret_hash(work_key.secret),
+               grant_role: role,
+               capabilities: capabilities,
+               expires_at: DateTime.add(DateTime.utc_now(:microsecond), 3600, :second)
+             })
+
+    assert {:ok, _assignment} =
+             AccessGrantRepository.claim(repo, work_key.secret, %{claimed_by: claimed_by}, DateTime.utc_now(:microsecond))
+
+    assert grant.display_key == work_key.display_key
+    work_key.secret
+  end
+
+  defp auth_conn(secret) do
+    build_conn()
+    |> put_req_header("authorization", "Bearer #{secret}")
   end
 
   defp start_test_endpoint do
