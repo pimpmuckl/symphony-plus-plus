@@ -461,5 +461,9 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
   defp present(""), do: "n/a"
   defp present(value), do: value
 
-  defp error_message(reason), do: SymppBoardLive.error_message(reason)
+  defp error_message(:not_found), do: "The Symphony++ work package could not be found."
+  defp error_message(:database_busy), do: "The Symphony++ package ledger is busy. Refresh shortly."
+  defp error_message({:repo_database_mismatch, _repo}), do: "The configured Symphony++ repo does not match the package ledger."
+  defp error_message({:storage_failed, _reason}), do: "The Symphony++ package ledger could not be read."
+  defp error_message(_reason), do: "The Symphony++ work package could not be loaded."
 end
