@@ -40,6 +40,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     def start_link(_opts), do: raise("custom repo should not start for invalid bearer probes")
   end
 
+  defmodule CountingRepo do
+    @moduledoc false
+
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    def all(query) do
+      count_artifact_list_query(query)
+      Repo.all(query)
+    end
+
+    def one(query), do: Repo.one(query)
+    def get(queryable, id), do: Repo.get(queryable, id)
+    def transaction(fun), do: Repo.transaction(fun)
+
+    def counter(counter), do: :persistent_term.put({__MODULE__, :counter}, counter)
+    def clear_counter, do: :persistent_term.erase({__MODULE__, :counter})
+
+    defp count_artifact_list_query(%Ecto.Query{from: %{source: {"sympp_artifacts", _schema}}, order_bys: [_ | _]}) do
+      case :persistent_term.get({__MODULE__, :counter}, nil) do
+        nil -> :ok
+        counter -> Agent.update(counter, &(&1 + 1))
+      end
+    end
+
+    defp count_artifact_list_query(_query), do: :ok
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
@@ -101,6 +128,53 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              "work_package" => %{"id" => "SYMPP-DASH-2"},
              "summary" => %{"artifact_count" => 0, "progress_event_count" => 0}
            } = json_response(get(auth_conn(architect_secret), "/api/v1/sympp/work-packages/SYMPP-DASH-2"), 200)
+  end
+
+  test "board artifact reads are limited to packages that need artifact-backed readiness", %{repo: repo} do
+    assert {:ok, plain_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-DASH-PLAIN-ARTIFACTS", kind: "mcp", status: "planning", policy_template: "mcp")
+             )
+
+    assert {:ok, review_suite_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-REVIEW-SUITE-ARTIFACTS",
+                 kind: "mcp",
+                 status: "planning",
+                 policy_template: "mcp_review_suite_artifact"
+               )
+             )
+
+    assert {:ok, _plain_artifact} =
+             PlanningService.append_artifact(repo, %{
+               work_package_id: plain_package.id,
+               path: "plain.txt",
+               title: "Plain artifact",
+               kind: "note"
+             })
+
+    assert {:ok, _review_suite_artifact} =
+             PlanningService.append_artifact(repo, %{
+               work_package_id: review_suite_package.id,
+               path: "review-suite-result.json",
+               title: "Review-suite result",
+               kind: "review_suite"
+             })
+
+    assert {:ok, counter} = Agent.start_link(fn -> 0 end)
+    CountingRepo.counter(counter)
+
+    try do
+      assert {:ok, board} = Dashboard.board(CountingRepo)
+      assert board.total_count == 2
+      assert Agent.get(counter, & &1) == 1
+    after
+      CountingRepo.clear_counter()
+      Agent.stop(counter)
+    end
   end
 
   test "detail endpoint returns package state with redacted events, artifacts, grants, blockers, and runs", %{repo: repo} do
@@ -549,6 +623,84 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     refute "tests_passed" in missing["missing"]
     refute "acceptance_criteria_met" in missing["missing"]
     refute "review_lanes_complete" in missing["missing"]
+  end
+
+  test "package detail exposes sanitized review-suite result evidence", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-REVIEW-SUITE",
+                 kind: "mcp",
+                 status: "ready_for_human_merge",
+                 policy_template: "mcp_review_suite_artifact"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    append_ready_evidence_with_review_artifacts(repo, work_package, ["review-log.txt"])
+
+    assert {:ok, _review_suite_event} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Review suite passed",
+               idempotency_key: "attach_review_suite_result:#{work_package.id}:dashboard-review-suite",
+               status: "review_suite_passed",
+               created_at: ~U[2026-05-05 00:00:10Z],
+               payload: %{
+                 type: "review_suite_result",
+                 source_tool: "attach_review_suite_result",
+                 work_package_id: work_package.id,
+                 head_sha: "abc123",
+                 suite: "review-suite",
+                 anchor: "phase_gate-abc123",
+                 status: "passed",
+                 verdict: "green",
+                 summary: "T1 and T2 green",
+                 lane: "review_t2",
+                 reviewer: "Bearer raw-review-token"
+               }
+             })
+
+    assert {:ok, _older_review_suite_event} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Older review suite failed",
+               idempotency_key: "attach_review_suite_result:#{work_package.id}:dashboard-review-suite-failed",
+               status: "review_suite_failed",
+               created_at: ~U[2026-05-05 00:00:00Z],
+               payload: %{
+                 type: "review_suite_result",
+                 source_tool: "attach_review_suite_result",
+                 work_package_id: work_package.id,
+                 head_sha: "abc123",
+                 suite: "review-suite",
+                 anchor: "phase_gate-abc123-failed",
+                 status: "failed",
+                 verdict: "red",
+                 summary: "Older failed result"
+               }
+             })
+
+    assert {:ok, _review_suite_artifact} =
+             PlanningRepository.append_artifact(repo, %{
+               id: review_suite_artifact_id(work_package.id, "abc123"),
+               work_package_id: work_package.id,
+               path: "review-suite-result.json",
+               title: "Review-suite result",
+               kind: "review_suite"
+             })
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert payload["metadata"]["review_suite_result"]["status"] == "passed"
+    assert payload["metadata"]["review_suite_result"]["verdict"] == "green"
+    assert payload["metadata"]["review_suite_result"]["anchor"] == "phase_gate-abc123"
+    assert Enum.any?(payload["artifacts"], &(&1["kind"] == "review_suite" and &1["path"] == "review-suite-result.json"))
+    refute "review_suite_result" in missing["missing"]
+    refute inspect(payload) =~ "raw prompt"
+    refute inspect(payload) =~ "Bearer "
   end
 
   test "latest no-artifact review package does not reuse older artifact evidence", %{repo: repo} do
@@ -2038,6 +2190,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
   defp review_artifact_id(work_package_id, head_sha, artifact) do
     material = [work_package_id, head_sha || "no-head", artifact] |> Enum.join(":")
+    "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
+  end
+
+  defp review_suite_artifact_id(work_package_id, head_sha) do
+    material = [work_package_id, head_sha, "review-suite-result.json"] |> Enum.join(":")
     "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
