@@ -202,6 +202,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     refute response(detail_conn, 401) =~ "Product context"
   end
 
+  test "package browser sessions are scoped by work package" do
+    %{work_package: first, worker_secret: first_secret} = create_detail_package(id: "SYMPP-P5-TAB-A", title: "First tab package")
+    %{work_package: second, worker_secret: second_secret} = create_detail_package(id: "SYMPP-P5-TAB-B", title: "Second tab package")
+
+    first_conn =
+      post(build_conn(), "/sympp/work-packages/#{first.id}/session", %{
+        "work_key" => first_secret
+      })
+
+    assert redirected_to(first_conn) == "/sympp/work-packages/#{first.id}"
+
+    second_conn =
+      first_conn
+      |> recycle()
+      |> post("/sympp/work-packages/#{second.id}/session", %{
+        "work_key" => second_secret
+      })
+
+    assert redirected_to(second_conn) == "/sympp/work-packages/#{second.id}"
+
+    first_refresh_conn =
+      second_conn
+      |> recycle()
+      |> get("/sympp/work-packages/#{first.id}")
+
+    assert response(first_refresh_conn, 200) =~ "First tab package"
+
+    second_refresh_conn =
+      first_refresh_conn
+      |> recycle()
+      |> get("/sympp/work-packages/#{second.id}")
+
+    assert response(second_refresh_conn, 200) =~ "Second tab package"
+  end
+
   test "package login escapes user-controlled package id paths" do
     raw_id = ~S|SYMPP-" autofocus onfocus="alert(1)|
     encoded_id = path_segment(raw_id)
@@ -308,6 +343,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
 
     assert response(session_conn, 404) =~ "Package not found"
     refute response(session_conn, 404) =~ "work_key"
+
+    empty_session_conn = post(build_conn(), "/sympp/work-packages/SYMPP-P5-MISSING/session", %{})
+
+    assert response(empty_session_conn, 404) =~ "Package not found"
+    refute response(empty_session_conn, 404) =~ "work_key"
   end
 
   test "malformed package route ids return not found without prompting for credentials" do
@@ -412,6 +452,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
 
     assert response(detail_conn, 200) =~ ~s(class="sympp-back-link")
     assert response(detail_conn, 200) =~ ~s(href="../board")
+  end
+
+  test "board session preserves missing package not found when a package session also exists" do
+    %{architect_secret: architect_secret} = create_detail_package(id: "SYMPP-P5-PHASE-MISSING")
+    %{work_package: work_package, worker_secret: worker_secret} = create_detail_package(id: "SYMPP-P5-WORKER-MISSING")
+
+    board_conn = post(build_conn(), "/sympp/board/session", %{"work_key" => architect_secret})
+    assert redirected_to(board_conn) == "/sympp/board"
+
+    package_conn =
+      board_conn
+      |> recycle()
+      |> post("/sympp/work-packages/#{work_package.id}/session", %{"work_key" => worker_secret})
+
+    assert redirected_to(package_conn) == "/sympp/work-packages/#{work_package.id}"
+
+    missing_conn =
+      package_conn
+      |> recycle()
+      |> get("/sympp/work-packages/SYMPP-P5-DOES-NOT-EXIST")
+
+    assert response(missing_conn, 404) =~ "Package not found"
+    refute response(missing_conn, 404) =~ "Package access"
   end
 
   test "renders DateTime timestamps and string-keyed payloads in render helpers" do

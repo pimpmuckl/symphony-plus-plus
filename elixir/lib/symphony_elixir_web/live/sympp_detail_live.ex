@@ -25,7 +25,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
   @impl true
   def mount(params, session, socket) do
     work_package_id = params |> Map.get("work_package_id") |> SymppDashboardApiController.normalize_package_route_id()
-    package_grant_id = Map.get(session, "sympp_package_grant_id")
+    package_grant_id = session |> Map.get("sympp_package_grant_ids") |> package_session_grant_id(work_package_id)
     board_grant_id = Map.get(session, "sympp_board_grant_id")
 
     {:ok,
@@ -260,10 +260,17 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     case {package_result, board_result} do
       {_package_result, {:ok, %AccessGrant{}} = authorized} -> authorized
       {{:ok, %AccessGrant{}} = authorized, _board_result} -> authorized
+      {{:error, _package_reason}, {:error, :not_found}} -> {:error, :not_found}
       {{:error, :unauthorized}, {:error, reason}} -> {:error, reason}
       {{:error, reason}, _board_result} -> {:error, reason}
     end
   end
+
+  defp package_session_grant_id(sessions, work_package_id) when is_map(sessions) and is_binary(work_package_id) do
+    Map.get(sessions, work_package_id)
+  end
+
+  defp package_session_grant_id(_sessions, _work_package_id), do: nil
 
   defp phase_reader?(%AccessGrant{capabilities: capabilities}) when is_list(capabilities), do: "read:phase" in capabilities
   defp phase_reader?(_grant), do: false

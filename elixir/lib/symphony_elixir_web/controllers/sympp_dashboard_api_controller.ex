@@ -18,7 +18,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @type auth_context :: {:grant, AccessGrant.t()}
   @board_session_key "sympp_board_grant_id"
-  @package_session_key "sympp_package_grant_id"
+  @package_session_key "sympp_package_grant_ids"
 
   @spec authorize_board_browser(Conn.t(), term()) :: Conn.t()
   def authorize_board_browser(conn, _opts) do
@@ -34,7 +34,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     work_package_id = conn.path_params |> Map.get("work_package_id") |> normalize_package_route_id()
 
     case authorize_package_request(conn, work_package_id) do
-      {:ok, %AccessGrant{} = grant} -> put_package_browser_session(conn, grant)
+      {:ok, %AccessGrant{} = grant} -> put_package_browser_session(conn, grant, work_package_id)
       {:error, :unauthorized} -> conn |> package_login_response(work_package_id: work_package_id) |> Conn.halt()
       {:error, reason} -> conn |> package_browser_error_response(reason, work_package_id) |> Conn.halt()
     end
@@ -98,42 +98,42 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     case authorize_package_secret(secret, work_package_id) do
       {:ok, %AccessGrant{} = grant} ->
         conn
-        |> put_package_browser_session(grant)
+        |> put_package_browser_session(grant, work_package_id)
         |> redirect(to: package_detail_path(conn, work_package_id))
 
       {:error, :forbidden} ->
         conn
-        |> clear_package_session()
+        |> clear_package_session(work_package_id)
         |> package_login_response(status: 403, message: "The work key is not allowed to open this package.", work_package_id: work_package_id)
         |> Conn.halt()
 
       {:error, :database_busy} ->
         conn
-        |> clear_package_session()
+        |> clear_package_session(work_package_id)
         |> package_login_response(status: 503, message: "The dashboard ledger is busy. Try again.", work_package_id: work_package_id)
         |> Conn.halt()
 
       {:error, {:storage_failed, _reason}} ->
         conn
-        |> clear_package_session()
+        |> clear_package_session(work_package_id)
         |> package_login_response(status: 503, message: "The package ledger could not be read.", work_package_id: work_package_id)
         |> Conn.halt()
 
       {:error, {:repo_start_failed, _reason}} ->
         conn
-        |> clear_package_session()
+        |> clear_package_session(work_package_id)
         |> package_login_response(status: 503, message: "The package ledger could not be opened.", work_package_id: work_package_id)
         |> Conn.halt()
 
       {:error, :not_found} ->
         conn
-        |> clear_package_session()
+        |> clear_package_session(work_package_id)
         |> package_not_found_response()
         |> Conn.halt()
 
       {:error, _reason} ->
         conn
-        |> clear_package_session()
+        |> clear_package_session(work_package_id)
         |> package_login_response(status: 401, message: "The work key could not access this package.", work_package_id: work_package_id)
         |> Conn.halt()
     end
@@ -142,16 +142,24 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   def package_session(conn, %{"work_package_id" => work_package_id}) do
     work_package_id = normalize_package_route_id(work_package_id)
 
-    if valid_package_route_id?(work_package_id) do
-      conn
-      |> clear_package_session()
-      |> package_login_response(status: 400, message: "Enter a work key to open this package.", work_package_id: work_package_id)
-      |> Conn.halt()
-    else
-      conn
-      |> clear_package_session()
-      |> package_not_found_response()
-      |> Conn.halt()
+    cond do
+      not valid_package_route_id?(work_package_id) ->
+        conn
+        |> clear_package_session(work_package_id)
+        |> package_not_found_response()
+        |> Conn.halt()
+
+      match?(:ok, require_existing_work_package(work_package_id)) ->
+        conn
+        |> clear_package_session(work_package_id)
+        |> package_login_response(status: 400, message: "Enter a work key to open this package.", work_package_id: work_package_id)
+        |> Conn.halt()
+
+      true ->
+        conn
+        |> clear_package_session(work_package_id)
+        |> package_not_found_response()
+        |> Conn.halt()
     end
   end
 
@@ -247,6 +255,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     package_result =
       conn
       |> Conn.get_session(@package_session_key)
+      |> package_session_grant_id(work_package_id)
       |> authorize_package_grant_id(work_package_id)
 
     board_result =
@@ -255,16 +264,29 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       |> authorize_package_grant_id(work_package_id)
 
     case {package_result, board_result} do
+      {_package_result, {:ok, %AccessGrant{}} = authorized} -> authorized
       {{:ok, %AccessGrant{}} = authorized, _board_result} -> authorized
-      {{:error, _package_reason}, {:ok, %AccessGrant{}} = authorized} -> authorized
+      {{:error, _package_reason}, {:error, :not_found}} -> {:error, :not_found}
       {{:error, :unauthorized}, {:error, reason}} -> {:error, reason}
       {{:error, reason}, _board_result} -> {:error, reason}
     end
   end
 
-  defp put_package_browser_session(conn, %AccessGrant{} = grant) do
+  defp package_session_grant_id(sessions, work_package_id) when is_map(sessions) and is_binary(work_package_id) do
+    Map.get(sessions, work_package_id)
+  end
+
+  defp package_session_grant_id(_sessions, _work_package_id), do: nil
+
+  defp put_package_browser_session(conn, %AccessGrant{} = grant, work_package_id) do
+    sessions =
+      conn
+      |> Conn.get_session(@package_session_key)
+      |> package_sessions()
+      |> Map.put(work_package_id, grant.id)
+
     conn
-    |> Conn.put_session(@package_session_key, grant.id)
+    |> Conn.put_session(@package_session_key, sessions)
     |> maybe_put_board_session(grant)
   end
 
@@ -784,7 +806,24 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp clear_board_session(conn), do: Conn.delete_session(conn, @board_session_key)
 
-  defp clear_package_session(conn), do: Conn.delete_session(conn, @package_session_key)
+  defp clear_package_session(conn, work_package_id) when is_binary(work_package_id) do
+    sessions =
+      conn
+      |> Conn.get_session(@package_session_key)
+      |> package_sessions()
+      |> Map.delete(work_package_id)
+
+    if map_size(sessions) == 0 do
+      Conn.delete_session(conn, @package_session_key)
+    else
+      Conn.put_session(conn, @package_session_key, sessions)
+    end
+  end
+
+  defp clear_package_session(conn, _work_package_id), do: Conn.delete_session(conn, @package_session_key)
+
+  defp package_sessions(sessions) when is_map(sessions), do: sessions
+  defp package_sessions(_sessions), do: %{}
 
   defp error_response(conn, status, code, message) do
     conn
