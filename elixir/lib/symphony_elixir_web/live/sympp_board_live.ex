@@ -1,0 +1,404 @@
+defmodule SymphonyElixirWeb.SymppBoardLive do
+  @moduledoc """
+  Read-only Symphony++ work package board.
+  """
+
+  use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
+
+  alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
+  alias SymphonyElixirWeb.Endpoint
+
+  @empty_filter "all"
+
+  @impl true
+  def mount(params, _session, socket) do
+    {:ok,
+     socket
+     |> assign(:empty_filter, @empty_filter)
+     |> assign(:filters, filters(params))
+     |> assign_board()}
+  end
+
+  @impl true
+  def handle_params(params, _uri, socket) do
+    {:noreply,
+     socket
+     |> assign(:filters, filters(params))
+     |> assign_board()}
+  end
+
+  @impl true
+  def render(assigns) do
+    ~H"""
+    <section class="sympp-board-shell">
+      <header class="sympp-board-header">
+        <div>
+          <p class="eyebrow">Symphony++</p>
+          <h1 class="sympp-board-title">Work package board</h1>
+        </div>
+
+        <div class="sympp-board-summary">
+          <span class="sympp-board-count numeric"><%= @board.total_count %></span>
+          <span class="muted">packages</span>
+        </div>
+      </header>
+
+      <%= if @board.error do %>
+        <section class="error-card">
+          <h2 class="error-title">Board unavailable</h2>
+          <p class="error-copy"><%= @board.error %></p>
+        </section>
+      <% else %>
+        <form class="sympp-board-filters" method="get" action="/sympp/board">
+          <label>
+            <span>Kind</span>
+            <select name="kind">
+              <option value={@empty_filter} selected={@filters.kind == @empty_filter}>All</option>
+              <option :for={kind <- @board.filter_options.kinds} value={kind} selected={@filters.kind == kind}>
+                <%= kind %>
+              </option>
+            </select>
+          </label>
+
+          <label>
+            <span>Repo</span>
+            <select name="repo">
+              <option value={@empty_filter} selected={@filters.repo == @empty_filter}>All</option>
+              <option :for={repo <- @board.filter_options.repos} value={repo} selected={@filters.repo == repo}>
+                <%= repo %>
+              </option>
+            </select>
+          </label>
+
+          <label>
+            <span>Phase</span>
+            <select name="phase">
+              <option value={@empty_filter} selected={@filters.phase == @empty_filter}>All</option>
+              <option :for={phase <- @board.filter_options.phases} value={phase} selected={@filters.phase == phase}>
+                <%= phase %>
+              </option>
+            </select>
+          </label>
+
+          <button class="subtle-button" type="submit">Apply</button>
+          <a class="sympp-clear-link" href="/sympp/board">Clear</a>
+        </form>
+
+        <%= if @board.visible_count == 0 do %>
+          <p class="sympp-empty-state">No work packages match the current board filters.</p>
+        <% else %>
+          <div class="sympp-board-columns" style={"--sympp-column-count: #{@board.column_count};"}>
+            <section :for={column <- @board.columns} class="sympp-board-column">
+              <header class="sympp-column-header">
+                <h2><%= status_label(column.status) %></h2>
+                <span class="numeric"><%= length(column.cards) %></span>
+              </header>
+
+              <div class="sympp-card-list">
+                <article :for={card <- column.cards} class={card_class(card)}>
+                  <header class="sympp-card-header">
+                    <span class="sympp-card-id"><%= card.id %></span>
+                    <span class="state-badge"><%= card.kind || "unknown" %></span>
+                  </header>
+
+                  <h3 class="sympp-card-title"><%= card.title || "Untitled package" %></h3>
+
+                  <dl class="sympp-card-meta">
+                    <div>
+                      <dt>Repo</dt>
+                      <dd><%= repo_base(card) %></dd>
+                    </div>
+                    <div>
+                      <dt>Updated</dt>
+                      <dd class="numeric"><%= relative_time(card.latest_progress_at || card.updated_at) %></dd>
+                    </div>
+                    <div>
+                      <dt>Blockers</dt>
+                      <dd class="numeric"><%= card.active_blocker_count || 0 %></dd>
+                    </div>
+                  </dl>
+
+                  <div class="sympp-readiness-row">
+                    <span class={readiness_class(card, :plan)}>
+                      Plan <%= plan_progress(card) %>
+                    </span>
+                    <span class={readiness_class(card, :review)}>
+                      Review <%= review_state(card) %>
+                    </span>
+                  </div>
+
+                  <footer class="sympp-card-footer">
+                    <a :if={pr_url(card)} href={pr_url(card)} target="_blank" rel="noopener noreferrer">PR</a>
+                    <span :if={active_agent_run?(card)} class="sympp-live-pill">active run</span>
+                  </footer>
+                </article>
+              </div>
+            </section>
+          </div>
+        <% end %>
+      <% end %>
+    </section>
+    """
+  end
+
+  defp assign_board(socket) do
+    assign(socket, :board, load_board(socket.assigns.filters))
+  end
+
+  defp load_board(filters) do
+    case with_dashboard_repo(&Dashboard.board/1) do
+      {:ok, payload} -> board_view(payload, filters)
+      {:error, reason} -> empty_board(error_message(reason))
+    end
+  end
+
+  defp with_dashboard_repo(fun) when is_function(fun, 1) do
+    case Endpoint.config(:sympp_repo) do
+      repo when is_atom(repo) and repo != Repo ->
+        fun.(repo)
+
+      _repo ->
+        with_default_dashboard_repo(fun)
+    end
+  end
+
+  defp with_default_dashboard_repo(fun) do
+    database_path = Repo.database_path()
+
+    case default_repo_pid(database_path) do
+      pid when is_pid(pid) -> call_dynamic_repo(pid, fun)
+      :undefined -> start_transient_repo(database_path, fun)
+    end
+  end
+
+  defp default_repo_pid(database_path) do
+    case Process.whereis(Repo) do
+      pid when is_pid(pid) -> pid
+      nil -> :global.whereis_name(Repo.process_key(database_path))
+    end
+  end
+
+  defp start_transient_repo(database_path, fun) do
+    options = Repo.child_options(database: database_path, name: nil)
+
+    case Repo.start_link(options) do
+      {:ok, pid} -> call_owned_repo(unlink_transient_repo(pid), fun)
+      {:error, {:already_started, pid}} -> call_dynamic_repo(pid, fun)
+      {:error, reason} -> {:error, {:repo_start_failed, reason}}
+    end
+  end
+
+  defp call_owned_repo(pid, fun) do
+    call_dynamic_repo(pid, fn repo ->
+      with :ok <- WorkPackageRepository.migrate(repo), do: fun.(repo)
+    end)
+  after
+    stop_transient_repo(pid)
+  end
+
+  defp unlink_transient_repo(pid) do
+    Process.unlink(pid)
+    pid
+  end
+
+  defp call_dynamic_repo(pid, fun) do
+    original_repo = Repo.put_dynamic_repo(pid)
+
+    try do
+      fun.(Repo)
+    after
+      Repo.put_dynamic_repo(original_repo)
+    end
+  end
+
+  defp stop_transient_repo(pid) when is_pid(pid) do
+    ref = Process.monitor(pid)
+    Process.exit(pid, :shutdown)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+    after
+      1_000 ->
+        Process.demonitor(ref, [:flush])
+        :ok
+    end
+  end
+
+  defp board_view(payload, filters) do
+    statuses = Map.get(payload, :statuses, [])
+    groups = Map.get(payload, :groups, %{})
+    all_cards = Enum.flat_map(statuses, &Map.get(groups, &1, []))
+
+    filtered_groups =
+      Map.new(statuses, fn status ->
+        {status, groups |> Map.get(status, []) |> Enum.filter(&matches_filters?(&1, filters))}
+      end)
+
+    columns =
+      statuses
+      |> Enum.map(&%{status: &1, cards: Map.get(filtered_groups, &1, [])})
+      |> Enum.reject(&(&1.cards == []))
+
+    visible_count = filtered_groups |> Map.values() |> Enum.map(&length/1) |> Enum.sum()
+
+    %{
+      error: nil,
+      total_count: Map.get(payload, :total_count, length(all_cards)),
+      visible_count: visible_count,
+      column_count: max(length(columns), 1),
+      columns: columns,
+      filter_options: filter_options(all_cards)
+    }
+  end
+
+  defp empty_board(error) do
+    %{
+      error: error,
+      total_count: 0,
+      visible_count: 0,
+      column_count: 1,
+      columns: [],
+      filter_options: %{kinds: [], repos: [], phases: []}
+    }
+  end
+
+  defp filters(params) when is_map(params) do
+    %{
+      kind: filter_value(params["kind"]),
+      repo: filter_value(params["repo"]),
+      phase: filter_value(params["phase"])
+    }
+  end
+
+  defp filter_value(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: @empty_filter, else: value
+  end
+
+  defp filter_value(_value), do: @empty_filter
+
+  defp matches_filters?(card, filters) do
+    matches_filter?(card.kind, filters.kind) and
+      matches_filter?(card.repo, filters.repo) and
+      matches_filter?(phase(card), filters.phase)
+  end
+
+  defp matches_filter?(_value, @empty_filter), do: true
+  defp matches_filter?(value, filter), do: value == filter
+
+  defp filter_options(cards) do
+    %{
+      kinds: sorted_present_values(cards, & &1.kind),
+      repos: sorted_present_values(cards, & &1.repo),
+      phases: sorted_present_values(cards, &phase/1)
+    }
+  end
+
+  defp sorted_present_values(cards, fun) do
+    cards
+    |> Enum.map(fun)
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp phase(%{id: id}) when is_binary(id) do
+    case Regex.run(~r/^SYMPP-(P\d+)-/, id) do
+      [_, phase] -> phase
+      _match -> nil
+    end
+  end
+
+  defp phase(_card), do: nil
+
+  defp status_label(status) when is_binary(status) do
+    status
+    |> String.replace("_", " ")
+    |> String.capitalize()
+  end
+
+  defp status_label(status), do: to_string(status)
+
+  defp card_class(card) do
+    base = "sympp-work-card"
+
+    cond do
+      (card.active_blocker_count || 0) > 0 -> "#{base} sympp-work-card-blocked"
+      active_agent_run?(card) -> "#{base} sympp-work-card-active"
+      true -> base
+    end
+  end
+
+  defp repo_base(card) do
+    [card.repo, card.base_branch]
+    |> Enum.reject(&(is_nil(&1) or &1 == ""))
+    |> Enum.join(" / ")
+    |> case do
+      "" -> "n/a"
+      value -> value
+    end
+  end
+
+  defp plan_progress(%{plan: %{total_count: total, completed_count: completed}})
+       when is_integer(total) and is_integer(completed) and total > 0 do
+    "#{completed}/#{total}"
+  end
+
+  defp plan_progress(_card), do: "n/a"
+
+  defp readiness_class(card, :plan) do
+    case card.plan do
+      %{total_count: total, open_count: 0} when is_integer(total) and total > 0 -> "sympp-readiness sympp-readiness-ready"
+      %{total_count: total} when is_integer(total) and total > 0 -> "sympp-readiness"
+      _plan -> "sympp-readiness sympp-readiness-muted"
+    end
+  end
+
+  defp readiness_class(card, :review) do
+    if review_present?(card) do
+      "sympp-readiness sympp-readiness-ready"
+    else
+      "sympp-readiness sympp-readiness-muted"
+    end
+  end
+
+  defp review_state(card), do: if(review_present?(card), do: "attached", else: "none")
+
+  defp review_present?(card), do: not is_nil(get_in(card, [:metadata, :review_package]))
+
+  defp pr_url(card) do
+    case get_in(card, [:metadata, :pr, "url"]) || get_in(card, [:metadata, :pr, :url]) do
+      url when is_binary(url) and url != "[REDACTED]" -> url
+      _url -> nil
+    end
+  end
+
+  defp active_agent_run?(card), do: not is_nil(card.active_agent_run)
+
+  defp relative_time(nil), do: "n/a"
+
+  defp relative_time(timestamp) when is_binary(timestamp) do
+    case DateTime.from_iso8601(timestamp) do
+      {:ok, datetime, _offset} -> relative_time(datetime, DateTime.utc_now())
+      _error -> timestamp
+    end
+  end
+
+  defp relative_time(%DateTime{} = datetime, %DateTime{} = now) do
+    seconds = max(DateTime.diff(now, datetime, :second), 0)
+
+    cond do
+      seconds < 60 -> "#{seconds}s ago"
+      seconds < 3_600 -> "#{div(seconds, 60)}m ago"
+      seconds < 86_400 -> "#{div(seconds, 3_600)}h ago"
+      true -> "#{div(seconds, 86_400)}d ago"
+    end
+  end
+
+  defp error_message(:not_found), do: "No Symphony++ work package ledger was found."
+  defp error_message(:database_busy), do: "The Symphony++ ledger is busy. Refresh shortly."
+  defp error_message({:storage_failed, _reason}), do: "The Symphony++ ledger could not be read."
+  defp error_message(_reason), do: "The Symphony++ board could not be loaded."
+end

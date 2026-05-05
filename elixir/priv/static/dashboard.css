@@ -431,6 +431,263 @@ pre,
   color: var(--danger);
 }
 
+.sympp-board-shell {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.sympp-board-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.35rem 0 0.2rem;
+}
+
+.sympp-board-title {
+  margin: 0.2rem 0 0;
+  font-size: 1.85rem;
+  line-height: 1.05;
+  letter-spacing: 0;
+}
+
+.sympp-board-summary {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.38rem;
+  white-space: nowrap;
+}
+
+.sympp-board-count {
+  color: var(--ink);
+  font-size: 1.45rem;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.sympp-board-filters {
+  display: flex;
+  align-items: end;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+  padding: 0.8rem 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.sympp-board-filters label {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 10rem;
+}
+
+.sympp-board-filters label span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sympp-board-filters select {
+  width: 100%;
+  min-height: 2.25rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--ink);
+  padding: 0.35rem 0.6rem;
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+.sympp-clear-link {
+  min-height: 2.25rem;
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.sympp-board-columns {
+  display: grid;
+  grid-template-columns: repeat(var(--sympp-column-count), minmax(16rem, 1fr));
+  gap: 0.75rem;
+  overflow-x: auto;
+  padding-bottom: 0.45rem;
+}
+
+.sympp-board-column {
+  min-width: 16rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(243, 244, 246, 0.56);
+}
+
+.sympp-column-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  min-height: 2.65rem;
+  padding: 0.7rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  background: rgba(250, 250, 251, 0.96);
+  border-radius: 8px 8px 0 0;
+}
+
+.sympp-column-header h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.sympp-column-header span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.sympp-card-list {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.55rem;
+}
+
+.sympp-work-card {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.72rem;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+}
+
+.sympp-work-card-active {
+  border-left-color: var(--accent);
+}
+
+.sympp-work-card-blocked {
+  border-left-color: var(--danger);
+}
+
+.sympp-card-header,
+.sympp-card-footer,
+.sympp-readiness-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.sympp-card-header {
+  justify-content: space-between;
+}
+
+.sympp-card-id {
+  color: var(--ink);
+  font-family: "Sohne Mono", "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.sympp-card-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.95rem;
+  line-height: 1.32;
+  letter-spacing: 0;
+}
+
+.sympp-card-meta {
+  display: grid;
+  gap: 0.42rem;
+  margin: 0;
+}
+
+.sympp-card-meta div {
+  display: grid;
+  grid-template-columns: 4.8rem minmax(0, 1fr);
+  gap: 0.45rem;
+  align-items: baseline;
+}
+
+.sympp-card-meta dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sympp-card-meta dd {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.84rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sympp-readiness {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.6rem;
+  padding: 0.24rem 0.5rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 0.76rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.sympp-readiness-ready {
+  border-color: rgba(16, 163, 127, 0.22);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.sympp-readiness-muted {
+  color: var(--muted);
+}
+
+.sympp-card-footer {
+  min-height: 1.45rem;
+  justify-content: space-between;
+}
+
+.sympp-card-footer a {
+  color: var(--accent-ink);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.sympp-live-pill {
+  color: var(--accent-ink);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.sympp-empty-state {
+  margin: 0;
+  padding: 1.25rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.58);
+}
+
 @media (max-width: 860px) {
   .app-shell {
     padding: 1rem 0.85rem 2rem;
@@ -447,6 +704,11 @@ pre,
   .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .sympp-board-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 
 @media (max-width: 560px) {
@@ -459,5 +721,24 @@ pre,
   .error-card {
     border-radius: 20px;
     padding: 1rem;
+  }
+
+  .sympp-board-filters {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .sympp-board-filters label {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .sympp-board-columns {
+    grid-template-columns: 1fr;
+    overflow-x: visible;
+  }
+
+  .sympp-board-column {
+    min-width: 0;
   }
 }
