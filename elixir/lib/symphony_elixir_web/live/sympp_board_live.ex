@@ -443,7 +443,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   defp migrate_dashboard_repo(repo, pid, database_path) do
     database_key = {repo, Repo.database_key(database_path)}
 
-    if migrated_dashboard_database?(database_key) do
+    if migrated_dashboard_database?(database_key) and dashboard_schema_migrated?(repo) do
       :ok
     else
       TrackerAdapter.run_with_migration_file_lock(database_path, fn ->
@@ -453,7 +453,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp migrate_dashboard_repo_if_needed(repo, pid, database_key) do
-    if migrated_dashboard_database?(database_key) do
+    if migrated_dashboard_database?(database_key) and dashboard_schema_migrated?(repo) do
       :ok
     else
       Ecto.Migrator.run(repo, WorkPackageRepository.migrations_path(), :up,
@@ -468,6 +468,33 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     error in Exqlite.Error -> {:error, {:migration_failed, error}}
     error -> {:error, {:migration_failed, error}}
   end
+
+  defp dashboard_schema_migrated?(repo) do
+    with {:ok, %{rows: rows}} <- repo.query("SELECT version FROM schema_migrations", []),
+         expected_versions when expected_versions != [] <- expected_migration_versions() do
+      migrated_versions = rows |> Enum.map(&migration_version/1) |> MapSet.new()
+      MapSet.subset?(MapSet.new(expected_versions), migrated_versions)
+    else
+      _missing -> false
+    end
+  rescue
+    _error in Exqlite.Error -> false
+  end
+
+  defp expected_migration_versions do
+    WorkPackageRepository.migrations_path()
+    |> File.ls!()
+    |> Enum.flat_map(fn filename ->
+      case Regex.run(~r/^(\d+)_/, filename) do
+        [_match, version] -> [version]
+        nil -> []
+      end
+    end)
+  end
+
+  defp migration_version([version]) when is_integer(version), do: Integer.to_string(version)
+  defp migration_version([version]) when is_binary(version), do: version
+  defp migration_version(_row), do: nil
 
   defp migrated_dashboard_database?(database_key), do: MapSet.member?(migrated_dashboard_databases(), database_key)
 

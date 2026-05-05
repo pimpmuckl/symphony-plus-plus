@@ -3,7 +3,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
-  import Plug.Conn, only: [put_req_header: 3]
+  import Plug.Conn, only: [get_resp_header: 2, put_req_header: 3]
 
   alias Phoenix.HTML.Safe
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
@@ -226,11 +226,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
   test "migrates an existing configured ledger before rendering the browser board" do
     database_path = WorkPackageFactory.database_path()
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+    original_migrated_databases = Application.get_env(:symphony_elixir, :sympp_board_live_migrated_databases)
 
     Application.put_env(:symphony_elixir, :sympp_repo_database, database_path)
 
     on_exit(fn ->
       restore_database_env(original_database)
+      restore_board_live_migrated_databases(original_migrated_databases)
       File.rm(database_path)
     end)
 
@@ -247,6 +249,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
 
         create_architect_grant_secret(Repo, "SYMPP-P5-021")
       end)
+
+    Application.put_env(
+      :symphony_elixir,
+      :sympp_board_live_migrated_databases,
+      MapSet.new([{Repo, Repo.database_key(database_path)}])
+    )
 
     {:ok, _view, html} = live(board_session_conn(secret), "/sympp/board")
 
@@ -326,10 +334,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     })
 
     secret = create_architect_grant_secret(Repo, "SYMPP-P5-020")
-    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/board")
 
-    assert html =~ "Running repo package"
-    refute html =~ "No Symphony++ work package ledger was found."
+    with_endpoint_repo(nil, fn ->
+      {:ok, _view, html} = live(board_session_conn(secret), "/sympp/board")
+
+      assert html =~ "Running repo package"
+      refute html =~ "No Symphony++ work package ledger was found."
+    end)
   end
 
   test "does not create or migrate a missing ledger on board load" do
@@ -601,6 +612,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
 
     assert get(build_conn(), "/sympp/board") |> response(401)
     assert get(auth_conn(worker_secret), "/sympp/board") |> response(403)
+
+    conn = post(build_conn(), "/sympp/board/session", %{"work_key" => worker_secret})
+
+    assert response(conn, 403) =~ "Board access"
+    assert response(conn, 403) =~ "not allowed"
+    refute conn |> get_resp_header("content-type") |> Enum.join("") =~ "application/json"
+  end
+
+  test "browser board session trims pasted work keys" do
+    create_board_package(%{
+      id: "SYMPP-P5-025",
+      kind: "dashboard",
+      status: "implementing",
+      title: "Trimmed key package",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "symphony-plus-plus/beta"
+    })
+
+    secret = create_architect_grant_secret(Repo, "SYMPP-P5-025")
+    conn = post(build_conn(), "/sympp/board/session", %{"work_key" => "  #{secret}\n"})
+
+    assert redirected_to(conn) == "/sympp/board"
   end
 
   test "browser session login preserves board access for filter navigation" do
@@ -855,6 +888,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
 
   defp restore_custom_repo_env(nil), do: Application.delete_env(:symphony_elixir, CustomBoardRepo)
   defp restore_custom_repo_env(config), do: Application.put_env(:symphony_elixir, CustomBoardRepo, config)
+
+  defp restore_board_live_migrated_databases(nil) do
+    Application.delete_env(:symphony_elixir, :sympp_board_live_migrated_databases)
+  end
+
+  defp restore_board_live_migrated_databases(databases) do
+    Application.put_env(:symphony_elixir, :sympp_board_live_migrated_databases, databases)
+  end
 
   defp seed_custom_repo(database_path, fun) do
     {:ok, pid} = CustomBoardRepo.start_link(database: database_path, name: CustomBoardRepo)

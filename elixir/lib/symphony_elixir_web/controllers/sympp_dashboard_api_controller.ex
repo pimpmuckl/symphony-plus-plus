@@ -41,6 +41,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @spec board_session(Conn.t(), map()) :: Conn.t()
   def board_session(conn, %{"work_key" => secret}) when is_binary(secret) do
+    secret = String.trim(secret)
+
     case authorize_board_secret(secret) do
       {:ok, %AccessGrant{} = grant} ->
         conn
@@ -48,7 +50,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         |> redirect(to: "/sympp/board")
 
       {:error, :forbidden} ->
-        conn |> error_response(:forbidden) |> Conn.halt()
+        conn |> board_login_response(status: 403, message: "The work key is not allowed to open the board.") |> Conn.halt()
 
       {:error, :database_busy} ->
         conn |> board_login_response(status: 503, message: "The dashboard ledger is busy. Try again.") |> Conn.halt()
@@ -203,7 +205,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp dashboard_storage_present? do
     case configured_repo() do
       Repo -> configured_repo_storage_present?()
-      nil -> persistent_database_present?(Repo.database_path_if_present())
+      nil -> configured_repo_storage_present?()
       configured_repo -> custom_repo_storage_present?(configured_repo)
     end
   end
