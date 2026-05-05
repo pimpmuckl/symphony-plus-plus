@@ -466,8 +466,8 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     current_head_sha = map_value(pr, :current_head_sha)
 
     cond do
-      stale? == true -> "PR stale @ #{short_sha(head_sha) || "unknown"}; branch @ #{short_sha(current_head_sha) || "unknown"}"
-      is_binary(head_sha) -> "PR head @ #{short_sha(head_sha) || head_sha}"
+      stale? == true -> "PR stale @ #{display_sha(head_sha) || "unknown"}; branch @ #{display_sha(current_head_sha) || "unknown"}"
+      is_binary(head_sha) -> "PR head @ #{display_sha(head_sha) || head_sha}"
       true -> nil
     end
   end
@@ -524,6 +524,18 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
 
   defp short_sha(head_sha) when is_binary(head_sha) and byte_size(head_sha) >= 7, do: String.slice(head_sha, 0, 7)
   defp short_sha(_head_sha), do: nil
+
+  defp display_sha(head_sha) when is_binary(head_sha) do
+    head_sha = String.trim(head_sha)
+
+    cond do
+      head_sha == "" -> nil
+      byte_size(head_sha) >= 7 -> String.slice(head_sha, 0, 7)
+      true -> head_sha
+    end
+  end
+
+  defp display_sha(_head_sha), do: nil
 
   defp timeline_title(%{type: "finding"} = event), do: event.title || "Finding"
   defp timeline_title(event), do: event.summary || event.status || "Progress"

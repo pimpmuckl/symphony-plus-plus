@@ -4763,6 +4763,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
   end
 
+  test "attach_pr with full current state satisfies PR readiness", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PR-ATTACH-STATE-READY", kind: "mcp", status: "ci_waiting"))
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-ATTACH-STATE-READY/worker", "head_sha" => "head-a"})
+
+    attach_tool(repo, session, "attach_pr", %{
+      "url" => "https://github.com/example/repo/pull/790",
+      "metadata" => %{
+        "head_sha" => "head-a",
+        "check_summary" => %{"conclusion" => "success"},
+        "review_state" => %{"state" => "approved"},
+        "merge_state" => %{"state" => "clean"}
+      }
+    })
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready review",
+      "tests" => ["mix test"],
+      "artifacts" => ["review.txt"],
+      "head_sha" => "head-a",
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-attach-state", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+  end
+
   test "abbreviated branch head does not satisfy PR metadata readiness", %{repo: repo} do
     assert {:ok, package} =
              WorkPackageRepository.create(

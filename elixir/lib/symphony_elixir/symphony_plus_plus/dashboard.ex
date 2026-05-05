@@ -978,7 +978,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp metadata_present?(_progress_events, _type, _head_sha), do: false
 
-  defp current_pr_state_payload?(%{"source_tool" => "sync_pr"} = payload) do
+  defp current_pr_state_payload?(%{"source_tool" => source_tool} = payload) when source_tool in ["attach_pr", "sync_pr"] do
     Enum.any?(["check_summary", "review_state", "merge_state"], fn key ->
       case Map.get(payload, key) do
         value when is_map(value) -> map_size(value) > 0

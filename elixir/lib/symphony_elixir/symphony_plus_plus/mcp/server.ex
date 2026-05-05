@@ -1669,8 +1669,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp pr_payload_ref(_payload), do: nil
 
   defp chronological_progress_events(progress_events) do
-    Enum.sort_by(progress_events, fn %ProgressEvent{created_at: created_at, sequence: sequence} ->
-      {created_at || DateTime.from_unix!(0), sequence || 0}
+    Enum.sort_by(progress_events, fn %ProgressEvent{created_at: created_at, sequence: sequence, id: id} ->
+      {created_at || DateTime.from_unix!(0), sequence || 0, id || ""}
     end)
   end
 
@@ -3288,7 +3288,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp metadata_present?(_progress_events, _type, _head_sha), do: false
 
-  defp current_pr_state_payload?(%{"source_tool" => "sync_pr"} = payload) do
+  defp current_pr_state_payload?(%{"source_tool" => source_tool} = payload) when source_tool in ["attach_pr", "sync_pr"] do
     Enum.any?(["check_summary", "review_state", "merge_state"], fn key ->
       case Map.get(payload, key) do
         value when is_map(value) -> map_size(value) > 0
