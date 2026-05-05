@@ -87,6 +87,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
     assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(kind: "mcp", policy_template: "mcp"))
     assert package.policy_template == "mcp"
 
+    assert {:ok, current_pr_state_package} =
+             Repository.create(repo, WorkPackageFactory.attrs(kind: "mcp", policy_template: "mcp_current_pr_state"))
+
+    assert current_pr_state_package.policy_template == "mcp_current_pr_state"
+
     assert {:error, %Ecto.Changeset{} = mismatch_changeset} =
              Repository.create(repo, WorkPackageFactory.attrs(kind: "quick_fix", policy_template: "hotfix"))
 

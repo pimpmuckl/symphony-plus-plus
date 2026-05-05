@@ -783,6 +783,100 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert "pr_attached" in missing["missing"]
   end
 
+  test "dashboard current PR state gate validates synced state separately from attachment", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-CURRENT-PR-STATE",
+                 kind: "mcp",
+                 status: "ready_for_human_merge",
+                 policy_template: "mcp_current_pr_state"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    timestamp = ~U[2026-05-05 00:00:00Z]
+
+    assert {:ok, _branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Branch attached",
+               status: "branch_attached",
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "head-a"},
+               created_at: DateTime.add(timestamp, 1, :second)
+             })
+
+    assert {:ok, _pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR attached",
+               status: "pr_attached",
+               payload: %{type: "pr", source_tool: "attach_pr", url: "https://github.com/example/repo/pull/8", head_sha: "head-a"},
+               created_at: DateTime.add(timestamp, 2, :second)
+             })
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    refute "pr_attached" in missing["missing"]
+    assert "current_pr_state" in missing["missing"]
+
+    assert {:ok, _invalid_sync} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR synced",
+               status: "pr_synced",
+               payload: %{
+                 type: "pr",
+                 source_tool: "sync_pr",
+                 url: "https://github.com/example/repo/pull/8",
+                 head_sha: "head-a",
+                 check_summary: %{token: "x"}
+               },
+               created_at: DateTime.add(timestamp, 3, :second)
+             })
+
+    invalid_payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    invalid_missing = Enum.find(invalid_payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert "current_pr_state" in invalid_missing["missing"]
+
+    assert {:ok, _valid_sync} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR synced",
+               status: "pr_synced",
+               payload: %{
+                 type: "pr",
+                 source_tool: "sync_pr",
+                 url: "https://github.com/example/repo/pull/8",
+                 head_sha: "head-a",
+                 check_summary: %{conclusion: "success"}
+               },
+               created_at: DateTime.add(timestamp, 4, :second)
+             })
+
+    valid_payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    valid_missing = Enum.find(valid_payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    refute "current_pr_state" in valid_missing["missing"]
+
+    assert {:ok, _new_branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Branch advanced",
+               status: "branch_attached",
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "head-b"},
+               created_at: DateTime.add(timestamp, 5, :second)
+             })
+
+    stale_payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    stale_missing = Enum.find(stale_payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert "current_pr_state" in stale_missing["missing"]
+  end
+
   test "detail API exposes stale synced PR metadata without secrets", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(
@@ -971,6 +1065,85 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert payload["metadata"]["pr"]["url"] == "https://github.com/example/repo/pull/11"
     assert payload["metadata"]["pr"]["stale"] == true
     assert payload["metadata"]["pr"]["current_head_sha"] == "current-head"
+  end
+
+  test "metadata prefers synced PR state over later bare reattach for display", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PR-SYNC-DISPLAY-PREFERRED", status: "planning"))
+
+    architect_secret = create_architect_grant_secret(repo, work_package.id)
+
+    assert {:ok, _branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Branch attached",
+               status: "branch_attached",
+               payload: %{
+                 type: "branch",
+                 source_tool: "attach_branch",
+                 branch: "agent/#{work_package.id}",
+                 head_sha: "current-head"
+               },
+               created_at: ~U[2026-05-05 00:00:00Z]
+             })
+
+    assert {:ok, _first_attach} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR attached",
+               status: "pr_attached",
+               payload: %{
+                 type: "pr",
+                 source_tool: "attach_pr",
+                 repository: "example/repo",
+                 number: 10,
+                 url: "https://github.com/example/repo/pull/10",
+                 head_sha: "current-head"
+               },
+               created_at: ~U[2026-05-05 00:00:01Z]
+             })
+
+    assert {:ok, _sync} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR synced",
+               status: "pr_synced",
+               payload: %{
+                 type: "pr",
+                 source_tool: "sync_pr",
+                 repository: "example/repo",
+                 number: 10,
+                 url: "https://github.com/example/repo/pull/10",
+                 head_sha: "current-head",
+                 check_summary: %{conclusion: "success"},
+                 review_state: %{state: "approved"},
+                 merge_state: %{state: "clean"}
+               },
+               created_at: ~U[2026-05-05 00:00:02Z]
+             })
+
+    assert {:ok, _reattach} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR reattached",
+               status: "pr_attached",
+               payload: %{
+                 type: "pr",
+                 source_tool: "attach_pr",
+                 repository: "example/repo",
+                 number: 10,
+                 url: "https://github.com/example/repo/pull/10",
+                 head_sha: "current-head"
+               },
+               created_at: ~U[2026-05-05 00:00:03Z]
+             })
+
+    payload = json_response(get(auth_conn(architect_secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+
+    assert payload["metadata"]["pr"]["source_tool"] == "sync_pr"
+    assert payload["metadata"]["pr"]["check_summary"]["conclusion"] == "success"
+    assert payload["metadata"]["pr"]["review_state"]["state"] == "approved"
+    assert payload["metadata"]["pr"]["merge_state"]["state"] == "clean"
   end
 
   test "unknown policy lookup does not invent merge or review evidence requirements", %{repo: repo} do

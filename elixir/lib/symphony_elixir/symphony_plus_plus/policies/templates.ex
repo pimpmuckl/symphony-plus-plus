@@ -46,6 +46,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       readiness_requirements: ["acceptance_criteria_met", "tests_passed", "review_t1_green", "review_t2_green"],
       review_suite: %{required: ["review_t1", "review_t2"], optional: ["review_github"]}
     },
+    "mcp_current_pr_state" => %{
+      work_package_kind: "mcp",
+      template: "worker_package",
+      constraints: %{
+        expiry_seconds: 86_400,
+        planning_depth: "package",
+        terminal_readiness_status: "ready_for_human_merge"
+      },
+      required_gates: ["package_acceptance", "focused_tests", "review_t1", "review_t2", "human_merge", "current_pr_state"],
+      readiness_requirements: [
+        "acceptance_criteria_met",
+        "tests_passed",
+        "review_t1_green",
+        "review_t2_green",
+        "current_pr_state"
+      ],
+      review_suite: %{required: ["review_t1", "review_t2"], optional: ["review_github"]}
+    },
     "skill" => %{
       template: "worker_package",
       constraints: %{
@@ -141,5 +159,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       end)
 
     if known?, do: {:error, :policy_template_mismatch}, else: {:error, :unknown_policy_template}
+  end
+
+  @spec key?(String.t()) :: boolean()
+  def key?(key) when is_binary(key), do: Map.has_key?(@templates, key)
+
+  @spec compatible_kind?(String.t(), String.t()) :: boolean()
+  def compatible_kind?(kind, policy_key) when is_binary(kind) and is_binary(policy_key) do
+    case Map.fetch(@templates, policy_key) do
+      {:ok, template} -> Map.get(template, :work_package_kind, policy_key) == kind
+      :error -> false
+    end
+  end
+
+  @spec work_package_kind(String.t()) :: {:ok, String.t()} | {:error, :unknown_policy_template}
+  def work_package_kind(policy_key) when is_binary(policy_key) do
+    case Map.fetch(@templates, policy_key) do
+      {:ok, template} -> {:ok, Map.get(template, :work_package_kind, policy_key)}
+      :error -> {:error, :unknown_policy_template}
+    end
+  end
+
+  @spec matches?(String.t(), String.t()) :: boolean()
+  def matches?(policy_key, requested) when is_binary(policy_key) and is_binary(requested) do
+    case Map.fetch(@templates, policy_key) do
+      {:ok, template} -> requested in [policy_key, template.template, Map.get(template, :work_package_kind)]
+      :error -> false
+    end
   end
 end

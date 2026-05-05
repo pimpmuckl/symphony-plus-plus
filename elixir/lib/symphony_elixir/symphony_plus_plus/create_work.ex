@@ -357,8 +357,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
 
   defp default_kind(policy_templates) do
     with {:ok, policy_key, policy} <- Templates.resolve_key(policy_templates),
+         {:ok, kind} <- Templates.work_package_kind(policy_key),
          :ok <- reject_phase_child_policy(policy) do
-      {:ok, policy_key}
+      {:ok, kind}
     end
   end
 
@@ -373,12 +374,49 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   end
 
   defp policy_for(kind, policy_templates) do
-    with {:ok, ^kind, policy} <- Templates.resolve_key([kind | policy_templates]),
+    with {:ok, policy_key, policy} <- policy_key_for(kind, policy_templates),
          :ok <- reject_phase_child_policy(policy) do
-      {:ok, kind, policy}
+      {:ok, policy_key, policy}
     else
-      {:ok, _policy_key, _policy} -> {:error, :policy_template_mismatch}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp policy_key_for(kind, policy_templates) do
+    case exact_policy_key(kind, policy_templates) do
+      {:ok, policy_key} ->
+        with {:ok, policy} <- Templates.expand(policy_key),
+             true <- Templates.compatible_kind?(kind, policy_key),
+             true <- Enum.all?(policy_templates, &Templates.matches?(policy_key, &1)) do
+          {:ok, policy_key, policy}
+        else
+          false -> {:error, :policy_template_mismatch}
+          {:error, reason} -> {:error, reason}
+        end
+
+      :none ->
+        with {:ok, policy_key, policy} <- Templates.resolve_key([kind | policy_templates]),
+             true <- Templates.compatible_kind?(kind, policy_key) do
+          {:ok, policy_key, policy}
+        else
+          false -> {:error, :policy_template_mismatch}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp exact_policy_key(kind, policy_templates) do
+    exact_keys = policy_templates |> Enum.filter(&Templates.key?/1) |> Enum.uniq()
+    non_kind_keys = Enum.reject(exact_keys, &(&1 == kind))
+
+    case {exact_keys, non_kind_keys} do
+      {[], []} -> :none
+      {[_kind], []} -> {:ok, kind}
+      {_keys, [policy_key]} -> {:ok, policy_key}
+      {_keys, _multiple} -> {:error, :policy_template_mismatch}
     end
   end
 

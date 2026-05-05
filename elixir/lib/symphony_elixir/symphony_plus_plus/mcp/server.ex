@@ -1618,11 +1618,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, payload} <- PullRequest.metadata(metadata, ref, pr_fallback_head_sha(arguments, source_tool)) do
       {:ok, Map.put(payload, "source_tool", source_tool)}
     else
-      {:tool_error, reason} -> {:tool_error, reason}
-      {:ok, nil} -> {:error, :not_found}
-      {:error, reason} when reason in [:database_busy] -> {:error, reason}
-      {:error, {reason, _detail} = error} when reason in [:storage_failed, :migration_failed, :service_unavailable] -> {:error, error}
-      {:error, reason} -> {:tool_error, reason_text(reason)}
+      {:tool_error, reason} ->
+        {:tool_error, reason}
+
+      {:ok, nil} ->
+        {:error, :not_found}
+
+      {:error, reason} when reason in [:database_busy] ->
+        {:error, reason}
+
+      {:error, {reason, _detail} = error} when reason in [:storage_failed, :migration_failed, :service_unavailable] ->
+        {:error, error}
+
+      {:error, reason} ->
+        {:tool_error, reason_text(reason)}
     end
   end
 
@@ -2874,6 +2883,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {tests_missing?(state), "tests_passed"},
       {merge_metadata_missing?(state, "branch"), "branch_attached"},
       {merge_metadata_missing?(state, "pr"), "pr_attached"},
+      {current_pr_state_missing?(state), "current_pr_state"},
       {review_package_missing?(state, required_review_lanes), "review_package_submitted"},
       {review_artifacts_missing?(state, required_review_lanes), "review_artifacts_attached"},
       {review_lanes_missing?(state, required_review_lanes), "review_lanes_complete"},
@@ -2899,6 +2909,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     merge_required?(state.work_package) and
       not metadata_present?(state.progress_events, metadata_type, current_head_sha)
+  end
+
+  defp current_pr_state_missing?(state) do
+    current_head_sha = latest_current_head_sha(state.progress_events)
+
+    merge_required?(state.work_package) and
+      pr_required?(state.work_package) and
+      required_gate?(state.work_package, "current_pr_state") and
+      not current_pr_state_present?(state.progress_events, current_head_sha)
   end
 
   defp review_package_missing?(state, required_review_lanes) do
@@ -3264,8 +3283,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, attached_ref} ->
         Enum.any?(progress_events, fn
           %ProgressEvent{payload: payload} = event when is_map(payload) ->
-            payload_type?(event, "pr", ["attach_pr", "sync_pr"]) and head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
-              pr_payload_ref(payload) == attached_ref and current_pr_state_payload?(payload)
+            payload_type?(event, "pr", "attach_pr") and head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
+              pr_payload_ref(payload) == attached_ref
 
           %ProgressEvent{} ->
             false
@@ -3288,19 +3307,48 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp metadata_present?(_progress_events, _type, _head_sha), do: false
 
+  defp current_pr_state_present?(progress_events, head_sha) when is_binary(head_sha) do
+    case latest_attached_pr_ref(progress_events) do
+      {:ok, attached_ref} ->
+        Enum.any?(progress_events, fn
+          %ProgressEvent{payload: payload} = event when is_map(payload) ->
+            payload_type?(event, "pr", ["attach_pr", "sync_pr"]) and head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
+              pr_payload_ref(payload) == attached_ref and current_pr_state_payload?(payload)
+
+          %ProgressEvent{} ->
+            false
+        end)
+
+      {:tool_error, _reason} ->
+        false
+    end
+  end
+
+  defp current_pr_state_present?(_progress_events, _head_sha), do: false
+
   defp current_pr_state_payload?(%{"source_tool" => source_tool} = payload) when source_tool in ["attach_pr", "sync_pr"] do
-    Enum.any?(["check_summary", "review_state", "merge_state"], fn key ->
-      case Map.get(payload, key) do
-        value when is_map(value) -> map_size(value) > 0
-        value when is_list(value) -> value != []
-        value when is_binary(value) -> String.trim(value) != ""
-        nil -> false
-        _value -> true
-      end
-    end)
+    semantic_pr_state?(payload, "check_summary", ["conclusion", "state", "status"]) or
+      semantic_pr_state?(payload, "review_state", ["decision", "state", "status"]) or
+      semantic_pr_state?(payload, "merge_state", ["mergeable_state", "state", "status"])
   end
 
   defp current_pr_state_payload?(_payload), do: false
+
+  defp semantic_pr_state?(payload, key, semantic_keys) do
+    case Map.get(payload, key) do
+      value when is_map(value) ->
+        Enum.any?(semantic_keys, fn semantic_key ->
+          value |> semantic_pr_value(semantic_key) |> filled_string?()
+        end)
+
+      _value ->
+        false
+    end
+  end
+
+  defp semantic_pr_value(value, key), do: Map.get(value, key) || Map.get(value, String.to_atom(key))
+
+  defp filled_string?(value), do: is_binary(value) and String.trim(value) != ""
 
   defp recommendation_artifact_recorded?(artifacts, work_package_id) do
     artifact_id = recommendation_artifact_id(work_package_id)

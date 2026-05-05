@@ -554,6 +554,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       {tests_missing?(context), "tests_passed"},
       {merge_metadata_missing?(context, "branch"), "branch_attached"},
       {merge_metadata_missing?(context, "pr"), "pr_attached"},
+      {current_pr_state_missing?(context), "current_pr_state"},
       {review_package_missing?(context), "review_package_submitted"},
       {review_artifacts_missing?(context), "review_artifacts_attached"},
       {review_lanes_missing?(context), "review_lanes_complete"},
@@ -579,6 +580,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp merge_metadata_missing?(context, type) do
     merge_required?(context.work_package) and
       not metadata_present?(context.progress_events, type, latest_current_head_sha(context.progress_events))
+  end
+
+  defp current_pr_state_missing?(context) do
+    merge_required?(context.work_package) and pr_required?(context.work_package) and
+      required_gate?(context.work_package, "current_pr_state") and
+      not current_pr_state_present?(context.progress_events, latest_current_head_sha(context.progress_events))
   end
 
   defp review_package_missing?(context) do
@@ -952,8 +959,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       {:ok, attached_ref} ->
         Enum.any?(progress_events, fn
           %ProgressEvent{payload: payload} = event when is_map(payload) ->
-            payload_type?(event, "pr", ["attach_pr", "sync_pr"]) and head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
-              pr_payload_ref(payload) == attached_ref and current_pr_state_payload?(payload)
+            payload_type?(event, "pr", "attach_pr") and head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
+              pr_payload_ref(payload) == attached_ref
 
           %ProgressEvent{} ->
             false
@@ -978,19 +985,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp metadata_present?(_progress_events, _type, _head_sha), do: false
 
+  defp current_pr_state_present?(progress_events, head_sha) when is_binary(head_sha) do
+    case latest_attached_pr_ref(progress_events) do
+      {:ok, attached_ref} ->
+        Enum.any?(progress_events, fn
+          %ProgressEvent{payload: payload} = event when is_map(payload) ->
+            payload_type?(event, "pr", ["attach_pr", "sync_pr"]) and head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
+              pr_payload_ref(payload) == attached_ref and current_pr_state_payload?(payload)
+
+          %ProgressEvent{} ->
+            false
+        end)
+
+      {:error, :not_found} ->
+        false
+    end
+  end
+
+  defp current_pr_state_present?(_progress_events, _head_sha), do: false
+
   defp current_pr_state_payload?(%{"source_tool" => source_tool} = payload) when source_tool in ["attach_pr", "sync_pr"] do
-    Enum.any?(["check_summary", "review_state", "merge_state"], fn key ->
-      case Map.get(payload, key) do
-        value when is_map(value) -> map_size(value) > 0
-        value when is_list(value) -> value != []
-        value when is_binary(value) -> String.trim(value) != ""
-        nil -> false
-        _value -> true
-      end
-    end)
+    semantic_pr_state?(payload, "check_summary", ["conclusion", "state", "status"]) or
+      semantic_pr_state?(payload, "review_state", ["decision", "state", "status"]) or
+      semantic_pr_state?(payload, "merge_state", ["mergeable_state", "state", "status"])
   end
 
   defp current_pr_state_payload?(_payload), do: false
+
+  defp semantic_pr_state?(payload, key, semantic_keys) do
+    case Map.get(payload, key) do
+      value when is_map(value) ->
+        Enum.any?(semantic_keys, fn semantic_key ->
+          value |> semantic_pr_value(semantic_key) |> filled_string?()
+        end)
+
+      _value ->
+        false
+    end
+  end
+
+  defp semantic_pr_value(value, key), do: Map.get(value, key) || Map.get(value, String.to_atom(key))
 
   defp metadata_tool("branch"), do: "attach_branch"
   defp metadata_tool("pr"), do: ["attach_pr", "sync_pr"]
@@ -1026,20 +1060,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp latest_pr_payload(progress_events, :none) do
     case latest_attached_pr_ref(progress_events) do
-      {:ok, attached_ref} -> latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], :any, attached_ref)
-      {:error, :not_found} -> latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"])
+      {:ok, attached_ref} ->
+        latest_current_pr_payload(progress_events, :any, attached_ref) ||
+          latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], :any, attached_ref)
+
+      {:error, :not_found} ->
+        latest_current_pr_payload(progress_events, :any, :any) ||
+          latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"])
     end
   end
 
   defp latest_pr_payload(progress_events, head_filter) do
     case latest_attached_pr_ref(progress_events) do
       {:ok, attached_ref} ->
-        latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], head_filter, attached_ref) ||
+        latest_current_pr_payload(progress_events, head_filter, attached_ref) ||
+          latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], head_filter, attached_ref) ||
+          latest_current_pr_payload(progress_events, :any, attached_ref) ||
           latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], :any, attached_ref)
 
       {:error, :not_found} ->
-        latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], head_filter) ||
+        latest_current_pr_payload(progress_events, head_filter, :any) ||
+          latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], head_filter) ||
+          latest_current_pr_payload(progress_events, :any, :any) ||
           latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"])
+    end
+  end
+
+  defp latest_current_pr_payload(progress_events, head_filter, attached_ref) do
+    progress_events
+    |> chronological_progress_events()
+    |> Enum.reverse()
+    |> Enum.find(fn
+      %ProgressEvent{payload: payload} = event when is_map(payload) ->
+        payload_type?(event, "pr", ["attach_pr", "sync_pr"]) and payload_head_matches?(payload, head_filter) and
+          pr_ref_matches?(payload, attached_ref) and current_pr_state_payload?(payload)
+
+      %ProgressEvent{} ->
+        false
+    end)
+    |> case do
+      %ProgressEvent{payload: payload} -> redacted_json(payload || %{})
+      nil -> nil
     end
   end
 
@@ -1076,6 +1137,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       nil -> nil
     end
   end
+
+  defp pr_ref_matches?(_payload, :any), do: true
+  defp pr_ref_matches?(payload, pr_ref), do: pr_payload_ref(payload) == pr_ref
 
   defp latest_attached_pr_ref(progress_events) do
     progress_events

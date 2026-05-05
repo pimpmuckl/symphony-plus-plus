@@ -4709,14 +4709,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert "pr_attached" in missing
   end
 
-  test "merge-gated readiness requires synced PR state for the attached head", %{repo: repo} do
-    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PR-SYNC-READY", kind: "mcp", status: "ci_waiting"))
+  test "attach_pr alone satisfies pr_attached for policies without current PR state", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PR-ATTACH-READY", kind: "mcp", status: "ci_waiting"))
     append_done_plan(repo, package.id)
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
 
-    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-SYNC-READY/worker", "head_sha" => "head-a"})
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-ATTACH-READY/worker", "head_sha" => "head-a"})
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/790", "head_sha" => "head-a"})
 
     attach_tool(repo, session, "submit_review_package", %{
@@ -4735,23 +4735,86 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
-    assert "pr_attached" in get_in(attach_only_response, ["error", "data", "missing"])
+    assert get_in(attach_only_response, ["result", "structuredContent", "ready"]) == true
+  end
 
-    attach_tool(repo, session, "sync_pr", %{
-      "url" => "https://github.com/example/repo/pull/790",
-      "metadata" => %{"head_sha" => "head-a"}
+  test "current PR state policy fails missing, invalid, and stale sync state", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-PR-SYNC-READY",
+                 kind: "mcp",
+                 status: "ci_waiting",
+                 policy_template: "mcp_current_pr_state"
+               )
+             )
+
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-SYNC-READY/worker", "head_sha" => "head-a"})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/790", "head_sha" => "head-a"})
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready review",
+      "tests" => ["mix test"],
+      "artifacts" => ["review.txt"],
+      "head_sha" => "head-a",
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
     })
 
-    empty_sync_response =
+    missing_state_response =
       MCPHarness.request(
-        %{"jsonrpc" => "2.0", "id" => "ready-empty-sync", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        %{"jsonrpc" => "2.0", "id" => "ready-missing-state", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
         repo: repo,
         session: session
       )
 
-    assert "pr_attached" in get_in(empty_sync_response, ["error", "data", "missing"])
+    missing = get_in(missing_state_response, ["error", "data", "missing"])
+    refute "pr_attached" in missing
+    assert "current_pr_state" in missing
 
-    sync_pr_state(repo, session, "https://github.com/example/repo/pull/790", "head-a")
+    attach_tool(repo, session, "sync_pr", %{
+      "url" => "https://github.com/example/repo/pull/790",
+      "metadata" => %{"head_sha" => "head-a", "check_summary" => %{"token" => "x"}}
+    })
+
+    invalid_sync_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-invalid-sync", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "current_pr_state" in get_in(invalid_sync_response, ["error", "data", "missing"])
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-SYNC-READY/worker", "head_sha" => "head-b"})
+
+    stale_sync_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-stale-sync", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "current_pr_state" in get_in(stale_sync_response, ["error", "data", "missing"])
+
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/790", "head_sha" => "head-b"})
+
+    sync_pr_state(repo, session, "https://github.com/example/repo/pull/790", "head-b")
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready review for advanced head",
+      "tests" => ["mix test"],
+      "artifacts" => ["review-head-b.txt"],
+      "head_sha" => "head-b",
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
 
     ready_response =
       MCPHarness.request(
@@ -4764,7 +4827,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   end
 
   test "attach_pr with full current state satisfies PR readiness", %{repo: repo} do
-    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PR-ATTACH-STATE-READY", kind: "mcp", status: "ci_waiting"))
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-PR-ATTACH-STATE-READY",
+                 kind: "mcp",
+                 status: "ci_waiting",
+                 policy_template: "mcp_current_pr_state"
+               )
+             )
+
     append_done_plan(repo, package.id)
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
@@ -5151,6 +5224,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert "recommendation_artifact_recorded" in get_in(missing_recommendation_response, ["error", "data", "missing"])
+    refute "current_pr_state" in get_in(missing_recommendation_response, ["error", "data", "missing"])
 
     spoofed_artifact_id =
       "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, Enum.join([package.id, "recommendation", "recommendation.md"], ":")), padding: false)
