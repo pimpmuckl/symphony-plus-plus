@@ -171,6 +171,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert grant_id == grant.id
     assert display_key == grant.display_key
     assert [%{"status" => "completed", "session_id" => "session-1"}] = payload["agent_runs"]
+    assert [%{"runtime_state" => "terminal", "stale" => false}] = payload["agent_runs"]
 
     encoded = Jason.encode!(payload)
     assert encoded =~ "Sibling package progress"
@@ -183,6 +184,125 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     refute encoded =~ "other-workspace"
     refute encoded =~ "raw-secret-value"
     assert encoded =~ "[REDACTED]"
+  end
+
+  test "stale calculation only flags active or queued runs past the threshold", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUNTIME-STALE", status: "ready_for_worker"))
+
+    now = DateTime.utc_now(:microsecond)
+
+    fresh_run =
+      %AgentRun{
+        work_package_id: work_package.id,
+        status: "running",
+        last_seen_at: DateTime.add(now, -299, :second)
+      }
+
+    stale_run =
+      %AgentRun{
+        work_package_id: work_package.id,
+        status: "starting",
+        last_seen_at: DateTime.add(now, -300, :second)
+      }
+
+    stopped_run =
+      %AgentRun{
+        work_package_id: work_package.id,
+        status: "stopped",
+        last_seen_at: DateTime.add(now, -900, :second)
+      }
+
+    refute Dashboard.stale_agent_run?(fresh_run, now, 300)
+    assert Dashboard.stale_agent_run?(stale_run, now, 300)
+    refute Dashboard.stale_agent_run?(stopped_run, now, 300)
+  end
+
+  test "runtime alert indicators expose stale, blocker, failed, stopped, and queued states without secrets", %{repo: repo} do
+    %{work_package: work_package, work_key_secret: secret, grant: grant} =
+      create_dashboard_fixture(repo, id: "SYMPP-RUNTIME-API", status: "blocked")
+
+    assert {:ok, [run]} = AgentRunRepository.list_for_work_package(repo, work_package.id)
+    assert {:ok, failed_run} = AgentRunRepository.mark_failed(repo, run.id, "failed with Bearer raw-secret-value")
+
+    assert {:ok, stopped_run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: work_package.id,
+               access_grant_id: grant.id,
+               actor_id: "worker-1",
+               status: "running",
+               attempt: 2,
+               worker_task_handle: "stopped-task"
+             })
+
+    assert {:ok, _stopped_run} = AgentRunRepository.mark_stopped(repo, stopped_run.id, "operator stopped raw-secret-value")
+
+    assert {:ok, queued_run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: work_package.id,
+               access_grant_id: grant.id,
+               actor_id: "worker-1",
+               status: "starting",
+               attempt: 3,
+               worker_task_handle: "queued-task",
+               session_id: "session-queued"
+             })
+
+    stale_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -600, :second)
+
+    assert {:ok, _stale_queued_run} =
+             queued_run
+             |> AgentRun.update_changeset(%{last_seen_at: stale_seen_at})
+             |> repo.update()
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+
+    assert payload["summary"]["queued_agent_run_count"] == 1
+    assert payload["summary"]["stopped_agent_run_count"] == 1
+    assert payload["summary"]["failed_agent_run_count"] == 1
+    assert payload["summary"]["stale_agent_run_count"] == 1
+    assert payload["summary"]["runtime"]["stale_heartbeat_after_seconds"] == 300
+
+    assert Enum.any?(payload["agent_runs"], &(&1["id"] == failed_run.id and &1["runtime_state"] == "terminal"))
+    assert Enum.any?(payload["agent_runs"], &(&1["runtime_state"] == "stopped"))
+    assert Enum.any?(payload["agent_runs"], &(&1["runtime_state"] == "queued" and &1["stale"] == true))
+
+    alerts = Map.new(payload["alert_indicators"], &{&1["type"], &1})
+    assert alerts["blocker"]["active"] == true
+    assert alerts["stale_heartbeat"]["active"] == true
+    assert alerts["failed_run"]["active"] == true
+    assert alerts["scope_drift"]["placeholder"] == true
+    refute alerts["scope_drift"]["active"]
+
+    encoded = Jason.encode!(payload)
+    refute encoded =~ "raw-secret-value"
+    refute encoded =~ "Bearer "
+  end
+
+  test "ready packages missing readiness evidence are flagged in API", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-MISSING",
+                 kind: "mcp",
+                 status: "ready_for_human_merge",
+                 policy_template: "mcp"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert missing["active"] == true
+    assert "plan_complete" in missing["missing"]
+    assert "acceptance_criteria_met" in missing["missing"]
+    assert "tests_passed" in missing["missing"]
+    assert "branch_attached" in missing["missing"]
+    assert "pr_attached" in missing["missing"]
+    assert "review_package_submitted" in missing["missing"]
   end
 
   test "card summaries use total counts and full progress metadata", %{repo: repo} do

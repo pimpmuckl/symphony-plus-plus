@@ -21,6 +21,12 @@ Add runtime view and basic alert indicators for stale agents, blockers, scope dr
 - Add scope-drift placeholder until GitHub sync lands.
 - Document alert thresholds.
 
+## Alert thresholds
+
+- Active or queued AgentRuns are flagged as stale when `last_seen_at` is at least 300 seconds old.
+- Stale heartbeat indicators are read-only dashboard hints. They do not stop, retry, revoke, page, notify, or otherwise mutate runtime state.
+- Scope drift remains a placeholder in this package. It is surfaced as not configured until a later GitHub-sync package owns changed-file evidence.
+
 ## Acceptance criteria
 
 - [ ] Human can see active worker runs and stale state.

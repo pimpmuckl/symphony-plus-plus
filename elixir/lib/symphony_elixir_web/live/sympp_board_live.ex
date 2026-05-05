@@ -147,9 +147,15 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
                     </span>
                   </div>
 
+                  <div :if={active_alerts(card) != []} class="sympp-alert-row">
+                    <span :for={alert <- active_alerts(card)} class={alert_class(alert)}>
+                      <%= alert.label %>
+                    </span>
+                  </div>
+
                   <footer class="sympp-card-footer">
                     <a :if={pr_url(card)} href={pr_url(card)} target="_blank" rel="noopener noreferrer">PR</a>
-                    <span :if={active_agent_run?(card)} class="sympp-live-pill">active run</span>
+                    <span :if={active_agent_run?(card)} class="sympp-live-pill"><%= runtime_label(card) %></span>
                   </footer>
                 </article>
               </div>
@@ -666,6 +672,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
     cond do
       (card.active_blocker_count || 0) > 0 -> "#{base} sympp-work-card-blocked"
+      active_alert_type?(card, "stale_heartbeat") -> "#{base} sympp-work-card-warning"
       active_agent_run?(card) -> "#{base} sympp-work-card-active"
       true -> base
     end
@@ -736,6 +743,30 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   defp metadata_value(_card, _atom_key, _string_key), do: nil
 
   defp active_agent_run?(card), do: not is_nil(card.active_agent_run)
+
+  defp active_alerts(card) do
+    case Map.get(card, :alert_indicators) || Map.get(card, "alert_indicators") do
+      alerts when is_list(alerts) -> Enum.filter(alerts, &alert_active?/1)
+      _alerts -> []
+    end
+  end
+
+  defp active_alert_type?(card, type) do
+    Enum.any?(active_alerts(card), &((Map.get(&1, :type) || Map.get(&1, "type")) == type))
+  end
+
+  defp alert_active?(alert), do: Map.get(alert, :active) == true or Map.get(alert, "active") == true
+
+  defp alert_class(alert) do
+    case Map.get(alert, :severity) || Map.get(alert, "severity") do
+      "critical" -> "sympp-alert-pill sympp-alert-critical"
+      "warning" -> "sympp-alert-pill sympp-alert-warning"
+      _severity -> "sympp-alert-pill"
+    end
+  end
+
+  defp runtime_label(%{runtime: %{stale_count: stale_count}}) when is_integer(stale_count) and stale_count > 0, do: "stale run"
+  defp runtime_label(_card), do: "active run"
 
   defp package_detail_path(%{id: id}), do: "work-packages/#{path_segment(id)}"
 

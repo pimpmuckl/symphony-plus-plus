@@ -102,6 +102,55 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     assert html =~ "Plan 1/2"
     assert html =~ "Review attached"
     assert html =~ "active run"
+    assert html =~ "Blockers"
+  end
+
+  test "renders runtime alert indicators for stale runs and missing readiness evidence" do
+    stale_package =
+      create_board_package(%{
+        id: "SYMPP-P5-004-STALE",
+        kind: "dashboard",
+        status: "implementing",
+        title: "Stale runtime package",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "symphony-plus-plus/beta",
+        blocker?: true
+      })
+
+    assert {:ok, [run]} = AgentRunRepository.list_for_work_package(Repo, stale_package.id)
+    stale_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -600, :second)
+
+    assert {:ok, _stale_run} =
+             run
+             |> AgentRun.update_changeset(%{last_seen_at: stale_seen_at})
+             |> Repo.update()
+
+    assert {:ok, missing_package} =
+             WorkPackageRepository.create(
+               Repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-P5-004-MISSING",
+                 kind: "mcp",
+                 status: "ready_for_human_merge",
+                 title: "Missing evidence package",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta",
+                 policy_template: "mcp"
+               )
+             )
+
+    secret = create_architect_grant_secret(Repo, stale_package.id)
+    create_architect_grant_secret(Repo, missing_package.id)
+
+    {:ok, _view, html} = live(auth_conn(secret), "/sympp/board")
+
+    assert html =~ "Stale runtime package"
+    assert html =~ "stale run"
+    assert html =~ "Stale heartbeat"
+    assert html =~ "Blockers"
+    assert html =~ "Missing evidence package"
+    assert html =~ "Missing readiness evidence"
+    refute html =~ ~r/<button[^>]*>\s*(Stop|Retry|Merge|Revoke|Claim|Notify)\s*<\/button>/
   end
 
   test "renders empty board state" do
