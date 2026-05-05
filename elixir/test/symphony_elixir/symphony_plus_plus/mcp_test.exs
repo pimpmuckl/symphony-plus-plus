@@ -4965,6 +4965,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
   end
 
+  test "overly short branch head does not satisfy full PR head readiness", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-PR-TINY-HEAD-READY", kind: "mcp", status: "ci_waiting")
+             )
+
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-TINY-HEAD-READY/worker", "head_sha" => "abc"})
+    attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/790", "head_sha" => "abcdef1234567890abcdef1234567890abcdef12"})
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Tiny head review",
+      "tests" => ["mix test"],
+      "artifacts" => ["tiny-head-review.txt"],
+      "head_sha" => "abc",
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-tiny-head", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "pr_attached" in get_in(ready_response, ["error", "data", "missing"])
+  end
+
   test "mark_ready rejects empty review packages and allows resolved blockers", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-READY-BLOCKER", kind: "mcp", status: "ci_waiting"))
     append_done_plan(repo, package.id)

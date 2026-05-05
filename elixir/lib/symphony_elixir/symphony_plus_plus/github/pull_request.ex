@@ -3,6 +3,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
 
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
 
+  @minimum_sha_prefix_length 7
+
   @type ref :: %{
           owner: String.t(),
           repo: String.t(),
@@ -179,15 +181,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
   defp validate_repo_part(_value), do: {:error, :invalid_repository}
 
   defp metadata_head_sha(metadata, fallback_head_sha) do
-    case Map.get(metadata, "head_sha") || get_in(metadata, ["head", "sha"]) || fallback_head_sha do
-      value when is_binary(value) ->
-        value = String.trim(value)
-        if value == "", do: {:error, :missing_head_sha}, else: {:ok, value}
+    explicit_head_sha = clean_head_sha(fallback_head_sha)
+    metadata_head_sha = clean_head_sha(Map.get(metadata, "head_sha") || get_in(metadata, ["head", "sha"]))
 
-      _value ->
+    case {explicit_head_sha, metadata_head_sha} do
+      {nil, nil} ->
         {:error, :missing_head_sha}
+
+      {explicit, nil} ->
+        {:ok, explicit}
+
+      {nil, metadata} ->
+        {:ok, metadata}
+
+      {explicit, metadata} ->
+        if head_sha_matches?(explicit, metadata), do: {:ok, explicit}, else: {:error, :head_sha_mismatch}
     end
   end
+
+  defp clean_head_sha(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
+
+  defp clean_head_sha(_value), do: nil
 
   defp metadata_branch(metadata) do
     case Map.get(metadata, "branch") || get_in(metadata, ["head", "ref"]) do
@@ -258,8 +275,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
     left = String.trim(left)
     right = String.trim(right)
 
-    left != "" and right != "" and (String.starts_with?(left, right) or String.starts_with?(right, left))
+    left != "" and right != "" and (left == right or safe_sha_prefix_match?(left, right))
   end
 
   defp head_sha_matches?(_left, _right), do: false
+
+  defp safe_sha_prefix_match?(left, right) do
+    min(String.length(left), String.length(right)) >= @minimum_sha_prefix_length and
+      (String.starts_with?(left, right) or String.starts_with?(right, left))
+  end
 end

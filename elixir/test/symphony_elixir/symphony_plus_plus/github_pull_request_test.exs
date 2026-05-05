@@ -104,6 +104,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
     assert payload["branch"] == "agent/SYMPP-P6-001/github-pr-attachment-sync"
     assert payload["merge_state"] == %{"mergeable" => true, "mergeable_state" => "clean", "state" => "open"}
     assert payload["review_state"] == %{"draft" => false}
+
+    explicit_metadata = Map.put(metadata, "head", %{"sha" => "abc1234567890", "ref" => "agent/SYMPP-P6-001/github-pr-attachment-sync"})
+
+    assert {:ok, explicit_payload} = PullRequest.metadata(explicit_metadata, ref, "abc1234")
+    assert explicit_payload["head_sha"] == "abc1234"
+
+    assert {:error, :head_sha_mismatch} = PullRequest.metadata(explicit_metadata, ref, "def1234")
   end
 
   test "tolerates canonical GitHub changed file counts" do
@@ -123,6 +130,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
   test "detects stale PR metadata by head sha" do
     refute PullRequest.stale?(%{"head_sha" => "abc123"}, "abc123")
     refute PullRequest.stale?(%{"head_sha" => "abcdef1234567890abcdef1234567890abcdef12"}, "abcdef1")
+    assert PullRequest.stale?(%{"head_sha" => "abcdef1234567890abcdef1234567890abcdef12"}, "abc")
     assert PullRequest.stale?(%{"head_sha" => "abcdef1234567890abcdef1234567890abcdef12"}, "abcdef2")
     assert PullRequest.stale?(%{"head_sha" => "abc123"}, "def456")
   end

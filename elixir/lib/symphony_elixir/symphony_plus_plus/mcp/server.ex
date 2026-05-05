@@ -68,6 +68,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @handle_state_ttl_ms 86_400_000
   @explicit_handle_state_ttl_ms 604_800_000
   @handle_state_agent Module.concat(__MODULE__, HandleState)
+  @minimum_sha_prefix_length 7
   @plan_append_argument_keys ["body", "expected_version", "id", "status", "title", "work_package_id"]
   @plan_patch_argument_keys ["expected_version", "patch", "work_package_id"]
   @plan_node_patch_keys ["body", "id", "status", "title"]
@@ -3387,10 +3388,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     left = String.trim(left)
     right = String.trim(right)
 
-    left != "" and right != "" and (String.starts_with?(left, right) or String.starts_with?(right, left))
+    left != "" and right != "" and (left == right or safe_sha_prefix_match?(left, right))
   end
 
   defp head_sha_matches?(_left, _right), do: false
+
+  defp safe_sha_prefix_match?(left, right) do
+    min(String.length(left), String.length(right)) >= @minimum_sha_prefix_length and
+      (String.starts_with?(left, right) or String.starts_with?(right, left))
+  end
 
   defp payload_type?(%ProgressEvent{payload: payload}, type, source_tools) when is_map(payload) and is_list(source_tools) do
     Map.get(payload, "type") == type and Map.get(payload, "source_tool") in source_tools
