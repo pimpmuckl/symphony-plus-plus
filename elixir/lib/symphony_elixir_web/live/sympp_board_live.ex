@@ -159,8 +159,19 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       repo when is_atom(repo) and repo != Repo ->
         fun.(repo)
 
+      Repo ->
+        with_configured_default_repo(fun)
+
       _repo ->
         with_default_dashboard_repo(fun)
+    end
+  end
+
+  defp with_configured_default_repo(fun) do
+    if Application.get_env(:symphony_elixir, :sympp_repo_database) == nil and Process.whereis(Repo) != nil do
+      fun.(Repo)
+    else
+      with_default_dashboard_repo(fun)
     end
   end
 
