@@ -17,6 +17,61 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   alias SymphonyElixirWeb.Endpoint
 
   @type auth_context :: {:grant, AccessGrant.t()}
+  @board_session_key "sympp_board_grant_id"
+
+  @spec authorize_board_browser(Conn.t(), term()) :: Conn.t()
+  def authorize_board_browser(conn, _opts) do
+    case authorize_board_request(conn) do
+      {:ok, %AccessGrant{} = grant} -> Conn.put_session(conn, @board_session_key, grant.id)
+      {:error, :unauthorized} -> conn |> board_login_response() |> Conn.halt()
+      {:error, reason} -> conn |> board_browser_error_response(reason) |> Conn.halt()
+    end
+  end
+
+  @spec authorize_board_session(map()) :: :ok | {:error, term()}
+  def authorize_board_session(session) when is_map(session) do
+    session
+    |> Map.get(@board_session_key)
+    |> authorize_board_grant_id()
+    |> case do
+      {:ok, %AccessGrant{}} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec board_session(Conn.t(), map()) :: Conn.t()
+  def board_session(conn, %{"work_key" => secret}) when is_binary(secret) do
+    secret = String.trim(secret)
+
+    case authorize_board_secret(secret) do
+      {:ok, %AccessGrant{} = grant} ->
+        conn
+        |> Conn.put_session(@board_session_key, grant.id)
+        |> redirect(to: prefixed_path(conn, "/sympp/board"))
+
+      {:error, :forbidden} ->
+        conn
+        |> clear_board_session()
+        |> board_login_response(status: 403, message: "The work key is not allowed to open the board.")
+        |> Conn.halt()
+
+      {:error, :database_busy} ->
+        conn |> clear_board_session() |> board_login_response(status: 503, message: "The dashboard ledger is busy. Try again.") |> Conn.halt()
+
+      {:error, {:storage_failed, _reason}} ->
+        conn |> clear_board_session() |> board_login_response(status: 503, message: "The board ledger could not be read.") |> Conn.halt()
+
+      {:error, {:repo_start_failed, _reason}} ->
+        conn |> clear_board_session() |> board_login_response(status: 503, message: "The board ledger could not be opened.") |> Conn.halt()
+
+      {:error, _reason} ->
+        conn |> clear_board_session() |> board_login_response(status: 401, message: "The work key could not access the board.") |> Conn.halt()
+    end
+  end
+
+  def board_session(conn, _params) do
+    conn |> board_login_response(status: 400, message: "Enter a work key to open the board.") |> Conn.halt()
+  end
 
   @spec board(Conn.t(), map()) :: Conn.t()
   def board(conn, _params) do
@@ -80,6 +135,40 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
+  defp authorize_board_request(conn) do
+    with {:error, :unauthorized} <- conn |> Conn.get_session(@board_session_key) |> authorize_board_grant_id() do
+      case bearer_secret(conn) do
+        nil -> {:error, :unauthorized}
+        secret -> authorize_board_secret(secret)
+      end
+    end
+  end
+
+  defp authorize_board_secret(secret) do
+    with true <- auth_storage_ready?(secret),
+         {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_with_existing_repo(secret),
+         :ok <- require_global_board(auth_context) do
+      {:ok, grant}
+    else
+      false -> {:error, :unauthorized}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec authorize_board_grant_id(term()) :: {:ok, AccessGrant.t()} | {:error, term()}
+  def authorize_board_grant_id(grant_id) when is_binary(grant_id) do
+    with true <- dashboard_storage_present?(),
+         {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_grant_id_with_existing_repo(grant_id),
+         :ok <- require_global_board(auth_context) do
+      {:ok, grant}
+    else
+      false -> {:error, :unauthorized}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def authorize_board_grant_id(_grant_id), do: {:error, :unauthorized}
+
   defp send_authenticated_repo_response(secret, fun) do
     if auth_storage_ready?(secret) do
       send_after_repo_auth(secret, fun)
@@ -106,10 +195,20 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
+  defp authenticate_grant_id_with_existing_repo(grant_id) do
+    case with_dashboard_repo(fn repo -> grant_id_auth_context(repo, grant_id) end, migrate?: false) do
+      {:error, {:storage_failed, message}} when is_binary(message) ->
+        if missing_schema_message?(message), do: {:error, :unauthorized}, else: {:error, {:storage_failed, message}}
+
+      result ->
+        result
+    end
+  end
+
   defp dashboard_storage_present? do
     case configured_repo() do
       Repo -> configured_repo_storage_present?()
-      nil -> persistent_database_present?(Repo.database_path_if_present())
+      nil -> configured_repo_storage_present?()
       configured_repo -> custom_repo_storage_present?(configured_repo)
     end
   end
@@ -224,6 +323,18 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       else
         false -> {:error, :unauthorized}
         {:error, :invalid_secret} -> {:error, :unauthorized}
+        {:error, :not_found} -> {:error, :unauthorized}
+        {:error, reason} -> {:error, reason}
+      end
+    end)
+  end
+
+  defp grant_id_auth_context(repo, grant_id) do
+    normalize_storage_errors(fn ->
+      with {:ok, %AccessGrant{} = grant} <- AccessGrantRepository.get(repo, grant_id),
+           :ok <- live_grant?(grant) do
+        {:ok, {:grant, grant}}
+      else
         {:error, :not_found} -> {:error, :unauthorized}
         {:error, reason} -> {:error, reason}
       end
@@ -430,10 +541,86 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp error_response(conn, _reason), do: error_response(conn, 500, "dashboard_unavailable", "Dashboard API unavailable")
 
+  defp board_browser_error_response(conn, :forbidden) do
+    board_login_response(conn, status: 403, message: "The work key is not allowed to open the board.")
+  end
+
+  defp board_browser_error_response(conn, :database_busy) do
+    board_login_response(conn, status: 503, message: "The dashboard ledger is busy. Try again.")
+  end
+
+  defp board_browser_error_response(conn, {:storage_failed, _reason}) do
+    board_login_response(conn, status: 503, message: "The board ledger could not be read.")
+  end
+
+  defp board_browser_error_response(conn, {:repo_start_failed, _reason}) do
+    board_login_response(conn, status: 503, message: "The board ledger could not be opened.")
+  end
+
+  defp board_browser_error_response(conn, _reason) do
+    board_login_response(conn, status: 500, message: "The board is temporarily unavailable.")
+  end
+
+  defp clear_board_session(conn), do: Conn.delete_session(conn, @board_session_key)
+
   defp error_response(conn, status, code, message) do
     conn
     |> put_status(status)
     |> json(%{error: %{code: code, message: message}})
+  end
+
+  defp board_login_response(conn, opts \\ []) do
+    status = Keyword.get(opts, :status, 401)
+    message = Keyword.get(opts, :message, "Enter a board work key to continue.")
+    csrf_token = Plug.CSRFProtection.get_csrf_token()
+    dashboard_css_path = prefixed_path(conn, "/dashboard.css")
+    board_session_path = prefixed_path(conn, "/sympp/board/session")
+
+    body = """
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>Symphony++ board access</title>
+      <link rel="stylesheet" href="#{dashboard_css_path}">
+    </head>
+    <body>
+      <main class="sympp-board-shell sympp-auth-shell">
+        <section class="error-card">
+          <p class="eyebrow">Symphony++</p>
+          <h1 class="error-title">Board access</h1>
+          <p class="error-copy">#{html_escape(message)}</p>
+          <form class="sympp-board-filters" method="post" action="#{board_session_path}">
+            <input type="hidden" name="_csrf_token" value="#{csrf_token}">
+            <label>
+              <span>Work key</span>
+              <input type="password" name="work_key" autocomplete="current-password" required>
+            </label>
+            <button class="subtle-button" type="submit">Open board</button>
+          </form>
+        </section>
+      </main>
+    </body>
+    </html>
+    """
+
+    conn
+    |> Conn.put_resp_content_type("text/html")
+    |> Conn.send_resp(status, body)
+  end
+
+  defp prefixed_path(%Conn{script_name: []}, path), do: path
+
+  defp prefixed_path(%Conn{script_name: script_name}, path) do
+    "/" <> Enum.join(script_name ++ [String.trim_leading(path, "/")], "/")
+  end
+
+  defp html_escape(value) do
+    value
+    |> to_string()
+    |> Phoenix.HTML.html_escape()
+    |> Phoenix.HTML.safe_to_string()
   end
 
   defp normalize_storage_errors(fun) when is_function(fun, 0) do
@@ -561,6 +748,20 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp with_dynamic_dashboard_repo(fun, migrate?) do
+    case Process.whereis(Repo) do
+      pid when is_pid(pid) ->
+        if explicit_database_configured?() do
+          with_started_dynamic_dashboard_repo(fun, migrate?)
+        else
+          with_running_dynamic_dashboard_repo(pid, fun, migrate?)
+        end
+
+      nil ->
+        with_started_dynamic_dashboard_repo(fun, migrate?)
+    end
+  end
+
+  defp with_started_dynamic_dashboard_repo(fun, migrate?) do
     database_path = Repo.database_path()
 
     with {:ok, pid, owner} <- ensure_repo_started(database_path) do
@@ -573,6 +774,19 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         fn -> call_dynamic_repo(pid, fun) end
       )
     end
+  end
+
+  defp with_running_dynamic_dashboard_repo(pid, fun, migrate?) do
+    database_path = local_repo_database_path(Repo.database_path())
+
+    with_optional_migrated_repo(
+      migrate?,
+      pid,
+      :local,
+      database_path,
+      fn -> ensure_repo_migrated(Repo, pid, database_path) end,
+      fn -> call_dynamic_repo(pid, fun) end
+    )
   end
 
   defp ensure_repo_started(database_path) do
@@ -645,7 +859,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp with_ecto_custom_repo(repo, fun, migrate?) do
-    :global.trans({__MODULE__, :custom_repo, repo}, fn ->
+    :global.trans({{__MODULE__, :custom_repo}, repo}, fn ->
       with_ecto_custom_repo_locked(repo, fun, migrate?)
     end)
   end
