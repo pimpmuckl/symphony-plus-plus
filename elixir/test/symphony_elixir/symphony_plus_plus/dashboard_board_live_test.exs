@@ -203,6 +203,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     assert html =~ "SYMPP-P5-010"
   end
 
+  test "uses a running default repo when no configured ledger path exists" do
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+
+    Application.delete_env(:symphony_elixir, :sympp_repo_database)
+    on_exit(fn -> restore_database_env(original_database) end)
+
+    create_board_package(%{
+      id: "SYMPP-P5-020",
+      kind: "dashboard",
+      status: "implementing",
+      title: "Running repo package",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "symphony-plus-plus/beta"
+    })
+
+    secret = create_architect_grant_secret(Repo, "SYMPP-P5-020")
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/board")
+
+    assert html =~ "Running repo package"
+    refute html =~ "No Symphony++ work package ledger was found."
+  end
+
   test "does not create or migrate a missing ledger on board load" do
     missing_database_path = WorkPackageFactory.database_path()
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)

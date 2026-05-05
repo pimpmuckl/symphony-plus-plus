@@ -271,9 +271,40 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
         read_existing_dashboard_repo(database_path, fun)
 
       _missing ->
+        read_running_default_dashboard_repo(fun)
+    end
+  end
+
+  defp read_running_default_dashboard_repo(fun) do
+    case Process.whereis(Repo) do
+      pid when is_pid(pid) ->
+        if running_repo_has_storage?(pid), do: fun.(Repo), else: {:error, :not_found}
+
+      nil ->
         {:error, :not_found}
     end
   end
+
+  defp running_repo_has_storage?(pid) do
+    original_repo = Repo.put_dynamic_repo(pid)
+
+    try do
+      case Repo.query("PRAGMA database_list", []) do
+        {:ok, %{rows: rows}} -> Enum.any?(rows, &persistent_main_database_row?/1)
+        {:error, _reason} -> false
+      end
+    rescue
+      _error in Exqlite.Error -> false
+    after
+      Repo.put_dynamic_repo(original_repo)
+    end
+  end
+
+  defp persistent_main_database_row?([_seq, "main", path]) when is_binary(path) and path != "" do
+    File.exists?(path)
+  end
+
+  defp persistent_main_database_row?(_row), do: false
 
   defp existing_database_path(nil), do: nil
   defp existing_database_path(database_path) when not is_binary(database_path), do: nil
