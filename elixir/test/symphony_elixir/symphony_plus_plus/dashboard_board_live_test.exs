@@ -21,6 +21,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
   alias SymphonyElixirWeb.SymppBoardLive
+  alias SymphonyElixirWeb.SymppDashboardApiController
 
   @endpoint SymphonyElixirWeb.Endpoint
 
@@ -623,6 +624,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     assert response(conn, 403) =~ "Board access"
     assert response(conn, 403) =~ "not allowed"
     refute conn |> get_resp_header("content-type") |> Enum.join("") =~ "application/json"
+  end
+
+  test "board login shell uses prefixed browser paths" do
+    conn =
+      build_conn(:get, "/sympp/board")
+      |> Plug.Test.init_test_session(%{})
+      |> Map.put(:script_name, ["app"])
+      |> SymppDashboardApiController.authorize_board_browser([])
+
+    html = response(conn, 401)
+
+    assert html =~ ~s(href="/app/dashboard.css")
+    assert html =~ ~s(action="/app/sympp/board/session")
   end
 
   test "browser board session trims pasted work keys" do

@@ -67,7 +67,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
           <p class="error-copy"><%= @board.error %></p>
         </section>
       <% else %>
-        <form class="sympp-board-filters" method="get" action="/sympp/board">
+        <form class="sympp-board-filters" method="get">
           <label>
             <span>Kind</span>
             <select name="kind">
@@ -99,7 +99,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
           </label>
 
           <button class="subtle-button" type="submit">Apply</button>
-          <a class="sympp-clear-link" href="/sympp/board">Clear</a>
+          <a class="sympp-clear-link" href="board">Clear</a>
         </form>
 
         <%= if @board.visible_count == 0 do %>
@@ -195,13 +195,21 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp with_custom_dashboard_repo(repo, fun) do
+    if ecto_repo?(repo) do
+      with_ecto_custom_dashboard_repo(repo, fun)
+    else
+      fun.(repo)
+    end
+  end
+
+  defp with_ecto_custom_dashboard_repo(repo, fun) do
     case custom_repo_database_path(repo) do
-      database_path when is_binary(database_path) -> with_custom_dashboard_repo(repo, database_path, fun)
+      database_path when is_binary(database_path) -> with_ecto_custom_dashboard_repo(repo, database_path, fun)
       _missing -> {:error, :not_found}
     end
   end
 
-  defp with_custom_dashboard_repo(repo, database_path, fun) do
+  defp with_ecto_custom_dashboard_repo(repo, database_path, fun) do
     case Process.whereis(repo) do
       pid when is_pid(pid) ->
         if custom_repo_uses_database?(repo, database_path) do
@@ -213,6 +221,10 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       nil ->
         start_custom_dashboard_repo(database_path, repo, fun)
     end
+  end
+
+  defp ecto_repo?(repo) do
+    Code.ensure_loaded?(repo) and function_exported?(repo, :__adapter__, 0) and function_exported?(repo, :start_link, 1)
   end
 
   defp custom_repo_database_path(repo) do

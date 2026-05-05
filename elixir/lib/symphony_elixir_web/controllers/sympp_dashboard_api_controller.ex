@@ -47,7 +47,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       {:ok, %AccessGrant{} = grant} ->
         conn
         |> Conn.put_session(@board_session_key, grant.id)
-        |> redirect(to: "/sympp/board")
+        |> redirect(to: prefixed_path(conn, "/sympp/board"))
 
       {:error, :forbidden} ->
         conn
@@ -573,6 +573,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     status = Keyword.get(opts, :status, 401)
     message = Keyword.get(opts, :message, "Enter a board work key to continue.")
     csrf_token = Plug.CSRFProtection.get_csrf_token()
+    dashboard_css_path = prefixed_path(conn, "/dashboard.css")
+    board_session_path = prefixed_path(conn, "/sympp/board/session")
 
     body = """
     <!doctype html>
@@ -581,7 +583,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1">
       <title>Symphony++ board access</title>
-      <link rel="stylesheet" href="/dashboard.css">
+      <link rel="stylesheet" href="#{dashboard_css_path}">
     </head>
     <body>
       <main class="sympp-board-shell sympp-auth-shell">
@@ -589,7 +591,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
           <p class="eyebrow">Symphony++</p>
           <h1 class="error-title">Board access</h1>
           <p class="error-copy">#{html_escape(message)}</p>
-          <form class="sympp-board-filters" method="post" action="/sympp/board/session">
+          <form class="sympp-board-filters" method="post" action="#{board_session_path}">
             <input type="hidden" name="_csrf_token" value="#{csrf_token}">
             <label>
               <span>Work key</span>
@@ -606,6 +608,12 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     conn
     |> Conn.put_resp_content_type("text/html")
     |> Conn.send_resp(status, body)
+  end
+
+  defp prefixed_path(%Conn{script_name: []}, path), do: path
+
+  defp prefixed_path(%Conn{script_name: script_name}, path) do
+    "/" <> Enum.join(script_name ++ [String.trim_leading(path, "/")], "/")
   end
 
   defp html_escape(value) do
