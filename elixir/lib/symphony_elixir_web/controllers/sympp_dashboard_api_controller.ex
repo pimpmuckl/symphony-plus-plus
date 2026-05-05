@@ -19,6 +19,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @type auth_context :: {:grant, AccessGrant.t()}
   @board_session_key "sympp_board_grant_id"
   @package_session_key "sympp_package_grant_ids"
+  @max_package_sessions 8
 
   @spec authorize_board_browser(Conn.t(), term()) :: Conn.t()
   def authorize_board_browser(conn, _opts) do
@@ -240,7 +241,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
       case {session_result, bearer_secret(conn)} do
         {{:ok, %AccessGrant{}} = authorized, _secret} -> authorized
-        {{:error, _reason}, nil} -> {:error, :unauthorized}
+        {{:error, :unauthorized}, nil} -> {:error, :unauthorized}
+        {{:error, reason}, nil} -> {:error, reason}
         {{:error, _reason}, secret} -> authorize_package_secret(secret, work_package_id)
       end
     else
@@ -283,7 +285,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         conn
         |> Conn.get_session(@package_session_key)
         |> package_sessions()
-        |> Map.put(work_package_id, grant.id)
+        |> put_limited_package_session(work_package_id, grant.id)
 
       conn
       |> Conn.put_session(@package_session_key, sessions)
@@ -821,6 +823,14 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp package_sessions(sessions) when is_map(sessions), do: sessions
   defp package_sessions(_sessions), do: %{}
+
+  defp put_limited_package_session(sessions, work_package_id, grant_id) do
+    if Map.has_key?(sessions, work_package_id) or map_size(sessions) < @max_package_sessions do
+      Map.put(sessions, work_package_id, grant_id)
+    else
+      %{work_package_id => grant_id}
+    end
+  end
 
   defp error_response(conn, status, code, message) do
     conn

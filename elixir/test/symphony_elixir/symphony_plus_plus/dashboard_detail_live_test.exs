@@ -237,6 +237,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert response(second_refresh_conn, 200) =~ "Second tab package"
   end
 
+  test "package browser session map is bounded" do
+    packages =
+      for index <- 1..9 do
+        create_detail_package(id: "SYMPP-P5-BOUND-#{index}", title: "Bounded package #{index}")
+      end
+
+    session_conn =
+      Enum.reduce(packages, build_conn(), fn %{work_package: work_package, worker_secret: worker_secret}, conn ->
+        conn
+        |> recycle()
+        |> post("/sympp/work-packages/#{work_package.id}/session", %{"work_key" => worker_secret})
+      end)
+
+    first_conn =
+      session_conn
+      |> recycle()
+      |> get("/sympp/work-packages/SYMPP-P5-BOUND-1")
+
+    assert response(first_conn, 401) =~ "Package access"
+
+    latest_conn =
+      first_conn
+      |> recycle()
+      |> get("/sympp/work-packages/SYMPP-P5-BOUND-9")
+
+    assert response(latest_conn, 200) =~ "Bounded package 9"
+  end
+
   test "package login escapes user-controlled package id paths" do
     raw_id = ~S|SYMPP-" autofocus onfocus="alert(1)|
     encoded_id = path_segment(raw_id)
