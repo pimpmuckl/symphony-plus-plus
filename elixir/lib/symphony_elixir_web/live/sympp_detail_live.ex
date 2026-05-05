@@ -258,7 +258,9 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
                 <span class={run_badge_class(run)}><%= run.runtime_state || run.status %></span>
                 <h3><%= present(run.worker_task_handle) %></h3>
                 <p class="mono"><%= run.session_id || run.id %></p>
+                <p class="mono"><%= present(run.workspace_path) %></p>
                 <p class="muted"><%= token_summary(run) %> / last seen <%= present(run.last_seen_at) %></p>
+                <p :if={run.status == "failed"} class="muted"><%= present(run.reason) %></p>
               </div>
             </div>
             <p :if={@detail.agent_runs == []} class="sympp-empty-inline">No agent runs recorded.</p>

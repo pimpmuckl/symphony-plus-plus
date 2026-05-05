@@ -165,6 +165,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert payload["summary"]["grant_count"] == 1
     assert payload["summary"]["agent_run_count"] == 1
     assert payload["summary"]["active_agent_run_count"] == 0
+    assert payload["summary"]["runtime"]["active_count"] == 0
+    assert payload["summary"]["runtime"]["failed_count"] == 0
+    assert payload["summary"]["runtime"]["stale_count"] == 0
     assert [%{"path" => "[REDACTED]", "title" => "[REDACTED]", "kind" => "review"}] = payload["artifacts"]
     assert [%{"id" => "blocker-a", "active" => true}] = payload["blockers"]
     assert [%{"id" => grant_id, "display_key" => display_key, "status" => "active"}] = payload["grants"]
@@ -172,6 +175,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert display_key == grant.display_key
     assert [%{"status" => "completed", "session_id" => "session-1"}] = payload["agent_runs"]
     assert [%{"runtime_state" => "terminal", "stale" => false}] = payload["agent_runs"]
+    alerts = Map.new(payload["alert_indicators"], &{&1["type"], &1})
+    refute alerts["stale_heartbeat"]["active"]
+    refute alerts["failed_run"]["active"]
 
     encoded = Jason.encode!(payload)
     assert encoded =~ "Sibling package progress"
@@ -373,9 +379,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     refute "review_package_submitted" in missing["missing"]
     refute "branch_attached" in missing["missing"]
     refute "pr_attached" in missing["missing"]
-    assert "tests_passed" in missing["missing"]
-    assert "acceptance_criteria_met" in missing["missing"]
-    assert "review_lanes_complete" in missing["missing"]
+    refute "tests_passed" in missing["missing"]
+    refute "acceptance_criteria_met" in missing["missing"]
+    refute "review_lanes_complete" in missing["missing"]
   end
 
   test "generic readiness statuses before latest branch do not clear missing evidence", %{repo: repo} do

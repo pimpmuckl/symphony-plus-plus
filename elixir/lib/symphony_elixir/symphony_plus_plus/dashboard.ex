@@ -536,7 +536,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   @spec missing_readiness_evidence(map()) :: [String.t()]
   def missing_readiness_evidence(%{work_package: %WorkPackage{}} = context) do
     [
-      {context.work_package.status != "ci_waiting", "status_ci_waiting"},
       {active_blocker?(context.progress_events), "no_active_blockers"},
       {incomplete_plan?(context), "plan_complete"},
       {acceptance_missing?(context), "acceptance_criteria_met"},
@@ -594,7 +593,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp acceptance_missing?(context) do
-    required_gate?(context.work_package, "package_acceptance") and not acceptance_recorded?(context.progress_events)
+    required_gate?(context.work_package, "package_acceptance") and not acceptance_recorded?(context)
   end
 
   defp tests_missing?(context) do
@@ -640,8 +639,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp pr_required?(%WorkPackage{kind: "investigation"}), do: false
   defp pr_required?(%WorkPackage{}), do: true
 
-  defp acceptance_recorded?(progress_events) do
-    case latest_review_package_event(progress_events, latest_current_head_sha(progress_events)) do
+  defp acceptance_recorded?(context) do
+    progress_events = progress_events_for_review_payload(context)
+
+    case latest_review_package_event(progress_events, review_head_sha_for_readiness(context)) do
       %ProgressEvent{payload: payload} when is_map(payload) -> Map.get(payload, "acceptance_criteria_met") == true
       _event -> false
     end
@@ -755,6 +756,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp latest_review_package_event(progress_events, readiness_head_sha) do
     progress_events
     |> current_head_review_package_events(readiness_head_sha)
+    |> List.last()
+  end
+
+  defp latest_artifact_review_package_event(progress_events, readiness_head_sha) do
+    progress_events
+    |> current_head_review_package_events(readiness_head_sha)
     |> Enum.reverse()
     |> Enum.find(fn event -> review_package_artifact_paths(event, readiness_head_sha) != [] end)
   end
@@ -776,7 +783,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp current_head_review_artifact_references(progress_events, current_head_sha) do
-    case latest_review_package_event(progress_events, current_head_sha) do
+    case latest_artifact_review_package_event(progress_events, current_head_sha) do
       %ProgressEvent{} = event -> review_package_artifact_references(event, current_head_sha)
       nil -> []
     end
@@ -837,11 +844,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
-  defp normalize_review_entry(%{"lane" => lane, "verdict" => verdict}) when is_binary(lane) and is_binary(verdict) do
-    [%{"lane" => lane |> String.trim() |> String.downcase(), "verdict" => verdict |> String.trim() |> String.downcase()}]
+  defp normalize_review_entry(%{} = review) do
+    keys = review |> Map.keys() |> Enum.map(&to_string/1) |> Enum.sort()
+    lane = Map.get(review, "lane")
+    verdict = Map.get(review, "verdict")
+
+    if keys == ["lane", "verdict"] and filled_string?(lane) and filled_string?(verdict) do
+      [%{"lane" => lane |> String.trim() |> String.downcase(), "verdict" => verdict |> String.trim() |> String.downcase()}]
+    else
+      []
+    end
   end
 
   defp normalize_review_entry(_review), do: []
+
+  defp filled_string?(value), do: is_binary(value) and String.trim(value) != ""
 
   defp review_head_matches?(payload, :any_head) when is_map(payload) do
     head_sha = Map.get(payload, "head_sha")
@@ -858,6 +875,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       is_binary(current_head_sha) -> current_head_sha
       merge_required?(context.work_package) -> nil
       true -> :any_head
+    end
+  end
+
+  defp progress_events_for_review_payload(context) do
+    if merge_required?(context.work_package) do
+      context.progress_events
+    else
+      current_branch_progress_events(context.progress_events)
     end
   end
 
