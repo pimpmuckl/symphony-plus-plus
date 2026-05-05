@@ -670,7 +670,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp with_ecto_custom_repo(repo, fun, migrate?) do
-    :global.trans({{__MODULE__, :custom_repo, repo}, self()}, fn ->
+    :global.trans({{__MODULE__, :custom_repo}, repo}, fn ->
       with_ecto_custom_repo_locked(repo, fun, migrate?)
     end)
   end
