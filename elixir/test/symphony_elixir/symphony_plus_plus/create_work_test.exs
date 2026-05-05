@@ -402,6 +402,261 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     refute text =~ creation.worker_grant.secret
   end
 
+  test "drives standalone hotfix from create-work through worker MCP readiness", %{repo: repo} do
+    assert {:ok, creation} =
+             CreateWork.create(repo, %{
+               kind: "hotfix",
+               repo: "kraken",
+               base_branch: "main",
+               title: "Fix standalone hotfix incident",
+               product_description: "A production endpoint is returning stale results.",
+               engineering_scope: "Refresh the endpoint cache invalidation path only.",
+               acceptance_criteria: ["Endpoint returns fresh results.", "Hotfix evidence is attached."],
+               review_suite_template: "hotfix"
+             })
+
+    assert {:ok, sibling_creation} =
+             CreateWork.create(repo, %{
+               kind: "hotfix",
+               repo: "kraken",
+               base_branch: "main",
+               title: "Sibling hotfix",
+               acceptance_criteria: ["Sibling remains isolated."],
+               review_suite_template: "hotfix"
+             })
+
+    assert creation.work_package.parent_id == nil
+    assert creation.work_package.status == "ready_for_worker"
+    assert creation.policy.template == "hotfix"
+    assert creation.policy.review_suite.required == ["review_t1", "review_t2"]
+
+    server = Server.new(Config.default(repo: repo), initialized: true)
+
+    {claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_work_key",
+            "arguments" => %{"secret" => creation.worker_grant.secret, "claimed_by" => "worker-hotfix-1"}
+          }
+        },
+        server
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == creation.work_package.id
+    session = claimed_server.session
+
+    reconnect_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-reconnect",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_work_key",
+            "arguments" => %{"secret" => creation.worker_grant.secret, "claimed_by" => "worker-hotfix-1"}
+          }
+        },
+        repo: repo
+      )
+
+    assert get_in(reconnect_response, ["result", "structuredContent", "assignment", "work_package_id"]) == creation.work_package.id
+
+    wrong_owner_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-wrong-owner",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_work_key",
+            "arguments" => %{"secret" => creation.worker_grant.secret, "claimed_by" => "worker-hotfix-2"}
+          }
+        },
+        repo: repo
+      )
+
+    assert get_in(wrong_owner_response, ["error", "data", "reason"]) == "already_claimed"
+
+    context_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "context",
+          "method" => "resources/read",
+          "params" => %{"uri" => "sympp://work-packages/#{creation.work_package.id}/context.md"}
+        },
+        repo: repo,
+        session: session
+      )
+
+    context_text = get_in(context_response, ["result", "contents", Access.at(0), "text"])
+    assert context_text =~ "Fix standalone hotfix incident"
+    assert context_text =~ "- Parent: source: `Not recorded.`"
+
+    read_plan_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "read-plan", "method" => "tools/call", "params" => %{"name" => "read_task_plan"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(read_plan_response, ["result", "structuredContent", "text"]) =~ "Implement requested scope"
+
+    plan_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "plan",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "update_task_plan",
+            "arguments" => %{
+              "expected_version" => get_in(read_plan_response, ["result", "structuredContent", "version"]),
+              "id" => "hotfix-worker-note",
+              "title" => "Record standalone hotfix proof",
+              "body" => "Worker updated the virtual plan through MCP.",
+              "status" => "done"
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert Enum.any?(
+             get_in(plan_response, ["result", "structuredContent", "plan_nodes"]),
+             &(&1["id"] == "hotfix-worker-note" and &1["status"] == "done")
+           )
+
+    finding_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "finding",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_finding",
+            "arguments" => %{
+              "title" => "Root cause isolated",
+              "body" => "Cache invalidation missed the hot path.",
+              "idempotency_key" => "standalone-hotfix-finding"
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(finding_response, ["result", "structuredContent", "finding", "title"]) == "Root cause isolated"
+
+    progress_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "progress",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_progress",
+            "arguments" => %{
+              "summary" => "Focused hotfix test passed",
+              "status" => "tests_passed",
+              "body" => "Regression script exercised the stale-result path.",
+              "idempotency_key" => "standalone-hotfix-tests"
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(progress_response, ["result", "structuredContent", "progress_event", "status"]) == "tests_passed"
+
+    transition_status(repo, session, "ready_for_worker", "claimed")
+    transition_status(repo, session, "claimed", "planning")
+    transition_status(repo, session, "planning", "implementing")
+    transition_status(repo, session, "implementing", "reviewing")
+    transition_status(repo, session, "reviewing", "ci_waiting")
+
+    progress_file_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "progress-file",
+          "method" => "resources/read",
+          "params" => %{"uri" => "sympp://work-packages/#{creation.work_package.id}/progress.md"}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(progress_file_response, ["result", "contents", Access.at(0), "text"]) =~ "Focused hotfix test passed"
+
+    denied_sibling_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "sibling-context",
+          "method" => "resources/read",
+          "params" => %{"uri" => "sympp://work-packages/#{sibling_creation.work_package.id}/context.md"}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(denied_sibling_response, ["error", "code"]) == -32_003
+    assert get_in(denied_sibling_response, ["error", "data", "reason"]) == "outside_session_scope"
+
+    missing_evidence_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-missing-evidence", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    missing = get_in(missing_evidence_response, ["error", "data", "missing"])
+    assert "branch_attached" in missing
+    assert "pr_attached" in missing
+    assert "review_lanes_complete" in missing
+
+    head_sha = "standalone-hotfix-head"
+
+    attach_tool(repo, session, "attach_branch", %{
+      "branch" => "agent/SYMPP-P4-003/standalone-hotfix-e2e",
+      "head_sha" => head_sha
+    })
+
+    attach_tool(repo, session, "attach_pr", %{
+      "url" => "https://github.com/example/symphony-plus-plus/pull/4003",
+      "head_sha" => head_sha
+    })
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Fake hotfix review-suite package for the E2E path.",
+      "tests" => ["mix test test/symphony_elixir/symphony_plus_plus/create_work_test.exs"],
+      "artifacts" => ["review-suite/SYMPP-P4-003-fake-hotfix-review.json"],
+      "head_sha" => head_sha,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+    assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
+
+    assert {:ok, persisted} = WorkPackageRepository.get(repo, creation.work_package.id)
+    assert persisted.status == "ready_for_human_merge"
+    assert persisted.parent_id == nil
+  end
+
   test "normal work package and grant reads do not expose the raw worker secret", %{repo: repo} do
     assert {:ok, creation} =
              CreateWork.create(repo, %{
@@ -420,5 +675,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     assert grant.secret_hash
     refute inspect(grant) =~ secret
     refute grant.secret_hash == secret
+  end
+
+  defp attach_tool(repo, session, name, arguments) do
+    response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => name, "method" => "tools/call", "params" => %{"name" => name, "arguments" => arguments}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(response, ["result", "structuredContent", "progress_event", "id"])
+    response
+  end
+
+  defp transition_status(repo, session, expected_status, status) do
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "set-status-#{status}",
+          "method" => "tools/call",
+          "params" => %{"name" => "set_status", "arguments" => %{"expected_status" => expected_status, "status" => status}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(response, ["result", "structuredContent", "work_package", "status"]) == status
+    response
   end
 end
