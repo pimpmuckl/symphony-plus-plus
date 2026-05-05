@@ -127,7 +127,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
   defp validate_repo_part(_value), do: {:error, :invalid_repository}
 
   defp metadata_head_sha(metadata, fallback_head_sha) do
-    case Map.get(metadata, "head_sha") || fallback_head_sha do
+    case Map.get(metadata, "head_sha") || get_in(metadata, ["head", "sha"]) || fallback_head_sha do
       value when is_binary(value) ->
         value = String.trim(value)
         if value == "", do: {:error, :missing_head_sha}, else: {:ok, value}

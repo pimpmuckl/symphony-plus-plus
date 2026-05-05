@@ -357,8 +357,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["blocker_id", "resolution", "summary", "idempotency_key"]
     assert get_in(tools_by_name, ["attach_branch", "inputSchema", "required"]) == ["branch", "head_sha"]
     assert get_in(tools_by_name, ["attach_branch", "inputSchema", "properties", "head_sha", "type"]) == "string"
-    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "required"]) == ["head_sha"]
-    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "anyOf"]) == [%{"required" => ["url"]}, %{"required" => ["number"]}]
+
+    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "allOf"]) == [
+             %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]},
+             %{
+               "anyOf" => [
+                 %{"required" => ["head_sha"]},
+                 %{
+                   "required" => ["metadata"],
+                   "properties" => %{
+                     "metadata" => %{
+                       "type" => "object",
+                       "additionalProperties" => true,
+                       "properties" => %{"head_sha" => %{"type" => "string"}},
+                       "required" => ["head_sha"]
+                     }
+                   }
+                 }
+               ]
+             }
+           ]
+
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == "string"
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "metadata", "type"]) == "object"
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "required"]) == ["metadata"]
@@ -4359,6 +4378,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
     assert Enum.any?(artifacts, &(&1.kind == "github_pr" and &1.path == "github-pr.json" and &1.uri == payload["url"]))
+  end
+
+  test "sync_pr malformed metadata returns structured MCP error", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-PR-METADATA-ERROR", kind: "standard_pr", repo: "nextide/symphony-plus-plus", status: "ci_waiting")
+             )
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "sync_pr",
+          "method" => "tools/call",
+          "params" => %{"name" => "sync_pr", "arguments" => %{"number" => 42, "metadata" => "bad"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "tool"]) == "sync_pr"
+    assert get_in(response, ["error", "data", "reason"]) == "missing_metadata"
   end
 
   test "latest branch head supersedes earlier PR head for review evidence", %{repo: repo} do

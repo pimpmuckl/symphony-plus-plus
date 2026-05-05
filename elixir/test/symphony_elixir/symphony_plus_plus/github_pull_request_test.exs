@@ -52,6 +52,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
     refute Map.has_key?(payload, "authorization")
   end
 
+  test "maps standard GitHub head object into PR head metadata" do
+    assert {:ok, ref} = PullRequest.parse(%{"url" => "https://github.com/nextide/symphony-plus-plus/pull/42"}, nil)
+
+    metadata = %{
+      "head" => %{"sha" => "abc123", "ref" => "agent/SYMPP-P6-001/github-pr-attachment-sync"},
+      "changed_files" => []
+    }
+
+    assert {:ok, payload} = PullRequest.metadata(metadata, ref, nil)
+
+    assert payload["head_sha"] == "abc123"
+    assert payload["branch"] == "agent/SYMPP-P6-001/github-pr-attachment-sync"
+  end
+
   test "detects stale PR metadata by head sha" do
     refute PullRequest.stale?(%{"head_sha" => "abc123"}, "abc123")
     assert PullRequest.stale?(%{"head_sha" => "abc123"}, "def456")

@@ -920,9 +920,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "head_sha" => string_schema(),
         "metadata" => object_schema()
       }),
-      ["head_sha"]
+      []
     )
-    |> Map.put("anyOf", [%{"required" => ["url"]}, %{"required" => ["number"]}])
+    |> Map.put("allOf", [
+      %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]},
+      %{
+        "anyOf" => [
+          %{"required" => ["head_sha"]},
+          %{"required" => ["metadata"], "properties" => %{"metadata" => metadata_head_schema()}}
+        ]
+      }
+    ])
   end
 
   defp worker_tool_input_schema("sync_pr") do
@@ -932,7 +940,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "number" => integer_schema(),
         "repository" => string_schema(),
         "head_sha" => string_schema(),
-        "metadata" => object_schema()
+        "metadata" => metadata_head_schema()
       }),
       ["metadata"]
     )
@@ -1053,6 +1061,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp integer_schema, do: %{"type" => "integer"}
   defp nullable_string_schema, do: %{"type" => ["string", "null"]}
   defp object_schema, do: %{"type" => "object", "additionalProperties" => true}
+  defp metadata_head_schema, do: %{"type" => "object", "additionalProperties" => true, "properties" => %{"head_sha" => string_schema()}, "required" => ["head_sha"]}
   defp nonempty_string_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => nonblank_string_schema()}
   defp nonempty_object_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => object_schema()}
 
@@ -1591,6 +1600,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, payload} <- PullRequest.metadata(metadata, ref, Map.get(arguments, "head_sha")) do
       {:ok, Map.put(payload, "source_tool", source_tool)}
     else
+      {:tool_error, reason} -> {:tool_error, reason}
       {:ok, nil} -> {:error, :not_found}
       {:error, reason} -> {:tool_error, reason_text(reason)}
     end
