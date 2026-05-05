@@ -665,6 +665,48 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     refute html =~ "n/a"
   end
 
+  test "runtime pill labels the selected run instead of aggregate stale count" do
+    html =
+      %{
+        empty_filter: "all",
+        filters: %{kind: "all", repo: "all", phase: "all"},
+        board: %{
+          error: nil,
+          total_count: 1,
+          visible_count: 1,
+          column_count: 1,
+          filter_options: %{kinds: [], repos: [], phases: []},
+          columns: [
+            %{
+              status: "implementing",
+              cards: [
+                %{
+                  id: "SYMPP-P5-017",
+                  kind: "dashboard",
+                  title: "Queued selected run",
+                  repo: "nextide/symphony-plus-plus",
+                  base_branch: "symphony-plus-plus/beta",
+                  latest_progress_at: ~U[2026-05-05 00:00:00Z],
+                  updated_at: ~U[2026-05-04 00:00:00Z],
+                  active_blocker_count: 0,
+                  plan: %{total_count: 1, completed_count: 1, open_count: 0},
+                  metadata: %{},
+                  runtime: %{stale_count: 1},
+                  active_agent_run: %{runtime_state: "queued", stale: false}
+                }
+              ]
+            }
+          ]
+        }
+      }
+      |> SymppBoardLive.render()
+      |> Safe.to_iodata()
+      |> IO.iodata_to_binary()
+
+    assert html =~ "queued run"
+    refute html =~ "stale run"
+  end
+
   defp create_board_package(attrs) do
     attrs = Map.new(attrs)
 

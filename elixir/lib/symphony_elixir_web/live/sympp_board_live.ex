@@ -765,9 +765,14 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     end
   end
 
-  defp runtime_label(%{runtime: %{stale_count: stale_count}}) when is_integer(stale_count) and stale_count > 0, do: "stale run"
-  defp runtime_label(%{active_agent_run: %{runtime_state: "queued"}}), do: "queued run"
-  defp runtime_label(%{active_agent_run: %{"runtime_state" => "queued"}}), do: "queued run"
+  defp runtime_label(%{active_agent_run: run}) when is_map(run) do
+    cond do
+      Map.get(run, :stale) == true or Map.get(run, "stale") == true -> "stale run"
+      (Map.get(run, :runtime_state) || Map.get(run, "runtime_state")) == "queued" -> "queued run"
+      true -> "active run"
+    end
+  end
+
   defp runtime_label(_card), do: "active run"
 
   defp package_detail_path(%{id: id}), do: "work-packages/#{path_segment(id)}"

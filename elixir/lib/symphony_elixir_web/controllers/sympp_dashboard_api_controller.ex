@@ -9,6 +9,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.TrackerAdapter
@@ -645,7 +646,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         |> Map.put(runs_key, runs)
         |> put_active_agent_run(runs)
         |> put_summary_count("agent_run_count", length(runs))
-        |> put_summary_count("active_agent_run_count", Enum.count(runs, &(runtime_state(&1) == "active")))
+        |> put_summary_count("active_agent_run_count", Enum.count(runs, &agent_run_in_flight?/1))
         |> put_summary_count("queued_agent_run_count", Enum.count(runs, &(runtime_state(&1) == "queued")))
         |> put_summary_count("stopped_agent_run_count", Enum.count(runs, &(runtime_state(&1) == "stopped")))
         |> put_summary_count("failed_agent_run_count", Enum.count(runs, &agent_run_failed?/1))
@@ -773,6 +774,11 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp grant_active?(grant), do: Map.get(grant, :status) == "active" or Map.get(grant, "status") == "active"
+
+  defp agent_run_in_flight?(run) do
+    status = Map.get(run, :status) || Map.get(run, "status")
+    status in AgentRun.active_statuses() or runtime_state(run) in ["active", "queued"]
+  end
 
   defp agent_run_failed?(run), do: (Map.get(run, :status) || Map.get(run, "status")) == "failed"
   defp agent_run_completed?(run), do: (Map.get(run, :status) || Map.get(run, "status")) == "completed"

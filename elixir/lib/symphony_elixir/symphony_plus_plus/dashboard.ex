@@ -17,7 +17,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   @stale_heartbeat_after_seconds 300
   @ready_statuses ["ready_for_human_merge", "ready_for_architect_merge"]
-  @merge_required_kinds ["hotfix", "adapter", "mcp", "skill", "hooks", "phase_child"]
+  @complete_plan_statuses ["done", "completed", "skipped"]
+  @merge_required_gates ["human_merge", "architect_merge"]
 
   @type repo :: module()
   @type dashboard_error :: :not_found | :forbidden | :database_busy | {:storage_failed, String.t()} | term()
@@ -256,7 +257,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       grant_count: length(grants),
       active_grant_count: Enum.count(grants, &active_grant?/1),
       agent_run_count: length(agent_runs),
-      active_agent_run_count: runtime.active_count,
+      active_agent_run_count: Enum.count(agent_runs, &(&1.status in AgentRun.active_statuses())),
       queued_agent_run_count: runtime.queued_count,
       stopped_agent_run_count: runtime.stopped_count,
       failed_agent_run_count: runtime.failed_count,
@@ -559,6 +560,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       not metadata_present?(context.progress_events, "pr", latest_current_head_sha(context.progress_events))
   end
 
+  defp merge_metadata_missing?(context, "branch") do
+    merge_required?(context.work_package) and not metadata_present?(context.progress_events, "branch", :any_head)
+  end
+
   defp merge_metadata_missing?(context, type) do
     merge_required?(context.work_package) and
       not metadata_present?(context.progress_events, type, latest_current_head_sha(context.progress_events))
@@ -566,19 +571,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp review_package_missing?(context) do
     readiness_head_sha = review_head_sha_for_readiness(context)
+    required_lanes = required_review_lanes(context.work_package)
 
-    merge_required?(context.work_package) and required_review_lanes(context.work_package) != [] and
+    merge_required?(context.work_package) and review_lanes_required?(required_lanes) and
       current_head_review_package_events(context.progress_events, readiness_head_sha) == []
   end
 
   defp review_artifacts_missing?(context) do
-    merge_required?(context.work_package) and required_review_lanes(context.work_package) != [] and
+    required_lanes = required_review_lanes(context.work_package)
+
+    merge_required?(context.work_package) and review_lanes_required?(required_lanes) and
       not review_artifacts_present?(context.progress_events, context.artifacts, context.work_package.id)
   end
 
   defp review_lanes_missing?(context) do
     required_lanes = required_review_lanes(context.work_package)
-    required_lanes != [] and not review_lanes_present?(context, required_lanes)
+    review_lanes_required?(required_lanes) and not review_lanes_present?(context, required_lanes)
   end
 
   defp investigation_findings_missing?(context), do: context.work_package.kind == "investigation" and context.findings == []
@@ -590,7 +598,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp incomplete_plan?(context) do
     plan_required?(context.work_package) and
-      (context.plan_nodes == [] or Enum.any?(context.plan_nodes, &(&1.status not in ["done", "completed", "skipped"])))
+      (context.plan_nodes == [] or Enum.any?(context.plan_nodes, &(&1.status not in @complete_plan_statuses)))
   end
 
   defp acceptance_missing?(context) do
@@ -616,28 +624,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp plan_required?(%WorkPackage{} = work_package) do
-    case LifecycleService.policy_for(work_package) do
+    case policy_for(work_package) do
       {:ok, policy} -> get_in(policy, [:constraints, :planning_depth]) == "package"
       {:error, _reason} -> true
     end
   end
 
   defp required_gate?(%WorkPackage{} = work_package, gate) do
-    case LifecycleService.policy_for(work_package) do
+    case policy_for(work_package) do
       {:ok, policy} -> gate in Map.get(policy, :required_gates, [])
-      {:error, _reason} -> false
+      {:error, _reason} -> true
     end
   end
 
   defp required_review_lanes(%WorkPackage{} = work_package) do
-    case LifecycleService.policy_for(work_package) do
+    case policy_for(work_package) do
       {:ok, policy} -> get_in(policy, [:review_suite, :required]) || []
-      {:error, _reason} -> []
+      {:error, _reason} -> :policy_lookup_failed
     end
   end
 
-  defp merge_required?(%WorkPackage{kind: kind}), do: kind in @merge_required_kinds
-  defp pr_required?(%WorkPackage{kind: "investigation"}), do: false
+  defp policy_for(%WorkPackage{} = work_package), do: LifecycleService.policy_for(work_package)
+
+  defp review_lanes_required?(:policy_lookup_failed), do: true
+  defp review_lanes_required?(required_lanes), do: required_lanes != []
+
+  defp merge_required?(%WorkPackage{} = work_package) do
+    case policy_for(work_package) do
+      {:ok, policy} ->
+        required_gates = Map.get(policy, :required_gates, [])
+        Enum.any?(@merge_required_gates, &(&1 in required_gates))
+
+      {:error, _reason} ->
+        true
+    end
+  end
+
   defp pr_required?(%WorkPackage{}), do: true
 
   defp acceptance_recorded?(context) do
@@ -651,7 +673,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp tests_recorded?(context) do
     if merge_required?(context.work_package) do
-      review_package_tests_recorded?(context.progress_events, latest_current_head_sha(context.progress_events))
+      review_package_tests_recorded?(context.progress_events, review_head_sha_for_readiness(context))
     else
       progress_events = current_branch_progress_events(context.progress_events)
 
@@ -670,12 +692,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
+  defp review_lanes_present?(_context, :policy_lookup_failed), do: false
+
   defp review_lanes_present?(context, required_lanes) do
     if merge_required?(context.work_package) do
       review_package_lanes_present?(
         context.progress_events,
         required_lanes,
-        latest_current_head_sha(context.progress_events)
+        review_head_sha_for_readiness(context)
       )
     else
       progress_events = current_branch_progress_events(context.progress_events)
@@ -882,11 +906,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp latest_current_head_sha(progress_events) do
     progress_events
-    |> Enum.filter(&payload_type?(&1, "branch", "attach_branch"))
+    |> Enum.filter(&current_head_event?/1)
     |> Enum.reverse()
     |> Enum.find_value(fn
       %ProgressEvent{payload: payload} -> payload_head_sha(payload)
       _event -> nil
+    end)
+  end
+
+  defp current_head_event?(event) do
+    payload_type?(event, "branch", "attach_branch") or payload_type?(event, "pr", "attach_pr") or
+      payload_type?(event, "review_package", "submit_review_package")
+  end
+
+  defp metadata_present?(progress_events, type, :any_head) do
+    tool = metadata_tool(type)
+
+    Enum.any?(progress_events, fn
+      %ProgressEvent{payload: payload} = event when is_map(payload) and is_binary(tool) ->
+        payload_type?(event, type, tool) and filled_string?(Map.get(payload, "head_sha"))
+
+      %ProgressEvent{} ->
+        false
     end)
   end
 
