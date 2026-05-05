@@ -1237,17 +1237,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
-  defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_integer(number), do: {repository, number}
-  defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_binary(number), do: {repository, number}
+  defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_integer(number), do: normalized_pr_ref(repository, number)
+  defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_binary(number), do: normalized_pr_ref(repository, number)
 
   defp pr_payload_ref(%{"url" => url}) when is_binary(url) do
     case PullRequest.parse(%{"url" => url}, nil) do
-      {:ok, ref} -> {ref.repository, ref.number}
+      {:ok, ref} -> normalized_pr_ref(ref.repository, ref.number)
       {:error, _reason} -> legacy_url_ref(url)
     end
   end
 
   defp pr_payload_ref(_payload), do: nil
+
+  defp normalized_pr_ref(repository, number) when is_binary(repository), do: {String.downcase(repository), number}
 
   defp legacy_url_ref(url) do
     case URI.parse(url) do

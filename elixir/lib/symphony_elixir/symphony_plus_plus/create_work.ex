@@ -456,10 +456,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   defp reject_exact_policy_alias_mismatch(kind, policy_key, policy, policy_templates) do
     template_alias = Map.get(policy, :template)
 
-    if policy_key != kind and template_alias != policy_key and template_alias in policy_templates do
+    if policy_key != kind and template_alias != policy_key and template_alias in policy_templates and
+         not explicit_policy_with_alias?(policy_templates, policy_key, template_alias) do
       {:error, :policy_template_mismatch}
     else
       :ok
+    end
+  end
+
+  defp explicit_policy_with_alias?(policy_templates, policy_key, template_alias) do
+    with {:ok, %{template: ^template_alias}} <- Templates.expand(policy_key),
+         policy_index when is_integer(policy_index) <- Enum.find_index(policy_templates, &(&1 == policy_key)),
+         alias_index when is_integer(alias_index) <- Enum.find_index(policy_templates, &(&1 == template_alias)) do
+      policy_index < alias_index
+    else
+      _reason -> false
     end
   end
 

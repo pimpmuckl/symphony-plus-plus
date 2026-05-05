@@ -4750,6 +4750,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     attach_tool(repo, session, "attach_pr", %{"number" => 42, "head_sha" => "abc123"})
 
+    cased_ref =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "sync_pr_cased_ref",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "sync_pr",
+            "arguments" => %{
+              "url" => "https://github.com/NextIDE/Symphony-Plus-Plus/pull/42",
+              "metadata" => %{"head_sha" => "abc123"}
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(cased_ref, ["result", "structuredContent", "progress_event", "payload", "repository"]) == "NextIDE/Symphony-Plus-Plus"
+
     mismatch =
       MCPHarness.request(
         %{

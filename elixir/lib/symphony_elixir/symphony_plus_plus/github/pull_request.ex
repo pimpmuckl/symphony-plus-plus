@@ -173,8 +173,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
 
   defp validate_repository_ref(%{"repository" => repository}, ref) do
     case parse_repository(repository) do
-      {:ok, {owner, repo}} when owner == ref.owner and repo == ref.repo -> :ok
-      {:ok, {_owner, _repo}} -> {:error, :pr_reference_mismatch}
+      {:ok, {owner, repo}} -> validate_repository_parts(owner, repo, ref)
       {:error, reason} -> {:error, reason}
     end
   end
@@ -195,12 +194,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
 
       repository ->
         case parse_repository(repository) do
-          {:ok, {owner, repo}} when owner == ref.owner and repo == ref.repo -> :ok
-          {:ok, {_owner, _repo}} -> {:error, :pr_reference_mismatch}
+          {:ok, {owner, repo}} -> validate_repository_parts(owner, repo, ref)
           {:error, _reason} -> :ok
         end
     end
   end
+
+  defp validate_repository_parts(owner, repo, ref) do
+    if same_repository_part?(owner, ref.owner) and same_repository_part?(repo, ref.repo) do
+      :ok
+    else
+      {:error, :pr_reference_mismatch}
+    end
+  end
+
+  defp same_repository_part?(left, right), do: String.downcase(left) == String.downcase(right)
 
   defp validate_metadata_number_ref(metadata, ref) do
     case metadata_number(metadata) do

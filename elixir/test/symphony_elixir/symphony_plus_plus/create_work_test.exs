@@ -250,6 +250,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     assert request["policy_template"] == "mcp_current_pr_state"
     assert "current_pr_state" in request["policy"].required_gates
 
+    assert {:ok, exact_alias_request} =
+             CreateWork.parse_request(%{
+               kind: "mcp",
+               repo: "symphony-plus-plus",
+               base_branch: "symphony-plus-plus/beta",
+               title: "MCP current PR state accepts exact policy and template alias",
+               acceptance_criteria: ["Current PR state is required."],
+               policy_template: "mcp_current_pr_state",
+               review_suite_template: "worker_package"
+             })
+
+    assert exact_alias_request["policy_template"] == "mcp_current_pr_state"
+    assert "current_pr_state" in exact_alias_request["policy"].required_gates
+
     assert {:error, :policy_template_mismatch} =
              CreateWork.parse_request(%{
                kind: "mcp",

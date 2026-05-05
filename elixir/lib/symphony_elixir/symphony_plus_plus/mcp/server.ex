@@ -1735,7 +1735,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp validate_pr_sync_target(repo, %Session{} = session, ref, "sync_pr") do
     with {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, Session.work_package_id(session)),
          {:ok, attached_ref} <- latest_attached_pr_ref(progress_events) do
-      if attached_ref == {ref.repository, ref.number}, do: :ok, else: {:tool_error, "pr_mismatch"}
+      if attached_ref == normalized_pr_ref(ref.repository, ref.number), do: :ok, else: {:tool_error, "pr_mismatch"}
     end
   end
 
@@ -1770,17 +1770,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_integer(number), do: {repository, number}
-  defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_binary(number), do: {repository, number}
+  defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_integer(number), do: normalized_pr_ref(repository, number)
+  defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_binary(number), do: normalized_pr_ref(repository, number)
 
   defp pr_payload_ref(%{"url" => url}) when is_binary(url) do
     case PullRequest.parse(%{"url" => url}, nil) do
-      {:ok, ref} -> {ref.repository, ref.number}
+      {:ok, ref} -> normalized_pr_ref(ref.repository, ref.number)
       {:error, _reason} -> legacy_url_ref(url)
     end
   end
 
   defp pr_payload_ref(_payload), do: nil
+
+  defp normalized_pr_ref(repository, number) when is_binary(repository), do: {String.downcase(repository), number}
 
   defp legacy_url_ref(url) do
     case URI.parse(url) do

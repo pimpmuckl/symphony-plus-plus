@@ -17,6 +17,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
 
     assert {:ok, subpage_ref} = PullRequest.parse(%{"url" => "https://github.com/nextide/symphony-plus-plus/pull/44/files"}, nil)
     assert subpage_ref.url == "https://github.com/nextide/symphony-plus-plus/pull/44"
+
+    assert {:ok, cased_ref} =
+             PullRequest.parse(
+               %{"url" => "https://github.com/NextIDE/Symphony-Plus-Plus/pull/45", "repository" => "nextide/symphony-plus-plus"},
+               nil
+             )
+
+    assert cased_ref.repository == "NextIDE/Symphony-Plus-Plus"
+    assert cased_ref.number == 45
   end
 
   test "parses PR numbers against package repository" do
@@ -123,6 +132,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
     assert explicit_payload["head_sha"] == "abc1234"
 
     assert {:error, :head_sha_mismatch} = PullRequest.metadata(explicit_metadata, ref, "def1234")
+
+    assert {:ok, cased_payload} =
+             PullRequest.metadata(Map.put(metadata, "html_url", "https://github.com/NextIDE/Symphony-Plus-Plus/pull/42"), ref, nil)
+
+    assert cased_payload["repository"] == "nextide/symphony-plus-plus"
 
     assert {:error, :pr_reference_mismatch} =
              PullRequest.metadata(Map.put(metadata, "html_url", "https://github.com/other/repo/pull/42"), ref, nil)
