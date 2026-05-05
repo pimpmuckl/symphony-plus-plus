@@ -94,6 +94,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     assert html =~ "Ready for worker"
     assert html =~ "SYMPP-P5-002"
     assert html =~ "Dashboard board UI"
+    assert html =~ ~s(href="work-packages/SYMPP-P5-002")
     assert html =~ "dashboard"
     assert html =~ "nextide/symphony-plus-plus / symphony-plus-plus/beta"
     assert html =~ "Blockers"
@@ -119,6 +120,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
 
     assert html =~ "No work packages match the current board filters."
     refute html =~ "Filtered auth package"
+  end
+
+  test "encodes package ids in board detail links" do
+    raw_id = "SYMPP-P5-LINK/ONE?x=1"
+
+    create_board_package(%{
+      id: raw_id,
+      kind: "dashboard",
+      status: "implementing",
+      title: "Encoded link package",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "symphony-plus-plus/beta"
+    })
+
+    secret = create_architect_grant_secret(Repo, raw_id)
+
+    {:ok, _view, html} = live(auth_conn(secret), "/sympp/board")
+
+    assert html =~ ~s(href="work-packages/#{path_segment(raw_id)}")
+    refute html =~ ~s(href="work-packages/#{raw_id}")
+  end
+
+  test "encodes dot-only package ids in board detail links" do
+    raw_id = ".."
+
+    create_board_package(%{
+      id: raw_id,
+      kind: "dashboard",
+      status: "implementing",
+      title: "Dot link package",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "symphony-plus-plus/beta"
+    })
+
+    secret = create_architect_grant_secret(Repo, raw_id)
+
+    {:ok, _view, html} = live(auth_conn(secret), "/sympp/board")
+
+    assert html =~ ~s(href="work-packages/%2E%2E")
+    refute html =~ ~s(href="work-packages/..")
   end
 
   test "filters packages by kind repo and phase without mutating state" do
@@ -963,6 +1004,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     conn = post(build_conn(), "/sympp/board/session", %{"work_key" => secret})
     assert redirected_to(conn) == "/sympp/board"
     recycle(conn)
+  end
+
+  defp path_segment(value) do
+    case value do
+      "." -> "%2E"
+      ".." -> "%2E%2E"
+      value -> URI.encode(value, &URI.char_unreserved?/1)
+    end
   end
 
   defp start_test_endpoint do

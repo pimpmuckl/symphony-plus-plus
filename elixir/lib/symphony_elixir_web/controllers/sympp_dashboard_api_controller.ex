@@ -18,6 +18,9 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @type auth_context :: {:grant, AccessGrant.t()}
   @board_session_key "sympp_board_grant_id"
+  @package_session_key "sympp_package_grant_ids"
+  @package_session_order_key "sympp_package_grant_order"
+  @max_package_sessions 8
 
   @spec authorize_board_browser(Conn.t(), term()) :: Conn.t()
   def authorize_board_browser(conn, _opts) do
@@ -25,6 +28,17 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       {:ok, %AccessGrant{} = grant} -> Conn.put_session(conn, @board_session_key, grant.id)
       {:error, :unauthorized} -> conn |> board_login_response() |> Conn.halt()
       {:error, reason} -> conn |> board_browser_error_response(reason) |> Conn.halt()
+    end
+  end
+
+  @spec authorize_package_browser(Conn.t(), term()) :: Conn.t()
+  def authorize_package_browser(conn, _opts) do
+    work_package_id = conn.path_params |> Map.get("work_package_id") |> normalize_package_route_id()
+
+    case authorize_package_request(conn, work_package_id) do
+      {:ok, %AccessGrant{} = grant} -> put_package_browser_session(conn, grant, work_package_id)
+      {:error, :unauthorized} -> conn |> package_login_response(work_package_id: work_package_id) |> Conn.halt()
+      {:error, reason} -> conn |> package_browser_error_response(reason, work_package_id) |> Conn.halt()
     end
   end
 
@@ -38,6 +52,10 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  @spec normalize_package_route_id(term()) :: term()
+  def normalize_package_route_id(work_package_id) when is_binary(work_package_id), do: work_package_id
+  def normalize_package_route_id(work_package_id), do: work_package_id
 
   @spec board_session(Conn.t(), map()) :: Conn.t()
   def board_session(conn, %{"work_key" => secret}) when is_binary(secret) do
@@ -73,6 +91,78 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     conn |> board_login_response(status: 400, message: "Enter a work key to open the board.") |> Conn.halt()
   end
 
+  @spec package_session(Conn.t(), map()) :: Conn.t()
+  def package_session(conn, %{"work_package_id" => work_package_id, "work_key" => secret})
+      when is_binary(work_package_id) and is_binary(secret) do
+    work_package_id = normalize_package_route_id(work_package_id)
+    secret = String.trim(secret)
+
+    case authorize_package_secret(secret, work_package_id) do
+      {:ok, %AccessGrant{} = grant} ->
+        conn
+        |> put_package_browser_session(grant, work_package_id)
+        |> redirect(to: package_detail_path(conn, work_package_id))
+
+      {:error, :forbidden} ->
+        conn
+        |> clear_package_session(work_package_id)
+        |> package_login_response(status: 403, message: "The work key is not allowed to open this package.", work_package_id: work_package_id)
+        |> Conn.halt()
+
+      {:error, :database_busy} ->
+        conn
+        |> clear_package_session(work_package_id)
+        |> package_login_response(status: 503, message: "The dashboard ledger is busy. Try again.", work_package_id: work_package_id)
+        |> Conn.halt()
+
+      {:error, {:storage_failed, _reason}} ->
+        conn
+        |> clear_package_session(work_package_id)
+        |> package_login_response(status: 503, message: "The package ledger could not be read.", work_package_id: work_package_id)
+        |> Conn.halt()
+
+      {:error, {:repo_start_failed, _reason}} ->
+        conn
+        |> clear_package_session(work_package_id)
+        |> package_login_response(status: 503, message: "The package ledger could not be opened.", work_package_id: work_package_id)
+        |> Conn.halt()
+
+      {:error, :not_found} ->
+        conn
+        |> clear_package_session(work_package_id)
+        |> package_not_found_response()
+        |> Conn.halt()
+
+      {:error, _reason} ->
+        conn
+        |> clear_package_session(work_package_id)
+        |> package_login_response(status: 401, message: "The work key could not access this package.", work_package_id: work_package_id)
+        |> Conn.halt()
+    end
+  end
+
+  def package_session(conn, %{"work_package_id" => work_package_id}) do
+    work_package_id = normalize_package_route_id(work_package_id)
+
+    if valid_package_route_id?(work_package_id) do
+      conn
+      |> clear_package_session(work_package_id)
+      |> package_login_response(status: 400, message: "Enter a work key to open this package.", work_package_id: work_package_id)
+      |> Conn.halt()
+    else
+      conn
+      |> clear_package_session(work_package_id)
+      |> package_not_found_response()
+      |> Conn.halt()
+    end
+  end
+
+  def package_session(conn, _params) do
+    conn
+    |> package_login_response(status: 400, message: "Enter a work key to open this package.", work_package_id: nil)
+    |> Conn.halt()
+  end
+
   @spec board(Conn.t(), map()) :: Conn.t()
   def board(conn, _params) do
     send_repo_response(conn, fn repo, secret ->
@@ -86,32 +176,32 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @spec detail(Conn.t(), map()) :: Conn.t()
   def detail(conn, %{"work_package_id" => work_package_id}) do
-    send_package_response(conn, work_package_id, &Dashboard.detail/2)
+    send_package_response(conn, normalize_package_route_id(work_package_id), &Dashboard.detail/2)
   end
 
   @spec timeline(Conn.t(), map()) :: Conn.t()
   def timeline(conn, %{"work_package_id" => work_package_id}) do
-    send_package_response(conn, work_package_id, &Dashboard.timeline/2)
+    send_package_response(conn, normalize_package_route_id(work_package_id), &Dashboard.timeline/2)
   end
 
   @spec artifacts(Conn.t(), map()) :: Conn.t()
   def artifacts(conn, %{"work_package_id" => work_package_id}) do
-    send_package_response(conn, work_package_id, &Dashboard.artifacts/2)
+    send_package_response(conn, normalize_package_route_id(work_package_id), &Dashboard.artifacts/2)
   end
 
   @spec blockers(Conn.t(), map()) :: Conn.t()
   def blockers(conn, %{"work_package_id" => work_package_id}) do
-    send_package_response(conn, work_package_id, &Dashboard.blockers/2)
+    send_package_response(conn, normalize_package_route_id(work_package_id), &Dashboard.blockers/2)
   end
 
   @spec grants(Conn.t(), map()) :: Conn.t()
   def grants(conn, %{"work_package_id" => work_package_id}) do
-    send_package_response(conn, work_package_id, &Dashboard.grants/2)
+    send_package_response(conn, normalize_package_route_id(work_package_id), &Dashboard.grants/2)
   end
 
   @spec agent_runs(Conn.t(), map()) :: Conn.t()
   def agent_runs(conn, %{"work_package_id" => work_package_id}) do
-    send_package_response(conn, work_package_id, &Dashboard.agent_runs/2)
+    send_package_response(conn, normalize_package_route_id(work_package_id), &Dashboard.agent_runs/2)
   end
 
   defp send_package_response(conn, work_package_id, fetch_fun) do
@@ -144,6 +234,73 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
+  defp authorize_package_request(_conn, work_package_id) when not is_binary(work_package_id), do: {:error, :not_found}
+
+  defp authorize_package_request(conn, work_package_id) do
+    cond do
+      not valid_package_route_id?(work_package_id) -> {:error, :not_found}
+      is_binary(bearer_secret(conn)) -> authorize_package_secret(bearer_secret(conn), work_package_id)
+      true -> authorize_package_session(conn, work_package_id)
+    end
+  end
+
+  defp authorize_package_session(conn, work_package_id) do
+    package_result =
+      conn
+      |> Conn.get_session(@package_session_key)
+      |> package_session_grant_id(work_package_id)
+      |> authorize_package_grant_id(work_package_id)
+
+    board_result =
+      conn
+      |> Conn.get_session(@board_session_key)
+      |> authorize_package_grant_id(work_package_id)
+
+    case {package_result, board_result} do
+      {_package_result, {:ok, %AccessGrant{}} = authorized} -> authorized
+      {{:ok, %AccessGrant{}} = authorized, _board_result} -> authorized
+      {{:error, _package_reason}, {:error, :not_found}} -> {:error, :not_found}
+      {{:error, :unauthorized}, {:error, reason}} -> {:error, reason}
+      {{:error, reason}, _board_result} -> {:error, reason}
+    end
+  end
+
+  defp package_session_grant_id(sessions, work_package_id) when is_map(sessions) and is_binary(work_package_id) do
+    Map.get(sessions, work_package_id)
+  end
+
+  defp package_session_grant_id(_sessions, _work_package_id), do: nil
+
+  defp put_package_browser_session(conn, %AccessGrant{} = grant, work_package_id) do
+    if phase_reader?(grant) do
+      maybe_put_board_session(conn, grant)
+    else
+      {sessions, order} =
+        conn
+        |> Conn.get_session(@package_session_key)
+        |> package_sessions()
+        |> put_limited_package_session(package_session_order(conn, work_package_id), work_package_id, grant.id)
+
+      conn
+      |> Conn.put_session(@package_session_key, sessions)
+      |> Conn.put_session(@package_session_order_key, order)
+      |> Conn.delete_session(@board_session_key)
+    end
+  end
+
+  defp maybe_put_board_session(conn, %AccessGrant{capabilities: capabilities} = grant) when is_list(capabilities) do
+    if "read:phase" in capabilities do
+      Conn.put_session(conn, @board_session_key, grant.id)
+    else
+      conn
+    end
+  end
+
+  defp maybe_put_board_session(conn, %AccessGrant{}), do: conn
+
+  defp phase_reader?(%AccessGrant{capabilities: capabilities}) when is_list(capabilities), do: "read:phase" in capabilities
+  defp phase_reader?(_grant), do: false
+
   defp authorize_board_secret(secret) do
     with true <- auth_storage_ready?(secret),
          {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_with_existing_repo(secret),
@@ -152,6 +309,22 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     else
       false -> {:error, :unauthorized}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp authorize_package_secret(secret, work_package_id) do
+    if valid_package_route_id?(work_package_id) do
+      with true <- auth_storage_ready?(secret),
+           {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_with_existing_repo(secret),
+           :ok <- require_work_package(auth_context, work_package_id),
+           :ok <- require_existing_work_package(work_package_id) do
+        {:ok, grant}
+      else
+        false -> {:error, :unauthorized}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:error, :not_found}
     end
   end
 
@@ -168,6 +341,30 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   def authorize_board_grant_id(_grant_id), do: {:error, :unauthorized}
+
+  @spec authorize_package_grant_id(term(), String.t()) :: {:ok, AccessGrant.t()} | {:error, term()}
+  def authorize_package_grant_id(grant_id, work_package_id) when is_binary(grant_id) and is_binary(work_package_id) do
+    if valid_package_route_id?(work_package_id) do
+      with true <- dashboard_storage_present?(),
+           {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_grant_id_with_existing_repo(grant_id),
+           :ok <- require_work_package(auth_context, work_package_id),
+           :ok <- require_existing_work_package(work_package_id) do
+        {:ok, grant}
+      else
+        false -> {:error, :unauthorized}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:error, :not_found}
+    end
+  end
+
+  def authorize_package_grant_id(_grant_id, _work_package_id), do: {:error, :unauthorized}
+
+  @spec scope_package_payload_for_grant(AccessGrant.t(), map()) :: map()
+  def scope_package_payload_for_grant(%AccessGrant{} = grant, payload) when is_map(payload) do
+    scoped_package_payload({:grant, grant}, payload)
+  end
 
   defp send_authenticated_repo_response(secret, fun) do
     if auth_storage_ready?(secret) do
@@ -388,6 +585,20 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
+  defp require_existing_work_package(work_package_id) when is_binary(work_package_id) do
+    with_dashboard_repo(
+      fn repo ->
+        case WorkPackageRepository.get(repo, work_package_id) do
+          {:ok, _work_package} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+      end,
+      migrate?: false
+    )
+  end
+
+  defp require_existing_work_package(_work_package_id), do: {:error, :not_found}
+
   defp require_capability(capabilities, capability) when is_list(capabilities) do
     if capability in capabilities, do: :ok, else: {:error, :forbidden}
   end
@@ -561,7 +772,86 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     board_login_response(conn, status: 500, message: "The board is temporarily unavailable.")
   end
 
+  defp package_browser_error_response(conn, :forbidden, work_package_id) do
+    package_login_response(conn,
+      status: 403,
+      message: "The current work key is not allowed to open this package.",
+      work_package_id: work_package_id
+    )
+  end
+
+  defp package_browser_error_response(conn, :not_found, _work_package_id), do: package_not_found_response(conn)
+
+  defp package_browser_error_response(conn, :database_busy, work_package_id) do
+    package_login_response(conn, status: 503, message: "The dashboard ledger is busy. Try again.", work_package_id: work_package_id)
+  end
+
+  defp package_browser_error_response(conn, {:storage_failed, _reason}, work_package_id) do
+    package_login_response(conn, status: 503, message: "The package ledger could not be read.", work_package_id: work_package_id)
+  end
+
+  defp package_browser_error_response(conn, {:repo_start_failed, _reason}, work_package_id) do
+    package_login_response(conn, status: 503, message: "The package ledger could not be opened.", work_package_id: work_package_id)
+  end
+
+  defp package_browser_error_response(conn, _reason, work_package_id) do
+    package_login_response(conn, status: 500, message: "The package is temporarily unavailable.", work_package_id: work_package_id)
+  end
+
   defp clear_board_session(conn), do: Conn.delete_session(conn, @board_session_key)
+
+  defp clear_package_session(conn, work_package_id) when is_binary(work_package_id) do
+    sessions =
+      conn
+      |> Conn.get_session(@package_session_key)
+      |> package_sessions()
+      |> Map.delete(work_package_id)
+
+    order =
+      conn
+      |> package_session_order(work_package_id)
+      |> Enum.reject(&(&1 == work_package_id))
+
+    if map_size(sessions) == 0 do
+      conn
+      |> Conn.delete_session(@package_session_key)
+      |> Conn.delete_session(@package_session_order_key)
+    else
+      conn
+      |> Conn.put_session(@package_session_key, sessions)
+      |> Conn.put_session(@package_session_order_key, order)
+    end
+  end
+
+  defp clear_package_session(conn, _work_package_id) do
+    conn
+    |> Conn.delete_session(@package_session_key)
+    |> Conn.delete_session(@package_session_order_key)
+  end
+
+  defp package_sessions(sessions) when is_map(sessions), do: sessions
+  defp package_sessions(_sessions), do: %{}
+
+  defp package_session_order(conn, work_package_id) do
+    order =
+      conn
+      |> Conn.get_session(@package_session_order_key)
+      |> case do
+        order when is_list(order) -> order
+        _order -> conn |> Conn.get_session(@package_session_key) |> package_sessions() |> Map.keys()
+      end
+
+    Enum.filter(order, &(is_binary(&1) and (&1 == work_package_id or Map.has_key?(package_sessions(Conn.get_session(conn, @package_session_key)), &1))))
+  end
+
+  defp put_limited_package_session(sessions, order, work_package_id, grant_id) do
+    sessions = Map.put(sessions, work_package_id, grant_id)
+    order = order |> Enum.reject(&(&1 == work_package_id)) |> Kernel.++([work_package_id])
+    drop_count = max(length(order) - @max_package_sessions, 0)
+    {drop, keep} = Enum.split(order, drop_count)
+
+    {Map.drop(sessions, drop), keep}
+  end
 
   defp error_response(conn, status, code, message) do
     conn
@@ -610,11 +900,101 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     |> Conn.send_resp(status, body)
   end
 
+  defp package_login_response(conn, opts) do
+    status = Keyword.get(opts, :status, 401)
+    message = Keyword.get(opts, :message, "Enter a package work key to continue.")
+    work_package_id = Keyword.fetch!(opts, :work_package_id)
+    csrf_token = Plug.CSRFProtection.get_csrf_token()
+    dashboard_css_path = prefixed_path(conn, "/dashboard.css")
+    package_session_path = package_session_path(conn, work_package_id)
+
+    body = """
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>Symphony++ package access</title>
+      <link rel="stylesheet" href="#{html_escape(dashboard_css_path)}">
+    </head>
+    <body>
+      <main class="sympp-board-shell sympp-auth-shell">
+        <section class="error-card">
+          <p class="eyebrow">Symphony++</p>
+          <h1 class="error-title">Package access</h1>
+          <p class="error-copy">#{html_escape(message)}</p>
+          <form class="sympp-board-filters" method="post" action="#{html_escape(package_session_path)}">
+            <input type="hidden" name="_csrf_token" value="#{csrf_token}">
+            <label>
+              <span>Work key</span>
+              <input type="password" name="work_key" autocomplete="current-password" required>
+            </label>
+            <button class="subtle-button" type="submit">Open package</button>
+          </form>
+        </section>
+      </main>
+    </body>
+    </html>
+    """
+
+    conn
+    |> Conn.put_resp_content_type("text/html")
+    |> Conn.send_resp(status, body)
+  end
+
+  defp package_not_found_response(conn) do
+    dashboard_css_path = prefixed_path(conn, "/dashboard.css")
+
+    body = """
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>Symphony++ package not found</title>
+      <link rel="stylesheet" href="#{html_escape(dashboard_css_path)}">
+    </head>
+    <body>
+      <main class="sympp-board-shell sympp-auth-shell">
+        <section class="error-card">
+          <p class="eyebrow">Symphony++</p>
+          <h1 class="error-title">Package not found</h1>
+          <p class="error-copy">The requested work package could not be found.</p>
+        </section>
+      </main>
+    </body>
+    </html>
+    """
+
+    conn
+    |> Conn.put_resp_content_type("text/html")
+    |> Conn.send_resp(404, body)
+  end
+
   defp prefixed_path(%Conn{script_name: []}, path), do: path
 
   defp prefixed_path(%Conn{script_name: script_name}, path) do
     "/" <> Enum.join(script_name ++ [String.trim_leading(path, "/")], "/")
   end
+
+  defp package_detail_path(conn, work_package_id) do
+    prefixed_path(conn, "/sympp/work-packages/#{path_segment(work_package_id)}")
+  end
+
+  defp package_session_path(conn, work_package_id) do
+    prefixed_path(conn, "/sympp/work-packages/#{path_segment(work_package_id)}/session")
+  end
+
+  defp path_segment("."), do: "%2E"
+  defp path_segment(".."), do: "%2E%2E"
+
+  defp path_segment(value), do: value |> to_string() |> URI.encode(&URI.char_unreserved?/1)
+
+  defp valid_package_route_id?(work_package_id) when is_binary(work_package_id) do
+    String.trim(work_package_id) != "" and not String.contains?(work_package_id, ["\0", "\n", "\r", "\t"])
+  end
+
+  defp valid_package_route_id?(_work_package_id), do: false
 
   defp html_escape(value) do
     value
