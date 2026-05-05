@@ -18,6 +18,10 @@ defmodule SymphonyElixirWeb.Router do
     plug(:authorize_sympp_board)
   end
 
+  pipeline :sympp_package_auth do
+    plug(:authorize_sympp_package)
+  end
+
   scope "/", SymphonyElixirWeb do
     get("/dashboard.css", StaticAssetController, :dashboard_css)
     get("/vendor/phoenix_html/phoenix_html.js", StaticAssetController, :phoenix_html_js)
@@ -36,6 +40,12 @@ defmodule SymphonyElixirWeb.Router do
     pipe_through([:browser, :sympp_board_auth])
 
     live("/sympp/board", SymppBoardLive, :index)
+  end
+
+  scope "/", SymphonyElixirWeb do
+    pipe_through([:browser, :sympp_package_auth])
+
+    live("/sympp/work-packages/:work_package_id", SymppDetailLive, :show)
   end
 
   scope "/", SymphonyElixirWeb do
@@ -66,5 +76,9 @@ defmodule SymphonyElixirWeb.Router do
 
   defp authorize_sympp_board(conn, opts) do
     SymphonyElixirWeb.SymppDashboardApiController.authorize_board_browser(conn, opts)
+  end
+
+  defp authorize_sympp_package(conn, opts) do
+    SymphonyElixirWeb.SymppDashboardApiController.authorize_package_browser(conn, opts)
   end
 end

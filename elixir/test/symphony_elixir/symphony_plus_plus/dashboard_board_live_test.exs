@@ -94,6 +94,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     assert html =~ "Ready for worker"
     assert html =~ "SYMPP-P5-002"
     assert html =~ "Dashboard board UI"
+    assert html =~ ~s(href="work-packages/SYMPP-P5-002")
     assert html =~ "dashboard"
     assert html =~ "nextide/symphony-plus-plus / symphony-plus-plus/beta"
     assert html =~ "Blockers"

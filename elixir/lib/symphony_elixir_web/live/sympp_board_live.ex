@@ -119,7 +119,9 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
                     <span class="state-badge"><%= card.kind || "unknown" %></span>
                   </header>
 
-                  <h3 class="sympp-card-title"><%= card.title || "Untitled package" %></h3>
+                  <h3 class="sympp-card-title">
+                    <a href={"work-packages/#{card.id}"}><%= card.title || "Untitled package" %></a>
+                  </h3>
 
                   <dl class="sympp-card-meta">
                     <div>
@@ -177,7 +179,8 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     end
   end
 
-  defp with_dashboard_repo(fun) when is_function(fun, 1) do
+  @spec with_dashboard_repo((module() -> {:ok, map()} | {:error, term()})) :: {:ok, map()} | {:error, term()}
+  def with_dashboard_repo(fun) when is_function(fun, 1) do
     case configured_dashboard_repo() do
       repo when is_atom(repo) and not is_nil(repo) and repo != Repo ->
         with_custom_dashboard_repo(repo, fun)
@@ -756,9 +759,10 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     end
   end
 
-  defp error_message(:not_found), do: "No Symphony++ work package ledger was found."
-  defp error_message(:database_busy), do: "The Symphony++ ledger is busy. Refresh shortly."
-  defp error_message({:repo_database_mismatch, _repo}), do: "The configured Symphony++ repo does not match the selected ledger."
-  defp error_message({:storage_failed, _reason}), do: "The Symphony++ ledger could not be read."
-  defp error_message(_reason), do: "The Symphony++ board could not be loaded."
+  @spec error_message(term()) :: String.t()
+  def error_message(:not_found), do: "No Symphony++ work package ledger was found."
+  def error_message(:database_busy), do: "The Symphony++ ledger is busy. Refresh shortly."
+  def error_message({:repo_database_mismatch, _repo}), do: "The configured Symphony++ repo does not match the selected ledger."
+  def error_message({:storage_failed, _reason}), do: "The Symphony++ ledger could not be read."
+  def error_message(_reason), do: "The Symphony++ board could not be loaded."
 end

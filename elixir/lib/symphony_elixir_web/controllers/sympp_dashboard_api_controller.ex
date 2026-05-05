@@ -28,6 +28,17 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
+  @spec authorize_package_browser(Conn.t(), term()) :: Conn.t()
+  def authorize_package_browser(conn, _opts) do
+    work_package_id = Map.get(conn.path_params, "work_package_id")
+
+    case authorize_package_request(conn, work_package_id) do
+      {:ok, %AccessGrant{} = grant} -> Conn.put_session(conn, @board_session_key, grant.id)
+      {:error, :unauthorized} -> conn |> board_login_response() |> Conn.halt()
+      {:error, reason} -> conn |> board_browser_error_response(reason) |> Conn.halt()
+    end
+  end
+
   @spec authorize_board_session(map()) :: :ok | {:error, term()}
   def authorize_board_session(session) when is_map(session) do
     session
@@ -144,10 +155,35 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
+  defp authorize_package_request(_conn, nil), do: {:error, :not_found}
+
+  defp authorize_package_request(conn, work_package_id) do
+    with {:error, :unauthorized} <-
+           conn
+           |> Conn.get_session(@board_session_key)
+           |> authorize_package_grant_id(work_package_id) do
+      case bearer_secret(conn) do
+        nil -> {:error, :unauthorized}
+        secret -> authorize_package_secret(secret, work_package_id)
+      end
+    end
+  end
+
   defp authorize_board_secret(secret) do
     with true <- auth_storage_ready?(secret),
          {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_with_existing_repo(secret),
          :ok <- require_global_board(auth_context) do
+      {:ok, grant}
+    else
+      false -> {:error, :unauthorized}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp authorize_package_secret(secret, work_package_id) do
+    with true <- auth_storage_ready?(secret),
+         {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_with_existing_repo(secret),
+         :ok <- require_work_package(auth_context, work_package_id) do
       {:ok, grant}
     else
       false -> {:error, :unauthorized}
@@ -168,6 +204,25 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   def authorize_board_grant_id(_grant_id), do: {:error, :unauthorized}
+
+  @spec authorize_package_grant_id(term(), String.t()) :: {:ok, AccessGrant.t()} | {:error, term()}
+  def authorize_package_grant_id(grant_id, work_package_id) when is_binary(grant_id) and is_binary(work_package_id) do
+    with true <- dashboard_storage_present?(),
+         {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_grant_id_with_existing_repo(grant_id),
+         :ok <- require_work_package(auth_context, work_package_id) do
+      {:ok, grant}
+    else
+      false -> {:error, :unauthorized}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def authorize_package_grant_id(_grant_id, _work_package_id), do: {:error, :unauthorized}
+
+  @spec scope_package_payload_for_grant(AccessGrant.t(), map()) :: map()
+  def scope_package_payload_for_grant(%AccessGrant{} = grant, payload) when is_map(payload) do
+    scoped_package_payload({:grant, grant}, payload)
+  end
 
   defp send_authenticated_repo_response(secret, fun) do
     if auth_storage_ready?(secret) do
