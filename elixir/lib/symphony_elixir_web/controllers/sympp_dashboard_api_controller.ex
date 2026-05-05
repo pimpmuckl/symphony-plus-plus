@@ -17,13 +17,46 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   alias SymphonyElixirWeb.Endpoint
 
   @type auth_context :: {:grant, AccessGrant.t()}
+  @board_session_key "sympp_board_grant_id"
 
   @spec authorize_board_browser(Conn.t(), term()) :: Conn.t()
   def authorize_board_browser(conn, _opts) do
-    case authorize_global_board(conn) do
-      :ok -> conn
+    case authorize_board_request(conn) do
+      {:ok, %AccessGrant{} = grant} -> Conn.put_session(conn, @board_session_key, grant.id)
+      {:error, :unauthorized} -> conn |> board_login_response() |> Conn.halt()
       {:error, reason} -> conn |> error_response(reason) |> Conn.halt()
     end
+  end
+
+  @spec authorize_board_session(map()) :: :ok | {:error, term()}
+  def authorize_board_session(session) when is_map(session) do
+    session
+    |> Map.get(@board_session_key)
+    |> authorize_board_grant_id()
+    |> case do
+      {:ok, %AccessGrant{}} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec board_session(Conn.t(), map()) :: Conn.t()
+  def board_session(conn, %{"work_key" => secret}) when is_binary(secret) do
+    case authorize_board_secret(secret) do
+      {:ok, %AccessGrant{} = grant} ->
+        conn
+        |> Conn.put_session(@board_session_key, grant.id)
+        |> redirect(to: "/sympp/board")
+
+      {:error, :forbidden} ->
+        conn |> error_response(:forbidden) |> Conn.halt()
+
+      {:error, _reason} ->
+        conn |> board_login_response(status: 401, message: "The work key could not access the board.") |> Conn.halt()
+    end
+  end
+
+  def board_session(conn, _params) do
+    conn |> board_login_response(status: 400, message: "Enter a work key to open the board.") |> Conn.halt()
   end
 
   @spec board(Conn.t(), map()) :: Conn.t()
@@ -88,22 +121,38 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
-  defp authorize_global_board(conn) do
-    case bearer_secret(conn) do
-      nil ->
-        {:error, :unauthorized}
-
-      secret ->
-        with true <- auth_storage_ready?(secret),
-             {:ok, auth_context} <- authenticate_with_existing_repo(secret),
-             :ok <- require_global_board(auth_context) do
-          :ok
-        else
-          false -> {:error, :unauthorized}
-          {:error, reason} -> {:error, reason}
-        end
+  defp authorize_board_request(conn) do
+    with {:error, :unauthorized} <- conn |> Conn.get_session(@board_session_key) |> authorize_board_grant_id() do
+      case bearer_secret(conn) do
+        nil -> {:error, :unauthorized}
+        secret -> authorize_board_secret(secret)
+      end
     end
   end
+
+  defp authorize_board_secret(secret) do
+    with true <- auth_storage_ready?(secret),
+         {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_with_existing_repo(secret),
+         :ok <- require_global_board(auth_context) do
+      {:ok, grant}
+    else
+      false -> {:error, :unauthorized}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp authorize_board_grant_id(grant_id) when is_binary(grant_id) do
+    with true <- dashboard_storage_present?(),
+         {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_grant_id_with_existing_repo(grant_id),
+         :ok <- require_global_board(auth_context) do
+      {:ok, grant}
+    else
+      false -> {:error, :unauthorized}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp authorize_board_grant_id(_grant_id), do: {:error, :unauthorized}
 
   defp send_authenticated_repo_response(secret, fun) do
     if auth_storage_ready?(secret) do
@@ -123,6 +172,16 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp authenticate_with_existing_repo(secret) do
     case with_dashboard_repo(fn repo -> grant_auth_context(repo, secret) end, migrate?: false) do
+      {:error, {:storage_failed, message}} when is_binary(message) ->
+        if missing_schema_message?(message), do: {:error, :unauthorized}, else: {:error, {:storage_failed, message}}
+
+      result ->
+        result
+    end
+  end
+
+  defp authenticate_grant_id_with_existing_repo(grant_id) do
+    case with_dashboard_repo(fn repo -> grant_id_auth_context(repo, grant_id) end, migrate?: false) do
       {:error, {:storage_failed, message}} when is_binary(message) ->
         if missing_schema_message?(message), do: {:error, :unauthorized}, else: {:error, {:storage_failed, message}}
 
@@ -249,6 +308,18 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       else
         false -> {:error, :unauthorized}
         {:error, :invalid_secret} -> {:error, :unauthorized}
+        {:error, :not_found} -> {:error, :unauthorized}
+        {:error, reason} -> {:error, reason}
+      end
+    end)
+  end
+
+  defp grant_id_auth_context(repo, grant_id) do
+    normalize_storage_errors(fn ->
+      with {:ok, %AccessGrant{} = grant} <- AccessGrantRepository.get(repo, grant_id),
+           :ok <- live_grant?(grant) do
+        {:ok, {:grant, grant}}
+      else
         {:error, :not_found} -> {:error, :unauthorized}
         {:error, reason} -> {:error, reason}
       end
@@ -459,6 +530,52 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     conn
     |> put_status(status)
     |> json(%{error: %{code: code, message: message}})
+  end
+
+  defp board_login_response(conn, opts \\ []) do
+    status = Keyword.get(opts, :status, 401)
+    message = Keyword.get(opts, :message, "Enter a board work key to continue.")
+    csrf_token = Plug.CSRFProtection.get_csrf_token()
+
+    body = """
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>Symphony++ board access</title>
+      <link rel="stylesheet" href="/dashboard.css">
+    </head>
+    <body>
+      <main class="sympp-board-shell sympp-auth-shell">
+        <section class="error-card">
+          <p class="eyebrow">Symphony++</p>
+          <h1 class="error-title">Board access</h1>
+          <p class="error-copy">#{html_escape(message)}</p>
+          <form class="sympp-board-filters" method="post" action="/sympp/board/session">
+            <input type="hidden" name="_csrf_token" value="#{csrf_token}">
+            <label>
+              <span>Work key</span>
+              <input type="password" name="work_key" autocomplete="current-password" required>
+            </label>
+            <button class="subtle-button" type="submit">Open board</button>
+          </form>
+        </section>
+      </main>
+    </body>
+    </html>
+    """
+
+    conn
+    |> Conn.put_resp_content_type("text/html")
+    |> Conn.send_resp(status, body)
+  end
+
+  defp html_escape(value) do
+    value
+    |> to_string()
+    |> Phoenix.HTML.html_escape()
+    |> Phoenix.HTML.safe_to_string()
   end
 
   defp normalize_storage_errors(fun) when is_function(fun, 0) do

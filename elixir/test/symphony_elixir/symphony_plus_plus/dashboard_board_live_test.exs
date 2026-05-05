@@ -141,7 +141,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     secret = create_architect_grant_secret(Repo, "SYMPP-P5-002")
 
     {:ok, _view, html} =
-      live(auth_conn(secret), "/sympp/board?kind=dashboard&repo=nextide/symphony-plus-plus&phase=P5")
+      live(board_session_conn(secret), "/sympp/board?kind=dashboard&repo=nextide/symphony-plus-plus&phase=P5")
 
     assert html =~ "Visible dashboard package"
     refute html =~ "Hidden integration package"
@@ -217,7 +217,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
 
     conn = get(build_conn(), "/sympp/board")
 
-    assert response(conn, 401) =~ "Unauthorized"
+    assert response(conn, 401) =~ "Board access"
     refute File.exists?(missing_database_path)
   end
 
@@ -321,7 +321,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     with_endpoint_repo(CustomBoardRepo, fn ->
       conn = get(auth_conn(secret), "/sympp/board")
 
-      assert response(conn, 401) =~ "Unauthorized"
+      assert response(conn, 401) =~ "Board access"
       refute response(conn, 401) =~ "Wrong custom repo package"
     end)
   end
@@ -448,6 +448,49 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     assert get(auth_conn(worker_secret), "/sympp/board") |> response(403)
   end
 
+  test "browser session login preserves board access for filter navigation" do
+    create_board_package(%{
+      id: "SYMPP-P5-017",
+      kind: "dashboard",
+      status: "implementing",
+      title: "Session board package",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "symphony-plus-plus/beta"
+    })
+
+    secret = create_architect_grant_secret(Repo, "SYMPP-P5-017")
+    conn = board_session_conn(secret)
+
+    {:ok, _view, html} = live(conn, "/sympp/board?kind=dashboard")
+
+    assert html =~ "Session board package"
+    refute html =~ secret
+  end
+
+  test "revoked board session grants are rejected before rendering the board" do
+    work_package =
+      create_board_package(%{
+        id: "SYMPP-P5-018",
+        kind: "dashboard",
+        status: "implementing",
+        title: "Revoked board package",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "symphony-plus-plus/beta"
+      })
+
+    secret = create_architect_grant_secret(Repo, work_package.id)
+    conn = board_session_conn(secret)
+    secret_hash = WorkKey.secret_hash(secret)
+    assert {:ok, grant} = AccessGrantRepository.find_by_secret_hash(Repo, secret_hash)
+    assert {:ok, _revoked} = AccessGrantRepository.revoke(Repo, grant.id, DateTime.utc_now(:microsecond))
+
+    conn = get(conn, "/sympp/board")
+
+    assert response(conn, 401) =~ "Board access"
+    refute response(conn, 401) =~ "Revoked board package"
+    refute response(conn, 401) =~ secret
+  end
+
   defp append_pr(_work_package, nil, _timestamp), do: :ok
 
   defp append_pr(work_package, pr_url, timestamp) do
@@ -546,6 +589,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
   defp auth_conn(secret) do
     build_conn()
     |> put_req_header("authorization", "Bearer #{secret}")
+  end
+
+  defp board_session_conn(secret) do
+    conn = post(build_conn(), "/sympp/board/session", %{"work_key" => secret})
+    assert redirected_to(conn) == "/sympp/board"
+    recycle(conn)
   end
 
   defp start_test_endpoint do

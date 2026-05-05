@@ -29,6 +29,7 @@ defmodule SymphonyElixirWeb.Router do
     pipe_through(:browser)
 
     live("/", DashboardLive, :index)
+    post("/sympp/board/session", SymppDashboardApiController, :board_session)
   end
 
   scope "/", SymphonyElixirWeb do

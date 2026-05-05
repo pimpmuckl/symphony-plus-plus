@@ -8,23 +8,31 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixirWeb.Endpoint
+  alias SymphonyElixirWeb.SymppDashboardApiController
 
   @empty_filter "all"
 
   @impl true
-  def mount(params, _session, socket) do
+  def mount(params, session, socket) do
+    authorized? = SymppDashboardApiController.authorize_board_session(session) == :ok
+
     {:ok,
      socket
+     |> assign(:authorized?, authorized?)
      |> assign(:empty_filter, @empty_filter)
-     |> assign(:filters, filters(params))}
+     |> assign(:filters, filters(params))
+     |> assign_new(:board, fn -> unauthorized_board(authorized?) end)}
   end
 
   @impl true
   def handle_params(params, _uri, socket) do
-    {:noreply,
-     socket
-     |> assign(:filters, filters(params))
-     |> assign_board()}
+    socket = assign(socket, :filters, filters(params))
+
+    if socket.assigns.authorized? do
+      {:noreply, assign_board(socket)}
+    else
+      {:noreply, assign(socket, :board, unauthorized_board(false))}
+    end
   end
 
   @impl true
@@ -420,6 +428,9 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       filter_options: %{kinds: [], repos: [], phases: []}
     }
   end
+
+  defp unauthorized_board(true), do: empty_board(nil)
+  defp unauthorized_board(false), do: empty_board("Board access expired. Reload and enter a current board work key.")
 
   defp filters(params) when is_map(params) do
     %{
