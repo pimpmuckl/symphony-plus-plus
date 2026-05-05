@@ -213,6 +213,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
       case {session_result, bearer_secret(conn)} do
         {{:ok, %AccessGrant{}} = authorized, _secret} -> authorized
+        {{:error, :unauthorized}, nil} -> require_package_before_login(work_package_id)
         {{:error, reason}, nil} -> {:error, reason}
         {{:error, _reason}, secret} -> authorize_package_secret(secret, work_package_id)
       end
@@ -271,8 +272,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     if valid_package_route_id?(work_package_id) do
       with true <- auth_storage_ready?(secret),
            {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_with_existing_repo(secret),
-           :ok <- require_existing_work_package(work_package_id),
-           :ok <- require_work_package(auth_context, work_package_id) do
+           :ok <- require_work_package(auth_context, work_package_id),
+           :ok <- require_existing_work_package(work_package_id) do
         {:ok, grant}
       else
         false -> {:error, :unauthorized}
@@ -302,8 +303,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     if valid_package_route_id?(work_package_id) do
       with true <- dashboard_storage_present?(),
            {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_grant_id_with_existing_repo(grant_id),
-           :ok <- require_existing_work_package(work_package_id),
-           :ok <- require_work_package(auth_context, work_package_id) do
+           :ok <- require_work_package(auth_context, work_package_id),
+           :ok <- require_existing_work_package(work_package_id) do
         {:ok, grant}
       else
         false -> {:error, :unauthorized}
@@ -553,6 +554,13 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp require_existing_work_package(_work_package_id), do: {:error, :not_found}
+
+  defp require_package_before_login(work_package_id) do
+    case require_existing_work_package(work_package_id) do
+      :ok -> {:error, :unauthorized}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp require_capability(capabilities, capability) when is_list(capabilities) do
     if capability in capabilities, do: :ok, else: {:error, :forbidden}

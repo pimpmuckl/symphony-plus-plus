@@ -145,6 +145,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert response(conn, 403) =~ "Package access"
     assert response(conn, 403) =~ ~s(action="/sympp/work-packages/#{sibling.id}/session")
     refute response(conn, 403) =~ "Sibling detail package"
+
+    missing_conn = get(auth_conn(worker_secret), "/sympp/work-packages/SYMPP-P5-MISSING-SIBLING")
+
+    assert response(missing_conn, 403) =~ "Package access"
+    refute response(missing_conn, 403) =~ "Package not found"
   end
 
   test "package-scoped work key can create a browser detail session" do
@@ -174,6 +179,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
   test "package login escapes user-controlled package id paths" do
     raw_id = ~S|SYMPP-" autofocus onfocus="alert(1)|
     encoded_id = path_segment(raw_id)
+    create_detail_package(id: raw_id)
 
     login_conn = get(build_conn(), "/sympp/work-packages/#{encoded_id}")
     login_html = response(login_conn, 401)
@@ -198,6 +204,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
 
   test "missing package detail and session return package not found" do
     %{architect_secret: architect_secret} = create_detail_package(id: "SYMPP-P5-EXISTS")
+
+    anonymous_conn = get(build_conn(), "/sympp/work-packages/SYMPP-P5-MISSING")
+
+    assert response(anonymous_conn, 404) =~ "Package not found"
+    refute response(anonymous_conn, 404) =~ "work_key"
 
     detail_conn = get(auth_conn(architect_secret), "/sympp/work-packages/SYMPP-P5-MISSING")
 
