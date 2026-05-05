@@ -34,6 +34,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     def query(_sql, _params, _opts), do: {:error, %RuntimeError{message: "C:/secret/path.sqlite"}}
   end
 
+  defmodule BusyPrSyncRepo do
+    def get(AccessGrant, "grant-pr-sync-service") do
+      %AccessGrant{
+        id: "grant-pr-sync-service",
+        work_package_id: "SYMPP-PR-SERVICE-ERROR",
+        display_key: "ABCD",
+        grant_role: "worker",
+        capabilities: ["read:own", "write:own"],
+        claimed_at: ~U[2026-05-05 00:00:00Z],
+        claimed_by: "worker-1",
+        expires_at: ~U[2030-01-01 00:00:00Z],
+        secret_hash: "proof"
+      }
+    end
+
+    def get(WorkPackage, "SYMPP-PR-SERVICE-ERROR") do
+      %WorkPackage{
+        id: "SYMPP-PR-SERVICE-ERROR",
+        kind: "standard_pr",
+        repo: "nextide/symphony-plus-plus",
+        status: "ci_waiting"
+      }
+    end
+
+    def all(_query), do: raise(%Exqlite.Error{message: "database is locked"})
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
 
@@ -4464,6 +4491,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(response, ["error", "code"]) == -32_602
     assert get_in(response, ["error", "data", "tool"]) == "sync_pr"
     assert get_in(response, ["error", "data", "reason"]) == "missing_metadata"
+  end
+
+  test "sync_pr preserves service error shape for PR metadata lookup failures" do
+    session =
+      Session.new(
+        %Assignment{
+          grant_id: "grant-pr-sync-service",
+          work_package_id: "SYMPP-PR-SERVICE-ERROR",
+          display_key: "ABCD",
+          grant_role: "worker",
+          capabilities: ["read:own", "write:own"],
+          claimed_at: ~U[2026-05-05 00:00:00Z],
+          claimed_by: "worker-1"
+        },
+        proof_hash: "proof"
+      )
+
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "sync-pr-service-error",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "sync_pr",
+            "arguments" => %{"number" => 42, "metadata" => %{"head_sha" => "head-a"}}
+          }
+        },
+        repo: BusyPrSyncRepo,
+        session: session
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_000
+    assert get_in(response, ["error", "data", "resource"]) == "sync_pr"
+    assert get_in(response, ["error", "data", "reason"]) == "ledger_unavailable"
   end
 
   test "sync_pr requires an attached matching PR and metadata head", %{repo: repo} do

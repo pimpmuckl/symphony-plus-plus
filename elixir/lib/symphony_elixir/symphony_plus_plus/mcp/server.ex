@@ -1620,6 +1620,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     else
       {:tool_error, reason} -> {:tool_error, reason}
       {:ok, nil} -> {:error, :not_found}
+      {:error, reason} when reason in [:database_busy] -> {:error, reason}
+      {:error, {reason, _detail} = error} when reason in [:storage_failed, :migration_failed, :service_unavailable] -> {:error, error}
       {:error, reason} -> {:tool_error, reason_text(reason)}
     end
   end

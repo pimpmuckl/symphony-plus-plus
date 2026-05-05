@@ -26,6 +26,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     "request_scope_expansion",
     "attach_branch",
     "attach_pr",
+    "sync_pr",
     "submit_review_package",
     "mark_ready"
   ]
