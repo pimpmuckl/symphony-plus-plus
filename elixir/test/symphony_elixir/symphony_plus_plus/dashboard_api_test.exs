@@ -1239,6 +1239,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert payload["metadata"]["pr"]["check_summary"]["conclusion"] == "success"
     assert payload["metadata"]["pr"]["review_state"]["state"] == "approved"
     assert payload["metadata"]["pr"]["merge_state"]["state"] == "clean"
+
+    assert {:ok, _rich_reattach} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR reattached with richer metadata",
+               status: "pr_attached",
+               payload: %{
+                 type: "pr",
+                 source_tool: "attach_pr",
+                 repository: "example/repo",
+                 number: 10,
+                 url: "https://github.com/example/repo/pull/10",
+                 head_sha: "current-head",
+                 check_summary: %{conclusion: "success", total_count: 7},
+                 review_state: %{state: "approved"},
+                 merge_state: %{state: "clean"}
+               },
+               created_at: ~U[2026-05-05 00:00:04Z]
+             })
+
+    rich_payload = json_response(get(auth_conn(architect_secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+
+    assert rich_payload["metadata"]["pr"]["source_tool"] == "attach_pr"
+    assert rich_payload["metadata"]["pr"]["check_summary"]["total_count"] == 7
   end
 
   test "unknown policy lookup does not invent merge or review evidence requirements", %{repo: repo} do

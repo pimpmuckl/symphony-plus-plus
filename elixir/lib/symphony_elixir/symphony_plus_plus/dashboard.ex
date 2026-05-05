@@ -1004,14 +1004,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp current_pr_state_present?(_progress_events, _head_sha), do: false
 
-  defp current_pr_state_payload?(%{"source_tool" => "sync_pr"} = payload) do
+  defp current_pr_state_payload?(%{"source_tool" => "sync_pr"} = payload), do: semantic_pr_payload?(payload)
+  defp current_pr_state_payload?(_payload), do: false
+
+  defp semantic_pr_payload?(payload) do
     semantic_pr_state?(payload, "check_summary", ["conclusion", "state", "status"]) or
       semantic_pr_state?(payload, "review_state", ["decision", "state", "status"]) or
       semantic_pr_state?(payload, "merge_state", ["mergeable_state", "state", "status"]) or
       semantic_pr_boolean?(payload, "merge_state", ["mergeable", "merged"])
   end
-
-  defp current_pr_state_payload?(_payload), do: false
 
   defp semantic_pr_state?(payload, key, semantic_keys) do
     case Map.get(payload, key) do
@@ -1087,8 +1088,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp latest_pr_payload(progress_events, :none) do
     case latest_attached_pr_ref(progress_events) do
       {:ok, attached_ref} ->
-        latest_current_pr_payload(progress_events, :any, attached_ref) ||
-          latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], :any, attached_ref)
+        latest_preferred_pr_payload(progress_events, :any, attached_ref)
 
       {:error, :not_found} ->
         nil
@@ -1098,15 +1098,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp latest_pr_payload(progress_events, head_filter) do
     case latest_attached_pr_ref(progress_events) do
       {:ok, attached_ref} ->
-        latest_current_pr_payload(progress_events, head_filter, attached_ref) ||
-          latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], head_filter, attached_ref) ||
-          latest_current_pr_payload(progress_events, :any, attached_ref) ||
-          latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], :any, attached_ref)
+        latest_preferred_pr_payload(progress_events, head_filter, attached_ref) ||
+          latest_preferred_pr_payload(progress_events, :any, attached_ref)
 
       {:error, :not_found} ->
         nil
     end
   end
+
+  defp latest_preferred_pr_payload(progress_events, head_filter, attached_ref) do
+    latest_payload = latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], head_filter, attached_ref)
+
+    cond do
+      is_nil(latest_payload) ->
+        latest_current_pr_payload(progress_events, head_filter, attached_ref)
+
+      display_pr_payload?(latest_payload) ->
+        latest_payload
+
+      true ->
+        latest_current_pr_payload(progress_events, head_filter, attached_ref) || latest_payload
+    end
+  end
+
+  defp display_pr_payload?(%{"source_tool" => "sync_pr"}), do: true
+  defp display_pr_payload?(%{"source_tool" => "attach_pr"} = payload), do: semantic_pr_payload?(payload)
+  defp display_pr_payload?(_payload), do: false
 
   defp latest_current_pr_payload(progress_events, head_filter, attached_ref) do
     progress_events

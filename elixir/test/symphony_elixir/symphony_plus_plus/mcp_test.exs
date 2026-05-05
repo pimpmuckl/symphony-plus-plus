@@ -415,6 +415,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
            ]
 
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == "string"
+    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "number", "type"]) == ["integer", "string"]
+    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "number", "pattern"]) == "^[1-9][0-9]*$"
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "metadata", "type"]) == "object"
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "required"]) == ["metadata"]
 
@@ -432,6 +434,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
            ]
 
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "metadata", "type"]) == "object"
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "number", "type"]) == ["integer", "string"]
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "number", "pattern"]) == "^[1-9][0-9]*$"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts", "head_sha"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "type"]) == "array"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "tests", "minItems"]) == 1
@@ -4585,7 +4589,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(missing_context, ["error", "data", "reason"]) == "missing_repository_use_url_or_owner_repo"
 
     explicit_repository =
-      attach_tool(repo, session, "attach_pr", %{"number" => 42, "repository" => "nextide/symphony-plus-plus", "head_sha" => "head-a"})
+      attach_tool(repo, session, "attach_pr", %{"number" => "42", "repository" => "nextide/symphony-plus-plus", "head_sha" => "head-a"})
 
     assert get_in(explicit_repository, ["result", "structuredContent", "progress_event", "payload", "url"]) ==
              "https://github.com/nextide/symphony-plus-plus/pull/42"
