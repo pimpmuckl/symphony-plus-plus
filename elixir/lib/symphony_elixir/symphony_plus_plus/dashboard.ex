@@ -982,7 +982,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp pr_metadata(nil, _head_filter), do: nil
 
   defp pr_metadata(%{} = pr, {:head, current_head_sha}) do
-    stale? = Map.get(pr, "head_sha") != current_head_sha
+    stale? = not head_sha_matches?(Map.get(pr, "head_sha"), current_head_sha)
 
     pr
     |> Map.put("stale", stale?)
@@ -1049,8 +1049,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp payload_head_matches?(_payload, :any), do: true
   defp payload_head_matches?(_payload, :none), do: false
-  defp payload_head_matches?(payload, {:head, head_sha}) when is_map(payload), do: Map.get(payload, "head_sha") == head_sha
+  defp payload_head_matches?(payload, {:head, head_sha}) when is_map(payload), do: head_sha_matches?(Map.get(payload, "head_sha"), head_sha)
   defp payload_head_matches?(_payload, {:head, _head_sha}), do: false
+
+  defp head_sha_matches?(left, right) when is_binary(left) and is_binary(right) do
+    left = String.trim(left)
+    right = String.trim(right)
+
+    cond do
+      left == "" or right == "" -> false
+      left == right -> true
+      hex_sha?(left) and hex_sha?(right) -> String.starts_with?(left, right) or String.starts_with?(right, left)
+      true -> false
+    end
+  end
+
+  defp head_sha_matches?(_left, _right), do: false
+
+  defp hex_sha?(value), do: String.match?(value, ~r/^[0-9a-fA-F]{7,40}$/)
 
   defp payload_branch(%{} = payload) do
     case Map.get(payload, "branch") do

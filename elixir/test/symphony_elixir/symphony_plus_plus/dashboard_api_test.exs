@@ -800,7 +800,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                work_package_id: work_package.id,
                summary: "Branch attached",
                status: "branch_attached",
-               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "current-head"},
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "abcdef1"},
                created_at: ~U[2026-05-05 00:00:00Z]
              })
 
@@ -809,7 +809,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                work_package_id: work_package.id,
                summary: "Current PR synced",
                status: "pr_synced",
-               payload: %{type: "pr", source_tool: "sync_pr", url: "https://github.com/example/repo/pull/10", head_sha: "current-head"},
+               payload: %{
+                 type: "pr",
+                 source_tool: "sync_pr",
+                 url: "https://github.com/example/repo/pull/10",
+                 head_sha: "abcdef1234567890abcdef1234567890abcdef12"
+               },
                created_at: ~U[2026-05-05 00:00:01Z]
              })
 
@@ -824,9 +829,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     payload = json_response(get(auth_conn(architect_secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
 
-    assert payload["metadata"]["pr"]["head_sha"] == "current-head"
+    assert payload["metadata"]["pr"]["head_sha"] == "abcdef1234567890abcdef1234567890abcdef12"
     assert payload["metadata"]["pr"]["stale"] == false
-    assert payload["metadata"]["pr"]["current_head_sha"] == "current-head"
+    assert payload["metadata"]["pr"]["current_head_sha"] == "abcdef1"
   end
 
   test "unknown policy lookup does not invent merge or review evidence requirements", %{repo: repo} do

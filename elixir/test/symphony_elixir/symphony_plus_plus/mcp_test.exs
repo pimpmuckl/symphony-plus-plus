@@ -4350,6 +4350,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
     session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
 
+    attach_tool(repo, session, "attach_pr", %{"number" => 42, "head_sha" => "sync-head"})
+
     response =
       attach_tool(repo, session, "sync_pr", %{
         "number" => 42,
@@ -4388,10 +4390,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
     assert Enum.any?(artifacts, &(&1.kind == "github_pr" and &1.path == "github-pr.json" and &1.uri == payload["url"]))
 
-    attach_tool(repo, session, "sync_pr", %{
-      "number" => 43,
-      "metadata" => %{"head_sha" => "sync-head", "branch" => "agent/SYMPP-P6-001/github-pr-attachment-sync"}
-    })
+    attach_tool(repo, session, "attach_pr", %{"number" => 43, "head_sha" => "sync-head"})
 
     assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
     pr_artifacts = Enum.filter(artifacts, &(&1.kind == "github_pr" and &1.path == "github-pr.json"))
@@ -4426,6 +4425,62 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(response, ["error", "code"]) == -32_602
     assert get_in(response, ["error", "data", "tool"]) == "sync_pr"
     assert get_in(response, ["error", "data", "reason"]) == "missing_metadata"
+  end
+
+  test "sync_pr requires an attached matching PR and metadata head", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-PR-SYNC-BOUNDARY", kind: "standard_pr", repo: "nextide/symphony-plus-plus", status: "ci_waiting")
+             )
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    missing_attach =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "sync_pr",
+          "method" => "tools/call",
+          "params" => %{"name" => "sync_pr", "arguments" => %{"number" => 42, "metadata" => %{"head_sha" => "abc123"}}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(missing_attach, ["error", "data", "reason"]) == "missing_attached_pr"
+
+    attach_tool(repo, session, "attach_pr", %{"number" => 42, "head_sha" => "abc123"})
+
+    mismatch =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "sync_pr",
+          "method" => "tools/call",
+          "params" => %{"name" => "sync_pr", "arguments" => %{"number" => 43, "metadata" => %{"head_sha" => "abc123"}}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(mismatch, ["error", "data", "reason"]) == "pr_mismatch"
+
+    headless =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "sync_pr",
+          "method" => "tools/call",
+          "params" => %{"name" => "sync_pr", "arguments" => %{"number" => 42, "head_sha" => "abc123", "metadata" => %{}}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(headless, ["error", "data", "reason"]) == "missing_head_sha"
   end
 
   test "latest branch head supersedes earlier PR head for review evidence", %{repo: repo} do

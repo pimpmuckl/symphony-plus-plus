@@ -66,8 +66,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
     assert payload["branch"] == "agent/SYMPP-P6-001/github-pr-attachment-sync"
   end
 
+  test "tolerates canonical GitHub changed file counts" do
+    assert {:ok, ref} = PullRequest.parse(%{"url" => "https://github.com/nextide/symphony-plus-plus/pull/42"}, nil)
+
+    metadata = %{
+      "head" => %{"sha" => "abcdef1234567890abcdef1234567890abcdef12", "ref" => "agent/SYMPP-P6-001/github-pr-attachment-sync"},
+      "changed_files" => 3
+    }
+
+    assert {:ok, payload} = PullRequest.metadata(metadata, ref, nil)
+
+    assert payload["changed_files"] == []
+  end
+
   test "detects stale PR metadata by head sha" do
     refute PullRequest.stale?(%{"head_sha" => "abc123"}, "abc123")
+    refute PullRequest.stale?(%{"head_sha" => "abcdef1234567890abcdef1234567890abcdef12"}, "abcdef1")
     assert PullRequest.stale?(%{"head_sha" => "abc123"}, "def456")
   end
 

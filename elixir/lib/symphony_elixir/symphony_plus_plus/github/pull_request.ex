@@ -85,7 +85,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
 
   @spec stale?(map() | nil, String.t() | nil) :: boolean()
   def stale?(%{} = pr_metadata, current_head_sha) when is_binary(current_head_sha) do
-    Map.get(pr_metadata, "head_sha") != current_head_sha
+    not head_sha_matches?(Map.get(pr_metadata, "head_sha"), current_head_sha)
   end
 
   def stale?(_pr_metadata, _current_head_sha), do: false
@@ -153,6 +153,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
       values when is_list(values) ->
         {:ok, Enum.map(values, &changed_file/1)}
 
+      count when is_integer(count) and count >= 0 ->
+        {:ok, []}
+
       _value ->
         {:error, :invalid_changed_files}
     end
@@ -181,4 +184,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
   end
 
   defp filled_string?(value), do: is_binary(value) and String.trim(value) != ""
+
+  defp head_sha_matches?(left, right) when is_binary(left) and is_binary(right) do
+    left = String.trim(left)
+    right = String.trim(right)
+
+    cond do
+      left == "" or right == "" -> false
+      left == right -> true
+      hex_sha?(left) and hex_sha?(right) -> String.starts_with?(left, right) or String.starts_with?(right, left)
+      true -> false
+    end
+  end
+
+  defp head_sha_matches?(_left, _right), do: false
+
+  defp hex_sha?(value), do: String.match?(value, ~r/^[0-9a-fA-F]{7,40}$/)
 end

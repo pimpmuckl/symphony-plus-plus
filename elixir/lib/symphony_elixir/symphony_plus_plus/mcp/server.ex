@@ -1613,8 +1613,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, %WorkPackage{} = work_package} <- WorkPackageRepository.get(repo, Session.work_package_id(session)),
          {:ok, ref} <- PullRequest.parse(arguments, work_package.repo),
          {:ok, metadata_input} <- pr_metadata_input(arguments, source_tool),
+         :ok <- validate_pr_sync_target(repo, session, ref, source_tool),
          {:ok, metadata} <- Client.fetch_pull_request(DryClient, ref, metadata: metadata_input),
-         {:ok, payload} <- PullRequest.metadata(metadata, ref, Map.get(arguments, "head_sha")) do
+         {:ok, payload} <- PullRequest.metadata(metadata, ref, pr_fallback_head_sha(arguments, source_tool)) do
       {:ok, Map.put(payload, "source_tool", source_tool)}
     else
       {:tool_error, reason} -> {:tool_error, reason}
@@ -1622,6 +1623,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, reason} -> {:tool_error, reason_text(reason)}
     end
   end
+
+  defp pr_fallback_head_sha(arguments, "attach_pr"), do: Map.get(arguments, "head_sha")
+  defp pr_fallback_head_sha(_arguments, "sync_pr"), do: nil
+
+  defp validate_pr_sync_target(_repo, %Session{}, _ref, "attach_pr"), do: :ok
+
+  defp validate_pr_sync_target(repo, %Session{} = session, ref, "sync_pr") do
+    with {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, Session.work_package_id(session)),
+         {:ok, attached_ref} <- latest_attached_pr_ref(progress_events) do
+      if attached_ref == {ref.repository, ref.number}, do: :ok, else: {:tool_error, "pr_mismatch"}
+    end
+  end
+
+  defp latest_attached_pr_ref(progress_events) do
+    progress_events
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      %ProgressEvent{payload: payload} when is_map(payload) ->
+        if payload_type?(%ProgressEvent{payload: payload}, "pr", "attach_pr") do
+          pr_payload_ref(payload)
+        end
+
+      _event ->
+        nil
+    end)
+    |> case do
+      nil -> {:tool_error, "missing_attached_pr"}
+      ref -> {:ok, ref}
+    end
+  end
+
+  defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_integer(number), do: {repository, number}
+  defp pr_payload_ref(_payload), do: nil
 
   defp pr_metadata_input(arguments, "attach_pr") do
     case Map.get(arguments, "metadata") do
@@ -1641,12 +1675,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp append_pr_metadata(repo, %Session{} = session, arguments, tool, status, payload) do
     repo
     |> run_worker_transaction(fn ->
-      with {:ok, event_result} <- append_metadata_event(repo, session, arguments, tool, status, payload),
-           :ok <- upsert_pr_artifact(repo, session, payload) do
+      with {:ok, idempotency_key, attrs} <- metadata_event_attrs(session, arguments, tool, status, payload),
+           {:ok, replay?} <- progress_event_replay?(repo, session, idempotency_key),
+           {:ok, event_result} <- append_progress_event_or_replay(repo, session, attrs, idempotency_key, tool),
+           :ok <- maybe_upsert_pr_artifact(repo, session, payload, replay?) do
         {:ok, event_result}
       end
     end)
   end
+
+  defp progress_event_replay?(repo, %Session{} = session, idempotency_key) do
+    case existing_progress_event(repo, session, idempotency_key) do
+      {:ok, %ProgressEvent{}} -> {:ok, true}
+      {:error, :not_found} -> {:ok, false}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_upsert_pr_artifact(_repo, %Session{}, _payload, true), do: :ok
+  defp maybe_upsert_pr_artifact(repo, %Session{} = session, payload, false), do: upsert_pr_artifact(repo, session, payload)
 
   defp upsert_pr_artifact(repo, %Session{} = session, payload) do
     attrs = %{
@@ -3187,10 +3234,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp pr_required?(%WorkPackage{kind: "investigation"}), do: false
   defp pr_required?(%WorkPackage{}), do: true
 
+  defp metadata_present?(progress_events, "pr", head_sha) when is_binary(head_sha) do
+    case latest_attached_pr_ref(progress_events) do
+      {:ok, attached_ref} ->
+        Enum.any?(progress_events, fn
+          %ProgressEvent{payload: payload} = event when is_map(payload) ->
+            payload_type?(event, "pr", ["attach_pr", "sync_pr"]) and head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
+              pr_payload_ref(payload) == attached_ref
+
+          %ProgressEvent{} ->
+            false
+        end)
+
+      {:tool_error, _reason} ->
+        false
+    end
+  end
+
   defp metadata_present?(progress_events, type, head_sha) when is_binary(head_sha) do
     Enum.any?(progress_events, fn
       %ProgressEvent{payload: payload} = event when is_map(payload) ->
-        payload_type?(event, type, metadata_tool(type)) and Map.get(payload, "head_sha") == head_sha
+        payload_type?(event, type, metadata_tool(type)) and head_sha_matches?(Map.get(payload, "head_sha"), head_sha)
 
       %ProgressEvent{} ->
         false
@@ -3210,8 +3274,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp metadata_tool("branch"), do: "attach_branch"
-  defp metadata_tool("pr"), do: ["attach_pr", "sync_pr"]
+  defp metadata_tool("pr"), do: "attach_pr"
   defp metadata_tool("review_package"), do: "submit_review_package"
+
+  defp head_sha_matches?(left, right) when is_binary(left) and is_binary(right) do
+    left = String.trim(left)
+    right = String.trim(right)
+
+    cond do
+      left == "" or right == "" -> false
+      left == right -> true
+      hex_sha?(left) and hex_sha?(right) -> String.starts_with?(left, right) or String.starts_with?(right, left)
+      true -> false
+    end
+  end
+
+  defp head_sha_matches?(_left, _right), do: false
+
+  defp hex_sha?(value), do: String.match?(value, ~r/^[0-9a-fA-F]{7,40}$/)
 
   defp payload_type?(%ProgressEvent{payload: payload}, type, source_tools) when is_map(payload) and is_list(source_tools) do
     Map.get(payload, "type") == type and Map.get(payload, "source_tool") in source_tools
