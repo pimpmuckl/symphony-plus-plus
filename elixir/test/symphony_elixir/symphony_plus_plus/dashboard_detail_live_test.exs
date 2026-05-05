@@ -279,7 +279,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     detail_conn = get(auth_conn(architect_secret), "/sympp/work-packages/#{work_package.id}")
 
     assert response(detail_conn, 200) =~ ~s(class="sympp-back-link")
-    assert response(detail_conn, 200) =~ ~s(href="/sympp/board")
+    assert response(detail_conn, 200) =~ ~s(href="../../board")
 
     board_conn =
       detail_conn
@@ -287,6 +287,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
       |> get("/sympp/board")
 
     assert response(board_conn, 200) =~ work_package.id
+  end
+
+  test "detail prefers broader board session when package and board sessions are both present" do
+    %{work_package: work_package, architect_secret: architect_secret, worker_secret: worker_secret} =
+      create_detail_package(id: "SYMPP-P5-BOTH")
+
+    board_conn = post(build_conn(), "/sympp/board/session", %{"work_key" => architect_secret})
+    assert redirected_to(board_conn) == "/sympp/board"
+
+    package_conn =
+      board_conn
+      |> recycle()
+      |> post("/sympp/work-packages/#{work_package.id}/session", %{"work_key" => worker_secret})
+
+    assert redirected_to(package_conn) == "/sympp/work-packages/#{work_package.id}"
+
+    detail_conn =
+      package_conn
+      |> recycle()
+      |> get("/sympp/work-packages/#{work_package.id}")
+
+    assert response(detail_conn, 200) =~ ~s(class="sympp-back-link")
+    assert response(detail_conn, 200) =~ ~s(href="../../board")
   end
 
   test "renders DateTime timestamps and string-keyed payloads in render helpers" do

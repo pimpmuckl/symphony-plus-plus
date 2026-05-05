@@ -73,7 +73,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
           <h1 class="sympp-detail-title"><%= package_title(@detail.work_package) %></h1>
         </div>
 
-        <a :if={@phase_reader?} class="sympp-back-link" href="/sympp/board">Board</a>
+        <a :if={@phase_reader?} class="sympp-back-link" href="../../board">Board</a>
       </header>
 
       <%= if @error do %>
@@ -256,8 +256,8 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
       SymppDashboardApiController.authorize_package_grant_id(socket.assigns.board_grant_id, work_package_id)
 
     case {package_result, board_result} do
+      {_package_result, {:ok, %AccessGrant{}} = authorized} -> authorized
       {{:ok, %AccessGrant{}} = authorized, _board_result} -> authorized
-      {{:error, _package_reason}, {:ok, %AccessGrant{}} = authorized} -> authorized
       {{:error, :unauthorized}, {:error, reason}} -> {:error, reason}
       {{:error, reason}, _board_result} -> {:error, reason}
     end
