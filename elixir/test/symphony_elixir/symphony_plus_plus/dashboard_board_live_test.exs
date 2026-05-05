@@ -153,6 +153,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     refute html =~ ~r/<button[^>]*>\s*(Stop|Retry|Merge|Revoke|Claim|Notify)\s*<\/button>/
   end
 
+  test "renders queued-only runs as queued on board cards" do
+    queued_package =
+      create_board_package(%{
+        id: "SYMPP-P5-004-QUEUED",
+        kind: "dashboard",
+        status: "implementing",
+        title: "Queued runtime package",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "symphony-plus-plus/beta"
+      })
+
+    assert {:ok, _queued_run} =
+             AgentRunRepository.start_run(Repo, %{
+               work_package_id: queued_package.id,
+               access_grant_id: nil,
+               actor_id: "worker-1",
+               status: "starting",
+               attempt: 1,
+               worker_task_handle: "queued-task"
+             })
+
+    secret = create_architect_grant_secret(Repo, queued_package.id)
+    {:ok, _view, html} = live(auth_conn(secret), "/sympp/board")
+
+    assert html =~ "Queued runtime package"
+    assert html =~ "queued run"
+    refute html =~ "active run"
+  end
+
   test "renders empty board state" do
     create_board_package(%{
       id: "SYMPP-P5-012",

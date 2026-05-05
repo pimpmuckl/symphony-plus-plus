@@ -256,7 +256,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       grant_count: length(grants),
       active_grant_count: Enum.count(grants, &active_grant?/1),
       agent_run_count: length(agent_runs),
-      active_agent_run_count: Enum.count(agent_runs, &(&1.status in AgentRun.active_statuses())),
+      active_agent_run_count: runtime.active_count,
       queued_agent_run_count: runtime.queued_count,
       stopped_agent_run_count: runtime.stopped_count,
       failed_agent_run_count: runtime.failed_count,

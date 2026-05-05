@@ -220,6 +220,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     alerts = Map.new(payload["alert_indicators"], &{&1["type"], &1})
 
     assert payload["summary"]["runtime"]["stale_heartbeat_after_seconds"] == 300
+    assert payload["summary"]["active_agent_run_count"] == 0
+    assert payload["summary"]["queued_agent_run_count"] == 1
     assert payload["summary"]["runtime"]["stale_count"] == 1
     assert alerts["stale_heartbeat"]["active"] == true
     assert alerts["stale_heartbeat"]["detail"] == "1 run(s) past 300s"
@@ -296,6 +298,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
 
+    assert payload["summary"]["active_agent_run_count"] == 0
     assert payload["summary"]["queued_agent_run_count"] == 1
     assert payload["summary"]["stopped_agent_run_count"] == 1
     assert payload["summary"]["failed_agent_run_count"] == 1
