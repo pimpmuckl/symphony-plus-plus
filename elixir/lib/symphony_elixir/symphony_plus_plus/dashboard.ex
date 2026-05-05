@@ -374,8 +374,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp runtime_summary(agent_runs) do
     runs = Enum.map(agent_runs, &agent_run/1)
-    latest_active_run = latest_active_run(agent_runs)
-    latest_active_stale? = if latest_active_run, do: stale_agent_run?(latest_active_run), else: false
 
     %{
       stale_heartbeat_after_seconds: @stale_heartbeat_after_seconds,
@@ -385,7 +383,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       failed_count: Enum.count(runs, &(&1.status == "failed")),
       completed_count: Enum.count(runs, &(&1.status == "completed")),
       terminal_count: Enum.count(runs, &(&1.runtime_state in ["stopped", "terminal"])),
-      stale_count: if(latest_active_stale?, do: 1, else: 0)
+      stale_count: Enum.count(runs, & &1.stale)
     }
   end
 
@@ -565,9 +563,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp review_artifacts_missing?(context) do
+    readiness_head_sha = review_head_sha_for_readiness(context)
+
     merge_required?(context.work_package) and required_review_lanes(context.work_package) != [] and
-      latest_review_package_event(context.progress_events, review_head_sha_for_readiness(context)) != nil and
-      context.artifact_count == 0
+      latest_review_package_event(context.progress_events, readiness_head_sha) != nil and
+      latest_review_package_artifacts(context.progress_events, readiness_head_sha) == []
   end
 
   defp review_lanes_missing?(context) do
@@ -725,6 +725,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     progress_events
     |> Enum.filter(&(payload_type?(&1, "review_package", "submit_review_package") and review_head_matches?(&1.payload, readiness_head_sha)))
     |> List.last()
+  end
+
+  defp latest_review_package_artifacts(progress_events, readiness_head_sha) do
+    case latest_review_package_event(progress_events, readiness_head_sha) do
+      %ProgressEvent{payload: payload} when is_map(payload) ->
+        Enum.filter(Map.get(payload, "artifacts", []), &(is_binary(&1) and String.trim(&1) != ""))
+
+      _event ->
+        []
+    end
   end
 
   defp review_package_reviews(%ProgressEvent{payload: payload}, readiness_head_sha) when is_map(payload) do

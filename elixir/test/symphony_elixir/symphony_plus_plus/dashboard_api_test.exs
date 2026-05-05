@@ -356,6 +356,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     secret = create_architect_grant_secret(repo, work_package.id)
     append_ready_evidence_without_artifacts(repo, work_package)
 
+    assert {:ok, _unrelated_artifact} =
+             PlanningService.append_artifact(repo, %{
+               work_package_id: work_package.id,
+               path: "notes.txt",
+               title: "Unrelated notes",
+               kind: "note",
+               uri: "file://notes.txt"
+             })
+
     payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
     missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
 
