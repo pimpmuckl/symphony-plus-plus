@@ -39,7 +39,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
     path_segments = uri.path |> to_string() |> String.split("/", trim: true)
 
     case {uri.scheme, host, path_segments} do
-      {scheme, "github.com", [owner, repo, "pull", number]} when scheme in ["http", "https"] ->
+      {scheme, "github.com", [owner, repo, "pull", number | _rest]} when scheme in ["http", "https"] ->
         with {:ok, number} <- parse_positive_number(number),
              :ok <- validate_repo_part(owner),
              :ok <- validate_repo_part(repo) do
@@ -63,7 +63,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
 
   @spec metadata(map(), ref(), String.t() | nil) :: {:ok, map()} | {:error, atom()}
   def metadata(metadata, ref, fallback_head_sha) when is_map(metadata) and is_map(ref) do
-    with {:ok, head_sha} <- metadata_head_sha(metadata, fallback_head_sha),
+    with :ok <- validate_metadata_ref(metadata, ref),
+         {:ok, head_sha} <- metadata_head_sha(metadata, fallback_head_sha),
          {:ok, branch} <- metadata_branch(metadata),
          {:ok, changed_files, changed_files_count} <- metadata_changed_files(metadata),
          {:ok, check_summary} <- metadata_map(metadata, "check_summary", %{}),
@@ -179,6 +180,54 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
   end
 
   defp validate_repository_ref(_arguments, _ref), do: :ok
+
+  defp validate_metadata_ref(metadata, ref) do
+    with :ok <- validate_metadata_repository_ref(metadata, ref),
+         :ok <- validate_metadata_number_ref(metadata, ref) do
+      :ok
+    end
+  end
+
+  defp validate_metadata_repository_ref(metadata, ref) do
+    case metadata_repository(metadata) do
+      nil ->
+        :ok
+
+      repository ->
+        case parse_repository(repository) do
+          {:ok, {owner, repo}} when owner == ref.owner and repo == ref.repo -> :ok
+          {:ok, {_owner, _repo}} -> {:error, :pr_reference_mismatch}
+          {:error, _reason} -> :ok
+        end
+    end
+  end
+
+  defp validate_metadata_number_ref(metadata, ref) do
+    case metadata_number(metadata) do
+      nil ->
+        :ok
+
+      number ->
+        case parse_positive_number(number) do
+          {:ok, parsed} when parsed == ref.number -> :ok
+          {:ok, _parsed} -> {:error, :pr_reference_mismatch}
+          {:error, _reason} -> :ok
+        end
+    end
+  end
+
+  defp metadata_number(metadata) do
+    Map.get(metadata, "number") || metadata_url_number(Map.get(metadata, "html_url") || Map.get(metadata, "url"))
+  end
+
+  defp metadata_url_number(url) when is_binary(url) do
+    case parse_url(url) do
+      {:ok, ref} -> ref.number
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp metadata_url_number(_url), do: nil
 
   defp parse_positive_number(number) when is_integer(number) and number > 0, do: {:ok, number}
 

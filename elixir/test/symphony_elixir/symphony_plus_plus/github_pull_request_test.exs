@@ -14,6 +14,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
 
     assert {:ok, mixed_host_ref} = PullRequest.parse(%{"url" => "https://GitHub.com/nextide/symphony-plus-plus/pull/43"}, nil)
     assert mixed_host_ref.url == "https://github.com/nextide/symphony-plus-plus/pull/43"
+
+    assert {:ok, subpage_ref} = PullRequest.parse(%{"url" => "https://github.com/nextide/symphony-plus-plus/pull/44/files"}, nil)
+    assert subpage_ref.url == "https://github.com/nextide/symphony-plus-plus/pull/44"
   end
 
   test "parses PR numbers against package repository" do
@@ -120,6 +123,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
     assert explicit_payload["head_sha"] == "abc1234"
 
     assert {:error, :head_sha_mismatch} = PullRequest.metadata(explicit_metadata, ref, "def1234")
+
+    assert {:error, :pr_reference_mismatch} =
+             PullRequest.metadata(Map.put(metadata, "html_url", "https://github.com/other/repo/pull/42"), ref, nil)
+
+    assert {:error, :pr_reference_mismatch} = PullRequest.metadata(Map.put(metadata, "number", 43), ref, nil)
   end
 
   test "tolerates canonical GitHub changed file counts" do

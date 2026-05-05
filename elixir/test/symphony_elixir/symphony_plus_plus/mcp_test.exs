@@ -4974,6 +4974,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(attach_only_response, ["result", "structuredContent", "ready"]) == true
   end
 
+  test "legacy attached PR URL still satisfies pr_attached evidence", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PR-LEGACY-URL-READY", kind: "mcp", status: "ci_waiting"))
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    timestamp = ~U[2026-05-05 00:00:00Z]
+
+    assert {:ok, _branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: package.id,
+               summary: "Branch attached",
+               status: "branch_attached",
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{package.id}", head_sha: "legacy-head"},
+               created_at: timestamp
+             })
+
+    assert {:ok, _pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: package.id,
+               summary: "PR attached",
+               status: "pr_attached",
+               payload: %{type: "pr", source_tool: "attach_pr", url: "https://git.example.com/org/repo/pulls/7", head_sha: "legacy-head"},
+               created_at: DateTime.add(timestamp, 1, :second)
+             })
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready review",
+      "tests" => ["mix test"],
+      "artifacts" => ["review.txt"],
+      "head_sha" => "legacy-head",
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-legacy-pr-url", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+  end
+
   test "current PR state policy fails missing, invalid, and stale sync state", %{repo: repo} do
     assert {:ok, package} =
              WorkPackageRepository.create(

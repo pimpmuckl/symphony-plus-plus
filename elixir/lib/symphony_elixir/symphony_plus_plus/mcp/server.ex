@@ -1714,15 +1714,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_integer(number), do: {repository, number}
+  defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_binary(number), do: {repository, number}
 
   defp pr_payload_ref(%{"url" => url}) when is_binary(url) do
     case PullRequest.parse(%{"url" => url}, nil) do
       {:ok, ref} -> {ref.repository, ref.number}
-      {:error, _reason} -> nil
+      {:error, _reason} -> legacy_url_ref(url)
     end
   end
 
   defp pr_payload_ref(_payload), do: nil
+
+  defp legacy_url_ref(url) do
+    case URI.parse(url) do
+      %URI{host: host} when is_binary(host) ->
+        if String.downcase(host) == "github.com", do: nil, else: {:url, url}
+
+      _uri ->
+        {:url, url}
+    end
+  rescue
+    _error in URI.Error -> {:url, url}
+  end
 
   defp chronological_progress_events(progress_events) do
     Enum.sort_by(progress_events, fn %ProgressEvent{created_at: created_at, sequence: sequence, id: id} ->
