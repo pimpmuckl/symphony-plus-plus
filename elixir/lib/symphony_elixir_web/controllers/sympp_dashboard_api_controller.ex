@@ -94,7 +94,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       {:ok, %AccessGrant{} = grant} ->
         conn
         |> put_package_browser_session(grant)
-        |> redirect(to: prefixed_path(conn, "/sympp/work-packages/#{work_package_id}"))
+        |> redirect(to: package_detail_path(conn, work_package_id))
 
       {:error, :forbidden} ->
         conn
@@ -749,7 +749,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     work_package_id = Keyword.fetch!(opts, :work_package_id)
     csrf_token = Plug.CSRFProtection.get_csrf_token()
     dashboard_css_path = prefixed_path(conn, "/dashboard.css")
-    package_session_path = prefixed_path(conn, "/sympp/work-packages/#{work_package_id}/session")
+    package_session_path = package_session_path(conn, work_package_id)
 
     body = """
     <!doctype html>
@@ -758,7 +758,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1">
       <title>Symphony++ package access</title>
-      <link rel="stylesheet" href="#{dashboard_css_path}">
+      <link rel="stylesheet" href="#{html_escape(dashboard_css_path)}">
     </head>
     <body>
       <main class="sympp-board-shell sympp-auth-shell">
@@ -766,7 +766,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
           <p class="eyebrow">Symphony++</p>
           <h1 class="error-title">Package access</h1>
           <p class="error-copy">#{html_escape(message)}</p>
-          <form class="sympp-board-filters" method="post" action="#{package_session_path}">
+          <form class="sympp-board-filters" method="post" action="#{html_escape(package_session_path)}">
             <input type="hidden" name="_csrf_token" value="#{csrf_token}">
             <label>
               <span>Work key</span>
@@ -789,6 +789,20 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp prefixed_path(%Conn{script_name: script_name}, path) do
     "/" <> Enum.join(script_name ++ [String.trim_leading(path, "/")], "/")
+  end
+
+  defp package_detail_path(conn, work_package_id) do
+    prefixed_path(conn, "/sympp/work-packages/#{path_segment(work_package_id)}")
+  end
+
+  defp package_session_path(conn, work_package_id) do
+    prefixed_path(conn, "/sympp/work-packages/#{path_segment(work_package_id)}/session")
+  end
+
+  defp path_segment(value) do
+    value
+    |> to_string()
+    |> URI.encode(&URI.char_unreserved?/1)
   end
 
   defp html_escape(value) do

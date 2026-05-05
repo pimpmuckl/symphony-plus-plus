@@ -170,6 +170,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert response(detail_conn, 200) =~ "SYMPP-P5-LOGIN"
   end
 
+  test "package login escapes user-controlled package id paths" do
+    raw_id = ~S|SYMPP-" autofocus onfocus="alert(1)|
+    encoded_id = path_segment(raw_id)
+
+    login_conn = get(build_conn(), "/sympp/work-packages/#{encoded_id}")
+    login_html = response(login_conn, 401)
+
+    assert login_html =~ ~s(action="/sympp/work-packages/#{encoded_id}/session")
+    refute login_html =~ ~s(SYMPP-" autofocus)
+    refute login_html =~ ~S|onfocus="alert(1)|
+  end
+
+  test "package session redirect encodes package id as a path segment" do
+    raw_id = ~s(SYMPP-P5-QUOTE"X)
+    encoded_id = path_segment(raw_id)
+    %{worker_secret: worker_secret} = create_detail_package(id: raw_id)
+
+    session_conn =
+      post(build_conn(), "/sympp/work-packages/#{encoded_id}/session", %{
+        "work_key" => worker_secret
+      })
+
+    assert redirected_to(session_conn) == "/sympp/work-packages/#{encoded_id}"
+  end
+
   test "valid package bearer auth overrides a stale different-package browser session" do
     %{work_package: first, worker_secret: first_secret} = create_detail_package(id: "SYMPP-P5-FIRST", title: "First package")
     %{work_package: second, worker_secret: second_secret} = create_detail_package(id: "SYMPP-P5-SECOND", title: "Second package")
@@ -310,6 +335,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     append_detail_state(work_package, Keyword.get(opts, :secret_finding?, false))
 
     %{work_package: work_package, worker_secret: worker_secret, architect_secret: architect_secret}
+  end
+
+  defp path_segment(value) do
+    URI.encode(value, &URI.char_unreserved?/1)
   end
 
   defp append_detail_state(work_package, secret_finding?) do
