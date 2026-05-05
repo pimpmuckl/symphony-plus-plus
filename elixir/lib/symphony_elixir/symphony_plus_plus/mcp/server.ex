@@ -9,11 +9,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Session}
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Renderer, as: PlanningRenderer
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
   @protocol_version "2025-03-26"
@@ -1473,11 +1475,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool("request_scope_expansion", arguments, %__MODULE__{config: config, session: session}) do
-    append_scoped_progress(config.repo, session, arguments, "request_scope_expansion", %{
-      "type" => "scope_expansion_request",
-      "source_tool" => "request_scope_expansion",
-      "approved" => false
-    })
+    with {:ok, session} <- Auth.require_session(session, config.repo),
+         :ok <- require_worker_assignment(session.assignment),
+         {:ok, payload} <- request_scope_expansion_payload(config.repo, session) do
+      append_scoped_progress(config.repo, session, arguments, "request_scope_expansion", payload)
+    else
+      {:error, reason} -> worker_error(reason, "request_scope_expansion")
+    end
   end
 
   defp worker_tool("attach_branch", arguments, %__MODULE__{config: config, session: session}) do
@@ -1541,6 +1545,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
       {:error, reason} ->
         worker_error(reason, "mark_ready")
+    end
+  end
+
+  defp request_scope_expansion_payload(repo, %Session{} = session) do
+    payload = %{
+      "type" => "scope_expansion_request",
+      "source_tool" => "request_scope_expansion",
+      "approved" => false
+    }
+
+    case WorkPackageRepository.get(repo, session.assignment.work_package_id) do
+      {:ok, %WorkPackage{kind: "investigation"} = work_package} ->
+        {:ok, Map.put(payload, "recommendation_artifact_id", recommendation_artifact_id(work_package.id))}
+
+      {:ok, %WorkPackage{}} ->
+        {:ok, payload}
+
+      {:ok, nil} ->
+        {:error, :not_found}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -2047,7 +2073,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "body" => optional_argument(arguments, "body", nil),
         "status" => optional_argument(arguments, "status", "recorded"),
         "idempotency_key" => idempotency_key,
-        "payload" => merge_tool_payload(caller_payload, payload)
+        "payload" => merge_tool_payload(tool, caller_payload, payload)
       }
 
       append_progress_event_or_replay(repo, session, attrs, idempotency_key, tool)
@@ -2109,8 +2135,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp append_new_progress_event_or_replay(repo, %Session{} = session, attrs, idempotency_key, tool) do
     transaction_fun = fn ->
       with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
-           :ok <- reject_ready_evidence_mutation(repo, session, tool) do
-        PlanningService.append_authenticated_progress_event(repo, session.assignment, attrs)
+           :ok <- reject_ready_evidence_mutation(repo, session, tool),
+           {:ok, event} <- PlanningService.append_authenticated_progress_event(repo, session.assignment, attrs),
+           :ok <- append_investigation_recommendation_artifact(repo, session, tool, event) do
+        {:ok, event}
       end
     end
 
@@ -2127,6 +2155,83 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, reason} ->
         worker_error(reason, tool)
     end
+  end
+
+  defp append_investigation_recommendation_artifact(repo, %Session{} = session, "request_scope_expansion", %ProgressEvent{} = event) do
+    if Map.has_key?(event.payload || %{}, "recommendation_artifact_id") do
+      append_recommendation_artifact(repo, session, event)
+    else
+      :ok
+    end
+  end
+
+  defp append_investigation_recommendation_artifact(_repo, %Session{}, _tool, %ProgressEvent{}), do: :ok
+
+  defp append_recommendation_artifact(repo, %Session{} = session, %ProgressEvent{}) do
+    work_package_id = session.assignment.work_package_id
+
+    attrs = %{
+      "id" => recommendation_artifact_id(work_package_id),
+      "work_package_id" => work_package_id,
+      "path" => "recommendation.md",
+      "title" => "Investigation recommendation",
+      "kind" => "recommendation"
+    }
+
+    append_recommendation_artifact(attrs, repo)
+  end
+
+  defp append_recommendation_artifact(attrs, repo) do
+    case PlanningRepository.get_artifact(repo, attrs["id"]) do
+      {:ok, nil} ->
+        case PlanningService.append_artifact(repo, attrs) do
+          {:ok, _artifact} -> :ok
+          {:error, :id_already_exists} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:ok, %Artifact{} = artifact} ->
+        repair_recommendation_artifact(repo, attrs, artifact)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp repair_recommendation_artifact(repo, attrs, %Artifact{} = artifact) do
+    if artifact.work_package_id == attrs["work_package_id"] do
+      case PlanningRepository.update_artifact(repo, artifact, recommendation_artifact_repair_attrs(attrs, artifact)) do
+        {:ok, _artifact} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:error, :id_already_exists}
+    end
+  end
+
+  defp recommendation_artifact_repair_attrs(attrs, %Artifact{} = artifact) do
+    %{
+      work_package_id: attrs["work_package_id"],
+      path: attrs["path"],
+      title: attrs["title"],
+      kind: attrs["kind"],
+      uri: repaired_recommendation_artifact_uri(attrs, artifact)
+    }
+  end
+
+  defp repaired_recommendation_artifact_uri(%{"uri" => uri}, %Artifact{}) when not is_nil(uri), do: uri
+
+  defp repaired_recommendation_artifact_uri(attrs, %Artifact{} = artifact) do
+    if artifact.work_package_id == attrs["work_package_id"] and artifact.path == attrs["path"] and artifact.title == attrs["title"] and artifact.kind == attrs["kind"] do
+      artifact.uri
+    else
+      nil
+    end
+  end
+
+  defp recommendation_artifact_id(work_package_id) do
+    material = [work_package_id, "recommendation", "recommendation.md"] |> Enum.join(":")
+    "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
   defp reject_ready_evidence_mutation(repo, %Session{} = session, tool)
@@ -2165,7 +2270,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp replay_progress_event(repo, %Session{} = session, %ProgressEvent{} = event, attrs, tool) do
     case PlanningService.require_valid_assignment(repo, session.assignment) do
-      :ok -> replay_matching_progress_event(event, attrs, tool)
+      :ok -> replay_matching_progress_event(repo, session, event, attrs, tool)
       {:error, reason} -> worker_error(reason, tool)
     end
   end
@@ -2214,7 +2319,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp retry_missing_progress_event(result, _retry_fun, _attempts_left), do: result
 
-  defp replay_matching_progress_event(%ProgressEvent{} = event, attrs, tool) do
+  defp replay_matching_progress_event(_repo, %Session{} = _session, %ProgressEvent{} = event, attrs, tool) do
     if progress_replay_matches?(event, attrs) do
       {:ok, tool_result(%{"progress_event" => progress_event_payload(event)})}
     else
@@ -2223,10 +2328,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp progress_replay_matches?(%ProgressEvent{} = event, attrs) do
+    normalized_payload = normalized_progress_payload(event, attrs)
+
     event.summary == Map.get(attrs, "summary") and
       event.body == Map.get(attrs, "body") and
       event.status == Map.get(attrs, "status") and
-      event.payload == normalized_progress_payload(event, attrs)
+      progress_payload_replay_matches?(event.payload, normalized_payload)
+  end
+
+  defp progress_payload_replay_matches?(%{"type" => "scope_expansion_request", "source_tool" => "request_scope_expansion"} = existing, normalized) do
+    existing == normalized or
+      legacy_scope_expansion_replay_matches?(existing, normalized)
+  end
+
+  defp progress_payload_replay_matches?(existing, normalized), do: existing == normalized
+
+  defp legacy_scope_expansion_replay_matches?(existing, normalized) do
+    legacy_normalized =
+      case Map.fetch(existing, "recommendation_artifact_id") do
+        {:ok, artifact_id} -> Map.put(normalized, "recommendation_artifact_id", artifact_id)
+        :error -> Map.delete(normalized, "recommendation_artifact_id")
+      end
+
+    existing == legacy_normalized
   end
 
   defp normalized_progress_payload(%ProgressEvent{} = event, attrs) do
@@ -2261,7 +2385,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          "body" => optional_argument(arguments, "body", nil),
          "status" => optional_argument(arguments, "status", "recorded"),
          "idempotency_key" => idempotency_key,
-         "payload" => merge_tool_payload(caller_payload, payload)
+         "payload" => merge_tool_payload(tool, caller_payload, payload)
        }}
     end
   end
@@ -2536,7 +2660,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {review_artifacts_missing?(state, required_review_lanes), "review_artifacts_attached"},
       {review_lanes_missing?(state, required_review_lanes), "review_lanes_complete"},
       {investigation_findings_missing?(state), "findings_documented"},
-      {investigation_recommendation_missing?(state), "recommendation_recorded"}
+      {investigation_recommendation_missing?(state), "recommendation_artifact_recorded"}
     ]
     |> Enum.reduce([], fn
       {true, gate}, missing -> [gate | missing]
@@ -2578,7 +2702,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp investigation_findings_missing?(state), do: state.work_package.kind == "investigation" and state.findings == []
 
   defp investigation_recommendation_missing?(state) do
-    state.work_package.kind == "investigation" and not recommendation_recorded?(state.progress_events)
+    state.work_package.kind == "investigation" and
+      not recommendation_artifact_recorded?(state.artifacts, state.work_package.id)
   end
 
   defp required_review_lanes(%WorkPackage{} = work_package) do
@@ -2928,9 +3053,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp metadata_present?(_progress_events, _type, _head_sha), do: false
 
-  defp recommendation_recorded?(progress_events), do: Enum.any?(progress_events, &recommendation_event?/1)
+  defp recommendation_artifact_recorded?(artifacts, work_package_id) do
+    artifact_id = recommendation_artifact_id(work_package_id)
 
-  defp recommendation_event?(%ProgressEvent{} = event), do: payload_type?(event, "scope_expansion_request", "request_scope_expansion")
+    Enum.any?(
+      artifacts,
+      &(&1.id == artifact_id and &1.work_package_id == work_package_id and &1.path == "recommendation.md" and
+          &1.title == "Investigation recommendation" and &1.kind == "recommendation")
+    )
+  end
 
   defp metadata_tool("branch"), do: "attach_branch"
   defp metadata_tool("pr"), do: "attach_pr"
@@ -3179,11 +3310,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp merge_tool_payload(caller_payload, tool_payload) when tool_payload == %{} do
+  defp merge_tool_payload("append_progress", caller_payload, tool_payload) do
+    caller_payload
+    |> drop_protected_append_progress_payload()
+    |> Map.merge(tool_payload)
+  end
+
+  defp merge_tool_payload(_tool, caller_payload, tool_payload) when tool_payload == %{} do
     Map.drop(caller_payload, ["source_tool"])
   end
 
-  defp merge_tool_payload(caller_payload, tool_payload), do: Map.merge(caller_payload, tool_payload)
+  defp merge_tool_payload(_tool, caller_payload, %{"type" => "scope_expansion_request", "source_tool" => "request_scope_expansion"} = tool_payload) do
+    caller_payload
+    |> Map.drop(["source_tool", "recommendation_artifact_id"])
+    |> Map.merge(tool_payload)
+  end
+
+  defp merge_tool_payload(_tool, caller_payload, tool_payload), do: Map.merge(caller_payload, tool_payload)
+
+  defp drop_protected_append_progress_payload(%{"type" => "scope_expansion_request"} = caller_payload) do
+    Map.drop(caller_payload, ["type", "source_tool", "recommendation_artifact_id", "approved", "requested_file_globs"])
+  end
+
+  defp drop_protected_append_progress_payload(caller_payload) do
+    Map.drop(caller_payload, ["source_tool", "recommendation_artifact_id", "approved", "requested_file_globs"])
+  end
 
   defp maybe_put_id(attrs, arguments) do
     case Map.get(arguments, "id") do
