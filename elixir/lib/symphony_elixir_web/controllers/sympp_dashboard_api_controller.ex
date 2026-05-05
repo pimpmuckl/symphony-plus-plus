@@ -142,25 +142,23 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   def package_session(conn, %{"work_package_id" => work_package_id}) do
     work_package_id = normalize_package_route_id(work_package_id)
 
-    cond do
-      not valid_package_route_id?(work_package_id) ->
-        conn
-        |> clear_package_session(work_package_id)
-        |> package_not_found_response()
-        |> Conn.halt()
-
-      match?(:ok, require_existing_work_package(work_package_id)) ->
-        conn
-        |> clear_package_session(work_package_id)
-        |> package_login_response(status: 400, message: "Enter a work key to open this package.", work_package_id: work_package_id)
-        |> Conn.halt()
-
-      true ->
-        conn
-        |> clear_package_session(work_package_id)
-        |> package_not_found_response()
-        |> Conn.halt()
+    if valid_package_route_id?(work_package_id) do
+      conn
+      |> clear_package_session(work_package_id)
+      |> package_login_response(status: 400, message: "Enter a work key to open this package.", work_package_id: work_package_id)
+      |> Conn.halt()
+    else
+      conn
+      |> clear_package_session(work_package_id)
+      |> package_not_found_response()
+      |> Conn.halt()
     end
+  end
+
+  def package_session(conn, _params) do
+    conn
+    |> package_login_response(status: 400, message: "Enter a work key to open this package.", work_package_id: nil)
+    |> Conn.halt()
   end
 
   @spec board(Conn.t(), map()) :: Conn.t()
@@ -242,8 +240,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
       case {session_result, bearer_secret(conn)} do
         {{:ok, %AccessGrant{}} = authorized, _secret} -> authorized
-        {{:error, :unauthorized}, nil} -> require_package_before_login(work_package_id)
-        {{:error, reason}, nil} -> {:error, reason}
+        {{:error, _reason}, nil} -> {:error, :unauthorized}
         {{:error, _reason}, secret} -> authorize_package_secret(secret, work_package_id)
       end
     else
@@ -279,15 +276,19 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp package_session_grant_id(_sessions, _work_package_id), do: nil
 
   defp put_package_browser_session(conn, %AccessGrant{} = grant, work_package_id) do
-    sessions =
-      conn
-      |> Conn.get_session(@package_session_key)
-      |> package_sessions()
-      |> Map.put(work_package_id, grant.id)
+    if phase_reader?(grant) do
+      maybe_put_board_session(conn, grant)
+    else
+      sessions =
+        conn
+        |> Conn.get_session(@package_session_key)
+        |> package_sessions()
+        |> Map.put(work_package_id, grant.id)
 
-    conn
-    |> Conn.put_session(@package_session_key, sessions)
-    |> maybe_put_board_session(grant)
+      conn
+      |> Conn.put_session(@package_session_key, sessions)
+      |> Conn.delete_session(@board_session_key)
+    end
   end
 
   defp maybe_put_board_session(conn, %AccessGrant{capabilities: capabilities} = grant) when is_list(capabilities) do
@@ -299,6 +300,9 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp maybe_put_board_session(conn, %AccessGrant{}), do: conn
+
+  defp phase_reader?(%AccessGrant{capabilities: capabilities}) when is_list(capabilities), do: "read:phase" in capabilities
+  defp phase_reader?(_grant), do: false
 
   defp authorize_board_secret(secret) do
     with true <- auth_storage_ready?(secret),
@@ -597,13 +601,6 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp require_existing_work_package(_work_package_id), do: {:error, :not_found}
-
-  defp require_package_before_login(work_package_id) do
-    case require_existing_work_package(work_package_id) do
-      :ok -> {:error, :unauthorized}
-      {:error, reason} -> {:error, reason}
-    end
-  end
 
   defp require_capability(capabilities, capability) when is_list(capabilities) do
     if capability in capabilities, do: :ok, else: {:error, :forbidden}

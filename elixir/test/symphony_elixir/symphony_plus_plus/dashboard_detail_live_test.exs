@@ -323,13 +323,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert redirected_to(session_conn) == "/sympp/work-packages/%2E"
   end
 
-  test "missing package detail and session return package not found" do
+  test "missing package detail and session do not reveal existence before a key is presented" do
     %{architect_secret: architect_secret} = create_detail_package(id: "SYMPP-P5-EXISTS")
 
     anonymous_conn = get(build_conn(), "/sympp/work-packages/SYMPP-P5-MISSING")
 
-    assert response(anonymous_conn, 404) =~ "Package not found"
-    refute response(anonymous_conn, 404) =~ "work_key"
+    assert response(anonymous_conn, 401) =~ "Package access"
+    assert response(anonymous_conn, 401) =~ "work_key"
 
     detail_conn = get(auth_conn(architect_secret), "/sympp/work-packages/SYMPP-P5-MISSING")
 
@@ -346,8 +346,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
 
     empty_session_conn = post(build_conn(), "/sympp/work-packages/SYMPP-P5-MISSING/session", %{})
 
-    assert response(empty_session_conn, 404) =~ "Package not found"
-    refute response(empty_session_conn, 404) =~ "work_key"
+    assert response(empty_session_conn, 400) =~ "Package access"
+    assert response(empty_session_conn, 400) =~ "work_key"
   end
 
   test "malformed package route ids return not found without prompting for credentials" do
@@ -431,7 +431,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert response(board_conn, 200) =~ work_package.id
   end
 
-  test "detail prefers broader board session when package and board sessions are both present" do
+  test "explicit package login clears broader board session" do
     %{work_package: work_package, architect_secret: architect_secret, worker_secret: worker_secret} =
       create_detail_package(id: "SYMPP-P5-BOTH")
 
@@ -450,31 +450,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
       |> recycle()
       |> get("/sympp/work-packages/#{work_package.id}")
 
-    assert response(detail_conn, 200) =~ ~s(class="sympp-back-link")
-    assert response(detail_conn, 200) =~ ~s(href="../board")
-  end
+    assert response(detail_conn, 200) =~ work_package.id
+    refute response(detail_conn, 200) =~ ~s(class="sympp-back-link")
 
-  test "board session preserves missing package not found when a package session also exists" do
-    %{architect_secret: architect_secret} = create_detail_package(id: "SYMPP-P5-PHASE-MISSING")
-    %{work_package: work_package, worker_secret: worker_secret} = create_detail_package(id: "SYMPP-P5-WORKER-MISSING")
-
-    board_conn = post(build_conn(), "/sympp/board/session", %{"work_key" => architect_secret})
-    assert redirected_to(board_conn) == "/sympp/board"
-
-    package_conn =
-      board_conn
+    board_after_package_conn =
+      detail_conn
       |> recycle()
-      |> post("/sympp/work-packages/#{work_package.id}/session", %{"work_key" => worker_secret})
+      |> get("/sympp/board")
 
-    assert redirected_to(package_conn) == "/sympp/work-packages/#{work_package.id}"
-
-    missing_conn =
-      package_conn
-      |> recycle()
-      |> get("/sympp/work-packages/SYMPP-P5-DOES-NOT-EXIST")
-
-    assert response(missing_conn, 404) =~ "Package not found"
-    refute response(missing_conn, 404) =~ "Package access"
+    assert response(board_after_package_conn, 401) =~ "Board access"
   end
 
   test "renders DateTime timestamps and string-keyed payloads in render helpers" do
@@ -684,14 +668,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
   end
 
   defp create_architect_grant_secret(repo, work_package_id) do
-    create_claimed_grant_secret(repo, work_package_id, "architect", ["read:phase"], "architect-1")
+    {secret, _grant} = create_claimed_grant(repo, work_package_id, "architect", ["read:phase"], "architect-1")
+    secret
   end
 
   defp create_worker_grant_secret(repo, work_package_id) do
-    create_claimed_grant_secret(repo, work_package_id, "worker", ["read:package"], "worker-1")
+    {secret, _grant} = create_claimed_grant(repo, work_package_id, "worker", ["read:package"], "worker-1")
+    secret
   end
 
-  defp create_claimed_grant_secret(repo, work_package_id, role, capabilities, claimed_by) do
+  defp create_claimed_grant(repo, work_package_id, role, capabilities, claimed_by) do
     work_key = WorkKey.generate()
 
     assert {:ok, grant} =
@@ -708,7 +694,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
              AccessGrantRepository.claim(repo, work_key.secret, %{claimed_by: claimed_by}, DateTime.utc_now(:microsecond))
 
     assert grant.display_key == work_key.display_key
-    work_key.secret
+    {work_key.secret, grant}
   end
 
   defp auth_conn(secret) do
