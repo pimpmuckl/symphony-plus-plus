@@ -417,8 +417,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == "string"
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "metadata", "type"]) == "object"
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "required"]) == ["metadata"]
-    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "anyOf"]) == [%{"required" => ["url"]}, %{"required" => ["number"]}]
-    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "metadata"]) == pr_metadata_schema
+
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "allOf"]) == [
+             %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]},
+             %{
+               "anyOf" => [
+                 %{"required" => ["head_sha"]},
+                 %{
+                   "required" => ["metadata"],
+                   "properties" => %{"metadata" => pr_metadata_schema}
+                 }
+               ]
+             }
+           ]
+
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "metadata", "type"]) == "object"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "required"]) == ["summary", "tests", "artifacts", "head_sha"]
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "reviews", "type"]) == "array"
     assert get_in(tools_by_name, ["submit_review_package", "inputSchema", "properties", "tests", "minItems"]) == 1

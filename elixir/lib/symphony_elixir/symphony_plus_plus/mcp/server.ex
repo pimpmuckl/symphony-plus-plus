@@ -940,11 +940,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "number" => integer_schema(),
         "repository" => string_schema(),
         "head_sha" => string_schema(),
-        "metadata" => metadata_head_schema()
+        "metadata" => object_schema()
       }),
       ["metadata"]
     )
-    |> Map.put("anyOf", [%{"required" => ["url"]}, %{"required" => ["number"]}])
+    |> Map.put("allOf", [
+      %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]},
+      %{
+        "anyOf" => [
+          %{"required" => ["head_sha"]},
+          %{
+            "required" => ["metadata"],
+            "properties" => %{"metadata" => metadata_head_schema()}
+          }
+        ]
+      }
+    ])
   end
 
   defp worker_tool_input_schema("submit_review_package") do

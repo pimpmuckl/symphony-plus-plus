@@ -356,10 +356,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   defp default_kind([]), do: {:ok, @default_kind}
 
   defp default_kind(policy_templates) do
-    with {:ok, policy_key, policy} <- Templates.resolve_key(policy_templates),
+    with {:ok, policy_key, policy} <- default_policy_key(policy_templates),
          {:ok, kind} <- Templates.work_package_kind(policy_key),
          :ok <- reject_phase_child_policy(policy) do
       {:ok, kind}
+    end
+  end
+
+  defp default_policy_key(policy_templates) do
+    case exact_policy_key(nil, policy_templates) do
+      {:ok, policy_key} ->
+        with {:ok, policy} <- Templates.expand(policy_key),
+             true <- Enum.all?(policy_templates, &Templates.matches?(policy_key, &1)) do
+          {:ok, policy_key, policy}
+        else
+          false -> {:error, :policy_template_mismatch}
+          {:error, reason} -> {:error, reason}
+        end
+
+      :none ->
+        Templates.resolve_key(policy_templates)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -415,7 +434,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     case exact_keys do
       [] -> :none
       [policy_key] -> {:ok, policy_key}
-      _multiple -> {:error, :policy_template_mismatch}
+      [policy_key | aliases] -> exact_policy_key_with_kind_aliases(policy_key, aliases)
+    end
+  end
+
+  defp exact_policy_key_with_kind_aliases(policy_key, aliases) do
+    with {:ok, kind} <- Templates.work_package_kind(policy_key),
+         true <- Enum.all?(aliases, &(&1 == kind)) do
+      {:ok, policy_key}
+    else
+      false -> {:error, :policy_template_mismatch}
+      {:error, reason} -> {:error, reason}
     end
   end
 
