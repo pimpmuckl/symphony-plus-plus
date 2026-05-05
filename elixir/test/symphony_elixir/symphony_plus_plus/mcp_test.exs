@@ -4417,29 +4417,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     refute inspect(decoded_key_payload) =~ "ghp_should_not_surface"
     assert payload["check_summary"]["token"] == "[REDACTED]"
-    event_id = get_in(response, ["result", "structuredContent", "progress_event", "id"])
-
     assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
     assert Enum.any?(artifacts, &(&1.kind == "github_pr" and &1.path == "github-pr.json" and &1.uri == payload["url"]))
 
     attach_tool(repo, session, "attach_pr", %{"number" => 43, "head_sha" => "sync-head"})
 
     replay_response =
-      attach_tool(repo, session, "sync_pr", %{
-        "number" => 42,
-        "metadata" => %{
-          "head_sha" => "sync-head",
-          "branch" => "agent/SYMPP-P6-001/github-pr-attachment-sync",
-          "changed_files" => [%{"filename" => "elixir/lib/symphony_elixir/symphony_plus_plus/github/client.ex", "status" => "added"}],
-          "check_summary" => %{"conclusion" => "success", "token" => "ghp_should_not_surface_nested"},
-          "review_state" => %{"state" => "approved"},
-          "merge_state" => %{"state" => "clean"},
-          "token" => "ghp_should_not_surface"
-        }
-      })
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "sync-pr-replay-mismatch",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "sync_pr",
+            "arguments" => %{
+              "number" => 42,
+              "metadata" => %{
+                "head_sha" => "sync-head",
+                "branch" => "agent/SYMPP-P6-001/github-pr-attachment-sync",
+                "changed_files" => [%{"filename" => "elixir/lib/symphony_elixir/symphony_plus_plus/github/client.ex", "status" => "added"}],
+                "check_summary" => %{"conclusion" => "success", "token" => "ghp_should_not_surface_nested"},
+                "review_state" => %{"state" => "approved"},
+                "merge_state" => %{"state" => "clean"},
+                "token" => "ghp_should_not_surface"
+              }
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
 
-    assert get_in(replay_response, ["result", "structuredContent", "progress_event", "id"]) == event_id
-    assert get_in(replay_response, ["result", "structuredContent", "progress_event", "payload", "number"]) == 42
+    assert get_in(replay_response, ["error", "data", "reason"]) == "pr_mismatch"
 
     assert {:ok, artifacts} = PlanningRepository.list_artifacts(repo, package.id)
     pr_artifacts = Enum.filter(artifacts, &(&1.kind == "github_pr" and &1.path == "github-pr.json"))
@@ -4994,7 +5003,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
   end
 
-  test "attach_pr with full current state satisfies PR readiness", %{repo: repo} do
+  test "attach_pr with full current state does not satisfy synced PR readiness", %{repo: repo} do
     assert {:ok, package} =
              WorkPackageRepository.create(
                repo,
@@ -5032,14 +5041,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
     })
 
-    ready_response =
+    missing_sync_response =
       MCPHarness.request(
         %{"jsonrpc" => "2.0", "id" => "ready-attach-state", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
         repo: repo,
         session: session
       )
 
-    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+    assert "current_pr_state" in get_in(missing_sync_response, ["error", "data", "missing"])
   end
 
   test "abbreviated branch head satisfies full PR head readiness", %{repo: repo} do

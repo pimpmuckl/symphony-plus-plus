@@ -1005,7 +1005,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp current_pr_state_present?(_progress_events, _head_sha), do: false
 
-  defp current_pr_state_payload?(%{"source_tool" => source_tool} = payload) when source_tool in ["attach_pr", "sync_pr"] do
+  defp current_pr_state_payload?(%{"source_tool" => "sync_pr"} = payload) do
     semantic_pr_state?(payload, "check_summary", ["conclusion", "state", "status"]) or
       semantic_pr_state?(payload, "review_state", ["decision", "state", "status"]) or
       semantic_pr_state?(payload, "merge_state", ["mergeable_state", "state", "status"])
@@ -1066,8 +1066,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
           latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], :any, attached_ref)
 
       {:error, :not_found} ->
-        latest_current_pr_payload(progress_events, :any, :any) ||
-          latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"])
+        nil
     end
   end
 
@@ -1080,10 +1079,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
           latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], :any, attached_ref)
 
       {:error, :not_found} ->
-        latest_current_pr_payload(progress_events, head_filter, :any) ||
-          latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], head_filter) ||
-          latest_current_pr_payload(progress_events, :any, :any) ||
-          latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"])
+        nil
     end
   end
 

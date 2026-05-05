@@ -1748,6 +1748,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp validate_pr_sync_target_unless_replay(repo, %Session{} = session, payload, "sync_pr", _replay?) do
+    with {:ok, ref} <- PullRequest.parse(payload, nil) do
+      validate_pr_sync_target(repo, session, ref, "sync_pr")
+    end
+  end
+
   defp validate_pr_sync_target_unless_replay(_repo, %Session{}, _arguments, _tool, true), do: :ok
 
   defp validate_pr_sync_target_unless_replay(repo, %Session{} = session, payload, tool, false) do
@@ -3372,7 +3378,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp current_pr_state_present?(_progress_events, _head_sha), do: false
 
-  defp current_pr_state_payload?(%{"source_tool" => source_tool} = payload) when source_tool in ["attach_pr", "sync_pr"] do
+  defp current_pr_state_payload?(%{"source_tool" => "sync_pr"} = payload) do
     semantic_pr_state?(payload, "check_summary", ["conclusion", "state", "status"]) or
       semantic_pr_state?(payload, "review_state", ["decision", "state", "status"]) or
       semantic_pr_state?(payload, "merge_state", ["mergeable_state", "state", "status"])

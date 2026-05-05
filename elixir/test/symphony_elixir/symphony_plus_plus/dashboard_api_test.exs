@@ -781,6 +781,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
 
     assert "pr_attached" in missing["missing"]
+    assert payload["metadata"]["pr"] == nil
   end
 
   test "dashboard current PR state gate validates synced state separately from attachment", %{repo: repo} do
@@ -901,6 +902,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                created_at: DateTime.add(timestamp, 1, :second)
              })
 
+    assert {:ok, _attached_pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR attached",
+               status: "pr_attached",
+               payload: %{type: "pr", source_tool: "attach_pr", url: "https://github.com/example/repo/pull/44", head_sha: "old-pr-head"},
+               created_at: DateTime.add(timestamp, 2, :second)
+             })
+
     assert {:ok, _pr} =
              PlanningRepository.append_progress_event(repo, %{
                work_package_id: work_package.id,
@@ -916,7 +926,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  changed_files: [%{path: "elixir/lib/example.ex"}],
                  check_summary: %{token: "ghp_should_be_redacted"}
                },
-               created_at: DateTime.add(timestamp, 2, :second)
+               created_at: DateTime.add(timestamp, 3, :second)
              })
 
     payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
@@ -951,6 +961,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert {:ok, _current_pr} =
              PlanningRepository.append_progress_event(repo, %{
                work_package_id: work_package.id,
+               summary: "Current PR attached",
+               status: "pr_attached",
+               payload: %{
+                 type: "pr",
+                 source_tool: "attach_pr",
+                 url: "https://github.com/example/repo/pull/10",
+                 head_sha: "abcdef1234567890abcdef1234567890abcdef12"
+               },
+               created_at: ~U[2026-05-05 00:00:01Z]
+             })
+
+    assert {:ok, _current_pr_sync} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
                summary: "Current PR synced",
                status: "pr_synced",
                payload: %{
@@ -959,7 +983,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  url: "https://github.com/example/repo/pull/10",
                  head_sha: "abcdef1234567890abcdef1234567890abcdef12"
                },
-               created_at: ~U[2026-05-05 00:00:01Z]
+               created_at: ~U[2026-05-05 00:00:02Z]
              })
 
     assert {:ok, _stale_pr} =
@@ -968,7 +992,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                summary: "Older PR sync arrived late",
                status: "pr_synced",
                payload: %{type: "pr", source_tool: "sync_pr", url: "https://github.com/example/repo/pull/10", head_sha: "old-head"},
-               created_at: ~U[2026-05-05 00:00:02Z]
+               created_at: ~U[2026-05-05 00:00:03Z]
              })
 
     payload = json_response(get(auth_conn(architect_secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
@@ -996,6 +1020,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert {:ok, _pr} =
              PlanningRepository.append_progress_event(repo, %{
                work_package_id: work_package.id,
+               summary: "PR attached",
+               status: "pr_attached",
+               payload: %{
+                 type: "pr",
+                 source_tool: "attach_pr",
+                 url: "https://github.com/example/repo/pull/10",
+                 head_sha: "abcdef1234567890abcdef1234567890abcdef12"
+               },
+               created_at: ~U[2026-05-05 00:00:01Z]
+             })
+
+    assert {:ok, _sync} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
                summary: "PR synced",
                status: "pr_synced",
                payload: %{
@@ -1004,7 +1042,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  url: "https://github.com/example/repo/pull/10",
                  head_sha: "abcdef1234567890abcdef1234567890abcdef12"
                },
-               created_at: ~U[2026-05-05 00:00:01Z]
+               created_at: ~U[2026-05-05 00:00:02Z]
              })
 
     payload = json_response(get(auth_conn(architect_secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
