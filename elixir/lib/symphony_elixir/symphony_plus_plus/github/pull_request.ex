@@ -29,9 +29,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
   def parse_url(url) when is_binary(url) do
     trimmed = String.trim(url)
     uri = URI.parse(trimmed)
+    host = uri.host |> to_string() |> String.downcase()
     path_segments = uri.path |> to_string() |> String.split("/", trim: true)
 
-    case {uri.scheme, uri.host, path_segments} do
+    case {uri.scheme, host, path_segments} do
       {scheme, "github.com", [owner, repo, "pull", number]} when scheme in ["http", "https"] ->
         with {:ok, number} <- parse_positive_number(number),
              :ok <- validate_repo_part(owner),

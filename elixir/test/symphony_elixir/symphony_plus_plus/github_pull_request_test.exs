@@ -11,6 +11,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
     assert ref.repository == "nextide/symphony-plus-plus"
     assert ref.number == 42
     assert ref.url == "https://github.com/nextide/symphony-plus-plus/pull/42"
+
+    assert {:ok, mixed_host_ref} = PullRequest.parse(%{"url" => "https://GitHub.com/nextide/symphony-plus-plus/pull/43"}, nil)
+    assert mixed_host_ref.url == "https://github.com/nextide/symphony-plus-plus/pull/43"
   end
 
   test "parses PR numbers against package repository" do
