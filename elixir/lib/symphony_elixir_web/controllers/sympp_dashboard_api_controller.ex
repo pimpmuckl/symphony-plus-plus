@@ -19,6 +19,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @type auth_context :: {:grant, AccessGrant.t()}
   @board_session_key "sympp_board_grant_id"
   @package_session_key "sympp_package_grant_ids"
+  @package_session_order_key "sympp_package_grant_order"
   @max_package_sessions 8
 
   @spec authorize_board_browser(Conn.t(), term()) :: Conn.t()
@@ -236,17 +237,10 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp authorize_package_request(_conn, work_package_id) when not is_binary(work_package_id), do: {:error, :not_found}
 
   defp authorize_package_request(conn, work_package_id) do
-    if valid_package_route_id?(work_package_id) do
-      session_result = authorize_package_session(conn, work_package_id)
-
-      case {session_result, bearer_secret(conn)} do
-        {{:ok, %AccessGrant{}} = authorized, _secret} -> authorized
-        {{:error, :unauthorized}, nil} -> {:error, :unauthorized}
-        {{:error, reason}, nil} -> {:error, reason}
-        {{:error, _reason}, secret} -> authorize_package_secret(secret, work_package_id)
-      end
-    else
-      {:error, :not_found}
+    cond do
+      not valid_package_route_id?(work_package_id) -> {:error, :not_found}
+      is_binary(bearer_secret(conn)) -> authorize_package_secret(bearer_secret(conn), work_package_id)
+      true -> authorize_package_session(conn, work_package_id)
     end
   end
 
@@ -281,14 +275,15 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     if phase_reader?(grant) do
       maybe_put_board_session(conn, grant)
     else
-      sessions =
+      {sessions, order} =
         conn
         |> Conn.get_session(@package_session_key)
         |> package_sessions()
-        |> put_limited_package_session(work_package_id, grant.id)
+        |> put_limited_package_session(package_session_order(conn, work_package_id), work_package_id, grant.id)
 
       conn
       |> Conn.put_session(@package_session_key, sessions)
+      |> Conn.put_session(@package_session_order_key, order)
       |> Conn.delete_session(@board_session_key)
     end
   end
@@ -812,29 +807,50 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       |> package_sessions()
       |> Map.delete(work_package_id)
 
+    order =
+      conn
+      |> package_session_order(work_package_id)
+      |> Enum.reject(&(&1 == work_package_id))
+
     if map_size(sessions) == 0 do
-      Conn.delete_session(conn, @package_session_key)
+      conn
+      |> Conn.delete_session(@package_session_key)
+      |> Conn.delete_session(@package_session_order_key)
     else
-      Conn.put_session(conn, @package_session_key, sessions)
+      conn
+      |> Conn.put_session(@package_session_key, sessions)
+      |> Conn.put_session(@package_session_order_key, order)
     end
   end
 
-  defp clear_package_session(conn, _work_package_id), do: Conn.delete_session(conn, @package_session_key)
+  defp clear_package_session(conn, _work_package_id) do
+    conn
+    |> Conn.delete_session(@package_session_key)
+    |> Conn.delete_session(@package_session_order_key)
+  end
 
   defp package_sessions(sessions) when is_map(sessions), do: sessions
   defp package_sessions(_sessions), do: %{}
 
-  defp put_limited_package_session(sessions, work_package_id, grant_id) do
-    cond do
-      map_size(sessions) > @max_package_sessions ->
-        %{work_package_id => grant_id}
+  defp package_session_order(conn, work_package_id) do
+    order =
+      conn
+      |> Conn.get_session(@package_session_order_key)
+      |> case do
+        order when is_list(order) -> order
+        _order -> conn |> Conn.get_session(@package_session_key) |> package_sessions() |> Map.keys()
+      end
 
-      Map.has_key?(sessions, work_package_id) or map_size(sessions) < @max_package_sessions ->
-        Map.put(sessions, work_package_id, grant_id)
+    Enum.filter(order, &(is_binary(&1) and (&1 == work_package_id or Map.has_key?(package_sessions(Conn.get_session(conn, @package_session_key)), &1))))
+  end
 
-      true ->
-        %{work_package_id => grant_id}
-    end
+  defp put_limited_package_session(sessions, order, work_package_id, grant_id) do
+    sessions = Map.put(sessions, work_package_id, grant_id)
+    order = order |> Enum.reject(&(&1 == work_package_id)) |> Kernel.++([work_package_id])
+    drop_count = max(length(order) - @max_package_sessions, 0)
+    {drop, keep} = Enum.split(order, drop_count)
+
+    {Map.drop(sessions, drop), keep}
   end
 
   defp error_response(conn, status, code, message) do

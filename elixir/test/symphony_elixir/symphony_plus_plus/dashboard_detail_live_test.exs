@@ -257,8 +257,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
 
     assert response(first_conn, 401) =~ "Package access"
 
-    latest_conn =
+    second_conn =
       first_conn
+      |> recycle()
+      |> get("/sympp/work-packages/SYMPP-P5-BOUND-2")
+
+    assert response(second_conn, 200) =~ "Bounded package 2"
+
+    latest_conn =
+      second_conn
       |> recycle()
       |> get("/sympp/work-packages/SYMPP-P5-BOUND-9")
 
@@ -416,7 +423,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     refute response(second_conn, 200) =~ "Package unavailable"
   end
 
-  test "package bearer auth does not replace an existing board session" do
+  test "explicit package bearer auth overrides an existing board session" do
     %{work_package: first, architect_secret: architect_secret} = create_detail_package(id: "SYMPP-P5-BOARD")
     %{work_package: second, worker_secret: worker_secret} = create_detail_package(id: "SYMPP-P5-PACKAGE")
 
@@ -434,13 +441,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
       |> get("/sympp/work-packages/#{second.id}")
 
     assert response(package_conn, 200) =~ second.id
+    refute response(package_conn, 200) =~ ~s(class="sympp-back-link")
 
     board_after_package_conn =
       package_conn
       |> recycle()
       |> get("/sympp/board")
 
-    assert response(board_after_package_conn, 200) =~ first.id
+    assert response(board_after_package_conn, 403) =~ "Board access"
   end
 
   test "phase-reader bearer auth on detail preserves board navigation" do
