@@ -25,13 +25,16 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
   @impl true
   def mount(params, session, socket) do
     work_package_id = Map.get(params, "work_package_id")
-    grant_id = Map.get(session, "sympp_board_grant_id")
+    package_grant_id = Map.get(session, "sympp_package_grant_id")
+    board_grant_id = Map.get(session, "sympp_board_grant_id")
 
     {:ok,
      socket
      |> assign(:work_package_id, work_package_id)
-     |> assign(:grant_id, grant_id)
+     |> assign(:package_grant_id, package_grant_id)
+     |> assign(:board_grant_id, board_grant_id)
      |> assign(:grant, nil)
+     |> assign(:phase_reader?, false)
      |> assign(:detail, empty_detail(error: nil))
      |> assign(:timeline, %{events: []})
      |> assign(:error, nil)}
@@ -39,12 +42,13 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
 
   @impl true
   def handle_params(%{"work_package_id" => work_package_id}, _uri, socket) do
-    case SymppDashboardApiController.authorize_package_grant_id(socket.assigns.grant_id, work_package_id) do
+    case authorize_session(socket, work_package_id) do
       {:ok, %AccessGrant{} = grant} ->
         {:noreply,
          socket
          |> assign(:work_package_id, work_package_id)
          |> assign(:grant, grant)
+         |> assign(:phase_reader?, phase_reader?(grant))
          |> assign_detail()}
 
       {:error, reason} ->
@@ -52,6 +56,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
          socket
          |> assign(:work_package_id, work_package_id)
          |> assign(:grant, nil)
+         |> assign(:phase_reader?, false)
          |> assign(:detail, empty_detail(error: error_message(reason)))
          |> assign(:timeline, %{events: []})
          |> assign(:error, error_message(reason))}
@@ -68,7 +73,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
           <h1 class="sympp-detail-title"><%= package_title(@detail.work_package) %></h1>
         </div>
 
-        <a class="sympp-back-link" href="../board">Board</a>
+        <a :if={@phase_reader?} class="sympp-back-link" href="../board">Board</a>
       </header>
 
       <%= if @error do %>
@@ -242,6 +247,24 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     </section>
     """
   end
+
+  defp authorize_session(socket, work_package_id) do
+    package_result =
+      SymppDashboardApiController.authorize_package_grant_id(socket.assigns.package_grant_id, work_package_id)
+
+    board_result =
+      SymppDashboardApiController.authorize_package_grant_id(socket.assigns.board_grant_id, work_package_id)
+
+    case {package_result, board_result} do
+      {{:ok, %AccessGrant{}} = authorized, _board_result} -> authorized
+      {{:error, _package_reason}, {:ok, %AccessGrant{}} = authorized} -> authorized
+      {{:error, :unauthorized}, {:error, reason}} -> {:error, reason}
+      {{:error, reason}, _board_result} -> {:error, reason}
+    end
+  end
+
+  defp phase_reader?(%AccessGrant{capabilities: capabilities}) when is_list(capabilities), do: "read:phase" in capabilities
+  defp phase_reader?(_grant), do: false
 
   defp assign_detail(socket) do
     work_package_id = socket.assigns.work_package_id

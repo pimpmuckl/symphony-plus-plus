@@ -138,6 +138,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     {:ok, _view, own_html} = live(auth_conn(worker_secret), "/sympp/work-packages/#{work_package.id}")
 
     assert own_html =~ "Detail UI package"
+    refute own_html =~ ~s(class="sympp-back-link")
 
     conn = get(auth_conn(worker_secret), "/sympp/work-packages/#{sibling.id}")
 
@@ -163,11 +164,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     refute response(second_conn, 200) =~ "Package unavailable"
   end
 
+  test "package bearer auth does not replace an existing board session" do
+    %{work_package: first, architect_secret: architect_secret} = create_detail_package(id: "SYMPP-P5-BOARD")
+    %{work_package: second, worker_secret: worker_secret} = create_detail_package(id: "SYMPP-P5-PACKAGE")
+
+    board_conn = post(build_conn(), "/sympp/board/session", %{"work_key" => architect_secret})
+
+    assert redirected_to(board_conn) == "/sympp/board"
+
+    board_conn = recycle(board_conn)
+    assert get(board_conn, "/sympp/board") |> response(200) =~ first.id
+
+    package_conn =
+      board_conn
+      |> recycle()
+      |> put_req_header("authorization", "Bearer #{worker_secret}")
+      |> get("/sympp/work-packages/#{second.id}")
+
+    assert response(package_conn, 200) =~ second.id
+
+    board_after_package_conn =
+      package_conn
+      |> recycle()
+      |> get("/sympp/board")
+
+    assert response(board_after_package_conn, 200) =~ first.id
+  end
+
   test "renders DateTime timestamps and string-keyed payloads in render helpers" do
     html =
       %{
         work_package_id: "SYMPP-P5-HELPER",
         error: nil,
+        phase_reader?: true,
         detail: %{
           work_package: %{
             id: "SYMPP-P5-HELPER",

@@ -18,6 +18,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @type auth_context :: {:grant, AccessGrant.t()}
   @board_session_key "sympp_board_grant_id"
+  @package_session_key "sympp_package_grant_id"
 
   @spec authorize_board_browser(Conn.t(), term()) :: Conn.t()
   def authorize_board_browser(conn, _opts) do
@@ -33,7 +34,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     work_package_id = Map.get(conn.path_params, "work_package_id")
 
     case authorize_package_request(conn, work_package_id) do
-      {:ok, %AccessGrant{} = grant} -> Conn.put_session(conn, @board_session_key, grant.id)
+      {:ok, %AccessGrant{} = grant} -> Conn.put_session(conn, @package_session_key, grant.id)
       {:error, :unauthorized} -> conn |> board_login_response() |> Conn.halt()
       {:error, reason} -> conn |> board_browser_error_response(reason) |> Conn.halt()
     end
@@ -158,15 +159,31 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp authorize_package_request(_conn, nil), do: {:error, :not_found}
 
   defp authorize_package_request(conn, work_package_id) do
-    session_result =
-      conn
-      |> Conn.get_session(@board_session_key)
-      |> authorize_package_grant_id(work_package_id)
+    session_result = authorize_package_session(conn, work_package_id)
 
     case {session_result, bearer_secret(conn)} do
       {{:ok, %AccessGrant{}} = authorized, _secret} -> authorized
       {{:error, reason}, nil} -> {:error, reason}
       {{:error, _reason}, secret} -> authorize_package_secret(secret, work_package_id)
+    end
+  end
+
+  defp authorize_package_session(conn, work_package_id) do
+    package_result =
+      conn
+      |> Conn.get_session(@package_session_key)
+      |> authorize_package_grant_id(work_package_id)
+
+    board_result =
+      conn
+      |> Conn.get_session(@board_session_key)
+      |> authorize_package_grant_id(work_package_id)
+
+    case {package_result, board_result} do
+      {{:ok, %AccessGrant{}} = authorized, _board_result} -> authorized
+      {{:error, _package_reason}, {:ok, %AccessGrant{}} = authorized} -> authorized
+      {{:error, :unauthorized}, {:error, reason}} -> {:error, reason}
+      {{:error, reason}, _board_result} -> {:error, reason}
     end
   end
 
