@@ -50,6 +50,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     end
   end
 
+  @spec list_for_work_package(repo(), String.t()) :: {:ok, [AccessGrant.t()]} | {:error, error()}
+  def list_for_work_package(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
+    grants =
+      repo.all(
+        from(access_grant in AccessGrant,
+          where: access_grant.work_package_id == ^work_package_id,
+          order_by: [asc: access_grant.inserted_at, asc: access_grant.id]
+        )
+      )
+
+    {:ok, grants}
+  end
+
   @spec find_by_secret_hash(repo(), String.t()) :: {:ok, AccessGrant.t()} | {:error, error()}
   def find_by_secret_hash(repo, secret_hash) when is_atom(repo) and is_binary(secret_hash) do
     query = from(access_grant in AccessGrant, where: access_grant.secret_hash == ^secret_hash, limit: 1)

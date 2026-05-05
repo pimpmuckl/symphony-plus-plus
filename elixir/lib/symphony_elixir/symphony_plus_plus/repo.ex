@@ -25,6 +25,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo do
   end
 
   @doc false
+  @spec database_path_if_present() :: String.t() | term() | nil
+  def database_path_if_present do
+    case configured_database_path_without_side_effects() do
+      database_path when is_binary(database_path) ->
+        existing_database_path(database_path)
+
+      database_path ->
+        database_path
+    end
+  end
+
+  @doc false
   @spec child_id(term()) :: term()
   def child_id(database_path), do: {__MODULE__, :database, database_key(database_path)}
 
@@ -105,11 +117,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo do
     end
   end
 
+  defp configured_database_path_without_side_effects do
+    case Application.fetch_env(:symphony_elixir, :sympp_repo_database) do
+      {:ok, database_path} -> configured_database_value_without_side_effects(database_path)
+      :error -> configured_repo_database_path_without_side_effects()
+    end
+  end
+
   defp configured_repo_database_path do
     :symphony_elixir
     |> Application.get_env(__MODULE__, [])
     |> repo_database_config()
     |> configured_database_value()
+  end
+
+  defp configured_repo_database_path_without_side_effects do
+    :symphony_elixir
+    |> Application.get_env(__MODULE__, [])
+    |> repo_database_config()
+    |> case do
+      nil -> default_database_path_without_side_effects()
+      database_path -> configured_database_value_without_side_effects(database_path)
+    end
   end
 
   defp repo_database_config(config) when is_list(config), do: Keyword.get(config, :database)
@@ -118,6 +147,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo do
   defp configured_database_value(nil), do: default_database_path()
   defp configured_database_value(database_path) when is_binary(database_path), do: configured_binary_database_path(database_path)
   defp configured_database_value(database_path), do: database_path
+
+  defp configured_database_value_without_side_effects(nil), do: default_database_path_without_side_effects()
+
+  defp configured_database_value_without_side_effects(database_path) when is_binary(database_path) do
+    if String.trim(database_path) == "" do
+      default_database_path_without_side_effects()
+    else
+      database_path
+    end
+  end
+
+  defp configured_database_value_without_side_effects(database_path), do: database_path
 
   defp normalize_database_path(database_path) when is_binary(database_path) do
     if filesystem_database_path?(database_path) do
@@ -136,6 +177,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo do
       default_database_path()
     else
       database_path
+    end
+  end
+
+  defp existing_database_path(database_path) do
+    cond do
+      memory_database?(database_path) ->
+        nil
+
+      filesystem_database_path?(database_path) ->
+        database_path = Path.expand(database_path)
+        if File.exists?(database_path), do: database_path, else: nil
+
+      sqlite_file_uri?(database_path) ->
+        if sqlite_file_uri_exists?(database_path), do: database_path, else: nil
+
+      true ->
+        database_path
+    end
+  end
+
+  defp sqlite_file_uri_exists?(database_path) do
+    case sqlite_file_uri_path(database_path) do
+      path when is_binary(path) ->
+        String.trim(path) != "" and path |> Path.expand() |> File.exists?()
+
+      _path ->
+        false
     end
   end
 
@@ -185,6 +253,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo do
       |> binary_part(0, 16)
 
     Path.join([default_database_root(), "workflows", workflow_key, "symphony_plus_plus.sqlite3"])
+  end
+
+  defp default_database_path_without_side_effects do
+    workflow_key =
+      Workflow.workflow_file_path()
+      |> database_key()
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+      |> binary_part(0, 16)
+
+    System.user_home()
+    |> candidate_database_roots(System.tmp_dir())
+    |> Enum.find(&File.dir?/1)
+    |> case do
+      nil -> nil
+      root -> Path.join([root, "workflows", workflow_key, "symphony_plus_plus.sqlite3"])
+    end
   end
 
   defp default_database_root do
