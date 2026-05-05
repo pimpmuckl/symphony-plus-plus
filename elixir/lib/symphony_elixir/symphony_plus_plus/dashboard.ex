@@ -986,11 +986,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp metadata_present?(_progress_events, _type, _head_sha), do: false
 
   defp current_pr_state_present?(progress_events, head_sha) when is_binary(head_sha) do
-    case latest_attached_pr_ref(progress_events) do
-      {:ok, attached_ref} ->
+    case latest_attached_pr_ref_with_sequence(progress_events) do
+      {:ok, attached_ref, attach_sequence} ->
         Enum.any?(progress_events, fn
           %ProgressEvent{payload: payload} = event when is_map(payload) ->
-            payload_type?(event, "pr", ["attach_pr", "sync_pr"]) and head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
+            payload_type?(event, "pr", "sync_pr") and progress_after_pr_attach_boundary?(event, attach_sequence) and
+              head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
               pr_payload_ref(payload) == attached_ref and current_pr_state_payload?(payload)
 
           %ProgressEvent{} ->
@@ -1003,6 +1004,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp current_pr_state_present?(_progress_events, _head_sha), do: false
+
+  defp progress_after_pr_attach_boundary?(%ProgressEvent{}, nil), do: true
+  defp progress_after_pr_attach_boundary?(%ProgressEvent{sequence: sequence}, attach_sequence) when is_integer(sequence), do: sequence > attach_sequence
+  defp progress_after_pr_attach_boundary?(%ProgressEvent{}, _attach_sequence), do: false
 
   defp current_pr_state_payload?(%{"source_tool" => "sync_pr"} = payload), do: semantic_pr_payload?(payload)
   defp current_pr_state_payload?(_payload), do: false
@@ -1181,19 +1186,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp pr_ref_matches?(payload, pr_ref), do: pr_payload_ref(payload) == pr_ref
 
   defp latest_attached_pr_ref(progress_events) do
+    case latest_attached_pr_ref_with_sequence(progress_events) do
+      {:ok, ref, _sequence} -> {:ok, ref}
+      {:error, :not_found} -> {:error, :not_found}
+    end
+  end
+
+  defp latest_attached_pr_ref_with_sequence(progress_events) do
     progress_events
     |> chronological_progress_events()
     |> Enum.reverse()
-    |> Enum.find_value(fn
-      %ProgressEvent{payload: payload} = event when is_map(payload) ->
-        if payload_type?(event, "pr", "attach_pr"), do: pr_payload_ref(payload)
-
-      _event ->
-        nil
-    end)
+    |> Enum.find_value(&attached_pr_ref_with_sequence/1)
     |> case do
       nil -> {:error, :not_found}
-      ref -> {:ok, ref}
+      {ref, sequence} -> {:ok, ref, sequence}
+    end
+  end
+
+  defp attached_pr_ref_with_sequence(%ProgressEvent{payload: payload, sequence: sequence} = event) when is_map(payload) do
+    if payload_type?(event, "pr", "attach_pr"), do: pr_payload_ref_with_sequence(payload, sequence)
+  end
+
+  defp attached_pr_ref_with_sequence(_event), do: nil
+
+  defp pr_payload_ref_with_sequence(payload, sequence) do
+    case pr_payload_ref(payload) do
+      nil -> nil
+      ref -> {ref, sequence}
     end
   end
 

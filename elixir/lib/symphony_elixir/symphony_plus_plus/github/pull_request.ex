@@ -182,9 +182,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
   defp validate_repository_ref(_arguments, _ref), do: :ok
 
   defp validate_metadata_ref(metadata, ref) do
-    with :ok <- validate_metadata_repository_ref(metadata, ref),
-         :ok <- validate_metadata_number_ref(metadata, ref) do
-      :ok
+    case validate_metadata_repository_ref(metadata, ref) do
+      :ok -> validate_metadata_number_ref(metadata, ref)
+      error -> error
     end
   end
 

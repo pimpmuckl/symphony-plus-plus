@@ -5099,9 +5099,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert "current_pr_state" in get_in(stale_sync_response, ["error", "data", "missing"])
 
+    sync_pr_state(repo, session, "https://github.com/example/repo/pull/790", "head-b")
+
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/790", "head_sha" => "head-b"})
 
-    sync_pr_state(repo, session, "https://github.com/example/repo/pull/790", "head-b")
+    reattach_after_sync_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-reattach-after-sync", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "current_pr_state" in get_in(reattach_after_sync_response, ["error", "data", "missing"])
+
+    attach_tool(repo, session, "sync_pr", %{
+      "url" => "https://github.com/example/repo/pull/790",
+      "metadata" => %{
+        "head_sha" => "head-b",
+        "check_summary" => %{"conclusion" => "success", "total_count" => 1},
+        "review_state" => %{"state" => "approved"},
+        "merge_state" => %{"state" => "clean"}
+      }
+    })
 
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Ready review for advanced head",
