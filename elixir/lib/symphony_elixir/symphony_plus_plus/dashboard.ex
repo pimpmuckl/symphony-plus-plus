@@ -419,7 +419,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp latest_active_run(agent_runs) do
     agent_runs
-    |> Enum.filter(&(&1.status in AgentRun.active_statuses()))
+    |> Enum.filter(&(runtime_state(&1) in ["active", "queued"]))
     |> List.last()
   end
 
@@ -589,7 +589,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp incomplete_plan?(context) do
-    plan_required?(context.work_package) and (context.plan_nodes == [] or Enum.any?(context.plan_nodes, &(&1.status == "pending")))
+    plan_required?(context.work_package) and
+      (context.plan_nodes == [] or Enum.any?(context.plan_nodes, &(&1.status not in ["done", "completed", "skipped"])))
   end
 
   defp acceptance_missing?(context) do

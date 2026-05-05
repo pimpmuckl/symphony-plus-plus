@@ -643,6 +643,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
         payload
         |> Map.put(runs_key, runs)
+        |> put_active_agent_run(runs)
         |> put_summary_count("agent_run_count", length(runs))
         |> put_summary_count("active_agent_run_count", Enum.count(runs, &(runtime_state(&1) == "active")))
         |> put_summary_count("queued_agent_run_count", Enum.count(runs, &(runtime_state(&1) == "queued")))
@@ -674,6 +675,15 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp put_summary_count(payload, _key, _count), do: payload
+
+  defp put_active_agent_run(payload, runs) do
+    active_agent_run = runs |> Enum.filter(&(runtime_state(&1) in ["active", "queued"])) |> List.last()
+
+    case fetch_payload_field(payload, :active_agent_run) do
+      {:ok, key, _run} -> Map.put(payload, key, active_agent_run)
+      _missing -> Map.put(payload, :active_agent_run, active_agent_run)
+    end
+  end
 
   defp put_runtime_summary(%{"summary" => summary} = payload, runs) when is_map(summary) do
     runtime = runtime_summary(runs, Map.get(summary, "runtime"))

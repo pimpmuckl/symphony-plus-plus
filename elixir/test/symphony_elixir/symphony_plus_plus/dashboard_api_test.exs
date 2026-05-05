@@ -175,6 +175,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert display_key == grant.display_key
     assert [%{"status" => "completed", "session_id" => "session-1"}] = payload["agent_runs"]
     assert [%{"runtime_state" => "terminal", "stale" => false}] = payload["agent_runs"]
+    assert is_nil(payload["active_agent_run"])
     alerts = Map.new(payload["alert_indicators"], &{&1["type"], &1})
     refute alerts["stale_heartbeat"]["active"]
     refute alerts["failed_run"]["active"]
@@ -223,6 +224,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert payload["summary"]["active_agent_run_count"] == 0
     assert payload["summary"]["queued_agent_run_count"] == 1
     assert payload["summary"]["runtime"]["stale_count"] == 1
+    assert payload["active_agent_run"]["runtime_state"] == "queued"
     assert alerts["stale_heartbeat"]["active"] == true
     assert alerts["stale_heartbeat"]["detail"] == "1 run(s) past 300s"
   end
@@ -381,6 +383,55 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert "branch_attached" in missing["missing"]
     assert "pr_attached" in missing["missing"]
     assert "review_package_submitted" in missing["missing"]
+  end
+
+  test "ready packages with in-progress plan nodes flag missing plan evidence", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-IN-PROGRESS-PLAN",
+                 kind: "mcp",
+                 status: "ready_for_human_merge",
+                 policy_template: "mcp"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    append_ready_evidence_with_review_artifacts(repo, work_package, ["review-log.txt"])
+
+    timestamp = DateTime.utc_now(:microsecond)
+
+    repo.query!(
+      """
+      INSERT INTO sympp_plan_nodes
+        (id, work_package_id, title, body, status, position, created_at, inserted_at, updated_at)
+      VALUES
+        (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+      """,
+      [
+        "plan_in_progress",
+        work_package.id,
+        "Still running",
+        "Not done",
+        "in_progress",
+        2,
+        timestamp,
+        timestamp,
+        timestamp
+      ]
+    )
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert missing["active"] == true
+    assert "plan_complete" in missing["missing"]
+    refute "review_artifacts_attached" in missing["missing"]
+    refute "review_package_submitted" in missing["missing"]
+    refute "tests_passed" in missing["missing"]
+    refute "acceptance_criteria_met" in missing["missing"]
+    refute "review_lanes_complete" in missing["missing"]
   end
 
   test "ready packages with review package but no artifacts flag artifact evidence", %{repo: repo} do
