@@ -68,7 +68,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @handle_state_ttl_ms 86_400_000
   @explicit_handle_state_ttl_ms 604_800_000
   @handle_state_agent Module.concat(__MODULE__, HandleState)
-  @minimum_sha_prefix_length 7
   @plan_append_argument_keys ["body", "expected_version", "id", "status", "title", "work_package_id"]
   @plan_patch_argument_keys ["expected_version", "patch", "work_package_id"]
   @plan_node_patch_keys ["body", "id", "status", "title"]
@@ -1645,8 +1644,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp metadata_tool_response({:tool_error, reason}, tool), do: {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason}}
   defp metadata_tool_response({:error, reason}, tool), do: worker_error(reason, tool)
 
-  defp pr_fallback_head_sha(arguments, "attach_pr"), do: Map.get(arguments, "head_sha")
-  defp pr_fallback_head_sha(_arguments, "sync_pr"), do: nil
+  defp pr_fallback_head_sha(arguments, tool) when tool in ["attach_pr", "sync_pr"], do: Map.get(arguments, "head_sha")
 
   defp pr_reference_arguments(repo, %Session{} = session, arguments, "sync_pr") do
     if Map.has_key?(arguments, "number") and not filled_string?(Map.get(arguments, "repository")) and not filled_string?(Map.get(arguments, "url")) do
@@ -3410,19 +3408,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp metadata_tool("pr"), do: "attach_pr"
   defp metadata_tool("review_package"), do: "submit_review_package"
 
-  defp head_sha_matches?(left, right) when is_binary(left) and is_binary(right) do
-    left = String.trim(left)
-    right = String.trim(right)
-
-    left != "" and right != "" and (left == right or safe_sha_prefix_match?(left, right))
-  end
-
-  defp head_sha_matches?(_left, _right), do: false
-
-  defp safe_sha_prefix_match?(left, right) do
-    min(String.length(left), String.length(right)) >= @minimum_sha_prefix_length and
-      (String.starts_with?(left, right) or String.starts_with?(right, left))
-  end
+  defp head_sha_matches?(left, right), do: PullRequest.head_sha_matches?(left, right)
 
   defp payload_type?(%ProgressEvent{payload: payload}, type, source_tools) when is_map(payload) and is_list(source_tools) do
     Map.get(payload, "type") == type and Map.get(payload, "source_tool") in source_tools

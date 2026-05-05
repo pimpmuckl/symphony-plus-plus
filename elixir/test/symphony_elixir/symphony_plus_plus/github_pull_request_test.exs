@@ -133,6 +133,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
     assert PullRequest.stale?(%{"head_sha" => "abcdef1234567890abcdef1234567890abcdef12"}, "abc")
     assert PullRequest.stale?(%{"head_sha" => "abcdef1234567890abcdef1234567890abcdef12"}, "abcdef2")
     assert PullRequest.stale?(%{"head_sha" => "abc123"}, "def456")
+    assert PullRequest.stale?(%{"head_sha" => "current-head"}, "current-head-2")
   end
 
   test "dry client requires explicit metadata" do

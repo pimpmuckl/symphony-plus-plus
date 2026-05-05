@@ -21,7 +21,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   @complete_plan_statuses ["done", "completed", "skipped"]
   @merge_required_gates ["human_merge", "architect_merge"]
   @runtime_merge_required_kinds ["hotfix", "adapter", "mcp", "skill", "hooks", "phase_child"]
-  @minimum_sha_prefix_length 7
 
   @type repo :: module()
   @type dashboard_error :: :not_found | :forbidden | :database_busy | {:storage_failed, String.t()} | term()
@@ -1196,19 +1195,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp payload_head_matches?(payload, {:head, head_sha}) when is_map(payload), do: head_sha_matches?(Map.get(payload, "head_sha"), head_sha)
   defp payload_head_matches?(_payload, {:head, _head_sha}), do: false
 
-  defp head_sha_matches?(left, right) when is_binary(left) and is_binary(right) do
-    left = String.trim(left)
-    right = String.trim(right)
-
-    left != "" and right != "" and (left == right or safe_sha_prefix_match?(left, right))
-  end
-
-  defp head_sha_matches?(_left, _right), do: false
-
-  defp safe_sha_prefix_match?(left, right) do
-    min(String.length(left), String.length(right)) >= @minimum_sha_prefix_length and
-      (String.starts_with?(left, right) or String.starts_with?(right, left))
-  end
+  defp head_sha_matches?(left, right), do: PullRequest.head_sha_matches?(left, right)
 
   defp payload_branch(%{} = payload) do
     case Map.get(payload, "branch") do

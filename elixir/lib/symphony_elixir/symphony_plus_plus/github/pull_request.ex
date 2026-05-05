@@ -98,6 +98,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
 
   def stale?(_pr_metadata, _current_head_sha), do: false
 
+  @spec head_sha_matches?(term(), term()) :: boolean()
+  def head_sha_matches?(left, right) when is_binary(left) and is_binary(right) do
+    left = String.trim(left)
+    right = String.trim(right)
+
+    left != "" and right != "" and (left == right or sha_prefix_match?(left, right))
+  end
+
+  def head_sha_matches?(_left, _right), do: false
+
   defp ref(owner, repo, number, url) do
     %{owner: owner, repo: repo, repository: "#{owner}/#{repo}", number: number, url: url}
   end
@@ -271,17 +281,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
 
   defp filled_string?(value), do: is_binary(value) and String.trim(value) != ""
 
-  defp head_sha_matches?(left, right) when is_binary(left) and is_binary(right) do
-    left = String.trim(left)
-    right = String.trim(right)
-
-    left != "" and right != "" and (left == right or safe_sha_prefix_match?(left, right))
+  defp sha_prefix_match?(left, right) do
+    sha_abbreviation?(left) and sha_abbreviation?(right) and
+      (String.starts_with?(left, right) or String.starts_with?(right, left))
   end
 
-  defp head_sha_matches?(_left, _right), do: false
-
-  defp safe_sha_prefix_match?(left, right) do
-    min(String.length(left), String.length(right)) >= @minimum_sha_prefix_length and
-      (String.starts_with?(left, right) or String.starts_with?(right, left))
+  defp sha_abbreviation?(value) do
+    String.length(value) >= @minimum_sha_prefix_length and String.match?(value, ~r/\A[0-9a-fA-F]+\z/)
   end
 end

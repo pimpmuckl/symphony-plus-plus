@@ -863,13 +863,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     refute "current_pr_state" in valid_missing["missing"]
 
+    assert {:ok, _new_pr_attach} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Different PR attached",
+               status: "pr_attached",
+               payload: %{type: "pr", source_tool: "attach_pr", url: "https://github.com/example/repo/pull/9", head_sha: "head-a"},
+               created_at: DateTime.add(timestamp, 5, :second)
+             })
+
+    different_pr_payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    different_pr_missing = Enum.find(different_pr_payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert "current_pr_state" in different_pr_missing["missing"]
+    assert different_pr_payload["metadata"]["pr"]["url"] == "https://github.com/example/repo/pull/9"
+    refute Map.has_key?(different_pr_payload["metadata"]["pr"], "check_summary")
+
     assert {:ok, _new_branch} =
              PlanningRepository.append_progress_event(repo, %{
                work_package_id: work_package.id,
                summary: "Branch advanced",
                status: "branch_attached",
                payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "head-b"},
-               created_at: DateTime.add(timestamp, 5, :second)
+               created_at: DateTime.add(timestamp, 6, :second)
              })
 
     stale_payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)

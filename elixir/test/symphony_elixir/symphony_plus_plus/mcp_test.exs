@@ -4444,6 +4444,103 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert [%{uri: "https://github.com/nextide/symphony-plus-plus/pull/43"}] = pr_artifacts
   end
 
+  test "sync_pr replay after different attach is cached but not current readiness evidence", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-PR-SYNC-REPLAY-CURRENT",
+                 kind: "mcp",
+                 repo: "nextide/symphony-plus-plus",
+                 status: "ci_waiting",
+                 policy_template: "mcp_current_pr_state"
+               )
+             )
+
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+    head_sha = "abcdef1234567890abcdef1234567890abcdef12"
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-SYNC-REPLAY-CURRENT/worker", "head_sha" => head_sha})
+    attach_tool(repo, session, "attach_pr", %{"number" => 42, "head_sha" => head_sha})
+
+    sync_request = %{
+      "jsonrpc" => "2.0",
+      "id" => "sync-pr-replay-current",
+      "method" => "tools/call",
+      "params" => %{
+        "name" => "sync_pr",
+        "arguments" => %{
+          "number" => 42,
+          "metadata" => %{"head_sha" => head_sha, "check_summary" => %{"conclusion" => "success"}}
+        }
+      }
+    }
+
+    sync_response = MCPHarness.request(sync_request, repo: repo, session: session)
+    event_id = get_in(sync_response, ["result", "structuredContent", "progress_event", "id"])
+
+    attach_tool(repo, session, "attach_pr", %{"number" => 43, "head_sha" => head_sha})
+
+    replay_response = MCPHarness.request(sync_request, repo: repo, session: session)
+    assert get_in(replay_response, ["result", "structuredContent", "progress_event", "id"]) == event_id
+
+    new_old_sync_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "sync-pr-old-new-request",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "sync_pr",
+            "arguments" => %{
+              "number" => 42,
+              "metadata" => %{"head_sha" => head_sha, "check_summary" => %{"conclusion" => "success"}},
+              "idempotency_key" => "new-old-sync"
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(new_old_sync_response, ["error", "data", "reason"]) == "pr_mismatch"
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready review",
+      "tests" => ["mix test"],
+      "artifacts" => ["review.txt"],
+      "head_sha" => head_sha,
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-after-replayed-old-sync", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "current_pr_state" in get_in(ready_response, ["error", "data", "missing"])
+
+    attach_tool(repo, session, "sync_pr", %{
+      "number" => 43,
+      "metadata" => %{"head_sha" => head_sha, "check_summary" => %{"conclusion" => "success"}}
+    })
+
+    ready_after_current_sync =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-after-current-sync", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_after_current_sync, ["result", "structuredContent", "ready"]) == true
+  end
+
   test "attach_pr number requires unambiguous repository context for short package repos", %{repo: repo} do
     assert {:ok, package} =
              WorkPackageRepository.create(
@@ -4642,7 +4739,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(mismatch, ["error", "data", "reason"]) == "pr_mismatch"
 
-    headless =
+    top_level_head =
       MCPHarness.request(
         %{
           "jsonrpc" => "2.0",
@@ -4654,7 +4751,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
-    assert get_in(headless, ["error", "data", "reason"]) == "missing_head_sha"
+    assert get_in(top_level_head, ["result", "structuredContent", "progress_event", "payload", "head_sha"]) == "abc123"
   end
 
   test "sync_pr resolves URL-only attached PRs by chronology", %{repo: repo} do
