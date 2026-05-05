@@ -641,6 +641,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     assert redirected_to(conn) == "/sympp/board"
   end
 
+  test "failed board login clears an existing board session" do
+    create_board_package(%{
+      id: "SYMPP-P5-026",
+      kind: "dashboard",
+      status: "implementing",
+      title: "Previous session package",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "symphony-plus-plus/beta"
+    })
+
+    secret = create_architect_grant_secret(Repo, "SYMPP-P5-026")
+    conn = board_session_conn(secret)
+
+    {:ok, _view, html} = live(conn, "/sympp/board")
+    assert html =~ "Previous session package"
+
+    conn = post(conn, "/sympp/board/session", %{"work_key" => "not-a-valid-work-key"})
+
+    assert response(conn, 401) =~ "Board access"
+
+    conn = get(recycle(conn), "/sympp/board")
+
+    assert response(conn, 401) =~ "Board access"
+    refute response(conn, 401) =~ "Previous session package"
+  end
+
   test "browser session login preserves board access for filter navigation" do
     create_board_package(%{
       id: "SYMPP-P5-017",

@@ -50,19 +50,22 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         |> redirect(to: "/sympp/board")
 
       {:error, :forbidden} ->
-        conn |> board_login_response(status: 403, message: "The work key is not allowed to open the board.") |> Conn.halt()
+        conn
+        |> clear_board_session()
+        |> board_login_response(status: 403, message: "The work key is not allowed to open the board.")
+        |> Conn.halt()
 
       {:error, :database_busy} ->
-        conn |> board_login_response(status: 503, message: "The dashboard ledger is busy. Try again.") |> Conn.halt()
+        conn |> clear_board_session() |> board_login_response(status: 503, message: "The dashboard ledger is busy. Try again.") |> Conn.halt()
 
       {:error, {:storage_failed, _reason}} ->
-        conn |> board_login_response(status: 503, message: "The board ledger could not be read.") |> Conn.halt()
+        conn |> clear_board_session() |> board_login_response(status: 503, message: "The board ledger could not be read.") |> Conn.halt()
 
       {:error, {:repo_start_failed, _reason}} ->
-        conn |> board_login_response(status: 503, message: "The board ledger could not be opened.") |> Conn.halt()
+        conn |> clear_board_session() |> board_login_response(status: 503, message: "The board ledger could not be opened.") |> Conn.halt()
 
       {:error, _reason} ->
-        conn |> board_login_response(status: 401, message: "The work key could not access the board.") |> Conn.halt()
+        conn |> clear_board_session() |> board_login_response(status: 401, message: "The work key could not access the board.") |> Conn.halt()
     end
   end
 
@@ -557,6 +560,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp board_browser_error_response(conn, _reason) do
     board_login_response(conn, status: 500, message: "The board is temporarily unavailable.")
   end
+
+  defp clear_board_session(conn), do: Conn.delete_session(conn, @board_session_key)
 
   defp error_response(conn, status, code, message) do
     conn
