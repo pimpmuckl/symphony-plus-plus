@@ -1109,8 +1109,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp sensitive_key?(key) when is_binary(key) do
     key = String.downcase(key)
 
-    String.contains?(key, "secret") or String.contains?(key, "token") or String.contains?(key, "hash") or
-      key in ["access_grant_id", "agent_run_id", "actor_id"]
+    String.contains?(key, "secret") or String.contains?(key, "token") or String.contains?(key, "hash")
   end
 
   defp sensitive_key?(key) when is_atom(key), do: key |> Atom.to_string() |> sensitive_key?()

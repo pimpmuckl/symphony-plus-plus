@@ -712,7 +712,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       failed_count: Enum.count(runs, &agent_run_failed?/1),
       completed_count: Enum.count(runs, &agent_run_completed?/1),
       terminal_count: Enum.count(runs, &(runtime_state(&1) in ["stopped", "terminal"])),
-      stale_count: Enum.count(runs, &agent_run_stale?/1)
+      stale_count: Enum.count(runs, &agent_run_stale?(&1, threshold))
     }
   end
 
@@ -722,7 +722,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     payload
     |> update_alert_indicator(
       "stale_heartbeat",
-      Enum.count(runs, &agent_run_stale?/1),
+      Enum.count(runs, &agent_run_stale?(&1, stale_threshold)),
       &"#{&1} run(s) past #{stale_threshold}s"
     )
     |> update_alert_indicator("failed_run", Enum.count(runs, &agent_run_failed?/1), &"#{&1} failed run(s)")
@@ -776,9 +776,43 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp agent_run_failed?(run), do: (Map.get(run, :status) || Map.get(run, "status")) == "failed"
   defp agent_run_completed?(run), do: (Map.get(run, :status) || Map.get(run, "status")) == "completed"
-  defp agent_run_stale?(run), do: Map.get(run, :stale) == true or Map.get(run, "stale") == true
+  defp agent_run_stale?(run), do: agent_run_stale?(run, 300)
 
-  defp runtime_state(run), do: Map.get(run, :runtime_state) || Map.get(run, "runtime_state")
+  defp agent_run_stale?(run, threshold_seconds) do
+    cond do
+      Map.get(run, :stale) == true or Map.get(run, "stale") == true ->
+        true
+
+      runtime_state(run) in ["active", "queued"] ->
+        stale_last_seen?(Map.get(run, :last_seen_at) || Map.get(run, "last_seen_at"), threshold_seconds)
+
+      true ->
+        false
+    end
+  end
+
+  defp stale_last_seen?(%DateTime{} = last_seen_at, threshold_seconds) do
+    DateTime.diff(DateTime.utc_now(:microsecond), last_seen_at, :second) >= threshold_seconds
+  end
+
+  defp stale_last_seen?(last_seen_at, threshold_seconds) when is_binary(last_seen_at) do
+    case DateTime.from_iso8601(last_seen_at) do
+      {:ok, datetime, _offset} -> stale_last_seen?(datetime, threshold_seconds)
+      {:error, _reason} -> false
+    end
+  end
+
+  defp stale_last_seen?(_last_seen_at, _threshold_seconds), do: false
+
+  defp runtime_state(run) do
+    Map.get(run, :runtime_state) || Map.get(run, "runtime_state") || runtime_state_from_status(Map.get(run, :status) || Map.get(run, "status"))
+  end
+
+  defp runtime_state_from_status("starting"), do: "queued"
+  defp runtime_state_from_status(status) when status in ["running", "retrying"], do: "active"
+  defp runtime_state_from_status("stopped"), do: "stopped"
+  defp runtime_state_from_status(status) when status in ["completed", "failed"], do: "terminal"
+  defp runtime_state_from_status(_status), do: nil
 
   defp redact_worker_activity_identifiers(payload) do
     [:progress, :findings, :events, :blockers]
