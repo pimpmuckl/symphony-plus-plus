@@ -5016,6 +5016,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert "current_pr_state" in get_in(invalid_sync_response, ["error", "data", "missing"])
 
+    attach_tool(repo, session, "sync_pr", %{
+      "url" => "https://github.com/example/repo/pull/790",
+      "metadata" => %{"head_sha" => "head-a", "state" => "open", "draft" => false}
+    })
+
+    raw_state_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-raw-state-sync", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert "current_pr_state" in get_in(raw_state_response, ["error", "data", "missing"])
+
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-PR-SYNC-READY/worker", "head_sha" => "head-b"})
 
     stale_sync_response =

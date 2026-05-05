@@ -128,7 +128,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
   defp parse_repository(_repository), do: {:error, :missing_repository}
 
   defp repository_input(arguments, package_repo) do
-    Map.get(arguments, "repository") || metadata_repository(Map.get(arguments, "metadata")) || package_repo
+    Map.get(arguments, "repository") || full_repository(package_repo) || metadata_repository(Map.get(arguments, "metadata")) || package_repo
+  end
+
+  defp full_repository(repository) do
+    case parse_repository(repository) do
+      {:ok, {_owner, _repo}} -> repository
+      {:error, _reason} -> nil
+    end
   end
 
   defp metadata_repository(%{} = metadata) do

@@ -3385,7 +3385,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     semantic_pr_state?(payload, "check_summary", ["conclusion", "state", "status"]) or
       semantic_pr_state?(payload, "review_state", ["decision", "state", "status"]) or
       semantic_pr_state?(payload, "merge_state", ["mergeable_state", "state", "status"]) or
-      semantic_pr_boolean?(payload, "review_state", ["draft"]) or
       semantic_pr_boolean?(payload, "merge_state", ["mergeable", "merged"])
   end
 
@@ -3395,7 +3394,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case Map.get(payload, key) do
       value when is_map(value) ->
         Enum.any?(semantic_keys, fn semantic_key ->
-          value |> semantic_pr_value(semantic_key) |> filled_string?()
+          semantic_pr_value?(value, semantic_key)
         end)
 
       _value ->
@@ -3404,6 +3403,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp semantic_pr_value(value, key), do: Map.get(value, key) || Map.get(value, String.to_atom(key))
+
+  defp semantic_pr_value?(value, "state") do
+    case semantic_pr_value(value, "state") do
+      state when is_binary(state) ->
+        normalized = state |> String.trim() |> String.downcase()
+        normalized != "" and normalized not in ["open", "closed"]
+
+      _state ->
+        false
+    end
+  end
+
+  defp semantic_pr_value?(value, key), do: value |> semantic_pr_value(key) |> filled_string?()
 
   defp semantic_pr_boolean?(payload, key, semantic_keys) do
     case Map.get(payload, key) do
