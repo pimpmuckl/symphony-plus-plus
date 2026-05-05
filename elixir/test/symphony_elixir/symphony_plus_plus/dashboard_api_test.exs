@@ -378,6 +378,56 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     refute "review_lanes_complete" in missing["missing"]
   end
 
+  test "generic readiness statuses before latest branch do not clear missing evidence", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-BRANCH-BOUND",
+                 kind: "quick_fix",
+                 status: "ready_for_human_merge",
+                 policy_template: "quick_fix"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    timestamp = ~U[2026-05-05 00:00:00Z]
+
+    assert {:ok, _old_tests} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Old tests passed",
+               status: "tests_passed",
+               payload: %{},
+               created_at: DateTime.add(timestamp, 1, :second)
+             })
+
+    assert {:ok, _old_review} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Old review green",
+               status: "review_t1_green",
+               payload: %{},
+               created_at: DateTime.add(timestamp, 2, :second)
+             })
+
+    assert {:ok, _new_branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "New branch attached",
+               status: "branch_attached",
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "new-head"},
+               created_at: DateTime.add(timestamp, 3, :second)
+             })
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    missing = Enum.find(payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
+
+    assert "tests_passed" in missing["missing"]
+    assert "review_lanes_complete" in missing["missing"]
+    refute "branch_attached" in missing["missing"]
+  end
+
   test "card summaries use total counts and full progress metadata", %{repo: repo} do
     %{work_package: work_package} = create_dashboard_fixture(repo)
     timestamp = ~U[2026-05-05 00:02:00Z]

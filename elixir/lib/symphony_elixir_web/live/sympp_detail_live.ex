@@ -16,8 +16,8 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     body branch branch_pattern capabilities claimed_at claimed_by codex_total_tokens
     completed_count created_at detail display_key engineering_scope events expires_at
     failed_count finding_count findings finished_at grant_count grant_role grants
-    head_sha id inserted_at kind label latest latest_progress_at metadata missing
-    open_count path placeholder plan position pr product_description progress_event_count
+    head_sha id inserted_at kind label latest last_seen_at latest_progress_at metadata
+    missing open_count path placeholder plan position pr product_description progress_event_count
     queued_agent_run_count reason repo revoked_at runtime runtime_state scope severity
     sequence session_id stale stale_after_seconds stale_agent_run_count
     stale_heartbeat_after_seconds status stopped_agent_run_count summary terminal_count

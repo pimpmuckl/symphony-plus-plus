@@ -644,8 +644,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     if merge_required?(context.work_package) do
       review_package_tests_recorded?(context.progress_events, latest_current_head_sha(context.progress_events))
     else
-      review_package_tests_recorded?(context.progress_events, review_head_sha_for_readiness(context)) or
-        progress_status_recorded?(context.progress_events, "tests_passed")
+      progress_events = current_branch_progress_events(context.progress_events)
+
+      review_package_tests_recorded?(progress_events, review_head_sha_for_readiness(context)) or
+        progress_status_recorded?(progress_events, "tests_passed")
     end
   end
 
@@ -667,8 +669,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
         latest_current_head_sha(context.progress_events)
       )
     else
-      review_package_lanes_present?(context.progress_events, required_lanes, review_head_sha_for_readiness(context)) or
-        progress_review_lanes_present?(context.progress_events, required_lanes)
+      progress_events = current_branch_progress_events(context.progress_events)
+
+      review_package_lanes_present?(progress_events, required_lanes, review_head_sha_for_readiness(context)) or
+        progress_review_lanes_present?(progress_events, required_lanes)
     end
   end
 
@@ -697,6 +701,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp progress_status_recorded?(progress_events, expected_status) do
     latest_generic_progress_status(progress_events, [expected_status, failed_status(expected_status)]) ==
       expected_status
+  end
+
+  defp current_branch_progress_events(progress_events) do
+    case latest_branch_event_index(progress_events) do
+      nil -> progress_events
+      index -> Enum.drop(progress_events, index + 1)
+    end
+  end
+
+  defp latest_branch_event_index(progress_events) do
+    progress_events
+    |> Enum.with_index()
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      {%ProgressEvent{} = event, index} ->
+        if payload_type?(event, "branch", "attach_branch"), do: index
+
+      _entry ->
+        nil
+    end)
   end
 
   defp latest_generic_progress_status(progress_events, statuses) do
