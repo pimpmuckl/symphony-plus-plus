@@ -19,6 +19,7 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | request_scope_expansion | Request broader scope; does not approve it. |
 | attach_branch | Attach branch metadata with the current branch head SHA. |
 | attach_pr | Attach PR metadata. |
+| sync_pr | Refresh metadata for the already attached PR. |
 | submit_review_package | Attach summary/tests/artifacts for the current head review package. |
 | mark_ready | Move to ready state only if gates pass. |
 

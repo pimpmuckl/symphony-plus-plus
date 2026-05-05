@@ -58,6 +58,12 @@
       "purpose": "Attach PR metadata."
     },
     {
+      "name": "sync_pr",
+      "purpose": "Refresh metadata for the already attached PR.",
+      "required_arguments": ["metadata"],
+      "sync_policy": "sync_pr must target the latest attached PR and must carry the synced head SHA in metadata.head_sha or metadata.head.sha."
+    },
+    {
       "name": "submit_review_package",
       "purpose": "Attach summary/tests/artifacts for the current head review package.",
       "head_policy": "head_sha is required on every submit_review_package call and must match the latest attached branch head.",

@@ -834,6 +834,60 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert payload["metadata"]["pr"]["current_head_sha"] == "abcdef1"
   end
 
+  test "metadata stays scoped to latest attached PR after reattach", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PR-REATTACHED", status: "planning"))
+
+    architect_secret = create_architect_grant_secret(repo, work_package.id)
+
+    assert {:ok, _branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Branch attached",
+               status: "branch_attached",
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "current-head"},
+               created_at: ~U[2026-05-05 00:00:00Z]
+             })
+
+    assert {:ok, _first_pr_sync} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "First PR synced",
+               status: "pr_synced",
+               payload: %{
+                 type: "pr",
+                 source_tool: "sync_pr",
+                 repository: "example/repo",
+                 number: 10,
+                 url: "https://github.com/example/repo/pull/10",
+                 head_sha: "current-head"
+               },
+               created_at: ~U[2026-05-05 00:00:01Z]
+             })
+
+    assert {:ok, _reattached_pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR reattached",
+               status: "pr_attached",
+               payload: %{
+                 type: "pr",
+                 source_tool: "attach_pr",
+                 repository: "example/repo",
+                 number: 11,
+                 url: "https://github.com/example/repo/pull/11",
+                 head_sha: "old-head"
+               },
+               created_at: ~U[2026-05-05 00:00:02Z]
+             })
+
+    payload = json_response(get(auth_conn(architect_secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+
+    assert payload["metadata"]["pr"]["url"] == "https://github.com/example/repo/pull/11"
+    assert payload["metadata"]["pr"]["stale"] == true
+    assert payload["metadata"]["pr"]["current_head_sha"] == "current-head"
+  end
+
   test "unknown policy lookup does not invent merge or review evidence requirements", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(

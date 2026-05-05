@@ -946,12 +946,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end)
   end
 
+  defp metadata_present?(progress_events, "pr", head_sha) when is_binary(head_sha) do
+    case latest_attached_pr_ref(progress_events) do
+      {:ok, attached_ref} ->
+        Enum.any?(progress_events, fn
+          %ProgressEvent{payload: payload} = event when is_map(payload) ->
+            payload_type?(event, "pr", ["attach_pr", "sync_pr"]) and head_sha_matches?(Map.get(payload, "head_sha"), head_sha) and
+              pr_payload_ref(payload) == attached_ref
+
+          %ProgressEvent{} ->
+            false
+        end)
+
+      {:error, :not_found} ->
+        Enum.any?(progress_events, fn
+          %ProgressEvent{payload: payload} = event when is_map(payload) ->
+            payload_type?(event, "pr", ["attach_pr", "sync_pr"]) and head_sha_matches?(Map.get(payload, "head_sha"), head_sha)
+
+          %ProgressEvent{} ->
+            false
+        end)
+    end
+  end
+
   defp metadata_present?(progress_events, type, head_sha) when is_binary(head_sha) do
     tool = metadata_tool(type)
 
     Enum.any?(progress_events, fn
       %ProgressEvent{payload: payload} = event when is_map(payload) ->
-        payload_type?(event, type, tool) and Map.get(payload, "head_sha") == head_sha
+        payload_type?(event, type, tool) and head_sha_matches?(Map.get(payload, "head_sha"), head_sha)
 
       %ProgressEvent{} ->
         false
@@ -992,11 +1015,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp pr_metadata(%{} = pr, :none), do: pr
   defp pr_metadata(%{} = _pr, _head_filter), do: nil
 
-  defp latest_pr_payload(progress_events, :none), do: latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"])
+  defp latest_pr_payload(progress_events, :none) do
+    case latest_attached_pr_ref(progress_events) do
+      {:ok, attached_ref} -> latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], :any, attached_ref)
+      {:error, :not_found} -> latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"])
+    end
+  end
 
   defp latest_pr_payload(progress_events, head_filter) do
-    latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], head_filter) ||
-      latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"])
+    case latest_attached_pr_ref(progress_events) do
+      {:ok, attached_ref} ->
+        latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], head_filter, attached_ref) ||
+          latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], :any, attached_ref)
+
+      {:error, :not_found} ->
+        latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"], head_filter) ||
+          latest_payload(progress_events, "pr", ["attach_pr", "sync_pr"])
+    end
   end
 
   defp latest_current_payload(progress_events, type, source_tool, :none) do
@@ -1021,6 +1056,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       nil -> nil
     end
   end
+
+  defp latest_payload(progress_events, type, source_tool, head_filter, pr_ref) do
+    progress_events
+    |> chronological_progress_events()
+    |> Enum.reverse()
+    |> Enum.find(&(payload_type?(&1, type, source_tool) and payload_head_matches?(&1.payload, head_filter) and pr_payload_ref(&1.payload) == pr_ref))
+    |> case do
+      %ProgressEvent{payload: payload} -> redacted_json(payload || %{})
+      nil -> nil
+    end
+  end
+
+  defp latest_attached_pr_ref(progress_events) do
+    progress_events
+    |> chronological_progress_events()
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      %ProgressEvent{payload: payload} = event when is_map(payload) ->
+        if payload_type?(event, "pr", "attach_pr"), do: pr_payload_ref(payload)
+
+      _event ->
+        nil
+    end)
+    |> case do
+      nil -> {:error, :not_found}
+      ref -> {:ok, ref}
+    end
+  end
+
+  defp pr_payload_ref(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_integer(number), do: {repository, number}
+  defp pr_payload_ref(_payload), do: nil
 
   defp metadata_head_filter(_progress_events, nil), do: :none
 

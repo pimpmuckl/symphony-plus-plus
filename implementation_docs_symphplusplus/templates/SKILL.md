@@ -50,6 +50,8 @@ process aids when the operator explicitly asks for them.
 
 - Attach the implementation branch with `attach_branch(branch, head_sha)`.
 - Attach the PR with `attach_pr(url, head_sha)` after it exists.
+- Refresh the attached PR metadata with `sync_pr(url_or_number, metadata)` when
+  current PR state is required; `sync_pr` must target the already attached PR.
 - Submit review evidence with
   `submit_review_package(summary, tests, artifacts, head_sha)`.
 - Include review lane verdicts in the review package when the package policy
