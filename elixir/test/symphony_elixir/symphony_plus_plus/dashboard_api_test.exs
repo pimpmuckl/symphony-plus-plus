@@ -2285,11 +2285,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end
   end
 
-  test "dashboard API migrates pre-phase ledgers before board phase auth reads phase columns" do
+  test "dashboard board grant auth migrates pre-phase ledgers before phase auth reads phase columns" do
     database_path = WorkPackageFactory.database_path()
 
     try do
-      {_work_package_id, secret} =
+      {_work_package_id, _secret} =
         seed_pre_phase_dashboard_database(database_path,
           work_package_id: "SYMPP-PRE-PHASE-BOARD-AUTH",
           grant_id: "grant-pre-phase-board-auth",
@@ -2303,7 +2303,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
       with_configured_endpoint_database(database_path, fn ->
         assert {:error, :forbidden} = SymppDashboardApiController.authorize_board_grant_id("grant-pre-phase-board-auth")
+      end)
 
+      assert "phase_id" in table_columns(database_path, "sympp_access_grants")
+      assert "phase_id" in table_columns(database_path, "sympp_work_packages")
+    after
+      File.rm(database_path)
+    end
+  end
+
+  test "dashboard API board endpoint migrates pristine pre-phase ledgers before phase auth reads" do
+    database_path = WorkPackageFactory.database_path()
+
+    try do
+      {_work_package_id, secret} =
+        seed_pre_phase_dashboard_database(database_path,
+          work_package_id: "SYMPP-PRE-PHASE-BOARD-ENDPOINT",
+          grant_id: "grant-pre-phase-board-endpoint",
+          grant_role: "architect",
+          capabilities: ["read:phase"],
+          claimed_by: "architect-pre-phase"
+        )
+
+      refute "phase_id" in table_columns(database_path, "sympp_access_grants")
+      refute "phase_id" in table_columns(database_path, "sympp_work_packages")
+
+      with_configured_endpoint_database(database_path, fn ->
         assert %{"error" => %{"code" => "forbidden"}} =
                  json_response(get(auth_conn(secret), "/api/v1/sympp/board"), 403)
       end)
