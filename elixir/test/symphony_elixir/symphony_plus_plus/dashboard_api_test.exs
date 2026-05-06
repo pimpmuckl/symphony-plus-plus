@@ -1277,6 +1277,54 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert scope["active"] == false
     assert scope["severity"] == "info"
     assert [%{"code" => "missing_current_head"}] = scope["reasons"]
+
+    timestamp = ~U[2026-05-05 00:00:00Z]
+    head_sha = "scope-precondition-head"
+
+    assert {:ok, _branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Branch attached",
+               status: "branch_attached",
+               payload: %{"type" => "branch", "source_tool" => "attach_branch", "branch" => "agent/#{work_package.id}", "head_sha" => head_sha},
+               created_at: DateTime.add(timestamp, 1, :second)
+             })
+
+    assert {:ok, _pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR attached",
+               status: "pr_attached",
+               payload: %{"type" => "pr", "source_tool" => "attach_pr", "url" => "https://github.com/nextide/symphony-plus-plus/pull/13", "head_sha" => head_sha},
+               created_at: DateTime.add(timestamp, 2, :second)
+             })
+
+    assert {:ok, _sync} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR synced",
+               status: "pr_synced",
+               payload: %{
+                 "type" => "pr",
+                 "source_tool" => "sync_pr",
+                 "url" => "https://github.com/nextide/symphony-plus-plus/pull/13",
+                 "head_sha" => head_sha,
+                 "base_branch" => "symphony-plus-plus/beta",
+                 "changed_files" => [],
+                 "changed_files_count" => 0,
+                 "changed_files_available" => false
+               },
+               created_at: DateTime.add(timestamp, 3, :second)
+             })
+
+    blocked_payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    blocked_alerts = Map.new(blocked_payload["alert_indicators"], &{&1["type"], &1})
+    blocked_scope = blocked_alerts["scope_drift"]
+
+    assert blocked_scope["active"] == true
+    assert blocked_scope["severity"] == "warning"
+    assert blocked_scope["detail"] == "Scope guard evidence unavailable: changed_files_unavailable"
+    assert [%{"code" => "changed_files_unavailable"}] = blocked_scope["reasons"]
   end
 
   test "detail API exposes stale synced PR metadata without secrets", %{repo: repo} do

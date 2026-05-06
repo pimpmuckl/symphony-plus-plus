@@ -2138,21 +2138,73 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            idempotency_key,
            session.assignment.grant_id
          ) do
-      {:ok, event} -> validate_scope_expansion_approval_event(event)
-      {:error, reason} -> {:error, reason}
+      {:ok, event} ->
+        validate_scope_expansion_approval_event(event, session, arguments, allowed_file_globs, rationale)
+
+      {:error, :not_found} ->
+        with {:ok, event} <- existing_work_package_progress_event(repo, session, idempotency_key) do
+          validate_scope_expansion_approval_event(event, session, arguments, allowed_file_globs, rationale)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
-  defp validate_scope_expansion_approval_event(%ProgressEvent{payload: payload} = event) when is_map(payload) do
-    if Map.get(payload, "type") == "scope_expansion_approval" and
-         Map.get(payload, "source_tool") == "approve_scope_expansion" do
+  defp validate_scope_expansion_approval_event(
+         %ProgressEvent{} = event,
+         %Session{} = session,
+         arguments,
+         allowed_file_globs,
+         rationale
+       ) do
+    with :ok <- scope_expansion_approval_actor_matches?(event, session),
+         :ok <- scope_expansion_approval_payload_matches?(event, arguments, allowed_file_globs, rationale) do
       {:ok, event}
-    else
-      {:error, "invalid_scope_expansion_replay"}
     end
   end
 
-  defp validate_scope_expansion_approval_event(%ProgressEvent{}), do: {:error, "invalid_scope_expansion_replay"}
+  defp scope_expansion_approval_actor_matches?(%ProgressEvent{actor_id: event_actor_id}, %Session{} = session) do
+    current_actor_id = session.assignment.claimed_by
+
+    cond do
+      filled_string?(event_actor_id) and filled_string?(current_actor_id) ->
+        if String.trim(event_actor_id) == String.trim(current_actor_id), do: :ok, else: {:error, :idempotency_conflict}
+
+      filled_string?(event_actor_id) ->
+        {:error, :idempotency_conflict}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp scope_expansion_approval_payload_matches?(
+         %ProgressEvent{summary: summary, body: body, status: status, payload: payload},
+         arguments,
+         allowed_file_globs,
+         rationale
+       )
+       when is_map(payload) do
+    expected_request_id = optional_trimmed_string(arguments, "request_id")
+
+    if summary == "Scope expansion approved" and
+         body == rationale and
+         status == "scope_expansion_approved" and
+         Map.get(payload, "type") == "scope_expansion_approval" and
+         Map.get(payload, "source_tool") == "approve_scope_expansion" and
+         Map.get(payload, "approved") == true and
+         Map.get(payload, "request_id") == expected_request_id and
+         Map.get(payload, "approved_file_globs") == allowed_file_globs do
+      :ok
+    else
+      {:error, :idempotency_conflict}
+    end
+  end
+
+  defp scope_expansion_approval_payload_matches?(%ProgressEvent{}, _arguments, _allowed_file_globs, _rationale) do
+    {:error, :idempotency_conflict}
+  end
 
   defp scope_expansion_approval_result(%WorkPackage{} = work_package, %ProgressEvent{} = event) do
     %{

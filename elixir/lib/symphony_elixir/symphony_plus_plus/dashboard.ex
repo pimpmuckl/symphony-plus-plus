@@ -541,16 +541,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp scope_drift_indicator(%{work_package: %WorkPackage{} = work_package, progress_events: progress_events}) do
     reasons = ScopeGuard.failure_reasons(work_package, progress_events)
     drift_reasons = Enum.filter(reasons, &scope_drift_reason?/1)
-    active? = drift_reasons != []
+    blocked_reasons = Enum.filter(reasons, &scope_guard_blocked_reason?/1)
+    active_reasons = drift_reasons ++ blocked_reasons
+    active? = active_reasons != []
 
     detail =
       cond do
-        active? -> missing_detail(Enum.map(drift_reasons, &Map.get(&1, "code", @scope_guard_gate)))
+        drift_reasons != [] -> missing_detail(Enum.map(drift_reasons, &Map.get(&1, "code", @scope_guard_gate)))
+        blocked_reasons != [] -> "Scope guard evidence unavailable: " <> missing_detail(Enum.map(blocked_reasons, &Map.get(&1, "code", @scope_guard_gate)))
         reasons != [] -> "Scope guard is awaiting required PR metadata"
         true -> "Scope guard satisfied or not required"
       end
 
-    alert_indicator("scope_drift", "Scope guard", if(active?, do: "critical", else: "info"), active?, detail, %{
+    severity =
+      cond do
+        drift_reasons != [] -> "critical"
+        blocked_reasons != [] -> "warning"
+        true -> "info"
+      end
+
+    alert_indicator("scope_drift", "Scope guard", severity, active?, detail, %{
       placeholder: false,
       reasons: reasons
     })
@@ -567,6 +577,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp scope_drift_reason?(_reason), do: false
+
+  defp scope_guard_blocked_reason?(%{"code" => "changed_files_unavailable"}), do: true
+  defp scope_guard_blocked_reason?(_reason), do: false
 
   defp alert_indicator(type, label, severity, active, detail, extra \\ %{}) do
     Map.merge(%{type: type, label: label, severity: severity, active: active, detail: detail}, extra)
