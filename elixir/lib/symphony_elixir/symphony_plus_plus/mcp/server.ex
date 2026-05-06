@@ -1597,17 +1597,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp require_architect_anchor_status_scope(repo, %Session{} = session) do
-    case architect_phase_scope(repo, session) do
-      {:ok, phase_id} -> require_architect_phase_anchor(repo, session, phase_id)
-      {:error, :phase_scope_not_available} -> :ok
+    case architect_anchor_work_package(repo, session) do
+      {:ok, anchor} -> require_anchor_status_phase_scope(repo, session, anchor.phase_id)
+      {:error, :not_found} -> {:error, :phase_scope_not_available}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_anchor_status_phase_scope(repo, %Session{} = session, phase_id) do
+    if explicit_phase_id?(phase_id) do
+      require_child_phase_anchor_status(repo, session)
+    else
+      :ok
+    end
+  end
+
+  defp require_child_phase_anchor_status(repo, %Session{} = session) do
+    case architect_child_phase_anchor(repo, session) do
+      {:ok, _phase_id, _anchor} -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
 
   defp require_architect_child_work_package_scope(repo, %Session{} = session, work_package_id) do
-    with {:ok, phase_id} <- architect_phase_scope(repo, session),
-         :ok <- require_architect_phase_anchor(repo, session, phase_id),
-         {:ok, anchor} <- architect_anchor_work_package(repo, session),
+    with {:ok, phase_id, anchor} <- architect_child_phase_anchor(repo, session),
          {:ok, child} <- WorkPackageRepository.get(repo, work_package_id),
          :ok <- require_phase_child_scope(child, anchor, phase_id) do
       {:ok, child}
@@ -1676,15 +1689,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with :ok <- lock_access_grant(repo, session.assignment.grant_id),
          {:ok, architect_grant} <- require_live_architect_grant(repo, session),
          :ok <- lock_work_package(repo, Session.work_package_id(session)),
-         {:ok, child} <- require_architect_child_work_package_scope(repo, session, work_package_id),
+         {:ok, phase_id, anchor} <- architect_child_phase_anchor(repo, session, architect_grant),
          {:ok, grant_opts} <- child_worker_grant_opts(template, architect_grant),
-         {:ok, child} <- require_child_ready_for_mint(repo, child),
+         {:ok, child} <- require_child_ready_for_mint(repo, work_package_id),
+         :ok <- require_phase_child_scope(child, anchor, phase_id),
          {:ok, minted} <- AccessGrantService.mint_worker_grant(repo, child.id, grant_opts) do
       {:ok, {child, minted}}
     end
   end
 
-  defp require_child_ready_for_mint(repo, %WorkPackage{id: work_package_id}) do
+  defp require_child_ready_for_mint(repo, work_package_id) when is_binary(work_package_id) do
     now = DateTime.utc_now(:microsecond)
 
     query =
@@ -1706,9 +1720,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp child_work_package_attrs(repo, %Session{} = session, package) do
-    with {:ok, phase_id} <- architect_phase_scope(repo, session),
-         :ok <- require_architect_phase_anchor(repo, session, phase_id),
-         {:ok, anchor} <- architect_anchor_work_package(repo, session),
+    with {:ok, phase_id, anchor} <- architect_child_phase_anchor(repo, session),
          :ok <- validate_child_work_package_keys(package),
          {:ok, title} <- required_argument(package, "title"),
          {:ok, acceptance_criteria} <- required_string_list(package, "acceptance_criteria"),
@@ -3071,6 +3083,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp architect_child_phase_anchor(repo, %Session{} = session) do
+    with {:ok, grant} <- require_live_architect_grant(repo, session) do
+      architect_child_phase_anchor(repo, session, grant)
+    end
+  end
+
+  defp architect_child_phase_anchor(repo, %Session{} = session, %AccessGrant{} = grant) do
+    with {:ok, phase_id} <- explicit_grant_phase_id(grant),
+         {:ok, anchor} <- architect_anchor_work_package(repo, session),
+         :ok <- require_frozen_anchor_scope(anchor, grant) do
+      {:ok, phase_id, anchor}
+    else
+      {:error, :not_found} -> {:error, :phase_scope_not_available}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp explicit_grant_phase_id(%AccessGrant{phase_id: phase_id}) when is_binary(phase_id) and phase_id != "", do: {:ok, phase_id}
+  defp explicit_grant_phase_id(%AccessGrant{}), do: {:error, :phase_scope_not_available}
+
   defp require_architect_phase_anchor(repo, %Session{} = session, phase_id) when is_atom(repo) and is_binary(phase_id) do
     with {:ok, grant} <- require_live_architect_grant(repo, session),
          {:ok, anchor} <- architect_anchor_work_package(repo, session) do
@@ -3098,6 +3130,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     do: true
 
   defp architect_explicit_phase_grant?(%AccessGrant{}), do: false
+
+  defp explicit_phase_id?(phase_id) when is_binary(phase_id), do: String.trim(phase_id) != ""
+  defp explicit_phase_id?(_phase_id), do: false
 
   defp require_frozen_anchor_scope(%WorkPackage{} = anchor, %AccessGrant{} = grant) do
     if grant.phase_id == anchor.phase_id and grant.scope_repo == anchor.repo and grant.scope_base_branch == anchor.base_branch do
