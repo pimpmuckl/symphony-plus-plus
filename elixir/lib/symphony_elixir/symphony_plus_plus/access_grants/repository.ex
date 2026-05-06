@@ -245,8 +245,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
 
   defp architect_phase_grant?(%Changeset{} = changeset) do
     Changeset.get_field(changeset, :grant_role) == "architect" and
-      "read:phase" in Changeset.get_field(changeset, :capabilities, [])
+      explicit_phase_id?(Changeset.get_field(changeset, :phase_id))
   end
+
+  defp explicit_phase_id?(phase_id) when is_binary(phase_id), do: String.trim(phase_id) != ""
+  defp explicit_phase_id?(_phase_id), do: false
 
   defp validate_phase_anchor_phase(repo, changeset, phase_id) do
     case PhaseRepository.get(repo, phase_id) do

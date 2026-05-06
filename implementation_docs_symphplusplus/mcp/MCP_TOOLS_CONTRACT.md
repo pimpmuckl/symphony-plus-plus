@@ -54,17 +54,18 @@ use worker package read/write tools. Existing lifecycle capabilities such as
 P3-003 requires the explicit MCP capability strings listed in the permission
 model. Phase-dependent architect tools revalidate the grant's explicit phase
 scope plus the anchor repo/base-branch scope frozen when the phase architect
-grant was minted, or the current explicit phase of the grant's anchor package
-for legacy null-`phase_id` grants, before acting. `create_child_work_package`
-always creates a `phase_child` package under the architect phase anchor, rejects
-mismatched `phase_id`, `parent_id`, `repo`, or `base_branch`, inherits the anchor
-base branch because there is no separate phase base-branch policy field, and
-revalidates anchor scope in the insert transaction. It does not support
-context-slice input in this contract. `mint_child_worker_key` only mints
-single-package worker grants for same-phase child packages; the minted worker
-grant cannot include architect capabilities, cannot include capabilities outside
-the child worker capability set, and cannot outlive the transaction-current
-architect grant.
+grant was minted. Legacy null-`phase_id` grants may still derive the current
+explicit anchor phase for non-delegation phase reads, but P7 child
+delegation/status operations fail closed when the frozen repo/base-branch
+snapshot is missing. `create_child_work_package` always creates a `phase_child`
+package under the architect phase anchor, rejects mismatched `phase_id`,
+`parent_id`, `repo`, or `base_branch`, inherits the anchor base branch because
+there is no separate phase base-branch policy field, and revalidates anchor
+scope in the insert transaction. It does not support context-slice input in this
+contract. `mint_child_worker_key` only mints single-package worker grants for
+same-phase child packages; the minted worker grant cannot include architect
+capabilities, cannot include capabilities outside the child worker capability
+set, and cannot outlive the transaction-current architect grant.
 `read_child_status` requires both `read:child_progress` and
 `read:child_findings` because its summary includes progress, findings, and
 artifact counts. Remaining Phase 7-dependent tools perform authorization first

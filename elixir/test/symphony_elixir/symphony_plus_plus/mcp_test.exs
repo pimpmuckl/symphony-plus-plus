@@ -2795,6 +2795,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert child.allowed_file_globs == ["elixir/lib/symphony_elixir/**"]
   end
 
+  test "phase architect with delegation-only capabilities can create, mint, and read child", %{repo: repo} do
+    {anchor, session, grant} =
+      create_phase_architect_session(repo, "SYMPP-P7-002-DELEGATION-ONLY-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:child_progress",
+        "read:child_findings"
+      ])
+
+    assert grant.phase_id == @architect_phase_id
+    assert grant.scope_repo == anchor.repo
+    assert grant.scope_base_branch == anchor.base_branch
+
+    child_id = create_child_work_package(repo, session, "SYMPP-P7-002-DELEGATION-ONLY-CHILD")
+
+    mint_response =
+      mcp_tool(repo, session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => %{}
+      })
+
+    assert get_in(mint_response, ["result", "structuredContent", "worker_grant", "work_package_id"]) == child_id
+
+    status_response = mcp_tool(repo, session, "read_child_status", %{"work_package_id" => child_id})
+
+    assert get_in(status_response, ["result", "structuredContent", "work_package", "id"]) == child_id
+    assert get_in(status_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_worker"
+  end
+
   test "phase architect cannot create child outside scoped phase or base branch", %{repo: repo} do
     {_anchor, session} =
       create_architect_session(repo, "SYMPP-P7-002-CREATE-SCOPE-ANCHOR", [
@@ -2924,6 +2953,54 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       assert get_in(mint_response, ["error", "data", "reason"]) == "outside_session_scope"
       assert repo.aggregate(AccessGrant, :count) == grants_before
     end
+  end
+
+  test "phase architect child delegation fails closed when frozen scope snapshot is missing", %{repo: repo} do
+    {_anchor, session} =
+      create_architect_session(repo, "SYMPP-P7-002-MISSING-SNAPSHOT-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:child_progress",
+        "read:child_findings",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, session, "SYMPP-P7-002-MISSING-SNAPSHOT-CHILD")
+
+    repo.query!(
+      "UPDATE sympp_access_grants SET scope_repo = NULL, scope_base_branch = NULL WHERE id = ?",
+      [session.assignment.grant_id]
+    )
+
+    create_response =
+      mcp_tool(repo, session, "create_child_work_package", %{
+        "package" => %{
+          "id" => "SYMPP-P7-002-MISSING-SNAPSHOT-NEW-CHILD",
+          "title" => "Missing snapshot child",
+          "acceptance_criteria" => ["Should not be created"]
+        }
+      })
+
+    assert get_in(create_response, ["error", "code"]) == -32_003
+    assert get_in(create_response, ["error", "data", "reason"]) == "outside_session_scope"
+    assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-MISSING-SNAPSHOT-NEW-CHILD")
+
+    grants_before = repo.aggregate(AccessGrant, :count)
+
+    mint_response =
+      mcp_tool(repo, session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => %{}
+      })
+
+    assert get_in(mint_response, ["error", "code"]) == -32_003
+    assert get_in(mint_response, ["error", "data", "reason"]) == "outside_session_scope"
+    assert repo.aggregate(AccessGrant, :count) == grants_before
+
+    status_response = mcp_tool(repo, session, "read_child_status", %{"work_package_id" => child_id})
+
+    assert get_in(status_response, ["error", "code"]) == -32_003
+    assert get_in(status_response, ["error", "data", "reason"]) == "outside_session_scope"
   end
 
   test "phase architect child creation revalidates anchor scope inside insert transaction", %{repo: repo} do
@@ -8539,6 +8616,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   defp review_suite_artifact_id(work_package_id, head_sha) do
     material = [work_package_id, head_sha, "review-suite-result.json"] |> Enum.join(":")
     "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
+  end
+
+  defp create_phase_architect_session(repo, work_package_id, capabilities, overrides \\ []) do
+    phase_id = ensure_architect_phase(repo)
+
+    package_attrs =
+      [
+        id: work_package_id,
+        kind: "mcp",
+        base_branch: "symphony-plus-plus/beta",
+        repo: "nextide/symphony-plus-plus",
+        allowed_file_globs: ["elixir/lib/**"],
+        phase_id: phase_id,
+        status: "planning"
+      ]
+      |> Keyword.merge(overrides)
+      |> WorkPackageFactory.attrs()
+
+    assert {:ok, package} = WorkPackageRepository.create(repo, package_attrs)
+
+    assert {:ok, minted} =
+             AccessGrantService.mint_architect_grant(repo, phase_id,
+               work_package_id: package.id,
+               capabilities: capabilities
+             )
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, minted.work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: minted.grant.secret_hash)
+    assert {:ok, grant} = AccessGrantRepository.get(repo, minted.grant.id)
+
+    {package, session, grant}
   end
 
   defp create_architect_session(repo, work_package_id, capabilities, overrides \\ []) do

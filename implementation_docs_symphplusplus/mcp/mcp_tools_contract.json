@@ -121,7 +121,7 @@
       "purpose": "Phase 7 stub for phase updates; returns phase7_not_implemented after architect authorization."
     }
   ],
-  "architect_authorization_policy": "Architect tools require a live architect grant session and the matching architect capability. Phase architect grants are revalidated against the frozen phase/repo/base-branch anchor scope before phase-dependent actions. Worker grants and architect grants without the required capability are denied. Worker grants cannot be minted with architect-only MCP capabilities.",
+  "architect_authorization_policy": "Architect tools require a live architect grant session and the matching architect capability. Phase architect grants are revalidated against the frozen phase/repo/base-branch anchor scope before phase-dependent actions; P7 child delegation/status operations fail closed if that snapshot is missing. Worker grants and architect grants without the required capability are denied. Worker grants cannot be minted with architect-only MCP capabilities.",
   "architect_discovery_policy": "tools/list advertises architect tools only for already-bound architect sessions and filters them to the live grant capabilities. Stale sessions expose only health and claim_work_key for refresh. Anonymous and worker sessions receive the worker-facing tool surface. Architect sessions may call get_current_assignment and read sympp://assignment/current for scoped assignment introspection, but cannot use worker package read/write tools. Lifecycle capabilities such as architect:lifecycle.transition do not imply MCP architect tool capabilities; explicit MCP capability strings are required.",
   "resources": [
     "sympp://assignment/current",
