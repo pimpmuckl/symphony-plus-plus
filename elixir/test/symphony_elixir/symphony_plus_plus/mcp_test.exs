@@ -5642,6 +5642,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+
+    post_ready_retry_response =
+      attach_tool(repo, architect_session, "approve_scope_expansion", %{
+        "work_package_id" => package.id,
+        "allowed_file_globs" => ["docs/**"],
+        "request_id" => request_id,
+        "rationale" => "Docs contract file is part of the current package."
+      })
+
+    assert get_in(post_ready_retry_response, ["result", "structuredContent", "progress_event", "id"]) == approval_event_id
+    assert get_in(post_ready_retry_response, ["result", "structuredContent", "allowed_file_globs"]) == ["elixir/lib/**", "docs/**"]
+
+    post_ready_new_approval_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "post-ready-new-scope-approval",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "approve_scope_expansion",
+            "arguments" => %{
+              "work_package_id" => package.id,
+              "allowed_file_globs" => ["docs/**", "notes/**"],
+              "request_id" => request_id,
+              "rationale" => "New post-ready scope must not mutate"
+            }
+          }
+        },
+        repo: repo,
+        session: architect_session
+      )
+
+    assert get_in(post_ready_new_approval_response, ["error", "data", "reason"]) == "already_ready"
+
+    assert {:ok, post_ready_package} = WorkPackageRepository.get(repo, package.id)
+    assert post_ready_package.allowed_file_globs == ["elixir/lib/**", "docs/**"]
   end
 
   test "architect approval repairs overbroad existing scope constraints", %{repo: repo} do

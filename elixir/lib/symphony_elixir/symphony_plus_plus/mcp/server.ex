@@ -2048,27 +2048,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
            :ok <- lock_work_package(repo, work_package_id),
            {:ok, state} <- PlanningRepository.get_state(repo, work_package_id),
-           :ok <- reject_ready_work_package(state.work_package),
            :ok <- require_scope_guard_package(state.work_package),
-           {:ok, effective_globs} <- ScopeGuard.approve_file_globs(state.work_package, allowed_file_globs),
-           {:ok, updated_work_package} <- WorkPackageRepository.update(repo, work_package_id, %{"allowed_file_globs" => effective_globs}),
-           {:ok, event} <-
-             PlanningRepository.append_audit_progress_event(
+           {:ok, result} <-
+             approve_scope_expansion_result(
                repo,
-               session.assignment,
-               scope_expansion_approval_attrs(
-                 state.work_package,
-                 updated_work_package,
-                 arguments,
-                 allowed_file_globs,
-                 rationale
-               )
+               session,
+               state.work_package,
+               arguments,
+               allowed_file_globs,
+               rationale
              ) do
-        %{
-          "work_package" => work_package_payload(updated_work_package),
-          "allowed_file_globs" => updated_work_package.allowed_file_globs,
-          "progress_event" => progress_event_payload(event)
-        }
+        result
       else
         {:tool_error, reason} -> repo.rollback({:tool_error, reason})
         {:error, reason} -> repo.rollback({:error, reason})
@@ -2080,6 +2070,96 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, {:error, reason}} -> {:error, reason}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp approve_scope_expansion_result(
+         repo,
+         %Session{} = session,
+         %WorkPackage{} = work_package,
+         arguments,
+         allowed_file_globs,
+         rationale
+       ) do
+    case existing_scope_expansion_approval(
+           repo,
+           session,
+           work_package.id,
+           arguments,
+           allowed_file_globs,
+           rationale
+         ) do
+      {:ok, event} ->
+        {:ok, scope_expansion_approval_result(work_package, event)}
+
+      {:error, :not_found} ->
+        with :ok <- reject_ready_work_package(work_package),
+             {:ok, effective_globs} <- ScopeGuard.approve_file_globs(work_package, allowed_file_globs),
+             {:ok, updated_work_package} <-
+               WorkPackageRepository.update(repo, work_package.id, %{"allowed_file_globs" => effective_globs}),
+             {:ok, event} <-
+               PlanningRepository.append_audit_progress_event(
+                 repo,
+                 session.assignment,
+                 scope_expansion_approval_attrs(
+                   work_package,
+                   updated_work_package,
+                   arguments,
+                   allowed_file_globs,
+                   rationale
+                 )
+               ) do
+          {:ok, scope_expansion_approval_result(updated_work_package, event)}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp existing_scope_expansion_approval(
+         repo,
+         %Session{} = session,
+         work_package_id,
+         arguments,
+         allowed_file_globs,
+         rationale
+       ) do
+    idempotency_key =
+      scope_expansion_approval_idempotency_key(
+        work_package_id,
+        arguments,
+        allowed_file_globs,
+        rationale
+      )
+
+    case PlanningRepository.get_progress_event_by_idempotency_key(
+           repo,
+           work_package_id,
+           idempotency_key,
+           session.assignment.grant_id
+         ) do
+      {:ok, event} -> validate_scope_expansion_approval_event(event)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_scope_expansion_approval_event(%ProgressEvent{payload: payload} = event) when is_map(payload) do
+    if Map.get(payload, "type") == "scope_expansion_approval" and
+         Map.get(payload, "source_tool") == "approve_scope_expansion" do
+      {:ok, event}
+    else
+      {:error, "invalid_scope_expansion_replay"}
+    end
+  end
+
+  defp validate_scope_expansion_approval_event(%ProgressEvent{}), do: {:error, "invalid_scope_expansion_replay"}
+
+  defp scope_expansion_approval_result(%WorkPackage{} = work_package, %ProgressEvent{} = event) do
+    %{
+      "work_package" => work_package_payload(work_package),
+      "allowed_file_globs" => Map.get(event.payload || %{}, "allowed_file_globs", work_package.allowed_file_globs),
+      "progress_event" => progress_event_payload(event)
+    }
   end
 
   defp require_scope_guard_package(%WorkPackage{} = work_package) do
@@ -2101,24 +2181,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       }
       |> Map.reject(fn {_key, value} -> is_nil(value) end)
 
-    idempotency_payload =
-      %{
-        "type" => "scope_expansion_approval",
-        "source_tool" => "approve_scope_expansion",
-        "work_package_id" => previous_work_package.id,
-        "request_id" => request_id,
-        "approved_file_globs" => allowed_file_globs,
-        "rationale" => rationale
-      }
-      |> Map.reject(fn {_key, value} -> is_nil(value) end)
-
     %{
       "summary" => "Scope expansion approved",
       "body" => rationale,
       "status" => "scope_expansion_approved",
-      "idempotency_key" => metadata_idempotency_key(idempotency_payload),
+      "idempotency_key" =>
+        scope_expansion_approval_idempotency_key(
+          previous_work_package.id,
+          arguments,
+          allowed_file_globs,
+          rationale
+        ),
       "payload" => payload
     }
+  end
+
+  defp scope_expansion_approval_idempotency_key(
+         work_package_id,
+         arguments,
+         allowed_file_globs,
+         rationale
+       ) do
+    request_id = optional_trimmed_string(arguments, "request_id")
+
+    %{
+      "type" => "scope_expansion_approval",
+      "source_tool" => "approve_scope_expansion",
+      "work_package_id" => work_package_id,
+      "request_id" => request_id,
+      "approved_file_globs" => allowed_file_globs,
+      "rationale" => rationale
+    }
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
+    |> metadata_idempotency_key()
   end
 
   defp optional_trimmed_string(arguments, key) do
