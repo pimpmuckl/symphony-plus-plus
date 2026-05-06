@@ -8,6 +8,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
+  alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
@@ -27,6 +29,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
   setup %{repo: repo} do
     repo.delete_all(AccessGrant)
     repo.delete_all(WorkPackage)
+    repo.delete_all(Phase)
     :ok
   end
 
@@ -229,6 +232,89 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
 
       assert "worker grants cannot include architect capabilities" in errors_on(changeset).capabilities
     end
+  end
+
+  test "architect read phase grants require phase scope", %{repo: repo} do
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
+    work_key = WorkKey.generate()
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Repository.create(repo, %{
+               work_package_id: work_package.id,
+               display_key: work_key.display_key,
+               secret_hash: WorkKey.secret_hash(work_key.secret),
+               grant_role: "architect",
+               capabilities: ["read:phase"],
+               expires_at: DateTime.add(DateTime.utc_now(:microsecond), 60, :second)
+             })
+
+    assert "architect read phase grants require phase scope" in errors_on(changeset).phase_id
+  end
+
+  test "architect read phase grants require a work package anchor", %{repo: repo} do
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-grant-missing-anchor", title: "Grant anchor"})
+    work_key = WorkKey.generate()
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Repository.create(repo, %{
+               phase_id: phase.id,
+               display_key: work_key.display_key,
+               secret_hash: WorkKey.secret_hash(work_key.secret),
+               grant_role: "architect",
+               capabilities: ["read:phase"],
+               expires_at: DateTime.add(DateTime.utc_now(:microsecond), 60, :second)
+             })
+
+    assert "architect read phase grants require work package anchor" in errors_on(changeset).work_package_id
+  end
+
+  test "architect read phase grants require an anchor package inside the phase", %{repo: repo} do
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-grant-anchor", title: "Grant anchor"})
+    assert {:ok, other_phase} = PhaseRepository.create(repo, %{id: "phase-grant-other", title: "Other phase"})
+
+    assert {:ok, other_child} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-GRANT-OTHER", kind: "phase_child", phase_id: other_phase.id)
+             )
+
+    work_key = WorkKey.generate()
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Repository.create(repo, %{
+               work_package_id: other_child.id,
+               phase_id: phase.id,
+               display_key: work_key.display_key,
+               secret_hash: WorkKey.secret_hash(work_key.secret),
+               grant_role: "architect",
+               capabilities: ["read:phase"],
+               expires_at: DateTime.add(DateTime.utc_now(:microsecond), 60, :second)
+             })
+
+    assert "must belong to architect phase" in errors_on(changeset).work_package_id
+  end
+
+  test "architect read phase grants report missing phase scope as a changeset error", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-GRANT-MISSING-PHASE", kind: "phase_child")
+             )
+
+    work_key = WorkKey.generate()
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Repository.create(repo, %{
+               work_package_id: work_package.id,
+               phase_id: "phase-missing",
+               display_key: work_key.display_key,
+               secret_hash: WorkKey.secret_hash(work_key.secret),
+               grant_role: "architect",
+               capabilities: ["read:phase"],
+               expires_at: DateTime.add(DateTime.utc_now(:microsecond), 60, :second)
+             })
+
+    assert "does not exist" in errors_on(changeset).phase_id
   end
 
   test "non-id constraint failures are not reported as duplicate ids", %{repo: repo} do

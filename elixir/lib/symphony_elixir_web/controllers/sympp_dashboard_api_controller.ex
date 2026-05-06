@@ -167,8 +167,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   def board(conn, _params) do
     send_repo_response(conn, fn repo, secret ->
       with {:ok, auth_context} <- auth_context(conn, repo, secret),
-           :ok <- require_global_board(auth_context),
-           {:ok, payload} <- Dashboard.board(repo) do
+           {:ok, payload} <- board_payload(repo, auth_context) do
         json(conn, payload)
       end
     end)
@@ -207,7 +206,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp send_package_response(conn, work_package_id, fetch_fun) do
     send_repo_response(conn, fn repo, secret ->
       with {:ok, auth_context} <- auth_context(conn, repo, secret),
-           :ok <- require_work_package(auth_context, work_package_id),
+           :ok <- require_work_package(repo, auth_context, work_package_id),
            {:ok, payload} <- fetch_fun.(repo, work_package_id) do
         json(conn, scoped_package_payload(auth_context, payload))
       end
@@ -304,7 +303,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp authorize_board_secret(secret) do
     with true <- auth_storage_ready?(secret),
          {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_with_existing_repo(secret),
-         :ok <- require_global_board(auth_context) do
+         :ok <- require_phase_board_with_existing_repo(auth_context) do
       {:ok, grant}
     else
       false -> {:error, :unauthorized}
@@ -316,8 +315,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     if valid_package_route_id?(work_package_id) do
       with true <- auth_storage_ready?(secret),
            {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_with_existing_repo(secret),
-           :ok <- require_work_package(auth_context, work_package_id),
-           :ok <- require_existing_work_package(work_package_id) do
+           :ok <- require_work_package_with_existing_repo(auth_context, work_package_id) do
         {:ok, grant}
       else
         false -> {:error, :unauthorized}
@@ -332,7 +330,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   def authorize_board_grant_id(grant_id) when is_binary(grant_id) do
     with true <- dashboard_storage_present?(),
          {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_grant_id_with_existing_repo(grant_id),
-         :ok <- require_global_board(auth_context) do
+         :ok <- require_phase_board_with_existing_repo(auth_context) do
       {:ok, grant}
     else
       false -> {:error, :unauthorized}
@@ -347,8 +345,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     if valid_package_route_id?(work_package_id) do
       with true <- dashboard_storage_present?(),
            {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- authenticate_grant_id_with_existing_repo(grant_id),
-           :ok <- require_work_package(auth_context, work_package_id),
-           :ok <- require_existing_work_package(work_package_id) do
+           :ok <- require_work_package_with_existing_repo(auth_context, work_package_id) do
         {:ok, grant}
       else
         false -> {:error, :unauthorized}
@@ -383,22 +380,28 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp auth_storage_ready?(secret), do: WorkKey.secret_shape?(secret) and dashboard_storage_present?()
 
   defp authenticate_with_existing_repo(secret) do
-    case with_dashboard_repo(fn repo -> grant_auth_context(repo, secret) end, migrate?: false) do
+    authenticate_existing_repo(fn repo -> grant_auth_context(repo, secret) end)
+  end
+
+  defp authenticate_grant_id_with_existing_repo(grant_id) do
+    authenticate_existing_repo(fn repo -> grant_id_auth_context(repo, grant_id) end)
+  end
+
+  defp authenticate_existing_repo(auth_fun) when is_function(auth_fun, 1) do
+    case with_dashboard_repo(auth_fun, migrate?: false) do
       {:error, {:storage_failed, message}} when is_binary(message) ->
-        if missing_schema_message?(message), do: {:error, :unauthorized}, else: {:error, {:storage_failed, message}}
+        handle_existing_auth_storage_error(auth_fun, message)
 
       result ->
         result
     end
   end
 
-  defp authenticate_grant_id_with_existing_repo(grant_id) do
-    case with_dashboard_repo(fn repo -> grant_id_auth_context(repo, grant_id) end, migrate?: false) do
-      {:error, {:storage_failed, message}} when is_binary(message) ->
-        if missing_schema_message?(message), do: {:error, :unauthorized}, else: {:error, {:storage_failed, message}}
-
-      result ->
-        result
+  defp handle_existing_auth_storage_error(auth_fun, message) do
+    cond do
+      missing_schema_message?(message) -> {:error, :unauthorized}
+      missing_phase_column_message?(message) -> with_dashboard_repo(auth_fun, migrate?: true)
+      true -> {:error, {:storage_failed, message}}
     end
   end
 
@@ -574,30 +577,111 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
-  defp require_global_board({:grant, %AccessGrant{capabilities: capabilities}}), do: require_capability(capabilities, "read:phase")
-
-  defp require_work_package({:grant, %AccessGrant{} = grant}, work_package_id) do
-    cond do
-      has_capability?(grant.capabilities, "read:phase") -> :ok
-      grant.grant_role == "worker" and grant.work_package_id == work_package_id -> :ok
-      has_capability?(grant.capabilities, "read:package") and grant.work_package_id == work_package_id -> :ok
-      true -> {:error, :forbidden}
+  defp board_payload(repo, {:grant, %AccessGrant{} = grant} = auth_context) do
+    with :ok <- require_phase_board(repo, auth_context),
+         {:ok, phase_id} <- phase_scope(repo, grant) do
+      Dashboard.phase_board(repo, phase_id)
     end
   end
 
-  defp require_existing_work_package(work_package_id) when is_binary(work_package_id) do
-    with_dashboard_repo(
-      fn repo ->
-        case WorkPackageRepository.get(repo, work_package_id) do
-          {:ok, _work_package} -> :ok
-          {:error, reason} -> {:error, reason}
-        end
-      end,
-      migrate?: false
-    )
+  defp require_phase_board(repo, {:grant, %AccessGrant{capabilities: capabilities} = grant}) do
+    with :ok <- require_capability(capabilities, "read:phase"),
+         {:ok, phase_id} <- phase_scope(repo, grant) do
+      require_architect_phase_anchor(repo, grant, phase_id)
+    end
   end
 
-  defp require_existing_work_package(_work_package_id), do: {:error, :not_found}
+  defp require_phase_board_with_existing_repo(auth_context) do
+    phase_board_auth_fun = fn repo -> require_phase_board(repo, auth_context) end
+
+    retry_existing_phase_column_read(phase_board_auth_fun)
+  end
+
+  defp retry_existing_phase_column_read(auth_fun) when is_function(auth_fun, 1) do
+    case with_dashboard_repo(auth_fun, migrate?: false) do
+      {:error, {:storage_failed, message}} when is_binary(message) ->
+        handle_existing_phase_column_storage_error(auth_fun, message)
+
+      result ->
+        result
+    end
+  end
+
+  defp handle_existing_phase_column_storage_error(auth_fun, message) do
+    if missing_phase_column_message?(message) do
+      with_dashboard_repo(auth_fun, migrate?: true)
+    else
+      {:error, {:storage_failed, message}}
+    end
+  end
+
+  defp require_work_package(repo, {:grant, %AccessGrant{} = grant}, work_package_id) do
+    cond do
+      has_capability?(grant.capabilities, "read:phase") ->
+        require_phase_work_package(repo, grant, work_package_id)
+
+      grant.grant_role == "worker" and grant.work_package_id == work_package_id ->
+        require_existing_work_package(repo, work_package_id)
+
+      has_capability?(grant.capabilities, "read:package") and grant.work_package_id == work_package_id ->
+        require_existing_work_package(repo, work_package_id)
+
+      true ->
+        {:error, :forbidden}
+    end
+  end
+
+  defp require_work_package_with_existing_repo(auth_context, work_package_id) when is_binary(work_package_id) do
+    work_package_auth_fun = fn repo -> require_work_package(repo, auth_context, work_package_id) end
+
+    retry_existing_phase_column_read(work_package_auth_fun)
+  end
+
+  defp require_work_package_with_existing_repo(_auth_context, _work_package_id), do: {:error, :not_found}
+
+  defp require_existing_work_package(repo, work_package_id) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, _work_package} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_phase_work_package(repo, %AccessGrant{} = grant, work_package_id) do
+    with {:ok, phase_id} <- phase_scope(repo, grant),
+         :ok <- require_architect_phase_anchor(repo, grant, phase_id),
+         {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id) do
+      if work_package.phase_id == phase_id do
+        :ok
+      else
+        {:error, :forbidden}
+      end
+    end
+  end
+
+  defp require_architect_phase_anchor(repo, %AccessGrant{work_package_id: work_package_id}, phase_id)
+       when is_binary(work_package_id) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, %{phase_id: ^phase_id}} -> :ok
+      {:ok, _work_package} -> {:error, :forbidden}
+      {:error, _reason} -> {:error, :forbidden}
+    end
+  end
+
+  defp require_architect_phase_anchor(_repo, %AccessGrant{}, _phase_id), do: {:error, :forbidden}
+
+  defp phase_scope(_repo, %AccessGrant{phase_id: phase_id}) when is_binary(phase_id) do
+    if phase_id == "", do: {:error, :forbidden}, else: {:ok, phase_id}
+  end
+
+  defp phase_scope(repo, %AccessGrant{phase_id: nil, work_package_id: work_package_id}) when is_binary(work_package_id) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, %{phase_id: phase_id}} when is_binary(phase_id) and phase_id != "" -> {:ok, phase_id}
+      {:ok, _work_package} -> {:error, :forbidden}
+      {:error, _reason} -> {:error, :forbidden}
+    end
+  end
+
+  defp phase_scope(_repo, %AccessGrant{}), do: {:error, :forbidden}
 
   defp require_capability(capabilities, capability) when is_list(capabilities) do
     if capability in capabilities, do: :ok, else: {:error, :forbidden}
@@ -1181,6 +1265,11 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     message
     |> String.downcase()
     |> String.contains?("no such table")
+  end
+
+  defp missing_phase_column_message?(message) do
+    message = String.downcase(message)
+    String.contains?(message, "no such column") and String.contains?(message, "phase_id")
   end
 
   defp with_dashboard_repo(fun, opts \\ []) when is_function(fun, 1) and is_list(opts) do

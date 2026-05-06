@@ -7,6 +7,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
 
   @type repo :: module()
@@ -34,10 +35,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
 
   @spec create(repo(), map()) :: {:ok, AccessGrant.t()} | {:error, error()}
   def create(repo, attrs) when is_atom(repo) and is_map(attrs) do
-    attrs
-    |> AccessGrant.create_changeset()
-    |> repo.insert()
-    |> normalize_insert_result()
+    changeset = AccessGrant.create_changeset(attrs)
+
+    with {:ok, changeset} <- validate_architect_phase_anchor(repo, changeset) do
+      changeset
+      |> repo.insert()
+      |> normalize_insert_result()
+    end
   rescue
     error in Ecto.ConstraintError -> normalize_constraint_error(error)
   end
@@ -56,6 +60,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
       repo.all(
         from(access_grant in AccessGrant,
           where: access_grant.work_package_id == ^work_package_id,
+          order_by: [asc: access_grant.inserted_at, asc: access_grant.id]
+        )
+      )
+
+    {:ok, grants}
+  end
+
+  @spec list_for_phase(repo(), String.t()) :: {:ok, [AccessGrant.t()]} | {:error, error()}
+  def list_for_phase(repo, phase_id) when is_atom(repo) and is_binary(phase_id) do
+    grants =
+      repo.all(
+        from(access_grant in AccessGrant,
+          where: access_grant.phase_id == ^phase_id,
           order_by: [asc: access_grant.inserted_at, asc: access_grant.id]
         )
       )
@@ -105,6 +122,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
   def validate_work_package(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
     case WorkPackageRepository.get(repo, work_package_id) do
       {:ok, _work_package} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec validate_phase(repo(), String.t()) :: :ok | {:error, error()}
+  def validate_phase(repo, phase_id) when is_atom(repo) and is_binary(phase_id) do
+    case PhaseRepository.get(repo, phase_id) do
+      {:ok, _phase} -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
@@ -169,6 +194,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     %Assignment{
       grant_id: access_grant.id,
       work_package_id: access_grant.work_package_id,
+      phase_id: access_grant.phase_id,
       display_key: access_grant.display_key,
       grant_role: access_grant.grant_role,
       capabilities: access_grant.capabilities,
@@ -196,6 +222,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
       {:error, :id_already_exists}
     else
       {:error, changeset}
+    end
+  end
+
+  defp validate_architect_phase_anchor(_repo, %Changeset{valid?: false} = changeset), do: {:error, changeset}
+
+  defp validate_architect_phase_anchor(repo, %Changeset{} = changeset) do
+    if architect_phase_grant?(changeset) do
+      phase_id = Changeset.get_field(changeset, :phase_id)
+      work_package_id = Changeset.get_field(changeset, :work_package_id)
+
+      with :ok <- validate_phase_anchor_phase(repo, changeset, phase_id),
+           :ok <- validate_phase_anchor_work_package(repo, changeset, work_package_id, phase_id) do
+        {:ok, changeset}
+      else
+        {:error, %Changeset{} = changeset} -> {:error, changeset}
+      end
+    else
+      {:ok, changeset}
+    end
+  end
+
+  defp architect_phase_grant?(%Changeset{} = changeset) do
+    Changeset.get_field(changeset, :grant_role) == "architect" and
+      "read:phase" in Changeset.get_field(changeset, :capabilities, [])
+  end
+
+  defp validate_phase_anchor_phase(repo, changeset, phase_id) do
+    case PhaseRepository.get(repo, phase_id) do
+      {:ok, _phase} -> :ok
+      {:error, :not_found} -> {:error, Changeset.add_error(changeset, :phase_id, "does not exist")}
+      {:error, reason} -> {:error, Changeset.add_error(changeset, :phase_id, inspect(reason))}
+    end
+  end
+
+  defp validate_phase_anchor_work_package(repo, changeset, work_package_id, phase_id) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, %{phase_id: ^phase_id}} -> :ok
+      {:ok, _work_package} -> {:error, Changeset.add_error(changeset, :work_package_id, "must belong to architect phase")}
+      {:error, :not_found} -> {:error, Changeset.add_error(changeset, :work_package_id, "does not exist")}
+      {:error, reason} -> {:error, Changeset.add_error(changeset, :work_package_id, inspect(reason))}
     end
   end
 

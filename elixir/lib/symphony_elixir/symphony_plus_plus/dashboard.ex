@@ -7,6 +7,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
   alias SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
+  alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
+  alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Finding
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
@@ -30,6 +32,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   @spec board(repo()) :: {:ok, map()} | {:error, dashboard_error()}
   def board(repo) when is_atom(repo) do
     safe_read(fn -> build_board(repo) end)
+  end
+
+  @spec phase_board(repo(), String.t()) :: {:ok, map()} | {:error, dashboard_error()}
+  def phase_board(repo, phase_id) when is_atom(repo) and is_binary(phase_id) do
+    safe_read(fn -> build_phase_board(repo, phase_id) end)
   end
 
   @spec detail(repo(), String.t()) :: {:ok, map()} | {:error, dashboard_error()}
@@ -139,6 +146,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            status: work_package.status,
            repo: work_package.repo,
            base_branch: work_package.base_branch,
+           parent_id: work_package.parent_id,
+           phase_id: work_package.phase_id,
            owner_id: work_package.owner_id,
            active_agent_run: latest_active_agent_run(agent_runs),
            runtime: runtime,
@@ -201,6 +210,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       acceptance_criteria: Enum.map(work_package.acceptance_criteria || [], &redacted_text/1),
       status: work_package.status,
       parent_id: work_package.parent_id,
+      phase_id: work_package.phase_id,
       owner_id: work_package.owner_id,
       inserted_at: timestamp(work_package.inserted_at),
       updated_at: timestamp(work_package.updated_at)
@@ -223,6 +233,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
          {:ok, cards} <- cards_for_packages(repo, work_packages) do
       {:ok,
        %{
+         groups: group_cards(cards),
+         statuses: WorkPackage.statuses(),
+         total_count: length(cards)
+       }}
+    end
+  end
+
+  defp build_phase_board(repo, phase_id) do
+    with {:ok, phase} <- PhaseRepository.get(repo, phase_id),
+         {:ok, work_packages} <- WorkPackageRepository.list_for_phase(repo, phase_id),
+         {:ok, cards} <- cards_for_packages(repo, work_packages) do
+      {:ok,
+       %{
+         phase: phase(phase),
          groups: group_cards(cards),
          statuses: WorkPackage.statuses(),
          total_count: length(cards)
@@ -371,6 +395,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     %{
       id: grant.id,
       work_package_id: grant.work_package_id,
+      phase_id: grant.phase_id,
       display_key: grant.display_key,
       grant_role: grant.grant_role,
       capabilities: grant.capabilities || [],
@@ -379,6 +404,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       claimed_at: timestamp(grant.claimed_at),
       claimed_by: grant.claimed_by,
       status: grant_status(grant)
+    }
+  end
+
+  defp phase(%Phase{} = phase) do
+    %{
+      id: phase.id,
+      title: redacted_text(phase.title),
+      description: redacted_text(phase.description),
+      status: phase.status,
+      inserted_at: timestamp(phase.inserted_at),
+      updated_at: timestamp(phase.updated_at)
     }
   end
 

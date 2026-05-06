@@ -13,6 +13,7 @@ defmodule SymphonyElixir.WorkPackageFactory do
       engineering_scope: "Engineering scope",
       acceptance_criteria: ["Create and fetch package"],
       parent_id: nil,
+      phase_id: nil,
       owner_id: "agent-1"
     }
 

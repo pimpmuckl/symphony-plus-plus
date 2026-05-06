@@ -12,6 +12,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
           | :id_already_exists
           | :invalid_status
           | :stale_status
+          | {:constraint_failed, String.t()}
           | {:migration_failed, term()}
           | Changeset.t()
 
@@ -30,7 +31,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
     |> repo.insert()
     |> normalize_insert_result()
   rescue
-    _error in Ecto.ConstraintError -> {:error, :id_already_exists}
+    error in Ecto.ConstraintError -> normalize_constraint_error(error)
   end
 
   @spec get(repo(), String.t()) :: {:ok, WorkPackage.t()} | {:error, error()}
@@ -53,6 +54,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
     {:ok, work_packages}
   end
 
+  @spec list_for_phase(repo(), String.t()) :: {:ok, [WorkPackage.t()]} | {:error, error()}
+  def list_for_phase(repo, phase_id) when is_atom(repo) and is_binary(phase_id) do
+    work_packages =
+      repo.all(
+        from(work_package in WorkPackage,
+          where: work_package.phase_id == ^phase_id,
+          order_by: [asc: work_package.inserted_at, asc: work_package.id]
+        )
+      )
+
+    {:ok, work_packages}
+  end
+
   @spec update(repo(), String.t(), map()) :: {:ok, WorkPackage.t()} | {:error, error()}
   def update(repo, id, attrs) when is_atom(repo) and is_binary(id) and is_map(attrs) do
     with {:ok, work_package} <- get(repo, id) do
@@ -60,6 +74,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
       |> WorkPackage.update_changeset(attrs)
       |> repo.update()
     end
+  rescue
+    error in Ecto.ConstraintError -> normalize_constraint_error(error)
   end
 
   @spec update_status(repo(), String.t(), String.t(), String.t()) :: {:ok, WorkPackage.t()} | {:error, error()}
@@ -112,6 +128,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
       {:id, {_message, options}} -> Keyword.get(options, :constraint) == :unique
       _error -> false
     end)
+  end
+
+  defp normalize_constraint_error(%Ecto.ConstraintError{constraint: "sympp_work_packages_id_unique_index"}) do
+    {:error, :id_already_exists}
+  end
+
+  defp normalize_constraint_error(%Ecto.ConstraintError{constraint: "sympp_work_packages_id_index"}) do
+    {:error, :id_already_exists}
+  end
+
+  defp normalize_constraint_error(%Ecto.ConstraintError{constraint: constraint}) when is_binary(constraint) do
+    {:error, {:constraint_failed, constraint}}
+  end
+
+  defp normalize_constraint_error(%Ecto.ConstraintError{type: type}) do
+    {:error, {:constraint_failed, Atom.to_string(type)}}
   end
 
   defp stale_status_error(repo, id) do

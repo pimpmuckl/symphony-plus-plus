@@ -21,6 +21,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
          %Assignment{
            grant_id: grant.id,
            work_package_id: grant.work_package_id,
+           phase_id: grant.phase_id,
            display_key: grant.display_key,
            grant_role: grant.grant_role,
            capabilities: grant.capabilities,
@@ -36,6 +37,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
   def from_map(attrs) when is_map(attrs) do
     with {:ok, grant_id} <- required_string(attrs, "grant_id"),
          {:ok, work_package_id} <- required_string(attrs, "work_package_id"),
+         {:ok, phase_id} <- optional_string(attrs, "phase_id"),
          {:ok, display_key} <- required_string(attrs, "display_key"),
          {:ok, grant_role} <- required_string(attrs, "grant_role"),
          {:ok, capabilities} <- string_list(attrs, "capabilities"),
@@ -46,6 +48,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
          %Assignment{
            grant_id: grant_id,
            work_package_id: work_package_id,
+           phase_id: phase_id,
            display_key: display_key,
            grant_role: grant_role,
            capabilities: capabilities,
@@ -62,6 +65,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
     %{
       "grant_id" => assignment.grant_id,
       "work_package_id" => assignment.work_package_id,
+      "phase_id" => assignment.phase_id,
       "display_key" => assignment.display_key,
       "grant_role" => assignment.grant_role,
       "capabilities" => assignment.capabilities,
@@ -72,6 +76,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
 
   @spec work_package_id(t()) :: String.t()
   def work_package_id(%__MODULE__{assignment: %Assignment{work_package_id: work_package_id}}), do: work_package_id
+
+  @spec phase_id(t()) :: String.t() | nil
+  def phase_id(%__MODULE__{assignment: %Assignment{phase_id: phase_id}}), do: phase_id
 
   defp format_datetime(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
   defp format_datetime(nil), do: nil
@@ -109,6 +116,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
 
       _value ->
         {:error, {:missing, key}}
+    end
+  end
+
+  defp optional_string(attrs, key) do
+    case Map.get(attrs, key) || Map.get(attrs, String.to_atom(key)) do
+      nil ->
+        {:ok, nil}
+
+      value when is_binary(value) ->
+        if String.trim(value) == "" do
+          {:error, {:blank, key}}
+        else
+          {:ok, value}
+        end
+
+      _value ->
+        {:error, {:invalid, key}}
     end
   end
 

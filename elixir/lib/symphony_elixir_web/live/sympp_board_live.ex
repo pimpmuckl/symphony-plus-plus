@@ -5,6 +5,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.TrackerAdapter
@@ -19,11 +20,13 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   def mount(params, session, socket) do
     board_grant_id = Map.get(session, "sympp_board_grant_id")
     authorization = board_grant_authorization(board_grant_id)
+    board_grant = authorized_grant(authorization)
 
     {:ok,
      socket
      |> assign(:board_grant_id, board_grant_id)
-     |> assign(:authorized?, authorization == :ok)
+     |> assign(:board_grant, board_grant)
+     |> assign(:authorized?, not is_nil(board_grant))
      |> assign(:empty_filter, @empty_filter)
      |> assign(:filters, filters(params))
      |> assign_new(:board, fn -> unauthorized_board(authorization) end)}
@@ -34,12 +37,13 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     socket = assign(socket, :filters, filters(params))
 
     case board_grant_authorization(socket.assigns.board_grant_id) do
-      :ok ->
-        {:noreply, socket |> assign(:authorized?, true) |> assign_board()}
+      {:ok, grant} ->
+        {:noreply, socket |> assign(:board_grant, grant) |> assign(:authorized?, true) |> assign_board()}
 
       {:error, reason} ->
         {:noreply,
          socket
+         |> assign(:board_grant, nil)
          |> assign(:authorized?, false)
          |> assign(:board, unauthorized_board({:error, reason}))}
     end
@@ -168,22 +172,65 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp assign_board(socket) do
-    assign(socket, :board, load_board(socket.assigns.filters))
+    assign(socket, :board, load_board(socket.assigns.filters, socket.assigns.board_grant))
   end
 
   defp board_grant_authorization(grant_id) do
     case SymppDashboardApiController.authorize_board_grant_id(grant_id) do
-      {:ok, _grant} -> :ok
+      {:ok, grant} -> {:ok, grant}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp load_board(filters) do
-    case with_dashboard_repo(&Dashboard.board/1) do
+  defp load_board(filters, %AccessGrant{} = grant) do
+    case with_dashboard_repo(&phase_board_for_grant(&1, grant)) do
       {:ok, payload} -> board_view(payload, filters)
+      {:error, reason} when reason in [:unauthorized, :forbidden] -> unauthorized_board({:error, reason})
       {:error, reason} -> empty_board(error_message(reason))
     end
   end
+
+  defp load_board(_filters, _grant), do: empty_board("Board access expired. Reload and enter a current board work key.")
+
+  defp phase_board_for_grant(repo, %AccessGrant{} = grant) do
+    with {:ok, phase_id} <- phase_scope(repo, grant) do
+      Dashboard.phase_board(repo, phase_id)
+    end
+  end
+
+  defp phase_scope(repo, %AccessGrant{phase_id: phase_id, work_package_id: work_package_id})
+       when is_binary(phase_id) and is_binary(work_package_id) do
+    if phase_id == "" do
+      {:error, :forbidden}
+    else
+      require_anchor_phase(repo, work_package_id, phase_id)
+    end
+  end
+
+  defp phase_scope(repo, %AccessGrant{phase_id: nil, work_package_id: work_package_id}) when is_binary(work_package_id) do
+    anchor_phase_scope(repo, work_package_id)
+  end
+
+  defp phase_scope(_repo, %AccessGrant{}), do: {:error, :forbidden}
+
+  defp require_anchor_phase(repo, work_package_id, phase_id) do
+    case anchor_phase_scope(repo, work_package_id) do
+      {:ok, ^phase_id} -> {:ok, phase_id}
+      {:ok, _other_phase_id} -> {:error, :forbidden}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp anchor_phase_scope(repo, work_package_id) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, %{phase_id: phase_id}} when is_binary(phase_id) and phase_id != "" -> {:ok, phase_id}
+      {:ok, _work_package} -> {:error, :forbidden}
+      {:error, _reason} -> {:error, :forbidden}
+    end
+  end
+
+  defp authorized_grant({:ok, grant}), do: grant
+  defp authorized_grant(_authorization), do: nil
 
   @spec with_dashboard_repo((module() -> {:ok, map()} | {:error, term()})) :: {:ok, map()} | {:error, term()}
   def with_dashboard_repo(fun) when is_function(fun, 1) do
@@ -602,7 +649,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     }
   end
 
-  defp unauthorized_board(:ok), do: empty_board(nil)
+  defp unauthorized_board({:ok, _grant}), do: empty_board(nil)
 
   defp unauthorized_board({:error, reason}) when reason in [:unauthorized, :forbidden] do
     empty_board("Board access expired. Reload and enter a current board work key.")

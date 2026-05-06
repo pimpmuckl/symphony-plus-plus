@@ -15,6 +15,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Server, Session, Stdio}
+  alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
+  alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
@@ -22,6 +24,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
+
+  @architect_phase_id "phase-mcp-architect-test"
 
   defmodule FailingAuthRepo do
     def get(_schema, _id), do: raise(RuntimeError, "ledger unavailable")
@@ -78,6 +82,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     reset_handle_state_store()
     repo.delete_all(AccessGrant)
     repo.delete_all(WorkPackage)
+    repo.delete_all(Phase)
     :ok
   end
 
@@ -2701,21 +2706,71 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(out_of_scope_mint_response, ["error", "code"]) == -32_003
     assert get_in(out_of_scope_mint_response, ["error", "data", "reason"]) == "outside_session_scope"
+  end
 
-    board_response =
+  test "Phase 7 architect stubs revalidate phase anchors before not-implemented", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-STUB-DRIFT", kind: "mcp"))
+    assert {:ok, other_phase} = PhaseRepository.create(repo, %{id: "phase-mcp-stub-drift", title: "Stub drift"})
+
+    assert {:ok, architect_work_key} =
+             create_architect_work_key(repo, package.id, ["mint:child_worker_key", "read:phase", "revoke:child_worker_key"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+
+    revoke_response =
       MCPHarness.request(
         %{
           "jsonrpc" => "2.0",
-          "id" => "phase-board",
+          "id" => "revoke-child-stub",
           "method" => "tools/call",
-          "params" => %{"name" => "read_phase_board", "arguments" => %{"phase_id" => "phase-1"}}
+          "params" => %{
+            "name" => "revoke_child_worker_key",
+            "arguments" => %{"grant_id" => "grant-placeholder", "reason" => "drift check"}
+          }
         },
         repo: repo,
         session: session
       )
 
-    assert get_in(board_response, ["error", "code"]) == -32_604
-    assert get_in(board_response, ["error", "data", "phase"]) == "Phase 7"
+    assert get_in(revoke_response, ["error", "data", "reason"]) == "phase7_not_implemented"
+
+    assert {:ok, _package} = WorkPackageRepository.update(repo, package.id, %{phase_id: other_phase.id})
+
+    stale_revoke_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "revoke-child-stale",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "revoke_child_worker_key",
+            "arguments" => %{"grant_id" => "grant-placeholder", "reason" => "drift check"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(stale_revoke_response, ["error", "code"]) == -32_003
+    assert get_in(stale_revoke_response, ["error", "data", "reason"]) == "outside_session_scope"
+
+    stale_mint_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "mint-child-stale-anchor",
+          "method" => "tools/call",
+          "params" => %{"name" => "mint_child_worker_key", "arguments" => %{"work_package_id" => package.id, "template" => %{}}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(stale_mint_response, ["error", "code"]) == -32_003
+    assert get_in(stale_mint_response, ["error", "data", "reason"]) == "outside_session_scope"
   end
 
   test "Phase 7 architect stubs validate required arguments before not-implemented", %{repo: repo} do
@@ -7569,17 +7624,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   defp create_architect_work_key(repo, work_package_id, capabilities \\ ["architect:lifecycle.transition"]) do
     now = DateTime.utc_now(:microsecond)
     work_key = WorkKey.generate()
+    phase_id = phase_id_for_architect_grant(repo, work_package_id, capabilities)
 
-    with {:ok, _grant} <-
-           AccessGrantRepository.create(repo, %{
-             work_package_id: work_package_id,
-             display_key: work_key.display_key,
-             secret_hash: WorkKey.secret_hash(work_key.secret),
-             grant_role: "architect",
-             capabilities: capabilities,
-             expires_at: DateTime.add(now, 86_400, :second)
-           }) do
+    attrs = %{
+      work_package_id: work_package_id,
+      display_key: work_key.display_key,
+      secret_hash: WorkKey.secret_hash(work_key.secret),
+      grant_role: "architect",
+      capabilities: capabilities,
+      expires_at: DateTime.add(now, 86_400, :second)
+    }
+
+    attrs = if phase_id, do: Map.put(attrs, :phase_id, phase_id), else: attrs
+
+    with {:ok, _grant} <- AccessGrantRepository.create(repo, attrs) do
       {:ok, work_key}
+    end
+  end
+
+  defp phase_id_for_architect_grant(repo, work_package_id, capabilities) do
+    if "read:phase" in capabilities do
+      phase_id = ensure_architect_phase(repo)
+      assert {:ok, _work_package} = WorkPackageRepository.update(repo, work_package_id, %{phase_id: phase_id})
+      phase_id
+    end
+  end
+
+  defp ensure_architect_phase(repo) do
+    case PhaseRepository.get(repo, @architect_phase_id) do
+      {:ok, phase} ->
+        phase.id
+
+      {:error, :not_found} ->
+        assert {:ok, phase} = PhaseRepository.create(repo, %{id: @architect_phase_id, title: "MCP architect test phase"})
+        phase.id
     end
   end
 
