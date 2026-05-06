@@ -2942,6 +2942,56 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-GLOB-BROADENING")
   end
 
+  test "phase architect child glob scope rejects encoded backslash traversal", %{repo: repo} do
+    {_anchor, session} =
+      create_architect_session(
+        repo,
+        "SYMPP-P7-002-ENCODED-BACKSLASH-ANCHOR",
+        ["create:child_work_package", "read:phase"],
+        allowed_file_globs: ["elixir/**"]
+      )
+
+    response =
+      mcp_tool(repo, session, "create_child_work_package", %{
+        "package" => %{
+          "id" => "SYMPP-P7-002-GLOB-ENCODED-BACKSLASH-TRAVERSAL",
+          "title" => "Encoded backslash traversal child",
+          "allowed_file_globs" => ["elixir/lib%5c..%5cpriv/**"],
+          "acceptance_criteria" => ["Should not be created"]
+        }
+      })
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "reason"]) == "path_traversal_allowed_file_globs"
+
+    assert {:error, :not_found} =
+             WorkPackageRepository.get(repo, "SYMPP-P7-002-GLOB-ENCODED-BACKSLASH-TRAVERSAL")
+  end
+
+  test "phase architect child glob scope rejects child double-star missing required anchor suffix", %{repo: repo} do
+    {_anchor, session} =
+      create_architect_session(
+        repo,
+        "SYMPP-P7-002-GLOB-SUFFIX-ANCHOR",
+        ["create:child_work_package", "read:phase"],
+        allowed_file_globs: ["foo/**/bar"]
+      )
+
+    response =
+      mcp_tool(repo, session, "create_child_work_package", %{
+        "package" => %{
+          "id" => "SYMPP-P7-002-GLOB-MISSING-SUFFIX",
+          "title" => "Missing suffix child",
+          "allowed_file_globs" => ["foo/**"],
+          "acceptance_criteria" => ["Should not be created"]
+        }
+      })
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "reason"]) == "child_scope_outside_phase"
+    assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-GLOB-MISSING-SUFFIX")
+  end
+
   test "phase architect can narrow wildcard child globs inside wildcard anchor globs", %{repo: repo} do
     {_anchor, session} =
       create_architect_session(

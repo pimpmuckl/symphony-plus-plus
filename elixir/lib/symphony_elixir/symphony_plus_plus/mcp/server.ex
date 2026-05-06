@@ -1782,6 +1782,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp glob_segments_within?([], []), do: true
+  defp glob_segments_within?([], _anchor_segments), do: false
   defp glob_segments_within?(_child_segments, []), do: false
   defp glob_segments_within?(child_segments, ["**"]), do: not Enum.any?(child_segments, &traversal_segment?/1)
 
@@ -1981,19 +1982,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       segment in [".", ".."] ->
         true
 
-      segment |> String.split("/", trim: true) |> Enum.any?(&(&1 in [".", ".."])) ->
+      segment |> path_separator_segments() |> Enum.any?(&(&1 in [".", ".."])) ->
         true
 
       depth >= 3 ->
         false
 
       true ->
-        decoded_segment = URI.decode(segment)
+        decoded_segment = segment |> URI.decode() |> String.replace("\\", "/")
 
         decoded_segment != segment and traversal_segment?(decoded_segment, depth + 1)
     end
   rescue
     ArgumentError -> false
+  end
+
+  defp path_separator_segments(segment) do
+    segment
+    |> String.replace("\\", "/")
+    |> String.split("/", trim: true)
   end
 
   defp blank_default(value, default) do
