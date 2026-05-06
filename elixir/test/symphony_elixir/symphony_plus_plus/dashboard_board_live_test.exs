@@ -875,6 +875,133 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     refute html =~ "0 packages"
   end
 
+  test "browser board renders legacy null phase grants from their current anchor phase" do
+    assert {:ok, phase} = PhaseRepository.create(Repo, %{id: "phase-live-legacy", title: "Live legacy"})
+
+    anchor =
+      create_board_package(%{
+        id: "SYMPP-LIVE-LEGACY-ANCHOR",
+        kind: "dashboard",
+        status: "implementing",
+        title: "Legacy anchor board package",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "symphony-plus-plus/beta"
+      })
+
+    sibling =
+      create_board_package(%{
+        id: "SYMPP-LIVE-LEGACY-SIBLING",
+        kind: "dashboard",
+        status: "planning",
+        title: "Legacy sibling board package",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "symphony-plus-plus/beta"
+      })
+
+    assert {:ok, _anchor} = WorkPackageRepository.update(Repo, anchor.id, %{phase_id: phase.id})
+    assert {:ok, _sibling} = WorkPackageRepository.update(Repo, sibling.id, %{phase_id: phase.id})
+
+    secret = create_legacy_phase_grant_secret(Repo, anchor.id, "grant-live-legacy-anchor")
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/board")
+
+    assert html =~ "Legacy anchor board package"
+    assert html =~ "Legacy sibling board package"
+    refute html =~ "Board access expired"
+  end
+
+  test "browser board legacy null grant follows the anchor current explicit phase" do
+    assert {:ok, old_phase} = PhaseRepository.create(Repo, %{id: "phase-live-legacy-old", title: "Old legacy"})
+    assert {:ok, current_phase} = PhaseRepository.create(Repo, %{id: "phase-live-legacy-current", title: "Current legacy"})
+
+    anchor =
+      create_board_package(%{
+        id: "SYMPP-LIVE-LEGACY-MOVED",
+        kind: "dashboard",
+        status: "implementing",
+        title: "Moved legacy anchor",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "symphony-plus-plus/beta"
+      })
+
+    old_sibling =
+      create_board_package(%{
+        id: "SYMPP-LIVE-LEGACY-OLD-SIBLING",
+        kind: "dashboard",
+        status: "planning",
+        title: "Old phase sibling",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "symphony-plus-plus/beta"
+      })
+
+    current_sibling =
+      create_board_package(%{
+        id: "SYMPP-LIVE-LEGACY-CURRENT-SIBLING",
+        kind: "dashboard",
+        status: "blocked",
+        title: "Current phase sibling",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "symphony-plus-plus/beta"
+      })
+
+    assert {:ok, _anchor} = WorkPackageRepository.update(Repo, anchor.id, %{phase_id: old_phase.id})
+    assert {:ok, _old_sibling} = WorkPackageRepository.update(Repo, old_sibling.id, %{phase_id: old_phase.id})
+    assert {:ok, _current_sibling} = WorkPackageRepository.update(Repo, current_sibling.id, %{phase_id: current_phase.id})
+
+    secret = create_legacy_phase_grant_secret(Repo, anchor.id, "grant-live-legacy-current")
+    conn = board_session_conn(secret)
+
+    assert {:ok, _moved_anchor} = WorkPackageRepository.update(Repo, anchor.id, %{phase_id: current_phase.id})
+
+    {:ok, _view, html} = live(conn, "/sympp/board")
+
+    assert html =~ "Moved legacy anchor"
+    assert html =~ "Current phase sibling"
+    refute html =~ "Old phase sibling"
+    refute html =~ "Board access expired"
+  end
+
+  test "browser board denies legacy null phase grants with unphased anchors" do
+    anchor =
+      create_board_package(%{
+        id: "SYMPP-LIVE-LEGACY-UNPHASED",
+        kind: "dashboard",
+        status: "implementing",
+        title: "Unphased legacy anchor",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "symphony-plus-plus/beta"
+      })
+
+    secret = create_legacy_phase_grant_secret(Repo, anchor.id, "grant-live-legacy-unphased")
+    conn = post(build_conn(), "/sympp/board/session", %{"work_key" => secret})
+
+    assert response(conn, 403) =~ "Board access"
+    assert response(conn, 403) =~ "not allowed"
+  end
+
+  test "browser board denies explicit phase grants after their anchor leaves the phase" do
+    assert {:ok, other_phase} = PhaseRepository.create(Repo, %{id: "phase-live-explicit-other", title: "Other explicit"})
+
+    anchor =
+      create_board_package(%{
+        id: "SYMPP-LIVE-EXPLICIT-ANCHOR",
+        kind: "dashboard",
+        status: "implementing",
+        title: "Explicit anchor board package",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "symphony-plus-plus/beta"
+      })
+
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    conn = board_session_conn(secret)
+
+    assert {:ok, _moved_anchor} = WorkPackageRepository.update(Repo, anchor.id, %{phase_id: other_phase.id})
+
+    conn = get(conn, "/sympp/board")
+
+    assert response(conn, 403) =~ "Board access"
+    refute response(conn, 403) =~ "Explicit anchor board package"
+  end
+
   test "browser board session trims pasted work keys" do
     create_board_package(%{
       id: "SYMPP-P5-025",
@@ -1126,6 +1253,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
              AccessGrantRepository.claim(repo, work_key.secret, %{claimed_by: claimed_by}, DateTime.utc_now(:microsecond))
 
     assert grant.display_key == work_key.display_key
+    work_key.secret
+  end
+
+  defp create_legacy_phase_grant_secret(repo, work_package_id, grant_id) do
+    now = DateTime.utc_now(:microsecond)
+    work_key = WorkKey.generate()
+
+    repo.insert!(%AccessGrant{
+      id: grant_id,
+      work_package_id: work_package_id,
+      phase_id: nil,
+      display_key: work_key.display_key,
+      secret_hash: WorkKey.secret_hash(work_key.secret),
+      grant_role: "architect",
+      capabilities: ["read:phase"],
+      expires_at: DateTime.add(now, 3600, :second)
+    })
+
+    assert {:ok, assignment} =
+             AccessGrantRepository.claim(repo, work_key.secret, %{claimed_by: "architect-legacy"}, DateTime.utc_now(:microsecond))
+
+    assert assignment.phase_id == nil
     work_key.secret
   end
 

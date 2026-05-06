@@ -5,6 +5,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.TrackerAdapter
@@ -181,14 +182,35 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     end
   end
 
-  defp load_board(filters, %{phase_id: phase_id}) when is_binary(phase_id) do
-    case with_dashboard_repo(&Dashboard.phase_board(&1, phase_id)) do
+  defp load_board(filters, %AccessGrant{} = grant) do
+    case with_dashboard_repo(&phase_board_for_grant(&1, grant)) do
       {:ok, payload} -> board_view(payload, filters)
+      {:error, reason} when reason in [:unauthorized, :forbidden] -> unauthorized_board({:error, reason})
       {:error, reason} -> empty_board(error_message(reason))
     end
   end
 
   defp load_board(_filters, _grant), do: empty_board("Board access expired. Reload and enter a current board work key.")
+
+  defp phase_board_for_grant(repo, %AccessGrant{} = grant) do
+    with {:ok, phase_id} <- phase_scope(repo, grant) do
+      Dashboard.phase_board(repo, phase_id)
+    end
+  end
+
+  defp phase_scope(_repo, %AccessGrant{phase_id: phase_id}) when is_binary(phase_id) do
+    if phase_id == "", do: {:error, :forbidden}, else: {:ok, phase_id}
+  end
+
+  defp phase_scope(repo, %AccessGrant{phase_id: nil, work_package_id: work_package_id}) when is_binary(work_package_id) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, %{phase_id: phase_id}} when is_binary(phase_id) and phase_id != "" -> {:ok, phase_id}
+      {:ok, _work_package} -> {:error, :forbidden}
+      {:error, _reason} -> {:error, :forbidden}
+    end
+  end
+
+  defp phase_scope(_repo, %AccessGrant{}), do: {:error, :forbidden}
 
   defp authorized_grant({:ok, grant}), do: grant
   defp authorized_grant(_authorization), do: nil
