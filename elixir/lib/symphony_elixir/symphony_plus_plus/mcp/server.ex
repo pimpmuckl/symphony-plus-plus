@@ -1588,13 +1588,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_architect_child_status_scope(repo, %Session{} = session, work_package_id) do
     if Session.work_package_id(session) == work_package_id do
-      :ok
+      require_architect_anchor_status_scope(repo, session)
     else
       case require_architect_child_work_package_scope(repo, session, work_package_id) do
         {:ok, _child} -> :ok
         {:error, reason} -> {:error, reason}
         {:tool_error, _reason} -> {:error, :phase_scope_not_available}
       end
+    end
+  end
+
+  defp require_architect_anchor_status_scope(repo, %Session{} = session) do
+    case architect_phase_scope(repo, session) do
+      {:ok, phase_id} -> require_architect_phase_anchor(repo, session, phase_id)
+      {:error, :phase_scope_not_available} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -1610,6 +1618,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_phase_child_scope(%WorkPackage{kind: "phase_child", phase_id: phase_id} = child, anchor, phase_id) do
     cond do
+      child.parent_id != anchor.id -> {:error, :phase_scope_not_available}
       child.repo != anchor.repo -> {:tool_error, "repo_scope_mismatch"}
       child.base_branch != anchor.base_branch -> {:tool_error, "base_branch_scope_mismatch"}
       true -> :ok
@@ -1715,11 +1724,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     child_glob = normalize_child_glob(child_glob)
     anchor_glob = normalize_child_glob(anchor_glob)
 
-    if String.ends_with?(anchor_glob, "/**") do
-      anchor_prefix = String.replace_suffix(anchor_glob, "/**", "/")
-      String.starts_with?(child_glob, anchor_prefix)
+    cond do
+      String.ends_with?(anchor_glob, "/**") ->
+        anchor_prefix = String.replace_suffix(anchor_glob, "/**", "/")
+        String.starts_with?(child_glob, anchor_prefix)
+
+      literal_glob?(child_glob) ->
+        ScopeGuard.glob_match?(anchor_glob, child_glob)
+
+      double_star_subset?(child_glob, anchor_glob) ->
+        true
+
+      true ->
+        false
+    end
+  end
+
+  defp literal_glob?(glob), do: not String.contains?(glob, ["*", "?", "["])
+
+  defp double_star_subset?(child_glob, anchor_glob) do
+    with [anchor_prefix, anchor_suffix] <- String.split(anchor_glob, "**", parts: 2),
+         [child_prefix, child_suffix] <- String.split(child_glob, "**", parts: 2) do
+      String.starts_with?(child_prefix, anchor_prefix) and child_suffix == anchor_suffix
     else
-      false
+      _parts -> false
     end
   end
 

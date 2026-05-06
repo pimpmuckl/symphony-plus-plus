@@ -2745,6 +2745,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-EMPTY-GLOBS")
   end
 
+  test "phase architect can narrow child globs under supported non-prefix anchor globs", %{repo: repo} do
+    {_anchor, session} =
+      create_architect_session(
+        repo,
+        "SYMPP-P7-002-GLOB-ANCHOR",
+        ["create:child_work_package", "read:phase"],
+        allowed_file_globs: ["elixir/**/*.ex"]
+      )
+
+    response =
+      mcp_tool(repo, session, "create_child_work_package", %{
+        "package" => %{
+          "id" => "SYMPP-P7-002-GLOB-CHILD",
+          "title" => "Narrow glob child",
+          "allowed_file_globs" => ["elixir/lib/**/*.ex"],
+          "acceptance_criteria" => ["Child scope stays inside anchor glob"]
+        }
+      })
+
+    assert get_in(response, ["result", "structuredContent", "work_package", "id"]) == "SYMPP-P7-002-GLOB-CHILD"
+    assert {:ok, child} = WorkPackageRepository.get(repo, "SYMPP-P7-002-GLOB-CHILD")
+    assert child.allowed_file_globs == ["elixir/lib/**/*.ex"]
+  end
+
   test "phase architect mints child worker grant and worker is isolated to child package", %{repo: repo} do
     {_anchor, architect_session} =
       create_architect_session(repo, "SYMPP-P7-002-MINT-ANCHOR", [
@@ -2851,12 +2875,57 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(worker_mint_response, ["error", "data", "reason"]) == "architect_grant_required"
   end
 
-  test "phase architect cannot mint child worker key for sibling phase or mismatched base branch", %{repo: repo} do
+  test "phase architect cannot mint or read child worker key for sibling anchor, sibling phase, or mismatched base branch", %{repo: repo} do
     {_anchor, architect_session} =
       create_architect_session(repo, "SYMPP-P7-002-MINT-SCOPE-ANCHOR", [
         "mint:child_worker_key",
+        "read:child_progress",
+        "read:child_findings",
         "read:phase"
       ])
+
+    assert {:ok, sibling_anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-P7-002-MINT-SIBLING-ANCHOR",
+                 kind: "mcp",
+                 phase_id: @architect_phase_id,
+                 base_branch: "symphony-plus-plus/beta",
+                 repo: "nextide/symphony-plus-plus",
+                 status: "planning"
+               )
+             )
+
+    assert {:ok, sibling_anchor_child} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-P7-002-MINT-SIBLING-ANCHOR-CHILD",
+                 kind: "phase_child",
+                 policy_template: "phase_child",
+                 phase_id: @architect_phase_id,
+                 parent_id: sibling_anchor.id,
+                 base_branch: "symphony-plus-plus/beta",
+                 repo: "nextide/symphony-plus-plus",
+                 status: "ready_for_worker"
+               )
+             )
+
+    sibling_anchor_mint_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => sibling_anchor_child.id,
+        "template" => %{}
+      })
+
+    assert get_in(sibling_anchor_mint_response, ["error", "code"]) == -32_003
+    assert get_in(sibling_anchor_mint_response, ["error", "data", "reason"]) == "outside_session_scope"
+
+    sibling_anchor_status_response =
+      mcp_tool(repo, architect_session, "read_child_status", %{"work_package_id" => sibling_anchor_child.id})
+
+    assert get_in(sibling_anchor_status_response, ["error", "code"]) == -32_003
+    assert get_in(sibling_anchor_status_response, ["error", "data", "reason"]) == "outside_session_scope"
 
     assert {:ok, other_phase} = PhaseRepository.create(repo, %{id: "phase-p7-002-mint-outside", title: "Mint outside phase"})
 
@@ -2907,6 +2976,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(wrong_base_response, ["error", "code"]) == -32_602
     assert get_in(wrong_base_response, ["error", "data", "reason"]) == "base_branch_scope_mismatch"
+  end
+
+  test "phase architect read_child_status revalidates phase anchor drift", %{repo: repo} do
+    {anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-READ-DRIFT-ANCHOR", [
+        "read:child_progress",
+        "read:child_findings",
+        "read:phase"
+      ])
+
+    response = mcp_tool(repo, architect_session, "read_child_status", %{"work_package_id" => anchor.id})
+    assert get_in(response, ["result", "structuredContent", "work_package", "id"]) == anchor.id
+
+    assert {:ok, other_phase} = PhaseRepository.create(repo, %{id: "phase-p7-002-read-drift", title: "Read drift"})
+    assert {:ok, _anchor} = WorkPackageRepository.update(repo, anchor.id, %{phase_id: other_phase.id})
+
+    drifted_response = mcp_tool(repo, architect_session, "read_child_status", %{"work_package_id" => anchor.id})
+
+    assert get_in(drifted_response, ["error", "code"]) == -32_003
+    assert get_in(drifted_response, ["error", "data", "reason"]) == "outside_session_scope"
   end
 
   test "remaining Phase 7 architect stubs return explicit not-yet-implemented errors", %{repo: repo} do
@@ -7839,18 +7928,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
-  defp create_architect_session(repo, work_package_id, capabilities) do
+  defp create_architect_session(repo, work_package_id, capabilities, overrides \\ []) do
+    package_attrs =
+      [
+        id: work_package_id,
+        kind: "mcp",
+        base_branch: "symphony-plus-plus/beta",
+        repo: "nextide/symphony-plus-plus",
+        allowed_file_globs: ["elixir/lib/**"],
+        status: "planning"
+      ]
+      |> Keyword.merge(overrides)
+      |> WorkPackageFactory.attrs()
+
     assert {:ok, package} =
              WorkPackageRepository.create(
                repo,
-               WorkPackageFactory.attrs(
-                 id: work_package_id,
-                 kind: "mcp",
-                 base_branch: "symphony-plus-plus/beta",
-                 repo: "nextide/symphony-plus-plus",
-                 allowed_file_globs: ["elixir/lib/**"],
-                 status: "planning"
-               )
+               package_attrs
              )
 
     assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, capabilities)
