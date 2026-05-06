@@ -6,6 +6,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
   alias SymphonyElixir.MCPHarness
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Service, as: PhaseService
@@ -86,6 +87,60 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
     assert get_in(unrelated_response, ["error", "data", "reason"]) == "outside_session_scope"
   end
 
+  test "legacy null phase grant derives MCP scope only from its phased anchor", %{repo: repo} do
+    assert {:ok, phase} = PhaseService.create(repo, %{id: "phase-legacy-anchor", title: "Legacy anchor"})
+    assert {:ok, other_phase} = PhaseService.create(repo, %{id: "phase-legacy-anchor-other", title: "Legacy other"})
+
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-P7-LEGACY-ANCHOR", kind: "phase_child", phase_id: phase.id, status: "planning")
+             )
+
+    assert {:ok, sibling} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-P7-LEGACY-SIBLING", kind: "phase_child", phase_id: phase.id, status: "blocked")
+             )
+
+    assert {:ok, _other_child} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-P7-LEGACY-OTHER", kind: "phase_child", phase_id: other_phase.id, status: "planning")
+             )
+
+    session = legacy_phase_session(repo, anchor.id, "grant-p7-legacy-anchor")
+
+    response = read_phase_board(repo, session, phase.id)
+    anchor_id = anchor.id
+    sibling_id = sibling.id
+
+    assert get_in(response, ["result", "structuredContent", "phase", "id"]) == phase.id
+    assert [%{"id" => ^anchor_id}] = get_in(response, ["result", "structuredContent", "groups", "planning"])
+    assert [%{"id" => ^sibling_id}] = get_in(response, ["result", "structuredContent", "groups", "blocked"])
+
+    unrelated_response = read_phase_board(repo, session, other_phase.id)
+
+    assert get_in(unrelated_response, ["error", "code"]) == -32_003
+    assert get_in(unrelated_response, ["error", "data", "reason"]) == "outside_session_scope"
+  end
+
+  test "legacy null phase grant with unphased anchor is denied MCP phase board", %{repo: repo} do
+    assert {:ok, phase} = PhaseService.create(repo, %{id: "phase-legacy-unphased", title: "Legacy unphased"})
+
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-P7-LEGACY-UNPHASED", kind: "hotfix", parent_id: nil, phase_id: nil)
+             )
+
+    session = legacy_phase_session(repo, anchor.id, "grant-p7-legacy-unphased")
+    response = read_phase_board(repo, session, phase.id)
+
+    assert get_in(response, ["error", "code"]) == -32_003
+    assert get_in(response, ["error", "data", "reason"]) == "outside_session_scope"
+  end
+
   test "architect grant is denied phase board after its anchor leaves the phase", %{repo: repo} do
     assert {:ok, phase} = PhaseService.create(repo, %{id: "phase-anchor-drift", title: "Anchor drift"})
     assert {:ok, other_phase} = PhaseService.create(repo, %{id: "phase-anchor-drift-other", title: "Other phase"})
@@ -108,6 +163,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
 
     assert get_in(drifted_response, ["error", "code"]) == -32_003
     assert get_in(drifted_response, ["error", "data", "reason"]) == "outside_session_scope"
+
+    other_phase_response = read_phase_board(repo, session, other_phase.id)
+
+    assert get_in(other_phase_response, ["error", "code"]) == -32_003
+    assert get_in(other_phase_response, ["error", "data", "reason"]) == "outside_session_scope"
   end
 
   test "worker grant is denied phase board access", %{repo: repo} do
@@ -205,5 +265,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
       repo: repo,
       session: session
     )
+  end
+
+  defp legacy_phase_session(repo, work_package_id, grant_id) do
+    now = DateTime.utc_now(:microsecond)
+    work_key = WorkKey.generate()
+
+    grant =
+      repo.insert!(%AccessGrant{
+        id: grant_id,
+        work_package_id: work_package_id,
+        phase_id: nil,
+        display_key: work_key.display_key,
+        secret_hash: WorkKey.secret_hash(work_key.secret),
+        grant_role: "architect",
+        capabilities: ["read:phase"],
+        expires_at: DateTime.add(now, 3600, :second)
+      })
+
+    assert {:ok, assignment} = AccessGrantService.claim(repo, work_key.secret, claimed_by: "architect-legacy")
+    assert assignment.phase_id == nil
+    MCPHarness.session(assignment, proof_hash: grant.secret_hash)
   end
 end

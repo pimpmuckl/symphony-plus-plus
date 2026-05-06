@@ -169,6 +169,75 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert [%{"id" => "SYMPP-DASH-EXACT-PHASE"}] = payload["groups"]["planning"]
   end
 
+  test "legacy null phase grants derive dashboard scope from their phased anchor", %{repo: repo} do
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-dashboard-legacy", title: "Legacy phase"})
+
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-DASH-LEGACY-ANCHOR", kind: "phase_child", phase_id: phase.id, status: "planning")
+             )
+
+    assert {:ok, sibling} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-DASH-LEGACY-SIBLING", kind: "phase_child", phase_id: phase.id, status: "blocked")
+             )
+
+    secret = create_legacy_phase_grant_secret(repo, anchor.id, "grant-dashboard-legacy-derived")
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/board"), 200)
+
+    assert payload["phase"]["id"] == phase.id
+    assert payload["total_count"] == 2
+    assert [%{"id" => "SYMPP-DASH-LEGACY-ANCHOR"}] = payload["groups"]["planning"]
+    assert [%{"id" => "SYMPP-DASH-LEGACY-SIBLING"}] = payload["groups"]["blocked"]
+
+    phase_id = phase.id
+    sibling_id = sibling.id
+
+    assert %{"work_package" => %{"id" => ^sibling_id, "phase_id" => ^phase_id}} =
+             json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{sibling.id}"), 200)
+  end
+
+  test "legacy null phase grants with unphased anchors are denied dashboard phase reads", %{repo: repo} do
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-DASH-LEGACY-UNPHASED", kind: "hotfix", parent_id: nil, phase_id: nil)
+             )
+
+    secret = create_legacy_phase_grant_secret(repo, anchor.id, "grant-dashboard-legacy-unphased")
+
+    assert %{"error" => %{"code" => "forbidden"}} =
+             json_response(get(auth_conn(secret), "/api/v1/sympp/board"), 403)
+  end
+
+  test "legacy null phase grants cannot read packages outside anchor phase", %{repo: repo} do
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-dashboard-legacy-own", title: "Legacy own"})
+    assert {:ok, other_phase} = PhaseRepository.create(repo, %{id: "phase-dashboard-legacy-other", title: "Legacy other"})
+
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-DASH-LEGACY-OWN", kind: "phase_child", phase_id: phase.id, status: "planning")
+             )
+
+    assert {:ok, other_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-DASH-LEGACY-OTHER", kind: "phase_child", phase_id: other_phase.id, status: "planning")
+             )
+
+    secret = create_legacy_phase_grant_secret(repo, anchor.id, "grant-dashboard-legacy-other")
+    phase_id = phase.id
+
+    assert %{"phase" => %{"id" => ^phase_id}} = json_response(get(auth_conn(secret), "/api/v1/sympp/board"), 200)
+
+    assert %{"error" => %{"code" => "forbidden"}} =
+             json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{other_package.id}"), 403)
+  end
+
   test "phase board grants are denied after their architect anchor leaves the phase", %{repo: repo} do
     assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-dashboard-anchor", title: "Anchor phase"})
     assert {:ok, other_phase} = PhaseRepository.create(repo, %{id: "phase-dashboard-anchor-other", title: "Other phase"})
@@ -183,6 +252,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              WorkPackageRepository.create(
                repo,
                WorkPackageFactory.attrs(id: "SYMPP-DASH-ANCHOR-SIBLING", kind: "phase_child", phase_id: phase.id, status: "planning")
+             )
+
+    assert {:ok, other_sibling} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-DASH-ANCHOR-OTHER-SIBLING", kind: "phase_child", phase_id: other_phase.id, status: "planning")
              )
 
     work_key = WorkKey.generate()
@@ -211,6 +286,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     assert %{"error" => %{"code" => "forbidden"}} =
              json_response(get(auth_conn(work_key.secret), "/api/v1/sympp/work-packages/#{sibling.id}"), 403)
+
+    assert %{"error" => %{"code" => "forbidden"}} =
+             json_response(get(auth_conn(work_key.secret), "/api/v1/sympp/work-packages/#{other_sibling.id}"), 403)
   end
 
   test "board artifact reads are limited to packages that need artifact-backed readiness", %{repo: repo} do
@@ -2531,6 +2609,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              AccessGrantRepository.claim(repo, work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
 
     assert grant.display_key == work_key.display_key
+    work_key.secret
+  end
+
+  defp create_legacy_phase_grant_secret(repo, work_package_id, grant_id) do
+    now = DateTime.utc_now(:microsecond)
+    work_key = WorkKey.generate()
+
+    repo.insert!(%AccessGrant{
+      id: grant_id,
+      work_package_id: work_package_id,
+      phase_id: nil,
+      display_key: work_key.display_key,
+      secret_hash: WorkKey.secret_hash(work_key.secret),
+      grant_role: "architect",
+      capabilities: ["read:phase"],
+      expires_at: DateTime.add(now, 3600, :second)
+    })
+
+    assert {:ok, assignment} =
+             AccessGrantRepository.claim(repo, work_key.secret, %{claimed_by: "architect-legacy"}, DateTime.utc_now(:microsecond))
+
+    assert assignment.phase_id == nil
     work_key.secret
   end
 

@@ -1489,7 +1489,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool("read_phase_board", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- architect_session(config.repo, session, "read:phase"),
          {:ok, phase_id} <- required_argument(arguments, "phase_id"),
-         :ok <- require_architect_phase_scope(session, phase_id),
+         :ok <- require_architect_phase_scope(config.repo, session, phase_id),
          :ok <- require_architect_phase_anchor(config.repo, session, phase_id),
          {:ok, board} <- Dashboard.phase_board(config.repo, phase_id) do
       {:ok, tool_result(json_safe_payload(board))}
@@ -1515,7 +1515,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp require_architect_target_scope(repo, %Session{} = session, %{"phase_id" => phase_id}) do
-    with :ok <- require_architect_phase_scope(session, phase_id) do
+    with :ok <- require_architect_phase_scope(repo, session, phase_id) do
       require_architect_phase_anchor(repo, session, phase_id)
     end
   end
@@ -1525,9 +1525,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp require_architect_current_phase_anchor(repo, %Session{} = session) do
-    case Session.phase_id(session) do
-      phase_id when is_binary(phase_id) -> require_architect_phase_anchor(repo, session, phase_id)
-      _phase_id -> {:error, :phase_scope_not_available}
+    case architect_phase_scope(repo, session) do
+      {:ok, phase_id} -> require_architect_phase_anchor(repo, session, phase_id)
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -2365,11 +2365,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp require_architect_phase_scope(%Session{} = session, phase_id) do
-    if Session.phase_id(session) == phase_id do
-      :ok
-    else
-      {:error, :phase_scope_not_available}
+  defp require_architect_phase_scope(repo, %Session{} = session, phase_id) do
+    case architect_phase_scope(repo, session) do
+      {:ok, ^phase_id} -> :ok
+      {:ok, _other_phase_id} -> {:error, :phase_scope_not_available}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp architect_phase_scope(repo, %Session{} = session) do
+    case Session.phase_id(session) do
+      phase_id when is_binary(phase_id) and phase_id != "" -> {:ok, phase_id}
+      nil -> architect_session_anchor_phase_scope(repo, session)
+      _phase_id -> {:error, :phase_scope_not_available}
+    end
+  end
+
+  defp architect_session_anchor_phase_scope(repo, %Session{} = session) when is_atom(repo) do
+    case Session.work_package_id(session) do
+      work_package_id when is_binary(work_package_id) -> architect_anchor_phase_scope(repo, work_package_id)
+      _work_package_id -> {:error, :phase_scope_not_available}
+    end
+  end
+
+  defp architect_session_anchor_phase_scope(_repo, %Session{}), do: {:error, :phase_scope_not_available}
+
+  defp architect_anchor_phase_scope(repo, work_package_id) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, %{phase_id: phase_id}} when is_binary(phase_id) and phase_id != "" -> {:ok, phase_id}
+      {:ok, _work_package} -> {:error, :phase_scope_not_available}
+      {:error, _reason} -> {:error, :phase_scope_not_available}
     end
   end
 

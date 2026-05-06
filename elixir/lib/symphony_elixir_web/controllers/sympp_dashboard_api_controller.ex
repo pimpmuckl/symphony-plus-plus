@@ -579,14 +579,14 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp board_payload(repo, {:grant, %AccessGrant{} = grant} = auth_context) do
     with :ok <- require_phase_board(repo, auth_context),
-         {:ok, phase_id} <- phase_scope(grant) do
+         {:ok, phase_id} <- phase_scope(repo, grant) do
       Dashboard.phase_board(repo, phase_id)
     end
   end
 
   defp require_phase_board(repo, {:grant, %AccessGrant{capabilities: capabilities} = grant}) do
     with :ok <- require_capability(capabilities, "read:phase"),
-         {:ok, phase_id} <- phase_scope(grant) do
+         {:ok, phase_id} <- phase_scope(repo, grant) do
       require_architect_phase_anchor(repo, grant, phase_id)
     end
   end
@@ -631,7 +631,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp require_phase_work_package(repo, %AccessGrant{} = grant, work_package_id) do
-    with {:ok, phase_id} <- phase_scope(grant),
+    with {:ok, phase_id} <- phase_scope(repo, grant),
          :ok <- require_architect_phase_anchor(repo, grant, phase_id),
          {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id) do
       if work_package.phase_id == phase_id do
@@ -653,11 +653,19 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp require_architect_phase_anchor(_repo, %AccessGrant{}, _phase_id), do: {:error, :forbidden}
 
-  defp phase_scope(%AccessGrant{phase_id: phase_id}) when is_binary(phase_id) do
+  defp phase_scope(_repo, %AccessGrant{phase_id: phase_id}) when is_binary(phase_id) do
     if phase_id == "", do: {:error, :forbidden}, else: {:ok, phase_id}
   end
 
-  defp phase_scope(%AccessGrant{}), do: {:error, :forbidden}
+  defp phase_scope(repo, %AccessGrant{work_package_id: work_package_id}) when is_binary(work_package_id) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, %{phase_id: phase_id}} when is_binary(phase_id) and phase_id != "" -> {:ok, phase_id}
+      {:ok, _work_package} -> {:error, :forbidden}
+      {:error, _reason} -> {:error, :forbidden}
+    end
+  end
+
+  defp phase_scope(_repo, %AccessGrant{}), do: {:error, :forbidden}
 
   defp require_capability(capabilities, capability) when is_list(capabilities) do
     if capability in capabilities, do: :ok, else: {:error, :forbidden}
