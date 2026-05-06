@@ -181,6 +181,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
     assert payload["changed_files_count_available"] == true
   end
 
+  test "fails closed for empty changed-file paths without a reported count" do
+    assert {:ok, ref} = PullRequest.parse(%{"url" => "https://github.com/nextide/symphony-plus-plus/pull/42"}, nil)
+
+    metadata = %{
+      "head" => %{"sha" => "abcdef1234567890abcdef1234567890abcdef12", "ref" => "agent/SYMPP-P6-001/github-pr-attachment-sync"},
+      "changed_files" => []
+    }
+
+    assert {:ok, payload} = PullRequest.metadata(metadata, ref, nil)
+
+    assert payload["changed_files"] == []
+    assert payload["changed_files_count"] == 0
+    assert payload["changed_files_available"] == false
+    assert payload["changed_files_count_available"] == false
+  end
+
+  test "preserves previous filenames for renamed changed files" do
+    assert {:ok, ref} = PullRequest.parse(%{"url" => "https://github.com/nextide/symphony-plus-plus/pull/42"}, nil)
+
+    metadata = %{
+      "head" => %{"sha" => "abcdef1234567890abcdef1234567890abcdef12", "ref" => "agent/SYMPP-P6-001/github-pr-attachment-sync"},
+      "changed_files" => [
+        %{"filename" => "elixir/lib/new.ex", "previous_filename" => "docs/old.md", "status" => "renamed"}
+      ]
+    }
+
+    assert {:ok, payload} = PullRequest.metadata(metadata, ref, nil)
+
+    assert payload["changed_files"] == [
+             %{"path" => "elixir/lib/new.ex", "previous_path" => "docs/old.md", "status" => "renamed"}
+           ]
+  end
+
   test "marks omitted changed files as unavailable evidence" do
     assert {:ok, ref} = PullRequest.parse(%{"url" => "https://github.com/nextide/symphony-plus-plus/pull/42"}, nil)
 

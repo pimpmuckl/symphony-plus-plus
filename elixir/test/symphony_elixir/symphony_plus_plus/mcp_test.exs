@@ -5680,6 +5680,51 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert repaired_package.allowed_file_globs == ["docs/**"]
   end
 
+  test "scope expansion approval rejects packages without scope guard", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-SCOPE-GUARD-NOT-REQUIRED",
+                 kind: "quick_fix",
+                 status: "ci_waiting",
+                 policy_template: "quick_fix",
+                 allowed_file_globs: []
+               )
+             )
+
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["approve:scope_expansion"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    architect_session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+
+    approval_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "unguarded-scope-approval",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "approve_scope_expansion",
+            "arguments" => %{
+              "work_package_id" => package.id,
+              "allowed_file_globs" => ["docs/**"],
+              "rationale" => "Unguarded packages must not record scope approvals."
+            }
+          }
+        },
+        repo: repo,
+        session: architect_session
+      )
+
+    assert get_in(approval_response, ["error", "data", "reason"]) == "scope_guard_not_required"
+
+    assert {:ok, unchanged_package} = WorkPackageRepository.get(repo, package.id)
+    assert unchanged_package.allowed_file_globs == []
+  end
+
   test "review-suite result rejects missing head, wrong package, stale head, non-passing verdicts, and failed-result override", %{repo: repo} do
     assert {:ok, package} =
              WorkPackageRepository.create(

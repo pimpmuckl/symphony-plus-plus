@@ -2049,6 +2049,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            :ok <- lock_work_package(repo, work_package_id),
            {:ok, state} <- PlanningRepository.get_state(repo, work_package_id),
            :ok <- reject_ready_work_package(state.work_package),
+           :ok <- require_scope_guard_package(state.work_package),
            {:ok, effective_globs} <- ScopeGuard.approve_file_globs(state.work_package, allowed_file_globs),
            {:ok, updated_work_package} <- WorkPackageRepository.update(repo, work_package_id, %{"allowed_file_globs" => effective_globs}),
            {:ok, event} <-
@@ -2079,6 +2080,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, {:error, reason}} -> {:error, reason}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp require_scope_guard_package(%WorkPackage{} = work_package) do
+    if ScopeGuard.required?(work_package), do: :ok, else: {:error, "scope_guard_not_required"}
   end
 
   defp scope_expansion_approval_attrs(%WorkPackage{} = previous_work_package, %WorkPackage{} = updated_work_package, arguments, allowed_file_globs, rationale) do

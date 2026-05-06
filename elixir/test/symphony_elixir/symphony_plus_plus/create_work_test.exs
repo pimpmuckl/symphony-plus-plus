@@ -188,7 +188,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
                title: "Overbroad changed-file scope",
                acceptance_criteria: ["Changed files stay in scope."],
                policy_template: "mcp_changed_file_scope_guard",
-               allowed_file_globs: ["**"]
+               allowed_file_globs: ["**/**"]
              })
 
     assert {:ok, request} =

@@ -64,6 +64,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
 
     assert {:error, "overbroad_allowed_file_globs"} = ScopeGuard.approve_file_globs(package, ["**"])
     assert {:error, "overbroad_allowed_file_globs"} = ScopeGuard.approve_file_globs(package, ["./**/*"])
+    assert {:error, "overbroad_allowed_file_globs"} = ScopeGuard.approve_file_globs(package, ["**/**"])
   end
 
   test "approved expansion repairs overbroad existing package globs" do
@@ -81,6 +82,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
       |> Map.new(&{&1["code"], &1})
 
     assert reasons["overbroad_scope_constraints"]["allowed_file_globs"] == ["**"]
+  end
+
+  test "renamed files evaluate both previous and current paths" do
+    package = package(["elixir/lib/**"])
+
+    reasons =
+      package
+      |> ScopeGuard.failure_reasons(events(changed_files: [%{"path" => "elixir/lib/new.ex", "previous_path" => "docs/old.md"}]))
+      |> Map.new(&{&1["code"], &1})
+
+    assert reasons["out_of_scope_files"]["files"] == ["docs/old.md"]
   end
 
   test "zero changed-file count satisfies scope guard when paths are unavailable" do
@@ -153,13 +165,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
         "url" => "https://github.com/nextide/symphony-plus-plus/pull/7",
         "head_sha" => "head-a",
         "base_branch" => base_branch,
-        "changed_files" => Enum.map(changed_files, &%{"path" => &1}),
+        "changed_files" => Enum.map(changed_files, &changed_file_payload/1),
         "changed_files_count" => changed_files_count,
         "changed_files_available" => changed_files_available,
         "changed_files_count_available" => changed_files_count_available
       })
     ]
   end
+
+  defp changed_file_payload(path) when is_binary(path), do: %{"path" => path}
+  defp changed_file_payload(%{} = file), do: file
+  defp changed_file_payload(value), do: value
 
   defp event(sequence, payload) do
     %ProgressEvent{

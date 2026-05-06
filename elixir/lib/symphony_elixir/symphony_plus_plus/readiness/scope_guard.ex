@@ -150,7 +150,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
   end
 
   defp changed_file_paths(%{"changed_files" => changed_files} = pr_payload) when is_list(changed_files) do
-    raw_paths = Enum.map(changed_files, &changed_file_path/1)
+    raw_paths = Enum.flat_map(changed_files, &changed_file_entry_paths/1)
     paths = raw_paths |> Enum.reject(&is_nil/1) |> Enum.uniq()
     changed_files_count = Map.get(pr_payload, "changed_files_count", 0)
 
@@ -175,8 +175,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
 
   defp changed_file_paths(_pr_payload), do: {[], [reason("changed_files_unavailable")]}
 
-  defp changed_file_path(%{"path" => path}), do: clean_file_path(path)
-  defp changed_file_path(path), do: clean_file_path(path)
+  defp changed_file_entry_paths(%{"path" => path} = file) do
+    file
+    |> previous_file_paths()
+    |> List.insert_at(0, clean_file_path(path))
+  end
+
+  defp changed_file_entry_paths(path) when is_binary(path), do: [clean_file_path(path)]
+  defp changed_file_entry_paths(_path), do: [nil]
+
+  defp previous_file_paths(%{"previous_path" => path}), do: [clean_file_path(path)]
+  defp previous_file_paths(%{"previous_filename" => path}), do: [clean_file_path(path)]
+  defp previous_file_paths(_file), do: []
 
   defp clean_file_path(path) when is_binary(path) do
     path
@@ -323,10 +333,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
 
   @spec overbroad_glob?(String.t()) :: boolean()
   def overbroad_glob?(glob) when is_binary(glob) do
-    glob
-    |> normalize_path()
-    |> String.trim_leading("/")
-    |> then(&(&1 in ["*", "**", "**/*"]))
+    normalized_glob = glob |> normalize_path() |> String.trim("/")
+    segments = String.split(normalized_glob, "/", trim: true)
+
+    normalized_glob == "*" or
+      (segments != [] and Enum.all?(segments, &(&1 in ["*", "**"])) and Enum.any?(segments, &(&1 == "**")))
   end
 
   def overbroad_glob?(_glob), do: false

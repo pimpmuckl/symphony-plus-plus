@@ -333,6 +333,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
     end
   end
 
+  defp changed_file_count_metadata([], nil), do: {:ok, changed_file_metadata([], 0, false, false)}
+
   defp changed_file_count_metadata(changed_files, nil) do
     count = length(changed_files)
     {:ok, changed_file_metadata(changed_files, count, true, true)}
@@ -359,8 +361,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
 
   defp changed_file(%{} = value) do
     value
-    |> Map.take(["path", "filename", "status", "additions", "deletions", "changes"])
+    |> Map.take(["path", "filename", "previous_path", "previous_filename", "status", "additions", "deletions", "changes"])
     |> normalize_file_path()
+    |> normalize_previous_file_path()
   end
 
   defp changed_file(_value), do: %{}
@@ -368,6 +371,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
   defp normalize_file_path(%{"path" => path} = value) when is_binary(path), do: Map.put(value, "path", String.trim(path))
   defp normalize_file_path(%{"filename" => path} = value) when is_binary(path), do: value |> Map.put("path", String.trim(path)) |> Map.delete("filename")
   defp normalize_file_path(value), do: value
+
+  defp normalize_previous_file_path(%{"previous_path" => path} = value) when is_binary(path), do: Map.put(value, "previous_path", String.trim(path))
+
+  defp normalize_previous_file_path(%{"previous_filename" => path} = value) when is_binary(path) do
+    value
+    |> Map.put("previous_path", String.trim(path))
+    |> Map.delete("previous_filename")
+  end
+
+  defp normalize_previous_file_path(value), do: value
 
   defp metadata_map(metadata, key, fallback) do
     case Map.get(metadata, key, fallback) do
