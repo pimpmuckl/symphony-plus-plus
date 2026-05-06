@@ -148,15 +148,17 @@ Lifecycle capabilities such as `architect:lifecycle.transition` do not imply
 MCP architect tool capabilities; the explicit MCP capability strings listed in
 the permission model are required.
 
-Phase-dependent architect tools revalidate the grant's explicit phase scope, or
-the current explicit phase of the grant's anchor package for legacy null
-`phase_id` grants, before acting. `create_child_work_package(package)` creates
-only `phase_child` work inside the architect phase anchor, inherits the anchor
-base branch, and rejects mismatched phase, parent, repo, or base branch input.
+Phase-dependent architect tools revalidate the grant's explicit phase scope plus
+the anchor repo/base-branch scope frozen when the phase architect grant was
+minted, or the current explicit phase of the grant's anchor package for legacy
+null `phase_id` grants, before acting. `create_child_work_package(package)`
+creates only `phase_child` work inside the architect phase anchor, inherits the
+anchor base branch, and rejects mismatched phase, parent, repo, or base branch
+input. Child creation revalidates that anchor scope in the insert transaction.
 Context-slice input is not part of the current contract. `mint_child_worker_key`
-mints only single-package worker grants for same-phase children, with
-capabilities limited to the child worker set and expiry capped by the architect
-grant. `read_child_status(work_package_id)` requires both
+mints only single-package worker grants for same-phase children, revalidates the
+live architect grant in the mint transaction, and caps child capabilities and
+expiry to that current grant. `read_child_status(work_package_id)` requires both
 `read:child_progress` and `read:child_findings`; it can read the architect
 anchor package or a same-phase child package. The remaining architect tools
 return explicit `phase7_not_implemented` errors after authorization and must not

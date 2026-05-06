@@ -4,6 +4,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   import Ecto.Query, only: [from: 2]
 
   alias Ecto.Adapters.SQL
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
@@ -1500,8 +1501,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool("create_child_work_package", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- architect_session(config.repo, session, "create:child_work_package"),
          {:ok, package} <- required_object(arguments, "package"),
-         {:ok, attrs} <- child_work_package_attrs(config.repo, session, package),
-         {:ok, work_package} <- WorkPackageRepository.create(config.repo, attrs) do
+         {:ok, work_package} <- create_child_work_package_transaction(config.repo, session, package) do
       {:ok, tool_result(%{"work_package" => child_work_package_payload(work_package)})}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "create_child_work_package", "reason" => reason}}
@@ -1513,9 +1513,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- architect_session(config.repo, session, "mint:child_worker_key"),
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
          {:ok, template} <- required_object(arguments, "template"),
-         {:ok, child} <- require_architect_child_work_package_scope(config.repo, session, work_package_id),
-         {:ok, grant_opts} <- child_worker_grant_opts(config.repo, session, template),
-         {:ok, {child, minted}} <- mint_child_worker_key_transaction(config.repo, session, child.id, grant_opts) do
+         {:ok, {child, minted}} <- mint_child_worker_key_transaction(config.repo, session, work_package_id, template) do
       {:ok,
        tool_result(%{
          "work_package" => child_work_package_payload(child),
@@ -1627,9 +1625,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_phase_child_scope(%WorkPackage{}, _anchor, _phase_id), do: {:error, :phase_scope_not_available}
 
-  defp mint_child_worker_key_transaction(repo, %Session{} = session, work_package_id, grant_opts) do
+  defp create_child_work_package_transaction(repo, %Session{} = session, package) do
     case repo.transaction(fn ->
-           mint_child_worker_key_or_rollback(repo, session, work_package_id, grant_opts)
+           create_child_work_package_or_rollback(repo, session, package)
          end) do
       {:ok, result} -> {:ok, result}
       {:error, {:tool_error, reason}} -> {:tool_error, reason}
@@ -1638,16 +1636,48 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp mint_child_worker_key_or_rollback(repo, %Session{} = session, work_package_id, grant_opts) do
-    case mint_child_worker_key_in_transaction(repo, session, work_package_id, grant_opts) do
+  defp create_child_work_package_or_rollback(repo, %Session{} = session, package) do
+    case create_child_work_package_in_transaction(repo, session, package) do
       {:ok, result} -> result
       {:tool_error, reason} -> repo.rollback({:tool_error, reason})
       {:error, reason} -> repo.rollback({:error, reason})
     end
   end
 
-  defp mint_child_worker_key_in_transaction(repo, %Session{} = session, work_package_id, grant_opts) do
-    with {:ok, child} <- require_architect_child_work_package_scope(repo, session, work_package_id),
+  defp create_child_work_package_in_transaction(repo, %Session{} = session, package) do
+    with :ok <- lock_access_grant(repo, session.assignment.grant_id),
+         {:ok, _architect_grant} <- require_live_architect_grant(repo, session),
+         :ok <- lock_work_package(repo, Session.work_package_id(session)),
+         {:ok, attrs} <- child_work_package_attrs(repo, session, package) do
+      WorkPackageRepository.create(repo, attrs)
+    end
+  end
+
+  defp mint_child_worker_key_transaction(repo, %Session{} = session, work_package_id, template) do
+    case repo.transaction(fn ->
+           mint_child_worker_key_or_rollback(repo, session, work_package_id, template)
+         end) do
+      {:ok, result} -> {:ok, result}
+      {:error, {:tool_error, reason}} -> {:tool_error, reason}
+      {:error, {:error, reason}} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp mint_child_worker_key_or_rollback(repo, %Session{} = session, work_package_id, template) do
+    case mint_child_worker_key_in_transaction(repo, session, work_package_id, template) do
+      {:ok, result} -> result
+      {:tool_error, reason} -> repo.rollback({:tool_error, reason})
+      {:error, reason} -> repo.rollback({:error, reason})
+    end
+  end
+
+  defp mint_child_worker_key_in_transaction(repo, %Session{} = session, work_package_id, template) do
+    with :ok <- lock_access_grant(repo, session.assignment.grant_id),
+         {:ok, architect_grant} <- require_live_architect_grant(repo, session),
+         :ok <- lock_work_package(repo, Session.work_package_id(session)),
+         {:ok, child} <- require_architect_child_work_package_scope(repo, session, work_package_id),
+         {:ok, grant_opts} <- child_worker_grant_opts(template, architect_grant),
          {:ok, child} <- require_child_ready_for_mint(repo, child),
          {:ok, minted} <- AccessGrantService.mint_worker_grant(repo, child.id, grant_opts) do
       {:ok, {child, minted}}
@@ -2053,10 +2083,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp put_optional_child_value(attrs, _key, nil), do: attrs
   defp put_optional_child_value(attrs, key, value), do: Map.put(attrs, key, value)
 
-  defp child_worker_grant_opts(repo, %Session{} = session, template) do
+  defp child_worker_grant_opts(template, %AccessGrant{} = architect_grant) do
     with :ok <- validate_child_worker_template_keys(template),
          {:ok, capabilities} <- child_worker_capabilities(template),
-         {:ok, architect_grant} <- AccessGrantRepository.get(repo, session.assignment.grant_id),
          {:ok, expires_at} <- child_worker_expires_at(template, architect_grant) do
       {:ok, [capabilities: capabilities, expires_at: expires_at]}
     end
@@ -2948,6 +2977,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp require_live_architect_grant(repo, %Session{} = session) do
+    case AccessGrantRepository.get(repo, session.assignment.grant_id) do
+      {:ok, %AccessGrant{} = grant} ->
+        with :ok <- require_session_grant_match(session.assignment, grant),
+             :ok <- require_live_grant(grant, DateTime.utc_now(:microsecond)),
+             :ok <- require_architect_assignment(session.assignment) do
+          {:ok, grant}
+        end
+
+      {:error, :not_found} ->
+        {:error, :phase_scope_not_available}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp require_session_grant_match(assignment, %AccessGrant{} = grant) do
+    if assignment.grant_id == grant.id and
+         assignment.work_package_id == grant.work_package_id and
+         assignment.phase_id == grant.phase_id and
+         assignment.display_key == grant.display_key and
+         assignment.grant_role == grant.grant_role and
+         assignment.capabilities == grant.capabilities and
+         assignment.claimed_at == grant.claimed_at and
+         assignment.claimed_by == grant.claimed_by do
+      :ok
+    else
+      {:error, :phase_scope_not_available}
+    end
+  end
+
+  defp require_live_grant(%AccessGrant{revoked_at: %DateTime{}}, _now), do: {:error, :assignment_revoked}
+
+  defp require_live_grant(%AccessGrant{expires_at: %DateTime{} = expires_at}, %DateTime{} = now) do
+    if DateTime.compare(expires_at, now) == :gt do
+      :ok
+    else
+      {:error, :expired}
+    end
+  end
+
+  defp require_live_grant(%AccessGrant{}, _now), do: {:error, :phase_scope_not_available}
+
   defp require_architect_capabilities(assignment, capabilities) do
     Enum.reduce_while(capabilities, :ok, fn capability, :ok ->
       case require_architect_capability(assignment, capability) do
@@ -2999,16 +3072,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp require_architect_phase_anchor(repo, %Session{} = session, phase_id) when is_atom(repo) and is_binary(phase_id) do
-    case Session.work_package_id(session) do
-      work_package_id when is_binary(work_package_id) ->
-        case WorkPackageRepository.get(repo, work_package_id) do
-          {:ok, %{phase_id: ^phase_id}} -> :ok
-          {:ok, _work_package} -> {:error, :phase_scope_not_available}
-          {:error, _reason} -> {:error, :phase_scope_not_available}
-        end
+    with {:ok, grant} <- require_live_architect_grant(repo, session),
+         {:ok, anchor} <- architect_anchor_work_package(repo, session) do
+      require_architect_anchor_scope(anchor, grant, phase_id)
+    else
+      {:error, :not_found} -> {:error, :phase_scope_not_available}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
-      _work_package_id ->
+  defp require_architect_anchor_scope(%WorkPackage{} = anchor, %AccessGrant{} = grant, phase_id) do
+    cond do
+      anchor.phase_id != phase_id ->
         {:error, :phase_scope_not_available}
+
+      architect_explicit_phase_grant?(grant) ->
+        require_frozen_anchor_scope(anchor, grant)
+
+      true ->
+        :ok
+    end
+  end
+
+  defp architect_explicit_phase_grant?(%AccessGrant{grant_role: "architect", phase_id: phase_id}) when is_binary(phase_id) and phase_id != "",
+    do: true
+
+  defp architect_explicit_phase_grant?(%AccessGrant{}), do: false
+
+  defp require_frozen_anchor_scope(%WorkPackage{} = anchor, %AccessGrant{} = grant) do
+    if grant.phase_id == anchor.phase_id and grant.scope_repo == anchor.repo and grant.scope_base_branch == anchor.base_branch do
+      :ok
+    else
+      {:error, :phase_scope_not_available}
     end
   end
 
@@ -3138,6 +3233,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case repo.update_all(query, set: [id: work_package_id]) do
       {1, _rows} -> :ok
       {0, _rows} -> {:error, :not_found}
+    end
+  end
+
+  defp lock_access_grant(repo, grant_id) do
+    query = from(access_grant in AccessGrant, where: access_grant.id == ^grant_id)
+
+    case repo.update_all(query, set: [id: grant_id]) do
+      {1, _rows} -> :ok
+      {0, _rows} -> {:error, :phase_scope_not_available}
     end
   end
 

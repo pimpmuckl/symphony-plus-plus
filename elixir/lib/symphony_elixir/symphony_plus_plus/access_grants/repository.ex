@@ -233,8 +233,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
       work_package_id = Changeset.get_field(changeset, :work_package_id)
 
       with :ok <- validate_phase_anchor_phase(repo, changeset, phase_id),
-           :ok <- validate_phase_anchor_work_package(repo, changeset, work_package_id, phase_id) do
-        {:ok, changeset}
+           {:ok, anchor} <- validate_phase_anchor_work_package(repo, changeset, work_package_id, phase_id) do
+        {:ok, freeze_architect_anchor_scope(changeset, anchor)}
       else
         {:error, %Changeset{} = changeset} -> {:error, changeset}
       end
@@ -258,11 +258,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
 
   defp validate_phase_anchor_work_package(repo, changeset, work_package_id, phase_id) do
     case WorkPackageRepository.get(repo, work_package_id) do
-      {:ok, %{phase_id: ^phase_id}} -> :ok
+      {:ok, %{phase_id: ^phase_id} = work_package} -> {:ok, work_package}
       {:ok, _work_package} -> {:error, Changeset.add_error(changeset, :work_package_id, "must belong to architect phase")}
       {:error, :not_found} -> {:error, Changeset.add_error(changeset, :work_package_id, "does not exist")}
       {:error, reason} -> {:error, Changeset.add_error(changeset, :work_package_id, inspect(reason))}
     end
+  end
+
+  defp freeze_architect_anchor_scope(%Changeset{} = changeset, %{repo: repo, base_branch: base_branch}) do
+    changeset
+    |> Changeset.put_change(:scope_repo, repo)
+    |> Changeset.put_change(:scope_base_branch, base_branch)
   end
 
   defp duplicate_id?(changeset) do

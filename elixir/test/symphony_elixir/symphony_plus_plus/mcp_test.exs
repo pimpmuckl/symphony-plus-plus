@@ -103,6 +103,72 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     def rollback(value), do: Repo.rollback(value)
   end
 
+  defmodule CreateChildAnchorRaceRepo do
+    import Ecto.Query, only: [from: 2]
+
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+    alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+
+    @race_key :sympp_create_child_anchor_race
+
+    def arm(anchor_id, attrs), do: Process.put(@race_key, {anchor_id, attrs})
+    def disarm, do: Process.delete(@race_key)
+
+    def transaction(fun) do
+      Repo.transaction(fn ->
+        case Process.get(@race_key) do
+          {anchor_id, attrs} when is_binary(anchor_id) and is_map(attrs) ->
+            Process.delete(@race_key)
+            updates = Map.to_list(attrs) ++ [updated_at: DateTime.utc_now(:microsecond)]
+            Repo.update_all(from(work_package in WorkPackage, where: work_package.id == ^anchor_id), set: updates)
+
+          _race ->
+            :ok
+        end
+
+        fun.()
+      end)
+    end
+
+    def get(schema, id), do: Repo.get(schema, id)
+    def insert(changeset), do: Repo.insert(changeset)
+    def update_all(query, updates), do: Repo.update_all(query, updates)
+    def rollback(value), do: Repo.rollback(value)
+  end
+
+  defmodule MintParentGrantRaceRepo do
+    import Ecto.Query, only: [from: 2]
+
+    alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    @race_key :sympp_mint_parent_grant_race
+
+    def arm(grant_id, attrs), do: Process.put(@race_key, {grant_id, attrs})
+    def disarm, do: Process.delete(@race_key)
+
+    def transaction(fun) do
+      Repo.transaction(fn ->
+        case Process.get(@race_key) do
+          {grant_id, attrs} when is_binary(grant_id) and is_map(attrs) ->
+            Process.delete(@race_key)
+            updates = Map.to_list(attrs) ++ [updated_at: DateTime.utc_now(:microsecond)]
+            Repo.update_all(from(grant in AccessGrant, where: grant.id == ^grant_id), set: updates)
+
+          _race ->
+            :ok
+        end
+
+        fun.()
+      end)
+    end
+
+    def get(schema, id), do: Repo.get(schema, id)
+    def insert(changeset), do: Repo.insert(changeset)
+    def update_all(query, updates), do: Repo.update_all(query, updates)
+    def rollback(value), do: Repo.rollback(value)
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
 
@@ -2818,6 +2884,88 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-UNBOUNDED-EXPLICIT-GLOBS")
   end
 
+  test "phase architect child delegation fails closed after anchor repo or base branch drift", %{repo: repo} do
+    for {field, drifted_value, suffix} <- [
+          {:base_branch, "main", "BASE"},
+          {:repo, "nextide/other", "REPO"}
+        ] do
+      {anchor, session} =
+        create_architect_session(repo, "SYMPP-P7-002-#{suffix}-DRIFT-ANCHOR", [
+          "create:child_work_package",
+          "mint:child_worker_key",
+          "read:phase"
+        ])
+
+      child_id = create_child_work_package(repo, session, "SYMPP-P7-002-#{suffix}-DRIFT-CHILD")
+      assert {:ok, _anchor} = WorkPackageRepository.update(repo, anchor.id, Map.put(%{}, field, drifted_value))
+
+      create_response =
+        mcp_tool(repo, session, "create_child_work_package", %{
+          "package" => %{
+            "id" => "SYMPP-P7-002-#{suffix}-DRIFT-NEW-CHILD",
+            "title" => "Drifted anchor child",
+            "acceptance_criteria" => ["Should not be created"]
+          }
+        })
+
+      assert get_in(create_response, ["error", "code"]) == -32_003
+      assert get_in(create_response, ["error", "data", "reason"]) == "outside_session_scope"
+      assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-#{suffix}-DRIFT-NEW-CHILD")
+
+      grants_before = repo.aggregate(AccessGrant, :count)
+
+      mint_response =
+        mcp_tool(repo, session, "mint_child_worker_key", %{
+          "work_package_id" => child_id,
+          "template" => %{}
+        })
+
+      assert get_in(mint_response, ["error", "code"]) == -32_003
+      assert get_in(mint_response, ["error", "data", "reason"]) == "outside_session_scope"
+      assert repo.aggregate(AccessGrant, :count) == grants_before
+    end
+  end
+
+  test "phase architect child creation revalidates anchor scope inside insert transaction", %{repo: repo} do
+    {anchor, session} =
+      create_architect_session(repo, "SYMPP-P7-002-CREATE-RACE-ANCHOR", [
+        "create:child_work_package",
+        "read:phase"
+      ])
+
+    assert {:ok, other_phase} = PhaseRepository.create(repo, %{id: "phase-p7-002-create-race", title: "Create race"})
+    CreateChildAnchorRaceRepo.arm(anchor.id, %{phase_id: other_phase.id})
+
+    response =
+      try do
+        MCPHarness.request(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "create_child_work_package",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "create_child_work_package",
+              "arguments" => %{
+                "package" => %{
+                  "id" => "SYMPP-P7-002-CREATE-RACE-CHILD",
+                  "title" => "Create race child",
+                  "acceptance_criteria" => ["Should not be created"]
+                }
+              }
+            }
+          },
+          config: Config.default(repo: CreateChildAnchorRaceRepo),
+          session: session
+        )
+      after
+        CreateChildAnchorRaceRepo.disarm()
+      end
+
+    assert get_in(response, ["error", "code"]) == -32_003
+    assert get_in(response, ["error", "data", "reason"]) == "outside_session_scope"
+    assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-CREATE-RACE-CHILD")
+  end
+
   test "phase architect cannot create child work package with blank scoped fields", %{repo: repo} do
     {_anchor, session} =
       create_architect_session(repo, "SYMPP-P7-002-BLANK-SCOPE-ANCHOR", [
@@ -3223,6 +3371,121 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert {:ok, child} = WorkPackageRepository.get(repo, child_id)
     assert child.status == "ready_for_worker"
+  end
+
+  test "child worker key minting rejects revoked or expired parent architect grant inside transaction", %{repo: repo} do
+    for {suffix, grant_update, expected_reason} <- [
+          {"REVOKED", %{revoked_at: DateTime.utc_now(:microsecond)}, "revoked"},
+          {"EXPIRED", %{expires_at: DateTime.add(DateTime.utc_now(:microsecond), -1, :second)}, "expired"}
+        ] do
+      {_anchor, architect_session} =
+        create_architect_session(repo, "SYMPP-P7-002-MINT-PARENT-#{suffix}-ANCHOR", [
+          "create:child_work_package",
+          "mint:child_worker_key",
+          "read:phase"
+        ])
+
+      child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-PARENT-#{suffix}-CHILD")
+      grants_before = repo.aggregate(AccessGrant, :count)
+      MintParentGrantRaceRepo.arm(architect_session.assignment.grant_id, grant_update)
+
+      response =
+        try do
+          MCPHarness.request(
+            %{
+              "jsonrpc" => "2.0",
+              "id" => "mint_child_worker_key",
+              "method" => "tools/call",
+              "params" => %{
+                "name" => "mint_child_worker_key",
+                "arguments" => %{"work_package_id" => child_id, "template" => %{}}
+              }
+            },
+            config: Config.default(repo: MintParentGrantRaceRepo),
+            session: architect_session
+          )
+        after
+          MintParentGrantRaceRepo.disarm()
+        end
+
+      assert get_in(response, ["error", "code"]) == -32_001
+      assert get_in(response, ["error", "data", "reason"]) == expected_reason
+      assert repo.aggregate(AccessGrant, :count) == grants_before
+    end
+  end
+
+  test "child worker key minting uses transaction-current parent architect expiry", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-MINT-PARENT-SHORTENED-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-PARENT-SHORTENED-CHILD")
+    shortened_expires_at = DateTime.utc_now(:microsecond) |> DateTime.add(60, :second) |> DateTime.truncate(:microsecond)
+    MintParentGrantRaceRepo.arm(architect_session.assignment.grant_id, %{expires_at: shortened_expires_at})
+
+    response =
+      try do
+        MCPHarness.request(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "mint_child_worker_key",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "mint_child_worker_key",
+              "arguments" => %{"work_package_id" => child_id, "template" => %{}}
+            }
+          },
+          config: Config.default(repo: MintParentGrantRaceRepo),
+          session: architect_session
+        )
+      after
+        MintParentGrantRaceRepo.disarm()
+      end
+
+    assert get_in(response, ["result", "structuredContent", "worker_grant", "work_package_id"]) == child_id
+    minted_expires_at = get_in(response, ["result", "structuredContent", "worker_grant", "expires_at"])
+    assert {:ok, minted_expires_at, _offset} = DateTime.from_iso8601(minted_expires_at)
+    assert DateTime.compare(DateTime.truncate(minted_expires_at, :microsecond), shortened_expires_at) != :gt
+
+    {_anchor, broader_session} =
+      create_architect_session(repo, "SYMPP-P7-002-MINT-PARENT-SHORT-BROAD-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    broader_child_id = create_child_work_package(repo, broader_session, "SYMPP-P7-002-MINT-PARENT-SHORT-BROAD-CHILD")
+    broader_shortened_expires_at = DateTime.utc_now(:microsecond) |> DateTime.add(60, :second) |> DateTime.truncate(:microsecond)
+    requested_expires_at = DateTime.utc_now(:microsecond) |> DateTime.add(3600, :second) |> DateTime.truncate(:microsecond)
+    MintParentGrantRaceRepo.arm(broader_session.assignment.grant_id, %{expires_at: broader_shortened_expires_at})
+
+    broader_response =
+      try do
+        MCPHarness.request(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "mint_child_worker_key",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "mint_child_worker_key",
+              "arguments" => %{
+                "work_package_id" => broader_child_id,
+                "template" => %{"expires_at" => DateTime.to_iso8601(requested_expires_at)}
+              }
+            }
+          },
+          config: Config.default(repo: MintParentGrantRaceRepo),
+          session: broader_session
+        )
+      after
+        MintParentGrantRaceRepo.disarm()
+      end
+
+    assert get_in(broader_response, ["error", "code"]) == -32_602
+    assert get_in(broader_response, ["error", "data", "reason"]) == "broader_child_grant"
   end
 
   test "phase architect cannot mint or read child worker key for sibling anchor, sibling phase, or mismatched base branch", %{repo: repo} do

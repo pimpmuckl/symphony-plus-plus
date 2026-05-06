@@ -17,6 +17,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
           id: String.t() | nil,
           work_package_id: String.t() | nil,
           phase_id: String.t() | nil,
+          scope_repo: String.t() | nil,
+          scope_base_branch: String.t() | nil,
           display_key: String.t() | nil,
           secret_hash: String.t() | nil,
           grant_role: String.t() | nil,
@@ -32,6 +34,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
   schema "sympp_access_grants" do
     field(:work_package_id, :string)
     field(:phase_id, :string)
+    field(:scope_repo, :string)
+    field(:scope_base_branch, :string)
     field(:display_key, :string)
     field(:secret_hash, :string)
     field(:grant_role, :string)
@@ -87,6 +91,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
       :id,
       :work_package_id,
       :phase_id,
+      :scope_repo,
+      :scope_base_branch,
       :display_key,
       :secret_hash,
       :grant_role,
