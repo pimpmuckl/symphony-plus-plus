@@ -66,7 +66,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
     with :ok <- validate_metadata_ref(metadata, ref),
          {:ok, head_sha} <- metadata_head_sha(metadata, fallback_head_sha),
          {:ok, branch} <- metadata_branch(metadata),
-         {:ok, changed_files, changed_files_count} <- metadata_changed_files(metadata),
+         {:ok, base_branch} <- metadata_base_branch(metadata),
+         {:ok, changed_file_metadata} <- metadata_changed_files(metadata),
          {:ok, check_summary} <- metadata_map(metadata, "check_summary", %{}),
          {:ok, review_state} <- metadata_map(metadata, "review_state", github_review_state(metadata)),
          {:ok, merge_state} <- metadata_map(metadata, "merge_state", github_merge_state(metadata)) do
@@ -80,9 +81,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
          "repo" => ref.repo,
          "number" => ref.number,
          "branch" => branch,
+         "base_branch" => base_branch,
          "head_sha" => head_sha,
-         "changed_files" => changed_files,
-         "changed_files_count" => changed_files_count,
+         "changed_files" => changed_file_metadata.files,
+         "changed_files_count" => changed_file_metadata.count,
+         "changed_files_available" => changed_file_metadata.files_available,
+         "changed_files_count_available" => changed_file_metadata.count_available,
          "check_summary" => Redactor.redact(check_summary),
          "review_state" => Redactor.redact(review_state),
          "merge_state" => Redactor.redact(merge_state)
@@ -291,26 +295,75 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
     end
   end
 
-  defp metadata_changed_files(metadata) do
-    case Map.get(metadata, "changed_files", []) do
-      values when is_list(values) ->
-        changed_files = Enum.map(values, &changed_file/1)
-        {:ok, changed_files, length(changed_files)}
-
-      count when is_integer(count) and count >= 0 ->
-        {:ok, [], count}
+  defp metadata_base_branch(metadata) do
+    case Map.get(metadata, "base_branch") || get_in(metadata, ["base", "ref"]) do
+      value when is_binary(value) ->
+        value = String.trim(value)
+        if value == "", do: {:ok, nil}, else: {:ok, value}
 
       _value ->
-        {:error, :invalid_changed_files}
+        {:ok, nil}
     end
+  end
+
+  defp metadata_changed_files(metadata) do
+    with {:ok, reported_count} <- metadata_changed_files_count(metadata) do
+      case Map.get(metadata, "changed_files", :missing) do
+        values when is_list(values) ->
+          changed_files = Enum.map(values, &changed_file/1)
+          changed_file_count_metadata(changed_files, reported_count)
+
+        count when is_integer(count) and count >= 0 ->
+          {:ok, changed_file_metadata([], count, false, true)}
+
+        :missing ->
+          missing_changed_file_count_metadata(reported_count)
+
+        _value ->
+          {:error, :invalid_changed_files}
+      end
+    end
+  end
+
+  defp metadata_changed_files_count(metadata) do
+    case Map.get(metadata, "changed_files_count") do
+      nil -> {:ok, nil}
+      count when is_integer(count) and count >= 0 -> {:ok, count}
+      _value -> {:error, :invalid_changed_files_count}
+    end
+  end
+
+  defp changed_file_count_metadata([], nil), do: {:ok, changed_file_metadata([], 0, false, false)}
+
+  defp changed_file_count_metadata(changed_files, nil) do
+    count = length(changed_files)
+    {:ok, changed_file_metadata(changed_files, count, true, true)}
+  end
+
+  defp changed_file_count_metadata(changed_files, reported_count) do
+    count = max(reported_count, length(changed_files))
+    {:ok, changed_file_metadata(changed_files, count, reported_count <= length(changed_files), true)}
+  end
+
+  defp missing_changed_file_count_metadata(nil), do: {:ok, changed_file_metadata([], 0, false, false)}
+  defp missing_changed_file_count_metadata(reported_count), do: {:ok, changed_file_metadata([], reported_count, false, true)}
+
+  defp changed_file_metadata(files, count, files_available, count_available) do
+    %{
+      files: files,
+      count: count,
+      files_available: files_available,
+      count_available: count_available
+    }
   end
 
   defp changed_file(path) when is_binary(path), do: %{"path" => String.trim(path)}
 
   defp changed_file(%{} = value) do
     value
-    |> Map.take(["path", "filename", "status", "additions", "deletions", "changes"])
+    |> Map.take(["path", "filename", "previous_path", "previous_filename", "status", "additions", "deletions", "changes"])
     |> normalize_file_path()
+    |> normalize_previous_file_path()
   end
 
   defp changed_file(_value), do: %{}
@@ -318,6 +371,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
   defp normalize_file_path(%{"path" => path} = value) when is_binary(path), do: Map.put(value, "path", String.trim(path))
   defp normalize_file_path(%{"filename" => path} = value) when is_binary(path), do: value |> Map.put("path", String.trim(path)) |> Map.delete("filename")
   defp normalize_file_path(value), do: value
+
+  defp normalize_previous_file_path(%{"previous_path" => path} = value) when is_binary(path), do: Map.put(value, "previous_path", String.trim(path))
+
+  defp normalize_previous_file_path(%{"previous_filename" => path} = value) when is_binary(path) do
+    value
+    |> Map.put("previous_path", String.trim(path))
+    |> Map.delete("previous_filename")
+  end
+
+  defp normalize_previous_file_path(value), do: value
 
   defp metadata_map(metadata, key, fallback) do
     case Map.get(metadata, key, fallback) do

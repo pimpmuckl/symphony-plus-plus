@@ -436,7 +436,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert alerts["blocker"]["active"] == true
     assert alerts["stale_heartbeat"]["active"] == true
     assert alerts["failed_run"]["active"] == true
-    assert alerts["scope_drift"]["placeholder"] == true
+    assert alerts["scope_drift"]["placeholder"] == false
+    assert alerts["scope_drift"]["reasons"] == []
     refute alerts["scope_drift"]["active"]
 
     encoded = Jason.encode!(payload)
@@ -1116,6 +1117,214 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     stale_missing = Enum.find(stale_payload["alert_indicators"], &(&1["type"] == "missing_readiness_evidence"))
 
     assert "current_pr_state" in stale_missing["missing"]
+  end
+
+  test "dashboard exposes structured scope guard readiness reasons without synced secrets", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-SCOPE-GUARD",
+                 kind: "mcp",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta",
+                 status: "ready_for_human_merge",
+                 policy_template: "mcp_changed_file_scope_guard",
+                 allowed_file_globs: ["elixir/lib/**"]
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    timestamp = ~U[2026-05-05 00:00:00Z]
+    head_sha = "scope-dashboard-head"
+
+    assert {:ok, _plan_node} =
+             PlanningRepository.append_plan_node(repo, %{
+               work_package_id: work_package.id,
+               title: "Complete implementation",
+               status: "done"
+             })
+
+    assert {:ok, _branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Branch attached",
+               status: "branch_attached",
+               payload: %{"type" => "branch", "source_tool" => "attach_branch", "branch" => "agent/#{work_package.id}", "head_sha" => head_sha},
+               created_at: DateTime.add(timestamp, 1, :second)
+             })
+
+    assert {:ok, _pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR attached",
+               status: "pr_attached",
+               payload: %{"type" => "pr", "source_tool" => "attach_pr", "url" => "https://github.com/nextide/symphony-plus-plus/pull/12", "head_sha" => head_sha},
+               created_at: DateTime.add(timestamp, 2, :second)
+             })
+
+    assert {:ok, _sync} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR synced",
+               status: "pr_synced",
+               payload: %{
+                 "type" => "pr",
+                 "source_tool" => "sync_pr",
+                 "url" => "https://github.com/nextide/symphony-plus-plus/pull/12",
+                 "head_sha" => head_sha,
+                 "base_branch" => "symphony-plus-plus/beta",
+                 "changed_files" => [
+                   %{"path" => "elixir/lib/symphony_elixir/symphony_plus_plus/dashboard.ex"},
+                   %{"path" => "docs/scope-dashboard.md", "token" => "ghp_dashboard_secret"}
+                 ],
+                 "changed_files_count" => 2,
+                 "check_summary" => %{"conclusion" => "success", "token" => "ghp_dashboard_secret"},
+                 "review_state" => %{"state" => "approved"},
+                 "merge_state" => %{"state" => "clean"}
+               },
+               created_at: DateTime.add(timestamp, 3, :second)
+             })
+
+    assert {:ok, _review_package} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Review package",
+               status: "review_package_submitted",
+               payload: %{
+                 "type" => "review_package",
+                 "source_tool" => "submit_review_package",
+                 "head_sha" => head_sha,
+                 "summary" => "Ready review package",
+                 "tests" => ["mix test"],
+                 "artifacts" => ["review.txt"],
+                 "acceptance_criteria_met" => true,
+                 "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+               },
+               created_at: DateTime.add(timestamp, 4, :second)
+             })
+
+    assert {:ok, _review_artifact} =
+             PlanningRepository.append_artifact(repo, %{
+               id: review_artifact_id(work_package.id, head_sha, "review.txt"),
+               work_package_id: work_package.id,
+               path: "review.txt",
+               title: "Review artifact",
+               kind: "review"
+             })
+
+    assert {:ok, _review_suite_event} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               idempotency_key: "attach_review_suite_result:#{work_package.id}:dashboard-scope-suite",
+               summary: "Review-suite result",
+               status: "review_suite_passed",
+               payload: %{
+                 "type" => "review_suite_result",
+                 "source_tool" => "attach_review_suite_result",
+                 "work_package_id" => work_package.id,
+                 "head_sha" => head_sha,
+                 "suite" => "review-suite",
+                 "anchor" => "phase_gate-dashboard-scope",
+                 "summary" => "Review suite passed",
+                 "status" => "passed",
+                 "verdict" => "green"
+               },
+               created_at: DateTime.add(timestamp, 5, :second)
+             })
+
+    assert {:ok, _review_suite_artifact} =
+             PlanningRepository.append_artifact(repo, %{
+               id: review_suite_artifact_id(work_package.id, head_sha),
+               work_package_id: work_package.id,
+               path: "review-suite-result.json",
+               title: "Review-suite result",
+               kind: "review_suite"
+             })
+
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    alerts = Map.new(payload["alert_indicators"], &{&1["type"], &1})
+    missing = alerts["missing_readiness_evidence"]
+    scope = alerts["scope_drift"]
+
+    assert "scope_guard" in missing["missing"]
+    assert [%{"code" => "out_of_scope_files", "files" => ["docs/scope-dashboard.md"]}] = missing["reasons"]
+    assert scope["active"] == true
+    assert scope["reasons"] == missing["reasons"]
+    refute Jason.encode!(payload) =~ "ghp_dashboard_secret"
+  end
+
+  test "dashboard does not treat missing scope preconditions as critical drift", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-SCOPE-PRECONDITION",
+                 kind: "mcp",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta",
+                 status: "ready_for_human_merge",
+                 policy_template: "mcp_changed_file_scope_guard",
+                 allowed_file_globs: ["elixir/lib/**"]
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    alerts = Map.new(payload["alert_indicators"], &{&1["type"], &1})
+    scope = alerts["scope_drift"]
+
+    assert scope["active"] == false
+    assert scope["severity"] == "info"
+    assert [%{"code" => "missing_current_head"}] = scope["reasons"]
+
+    timestamp = ~U[2026-05-05 00:00:00Z]
+    head_sha = "scope-precondition-head"
+
+    assert {:ok, _branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Branch attached",
+               status: "branch_attached",
+               payload: %{"type" => "branch", "source_tool" => "attach_branch", "branch" => "agent/#{work_package.id}", "head_sha" => head_sha},
+               created_at: DateTime.add(timestamp, 1, :second)
+             })
+
+    assert {:ok, _pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR attached",
+               status: "pr_attached",
+               payload: %{"type" => "pr", "source_tool" => "attach_pr", "url" => "https://github.com/nextide/symphony-plus-plus/pull/13", "head_sha" => head_sha},
+               created_at: DateTime.add(timestamp, 2, :second)
+             })
+
+    assert {:ok, _sync} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR synced",
+               status: "pr_synced",
+               payload: %{
+                 "type" => "pr",
+                 "source_tool" => "sync_pr",
+                 "url" => "https://github.com/nextide/symphony-plus-plus/pull/13",
+                 "head_sha" => head_sha,
+                 "base_branch" => "symphony-plus-plus/beta",
+                 "changed_files" => [],
+                 "changed_files_count" => 0,
+                 "changed_files_available" => false
+               },
+               created_at: DateTime.add(timestamp, 3, :second)
+             })
+
+    blocked_payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    blocked_alerts = Map.new(blocked_payload["alert_indicators"], &{&1["type"], &1})
+    blocked_scope = blocked_alerts["scope_drift"]
+
+    assert blocked_scope["active"] == true
+    assert blocked_scope["severity"] == "warning"
+    assert blocked_scope["detail"] == "Scope guard evidence unavailable: changed_files_unavailable"
+    assert [%{"code" => "changed_files_unavailable"}] = blocked_scope["reasons"]
   end
 
   test "detail API exposes stale synced PR metadata without secrets", %{repo: repo} do

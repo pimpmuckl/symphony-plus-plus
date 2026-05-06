@@ -7,11 +7,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Renderer
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Policies.Templates
+  alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
   @default_kind "quick_fix"
   @required_fields ["repo", "base_branch", "title"]
+  @scope_guard_gate "scope_guard"
 
   @type request :: map()
   @type creation :: %{
@@ -30,6 +32,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
           | :invalid_request
           | :invalid_work_package_id
           | :missing_acceptance_criteria
+          | :missing_allowed_file_globs
+          | :overbroad_allowed_file_globs
           | :parent_not_supported
           | :policy_template_mismatch
           | :standalone_kind_not_supported
@@ -56,7 +60,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
          {:ok, policy_key, policy} <- policy_for(kind, policy_templates),
          {:ok, acceptance_criteria} <- normalize_acceptance_criteria(Map.get(attrs, "acceptance_criteria", [])),
          {:ok, allowed_file_globs} <- normalize_allowed_file_globs(Map.get(attrs, "allowed_file_globs", [])),
-         :ok <- require_acceptance_criteria(policy, acceptance_criteria) do
+         :ok <- require_acceptance_criteria(policy, acceptance_criteria),
+         :ok <- require_scope_guard_constraints(policy, allowed_file_globs) do
       {:ok,
        attrs
        |> Map.take([
@@ -132,6 +137,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   def error_message(:invalid_request), do: "Create-work request must be a JSON/YAML object"
   def error_message(:invalid_work_package_id), do: "id must be a nonblank string when provided"
   def error_message(:missing_acceptance_criteria), do: "acceptance_criteria is required for this work kind"
+  def error_message(:missing_allowed_file_globs), do: "allowed_file_globs is required for scope-guard policy templates"
+  def error_message(:overbroad_allowed_file_globs), do: "allowed_file_globs cannot contain repo-wide catch-all globs"
   def error_message(:parent_not_supported), do: "Standalone create-work does not accept parent_id"
   def error_message(:policy_template_mismatch), do: "policy_template/review_suite_template must select the same policy"
 
@@ -511,6 +518,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   end
 
   defp require_acceptance_criteria(_policy, _acceptance_criteria), do: :ok
+
+  defp require_scope_guard_constraints(%{required_gates: required_gates}, allowed_file_globs) do
+    if @scope_guard_gate in required_gates do
+      cond do
+        allowed_file_globs == [] -> {:error, :missing_allowed_file_globs}
+        Enum.any?(allowed_file_globs, &ScopeGuard.overbroad_glob?/1) -> {:error, :overbroad_allowed_file_globs}
+        true -> :ok
+      end
+    else
+      :ok
+    end
+  end
 
   defp normalize_acceptance_criteria(criteria) when is_list(criteria) do
     criteria = Enum.map(criteria, &normalize_acceptance_criterion/1)
