@@ -657,7 +657,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     if phase_id == "", do: {:error, :forbidden}, else: {:ok, phase_id}
   end
 
-  defp phase_scope(repo, %AccessGrant{work_package_id: work_package_id}) when is_binary(work_package_id) do
+  defp phase_scope(repo, %AccessGrant{phase_id: nil, work_package_id: work_package_id}) when is_binary(work_package_id) do
     case WorkPackageRepository.get(repo, work_package_id) do
       {:ok, %{phase_id: phase_id}} when is_binary(phase_id) and phase_id != "" -> {:ok, phase_id}
       {:ok, _work_package} -> {:error, :forbidden}

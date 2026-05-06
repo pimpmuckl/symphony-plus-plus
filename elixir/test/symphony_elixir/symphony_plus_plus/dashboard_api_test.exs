@@ -70,6 +70,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     defp count_artifact_list_query(_query), do: :ok
   end
 
+  defmodule MalformedPhaseGrantRepo do
+    @moduledoc false
+
+    def one(_query), do: :persistent_term.get({__MODULE__, :grant})
+    def get(_schema, _id), do: raise("non-null malformed phase scope must not derive from anchor")
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
@@ -236,6 +243,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     assert %{"error" => %{"code" => "forbidden"}} =
              json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{other_package.id}"), 403)
+  end
+
+  test "dashboard anchor fallback applies only to null phase grant scopes" do
+    now = DateTime.utc_now(:microsecond)
+    work_key = WorkKey.generate()
+
+    :persistent_term.put(
+      {MalformedPhaseGrantRepo, :grant},
+      %AccessGrant{
+        id: "grant-dashboard-malformed-phase",
+        work_package_id: "SYMPP-DASH-MALFORMED-PHASE",
+        phase_id: :malformed,
+        display_key: work_key.display_key,
+        secret_hash: WorkKey.secret_hash(work_key.secret),
+        grant_role: "architect",
+        capabilities: ["read:phase"],
+        expires_at: DateTime.add(now, 3600, :second),
+        claimed_at: now,
+        claimed_by: "architect-malformed"
+      }
+    )
+
+    on_exit(fn -> :persistent_term.erase({MalformedPhaseGrantRepo, :grant}) end)
+
+    with_endpoint_repo(MalformedPhaseGrantRepo, fn ->
+      assert %{"error" => %{"code" => "forbidden"}} =
+               json_response(get(auth_conn(work_key.secret), "/api/v1/sympp/board"), 403)
+    end)
   end
 
   test "phase board grants are denied after their architect anchor leaves the phase", %{repo: repo} do
