@@ -27,11 +27,11 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 
 | Tool | Purpose |
 |---|---|
-| create_child_work_package | Phase 7 stub for creating phase-scoped child work; returns `phase7_not_implemented` after architect authorization. |
-| mint_child_worker_key | Phase 7 stub for minting child worker keys; returns `phase7_not_implemented` after architect authorization. |
+| create_child_work_package | Create a `phase_child` work package inside the architect grant's current phase; child repo, phase, parent, and base branch are constrained to the architect phase anchor. |
+| mint_child_worker_key | Mint a child-scoped worker grant for a same-phase `phase_child` package; worker capabilities are limited to the child worker set and expiry cannot exceed the architect grant. |
 | revoke_child_worker_key | Phase 7 stub for revoking child worker keys; returns `phase7_not_implemented` after architect authorization. |
-| read_child_status | Read the architect grant's scoped work-package status without Phase 7 delegation. |
-| read_phase_board | Phase 7 stub for phase board reads; returns `phase7_not_implemented` after architect authorization. |
+| read_child_status | Read the architect grant's scoped anchor package status, or a same-phase child work-package status when the architect grant has child read capabilities. |
+| read_phase_board | Read the architect grant's scoped phase board. |
 | request_child_replan | Phase 7 stub for child replan requests; returns `phase7_not_implemented` after architect authorization. |
 | approve_child_ready_state | Phase 7 stub for child readiness approval; returns `phase7_not_implemented` after architect authorization. |
 | merge_child_into_phase | Phase 7 stub for merge-to-phase recording; returns `phase7_not_implemented` after architect authorization. |
@@ -52,15 +52,21 @@ scoped `work_package_id` after reconnect, but architect sessions still cannot
 use worker package read/write tools. Existing lifecycle capabilities such as
 `architect:lifecycle.transition` do not imply MCP architect tool capabilities;
 P3-003 requires the explicit MCP capability strings listed in the permission
-model. Until Phase 7 introduces phase
-entities and phase-child scope checks, `read_child_status` requires both
-`read:child_progress` and `read:child_findings` because its summary includes
-progress, findings, and artifact counts, and it is intentionally limited to the
-work package bound to the architect grant. Requests for unrelated work packages
-are denied rather than guessed from absent phase relationships.
-Phase 7-dependent tools perform authorization first and then return an explicit
-`phase7_not_implemented` error; they do not create children, mint grants,
-approve readiness, merge phase artifacts, or publish phase state in P3-003.
+model. Phase-dependent architect tools revalidate the grant's explicit phase
+scope, or the current explicit phase of the grant's anchor package for legacy
+null-`phase_id` grants, before acting. `create_child_work_package` always creates
+a `phase_child` package under the architect phase anchor, rejects mismatched
+`phase_id`, `parent_id`, `repo`, or `base_branch`, and inherits the anchor base
+branch because there is no separate phase base-branch policy field. It does not
+support context-slice input in this contract. `mint_child_worker_key` only mints
+single-package worker grants for same-phase child packages; the minted worker
+grant cannot include architect capabilities, cannot include capabilities outside
+the child worker capability set, and cannot outlive the architect grant.
+`read_child_status` requires both `read:child_progress` and
+`read:child_findings` because its summary includes progress, findings, and
+artifact counts. Remaining Phase 7-dependent tools perform authorization first
+and then return an explicit `phase7_not_implemented` error; they do not approve
+readiness, merge phase artifacts, or publish phase state in P7-002.
 
 ## Resources
 

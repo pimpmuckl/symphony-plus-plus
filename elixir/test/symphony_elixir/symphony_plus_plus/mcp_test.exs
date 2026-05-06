@@ -2663,49 +2663,253 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(sibling_response, ["error", "data", "reason"]) == "outside_session_scope"
   end
 
-  test "Phase 7 architect tools return explicit not-yet-implemented errors without minting grants", %{repo: repo} do
-    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-PHASE7", kind: "mcp"))
-    assert {:ok, sibling} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-PHASE7-SIBLING", kind: "mcp"))
+  test "phase architect creates child work package inside scoped phase", %{repo: repo} do
+    {anchor, session} =
+      create_architect_session(repo, "SYMPP-P7-002-CREATE-ANCHOR", [
+        "create:child_work_package",
+        "read:phase"
+      ])
 
-    assert {:ok, architect_work_key} =
-             create_architect_work_key(repo, package.id, ["mint:child_worker_key", "read:phase"])
+    response =
+      mcp_tool(repo, session, "create_child_work_package", %{
+        "package" => %{
+          "id" => "SYMPP-P7-002-CREATED-CHILD",
+          "title" => "Implement child lane",
+          "acceptance_criteria" => ["Child lane complete"],
+          "allowed_file_globs" => ["elixir/lib/symphony_elixir/**"]
+        }
+      })
 
-    assert {:ok, architect_assignment} =
-             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+    assert get_in(response, ["result", "structuredContent", "work_package", "id"]) == "SYMPP-P7-002-CREATED-CHILD"
+    assert get_in(response, ["result", "structuredContent", "work_package", "kind"]) == "phase_child"
+    assert get_in(response, ["result", "structuredContent", "work_package", "phase_id"]) == @architect_phase_id
+    assert get_in(response, ["result", "structuredContent", "work_package", "parent_id"]) == anchor.id
+    assert get_in(response, ["result", "structuredContent", "work_package", "base_branch"]) == "symphony-plus-plus/beta"
+    assert get_in(response, ["result", "structuredContent", "work_package", "repo"]) == "nextide/symphony-plus-plus"
 
-    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
-    grants_before = repo.aggregate(AccessGrant, :count)
+    assert {:ok, child} = WorkPackageRepository.get(repo, "SYMPP-P7-002-CREATED-CHILD")
+    assert child.status == "ready_for_worker"
+    assert child.policy_template == "phase_child"
+    assert child.allowed_file_globs == ["elixir/lib/symphony_elixir/**"]
+  end
+
+  test "phase architect cannot create child outside scoped phase or base branch", %{repo: repo} do
+    {_anchor, session} =
+      create_architect_session(repo, "SYMPP-P7-002-CREATE-SCOPE-ANCHOR", [
+        "create:child_work_package",
+        "read:phase"
+      ])
+
+    assert {:ok, other_phase} = PhaseRepository.create(repo, %{id: "phase-p7-002-outside", title: "Outside phase"})
+
+    out_of_phase_response =
+      mcp_tool(repo, session, "create_child_work_package", %{
+        "package" => %{
+          "id" => "SYMPP-P7-002-OUT-OF-PHASE",
+          "title" => "Invalid child",
+          "phase_id" => other_phase.id,
+          "acceptance_criteria" => ["Should not be created"]
+        }
+      })
+
+    assert get_in(out_of_phase_response, ["error", "code"]) == -32_003
+    assert get_in(out_of_phase_response, ["error", "data", "reason"]) == "outside_session_scope"
+    assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-OUT-OF-PHASE")
+
+    wrong_base_response =
+      mcp_tool(repo, session, "create_child_work_package", %{
+        "package" => %{
+          "id" => "SYMPP-P7-002-WRONG-BASE",
+          "title" => "Wrong base",
+          "base_branch" => "main",
+          "acceptance_criteria" => ["Should not be created"]
+        }
+      })
+
+    assert get_in(wrong_base_response, ["error", "code"]) == -32_602
+    assert get_in(wrong_base_response, ["error", "data", "reason"]) == "base_branch_scope_mismatch"
+    assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-WRONG-BASE")
+  end
+
+  test "phase architect mints child worker grant and worker is isolated to child package", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-MINT-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:child_progress",
+        "read:child_findings",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-CHILD")
+    sibling_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-SIBLING")
 
     mint_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => %{}
+      })
+
+    assert get_in(mint_response, ["result", "structuredContent", "worker_grant", "work_package_id"]) == child_id
+    assert get_in(mint_response, ["result", "structuredContent", "worker_grant", "grant_role"]) == "worker"
+
+    assert get_in(mint_response, ["result", "structuredContent", "worker_grant", "capabilities"]) == [
+             "worker:claim",
+             "worker:lifecycle.transition"
+           ]
+
+    worker_secret = get_in(mint_response, ["result", "structuredContent", "worker_grant", "secret"])
+    assert is_binary(worker_secret)
+
+    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, worker_secret, claimed_by: "worker-1")
+    worker_session = MCPHarness.session(worker_assignment, proof_hash: WorkKey.secret_hash(worker_secret))
+
+    assignment_response = mcp_tool(repo, worker_session, "get_current_assignment", %{})
+    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == child_id
+    assert get_in(assignment_response, ["result", "structuredContent", "assignment", "phase_id"]) == nil
+
+    own_resource_response =
       MCPHarness.request(
         %{
           "jsonrpc" => "2.0",
-          "id" => "mint-child",
-          "method" => "tools/call",
-          "params" => %{"name" => "mint_child_worker_key", "arguments" => %{"work_package_id" => package.id, "template" => %{}}}
+          "id" => "read-child-task-plan",
+          "method" => "resources/read",
+          "params" => %{"uri" => "sympp://work-packages/#{child_id}/task_plan.md"}
         },
         repo: repo,
-        session: session
+        session: worker_session
       )
 
-    assert get_in(mint_response, ["error", "code"]) == -32_604
-    assert get_in(mint_response, ["error", "data", "reason"]) == "phase7_not_implemented"
+    assert get_in(own_resource_response, ["result", "contents", Access.at(0), "text"]) =~ child_id
+
+    sibling_resource_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "read-sibling-task-plan",
+          "method" => "resources/read",
+          "params" => %{"uri" => "sympp://work-packages/#{sibling_id}/task_plan.md"}
+        },
+        repo: repo,
+        session: worker_session
+      )
+
+    assert get_in(sibling_resource_response, ["error", "code"]) == -32_003
+    assert get_in(sibling_resource_response, ["error", "data", "reason"]) == "outside_session_scope"
+
+    child_status_response =
+      mcp_tool(repo, architect_session, "read_child_status", %{"work_package_id" => child_id})
+
+    assert get_in(child_status_response, ["result", "structuredContent", "work_package", "id"]) == child_id
+    assert get_in(child_status_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_worker"
+  end
+
+  test "child worker key minting rejects broader grants and worker callers", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-BROADER-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-BROADER-CHILD")
+
+    broader_capability_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => %{"capabilities" => ["worker:claim", "read:phase"]}
+      })
+
+    assert get_in(broader_capability_response, ["error", "code"]) == -32_602
+    assert get_in(broader_capability_response, ["error", "data", "reason"]) == "broader_child_grant"
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, child_id)
+    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    worker_session = MCPHarness.session(worker_assignment, proof_hash: minted.grant.secret_hash)
+
+    worker_mint_response =
+      mcp_tool(repo, worker_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => %{}
+      })
+
+    assert get_in(worker_mint_response, ["error", "code"]) == -32_001
+    assert get_in(worker_mint_response, ["error", "data", "reason"]) == "architect_grant_required"
+  end
+
+  test "phase architect cannot mint child worker key for sibling phase or mismatched base branch", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-MINT-SCOPE-ANCHOR", [
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    assert {:ok, other_phase} = PhaseRepository.create(repo, %{id: "phase-p7-002-mint-outside", title: "Mint outside phase"})
+
+    assert {:ok, out_of_phase_child} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-P7-002-MINT-OUT-OF-PHASE",
+                 kind: "phase_child",
+                 policy_template: "phase_child",
+                 phase_id: other_phase.id,
+                 parent_id: "SYMPP-P7-002-MINT-SCOPE-ANCHOR",
+                 base_branch: "symphony-plus-plus/beta",
+                 repo: "nextide/symphony-plus-plus",
+                 status: "ready_for_worker"
+               )
+             )
+
+    out_of_phase_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => out_of_phase_child.id,
+        "template" => %{}
+      })
+
+    assert get_in(out_of_phase_response, ["error", "code"]) == -32_003
+    assert get_in(out_of_phase_response, ["error", "data", "reason"]) == "outside_session_scope"
+
+    assert {:ok, wrong_base_child} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-P7-002-MINT-WRONG-BASE",
+                 kind: "phase_child",
+                 policy_template: "phase_child",
+                 phase_id: @architect_phase_id,
+                 parent_id: "SYMPP-P7-002-MINT-SCOPE-ANCHOR",
+                 base_branch: "main",
+                 repo: "nextide/symphony-plus-plus",
+                 status: "ready_for_worker"
+               )
+             )
+
+    wrong_base_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => wrong_base_child.id,
+        "template" => %{}
+      })
+
+    assert get_in(wrong_base_response, ["error", "code"]) == -32_602
+    assert get_in(wrong_base_response, ["error", "data", "reason"]) == "base_branch_scope_mismatch"
+  end
+
+  test "remaining Phase 7 architect stubs return explicit not-yet-implemented errors", %{repo: repo} do
+    {_package, session} =
+      create_architect_session(repo, "SYMPP-ARCHITECT-PHASE7", [
+        "read:phase",
+        "revoke:child_worker_key"
+      ])
+
+    grants_before = repo.aggregate(AccessGrant, :count)
+
+    revoke_response =
+      mcp_tool(repo, session, "revoke_child_worker_key", %{"grant_id" => "grant-placeholder", "reason" => "not wired"})
+
+    assert get_in(revoke_response, ["error", "code"]) == -32_604
+    assert get_in(revoke_response, ["error", "data", "reason"]) == "phase7_not_implemented"
     assert repo.aggregate(AccessGrant, :count) == grants_before
-
-    out_of_scope_mint_response =
-      MCPHarness.request(
-        %{
-          "jsonrpc" => "2.0",
-          "id" => "mint-child-sibling",
-          "method" => "tools/call",
-          "params" => %{"name" => "mint_child_worker_key", "arguments" => %{"work_package_id" => sibling.id, "template" => %{}}}
-        },
-        repo: repo,
-        session: session
-      )
-
-    assert get_in(out_of_scope_mint_response, ["error", "code"]) == -32_003
-    assert get_in(out_of_scope_mint_response, ["error", "data", "reason"]) == "outside_session_scope"
   end
 
   test "Phase 7 architect stubs revalidate phase anchors before not-implemented", %{repo: repo} do
@@ -7619,6 +7823,58 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   defp review_suite_artifact_id(work_package_id, head_sha) do
     material = [work_package_id, head_sha, "review-suite-result.json"] |> Enum.join(":")
     "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
+  end
+
+  defp create_architect_session(repo, work_package_id, capabilities) do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: work_package_id,
+                 kind: "mcp",
+                 base_branch: "symphony-plus-plus/beta",
+                 repo: "nextide/symphony-plus-plus",
+                 allowed_file_globs: ["elixir/lib/**"],
+                 status: "planning"
+               )
+             )
+
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, capabilities)
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+    {:ok, package} = WorkPackageRepository.get(repo, package.id)
+
+    {package, session}
+  end
+
+  defp mcp_tool(repo, session, name, arguments) do
+    MCPHarness.request(
+      %{
+        "jsonrpc" => "2.0",
+        "id" => name,
+        "method" => "tools/call",
+        "params" => %{"name" => name, "arguments" => arguments}
+      },
+      repo: repo,
+      session: session
+    )
+  end
+
+  defp create_child_work_package(repo, session, child_id) do
+    response =
+      mcp_tool(repo, session, "create_child_work_package", %{
+        "package" => %{
+          "id" => child_id,
+          "title" => "Implement #{child_id}",
+          "acceptance_criteria" => ["Complete #{child_id}"]
+        }
+      })
+
+    assert get_in(response, ["result", "structuredContent", "work_package", "id"]) == child_id
+    child_id
   end
 
   defp create_architect_work_key(repo, work_package_id, capabilities \\ ["architect:lifecycle.transition"]) do

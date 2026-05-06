@@ -78,11 +78,13 @@
   "architect_tools": [
     {
       "name": "create_child_work_package",
-      "purpose": "Phase 7 stub for creating phase-scoped child work; returns phase7_not_implemented after architect authorization."
+      "purpose": "Create a phase_child work package inside the architect grant's current phase; child repo, phase, parent, and base branch are constrained to the architect phase anchor.",
+      "scope_policy": "Rejects mismatched phase_id, parent_id, repo, or base_branch and inherits the anchor base branch because there is no separate phase base-branch policy field."
     },
     {
       "name": "mint_child_worker_key",
-      "purpose": "Phase 7 stub for minting child worker keys; returns phase7_not_implemented after architect authorization."
+      "purpose": "Mint a child-scoped worker grant for a same-phase phase_child package.",
+      "scope_policy": "Worker grants are single-package grants, capabilities are limited to worker:claim and worker:lifecycle.transition, and expiry cannot exceed the architect grant."
     },
     {
       "name": "revoke_child_worker_key",
@@ -90,13 +92,13 @@
     },
     {
       "name": "read_child_status",
-      "purpose": "Read the architect grant's scoped work-package status without Phase 7 delegation.",
+      "purpose": "Read the architect grant's scoped anchor package status or a same-phase child work-package status.",
       "required_capabilities": ["read:child_progress", "read:child_findings"],
-      "scope_policy": "Until Phase 7 phase-child relationships exist, this only reads the work package bound to the architect grant."
+      "scope_policy": "Anchor reads remain package-scoped; child reads require the child package to be in the architect grant's current phase and match the phase anchor repo/base branch."
     },
     {
       "name": "read_phase_board",
-      "purpose": "Phase 7 stub for phase board reads; returns phase7_not_implemented after architect authorization."
+      "purpose": "Read the architect grant's scoped phase board."
     },
     {
       "name": "request_child_replan",

@@ -133,11 +133,10 @@ split_work_package(work_package_id, child_specs)
 publish_phase_update(phase_id, update)
 ```
 
-P3-003 exposes this architect-facing tool surface but does not implement Phase
-7 delegation. Architect tools require a live architect grant and the matching
-architect capability; worker grants and insufficient architect grants are
-denied. Worker grants cannot be minted with architect-only MCP capabilities,
-including unprefixed P3/P7 capability strings such as `read:phase` or
+Architect tools require a live architect grant and the matching architect
+capability; worker grants and insufficient architect grants are denied. Worker
+grants cannot be minted with architect-only MCP capabilities, including
+unprefixed P3/P7 capability strings such as `read:phase` or
 `mint:child_worker_key`. `tools/list` advertises architect tools only when an
 architect session is already bound and filters them to the live grant's
 capabilities. Stale sessions expose only health and `claim_work_key` for
@@ -146,16 +145,21 @@ surface. Architect sessions may call `get_current_assignment()` and read
 `sympp://assignment/current` to recover their scoped `work_package_id` after
 reconnect, but they still cannot use worker package read/write tools.
 Lifecycle capabilities such as `architect:lifecycle.transition` do not imply
-MCP architect tool capabilities; P3-003 requires the explicit MCP capability
-strings listed in the permission model.
-`read_child_status(work_package_id)` is the
-only safe read-only tool implemented before Phase 7. It requires both
-`read:child_progress` and `read:child_findings` because its status payload
-includes progress, finding, and artifact counts, and it is limited to the work
-package currently scoped to the architect grant because phase-child
-relationships do not exist yet. The remaining architect tools return explicit
-`phase7_not_implemented`
-errors after authorization and must not create child work, mint worker keys,
+MCP architect tool capabilities; the explicit MCP capability strings listed in
+the permission model are required.
+
+Phase-dependent architect tools revalidate the grant's explicit phase scope, or
+the current explicit phase of the grant's anchor package for legacy null
+`phase_id` grants, before acting. `create_child_work_package(package)` creates
+only `phase_child` work inside the architect phase anchor, inherits the anchor
+base branch, and rejects mismatched phase, parent, repo, or base branch input.
+Context-slice input is not part of the current contract. `mint_child_worker_key`
+mints only single-package worker grants for same-phase children, with
+capabilities limited to the child worker set and expiry capped by the architect
+grant. `read_child_status(work_package_id)` requires both
+`read:child_progress` and `read:child_findings`; it can read the architect
+anchor package or a same-phase child package. The remaining architect tools
+return explicit `phase7_not_implemented` errors after authorization and must not
 approve ready children, merge into a phase, or publish phase state.
 
 ## Skill rules
