@@ -2676,7 +2676,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "id" => "SYMPP-P7-002-CREATED-CHILD",
           "title" => "Implement child lane",
           "acceptance_criteria" => ["Child lane complete"],
-          "allowed_file_globs" => ["elixir/lib/symphony_elixir/**"]
+          "allowed_file_globs" => ["./elixir\\lib\\symphony_elixir/**"]
         }
       })
 
@@ -2729,6 +2729,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(wrong_base_response, ["error", "code"]) == -32_602
     assert get_in(wrong_base_response, ["error", "data", "reason"]) == "base_branch_scope_mismatch"
     assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-WRONG-BASE")
+
+    empty_globs_response =
+      mcp_tool(repo, session, "create_child_work_package", %{
+        "package" => %{
+          "id" => "SYMPP-P7-002-EMPTY-GLOBS",
+          "title" => "Empty globs",
+          "allowed_file_globs" => [],
+          "acceptance_criteria" => ["Should not be created"]
+        }
+      })
+
+    assert get_in(empty_globs_response, ["error", "code"]) == -32_602
+    assert get_in(empty_globs_response, ["error", "data", "reason"]) == "missing_allowed_file_globs"
+    assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-EMPTY-GLOBS")
   end
 
   test "phase architect mints child worker grant and worker is isolated to child package", %{repo: repo} do

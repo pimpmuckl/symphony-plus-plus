@@ -1678,7 +1678,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp child_allowed_file_globs(package, %WorkPackage{} = anchor) do
-    default_globs = anchor.allowed_file_globs || []
+    default_globs = normalize_child_globs(anchor.allowed_file_globs || [])
 
     with {:ok, globs} <- optional_child_string_list(package, "allowed_file_globs", default_globs),
          :ok <- reject_overbroad_child_globs(globs),
@@ -1696,7 +1696,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp require_child_globs_within_anchor(_child_globs, []), do: :ok
-  defp require_child_globs_within_anchor([], _anchor_globs), do: :ok
 
   defp require_child_globs_within_anchor(child_globs, anchor_globs) do
     if Enum.all?(child_globs, &glob_within_any_anchor?(&1, anchor_globs)) do
@@ -1713,6 +1712,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp glob_within_anchor?(child_glob, child_glob), do: true
 
   defp glob_within_anchor?(child_glob, anchor_glob) do
+    child_glob = normalize_child_glob(child_glob)
+    anchor_glob = normalize_child_glob(anchor_glob)
+
     if String.ends_with?(anchor_glob, "/**") do
       anchor_prefix = String.replace_suffix(anchor_glob, "/**", "/")
       String.starts_with?(child_glob, anchor_prefix)
@@ -1753,13 +1755,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp normalize_child_string_list([], key), do: {:tool_error, "missing_#{key}"}
+
   defp normalize_child_string_list(values, key) do
-    if Enum.all?(values, &(is_binary(&1) and String.trim(&1) != "")) do
-      {:ok, Enum.map(values, &String.trim/1)}
+    if Enum.all?(values, &(is_binary(&1) and normalize_child_glob(&1) != "")) do
+      case normalize_child_globs(values) do
+        [] -> {:tool_error, "missing_#{key}"}
+        globs -> {:ok, globs}
+      end
     else
       {:tool_error, "invalid_#{key}"}
     end
   end
+
+  defp normalize_child_globs(globs) when is_list(globs) do
+    globs
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&normalize_child_glob/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp normalize_child_glob(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.replace("\\", "/")
+    |> String.replace(~r/\A\.\//, "")
+  end
+
+  defp normalize_child_glob(_value), do: ""
 
   defp blank_default(value, default) do
     case String.trim(value) do
