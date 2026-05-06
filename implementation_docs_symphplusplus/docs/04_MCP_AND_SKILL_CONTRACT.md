@@ -151,8 +151,11 @@ the permission model are required.
 Phase-dependent architect tools revalidate the grant's explicit phase scope plus
 the anchor repo/base-branch scope frozen when the phase architect grant was
 minted. Legacy null `phase_id` grants may still derive the current explicit
-anchor phase for non-delegation phase reads, but P7 child delegation/status
-operations fail closed when the frozen repo/base-branch snapshot is missing.
+anchor phase for non-delegation phase reads, but scoped explicit phase-board
+reads and P7 child delegation/status operations fail closed when the frozen
+repo/base-branch snapshot is missing; migrations do not backfill that snapshot
+from mutable anchor state. `read_phase_board(phase_id)` filters explicit phase
+architect grants to the frozen repo/base-branch boundary.
 `create_child_work_package(package)` creates only `phase_child` work inside the
 architect phase anchor, inherits the anchor base branch, and rejects mismatched
 phase, parent, repo, or base branch input. Child creation revalidates that

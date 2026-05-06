@@ -1543,9 +1543,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- architect_session(config.repo, session, "read:phase"),
          {:ok, phase_id} <- required_argument(arguments, "phase_id"),
          :ok <- require_architect_phase_scope(config.repo, session, phase_id),
-         :ok <- require_architect_phase_anchor(config.repo, session, phase_id),
+         {:ok, board_scope} <- require_architect_phase_board_scope(config.repo, session, phase_id),
          {:ok, board} <- Dashboard.phase_board(config.repo, phase_id) do
-      {:ok, tool_result(json_safe_payload(board))}
+      {:ok, tool_result(json_safe_payload(filter_phase_board(board, board_scope)))}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_phase_board", "reason" => reason}}
       {:error, reason} -> architect_error(reason, "read_phase_board")
@@ -1559,6 +1559,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     else
       {:error, reason} -> architect_error(reason, name)
     end
+  end
+
+  defp require_architect_phase_board_scope(repo, %Session{} = session, phase_id) do
+    with {:ok, grant} <- require_live_architect_grant(repo, session),
+         {:ok, anchor} <- architect_anchor_work_package(repo, session),
+         :ok <- require_architect_anchor_scope(anchor, grant, phase_id),
+         {:ok, board_scope} <- phase_board_scope_filter(grant) do
+      {:ok, board_scope}
+    else
+      {:error, :not_found} -> {:error, :phase_scope_not_available}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp phase_board_scope_filter(%AccessGrant{} = grant) do
+    if architect_explicit_phase_grant?(grant) do
+      with {:ok, repo} <- frozen_scope_value(grant.scope_repo),
+           {:ok, base_branch} <- frozen_scope_value(grant.scope_base_branch) do
+        {:ok, {:repo_base, repo, base_branch}}
+      else
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:ok, :phase}
+    end
+  end
+
+  defp frozen_scope_value(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> {:error, :phase_scope_not_available}
+      trimmed -> {:ok, trimmed}
+    end
+  end
+
+  defp frozen_scope_value(_value), do: {:error, :phase_scope_not_available}
+
+  defp filter_phase_board(board, :phase), do: board
+
+  defp filter_phase_board(%{groups: groups} = board, {:repo_base, repo, base_branch}) do
+    filtered_groups =
+      Map.new(groups, fn {status, cards} ->
+        {status, Enum.filter(cards, &phase_board_card_in_scope?(&1, repo, base_branch))}
+      end)
+
+    %{board | groups: filtered_groups, total_count: phase_board_total_count(filtered_groups)}
+  end
+
+  defp phase_board_card_in_scope?(%{repo: card_repo, base_branch: card_base_branch}, repo, base_branch),
+    do: card_repo == repo and card_base_branch == base_branch
+
+  defp phase_board_card_in_scope?(_card, _repo, _base_branch), do: false
+
+  defp phase_board_total_count(groups) do
+    groups
+    |> Map.values()
+    |> Enum.map(&length/1)
+    |> Enum.sum()
   end
 
   defp require_architect_target_scope(repo, %Session{} = session, %{"work_package_id" => work_package_id}) do
@@ -1691,24 +1748,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          :ok <- lock_work_package(repo, Session.work_package_id(session)),
          {:ok, phase_id, anchor} <- architect_child_phase_anchor(repo, session, architect_grant),
          {:ok, grant_opts} <- child_worker_grant_opts(template, architect_grant),
-         {:ok, child} <- require_child_ready_for_mint(repo, work_package_id),
-         :ok <- require_phase_child_scope(child, anchor, phase_id),
+         {:ok, child} <- require_child_ready_for_mint(repo, work_package_id, anchor, phase_id),
          {:ok, minted} <- AccessGrantService.mint_worker_grant(repo, child.id, grant_opts) do
       {:ok, {child, minted}}
     end
   end
 
-  defp require_child_ready_for_mint(repo, work_package_id) when is_binary(work_package_id) do
+  defp require_child_ready_for_mint(repo, work_package_id, %WorkPackage{} = anchor, phase_id) when is_binary(work_package_id) do
     now = DateTime.utc_now(:microsecond)
 
     query =
       from(work_package in WorkPackage,
-        where: work_package.id == ^work_package_id and work_package.status == "ready_for_worker"
+        where:
+          work_package.id == ^work_package_id and work_package.status == "ready_for_worker" and
+            work_package.kind == "phase_child" and work_package.phase_id == ^phase_id and work_package.parent_id == ^anchor.id and
+            work_package.repo == ^anchor.repo and work_package.base_branch == ^anchor.base_branch
       )
 
     case repo.update_all(query, set: [updated_at: now]) do
-      {1, _rows} -> WorkPackageRepository.get(repo, work_package_id)
-      {0, _rows} -> {:tool_error, "child_not_ready_for_worker"}
+      {1, _rows} -> require_transaction_current_child_scope(repo, work_package_id, anchor, phase_id)
+      {0, _rows} -> classify_child_ready_mint_miss(repo, work_package_id, anchor, phase_id)
+    end
+  end
+
+  defp require_transaction_current_child_scope(repo, work_package_id, anchor, phase_id) do
+    with {:ok, child} <- WorkPackageRepository.get(repo, work_package_id),
+         :ok <- require_phase_child_scope(child, anchor, phase_id) do
+      {:ok, child}
+    end
+  end
+
+  defp classify_child_ready_mint_miss(repo, work_package_id, anchor, phase_id) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, child} ->
+        case require_phase_child_scope(child, anchor, phase_id) do
+          :ok -> {:tool_error, "child_not_ready_for_worker"}
+          {:error, reason} -> {:error, reason}
+          {:tool_error, reason} -> {:tool_error, reason}
+        end
+
+      {:error, _reason} ->
+        {:error, :phase_scope_not_available}
     end
   end
 

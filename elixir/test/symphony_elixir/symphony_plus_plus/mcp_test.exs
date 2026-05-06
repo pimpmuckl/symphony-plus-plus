@@ -3756,6 +3756,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                )
              )
 
+    sibling_anchor_child_updated_at = sibling_anchor_child.updated_at
+
     sibling_anchor_mint_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
         "work_package_id" => sibling_anchor_child.id,
@@ -3764,6 +3766,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(sibling_anchor_mint_response, ["error", "code"]) == -32_003
     assert get_in(sibling_anchor_mint_response, ["error", "data", "reason"]) == "outside_session_scope"
+    assert {:ok, unchanged_sibling_anchor_child} = WorkPackageRepository.get(repo, sibling_anchor_child.id)
+    assert unchanged_sibling_anchor_child.updated_at == sibling_anchor_child_updated_at
 
     sibling_anchor_status_response =
       mcp_tool(repo, architect_session, "read_child_status", %{"work_package_id" => sibling_anchor_child.id})
@@ -3788,6 +3792,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                )
              )
 
+    out_of_phase_child_updated_at = out_of_phase_child.updated_at
+
     out_of_phase_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
         "work_package_id" => out_of_phase_child.id,
@@ -3796,6 +3802,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(out_of_phase_response, ["error", "code"]) == -32_003
     assert get_in(out_of_phase_response, ["error", "data", "reason"]) == "outside_session_scope"
+    assert {:ok, unchanged_out_of_phase_child} = WorkPackageRepository.get(repo, out_of_phase_child.id)
+    assert unchanged_out_of_phase_child.updated_at == out_of_phase_child_updated_at
 
     assert {:ok, wrong_base_child} =
              WorkPackageRepository.create(
@@ -3812,6 +3820,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                )
              )
 
+    wrong_base_child_updated_at = wrong_base_child.updated_at
+
     wrong_base_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
         "work_package_id" => wrong_base_child.id,
@@ -3820,6 +3830,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(wrong_base_response, ["error", "code"]) == -32_602
     assert get_in(wrong_base_response, ["error", "data", "reason"]) == "base_branch_scope_mismatch"
+    assert {:ok, unchanged_wrong_base_child} = WorkPackageRepository.get(repo, wrong_base_child.id)
+    assert unchanged_wrong_base_child.updated_at == wrong_base_child_updated_at
   end
 
   test "phase architect read_child_status revalidates phase anchor drift", %{repo: repo} do

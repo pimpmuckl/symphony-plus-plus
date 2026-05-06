@@ -31,7 +31,7 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | mint_child_worker_key | Mint a child-scoped worker grant for a same-phase `phase_child` package; worker capabilities are limited to the child worker set and expiry cannot exceed the architect grant. |
 | revoke_child_worker_key | Phase 7 stub for revoking child worker keys; returns `phase7_not_implemented` after architect authorization. |
 | read_child_status | Read the architect grant's scoped anchor package status, or a same-phase child work-package status when the architect grant has child read capabilities. |
-| read_phase_board | Read the architect grant's scoped phase board. |
+| read_phase_board | Read the architect grant's scoped phase board, filtered to the frozen repo/base branch for explicit phase grants. |
 | request_child_replan | Phase 7 stub for child replan requests; returns `phase7_not_implemented` after architect authorization. |
 | approve_child_ready_state | Phase 7 stub for child readiness approval; returns `phase7_not_implemented` after architect authorization. |
 | merge_child_into_phase | Phase 7 stub for merge-to-phase recording; returns `phase7_not_implemented` after architect authorization. |
@@ -49,7 +49,10 @@ the live grant's capabilities; stale sessions expose only health and
 worker-facing discovery surface. Architect sessions may call
 `get_current_assignment` and read `sympp://assignment/current` to recover their
 scoped `work_package_id` after reconnect, but architect sessions still cannot
-use worker package read/write tools. Existing lifecycle capabilities such as
+use worker package read/write tools. `read_phase_board` is limited to the
+session's phase scope; explicit phase grants with a frozen repo/base snapshot
+see only matching package cards, and explicit phase grants missing that snapshot
+fail closed rather than being treated as phase-wide. Existing lifecycle capabilities such as
 `architect:lifecycle.transition` do not imply MCP architect tool capabilities;
 P3-003 requires the explicit MCP capability strings listed in the permission
 model. Phase-dependent architect tools revalidate the grant's explicit phase
