@@ -2151,6 +2151,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end
   end
 
+  test "dashboard API migrates existing ledgers before auth reads new phase columns" do
+    database_path = WorkPackageFactory.database_path()
+
+    try do
+      {work_package_id, secret} = seed_pre_phase_dashboard_database(database_path)
+
+      refute "phase_id" in table_columns(database_path, "sympp_access_grants")
+      refute "phase_id" in table_columns(database_path, "sympp_work_packages")
+
+      with_configured_endpoint_database(database_path, fn ->
+        assert %{"work_package" => %{"id" => ^work_package_id}} =
+                 json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package_id}"), 200)
+      end)
+
+      assert "phase_id" in table_columns(database_path, "sympp_access_grants")
+      assert "phase_id" in table_columns(database_path, "sympp_work_packages")
+    after
+      File.rm(database_path)
+    end
+  end
+
   test "dashboard auth preflight treats in-memory SQLite ledgers as absent" do
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
 
@@ -2666,6 +2687,99 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       assert :ok = WorkPackageRepository.migrate(Repo)
       %{work_package: work_package, work_key_secret: secret} = create_dashboard_fixture(Repo, id: "SYMPP-ALT-DB")
       {work_package.id, secret}
+    after
+      Repo.put_dynamic_repo(original_repo)
+      GenServer.stop(pid)
+    end
+  end
+
+  defp seed_pre_phase_dashboard_database(database_path) do
+    {:ok, pid} = Repo.start_link(database: database_path, name: nil, pool_size: 1, log: false)
+    original_repo = Repo.put_dynamic_repo(pid)
+
+    try do
+      pre_phase_migration = 20_260_503_192_500
+
+      migrated_versions =
+        Ecto.Migrator.run(Repo, WorkPackageRepository.migrations_path(), :up,
+          to: pre_phase_migration,
+          log: false
+        )
+
+      assert pre_phase_migration in migrated_versions
+
+      now = DateTime.utc_now(:microsecond)
+      expires_at = DateTime.add(now, 86_400, :second)
+      work_key = WorkKey.generate()
+      work_package_id = "SYMPP-PRE-PHASE-AUTH"
+
+      Repo.query!(
+        """
+        INSERT INTO sympp_work_packages
+          (id, kind, title, repo, base_branch, branch_pattern, product_description,
+           engineering_scope, acceptance_criteria, status, parent_id, owner_id,
+           allowed_file_globs, policy_template, inserted_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+          work_package_id,
+          "mcp",
+          "Pre-phase auth package",
+          "Pimpmuckl/symphony-plus-plus",
+          "symphony-plus-plus/beta",
+          nil,
+          nil,
+          nil,
+          "[]",
+          "created",
+          nil,
+          nil,
+          "[]",
+          nil,
+          now,
+          now
+        ]
+      )
+
+      Repo.query!(
+        """
+        INSERT INTO sympp_access_grants
+          (id, work_package_id, display_key, secret_hash, grant_role, capabilities,
+           expires_at, revoked_at, claimed_at, claimed_by, inserted_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+          "grant-pre-phase-auth",
+          work_package_id,
+          work_key.display_key,
+          WorkKey.secret_hash(work_key.secret),
+          "worker",
+          ~s(["read:package"]),
+          expires_at,
+          nil,
+          now,
+          "worker-1",
+          now,
+          now
+        ]
+      )
+
+      {work_package_id, work_key.secret}
+    after
+      Repo.put_dynamic_repo(original_repo)
+      GenServer.stop(pid)
+    end
+  end
+
+  defp table_columns(database_path, table) when table in ["sympp_access_grants", "sympp_work_packages"] do
+    {:ok, pid} = Repo.start_link(database: database_path, name: nil, pool_size: 1, log: false)
+    original_repo = Repo.put_dynamic_repo(pid)
+
+    try do
+      "PRAGMA table_info(#{table})"
+      |> Repo.query!([])
+      |> Map.fetch!(:rows)
+      |> Enum.map(fn [_index, name | _rest] -> name end)
     after
       Repo.put_dynamic_repo(original_repo)
       GenServer.stop(pid)

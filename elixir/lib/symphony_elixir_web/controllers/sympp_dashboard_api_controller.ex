@@ -380,22 +380,28 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp auth_storage_ready?(secret), do: WorkKey.secret_shape?(secret) and dashboard_storage_present?()
 
   defp authenticate_with_existing_repo(secret) do
-    case with_dashboard_repo(fn repo -> grant_auth_context(repo, secret) end, migrate?: false) do
+    authenticate_existing_repo(fn repo -> grant_auth_context(repo, secret) end)
+  end
+
+  defp authenticate_grant_id_with_existing_repo(grant_id) do
+    authenticate_existing_repo(fn repo -> grant_id_auth_context(repo, grant_id) end)
+  end
+
+  defp authenticate_existing_repo(auth_fun) when is_function(auth_fun, 1) do
+    case with_dashboard_repo(auth_fun, migrate?: false) do
       {:error, {:storage_failed, message}} when is_binary(message) ->
-        if missing_schema_message?(message), do: {:error, :unauthorized}, else: {:error, {:storage_failed, message}}
+        handle_existing_auth_storage_error(auth_fun, message)
 
       result ->
         result
     end
   end
 
-  defp authenticate_grant_id_with_existing_repo(grant_id) do
-    case with_dashboard_repo(fn repo -> grant_id_auth_context(repo, grant_id) end, migrate?: false) do
-      {:error, {:storage_failed, message}} when is_binary(message) ->
-        if missing_schema_message?(message), do: {:error, :unauthorized}, else: {:error, {:storage_failed, message}}
-
-      result ->
-        result
+  defp handle_existing_auth_storage_error(auth_fun, message) do
+    cond do
+      missing_schema_message?(message) -> {:error, :unauthorized}
+      missing_phase_column_message?(message) -> with_dashboard_repo(auth_fun, migrate?: true)
+      true -> {:error, {:storage_failed, message}}
     end
   end
 
@@ -1235,6 +1241,11 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     message
     |> String.downcase()
     |> String.contains?("no such table")
+  end
+
+  defp missing_phase_column_message?(message) do
+    message = String.downcase(message)
+    String.contains?(message, "no such column") and String.contains?(message, "phase_id")
   end
 
   defp with_dashboard_repo(fun, opts \\ []) when is_function(fun, 1) and is_list(opts) do

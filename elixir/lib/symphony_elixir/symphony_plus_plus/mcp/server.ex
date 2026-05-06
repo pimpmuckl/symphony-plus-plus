@@ -1508,8 +1508,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp require_architect_target_scope(_repo, %Session{} = session, %{"work_package_id" => work_package_id}) do
-    require_architect_work_package_scope(session, work_package_id)
+  defp require_architect_target_scope(repo, %Session{} = session, %{"work_package_id" => work_package_id}) do
+    with :ok <- require_architect_work_package_scope(session, work_package_id) do
+      require_architect_current_phase_anchor(repo, session)
+    end
   end
 
   defp require_architect_target_scope(repo, %Session{} = session, %{"phase_id" => phase_id}) do
@@ -1518,7 +1520,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp require_architect_target_scope(_repo, %Session{}, _arguments), do: :ok
+  defp require_architect_target_scope(repo, %Session{} = session, _arguments) do
+    require_architect_current_phase_anchor(repo, session)
+  end
+
+  defp require_architect_current_phase_anchor(repo, %Session{} = session) do
+    case Session.phase_id(session) do
+      phase_id when is_binary(phase_id) -> require_architect_phase_anchor(repo, session, phase_id)
+      _phase_id -> {:error, :phase_scope_not_available}
+    end
+  end
 
   defp worker_tool("get_current_assignment", _arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),

@@ -2708,6 +2708,71 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(out_of_scope_mint_response, ["error", "data", "reason"]) == "outside_session_scope"
   end
 
+  test "Phase 7 architect stubs revalidate phase anchors before not-implemented", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-STUB-DRIFT", kind: "mcp"))
+    assert {:ok, other_phase} = PhaseRepository.create(repo, %{id: "phase-mcp-stub-drift", title: "Stub drift"})
+
+    assert {:ok, architect_work_key} =
+             create_architect_work_key(repo, package.id, ["mint:child_worker_key", "read:phase", "revoke:child_worker_key"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+
+    revoke_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "revoke-child-stub",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "revoke_child_worker_key",
+            "arguments" => %{"grant_id" => "grant-placeholder", "reason" => "drift check"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(revoke_response, ["error", "data", "reason"]) == "phase7_not_implemented"
+
+    assert {:ok, _package} = WorkPackageRepository.update(repo, package.id, %{phase_id: other_phase.id})
+
+    stale_revoke_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "revoke-child-stale",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "revoke_child_worker_key",
+            "arguments" => %{"grant_id" => "grant-placeholder", "reason" => "drift check"}
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(stale_revoke_response, ["error", "code"]) == -32_003
+    assert get_in(stale_revoke_response, ["error", "data", "reason"]) == "outside_session_scope"
+
+    stale_mint_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "mint-child-stale-anchor",
+          "method" => "tools/call",
+          "params" => %{"name" => "mint_child_worker_key", "arguments" => %{"work_package_id" => package.id, "template" => %{}}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(stale_mint_response, ["error", "code"]) == -32_003
+    assert get_in(stale_mint_response, ["error", "data", "reason"]) == "outside_session_scope"
+  end
+
   test "Phase 7 architect stubs validate required arguments before not-implemented", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-STUB-ARGS", kind: "mcp"))
     assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])
