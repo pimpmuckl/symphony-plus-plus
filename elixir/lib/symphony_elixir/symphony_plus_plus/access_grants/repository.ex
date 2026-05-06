@@ -259,7 +259,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     end
   end
 
+  defp validate_phase_anchor_work_package(_repo, changeset, work_package_id, _phase_id)
+       when not is_binary(work_package_id) do
+    {:error, Changeset.add_error(changeset, :work_package_id, "architect phase grants require work package anchor")}
+  end
+
   defp validate_phase_anchor_work_package(repo, changeset, work_package_id, phase_id) do
+    if String.trim(work_package_id) == "" do
+      {:error, Changeset.add_error(changeset, :work_package_id, "architect phase grants require work package anchor")}
+    else
+      validate_phase_anchor_work_package_id(repo, changeset, work_package_id, phase_id)
+    end
+  end
+
+  defp validate_phase_anchor_work_package_id(repo, changeset, work_package_id, phase_id) do
     case WorkPackageRepository.get(repo, work_package_id) do
       {:ok, %{phase_id: ^phase_id} = work_package} -> {:ok, work_package}
       {:ok, _work_package} -> {:error, Changeset.add_error(changeset, :work_package_id, "must belong to architect phase")}

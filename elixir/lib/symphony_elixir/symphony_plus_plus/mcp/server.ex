@@ -1720,8 +1720,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, phase_id, anchor} <- architect_child_phase_anchor(repo, session, architect_grant),
          {:ok, grant_opts} <- child_worker_grant_opts(template, architect_grant),
          {:ok, _prechecked_child} <- require_transaction_current_child_scope(repo, work_package_id, anchor, phase_id),
-         :ok <- reject_active_child_worker_grant(repo, work_package_id),
+         :ok <- reject_claimed_active_child_worker_grant(repo, work_package_id),
          {:ok, child} <- require_child_ready_for_mint(repo, work_package_id, anchor, phase_id),
+         :ok <- supersede_unclaimed_child_worker_grants(repo, work_package_id),
          {:ok, minted} <- AccessGrantService.mint_worker_grant(repo, child.id, grant_opts) do
       {:ok, {child, minted}}
     end
@@ -1765,14 +1766,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp reject_active_child_worker_grant(repo, work_package_id) do
+  defp reject_claimed_active_child_worker_grant(repo, work_package_id) do
     now = DateTime.utc_now(:microsecond)
 
     query =
       from(grant in AccessGrant,
         where:
           grant.work_package_id == ^work_package_id and grant.grant_role == "worker" and is_nil(grant.revoked_at) and
-            grant.expires_at > ^now,
+            not is_nil(grant.claimed_at) and grant.expires_at > ^now,
         select: count(grant.id)
       )
 
@@ -1780,6 +1781,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       0 -> :ok
       nil -> :ok
       _active_count -> {:tool_error, "active_child_worker_grant_exists"}
+    end
+  end
+
+  defp supersede_unclaimed_child_worker_grants(repo, work_package_id) do
+    now = DateTime.utc_now(:microsecond)
+
+    active_query =
+      from(grant in AccessGrant,
+        where:
+          grant.work_package_id == ^work_package_id and grant.grant_role == "worker" and is_nil(grant.revoked_at) and
+            grant.expires_at > ^now
+      )
+
+    active_grants = repo.all(active_query)
+
+    if Enum.any?(active_grants, &match?(%DateTime{}, &1.claimed_at)) do
+      {:tool_error, "active_child_worker_grant_exists"}
+    else
+      supersede_unclaimed_child_worker_grants(repo, active_grants, now)
+    end
+  end
+
+  defp supersede_unclaimed_child_worker_grants(_repo, [], _now), do: :ok
+
+  defp supersede_unclaimed_child_worker_grants(repo, active_grants, now) do
+    grant_ids = Enum.map(active_grants, & &1.id)
+
+    revoke_query =
+      from(grant in AccessGrant,
+        where: grant.id in ^grant_ids and is_nil(grant.claimed_at) and is_nil(grant.revoked_at) and grant.expires_at > ^now
+      )
+
+    case repo.update_all(revoke_query, set: [revoked_at: now, updated_at: now]) do
+      {count, _rows} when count == length(grant_ids) -> :ok
+      _stale_or_claimed -> {:tool_error, "active_child_worker_grant_exists"}
     end
   end
 

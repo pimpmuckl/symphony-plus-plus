@@ -343,6 +343,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     assert grant.scope_base_branch == work_package.base_branch
   end
 
+  test "architect phase grants without read phase require a valid anchor", %{repo: repo} do
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-grant-delegation-anchor", title: "Delegation anchor"})
+    work_key = WorkKey.generate()
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Repository.create(repo, %{
+               phase_id: phase.id,
+               display_key: work_key.display_key,
+               secret_hash: WorkKey.secret_hash(work_key.secret),
+               grant_role: "architect",
+               capabilities: ["create:child_work_package", "mint:child_worker_key"],
+               expires_at: DateTime.add(DateTime.utc_now(:microsecond), 60, :second)
+             })
+
+    assert Enum.any?(
+             errors_on(changeset).work_package_id,
+             &(&1 in ["can't be blank", "architect phase grants require work package anchor"])
+           )
+  end
+
   test "scope snapshot migration does not backfill legacy phase grants from current anchors" do
     database_path = WorkPackageFactory.database_path()
     {:ok, pid} = Repo.start_link(database: database_path, name: nil, pool_size: 1, log: false)

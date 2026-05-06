@@ -100,6 +100,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     def get(schema, id), do: Repo.get(schema, id)
     def insert(changeset), do: Repo.insert(changeset)
+    def all(query), do: Repo.all(query)
     def one(query), do: Repo.one(query)
     def update_all(query, updates), do: Repo.update_all(query, updates)
     def rollback(value), do: Repo.rollback(value)
@@ -171,6 +172,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     def get(schema, id), do: Repo.get(schema, id)
     def insert(changeset), do: Repo.insert(changeset)
+    def all(query), do: Repo.all(query)
     def one(query), do: Repo.one(query)
     def update_all(query, updates), do: Repo.update_all(query, updates)
     def rollback(value), do: Repo.rollback(value)
@@ -205,6 +207,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     def get(schema, id), do: Repo.get(schema, id)
     def insert(changeset), do: Repo.insert(changeset)
+    def all(query), do: Repo.all(query)
     def one(query), do: Repo.one(query)
     def update_all(query, updates), do: Repo.update_all(query, updates)
     def rollback(value), do: Repo.rollback(value)
@@ -3489,7 +3492,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(child_status_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_worker"
   end
 
-  test "child worker key minting rejects a second active worker grant", %{repo: repo} do
+  test "child worker key minting supersedes unclaimed grants and rejects claimed active grants", %{repo: repo} do
     {_anchor, architect_session} =
       create_architect_session(repo, "SYMPP-P7-002-MINT-DUPLICATE-ANCHOR", [
         "create:child_work_package",
@@ -3506,8 +3509,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       })
 
     first_grant_id = get_in(first_response, ["result", "structuredContent", "worker_grant", "id"])
+    first_secret = get_in(first_response, ["result", "structuredContent", "worker_grant", "secret"])
     assert is_binary(first_grant_id)
-    grants_before_second = repo.aggregate(AccessGrant, :count)
+    assert is_binary(first_secret)
 
     second_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
@@ -3515,20 +3519,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "template" => %{}
       })
 
-    assert get_in(second_response, ["error", "code"]) == -32_602
-    assert get_in(second_response, ["error", "data", "reason"]) == "active_child_worker_grant_exists"
-    assert repo.aggregate(AccessGrant, :count) == grants_before_second
+    second_grant_id = get_in(second_response, ["result", "structuredContent", "worker_grant", "id"])
+    second_secret = get_in(second_response, ["result", "structuredContent", "worker_grant", "secret"])
+    assert is_binary(second_grant_id)
+    assert is_binary(second_secret)
+    refute second_grant_id == first_grant_id
+    refute second_secret == first_secret
 
-    assert {:ok, _revoked} = AccessGrantService.revoke(repo, first_grant_id)
+    assert {:ok, first_grant} = AccessGrantRepository.get(repo, first_grant_id)
+    assert %DateTime{} = first_grant.revoked_at
+    assert {:error, :revoked} = AccessGrantService.claim(repo, first_secret, claimed_by: "worker-late")
 
-    remint_response =
+    assert {:ok, grants_after_remint} = AccessGrantRepository.list_for_work_package(repo, child_id)
+
+    active_worker_grant_ids =
+      grants_after_remint
+      |> active_worker_grants()
+      |> Enum.map(& &1.id)
+
+    assert active_worker_grant_ids == [second_grant_id]
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, second_secret, claimed_by: "worker-1")
+    grants_before_claimed_remint = repo.aggregate(AccessGrant, :count)
+
+    claimed_remint_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
         "work_package_id" => child_id,
         "template" => %{}
       })
 
-    assert get_in(remint_response, ["result", "structuredContent", "worker_grant", "work_package_id"]) == child_id
-    refute get_in(remint_response, ["result", "structuredContent", "worker_grant", "id"]) == first_grant_id
+    assert get_in(claimed_remint_response, ["error", "code"]) == -32_602
+    assert get_in(claimed_remint_response, ["error", "data", "reason"]) == "active_child_worker_grant_exists"
+    assert repo.aggregate(AccessGrant, :count) == grants_before_claimed_remint
+
+    assert {:ok, second_grant} = AccessGrantRepository.get(repo, second_grant_id)
+    assert second_grant.revoked_at == nil
   end
 
   test "child worker key minting rejects broader grants and worker callers", %{repo: repo} do
@@ -8968,6 +8992,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     {:ok, package} = WorkPackageRepository.get(repo, package.id)
 
     {package, session}
+  end
+
+  defp active_worker_grants(grants) do
+    now = DateTime.utc_now(:microsecond)
+
+    Enum.filter(grants, fn grant ->
+      grant.grant_role == "worker" and is_nil(grant.revoked_at) and DateTime.compare(grant.expires_at, now) == :gt
+    end)
   end
 
   defp mcp_tool(repo, session, name, arguments) do

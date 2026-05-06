@@ -653,18 +653,17 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
          :ok <- require_architect_phase_anchor(repo, grant, phase_id),
          {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id) do
       if work_package.phase_id == phase_id do
-        :ok
+        Dashboard.require_phase_board_work_package_scope(work_package, grant)
       else
         {:error, :forbidden}
       end
     end
   end
 
-  defp require_architect_phase_anchor(repo, %AccessGrant{work_package_id: work_package_id}, phase_id)
+  defp require_architect_phase_anchor(repo, %AccessGrant{work_package_id: work_package_id} = grant, phase_id)
        when is_binary(work_package_id) do
     case WorkPackageRepository.get(repo, work_package_id) do
-      {:ok, %{phase_id: ^phase_id}} -> :ok
-      {:ok, _work_package} -> {:error, :forbidden}
+      {:ok, work_package} -> Dashboard.require_phase_board_anchor_scope(work_package, grant, phase_id)
       {:error, _reason} -> {:error, :forbidden}
     end
   end

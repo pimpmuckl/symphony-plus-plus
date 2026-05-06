@@ -422,6 +422,67 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     refute encoded =~ other_base.id
   end
 
+  test "dashboard API package detail rejects scoped phase siblings outside frozen repo and base", %{repo: repo} do
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-DETAIL-SCOPED-ANCHOR",
+                 kind: "phase_child",
+                 status: "planning",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta"
+               )
+             )
+
+    assert {:ok, in_scope_sibling} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-DETAIL-SCOPED-SIBLING",
+                 kind: "phase_child",
+                 status: "blocked",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta"
+               )
+             )
+
+    assert {:ok, other_repo} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-DETAIL-SCOPED-OTHER-REPO",
+                 kind: "phase_child",
+                 status: "planning",
+                 repo: "nextide/other-repo",
+                 base_branch: "symphony-plus-plus/beta"
+               )
+             )
+
+    assert {:ok, other_base} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-DETAIL-SCOPED-OTHER-BASE",
+                 kind: "phase_child",
+                 status: "planning",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "main"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, anchor.id)
+
+    assert %{"work_package" => %{"id" => "SYMPP-DASH-DETAIL-SCOPED-SIBLING"}} =
+             json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{in_scope_sibling.id}"), 200)
+
+    assert %{"error" => %{"code" => "forbidden"}} =
+             json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{other_repo.id}"), 403)
+
+    assert %{"error" => %{"code" => "forbidden"}} =
+             json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{other_base.id}"), 403)
+  end
+
   test "board artifact reads are limited to packages that need artifact-backed readiness", %{repo: repo} do
     assert {:ok, plain_package} =
              WorkPackageRepository.create(

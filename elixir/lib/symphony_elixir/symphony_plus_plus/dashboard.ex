@@ -79,6 +79,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
+  @spec require_phase_board_work_package_scope(WorkPackage.t(), AccessGrant.t()) :: :ok | {:error, :forbidden}
+  def require_phase_board_work_package_scope(%WorkPackage{} = work_package, %AccessGrant{} = grant) do
+    with {:ok, filters} <- phase_board_filters_for_grant(grant) do
+      if phase_work_package_matches_filters?(work_package, filters) do
+        :ok
+      else
+        {:error, :forbidden}
+      end
+    end
+  end
+
   @spec detail(repo(), String.t()) :: {:ok, map()} | {:error, dashboard_error()}
   def detail(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
     safe_read(fn ->
