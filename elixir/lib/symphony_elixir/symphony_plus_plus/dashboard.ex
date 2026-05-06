@@ -25,6 +25,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   @merge_required_gates ["human_merge", "architect_merge"]
   @runtime_merge_required_kinds ["hotfix", "adapter", "mcp", "skill", "hooks", "phase_child"]
   @scope_guard_gate "scope_guard"
+  @dropped_child_statuses ["abandoned"]
+  @non_open_child_statuses ["merged_into_phase", "closed", "abandoned"]
 
   @type repo :: module()
   @type dashboard_error :: :not_found | :forbidden | :database_busy | {:storage_failed, String.t()} | term()
@@ -294,6 +296,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp build_phase_board(repo, phase_id, filters) do
     with {:ok, phase} <- PhaseRepository.get(repo, phase_id),
          {:ok, work_packages} <- WorkPackageRepository.list_for_phase(repo, phase_id),
+         summary_work_packages = filter_phase_work_packages(work_packages, phase_scope_filters(filters)),
          scoped_work_packages = filter_phase_work_packages(work_packages, filters),
          {:ok, cards} <- cards_for_packages(repo, scoped_work_packages) do
       {:ok,
@@ -301,13 +304,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
          phase: phase(phase),
          groups: group_cards(cards),
          statuses: WorkPackage.statuses(),
-         total_count: length(cards)
+         total_count: length(cards),
+         summary: phase_progress_summary(summary_work_packages)
        }}
     end
   end
 
+  defp phase_progress_summary(work_packages) do
+    phase_children = Enum.filter(work_packages, &phase_child_package?/1)
+    progress_children = Enum.reject(phase_children, &(&1.status in @dropped_child_statuses))
+
+    %{
+      child_count: length(progress_children),
+      merged_child_count: Enum.count(progress_children, &(&1.status == "merged_into_phase")),
+      ready_child_count: Enum.count(progress_children, &(&1.status == "ready_for_architect_merge")),
+      merging_child_count: Enum.count(progress_children, &(&1.status == "merging_into_phase")),
+      open_child_count: Enum.count(progress_children, &(&1.status not in @non_open_child_statuses))
+    }
+  end
+
+  defp phase_child_package?(%WorkPackage{} = work_package) do
+    work_package.kind == "phase_child" and filled_string?(work_package.parent_id)
+  end
+
   defp filter_phase_work_packages(work_packages, filters) do
     Enum.filter(work_packages, &phase_work_package_matches_filters?(&1, filters))
+  end
+
+  defp phase_scope_filters(filters) do
+    Enum.filter(filters, fn
+      {:repo, repo} when is_binary(repo) -> true
+      {:base_branch, base_branch} when is_binary(base_branch) -> true
+      _filter -> false
+    end)
   end
 
   defp phase_work_package_matches_filters?(%WorkPackage{} = work_package, filters) do

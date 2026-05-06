@@ -75,8 +75,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
           {:ok, ProgressEvent.t()} | {:error, error()}
   def append_audit_progress_event(repo, %Assignment{} = assignment, attrs, opts)
       when is_atom(repo) and is_map(attrs) and is_list(opts) do
+    append_audit_progress_event_for_work_package(repo, assignment, assignment.work_package_id, attrs, opts)
+  end
+
+  @spec append_audit_progress_event_for_work_package(repo(), Assignment.t(), String.t(), map()) ::
+          {:ok, ProgressEvent.t()} | {:error, error()}
+  def append_audit_progress_event_for_work_package(repo, assignment, work_package_id, attrs) do
+    append_audit_progress_event_for_work_package(repo, assignment, work_package_id, attrs, [])
+  end
+
+  @spec append_audit_progress_event_for_work_package(repo(), Assignment.t(), String.t(), map(), keyword()) ::
+          {:ok, ProgressEvent.t()} | {:error, error()}
+  def append_audit_progress_event_for_work_package(repo, %Assignment{} = assignment, work_package_id, attrs, opts)
+      when is_atom(repo) and is_binary(work_package_id) and is_map(attrs) and is_list(opts) do
     repo.transaction(fn ->
       attrs = audit_attrs(assignment, attrs, opts)
+      attrs = Map.put(attrs, "work_package_id", work_package_id)
 
       with :not_found <- existing_progress_event_by_idempotency_key_with_retry(repo, attrs, append_retry_attempts()),
            :ok <- lock_valid_assignment(repo, assignment),

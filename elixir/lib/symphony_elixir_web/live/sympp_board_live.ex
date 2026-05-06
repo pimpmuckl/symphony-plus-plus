@@ -62,6 +62,9 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
         <div class="sympp-board-summary">
           <span class="sympp-board-count numeric"><%= @board.total_count %></span>
           <span class="muted">packages</span>
+          <span :if={phase_progress(Map.get(@board, :phase_summary, %{}))} class="muted">
+            <%= phase_progress(Map.get(@board, :phase_summary, %{})) %> children merged
+          </span>
         </div>
       </header>
 
@@ -635,6 +638,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     %{
       error: nil,
       total_count: Map.get(payload, :total_count, length(all_cards)),
+      phase_summary: Map.get(payload, :summary, %{}),
       visible_count: visible_count,
       column_count: max(length(columns), 1),
       columns: columns,
@@ -646,6 +650,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     %{
       error: error,
       total_count: 0,
+      phase_summary: %{},
       visible_count: 0,
       column_count: 1,
       columns: [],
@@ -660,6 +665,12 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp unauthorized_board({:error, reason}), do: empty_board(error_message(reason))
+
+  defp phase_progress(%{merged_child_count: merged_count, child_count: child_count}) when child_count > 0 do
+    "#{merged_count}/#{child_count}"
+  end
+
+  defp phase_progress(_summary), do: nil
 
   defp filters(params) when is_map(params) do
     %{

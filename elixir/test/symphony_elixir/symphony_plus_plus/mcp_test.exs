@@ -18,6 +18,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
   alias SymphonyElixir.SymphonyPlusPlus.Repo
@@ -640,6 +641,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                "read:child_findings",
                "mint:child_worker_key",
                "read:phase",
+               "approve:child_ready_state",
                "approve:scope_expansion",
                "merge:child_into_phase",
                "split:child_work_package"
@@ -665,9 +667,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["read_phase_board", "inputSchema", "required"]) == ["phase_id"]
     assert get_in(tools_by_name, ["approve_scope_expansion", "inputSchema", "required"]) == ["work_package_id", "allowed_file_globs", "rationale"]
     assert get_in(tools_by_name, ["approve_scope_expansion", "inputSchema", "properties", "allowed_file_globs", "minItems"]) == 1
+    assert get_in(tools_by_name, ["approve_child_ready_state", "inputSchema", "required"]) == ["work_package_id", "rationale"]
+    assert get_in(tools_by_name, ["approve_child_ready_state", "inputSchema", "properties", "request_id", "type"]) == "string"
     assert get_in(tools_by_name, ["mint_child_worker_key", "inputSchema", "required"]) == ["work_package_id", "template"]
     assert get_in(tools_by_name, ["mint_child_worker_key", "inputSchema", "properties", "template", "type"]) == "object"
     assert get_in(tools_by_name, ["merge_child_into_phase", "inputSchema", "required"]) == ["work_package_id", "merge_artifact"]
+    assert get_in(tools_by_name, ["merge_child_into_phase", "inputSchema", "properties", "merge_artifact", "required"]) == ["status", "uri"]
     assert get_in(tools_by_name, ["split_work_package", "inputSchema", "properties", "child_specs", "minItems"]) == 1
   end
 
@@ -4099,6 +4104,647 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(repo_drift_response, ["error", "code"]) == -32_003
     assert get_in(repo_drift_response, ["error", "data", "reason"]) == "outside_session_scope"
+  end
+
+  test "phase child readiness approval and merge record update phase progress", %{repo: repo} do
+    architect_capabilities = [
+      "create:child_work_package",
+      "mint:child_worker_key",
+      "read:child_progress",
+      "read:child_findings",
+      "read:phase",
+      "approve:child_ready_state",
+      "merge:child_into_phase"
+    ]
+
+    {anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-003-FLOW-ANCHOR", architect_capabilities)
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-003-FLOW-CHILD")
+    worker_session = claim_phase_child_worker(repo, architect_session, child_id)
+    advance_child_worker_to_ci_waiting(repo, worker_session)
+    attach_phase_child_ready_evidence(repo, worker_session, child_id, "p7-003-flow-head")
+
+    ready_response = mcp_tool(repo, worker_session, "mark_ready", %{})
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+    assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_architect_merge"
+
+    worker_approval_response =
+      mcp_tool(repo, worker_session, "approve_child_ready_state", %{
+        "work_package_id" => child_id,
+        "rationale" => "worker cannot approve"
+      })
+
+    assert get_in(worker_approval_response, ["error", "code"]) == -32_001
+    assert get_in(worker_approval_response, ["error", "data", "reason"]) == "architect_grant_required"
+
+    blank_request_id_response =
+      mcp_tool(repo, architect_session, "approve_child_ready_state", %{
+        "work_package_id" => child_id,
+        "rationale" => "Required evidence is green",
+        "request_id" => "   "
+      })
+
+    assert get_in(blank_request_id_response, ["error", "code"]) == -32_602
+    assert get_in(blank_request_id_response, ["error", "data", "reason"]) == "blank_request_id"
+
+    assert {:ok, ready_child} = WorkPackageRepository.get(repo, child_id)
+    assert ready_child.status == "ready_for_architect_merge"
+
+    approval_response =
+      mcp_tool(repo, architect_session, "approve_child_ready_state", %{
+        "work_package_id" => child_id,
+        "rationale" => "Required evidence is green",
+        "request_id" => "p7-003-approval-flow"
+      })
+
+    assert get_in(approval_response, ["result", "structuredContent", "work_package", "status"]) == "merging_into_phase"
+    assert get_in(approval_response, ["result", "structuredContent", "approval", "payload", "type"]) == "child_ready_approval"
+
+    approval_replay_response =
+      mcp_tool(repo, architect_session, "approve_child_ready_state", %{
+        "work_package_id" => child_id,
+        "rationale" => "Required evidence is green",
+        "request_id" => "p7-003-approval-flow"
+      })
+
+    assert get_in(approval_replay_response, ["result", "structuredContent", "work_package", "status"]) == "merging_into_phase"
+
+    assert get_in(approval_replay_response, ["result", "structuredContent", "approval", "id"]) ==
+             get_in(approval_response, ["result", "structuredContent", "approval", "id"])
+
+    approval_changed_rationale_replay_response =
+      mcp_tool(repo, architect_session, "approve_child_ready_state", %{
+        "work_package_id" => child_id,
+        "rationale" => "Edited retry explanation",
+        "request_id" => "p7-003-approval-flow"
+      })
+
+    assert get_in(approval_changed_rationale_replay_response, ["result", "structuredContent", "approval", "id"]) ==
+             get_in(approval_response, ["result", "structuredContent", "approval", "id"])
+
+    assert get_in(approval_changed_rationale_replay_response, ["result", "structuredContent", "approval", "payload", "rationale"]) ==
+             "Required evidence is green"
+
+    renewed_architect_session = renew_phase_architect_session(repo, anchor, architect_capabilities)
+
+    approval_renewal_response =
+      mcp_tool(repo, renewed_architect_session, "approve_child_ready_state", %{
+        "work_package_id" => child_id,
+        "rationale" => "Required evidence is green",
+        "request_id" => "p7-003-approval-flow"
+      })
+
+    assert get_in(approval_renewal_response, ["result", "structuredContent", "approval", "id"]) ==
+             get_in(approval_response, ["result", "structuredContent", "approval", "id"])
+
+    worker_close_response =
+      mcp_tool(repo, worker_session, "set_status", %{
+        "status" => "closed",
+        "expected_status" => "merging_into_phase",
+        "reason" => "worker cannot close child after architect approval"
+      })
+
+    assert get_in(worker_close_response, ["error", "data", "reason"]) == "child_under_architect_control"
+
+    worker_progress_response =
+      mcp_tool(repo, worker_session, "append_progress", %{
+        "summary" => "late worker update",
+        "status" => "late_worker_update",
+        "idempotency_key" => "late-worker-update-after-architect-approval"
+      })
+
+    assert get_in(worker_progress_response, ["error", "data", "reason"]) == "child_under_architect_control"
+
+    worker_report_blocker_response =
+      mcp_tool(repo, worker_session, "report_blocker", %{
+        "summary" => "late blocker",
+        "body" => "worker cannot add blockers while architect owns the merge",
+        "idempotency_key" => "late-worker-blocker-after-architect-approval"
+      })
+
+    assert get_in(worker_report_blocker_response, ["error", "data", "reason"]) == "child_under_architect_control"
+
+    worker_attach_pr_replay_response =
+      mcp_tool(repo, worker_session, "attach_pr", %{
+        "url" => "https://github.com/nextide/symphony-plus-plus/pull/7003",
+        "head_sha" => "p7-003-flow-head"
+      })
+
+    assert get_in(worker_attach_pr_replay_response, ["result", "structuredContent", "progress_event", "id"])
+
+    worker_attach_pr_mutation_response =
+      mcp_tool(repo, worker_session, "attach_pr", %{
+        "url" => "https://github.com/nextide/symphony-plus-plus/pull/7003",
+        "head_sha" => "late-worker-head"
+      })
+
+    assert get_in(worker_attach_pr_mutation_response, ["error", "data", "reason"]) == "child_under_architect_control"
+
+    worker_review_package_replay_response =
+      mcp_tool(repo, worker_session, "submit_review_package", ready_review_package_args("p7-003-flow-head"))
+
+    assert get_in(worker_review_package_replay_response, ["result", "structuredContent", "progress_event", "id"])
+
+    worker_review_package_mutation_response =
+      mcp_tool(
+        repo,
+        worker_session,
+        "submit_review_package",
+        "p7-003-flow-head"
+        |> ready_review_package_args()
+        |> Map.put("summary", "Late worker review package")
+      )
+
+    assert get_in(worker_review_package_mutation_response, ["error", "data", "reason"]) == "child_under_architect_control"
+
+    worker_merge_response =
+      mcp_tool(repo, worker_session, "set_status", %{
+        "status" => "merged_into_phase",
+        "expected_status" => "merging_into_phase",
+        "reason" => "worker cannot record phase merge"
+      })
+
+    assert get_in(worker_merge_response, ["error", "data", "reason"]) == "child_under_architect_control"
+
+    merge_artifact = %{
+      "status" => "merged_into_phase",
+      "uri" => "https://github.com/nextide/symphony-plus-plus/pull/7003",
+      "summary" => "Recorded local phase merge",
+      "commit_sha" => "p7-003-flow-head"
+    }
+
+    merge_response =
+      mcp_tool(repo, architect_session, "merge_child_into_phase", %{
+        "work_package_id" => child_id,
+        "merge_artifact" => merge_artifact
+      })
+
+    assert get_in(merge_response, ["result", "structuredContent", "work_package", "status"]) == "merged_into_phase"
+    assert get_in(merge_response, ["result", "structuredContent", "artifact", "kind"]) == "phase_merge"
+    assert get_in(merge_response, ["result", "structuredContent", "merge_artifact", "status"]) == "merged_into_phase"
+    assert get_in(merge_response, ["result", "structuredContent", "artifact", "metadata", "commit_sha"]) == "p7-003-flow-head"
+
+    post_merge_worker_report_blocker_response =
+      mcp_tool(repo, worker_session, "report_blocker", %{
+        "summary" => "post-merge blocker",
+        "body" => "worker cannot add blockers after the child merged",
+        "idempotency_key" => "post-merge-worker-blocker"
+      })
+
+    assert get_in(post_merge_worker_report_blocker_response, ["error", "data", "reason"]) == "child_under_architect_control"
+
+    merge_replay_response =
+      mcp_tool(repo, architect_session, "merge_child_into_phase", %{
+        "work_package_id" => child_id,
+        "merge_artifact" => merge_artifact
+      })
+
+    assert get_in(merge_replay_response, ["result", "structuredContent", "work_package", "status"]) == "merged_into_phase"
+
+    assert get_in(merge_replay_response, ["result", "structuredContent", "merge", "id"]) ==
+             get_in(merge_response, ["result", "structuredContent", "merge", "id"])
+
+    merge_renewal_response =
+      mcp_tool(repo, renewed_architect_session, "merge_child_into_phase", %{
+        "work_package_id" => child_id,
+        "merge_artifact" => merge_artifact
+      })
+
+    assert get_in(merge_renewal_response, ["result", "structuredContent", "merge", "id"]) ==
+             get_in(merge_response, ["result", "structuredContent", "merge", "id"])
+
+    different_actor_architect_session = renew_phase_architect_session(repo, anchor, architect_capabilities, "architect-2")
+
+    different_actor_merge_replay_response =
+      mcp_tool(repo, different_actor_architect_session, "merge_child_into_phase", %{
+        "work_package_id" => child_id,
+        "merge_artifact" => merge_artifact
+      })
+
+    assert get_in(different_actor_merge_replay_response, ["result", "structuredContent", "merge", "id"]) ==
+             get_in(merge_response, ["result", "structuredContent", "merge", "id"])
+
+    merge_update_artifact = %{
+      "status" => "merged_into_phase",
+      "uri" => "https://github.com/nextide/symphony-plus-plus/pull/7003#merge-commit",
+      "summary" => "Updated local phase merge",
+      "commit_sha" => "p7-003-flow-head-updated"
+    }
+
+    merge_update_response =
+      mcp_tool(repo, renewed_architect_session, "merge_child_into_phase", %{
+        "work_package_id" => child_id,
+        "merge_artifact" => merge_update_artifact
+      })
+
+    assert get_in(merge_update_response, ["result", "structuredContent", "work_package", "status"]) == "merged_into_phase"
+
+    refute get_in(merge_update_response, ["result", "structuredContent", "merge", "id"]) ==
+             get_in(merge_response, ["result", "structuredContent", "merge", "id"])
+
+    assert get_in(merge_update_response, ["result", "structuredContent", "artifact", "uri"]) ==
+             "https://github.com/nextide/symphony-plus-plus/pull/7003#merge-commit"
+
+    assert get_in(merge_update_response, ["result", "structuredContent", "artifact", "metadata", "commit_sha"]) ==
+             "p7-003-flow-head-updated"
+
+    stale_merge_replay_response =
+      mcp_tool(repo, renewed_architect_session, "merge_child_into_phase", %{
+        "work_package_id" => child_id,
+        "merge_artifact" => merge_artifact
+      })
+
+    assert get_in(stale_merge_replay_response, ["result", "structuredContent", "merge", "id"]) ==
+             get_in(merge_response, ["result", "structuredContent", "merge", "id"])
+
+    assert get_in(stale_merge_replay_response, ["result", "structuredContent", "artifact", "uri"]) ==
+             "https://github.com/nextide/symphony-plus-plus/pull/7003#merge-commit"
+
+    assert get_in(stale_merge_replay_response, ["result", "structuredContent", "merge_artifact", "uri"]) ==
+             "https://github.com/nextide/symphony-plus-plus/pull/7003#merge-commit"
+
+    board_response = mcp_tool(repo, architect_session, "read_phase_board", %{"phase_id" => @architect_phase_id})
+
+    assert get_in(board_response, ["result", "structuredContent", "summary", "child_count"]) == 1
+    assert get_in(board_response, ["result", "structuredContent", "summary", "merged_child_count"]) == 1
+    assert get_in(board_response, ["result", "structuredContent", "summary", "open_child_count"]) == 0
+
+    phase = repo.get!(Phase, @architect_phase_id)
+    assert {:ok, _phase} = repo.update(Ecto.Changeset.change(phase, status: "closed"))
+
+    closed_phase_exact_replay_response =
+      mcp_tool(repo, renewed_architect_session, "merge_child_into_phase", %{
+        "work_package_id" => child_id,
+        "merge_artifact" => merge_update_artifact
+      })
+
+    assert get_in(closed_phase_exact_replay_response, ["error", "code"]) == -32_602
+    assert get_in(closed_phase_exact_replay_response, ["error", "data", "reason"]) == "phase_not_active"
+
+    closed_phase_merge_update_response =
+      mcp_tool(repo, renewed_architect_session, "merge_child_into_phase", %{
+        "work_package_id" => child_id,
+        "merge_artifact" => %{
+          "status" => "merged_into_phase",
+          "uri" => "https://github.com/nextide/symphony-plus-plus/pull/7003#post-close-update",
+          "summary" => "Late local phase merge update"
+        }
+      })
+
+    assert get_in(closed_phase_merge_update_response, ["error", "code"]) == -32_602
+    assert get_in(closed_phase_merge_update_response, ["error", "data", "reason"]) == "phase_not_active"
+
+    assert repo.get_by(Artifact, work_package_id: child_id, kind: "phase_merge").uri ==
+             "https://github.com/nextide/symphony-plus-plus/pull/7003#merge-commit"
+
+    assert repo.get_by(Artifact, work_package_id: child_id, kind: "phase_merge").metadata["commit_sha"] ==
+             "p7-003-flow-head-updated"
+  end
+
+  test "phase architect approval replay survives grant renewal after child blocks", %{repo: repo} do
+    architect_capabilities = [
+      "create:child_work_package",
+      "mint:child_worker_key",
+      "read:child_progress",
+      "read:child_findings",
+      "read:phase",
+      "approve:child_ready_state"
+    ]
+
+    {anchor, architect_session} = create_architect_session(repo, "SYMPP-P7-003-APPROVAL-REPLAY-ANCHOR", architect_capabilities)
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-003-APPROVAL-REPLAY-CHILD")
+    worker_session = claim_phase_child_worker(repo, architect_session, child_id)
+    advance_child_worker_to_ci_waiting(repo, worker_session)
+    attach_phase_child_ready_evidence(repo, worker_session, child_id, "p7-003-approval-replay-head")
+
+    assert get_in(mcp_tool(repo, worker_session, "mark_ready", %{}), ["result", "structuredContent", "ready"]) == true
+
+    approval_response =
+      mcp_tool(repo, architect_session, "approve_child_ready_state", %{
+        "work_package_id" => child_id,
+        "rationale" => "Ready before downstream merge blocker",
+        "request_id" => "p7-003-approval-before-blocker"
+      })
+
+    assert get_in(approval_response, ["result", "structuredContent", "work_package", "status"]) == "merging_into_phase"
+
+    block_response =
+      mcp_tool(repo, worker_session, "set_status", %{
+        "status" => "blocked",
+        "expected_status" => "merging_into_phase",
+        "reason" => "phase merge is blocked by a conflict"
+      })
+
+    assert get_in(block_response, ["result", "structuredContent", "work_package", "status"]) == "blocked"
+
+    blocker_response =
+      mcp_tool(repo, worker_session, "report_blocker", %{
+        "summary" => "Phase merge conflict",
+        "body" => "Architect approval happened, but the child needs worker follow-up before merge.",
+        "idempotency_key" => "p7-003-post-approval-blocker"
+      })
+
+    assert get_in(blocker_response, ["result", "structuredContent", "progress_event", "payload", "active"]) == true
+
+    renewed_architect_session = renew_phase_architect_session(repo, anchor, architect_capabilities)
+
+    approval_replay_response =
+      mcp_tool(repo, renewed_architect_session, "approve_child_ready_state", %{
+        "work_package_id" => child_id,
+        "rationale" => "Ready before downstream merge blocker",
+        "request_id" => "p7-003-approval-before-blocker"
+      })
+
+    assert get_in(approval_replay_response, ["result", "structuredContent", "work_package", "status"]) == "blocked"
+
+    assert get_in(approval_replay_response, ["result", "structuredContent", "approval", "id"]) ==
+             get_in(approval_response, ["result", "structuredContent", "approval", "id"])
+
+    blocker_id = get_in(blocker_response, ["result", "structuredContent", "progress_event", "payload", "blocker_id"])
+
+    resolve_response =
+      mcp_tool(repo, worker_session, "resolve_blocker", %{
+        "blocker_id" => blocker_id,
+        "resolution" => "merge blocker resolved",
+        "summary" => "Phase merge conflict resolved",
+        "idempotency_key" => "p7-003-post-approval-blocker-resolved"
+      })
+
+    assert get_in(resolve_response, ["result", "structuredContent", "progress_event", "payload", "active"]) == false
+
+    [
+      {"blocked", "implementing"},
+      {"implementing", "reviewing"},
+      {"reviewing", "ci_waiting"}
+    ]
+    |> Enum.each(fn {expected_status, status} ->
+      response =
+        mcp_tool(repo, worker_session, "set_status", %{
+          "expected_status" => expected_status,
+          "status" => status,
+          "reason" => "rework phase child after merge blocker"
+        })
+
+      assert get_in(response, ["result", "structuredContent", "work_package", "status"]) == status
+    end)
+
+    attach_phase_child_ready_evidence(repo, worker_session, child_id, "p7-003-approval-replay-head-reworked")
+
+    assert get_in(mcp_tool(repo, worker_session, "mark_ready", %{}), ["result", "structuredContent", "work_package", "status"]) ==
+             "ready_for_architect_merge"
+
+    reapproval_response =
+      mcp_tool(repo, renewed_architect_session, "approve_child_ready_state", %{
+        "work_package_id" => child_id,
+        "rationale" => "Ready before downstream merge blocker",
+        "request_id" => "p7-003-approval-before-blocker"
+      })
+
+    assert get_in(reapproval_response, ["result", "structuredContent", "work_package", "status"]) == "merging_into_phase"
+
+    refute get_in(reapproval_response, ["result", "structuredContent", "approval", "id"]) ==
+             get_in(approval_response, ["result", "structuredContent", "approval", "id"])
+
+    reapproval_replay_response =
+      mcp_tool(repo, renewed_architect_session, "approve_child_ready_state", %{
+        "work_package_id" => child_id,
+        "rationale" => "Edited retry after rework",
+        "request_id" => "p7-003-approval-before-blocker"
+      })
+
+    assert get_in(reapproval_replay_response, ["result", "structuredContent", "approval", "id"]) ==
+             get_in(reapproval_response, ["result", "structuredContent", "approval", "id"])
+
+    original_approval = repo.get!(ProgressEvent, get_in(approval_response, ["result", "structuredContent", "approval", "id"]))
+    reapproval = repo.get!(ProgressEvent, get_in(reapproval_response, ["result", "structuredContent", "approval", "id"]))
+
+    refute reapproval.inserted_at == original_approval.inserted_at
+
+    assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, child_id)
+
+    assert 2 ==
+             Enum.count(progress_events, fn event ->
+               event.status == "child_ready_approved" and get_in(event.payload, ["request_id"]) == "p7-003-approval-before-blocker"
+             end)
+
+    [
+      {"merging_into_phase", "blocked"},
+      {"blocked", "implementing"},
+      {"implementing", "reviewing"},
+      {"reviewing", "ci_waiting"}
+    ]
+    |> Enum.each(fn {expected_status, status} ->
+      response =
+        mcp_tool(repo, worker_session, "set_status", %{
+          "expected_status" => expected_status,
+          "status" => status,
+          "reason" => "rework phase child before a distinct approval request"
+        })
+
+      assert get_in(response, ["result", "structuredContent", "work_package", "status"]) == status
+    end)
+
+    attach_phase_child_ready_evidence(repo, worker_session, child_id, "p7-003-approval-replay-head-second-reworked")
+
+    assert get_in(mcp_tool(repo, worker_session, "mark_ready", %{}), ["result", "structuredContent", "work_package", "status"]) ==
+             "ready_for_architect_merge"
+
+    distinct_reapproval_response =
+      mcp_tool(repo, renewed_architect_session, "approve_child_ready_state", %{
+        "work_package_id" => child_id,
+        "rationale" => "Ready after a second rework cycle",
+        "request_id" => "p7-003-approval-after-second-rework"
+      })
+
+    assert get_in(distinct_reapproval_response, ["result", "structuredContent", "work_package", "status"]) == "merging_into_phase"
+
+    stale_approval_replay_response =
+      mcp_tool(repo, renewed_architect_session, "approve_child_ready_state", %{
+        "work_package_id" => child_id,
+        "rationale" => "Stale retry from the previous ready cycle",
+        "request_id" => "p7-003-approval-before-blocker"
+      })
+
+    assert get_in(stale_approval_replay_response, ["error", "code"]) == -32_602
+    assert get_in(stale_approval_replay_response, ["error", "data", "reason"]) == "child_not_ready_for_architect"
+  end
+
+  test "phase architect cannot approve child readiness when gates are failed", %{repo: repo} do
+    {anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-003-FAILED-GATES-ANCHOR", [
+        "read:child_progress",
+        "read:child_findings",
+        "read:phase",
+        "approve:child_ready_state"
+      ])
+
+    assert {:ok, child} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-P7-003-FAILED-GATES-CHILD",
+                 kind: "phase_child",
+                 policy_template: "phase_child",
+                 phase_id: @architect_phase_id,
+                 parent_id: anchor.id,
+                 repo: anchor.repo,
+                 base_branch: anchor.base_branch,
+                 allowed_file_globs: anchor.allowed_file_globs,
+                 status: "ready_for_architect_merge"
+               )
+             )
+
+    response =
+      mcp_tool(repo, architect_session, "approve_child_ready_state", %{
+        "work_package_id" => child.id,
+        "rationale" => "should fail without evidence"
+      })
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "reason"]) == "readiness_failed"
+    assert "plan_complete" in get_in(response, ["error", "data", "missing"])
+    assert "acceptance_criteria_met" in get_in(response, ["error", "data", "missing"])
+
+    assert {:ok, unchanged_child} = WorkPackageRepository.get(repo, child.id)
+    assert unchanged_child.status == "ready_for_architect_merge"
+  end
+
+  test "phase architect merge record validates merge artifact", %{repo: repo} do
+    {anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-003-MERGE-ARTIFACT-ANCHOR", [
+        "read:phase",
+        "merge:child_into_phase"
+      ])
+
+    assert {:ok, child} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-P7-003-MERGE-ARTIFACT-CHILD",
+                 kind: "phase_child",
+                 policy_template: "phase_child",
+                 phase_id: @architect_phase_id,
+                 parent_id: anchor.id,
+                 repo: anchor.repo,
+                 base_branch: anchor.base_branch,
+                 allowed_file_globs: anchor.allowed_file_globs,
+                 status: "merging_into_phase"
+               )
+             )
+
+    missing_uri_response =
+      mcp_tool(repo, architect_session, "merge_child_into_phase", %{
+        "work_package_id" => child.id,
+        "merge_artifact" => %{"status" => "merged_into_phase"}
+      })
+
+    assert get_in(missing_uri_response, ["error", "code"]) == -32_602
+    assert get_in(missing_uri_response, ["error", "data", "reason"]) == "missing_merge_artifact_uri"
+
+    invalid_status_response =
+      mcp_tool(repo, architect_session, "merge_child_into_phase", %{
+        "work_package_id" => child.id,
+        "merge_artifact" => %{"status" => "merged", "uri" => "https://github.com/nextide/symphony-plus-plus/pull/7004"}
+      })
+
+    assert get_in(invalid_status_response, ["error", "code"]) == -32_602
+    assert get_in(invalid_status_response, ["error", "data", "reason"]) == "invalid_merge_artifact_status"
+
+    assert {:ok, unchanged_child} = WorkPackageRepository.get(repo, child.id)
+    assert unchanged_child.status == "merging_into_phase"
+  end
+
+  test "phase architect cannot finalize child merge after phase closes", %{repo: repo} do
+    {anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-003-MERGE-CLOSED-PHASE-ANCHOR", [
+        "read:phase",
+        "merge:child_into_phase"
+      ])
+
+    assert {:ok, child} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-P7-003-MERGE-CLOSED-PHASE-CHILD",
+                 kind: "phase_child",
+                 policy_template: "phase_child",
+                 phase_id: @architect_phase_id,
+                 parent_id: anchor.id,
+                 repo: anchor.repo,
+                 base_branch: anchor.base_branch,
+                 allowed_file_globs: anchor.allowed_file_globs,
+                 status: "merging_into_phase"
+               )
+             )
+
+    phase = repo.get!(Phase, @architect_phase_id)
+    assert {:ok, _phase} = repo.update(Ecto.Changeset.change(phase, status: "closed"))
+
+    response =
+      mcp_tool(repo, architect_session, "merge_child_into_phase", %{
+        "work_package_id" => child.id,
+        "merge_artifact" => %{
+          "status" => "merged_into_phase",
+          "uri" => "https://github.com/nextide/symphony-plus-plus/pull/7005"
+        }
+      })
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "reason"]) == "phase_not_active"
+
+    assert {:ok, unchanged_child} = WorkPackageRepository.get(repo, child.id)
+    assert unchanged_child.status == "merging_into_phase"
+  end
+
+  test "phase architect cannot replay pending child merge after phase closes", %{repo: repo} do
+    {anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-003-MERGE-CLOSED-REPLAY-ANCHOR", [
+        "read:phase",
+        "merge:child_into_phase"
+      ])
+
+    assert {:ok, child} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-P7-003-MERGE-CLOSED-REPLAY-CHILD",
+                 kind: "phase_child",
+                 policy_template: "phase_child",
+                 phase_id: @architect_phase_id,
+                 parent_id: anchor.id,
+                 repo: anchor.repo,
+                 base_branch: anchor.base_branch,
+                 allowed_file_globs: anchor.allowed_file_globs,
+                 status: "merging_into_phase"
+               )
+             )
+
+    merge_artifact = %{
+      "status" => "merged_into_phase",
+      "uri" => "https://github.com/nextide/symphony-plus-plus/pull/7006",
+      "summary" => "Pending phase merge event"
+    }
+
+    assert {:ok, _event} = append_child_merge_progress_event(repo, architect_session, child.id, merge_artifact)
+
+    phase = repo.get!(Phase, @architect_phase_id)
+    assert {:ok, _phase} = repo.update(Ecto.Changeset.change(phase, status: "closed"))
+
+    response =
+      mcp_tool(repo, architect_session, "merge_child_into_phase", %{
+        "work_package_id" => child.id,
+        "merge_artifact" => merge_artifact
+      })
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "reason"]) == "phase_not_active"
+
+    assert {:ok, unchanged_child} = WorkPackageRepository.get(repo, child.id)
+    assert unchanged_child.status == "merging_into_phase"
+    assert repo.get_by(Artifact, work_package_id: child.id, kind: "phase_merge") == nil
   end
 
   test "remaining Phase 7 architect stubs return explicit not-yet-implemented errors", %{repo: repo} do
@@ -9005,6 +9651,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     response
   end
 
+  defp append_child_merge_progress_event(repo, %Session{} = session, child_id, merge_artifact) do
+    payload = child_merge_payload(child_id, merge_artifact)
+
+    PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, child_id, %{
+      "summary" => Map.get(merge_artifact, "summary") || "Child merged into phase",
+      "status" => "merged_into_phase",
+      "idempotency_key" => metadata_idempotency_key(payload),
+      "payload" => payload
+    })
+  end
+
+  defp child_merge_payload(child_id, merge_artifact) do
+    %{
+      "type" => "phase_child_merge",
+      "source_tool" => "merge_child_into_phase",
+      "work_package_id" => child_id,
+      "merge_artifact" => merge_artifact
+    }
+  end
+
+  defp metadata_idempotency_key(payload) do
+    "mcp:" <> Map.get(payload, "type", "metadata") <> ":" <> Base.url_encode64(:erlang.term_to_binary(payload), padding: false)
+  end
+
   defp sync_pr_state(repo, session, url, head_sha) do
     attach_tool(repo, session, "sync_pr", %{
       "url" => url,
@@ -9113,6 +9783,71 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       repo: repo,
       session: session
     )
+  end
+
+  defp claim_phase_child_worker(repo, architect_session, child_id) do
+    mint_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => %{}
+      })
+
+    worker_secret = get_in(mint_response, ["result", "structuredContent", "worker_grant", "secret"])
+    assert is_binary(worker_secret)
+    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, worker_secret, claimed_by: "worker-1")
+    MCPHarness.session(worker_assignment, proof_hash: WorkKey.secret_hash(worker_secret))
+  end
+
+  defp renew_phase_architect_session(repo, anchor, capabilities, claimed_by \\ "architect-1") do
+    assert {:ok, minted} =
+             AccessGrantService.mint_architect_grant(repo, anchor.phase_id,
+               work_package_id: anchor.id,
+               capabilities: capabilities
+             )
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, minted.work_key.secret, %{claimed_by: claimed_by}, DateTime.utc_now(:microsecond))
+
+    MCPHarness.session(architect_assignment, proof_hash: minted.grant.secret_hash)
+  end
+
+  defp advance_child_worker_to_ci_waiting(repo, worker_session) do
+    [
+      {"ready_for_worker", "claimed"},
+      {"claimed", "planning"},
+      {"planning", "implementing"},
+      {"implementing", "reviewing"},
+      {"reviewing", "ci_waiting"}
+    ]
+    |> Enum.each(fn {expected_status, status} ->
+      response =
+        mcp_tool(repo, worker_session, "set_status", %{
+          "expected_status" => expected_status,
+          "status" => status,
+          "reason" => "advance phase child test flow"
+        })
+
+      assert get_in(response, ["result", "structuredContent", "work_package", "status"]) == status
+    end)
+  end
+
+  defp attach_phase_child_ready_evidence(repo, worker_session, child_id, head_sha) do
+    append_done_plan(repo, child_id)
+    attach_tool(repo, worker_session, "attach_branch", %{"branch" => "agent/#{child_id}/worker", "head_sha" => head_sha})
+    attach_tool(repo, worker_session, "attach_pr", %{"url" => "https://github.com/nextide/symphony-plus-plus/pull/7003", "head_sha" => head_sha})
+
+    attach_tool(repo, worker_session, "submit_review_package", ready_review_package_args(head_sha))
+  end
+
+  defp ready_review_package_args(head_sha) do
+    %{
+      "summary" => "Ready for architect review",
+      "tests" => ["mix test elixir/test/symphony_elixir/symphony_plus_plus/mcp_test.exs"],
+      "artifacts" => ["review-log.txt"],
+      "head_sha" => head_sha,
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    }
   end
 
   defp create_child_work_package(repo, session, child_id) do

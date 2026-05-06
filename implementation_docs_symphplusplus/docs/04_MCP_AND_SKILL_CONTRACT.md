@@ -127,7 +127,7 @@ revoke_child_worker_key(grant_id, reason)
 read_child_status(work_package_id)
 read_phase_board(phase_id)
 request_child_replan(work_package_id, reason)
-approve_child_ready_state(work_package_id, rationale)
+approve_child_ready_state(work_package_id, rationale, request_id?)
 merge_child_into_phase(work_package_id, merge_artifact)
 split_work_package(work_package_id, child_specs)
 publish_phase_update(phase_id, update)
@@ -172,9 +172,39 @@ ignores unrelated normal worker grants, and caps child capabilities and expiry
 to that current grant.
 `read_child_status(work_package_id)` requires both `read:child_progress` and
 `read:child_findings`; it can read the architect anchor package or a same-phase
-child package. The remaining architect tools return explicit
-`phase7_not_implemented` errors after authorization and must not approve ready
-children, merge into a phase, or publish phase state.
+child package. `approve_child_ready_state(work_package_id, rationale, request_id?)` can
+approve only a same-phase child already in `ready_for_architect_merge` after
+readiness gates still pass; it records a local audit event and moves the child
+to `merging_into_phase`. Exact approval retries replay across renewed architect
+grants for the same actor only when the caller supplies the same `request_id`;
+the human `rationale` is audit text and is not idempotency key material.
+Same-`request_id` retries within the same ready-state cycle replay the original
+approval audit event; retry rationale edits do not mutate the recorded audit
+rationale. Re-approval after a real blocked/reworked/readied cycle records a new
+approval audit event even when the same `request_id` and rationale text are
+reused. Approved children are architect-controlled, except the child worker may
+move `merging_into_phase` back to `blocked` to represent a merge blocker before
+further worker follow-up.
+`merge_child_into_phase(work_package_id, merge_artifact)` records a local
+`phase_merge` artifact and moves the approved
+child to `merged_into_phase`; the artifact must include
+`status: "merged_into_phase"` and a nonempty `uri`, and no live Git or branch
+merge side effect is performed. The full accepted `merge_artifact` is preserved
+as artifact metadata. Exact merge retries replay across renewed scoped
+architect grants even when the renewed grant has a different `claimed_by`;
+after a child is already merged, a new valid merge artifact updates the local
+`phase_merge` record and appends an audit event without another lifecycle
+transition while the phase remains active; exact older retries do not overwrite
+newer artifact data. Merge finalization and post-merge artifact updates are
+rejected after the phase closes.
+Phase-board reads include child progress summary counts so humans can inspect
+merged-child progress. Summary counts are computed after backend authorization
+and frozen repo/base scope filters, then remain stable across client-side board
+filters; abandoned children are excluded from merge-progress totals, while
+closed children still count in the merge denominator but are not open work. The
+remaining
+architect tools return explicit `phase7_not_implemented` errors after
+authorization and must not publish phase state.
 
 ## Skill rules
 

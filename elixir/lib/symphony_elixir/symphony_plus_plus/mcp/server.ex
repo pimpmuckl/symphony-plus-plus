@@ -11,7 +11,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.GitHub.{Client, DryClient, PullRequest}
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
+  alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Session}
+  alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
@@ -59,8 +61,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @phase7_stub_architect_tools [
     "revoke_child_worker_key",
     "request_child_replan",
-    "approve_child_ready_state",
-    "merge_child_into_phase",
     "split_work_package",
     "publish_phase_update"
   ]
@@ -869,6 +869,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "Read the architect grant's scoped phase board."
   end
 
+  defp architect_tool_description("approve_child_ready_state") do
+    "Approve a ready phase-child package for merge into the architect's phase."
+  end
+
+  defp architect_tool_description("merge_child_into_phase") do
+    "Record a local phase merge artifact and mark a phase child merged into the architect's phase."
+  end
+
   defp architect_tool_description(name) when name in @phase7_stub_architect_tools do
     "Phase 7 architect tool #{name}; authorization is enforced, but behavior is not implemented yet."
   end
@@ -1060,12 +1068,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool_input_schema("approve_child_ready_state") do
-    schema(%{"work_package_id" => string_schema(), "rationale" => string_schema()}, ["work_package_id", "rationale"])
+    schema(
+      %{"work_package_id" => string_schema(), "rationale" => string_schema(), "request_id" => string_schema()},
+      ["work_package_id", "rationale"]
+    )
   end
 
-  defp architect_tool_input_schema("merge_child_into_phase") do
-    schema(%{"work_package_id" => string_schema(), "merge_artifact" => object_schema()}, ["work_package_id", "merge_artifact"])
-  end
+  defp architect_tool_input_schema("merge_child_into_phase"),
+    do: schema(%{"work_package_id" => string_schema(), "merge_artifact" => merge_artifact_schema()}, ["work_package_id", "merge_artifact"])
 
   defp architect_tool_input_schema("split_work_package") do
     schema(%{"work_package_id" => string_schema(), "child_specs" => nonempty_object_array_schema()}, ["work_package_id", "child_specs"])
@@ -1167,6 +1177,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp nonempty_string_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => nonblank_string_schema()}
   defp nonempty_object_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => object_schema()}
+
+  defp merge_artifact_schema do
+    %{
+      "type" => "object",
+      "additionalProperties" => true,
+      "properties" => %{
+        "status" => string_schema(),
+        "uri" => string_schema(),
+        "summary" => string_schema(),
+        "commit_sha" => string_schema(),
+        "merge_commit_sha" => string_schema()
+      },
+      "required" => ["status", "uri"]
+    }
+  end
 
   defp plan_patch_schema do
     %{
@@ -1553,6 +1578,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp architect_tool("approve_child_ready_state", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "approve:child_ready_state"),
+         {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
+         {:ok, rationale} <- required_argument(arguments, "rationale"),
+         {:ok, request_id} <- optional_request_id(arguments, "request_id"),
+         {:ok, result} <-
+           approve_child_ready_state_transaction(config.repo, session, work_package_id, rationale, request_id) do
+      {:ok, tool_result(result)}
+    else
+      {:tool_error, reason} ->
+        {:error, -32_602, "Invalid params", %{"tool" => "approve_child_ready_state", "reason" => reason}}
+
+      {:error, {:readiness_failed, missing, reasons}} ->
+        {:error, -32_602, "Invalid params", %{"tool" => "approve_child_ready_state", "reason" => "readiness_failed", "missing" => missing, "reasons" => reasons}}
+
+      {:error, reason} ->
+        architect_error(reason, "approve_child_ready_state")
+    end
+  end
+
+  defp architect_tool("merge_child_into_phase", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "merge:child_into_phase"),
+         {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
+         {:ok, merge_artifact} <- required_object(arguments, "merge_artifact"),
+         {:ok, result} <- merge_child_into_phase_transaction(config.repo, session, work_package_id, merge_artifact) do
+      {:ok, tool_result(result)}
+    else
+      {:tool_error, reason} ->
+        {:error, -32_602, "Invalid params", %{"tool" => "merge_child_into_phase", "reason" => reason}}
+
+      {:error, reason} ->
+        architect_error(reason, "merge_child_into_phase")
+    end
+  end
+
   defp architect_tool(name, arguments, %__MODULE__{config: config, session: session}) when name in @phase7_stub_architect_tools do
     with {:ok, session} <- architect_session(config.repo, session, architect_tool_capability(name)),
          :ok <- require_architect_target_scope(config.repo, session, arguments) do
@@ -1738,6 +1798,171 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp approve_child_ready_state_transaction(repo, %Session{} = session, work_package_id, rationale, request_id) do
+    run_architect_transaction(repo, fn ->
+      approve_child_ready_state_in_transaction(repo, session, work_package_id, rationale, request_id)
+    end)
+  end
+
+  defp approve_child_ready_state_in_transaction(repo, %Session{} = session, work_package_id, rationale, request_id) do
+    with :ok <- lock_access_grant(repo, session.assignment.grant_id),
+         {:ok, architect_grant} <- require_live_architect_grant(repo, session),
+         :ok <- lock_work_package(repo, Session.work_package_id(session)),
+         {:ok, phase_id, anchor} <- architect_child_phase_anchor(repo, session, architect_grant),
+         {:ok, child} <- require_transaction_current_child_scope(repo, work_package_id, anchor, phase_id),
+         :ok <- lock_work_package(repo, child.id),
+         {:ok, state} <- PlanningRepository.get_state(repo, child.id) do
+      approve_child_ready_state_result(repo, session, state, rationale, request_id)
+    end
+  end
+
+  defp approve_child_ready_state_result(repo, %Session{} = session, state, rationale, request_id) do
+    case existing_child_ready_approval(repo, session, state, rationale, request_id) do
+      {:ok, %ProgressEvent{} = event} ->
+        replay_or_complete_child_ready_approval(repo, session, state, event)
+
+      {:error, :not_found} ->
+        with :ok <-
+               require_child_status(
+                 state.work_package,
+                 "ready_for_architect_merge",
+                 "child_not_ready_for_architect"
+               ),
+             :ok <- child_ready_approval_gates(repo, state),
+             {:ok, event} <-
+               append_child_ready_approval_event(repo, session, state.work_package, rationale, request_id),
+             {:ok, approved_child} <- architect_phase_child_transition(repo, session, state.work_package, "merging_into_phase") do
+          {:ok, child_ready_approval_result(approved_child, event)}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp replay_or_complete_child_ready_approval(
+         repo,
+         %Session{} = session,
+         %{work_package: %WorkPackage{status: "ready_for_architect_merge"}} = state,
+         %ProgressEvent{} = event
+       ) do
+    with :ok <- child_ready_approval_gates(repo, state),
+         {:ok, approved_child} <- architect_phase_child_transition(repo, session, state.work_package, "merging_into_phase") do
+      {:ok, child_ready_approval_result(approved_child, event)}
+    end
+  end
+
+  defp replay_or_complete_child_ready_approval(_repo, %Session{}, state, %ProgressEvent{} = event) do
+    {:ok, child_ready_approval_result(state.work_package, event)}
+  end
+
+  defp merge_child_into_phase_transaction(repo, %Session{} = session, work_package_id, merge_artifact) do
+    run_architect_transaction(repo, fn ->
+      merge_child_into_phase_in_transaction(repo, session, work_package_id, merge_artifact)
+    end)
+  end
+
+  defp merge_child_into_phase_in_transaction(repo, %Session{} = session, work_package_id, merge_artifact) do
+    with {:ok, merge_artifact} <- normalized_merge_artifact(merge_artifact),
+         :ok <- lock_access_grant(repo, session.assignment.grant_id),
+         {:ok, architect_grant} <- require_live_architect_grant(repo, session),
+         :ok <- lock_work_package(repo, Session.work_package_id(session)),
+         {:ok, phase_id, anchor} <- architect_child_phase_anchor(repo, session, architect_grant),
+         {:ok, child} <- require_transaction_current_child_scope(repo, work_package_id, anchor, phase_id),
+         :ok <- lock_work_package(repo, child.id),
+         {:ok, state} <- PlanningRepository.get_state(repo, child.id) do
+      merge_child_into_phase_result(repo, session, state, merge_artifact)
+    end
+  end
+
+  defp merge_child_into_phase_result(repo, %Session{} = session, state, merge_artifact) do
+    case existing_child_merge_record(repo, session, state.work_package.id, merge_artifact) do
+      {:ok, %ProgressEvent{} = event} ->
+        replay_or_complete_child_merge(repo, session, state, event, merge_artifact)
+
+      {:error, :not_found} ->
+        record_new_child_merge(repo, session, state, merge_artifact)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp replay_or_complete_child_merge(
+         repo,
+         %Session{} = session,
+         %{work_package: %WorkPackage{status: "merging_into_phase"}} = state,
+         %ProgressEvent{} = event,
+         merge_artifact
+       ) do
+    with :ok <- require_active_child_phase(repo, state.work_package),
+         {:ok, artifact} <- record_phase_merge_artifact(repo, state.work_package, merge_artifact),
+         {:ok, merged_child} <- architect_phase_child_transition(repo, session, state.work_package, "merged_into_phase") do
+      {:ok, child_merge_result(merged_child, event, artifact, merge_artifact)}
+    end
+  end
+
+  defp replay_or_complete_child_merge(repo, %Session{}, state, %ProgressEvent{} = event, merge_artifact) do
+    with :ok <- require_active_child_phase(repo, state.work_package),
+         {:ok, artifact} <- current_phase_merge_artifact(repo, state.work_package, merge_artifact) do
+      {:ok, child_merge_result(state.work_package, event, artifact, current_merge_artifact(artifact))}
+    end
+  end
+
+  defp record_new_child_merge(
+         repo,
+         %Session{} = session,
+         %{work_package: %WorkPackage{status: "merging_into_phase"}} = state,
+         merge_artifact
+       ) do
+    with :ok <- require_active_child_phase(repo, state.work_package),
+         {:ok, artifact} <- record_phase_merge_artifact(repo, state.work_package, merge_artifact),
+         {:ok, event} <- append_child_merge_event(repo, session, state.work_package, merge_artifact),
+         {:ok, merged_child} <- architect_phase_child_transition(repo, session, state.work_package, "merged_into_phase") do
+      {:ok, child_merge_result(merged_child, event, artifact, merge_artifact)}
+    end
+  end
+
+  defp record_new_child_merge(
+         repo,
+         %Session{} = session,
+         %{work_package: %WorkPackage{status: "merged_into_phase"}} = state,
+         merge_artifact
+       ) do
+    with :ok <- require_active_child_phase(repo, state.work_package),
+         {:ok, artifact} <- record_phase_merge_artifact(repo, state.work_package, merge_artifact),
+         {:ok, event} <- append_child_merge_event(repo, session, state.work_package, merge_artifact) do
+      {:ok, child_merge_result(state.work_package, event, artifact, merge_artifact)}
+    end
+  end
+
+  defp record_new_child_merge(_repo, %Session{}, state, _merge_artifact) do
+    require_child_status(state.work_package, "merging_into_phase", "child_not_approved_for_merge")
+  end
+
+  defp require_active_child_phase(repo, %WorkPackage{} = child) do
+    case readiness_phase(repo, child) do
+      {:ok, %{status: "active"}} -> :ok
+      {:ok, _phase} -> {:tool_error, "phase_not_active"}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp current_phase_merge_artifact(repo, %WorkPackage{} = child, merge_artifact) do
+    case PlanningRepository.get_artifact(repo, phase_merge_artifact_id(child.id)) do
+      {:ok, nil} ->
+        with :ok <- require_active_child_phase(repo, child) do
+          record_phase_merge_artifact(repo, child, merge_artifact)
+        end
+
+      {:ok, %Artifact{} = artifact} ->
+        {:ok, artifact}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp require_child_ready_for_mint(repo, work_package_id, %WorkPackage{} = anchor, phase_id) when is_binary(work_package_id) do
     now = DateTime.utc_now(:microsecond)
 
@@ -1773,6 +1998,415 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
       {:error, _reason} ->
         {:error, :phase_scope_not_available}
+    end
+  end
+
+  defp require_child_status(%WorkPackage{status: status}, status, _reason), do: :ok
+  defp require_child_status(%WorkPackage{}, _status, reason), do: {:tool_error, reason}
+
+  defp child_ready_approval_gates(repo, state) do
+    required_review_lanes = required_review_lanes(state.work_package)
+
+    with {:ok, reasons} <- readiness_failure_reasons(repo, state, required_review_lanes) do
+      reasons = Enum.reject(reasons, &(Map.get(&1, "gate") == "status_ci_waiting"))
+      missing = missing_readiness_gates(reasons)
+
+      if missing == [], do: :ok, else: {:error, {:readiness_failed, missing, reasons}}
+    end
+  end
+
+  defp existing_child_ready_approval(repo, %Session{} = session, %{work_package: %WorkPackage{} = child}, _rationale, request_id)
+       when is_binary(request_id) do
+    ready_cycle_id = child_ready_approval_ready_cycle_id(child)
+
+    case current_cycle_child_ready_approval_event(repo, session, child.id, request_id, ready_cycle_id) do
+      {:ok, %ProgressEvent{} = event} ->
+        {:ok, event}
+
+      {:error, :not_found} ->
+        replay_latest_child_ready_approval_event(repo, session, child, request_id, ready_cycle_id)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp existing_child_ready_approval(_repo, %Session{}, _state, _rationale, _request_id), do: {:error, :not_found}
+
+  defp current_cycle_child_ready_approval_event(_repo, %Session{}, _work_package_id, _request_id, nil), do: {:error, :not_found}
+
+  defp current_cycle_child_ready_approval_event(repo, %Session{} = session, work_package_id, request_id, ready_cycle_id) do
+    identity = child_ready_approval_request_identity(work_package_id, request_id, ready_cycle_id)
+    idempotency_key = child_ready_approval_idempotency_key(work_package_id, request_id, nil, ready_cycle_id)
+
+    case PlanningRepository.get_progress_event_by_idempotency_key(
+           repo,
+           work_package_id,
+           idempotency_key,
+           session.assignment.grant_id
+         ) do
+      {:ok, event} ->
+        validate_child_ready_approval_event(event, session, identity)
+
+      {:error, :not_found} ->
+        replay_child_ready_approval_event(repo, session, work_package_id, idempotency_key, identity)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp replay_latest_child_ready_approval_event(repo, %Session{} = session, %WorkPackage{} = child, request_id, ready_cycle_id) do
+    with {:ok, event} <- latest_child_ready_approval_event(repo, child.id, request_id),
+         :ok <- child_ready_approval_event_matches_current_cycle?(repo, event, child, ready_cycle_id) do
+      event_ready_cycle_id = Map.get(event.payload || %{}, "ready_cycle_id")
+      identity = child_ready_approval_request_identity(child.id, request_id, event_ready_cycle_id)
+
+      validate_child_ready_approval_event(event, session, identity)
+    end
+  end
+
+  defp latest_child_ready_approval_event(repo, work_package_id, request_id) do
+    case PlanningRepository.list_progress_events(repo, work_package_id) do
+      {:ok, progress_events} ->
+        progress_events
+        |> Enum.filter(&child_ready_approval_request_event?(&1, request_id))
+        |> List.last()
+        |> case do
+          %ProgressEvent{} = event -> {:ok, event}
+          nil -> {:error, :not_found}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp child_ready_approval_request_event?(%ProgressEvent{status: "child_ready_approved", payload: payload}, request_id)
+       when is_map(payload) do
+    Map.take(payload, ["type", "source_tool", "request_id"]) == %{
+      "type" => "child_ready_approval",
+      "source_tool" => "approve_child_ready_state",
+      "request_id" => request_id
+    }
+  end
+
+  defp child_ready_approval_request_event?(%ProgressEvent{}, _request_id), do: false
+
+  defp latest_child_ready_approval_event(repo, work_package_id) do
+    case PlanningRepository.list_progress_events(repo, work_package_id) do
+      {:ok, progress_events} ->
+        progress_events
+        |> Enum.filter(&child_ready_approval_event?/1)
+        |> List.last()
+        |> case do
+          %ProgressEvent{} = event -> {:ok, event}
+          nil -> {:error, :not_found}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp child_ready_approval_event?(%ProgressEvent{status: "child_ready_approved", payload: payload}) when is_map(payload) do
+    Map.take(payload, ["type", "source_tool"]) == %{
+      "type" => "child_ready_approval",
+      "source_tool" => "approve_child_ready_state"
+    }
+  end
+
+  defp child_ready_approval_event?(%ProgressEvent{}), do: false
+
+  defp child_ready_approval_event_matches_current_cycle?(
+         _repo,
+         %ProgressEvent{payload: payload},
+         %WorkPackage{status: "ready_for_architect_merge"},
+         ready_cycle_id
+       )
+       when is_map(payload) do
+    if Map.get(payload, "ready_cycle_id") == ready_cycle_id, do: :ok, else: {:error, :not_found}
+  end
+
+  defp child_ready_approval_event_matches_current_cycle?(repo, %ProgressEvent{} = event, %WorkPackage{id: child_id, status: status}, _ready_cycle_id)
+       when status in ["merging_into_phase", "merged_into_phase", "blocked"] do
+    with {:ok, latest_event} <- latest_child_ready_approval_event(repo, child_id) do
+      if latest_event.id == event.id, do: :ok, else: {:error, :not_found}
+    end
+  end
+
+  defp child_ready_approval_event_matches_current_cycle?(_repo, %ProgressEvent{}, %WorkPackage{}, _ready_cycle_id), do: {:error, :not_found}
+
+  defp append_child_ready_approval_event(repo, %Session{} = session, %WorkPackage{} = child, rationale, request_id) do
+    operation_id = if is_binary(request_id), do: nil, else: child_ready_approval_operation_id()
+    ready_cycle_id = child_ready_approval_ready_cycle_id(child)
+    payload = child_ready_approval_payload(child.id, rationale, request_id, operation_id, ready_cycle_id)
+
+    PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, child.id, %{
+      "summary" => "Child ready state approved",
+      "status" => "child_ready_approved",
+      "idempotency_key" => child_ready_approval_idempotency_key(child.id, request_id, operation_id, ready_cycle_id),
+      "payload" => payload
+    })
+  end
+
+  defp child_ready_approval_payload(work_package_id, rationale, request_id, operation_id, ready_cycle_id) do
+    %{
+      "type" => "child_ready_approval",
+      "source_tool" => "approve_child_ready_state",
+      "work_package_id" => work_package_id,
+      "rationale" => rationale
+    }
+    |> maybe_put_filled_string("request_id", request_id)
+    |> maybe_put_filled_string("operation_id", operation_id)
+    |> maybe_put_filled_string("ready_cycle_id", ready_cycle_id)
+  end
+
+  defp child_ready_approval_idempotency_key(work_package_id, request_id, _operation_id, ready_cycle_id) when is_binary(request_id) do
+    child_ready_approval_request_identity(work_package_id, request_id, ready_cycle_id)
+    |> metadata_idempotency_key()
+  end
+
+  defp child_ready_approval_idempotency_key(work_package_id, _request_id, operation_id, _ready_cycle_id) do
+    child_ready_approval_operation_payload(work_package_id)
+    |> Map.put("operation_id", operation_id)
+    |> metadata_idempotency_key()
+  end
+
+  defp child_ready_approval_operation_payload(work_package_id) do
+    %{
+      "type" => "child_ready_approval",
+      "source_tool" => "approve_child_ready_state",
+      "work_package_id" => work_package_id
+    }
+  end
+
+  defp child_ready_approval_request_identity(work_package_id, request_id, ready_cycle_id) do
+    work_package_id
+    |> child_ready_approval_operation_payload()
+    |> Map.put("request_id", request_id)
+    |> maybe_put_filled_string("ready_cycle_id", ready_cycle_id)
+  end
+
+  defp child_ready_approval_ready_cycle_id(%WorkPackage{status: "ready_for_architect_merge", updated_at: %DateTime{} = updated_at}) do
+    DateTime.to_iso8601(updated_at)
+  end
+
+  defp child_ready_approval_ready_cycle_id(%WorkPackage{}), do: nil
+
+  defp child_ready_approval_operation_id do
+    "approval_" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+  end
+
+  defp child_ready_approval_result(%WorkPackage{} = child, %ProgressEvent{} = event) do
+    %{
+      "work_package" => child_work_package_payload(child),
+      "approval" => progress_event_payload(event)
+    }
+  end
+
+  defp normalized_merge_artifact(merge_artifact) when is_map(merge_artifact) do
+    with {:ok, status} <- merge_artifact_string(merge_artifact, "status"),
+         :ok <- require_merge_artifact_status(status),
+         {:ok, uri} <- merge_artifact_string(merge_artifact, "uri") do
+      merge_artifact =
+        merge_artifact
+        |> trim_string_values()
+        |> Map.put("status", status)
+        |> Map.put("uri", uri)
+
+      {:ok, merge_artifact}
+    end
+  end
+
+  defp normalized_merge_artifact(_merge_artifact), do: {:tool_error, "invalid_merge_artifact"}
+
+  defp merge_artifact_string(merge_artifact, key) do
+    case Map.get(merge_artifact, key) do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> {:tool_error, "missing_merge_artifact_#{key}"}
+          trimmed -> {:ok, trimmed}
+        end
+
+      _value ->
+        {:tool_error, "missing_merge_artifact_#{key}"}
+    end
+  end
+
+  defp require_merge_artifact_status("merged_into_phase"), do: :ok
+  defp require_merge_artifact_status(_status), do: {:tool_error, "invalid_merge_artifact_status"}
+
+  defp trim_string_values(value) when is_map(value) do
+    Map.new(value, fn
+      {key, string} when is_binary(string) -> {key, String.trim(string)}
+      {key, nested} -> {key, trim_string_values(nested)}
+    end)
+  end
+
+  defp trim_string_values(values) when is_list(values), do: Enum.map(values, &trim_string_values/1)
+  defp trim_string_values(value), do: value
+
+  defp existing_child_merge_record(repo, %Session{} = session, work_package_id, merge_artifact) do
+    payload = child_merge_payload(work_package_id, merge_artifact)
+    idempotency_key = metadata_idempotency_key(payload)
+
+    case PlanningRepository.get_progress_event_by_idempotency_key(
+           repo,
+           work_package_id,
+           idempotency_key,
+           session.assignment.grant_id
+         ) do
+      {:ok, event} -> validate_child_merge_event(event, session, payload)
+      {:error, :not_found} -> replay_child_merge_event(repo, session, work_package_id, idempotency_key, payload)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp replay_child_ready_approval_event(repo, %Session{} = session, work_package_id, idempotency_key, expected_identity) do
+    with {:ok, event} <- existing_child_progress_event(repo, work_package_id, idempotency_key) do
+      validate_child_ready_approval_event(event, session, expected_identity)
+    end
+  end
+
+  defp replay_child_merge_event(repo, %Session{} = session, work_package_id, idempotency_key, expected_payload) do
+    with {:ok, event} <- existing_child_progress_event(repo, work_package_id, idempotency_key) do
+      validate_child_merge_event(event, session, expected_payload)
+    end
+  end
+
+  defp existing_child_progress_event(repo, work_package_id, idempotency_key) do
+    case PlanningRepository.list_progress_events(repo, work_package_id) do
+      {:ok, progress_events} -> matching_progress_event(progress_events, idempotency_key)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_child_ready_approval_event(event, session, expected_identity) do
+    if event.status == "child_ready_approved" and child_ready_approval_identity_matches?(event.payload, expected_identity) do
+      with :ok <- child_progress_event_actor_matches?(event, session), do: {:ok, event}
+    else
+      {:error, :idempotency_conflict}
+    end
+  end
+
+  defp child_ready_approval_identity_matches?(payload, expected_identity) when is_map(payload) do
+    payload
+    |> Map.take(["type", "source_tool", "work_package_id", "request_id", "ready_cycle_id"])
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
+    |> Kernel.==(expected_identity)
+  end
+
+  defp child_ready_approval_identity_matches?(_payload, _expected_identity), do: false
+
+  defp validate_child_merge_event(event, session, expected_payload) do
+    if event.status == "merged_into_phase" and event.payload == expected_payload do
+      with :ok <- child_progress_event_actor_role_matches?(event, session), do: {:ok, event}
+    else
+      {:error, :idempotency_conflict}
+    end
+  end
+
+  defp child_progress_event_actor_matches?(%ProgressEvent{actor_id: event_actor_id, actor_type: event_actor_type}, %Session{} = session) do
+    current_actor_id = session.assignment.claimed_by
+    current_actor_type = session.assignment.grant_role
+
+    cond do
+      filled_string?(event_actor_type) and event_actor_type != current_actor_type ->
+        {:error, :idempotency_conflict}
+
+      filled_string?(event_actor_id) and filled_string?(current_actor_id) ->
+        if String.trim(event_actor_id) == String.trim(current_actor_id), do: :ok, else: {:error, :idempotency_conflict}
+
+      filled_string?(event_actor_id) ->
+        {:error, :idempotency_conflict}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp child_progress_event_actor_role_matches?(%ProgressEvent{actor_type: event_actor_type}, %Session{} = session) do
+    current_actor_type = session.assignment.grant_role
+
+    if filled_string?(event_actor_type) and event_actor_type != current_actor_type do
+      {:error, :idempotency_conflict}
+    else
+      :ok
+    end
+  end
+
+  defp append_child_merge_event(repo, %Session{} = session, %WorkPackage{} = child, merge_artifact) do
+    payload = child_merge_payload(child.id, merge_artifact)
+
+    PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, child.id, %{
+      "summary" => Map.get(merge_artifact, "summary") || "Child merged into phase",
+      "status" => "merged_into_phase",
+      "idempotency_key" => metadata_idempotency_key(payload),
+      "payload" => payload
+    })
+  end
+
+  defp child_merge_payload(work_package_id, merge_artifact) do
+    %{
+      "type" => "phase_child_merge",
+      "source_tool" => "merge_child_into_phase",
+      "work_package_id" => work_package_id,
+      "merge_artifact" => merge_artifact
+    }
+  end
+
+  defp record_phase_merge_artifact(repo, %WorkPackage{} = child, merge_artifact) do
+    attrs = %{
+      id: phase_merge_artifact_id(child.id),
+      work_package_id: child.id,
+      path: "phase-merge.json",
+      title: "Phase merge record",
+      kind: "phase_merge",
+      uri: Map.fetch!(merge_artifact, "uri"),
+      metadata: merge_artifact
+    }
+
+    case PlanningRepository.get_artifact(repo, attrs.id) do
+      {:ok, nil} -> PlanningRepository.append_artifact(repo, attrs)
+      {:ok, %Artifact{} = artifact} -> PlanningRepository.update_artifact(repo, artifact, Map.drop(attrs, [:id, :work_package_id]))
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp phase_merge_artifact_id(work_package_id) do
+    material = [work_package_id, "phase-merge.json"] |> Enum.join(":")
+    "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
+  end
+
+  defp child_merge_result(%WorkPackage{} = child, %ProgressEvent{} = event, %Artifact{} = artifact, merge_artifact) do
+    %{
+      "work_package" => child_work_package_payload(child),
+      "merge" => progress_event_payload(event),
+      "artifact" => artifact_payload(artifact),
+      "merge_artifact" => merge_artifact
+    }
+  end
+
+  defp current_merge_artifact(%Artifact{} = artifact) do
+    artifact
+    |> artifact_metadata()
+    |> Map.put("status", "merged_into_phase")
+    |> Map.put("uri", artifact.uri)
+  end
+
+  defp artifact_metadata(%Artifact{metadata: metadata}) when is_map(metadata), do: metadata
+  defp artifact_metadata(%Artifact{}), do: %{}
+
+  defp architect_phase_child_transition(repo, %Session{} = session, %WorkPackage{} = child, next_status) do
+    actor =
+      session
+      |> actor()
+      |> Map.put(:work_package_id, child.id)
+      |> Map.update!(:capabilities, &Enum.uniq(["architect:lifecycle.transition" | &1]))
+
+    with :ok <- StateMachine.validate_transition(child, next_status, actor) do
+      WorkPackageRepository.update_status(repo, child.id, child.status, next_status)
     end
   end
 
@@ -2581,6 +3215,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp maybe_put_filled_string(payload, _key, _value), do: payload
 
   defp metadata_tool_response({:ok, _result} = result, _tool), do: result
+  defp metadata_tool_response({:error, _code, _message, _data} = error, _tool), do: error
   defp metadata_tool_response({:tool_error, reason}, tool), do: {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason}}
   defp metadata_tool_response({:error, reason}, tool), do: worker_error(reason, tool)
 
@@ -2815,6 +3450,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
            {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)),
            :ok <- require_expected_status(state.work_package, expected_status),
+           :ok <- reject_architect_controlled_child(state.work_package, status),
            {:ok, _event} <- append_status_reason_event(repo, session, expected_status, status, reason) do
         LifecycleService.transition(repo, state.work_package, status, actor(session))
       end
@@ -2827,7 +3463,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
            :ok <- lock_work_package(repo, Session.work_package_id(session)),
            {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)),
-           :ok <- readiness_gates(state) do
+           :ok <- readiness_gates(repo, state) do
         ready_status = terminal_ready_status(state.work_package)
         LifecycleService.transition(repo, state.work_package, ready_status, actor(session))
       end
@@ -3071,6 +3707,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         nil
     end
   end
+
+  defp optional_request_id(arguments, key) do
+    case Map.get(arguments, key) do
+      nil ->
+        {:ok, nil}
+
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> {:tool_error, "blank_request_id"}
+          trimmed -> {:ok, trimmed}
+        end
+
+      _value ->
+        {:tool_error, "invalid_request_id"}
+    end
+  end
+
+  defp run_architect_transaction(repo, fun) do
+    case repo.transaction(fn -> rollback_architect_transaction_result(repo, fun.()) end) do
+      {:ok, result} -> {:ok, result}
+      {:error, {:tool_error, reason}} -> {:tool_error, reason}
+      {:error, {:error, reason}} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp rollback_architect_transaction_result(_repo, {:ok, result}), do: result
+  defp rollback_architect_transaction_result(repo, {:tool_error, reason}), do: repo.rollback({:tool_error, reason})
+  defp rollback_architect_transaction_result(repo, {:error, reason}), do: repo.rollback({:error, reason})
 
   defp run_worker_transaction(repo, fun) do
     case repo.transaction(fn -> rollback_worker_transaction_result(repo, fun.()) end) do
@@ -3871,8 +4536,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp reject_ready_evidence_mutation(_repo, %Session{}, _tool), do: :ok
 
-  defp reject_ready_work_package(%WorkPackage{status: status}) when status in ["ready_for_human_merge", "ready_for_architect_merge"], do: {:tool_error, "already_ready"}
+  defp reject_ready_work_package(%WorkPackage{kind: "phase_child", status: status}) when status in ["merging_into_phase", "merged_into_phase"] do
+    {:tool_error, "child_under_architect_control"}
+  end
+
+  defp reject_ready_work_package(%WorkPackage{status: status}) when status in ["ready_for_human_merge", "ready_for_architect_merge"],
+    do: {:tool_error, "already_ready"}
+
   defp reject_ready_work_package(%WorkPackage{}), do: :ok
+
+  defp reject_architect_controlled_child(%WorkPackage{kind: "phase_child", status: "merging_into_phase"}, "blocked"), do: :ok
+
+  defp reject_architect_controlled_child(%WorkPackage{kind: "phase_child", status: status}, _next_status)
+       when status in ["merging_into_phase", "merged_into_phase"] do
+    {:tool_error, "child_under_architect_control"}
+  end
+
+  defp reject_architect_controlled_child(%WorkPackage{}, _next_status), do: :ok
 
   defp replay_progress_event_with_retry(repo, %Session{} = session, attrs, idempotency_key, tool, attempts_left) do
     retry_fun = fn ->
@@ -4469,13 +5149,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp scoped_progress_idempotency_key(tool, idempotency_key, %Session{}), do: tool <> ":" <> idempotency_key
 
-  defp readiness_gates(state) do
+  defp readiness_gates(repo, state) do
     required_review_lanes = required_review_lanes(state.work_package)
 
-    reasons = readiness_failure_reasons(state, required_review_lanes)
-    missing = missing_readiness_gates(reasons)
+    with {:ok, reasons} <- readiness_failure_reasons(repo, state, required_review_lanes) do
+      missing = missing_readiness_gates(reasons)
 
-    if missing == [], do: :ok, else: {:error, {:readiness_failed, missing, reasons}}
+      if missing == [], do: :ok, else: {:error, {:readiness_failed, missing, reasons}}
+    end
   end
 
   defp missing_readiness_gates(reasons) do
@@ -4484,7 +5165,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> Enum.uniq()
   end
 
-  defp readiness_failure_reasons(state, required_review_lanes) do
+  defp readiness_failure_reasons(repo, state, required_review_lanes) do
+    with {:ok, phase_child_reasons} <- phase_child_readiness_failure_reasons(repo, state.work_package) do
+      {:ok, base_readiness_failure_reasons(state, required_review_lanes) ++ phase_child_reasons}
+    end
+  end
+
+  defp base_readiness_failure_reasons(state, required_review_lanes) do
     [
       {state.work_package.status != "ci_waiting", "status_ci_waiting"},
       {active_blocker?(state.progress_events), "no_active_blockers"},
@@ -4509,6 +5196,58 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end)
   end
 
+  defp phase_child_readiness_failure_reasons(repo, %WorkPackage{kind: "phase_child"} = child) do
+    with {:ok, phase} <- readiness_phase(repo, child),
+         {:ok, parent} <- readiness_phase_parent(repo, child) do
+      reasons =
+        []
+        |> maybe_add_readiness_reason(phase.status != "active", "phase_active")
+        |> maybe_add_readiness_reason(not readiness_phase_child_scope_ok?(child, parent), "phase_child_scope")
+
+      {:ok, Enum.reverse(reasons)}
+    end
+  end
+
+  defp phase_child_readiness_failure_reasons(_repo, %WorkPackage{}), do: {:ok, []}
+
+  defp readiness_phase(repo, %WorkPackage{phase_id: phase_id}) when is_binary(phase_id) do
+    if filled_string?(phase_id) do
+      case PhaseRepository.get(repo, phase_id) do
+        {:ok, phase} -> {:ok, phase}
+        {:error, :not_found} -> {:ok, %{status: nil}}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:ok, %{status: nil}}
+    end
+  end
+
+  defp readiness_phase(_repo, %WorkPackage{}), do: {:ok, %{status: nil}}
+
+  defp readiness_phase_parent(repo, %WorkPackage{parent_id: parent_id}) when is_binary(parent_id) do
+    if filled_string?(parent_id) do
+      case WorkPackageRepository.get(repo, parent_id) do
+        {:ok, parent} -> {:ok, parent}
+        {:error, :not_found} -> {:ok, nil}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp readiness_phase_parent(_repo, %WorkPackage{}), do: {:ok, nil}
+
+  defp readiness_phase_child_scope_ok?(%WorkPackage{} = child, %WorkPackage{} = parent) do
+    child.parent_id == parent.id and child.phase_id == parent.phase_id and child.repo == parent.repo and child.base_branch == parent.base_branch and
+      require_phase_child_file_scope(child, parent) == :ok
+  end
+
+  defp readiness_phase_child_scope_ok?(%WorkPackage{}, _parent), do: false
+
+  defp maybe_add_readiness_reason(reasons, true, gate), do: [readiness_failure_reason(gate) | reasons]
+  defp maybe_add_readiness_reason(reasons, false, _gate), do: reasons
+
   defp readiness_failure_reason(gate) do
     %{
       "gate" => gate,
@@ -4531,6 +5270,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp readiness_failure_message("review_lanes_complete"), do: "Required review lanes are not green."
   defp readiness_failure_message("findings_documented"), do: "Investigation findings are missing."
   defp readiness_failure_message("recommendation_artifact_recorded"), do: "Investigation recommendation artifact is missing."
+  defp readiness_failure_message("phase_active"), do: "Phase must be active before phase child readiness."
+  defp readiness_failure_message("phase_child_scope"), do: "Phase child must remain inside its parent phase repo, base branch, and file scope."
   defp readiness_failure_message(_gate), do: "Readiness gate is not satisfied."
 
   defp merge_metadata_missing?(state, "pr") do
@@ -5436,6 +6177,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "status" => event.status,
       "idempotency_key" => event.idempotency_key,
       "payload" => event.payload || %{}
+    }
+  end
+
+  defp artifact_payload(%Artifact{} = artifact) do
+    %{
+      "id" => artifact.id,
+      "path" => artifact.path,
+      "title" => artifact.title,
+      "kind" => artifact.kind,
+      "uri" => artifact.uri,
+      "metadata" => artifact.metadata || %{}
     }
   end
 

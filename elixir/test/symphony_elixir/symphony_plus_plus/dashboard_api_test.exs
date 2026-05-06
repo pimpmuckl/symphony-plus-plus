@@ -202,6 +202,119 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert [%{"id" => "SYMPP-DASH-EXACT-PHASE"}] = payload["groups"]["planning"]
   end
 
+  test "phase board exposes scoped child merge progress summary", %{repo: repo} do
+    phase_id = "phase-dashboard-progress"
+    assert {:ok, _phase} = PhaseRepository.create(repo, %{id: phase_id, title: "Progress phase"})
+
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-PROGRESS-ANCHOR",
+                 kind: "mcp",
+                 phase_id: phase_id,
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta",
+                 status: "planning"
+               )
+             )
+
+    for {id, status} <- [
+          {"SYMPP-DASH-PROGRESS-MERGED", "merged_into_phase"},
+          {"SYMPP-DASH-PROGRESS-READY", "ready_for_architect_merge"},
+          {"SYMPP-DASH-PROGRESS-CLOSED", "closed"},
+          {"SYMPP-DASH-PROGRESS-ABANDONED", "abandoned"}
+        ] do
+      assert {:ok, _child} =
+               WorkPackageRepository.create(
+                 repo,
+                 WorkPackageFactory.attrs(
+                   id: id,
+                   kind: "phase_child",
+                   policy_template: "phase_child",
+                   phase_id: phase_id,
+                   parent_id: anchor.id,
+                   repo: anchor.repo,
+                   base_branch: anchor.base_branch,
+                   status: status
+                 )
+               )
+    end
+
+    assert {:ok, _out_of_scope_child} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-PROGRESS-OUT-OF-SCOPE",
+                 kind: "phase_child",
+                 policy_template: "phase_child",
+                 phase_id: phase_id,
+                 parent_id: anchor.id,
+                 repo: "nextide/other",
+                 base_branch: anchor.base_branch,
+                 status: "merged_into_phase"
+               )
+             )
+
+    assert {:ok, _out_of_scope_base_child} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-PROGRESS-OUT-OF-BASE",
+                 kind: "phase_child",
+                 policy_template: "phase_child",
+                 phase_id: phase_id,
+                 parent_id: anchor.id,
+                 repo: anchor.repo,
+                 base_branch: "main",
+                 status: "merged_into_phase"
+               )
+             )
+
+    work_key = WorkKey.generate()
+
+    assert {:ok, _grant} =
+             AccessGrantRepository.create(repo, %{
+               work_package_id: anchor.id,
+               phase_id: phase_id,
+               display_key: work_key.display_key,
+               secret_hash: WorkKey.secret_hash(work_key.secret),
+               grant_role: "architect",
+               capabilities: ["read:phase"],
+               expires_at: DateTime.add(DateTime.utc_now(:microsecond), 3600, :second)
+             })
+
+    assert {:ok, _assignment} =
+             AccessGrantRepository.claim(repo, work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    payload = json_response(get(auth_conn(work_key.secret), "/api/v1/sympp/board"), 200)
+
+    assert payload["total_count"] == 5
+
+    assert payload["summary"] == %{
+             "child_count" => 3,
+             "merged_child_count" => 1,
+             "ready_child_count" => 1,
+             "merging_child_count" => 0,
+             "open_child_count" => 1
+           }
+
+    assert {:ok, filtered_board} =
+             Dashboard.phase_board(repo, phase_id,
+               repo: anchor.repo,
+               base_branch: anchor.base_branch,
+               status: "merged_into_phase"
+             )
+
+    assert filtered_board.summary == %{
+             child_count: 3,
+             merged_child_count: 1,
+             ready_child_count: 1,
+             merging_child_count: 0,
+             open_child_count: 1
+           }
+  end
+
   test "legacy null phase grants derive dashboard scope from their phased anchor", %{repo: repo} do
     assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-dashboard-legacy", title: "Legacy phase"})
 
@@ -225,6 +338,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert payload["total_count"] == 2
     assert [%{"id" => "SYMPP-DASH-LEGACY-ANCHOR"}] = payload["groups"]["planning"]
     assert [%{"id" => "SYMPP-DASH-LEGACY-SIBLING"}] = payload["groups"]["blocked"]
+    assert payload["summary"]["child_count"] == 0
+    assert payload["summary"]["merged_child_count"] == 0
 
     phase_id = phase.id
     sibling_id = sibling.id
@@ -2313,8 +2428,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   test "dedicated collection endpoints fetch artifacts, blockers, grants, and agent runs", %{repo: repo} do
     %{work_package: work_package, work_key_secret: secret} = create_dashboard_fixture(repo)
 
-    assert %{"artifacts" => [%{"path" => "[REDACTED]", "title" => "[REDACTED]"}]} =
+    assert %{"artifacts" => [%{"path" => "[REDACTED]", "title" => "[REDACTED]"} = artifact]} =
              json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}/artifacts"), 200)
+
+    refute Map.has_key?(artifact, "metadata")
 
     assert %{"blockers" => [%{"id" => "blocker-a", "active" => true}]} =
              json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}/blockers"), 200)
@@ -2816,6 +2933,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                title: "Review log raw-secret-value",
                kind: "review",
                uri: "https://example.test/review-log.txt?X-Amz-Signature=raw-secret-value",
+               metadata: %{"access_grant_id" => "grant-other-worker", "agent_run_id" => "run-other-worker"},
                created_at: DateTime.add(timestamp, 7, :second)
              })
 

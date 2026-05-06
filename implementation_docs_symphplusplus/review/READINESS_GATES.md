@@ -17,7 +17,7 @@ A WorkPackage can be marked ready only when all gates required by its policy tem
 ## Phase-child additional gates
 
 - Parent phase is active.
-- Child package belongs to the phase.
+- Child package belongs to the phase and remains inside the architect anchor repo, base branch, and allowed file globs.
 - Architect approval is required after worker readiness.
 
 ## Hotfix additional gates

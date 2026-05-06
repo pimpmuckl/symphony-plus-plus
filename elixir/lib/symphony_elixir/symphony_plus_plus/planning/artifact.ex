@@ -15,6 +15,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Artifact do
           title: String.t() | nil,
           kind: String.t() | nil,
           uri: String.t() | nil,
+          metadata: map(),
           sequence: non_neg_integer() | nil,
           created_at: DateTime.t() | nil,
           inserted_at: DateTime.t() | nil,
@@ -27,6 +28,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Artifact do
     field(:title, :string)
     field(:kind, :string)
     field(:uri, :string)
+    field(:metadata, :map, default: %{})
     field(:sequence, :integer)
     field(:created_at, :utc_datetime_usec)
 
@@ -43,7 +45,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Artifact do
       |> put_new_value("created_at", DateTime.utc_now(:microsecond))
 
     %__MODULE__{}
-    |> cast(attrs, [:id, :work_package_id, :path, :title, :kind, :uri, :sequence, :created_at])
+    |> cast(attrs, [:id, :work_package_id, :path, :title, :kind, :uri, :metadata, :sequence, :created_at])
     |> validate_required([:id, :work_package_id, :path, :title, :kind, :sequence, :created_at])
     |> validate_number(:sequence, greater_than_or_equal_to: 1)
     |> unique_constraint(:id, name: :sympp_artifacts_id_unique_index)
