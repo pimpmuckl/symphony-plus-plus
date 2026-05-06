@@ -1254,6 +1254,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     refute Jason.encode!(payload) =~ "ghp_dashboard_secret"
   end
 
+  test "dashboard does not treat missing scope preconditions as critical drift", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-RUNTIME-SCOPE-PRECONDITION",
+                 kind: "mcp",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta",
+                 status: "ready_for_human_merge",
+                 policy_template: "mcp_changed_file_scope_guard",
+                 allowed_file_globs: ["elixir/lib/**"]
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, work_package.id)
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+    alerts = Map.new(payload["alert_indicators"], &{&1["type"], &1})
+    scope = alerts["scope_drift"]
+
+    assert scope["active"] == false
+    assert scope["severity"] == "info"
+    assert [%{"code" => "missing_current_head"}] = scope["reasons"]
+  end
+
   test "detail API exposes stale synced PR metadata without secrets", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(

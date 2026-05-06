@@ -307,21 +307,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
   end
 
   defp metadata_changed_files(metadata) do
-    case Map.get(metadata, "changed_files", :missing) do
-      values when is_list(values) ->
-        changed_files = Enum.map(values, &changed_file/1)
-        {:ok, changed_file_metadata(changed_files, length(changed_files), true, true)}
+    with {:ok, reported_count} <- metadata_changed_files_count(metadata) do
+      case Map.get(metadata, "changed_files", :missing) do
+        values when is_list(values) ->
+          changed_files = Enum.map(values, &changed_file/1)
+          changed_file_count_metadata(changed_files, reported_count)
 
-      count when is_integer(count) and count >= 0 ->
-        {:ok, changed_file_metadata([], count, false, true)}
+        count when is_integer(count) and count >= 0 ->
+          {:ok, changed_file_metadata([], count, false, true)}
 
-      :missing ->
-        {:ok, changed_file_metadata([], 0, false, false)}
+        :missing ->
+          missing_changed_file_count_metadata(reported_count)
 
-      _value ->
-        {:error, :invalid_changed_files}
+        _value ->
+          {:error, :invalid_changed_files}
+      end
     end
   end
+
+  defp metadata_changed_files_count(metadata) do
+    case Map.get(metadata, "changed_files_count") do
+      nil -> {:ok, nil}
+      count when is_integer(count) and count >= 0 -> {:ok, count}
+      _value -> {:error, :invalid_changed_files_count}
+    end
+  end
+
+  defp changed_file_count_metadata(changed_files, nil) do
+    count = length(changed_files)
+    {:ok, changed_file_metadata(changed_files, count, true, true)}
+  end
+
+  defp changed_file_count_metadata(changed_files, reported_count) do
+    count = max(reported_count, length(changed_files))
+    {:ok, changed_file_metadata(changed_files, count, reported_count <= length(changed_files), true)}
+  end
+
+  defp missing_changed_file_count_metadata(nil), do: {:ok, changed_file_metadata([], 0, false, false)}
+  defp missing_changed_file_count_metadata(reported_count), do: {:ok, changed_file_metadata([], reported_count, false, true)}
 
   defp changed_file_metadata(files, count, files_available, count_available) do
     %{

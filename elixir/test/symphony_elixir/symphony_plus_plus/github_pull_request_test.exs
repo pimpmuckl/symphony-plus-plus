@@ -164,6 +164,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
     assert payload["changed_files_count_available"] == true
   end
 
+  test "fails closed for empty changed-file paths with a nonzero reported count" do
+    assert {:ok, ref} = PullRequest.parse(%{"url" => "https://github.com/nextide/symphony-plus-plus/pull/42"}, nil)
+
+    metadata = %{
+      "head" => %{"sha" => "abcdef1234567890abcdef1234567890abcdef12", "ref" => "agent/SYMPP-P6-001/github-pr-attachment-sync"},
+      "changed_files" => [],
+      "changed_files_count" => 2
+    }
+
+    assert {:ok, payload} = PullRequest.metadata(metadata, ref, nil)
+
+    assert payload["changed_files"] == []
+    assert payload["changed_files_count"] == 2
+    assert payload["changed_files_available"] == false
+    assert payload["changed_files_count_available"] == true
+  end
+
   test "marks omitted changed files as unavailable evidence" do
     assert {:ok, ref} = PullRequest.parse(%{"url" => "https://github.com/nextide/symphony-plus-plus/pull/42"}, nil)
 

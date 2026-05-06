@@ -53,12 +53,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
     assert ScopeGuard.failure_reasons(expanded_package, changed_files) == []
   end
 
+  test "approved expansion rejects repo-wide catch-all globs" do
+    package = package(["elixir/lib/**"])
+
+    assert {:error, "overbroad_allowed_file_globs"} = ScopeGuard.approve_file_globs(package, ["**"])
+    assert {:error, "overbroad_allowed_file_globs"} = ScopeGuard.approve_file_globs(package, ["./**/*"])
+  end
+
   test "zero changed-file count satisfies scope guard when paths are unavailable" do
     package = package(["elixir/lib/**"])
 
     events = events(changed_files: [], changed_files_available: false, changed_files_count_available: true)
 
     assert ScopeGuard.failure_reasons(package, events) == []
+  end
+
+  test "nonzero changed-file count without paths fails scope guard" do
+    package = package(["elixir/lib/**"])
+
+    opts = [
+      changed_files: [],
+      changed_files_available: false,
+      changed_files_count_available: true,
+      changed_files_count: 2
+    ]
+
+    events = events(opts)
+
+    reasons =
+      package
+      |> ScopeGuard.failure_reasons(events)
+      |> Map.new(&{&1["code"], &1})
+
+    assert reasons["changed_files_unavailable"]["changed_files_count"] == 2
   end
 
   test "missing changed-file path and count evidence fails scope guard" do
@@ -90,6 +117,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
   defp events(opts) do
     base_branch = Keyword.get(opts, :base_branch, "symphony-plus-plus/beta")
     changed_files = Keyword.fetch!(opts, :changed_files)
+    changed_files_count = Keyword.get(opts, :changed_files_count, length(changed_files))
     changed_files_available = Keyword.get(opts, :changed_files_available, true)
     changed_files_count_available = Keyword.get(opts, :changed_files_count_available, true)
 
@@ -103,7 +131,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
         "head_sha" => "head-a",
         "base_branch" => base_branch,
         "changed_files" => Enum.map(changed_files, &%{"path" => &1}),
-        "changed_files_count" => length(changed_files),
+        "changed_files_count" => changed_files_count,
         "changed_files_available" => changed_files_available,
         "changed_files_count_available" => changed_files_count_available
       })

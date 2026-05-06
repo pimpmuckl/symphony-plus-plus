@@ -5587,6 +5587,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     architect_session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
 
+    overbroad_approval_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "architect-overbroad-scope",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "approve_scope_expansion",
+            "arguments" => %{
+              "work_package_id" => package.id,
+              "allowed_file_globs" => ["**"],
+              "request_id" => request_id,
+              "rationale" => "Overbroad approval must not disable the guard"
+            }
+          }
+        },
+        repo: repo,
+        session: architect_session
+      )
+
+    assert get_in(overbroad_approval_response, ["error", "data", "reason"]) == "overbroad_allowed_file_globs"
+
+    assert {:ok, overbroad_rejected_package} = WorkPackageRepository.get(repo, package.id)
+    assert overbroad_rejected_package.allowed_file_globs == ["elixir/lib/**"]
+
     approval_response =
       attach_tool(repo, architect_session, "approve_scope_expansion", %{
         "work_package_id" => package.id,

@@ -52,8 +52,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
         {:error, "missing_allowed_file_globs"}
 
       approved_globs ->
-        current_globs = normalize_globs(work_package.allowed_file_globs || [])
-        {:ok, Enum.uniq(current_globs ++ approved_globs)}
+        if Enum.any?(approved_globs, &overbroad_glob?/1) do
+          {:error, "overbroad_allowed_file_globs"}
+        else
+          current_globs = normalize_globs(work_package.allowed_file_globs || [])
+          {:ok, Enum.uniq(current_globs ++ approved_globs)}
+        end
     end
   end
 
@@ -289,6 +293,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
   end
 
   defp normalize_globs(_globs), do: []
+
+  defp overbroad_glob?(glob) do
+    glob
+    |> normalize_path()
+    |> String.trim_leading("/")
+    |> then(&(&1 in ["*", "**", "**/*"]))
+  end
 
   defp normalize_path(value) when is_binary(value) do
     value
