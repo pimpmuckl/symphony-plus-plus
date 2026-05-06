@@ -2968,6 +2968,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              WorkPackageRepository.get(repo, "SYMPP-P7-002-GLOB-ENCODED-BACKSLASH-TRAVERSAL")
   end
 
+  test "phase architect child glob scope rejects encoded separator broadening", %{repo: repo} do
+    {_anchor, session} =
+      create_architect_session(
+        repo,
+        "SYMPP-P7-002-ENCODED-SEPARATOR-ANCHOR",
+        ["create:child_work_package", "read:phase"],
+        allowed_file_globs: ["elixir/*"]
+      )
+
+    encoded_slash_response =
+      mcp_tool(repo, session, "create_child_work_package", %{
+        "package" => %{
+          "id" => "SYMPP-P7-002-GLOB-ENCODED-SLASH-BROADENING",
+          "title" => "Encoded slash broadening child",
+          "allowed_file_globs" => ["elixir/lib%2fsecret"],
+          "acceptance_criteria" => ["Should not be created"]
+        }
+      })
+
+    assert get_in(encoded_slash_response, ["error", "code"]) == -32_602
+    assert get_in(encoded_slash_response, ["error", "data", "reason"]) == "invalid_allowed_file_globs"
+    assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-GLOB-ENCODED-SLASH-BROADENING")
+
+    encoded_backslash_response =
+      mcp_tool(repo, session, "create_child_work_package", %{
+        "package" => %{
+          "id" => "SYMPP-P7-002-GLOB-ENCODED-BACKSLASH-BROADENING",
+          "title" => "Encoded backslash broadening child",
+          "allowed_file_globs" => ["elixir/lib%5csecret"],
+          "acceptance_criteria" => ["Should not be created"]
+        }
+      })
+
+    assert get_in(encoded_backslash_response, ["error", "code"]) == -32_602
+    assert get_in(encoded_backslash_response, ["error", "data", "reason"]) == "invalid_allowed_file_globs"
+
+    assert {:error, :not_found} =
+             WorkPackageRepository.get(repo, "SYMPP-P7-002-GLOB-ENCODED-BACKSLASH-BROADENING")
+  end
+
   test "phase architect child glob scope rejects child double-star missing required anchor suffix", %{repo: repo} do
     {_anchor, session} =
       create_architect_session(

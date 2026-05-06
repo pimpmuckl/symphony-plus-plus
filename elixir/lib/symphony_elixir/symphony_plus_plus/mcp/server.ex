@@ -1777,6 +1777,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     cond do
       glob == "" -> {:tool_error, "missing_allowed_file_globs"}
       traversal_glob?(glob) -> {:tool_error, "path_traversal_allowed_file_globs"}
+      encoded_separator_glob?(glob) -> {:tool_error, "invalid_allowed_file_globs"}
       true -> {:ok, String.split(glob, "/", trim: true)}
     end
   end
@@ -1942,10 +1943,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       |> Enum.reject(&(&1 == ""))
       |> Enum.uniq()
 
-    if Enum.any?(normalized_globs, &traversal_glob?/1) do
-      {:tool_error, "path_traversal_allowed_file_globs"}
-    else
-      {:ok, normalized_globs}
+    cond do
+      Enum.any?(normalized_globs, &traversal_glob?/1) ->
+        {:tool_error, "path_traversal_allowed_file_globs"}
+
+      Enum.any?(normalized_globs, &encoded_separator_glob?/1) ->
+        {:tool_error, "invalid_allowed_file_globs"}
+
+      true ->
+        {:ok, normalized_globs}
     end
   end
 
@@ -1967,6 +1973,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp traversal_glob?(_glob), do: false
+
+  defp encoded_separator_glob?(glob) when is_binary(glob) do
+    glob
+    |> String.split("/", trim: true)
+    |> Enum.any?(&encoded_separator_segment?/1)
+  end
+
+  defp encoded_separator_glob?(_glob), do: false
+
+  defp encoded_separator_segment?(segment) when is_binary(segment) do
+    segment
+    |> String.trim()
+    |> String.downcase()
+    |> encoded_separator_segment?(0)
+  end
+
+  defp encoded_separator_segment?(_segment), do: false
+
+  defp encoded_separator_segment?(segment, depth) do
+    cond do
+      String.contains?(segment, ["/", "\\"]) ->
+        true
+
+      depth >= 3 ->
+        false
+
+      true ->
+        decoded_segment = URI.decode(segment)
+
+        decoded_segment != segment and encoded_separator_segment?(decoded_segment, depth + 1)
+    end
+  rescue
+    ArgumentError -> false
+  end
 
   defp traversal_segment?(segment) when is_binary(segment) do
     segment
