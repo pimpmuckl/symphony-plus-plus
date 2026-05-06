@@ -139,10 +139,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
     changed_file_failures ++ reasons
   end
 
-  defp changed_file_paths(%{"changed_files_available" => false, "changed_files_count_available" => true, "changed_files_count" => 0}) do
-    {[], []}
-  end
-
   defp changed_file_paths(%{"changed_files_available" => false} = pr_payload) do
     count = Map.get(pr_payload, "changed_files_count", 0)
     detail = if is_integer(count) and count > 0, do: %{"changed_files_count" => count}, else: %{}
@@ -156,6 +152,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
 
     failures =
       cond do
+        changed_files == [] and Map.get(pr_payload, "changed_files_available") != true ->
+          [reason("changed_files_unavailable")]
+
         changed_files == [] and is_integer(changed_files_count) and changed_files_count > 0 ->
           [reason("changed_files_unavailable", %{"changed_files_count" => changed_files_count})]
 
@@ -200,19 +199,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
   defp clean_file_path(_path), do: nil
 
   defp base_branch_matches?(%WorkPackage{} = work_package, expected, actual) do
-    expected = trim_ref_prefix(expected)
-    actual = trim_ref_prefix(actual)
+    expected_forms = branch_match_forms(expected, work_package.repo)
+    actual_forms = branch_match_forms(actual, work_package.repo)
 
-    expected == actual or repo_qualified_branch_tail(expected, work_package.repo) == actual or
-      repo_qualified_branch_tail(actual, work_package.repo) == expected
+    not MapSet.disjoint?(MapSet.new(expected_forms), MapSet.new(actual_forms))
   end
 
   defp trim_ref_prefix(value) when is_binary(value), do: String.replace_prefix(value, "refs/heads/", "")
   defp trim_ref_prefix(value), do: value
 
+  defp branch_match_forms(value, repo) when is_binary(value) do
+    value = trim_ref_prefix(value)
+    repo_name = repo_name(repo)
+
+    [value | repo_authoritative_branch_forms(value, repo_name)]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp branch_match_forms(_value, _repo), do: []
+
+  defp repo_authoritative_branch_forms(value, repo_name) when is_binary(repo_name) do
+    cond do
+      String.starts_with?(value, repo_name <> "/") ->
+        [repo_qualified_branch_tail(value, repo_name)]
+
+      String.starts_with?(value, "origin/" <> repo_name <> "/") ->
+        repo_qualified = String.replace_prefix(value, "origin/", "")
+        [repo_qualified, repo_qualified_branch_tail(repo_qualified, repo_name)]
+
+      true ->
+        []
+    end
+  end
+
+  defp repo_authoritative_branch_forms(_value, _repo_name), do: []
+
+  defp repo_name(repo) when is_binary(repo), do: repo |> String.split("/", trim: true) |> List.last()
+  defp repo_name(_repo), do: nil
+
   defp repo_qualified_branch_tail(value, repo) when is_binary(value) and is_binary(repo) do
-    repo_name = repo |> String.split("/", trim: true) |> List.last()
-    prefix = repo_name <> "/"
+    prefix = repo <> "/"
 
     if String.starts_with?(value, prefix), do: String.replace_prefix(value, prefix, ""), else: nil
   end

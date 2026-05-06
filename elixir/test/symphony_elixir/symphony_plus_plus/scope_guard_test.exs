@@ -34,6 +34,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
     assert ScopeGuard.failure_reasons(package, events(base_branch: "beta", changed_files: ["elixir/lib/example.ex"])) == []
   end
 
+  test "origin repo-qualified package base branch matches plain GitHub base ref" do
+    package = %{package(["elixir/lib/**"]) | base_branch: "origin/symphony-plus-plus/beta"}
+
+    assert ScopeGuard.failure_reasons(package, events(base_branch: "beta", changed_files: ["elixir/lib/example.ex"])) == []
+    assert ScopeGuard.failure_reasons(package, events(base_branch: "symphony-plus-plus/beta", changed_files: ["elixir/lib/example.ex"])) == []
+  end
+
+  test "mismatched repo-qualified package base branch does not match plain GitHub base ref" do
+    package = %{package(["elixir/lib/**"]) | base_branch: "origin/other-repo/beta"}
+
+    reasons =
+      package
+      |> ScopeGuard.failure_reasons(events(base_branch: "beta", changed_files: ["elixir/lib/example.ex"]))
+      |> Map.new(&{&1["code"], &1})
+
+    assert reasons["wrong_base_branch"]["expected_base_branch"] == "origin/other-repo/beta"
+    assert reasons["wrong_base_branch"]["actual_base_branch"] == "beta"
+  end
+
   test "out-of-scope changed file fails scope guard" do
     package = package(["elixir/lib/**"])
 
@@ -95,10 +114,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
     assert reasons["out_of_scope_files"]["files"] == ["docs/old.md"]
   end
 
-  test "zero changed-file count satisfies scope guard when paths are unavailable" do
+  test "zero changed-file count fails scope guard when paths are unavailable" do
     package = package(["elixir/lib/**"])
 
     events = events(changed_files: [], changed_files_available: false, changed_files_count_available: true)
+
+    reasons =
+      package
+      |> ScopeGuard.failure_reasons(events)
+      |> Map.new(&{&1["code"], &1})
+
+    assert reasons["changed_files_unavailable"]["gate"] == "scope_guard"
+  end
+
+  test "empty changed-file path evidence satisfies scope guard when paths are explicitly available" do
+    package = package(["elixir/lib/**"])
+
+    events = events(changed_files: [], changed_files_available: true, changed_files_count_available: true)
 
     assert ScopeGuard.failure_reasons(package, events) == []
   end
