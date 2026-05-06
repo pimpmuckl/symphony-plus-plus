@@ -128,6 +128,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
     changed_file_failures ++ reasons
   end
 
+  defp changed_file_paths(%{"changed_files_available" => false, "changed_files_count_available" => true, "changed_files_count" => 0}) do
+    {[], []}
+  end
+
   defp changed_file_paths(%{"changed_files_available" => false} = pr_payload) do
     count = Map.get(pr_payload, "changed_files_count", 0)
     detail = if is_integer(count) and count > 0, do: %{"changed_files_count" => count}, else: %{}
@@ -314,6 +318,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
 
   defp glob_regex([], acc), do: acc
 
+  defp glob_regex(["*", "*", "/" | rest], acc), do: glob_regex(rest, ["(?:.*/)?" | acc])
   defp glob_regex(["*", "*" | rest], acc), do: glob_regex(rest, [".*" | acc])
   defp glob_regex(["*" | rest], acc), do: glob_regex(rest, ["[^/]*" | acc])
   defp glob_regex(["?" | rest], acc), do: glob_regex(rest, ["[^/]" | acc])

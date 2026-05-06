@@ -104,6 +104,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
     assert payload["changed_files"] == [%{"path" => "elixir/lib/example.ex", "status" => "modified"}]
     assert payload["changed_files_count"] == 1
     assert payload["changed_files_available"] == true
+    assert payload["changed_files_count_available"] == true
     assert payload["check_summary"] == %{"state" => "success", "token" => "[REDACTED]"}
     assert payload["review_state"] == %{"state" => "approved", "authorization" => "[REDACTED]"}
     assert payload["merge_state"] == %{"state" => "clean", "client_secret" => "[REDACTED]"}
@@ -160,6 +161,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
     assert payload["changed_files"] == []
     assert payload["changed_files_count"] == 3
     assert payload["changed_files_available"] == false
+    assert payload["changed_files_count_available"] == true
+  end
+
+  test "marks omitted changed files as unavailable evidence" do
+    assert {:ok, ref} = PullRequest.parse(%{"url" => "https://github.com/nextide/symphony-plus-plus/pull/42"}, nil)
+
+    metadata = %{
+      "head" => %{"sha" => "abcdef1234567890abcdef1234567890abcdef12", "ref" => "agent/SYMPP-P6-001/github-pr-attachment-sync"}
+    }
+
+    assert {:ok, payload} = PullRequest.metadata(metadata, ref, nil)
+
+    assert payload["changed_files"] == []
+    assert payload["changed_files_count"] == 0
+    assert payload["changed_files_available"] == false
+    assert payload["changed_files_count_available"] == false
   end
 
   test "detects stale PR metadata by head sha" do

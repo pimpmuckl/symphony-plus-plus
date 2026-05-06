@@ -9,6 +9,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
     assert ScopeGuard.glob_match?("elixir/lib/**", "elixir/lib/symphony_elixir/example.ex")
     assert ScopeGuard.glob_match?("src/[0-9]/**", "src/7/generated/file.ex")
     assert ScopeGuard.glob_match?("docs/*.md", "docs/plan.md")
+    assert ScopeGuard.glob_match?("docs/**/*.md", "docs/plan.md")
+    assert ScopeGuard.glob_match?("docs/**/*.md", "docs/nested/plan.md")
 
     refute ScopeGuard.glob_match?("docs/*.md", "docs/nested/plan.md")
     refute ScopeGuard.glob_match?("src/[0-9]/**", "src/a/generated/file.ex")
@@ -51,12 +53,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
     assert ScopeGuard.failure_reasons(expanded_package, changed_files) == []
   end
 
-  test "missing changed-file path evidence fails scope guard" do
+  test "zero changed-file count satisfies scope guard when paths are unavailable" do
     package = package(["elixir/lib/**"])
+
+    events = events(changed_files: [], changed_files_available: false, changed_files_count_available: true)
+
+    assert ScopeGuard.failure_reasons(package, events) == []
+  end
+
+  test "missing changed-file path and count evidence fails scope guard" do
+    package = package(["elixir/lib/**"])
+    opts = [changed_files: [], changed_files_available: false, changed_files_count_available: false]
 
     reasons =
       package
-      |> ScopeGuard.failure_reasons(events(changed_files: [], changed_files_available: false))
+      |> ScopeGuard.failure_reasons(events(opts))
       |> Map.new(&{&1["code"], &1})
 
     assert reasons["changed_files_unavailable"]["gate"] == "scope_guard"
@@ -80,6 +91,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
     base_branch = Keyword.get(opts, :base_branch, "symphony-plus-plus/beta")
     changed_files = Keyword.fetch!(opts, :changed_files)
     changed_files_available = Keyword.get(opts, :changed_files_available, true)
+    changed_files_count_available = Keyword.get(opts, :changed_files_count_available, true)
 
     [
       event(1, %{"type" => "branch", "source_tool" => "attach_branch", "branch" => "agent/SYMPP-SCOPE-UNIT", "head_sha" => "head-a"}),
@@ -92,7 +104,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
         "base_branch" => base_branch,
         "changed_files" => Enum.map(changed_files, &%{"path" => &1}),
         "changed_files_count" => length(changed_files),
-        "changed_files_available" => changed_files_available
+        "changed_files_available" => changed_files_available,
+        "changed_files_count_available" => changed_files_count_available
       })
     ]
   end
