@@ -2745,6 +2745,76 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-EMPTY-GLOBS")
   end
 
+  test "phase architect cannot create child work package with inherited empty file scope", %{repo: repo} do
+    {_anchor, session} =
+      create_architect_session(
+        repo,
+        "SYMPP-P7-002-EMPTY-ANCHOR",
+        ["create:child_work_package", "read:phase"],
+        allowed_file_globs: []
+      )
+
+    inherited_empty_response =
+      mcp_tool(repo, session, "create_child_work_package", %{
+        "package" => %{
+          "id" => "SYMPP-P7-002-INHERITED-EMPTY-GLOBS",
+          "title" => "Inherited empty globs",
+          "acceptance_criteria" => ["Should not be created"]
+        }
+      })
+
+    assert get_in(inherited_empty_response, ["error", "code"]) == -32_602
+    assert get_in(inherited_empty_response, ["error", "data", "reason"]) == "missing_allowed_file_globs"
+    assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-INHERITED-EMPTY-GLOBS")
+
+    explicit_scope_response =
+      mcp_tool(repo, session, "create_child_work_package", %{
+        "package" => %{
+          "id" => "SYMPP-P7-002-UNBOUNDED-EXPLICIT-GLOBS",
+          "title" => "Explicit globs without anchor scope",
+          "allowed_file_globs" => ["elixir/lib/**"],
+          "acceptance_criteria" => ["Should not be created"]
+        }
+      })
+
+    assert get_in(explicit_scope_response, ["error", "code"]) == -32_602
+    assert get_in(explicit_scope_response, ["error", "data", "reason"]) == "child_scope_outside_phase"
+    assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-UNBOUNDED-EXPLICIT-GLOBS")
+  end
+
+  test "phase architect cannot create child work package with blank scoped fields", %{repo: repo} do
+    {_anchor, session} =
+      create_architect_session(repo, "SYMPP-P7-002-BLANK-SCOPE-ANCHOR", [
+        "create:child_work_package",
+        "read:phase"
+      ])
+
+    blank_scope_cases = [
+      {"phase_id", " ", "invalid_phase_id"},
+      {"parent_id", "null", "invalid_parent_id"},
+      {"repo", "", "invalid_repo"},
+      {"base_branch", " NULL ", "invalid_base_branch"}
+    ]
+
+    for {key, value, reason} <- blank_scope_cases do
+      child_id = "SYMPP-P7-002-BLANK-" <> (key |> String.replace("_", "-") |> String.upcase())
+
+      response =
+        mcp_tool(repo, session, "create_child_work_package", %{
+          "package" => %{
+            "id" => child_id,
+            "title" => "Blank scoped field",
+            "acceptance_criteria" => ["Should not be created"],
+            key => value
+          }
+        })
+
+      assert get_in(response, ["error", "code"]) == -32_602
+      assert get_in(response, ["error", "data", "reason"]) == reason
+      assert {:error, :not_found} = WorkPackageRepository.get(repo, child_id)
+    end
+  end
+
   test "phase architect can narrow child globs under supported non-prefix anchor globs", %{repo: repo} do
     {_anchor, session} =
       create_architect_session(
@@ -2873,6 +2943,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(worker_mint_response, ["error", "code"]) == -32_001
     assert get_in(worker_mint_response, ["error", "data", "reason"]) == "architect_grant_required"
+  end
+
+  test "child worker key minting rejects child packages not ready for worker", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-NOT-READY-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-NOT-READY-CHILD")
+    assert {:ok, _child} = WorkPackageRepository.update(repo, child_id, %{status: "claimed"})
+
+    grants_before = repo.aggregate(AccessGrant, :count)
+
+    response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => %{}
+      })
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "reason"]) == "child_not_ready_for_worker"
+    assert repo.aggregate(AccessGrant, :count) == grants_before
   end
 
   test "phase architect cannot mint or read child worker key for sibling anchor, sibling phase, or mismatched base branch", %{repo: repo} do

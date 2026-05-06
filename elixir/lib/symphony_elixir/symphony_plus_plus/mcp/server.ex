@@ -1514,6 +1514,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
          {:ok, template} <- required_object(arguments, "template"),
          {:ok, child} <- require_architect_child_work_package_scope(config.repo, session, work_package_id),
+         :ok <- require_child_ready_for_worker(child),
          {:ok, grant_opts} <- child_worker_grant_opts(config.repo, session, template),
          {:ok, minted} <- AccessGrantService.mint_worker_grant(config.repo, child.id, grant_opts) do
       {:ok,
@@ -1627,6 +1628,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_phase_child_scope(%WorkPackage{}, _anchor, _phase_id), do: {:error, :phase_scope_not_available}
 
+  defp require_child_ready_for_worker(%WorkPackage{status: "ready_for_worker"}), do: :ok
+  defp require_child_ready_for_worker(%WorkPackage{}), do: {:tool_error, "child_not_ready_for_worker"}
+
   defp architect_anchor_work_package(repo, %Session{} = session) do
     case Session.work_package_id(session) do
       work_package_id when is_binary(work_package_id) -> WorkPackageRepository.get(repo, work_package_id)
@@ -1690,11 +1694,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     default_globs = normalize_child_globs(anchor.allowed_file_globs || [])
 
     with {:ok, globs} <- optional_child_string_list(package, "allowed_file_globs", default_globs),
+         :ok <- require_child_file_scope_present(globs),
          :ok <- reject_overbroad_child_globs(globs),
          :ok <- require_child_globs_within_anchor(globs, default_globs) do
       {:ok, globs}
     end
   end
+
+  defp require_child_file_scope_present([]), do: {:tool_error, "missing_allowed_file_globs"}
+  defp require_child_file_scope_present(_globs), do: :ok
 
   defp reject_overbroad_child_globs(globs) do
     if Enum.any?(globs, &ScopeGuard.overbroad_glob?/1) do
@@ -1704,7 +1712,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp require_child_globs_within_anchor(_child_globs, []), do: :ok
+  defp require_child_globs_within_anchor(_child_globs, []), do: {:tool_error, "child_scope_outside_phase"}
 
   defp require_child_globs_within_anchor(child_globs, anchor_globs) do
     if Enum.all?(child_globs, &glob_within_any_anchor?(&1, anchor_globs)) do
@@ -1754,13 +1762,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_child_field_match(package, key, expected, reason) do
     case Map.fetch(package, key) do
       :error -> :ok
-      {:ok, nil} -> :ok
-      {:ok, value} when is_binary(value) -> require_optional_field_match(String.trim(value), expected, reason)
+      {:ok, nil} -> {:tool_error, "invalid_#{key}"}
+      {:ok, value} when is_binary(value) -> require_nonblank_field_match(value, key, expected, reason)
       {:ok, _value} -> {:tool_error, "invalid_#{key}"}
     end
   end
 
-  defp require_optional_field_match("", _expected, _reason), do: :ok
+  defp require_nonblank_field_match(value, key, expected, reason) do
+    case String.trim(value) do
+      "" -> {:tool_error, "invalid_#{key}"}
+      trimmed -> reject_null_string_field(trimmed, key, expected, reason)
+    end
+  end
+
+  defp reject_null_string_field(trimmed, key, expected, reason) do
+    if String.downcase(trimmed) == "null" do
+      {:tool_error, "invalid_#{key}"}
+    else
+      require_optional_field_match(trimmed, expected, reason)
+    end
+  end
+
   defp require_optional_field_match(expected, expected, _reason), do: :ok
   defp require_optional_field_match(_value, _expected, reason) when is_atom(reason), do: {:error, reason}
   defp require_optional_field_match(_value, _expected, reason), do: {:tool_error, reason}
