@@ -1135,6 +1135,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     refute html =~ "Socket revalidation package"
   end
 
+  test "live board navigation revalidates an explicit phase grant anchor before reading" do
+    assert {:ok, other_phase} = PhaseRepository.create(Repo, %{id: "phase-live-socket-explicit-other", title: "Socket other"})
+
+    work_package =
+      create_board_package(%{
+        id: "SYMPP-P5-030",
+        kind: "dashboard",
+        status: "implementing",
+        title: "Socket explicit anchor package",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "symphony-plus-plus/beta"
+      })
+
+    secret = create_architect_grant_secret(Repo, work_package.id)
+    conn = board_session_conn(secret)
+    {:ok, view, html} = live(conn, "/sympp/board")
+
+    assert html =~ "Socket explicit anchor package"
+
+    assert {:ok, _moved_anchor} = WorkPackageRepository.update(Repo, work_package.id, %{phase_id: other_phase.id})
+
+    html = render_patch(view, "/sympp/board?kind=dashboard")
+
+    assert html =~ "Board access expired"
+    refute html =~ "Socket explicit anchor package"
+  end
+
   defp append_pr(_work_package, nil, _timestamp), do: :ok
 
   defp append_pr(work_package, pr_url, timestamp) do

@@ -198,19 +198,36 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     end
   end
 
-  defp phase_scope(_repo, %AccessGrant{phase_id: phase_id}) when is_binary(phase_id) do
-    if phase_id == "", do: {:error, :forbidden}, else: {:ok, phase_id}
+  defp phase_scope(repo, %AccessGrant{phase_id: phase_id, work_package_id: work_package_id})
+       when is_binary(phase_id) and is_binary(work_package_id) do
+    if phase_id == "" do
+      {:error, :forbidden}
+    else
+      require_anchor_phase(repo, work_package_id, phase_id)
+    end
   end
 
   defp phase_scope(repo, %AccessGrant{phase_id: nil, work_package_id: work_package_id}) when is_binary(work_package_id) do
+    anchor_phase_scope(repo, work_package_id)
+  end
+
+  defp phase_scope(_repo, %AccessGrant{}), do: {:error, :forbidden}
+
+  defp require_anchor_phase(repo, work_package_id, phase_id) do
+    case anchor_phase_scope(repo, work_package_id) do
+      {:ok, ^phase_id} -> {:ok, phase_id}
+      {:ok, _other_phase_id} -> {:error, :forbidden}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp anchor_phase_scope(repo, work_package_id) do
     case WorkPackageRepository.get(repo, work_package_id) do
       {:ok, %{phase_id: phase_id}} when is_binary(phase_id) and phase_id != "" -> {:ok, phase_id}
       {:ok, _work_package} -> {:error, :forbidden}
       {:error, _reason} -> {:error, :forbidden}
     end
   end
-
-  defp phase_scope(_repo, %AccessGrant{}), do: {:error, :forbidden}
 
   defp authorized_grant({:ok, grant}), do: grant
   defp authorized_grant(_authorization), do: nil
