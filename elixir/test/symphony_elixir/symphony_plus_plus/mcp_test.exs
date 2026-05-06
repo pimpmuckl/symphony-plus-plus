@@ -5622,6 +5622,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(approval_response, ["result", "structuredContent", "allowed_file_globs"]) == ["elixir/lib/**", "docs/**"]
     assert get_in(approval_response, ["result", "structuredContent", "progress_event", "payload", "approved"]) == true
+    approval_event_id = get_in(approval_response, ["result", "structuredContent", "progress_event", "id"])
+
+    retry_approval_response =
+      attach_tool(repo, architect_session, "approve_scope_expansion", %{
+        "work_package_id" => package.id,
+        "allowed_file_globs" => ["docs/**"],
+        "request_id" => request_id,
+        "rationale" => "Docs contract file is part of the current package."
+      })
+
+    assert get_in(retry_approval_response, ["result", "structuredContent", "progress_event", "id"]) == approval_event_id
 
     ready_response =
       MCPHarness.request(

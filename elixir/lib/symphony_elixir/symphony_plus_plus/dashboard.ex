@@ -557,7 +557,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp scope_drift_reason?(%{"code" => code}) do
-    code in ["wrong_base_branch", "out_of_scope_files", "scope_constraints_missing", "invalid_changed_file_paths"]
+    code in [
+      "wrong_base_branch",
+      "out_of_scope_files",
+      "scope_constraints_missing",
+      "overbroad_scope_constraints",
+      "invalid_changed_file_paths"
+    ]
   end
 
   defp scope_drift_reason?(_reason), do: false

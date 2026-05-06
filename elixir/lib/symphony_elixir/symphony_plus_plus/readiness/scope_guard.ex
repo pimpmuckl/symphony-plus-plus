@@ -82,7 +82,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
     |> add_allowed_file_failures(pr_payload, work_package)
   end
 
-  defp add_base_branch_failure(reasons, pr_payload, %WorkPackage{base_branch: expected}) do
+  defp add_base_branch_failure(reasons, pr_payload, %WorkPackage{base_branch: expected} = work_package) do
     actual = clean_string(Map.get(pr_payload, "base_branch"))
     expected = clean_string(expected)
 
@@ -93,7 +93,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
       is_nil(actual) ->
         [reason("missing_base_branch", %{"expected_base_branch" => expected}) | reasons]
 
-      actual != expected ->
+      not base_branch_matches?(work_package, expected, actual) ->
         [reason("wrong_base_branch", %{"expected_base_branch" => expected, "actual_base_branch" => actual}) | reasons]
 
       true ->
@@ -106,15 +106,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
     {changed_file_paths, changed_file_failures} = changed_file_paths(pr_payload)
 
     reasons =
-      case {allowed_file_globs, changed_file_paths} do
-        {[], _paths} ->
+      cond do
+        allowed_file_globs == [] ->
           [reason("scope_constraints_missing") | reasons]
 
-        {_globs, []} ->
+        Enum.any?(allowed_file_globs, &overbroad_glob?/1) ->
+          [reason("overbroad_scope_constraints", %{"allowed_file_globs" => allowed_file_globs}) | reasons]
+
+        changed_file_paths == [] ->
           reasons
 
-        {globs, paths} ->
-          out_of_scope_paths = Enum.reject(paths, &allowed_path?(&1, globs))
+        true ->
+          out_of_scope_paths = Enum.reject(changed_file_paths, &allowed_path?(&1, allowed_file_globs))
 
           if out_of_scope_paths == [] do
             reasons
@@ -122,7 +125,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
             [
               reason("out_of_scope_files", %{
                 "files" => out_of_scope_paths,
-                "allowed_file_globs" => globs
+                "allowed_file_globs" => allowed_file_globs
               })
               | reasons
             ]
@@ -181,6 +184,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
   end
 
   defp clean_file_path(_path), do: nil
+
+  defp base_branch_matches?(%WorkPackage{} = work_package, expected, actual) do
+    expected = trim_ref_prefix(expected)
+    actual = trim_ref_prefix(actual)
+
+    expected == actual or repo_qualified_branch_tail(expected, work_package.repo) == actual or
+      repo_qualified_branch_tail(actual, work_package.repo) == expected
+  end
+
+  defp trim_ref_prefix(value) when is_binary(value), do: String.replace_prefix(value, "refs/heads/", "")
+  defp trim_ref_prefix(value), do: value
+
+  defp repo_qualified_branch_tail(value, repo) when is_binary(value) and is_binary(repo) do
+    repo_name = repo |> String.split("/", trim: true) |> List.last()
+    prefix = repo_name <> "/"
+
+    if String.starts_with?(value, prefix), do: String.replace_prefix(value, prefix, ""), else: nil
+  end
+
+  defp repo_qualified_branch_tail(_value, _repo), do: nil
 
   defp allowed_path?(path, allowed_file_globs) do
     Enum.any?(allowed_file_globs, &glob_match?(&1, path))
@@ -374,6 +397,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
   defp message("missing_base_branch"), do: "Current PR metadata is missing the base branch."
   defp message("wrong_base_branch"), do: "Current PR targets the wrong base branch."
   defp message("scope_constraints_missing"), do: "Scope guard has no allowed file globs configured."
+  defp message("overbroad_scope_constraints"), do: "Scope guard has overbroad allowed file globs configured."
   defp message("changed_files_unavailable"), do: "Current PR metadata does not include changed-file paths."
   defp message("invalid_changed_file_paths"), do: "Current PR metadata includes invalid changed-file paths."
   defp message("out_of_scope_files"), do: "Current PR changes files outside the allowed globs."

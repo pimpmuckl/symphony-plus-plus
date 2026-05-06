@@ -2096,11 +2096,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       }
       |> Map.reject(fn {_key, value} -> is_nil(value) end)
 
+    idempotency_payload =
+      %{
+        "type" => "scope_expansion_approval",
+        "source_tool" => "approve_scope_expansion",
+        "work_package_id" => previous_work_package.id,
+        "request_id" => request_id,
+        "approved_file_globs" => allowed_file_globs,
+        "rationale" => rationale
+      }
+      |> Map.reject(fn {_key, value} -> is_nil(value) end)
+
     %{
       "summary" => "Scope expansion approved",
       "body" => rationale,
       "status" => "scope_expansion_approved",
-      "idempotency_key" => metadata_idempotency_key(Map.put(payload, "rationale", rationale)),
+      "idempotency_key" => metadata_idempotency_key(idempotency_payload),
       "payload" => payload
     }
   end

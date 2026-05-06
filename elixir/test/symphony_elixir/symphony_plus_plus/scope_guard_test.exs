@@ -28,6 +28,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
     assert reasons["wrong_base_branch"]["actual_base_branch"] == "main"
   end
 
+  test "repo-qualified package base branch matches plain GitHub base ref" do
+    package = package(["elixir/lib/**"])
+
+    assert ScopeGuard.failure_reasons(package, events(base_branch: "beta", changed_files: ["elixir/lib/example.ex"])) == []
+  end
+
   test "out-of-scope changed file fails scope guard" do
     package = package(["elixir/lib/**"])
 
@@ -58,6 +64,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
 
     assert {:error, "overbroad_allowed_file_globs"} = ScopeGuard.approve_file_globs(package, ["**"])
     assert {:error, "overbroad_allowed_file_globs"} = ScopeGuard.approve_file_globs(package, ["./**/*"])
+  end
+
+  test "overbroad configured package globs fail scope guard" do
+    package = package(["**"])
+
+    reasons =
+      package
+      |> ScopeGuard.failure_reasons(events(changed_files: ["docs/outside.md"]))
+      |> Map.new(&{&1["code"], &1})
+
+    assert reasons["overbroad_scope_constraints"]["allowed_file_globs"] == ["**"]
   end
 
   test "zero changed-file count satisfies scope guard when paths are unavailable" do
