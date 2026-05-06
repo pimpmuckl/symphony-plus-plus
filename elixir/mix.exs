@@ -48,6 +48,7 @@ defmodule SymphonyElixir.MixProject do
       dialyzer: [
         plt_add_apps: [:mix]
       ],
+      cli: cli(),
       escript: escript(),
       aliases: aliases(),
       deps: deps()
@@ -59,6 +60,12 @@ defmodule SymphonyElixir.MixProject do
     [
       mod: {SymphonyElixir.Application, []},
       extra_applications: [:logger]
+    ]
+  end
+
+  def cli do
+    [
+      preferred_envs: ["sympp.integration": :test]
     ]
   end
 
@@ -87,6 +94,7 @@ defmodule SymphonyElixir.MixProject do
     [
       setup: ["deps.get"],
       build: ["escript.build"],
+      "sympp.integration": ["test test/symphony_elixir/symphony_plus_plus/integration_harness_test.exs"],
       lint: ["specs.check", "credo --strict"]
     ]
   end
