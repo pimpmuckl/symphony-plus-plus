@@ -592,10 +592,23 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp require_phase_board_with_existing_repo(auth_context) do
-    with_dashboard_repo(
-      fn repo -> require_phase_board(repo, auth_context) end,
-      migrate?: false
-    )
+    phase_board_auth_fun = fn repo -> require_phase_board(repo, auth_context) end
+
+    case with_dashboard_repo(phase_board_auth_fun, migrate?: false) do
+      {:error, {:storage_failed, message}} when is_binary(message) ->
+        handle_existing_phase_board_storage_error(phase_board_auth_fun, message)
+
+      result ->
+        result
+    end
+  end
+
+  defp handle_existing_phase_board_storage_error(phase_board_auth_fun, message) do
+    if missing_phase_column_message?(message) do
+      with_dashboard_repo(phase_board_auth_fun, migrate?: true)
+    else
+      {:error, {:storage_failed, message}}
+    end
   end
 
   defp require_work_package(repo, {:grant, %AccessGrant{} = grant}, work_package_id) do

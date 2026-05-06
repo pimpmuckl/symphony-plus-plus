@@ -2285,6 +2285,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end
   end
 
+  test "dashboard API migrates pre-phase ledgers before board phase auth reads phase columns" do
+    database_path = WorkPackageFactory.database_path()
+
+    try do
+      {_work_package_id, secret} =
+        seed_pre_phase_dashboard_database(database_path,
+          work_package_id: "SYMPP-PRE-PHASE-BOARD-AUTH",
+          grant_id: "grant-pre-phase-board-auth",
+          grant_role: "architect",
+          capabilities: ["read:phase"],
+          claimed_by: "architect-pre-phase"
+        )
+
+      refute "phase_id" in table_columns(database_path, "sympp_access_grants")
+      refute "phase_id" in table_columns(database_path, "sympp_work_packages")
+
+      with_configured_endpoint_database(database_path, fn ->
+        assert {:error, :forbidden} = SymppDashboardApiController.authorize_board_grant_id("grant-pre-phase-board-auth")
+
+        assert %{"error" => %{"code" => "forbidden"}} =
+                 json_response(get(auth_conn(secret), "/api/v1/sympp/board"), 403)
+      end)
+
+      assert "phase_id" in table_columns(database_path, "sympp_access_grants")
+      assert "phase_id" in table_columns(database_path, "sympp_work_packages")
+    after
+      File.rm(database_path)
+    end
+  end
+
   test "dashboard auth preflight treats in-memory SQLite ledgers as absent" do
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
 
@@ -2828,7 +2858,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end
   end
 
-  defp seed_pre_phase_dashboard_database(database_path) do
+  defp seed_pre_phase_dashboard_database(database_path, opts \\ []) do
     {:ok, pid} = Repo.start_link(database: database_path, name: nil, pool_size: 1, log: false)
     original_repo = Repo.put_dynamic_repo(pid)
 
@@ -2846,7 +2876,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       now = DateTime.utc_now(:microsecond)
       expires_at = DateTime.add(now, 86_400, :second)
       work_key = WorkKey.generate()
-      work_package_id = "SYMPP-PRE-PHASE-AUTH"
+      work_package_id = Keyword.get(opts, :work_package_id, "SYMPP-PRE-PHASE-AUTH")
+      grant_id = Keyword.get(opts, :grant_id, "grant-pre-phase-auth")
+      grant_role = Keyword.get(opts, :grant_role, "worker")
+      capabilities = opts |> Keyword.get(:capabilities, ["read:package"]) |> Jason.encode!()
+      claimed_by = Keyword.get(opts, :claimed_by, "worker-1")
 
       Repo.query!(
         """
@@ -2884,16 +2918,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
-          "grant-pre-phase-auth",
+          grant_id,
           work_package_id,
           work_key.display_key,
           WorkKey.secret_hash(work_key.secret),
-          "worker",
-          ~s(["read:package"]),
+          grant_role,
+          capabilities,
           expires_at,
           nil,
           now,
-          "worker-1",
+          claimed_by,
           now,
           now
         ]
