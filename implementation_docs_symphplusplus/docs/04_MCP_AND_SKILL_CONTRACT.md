@@ -166,9 +166,10 @@ upper bound. Child creation revalidates that anchor scope in the insert
 transaction. Context-slice input is not part of the current contract.
 `mint_child_worker_key` mints only single-package worker grants for same-phase
 children, revalidates the live architect grant in the mint transaction, rejects
-claimed active worker grants for the same child, transactionally supersedes
-unclaimed active child worker grants, and caps child capabilities and expiry to
-that current grant.
+claimed active child-delegated worker grants for the same child,
+transactionally supersedes unclaimed active child-delegated worker grants,
+ignores unrelated normal worker grants, and caps child capabilities and expiry
+to that current grant.
 `read_child_status(work_package_id)` requires both `read:child_progress` and
 `read:child_findings`; it can read the architect anchor package or a same-phase
 child package. The remaining architect tools return explicit

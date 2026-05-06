@@ -22,6 +22,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service do
     now = option(opts, :now, DateTime.utc_now(:microsecond))
     expires_at = option(opts, :expires_at, DateTime.add(now, @default_lifetime_seconds, :second))
     capabilities = option(opts, :capabilities, @default_worker_capabilities)
+    provenance = option(opts, :provenance, nil)
     work_key = WorkKey.generate()
 
     with :ok <- Repository.validate_work_package(repo, work_package_id),
@@ -31,6 +32,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service do
              display_key: work_key.display_key,
              secret_hash: WorkKey.secret_hash(work_key.secret),
              grant_role: "worker",
+             provenance: provenance,
              capabilities: capabilities,
              expires_at: DateTime.truncate(expires_at, :microsecond)
            }) do

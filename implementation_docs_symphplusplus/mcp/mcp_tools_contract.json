@@ -84,7 +84,7 @@
     {
       "name": "mint_child_worker_key",
       "purpose": "Mint a child-scoped worker grant for a same-phase phase_child package.",
-      "scope_policy": "Worker grants are single-package grants, capabilities are limited to worker:claim and worker:lifecycle.transition, unclaimed active worker grants for the same child may be superseded transactionally, claimed active worker grants for the child are rejected, and expiry cannot exceed the transaction-current architect grant."
+      "scope_policy": "Worker grants are single-package grants, capabilities are limited to worker:claim and worker:lifecycle.transition, unclaimed active child-delegated worker grants for the same child may be superseded transactionally, claimed active child-delegated worker grants for the child are rejected, unrelated normal worker grants are ignored, and expiry cannot exceed the transaction-current architect grant."
     },
     {
       "name": "revoke_child_worker_key",

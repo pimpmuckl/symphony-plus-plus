@@ -73,8 +73,9 @@ support context-slice input in this contract. `mint_child_worker_key` only mints
 single-package worker grants for same-phase child packages; the minted worker
 grant cannot include architect capabilities, cannot include capabilities outside
 the child worker capability set, transactionally supersedes unclaimed active
-worker grants for the same child, rejects claimed active worker grants for that
-child, and cannot outlive the transaction-current architect grant.
+child-delegated worker grants for the same child, rejects claimed active
+child-delegated worker grants for that child, ignores unrelated normal worker
+grants, and cannot outlive the transaction-current architect grant.
 `read_child_status` requires both `read:child_progress` and
 `read:child_findings` because its summary includes progress, findings, and
 artifact counts. Remaining Phase 7-dependent tools perform authorization first

@@ -83,6 +83,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   ]
   @child_worker_template_keys ["capabilities", "expires_at"]
   @child_worker_capabilities ["worker:claim", "worker:lifecycle.transition"]
+  @child_worker_grant_provenance "child_worker_delegation"
   @version_resource "sympp://health/version"
   @assignment_resource "sympp://assignment/current"
   @finding_replay_retry_attempts 50
@@ -1773,7 +1774,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       from(grant in AccessGrant,
         where:
           grant.work_package_id == ^work_package_id and grant.grant_role == "worker" and is_nil(grant.revoked_at) and
-            not is_nil(grant.claimed_at) and grant.expires_at > ^now,
+            grant.provenance == ^@child_worker_grant_provenance and not is_nil(grant.claimed_at) and
+            grant.expires_at > ^now,
         select: count(grant.id)
       )
 
@@ -1791,7 +1793,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       from(grant in AccessGrant,
         where:
           grant.work_package_id == ^work_package_id and grant.grant_role == "worker" and is_nil(grant.revoked_at) and
-            grant.expires_at > ^now
+            grant.provenance == ^@child_worker_grant_provenance and grant.expires_at > ^now
       )
 
     active_grants = repo.all(active_query)
@@ -2206,7 +2208,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with :ok <- validate_child_worker_template_keys(template),
          {:ok, capabilities} <- child_worker_capabilities(template),
          {:ok, expires_at} <- child_worker_expires_at(template, architect_grant) do
-      {:ok, [capabilities: capabilities, expires_at: expires_at]}
+      {:ok, [capabilities: capabilities, expires_at: expires_at, provenance: @child_worker_grant_provenance]}
     end
   end
 

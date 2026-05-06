@@ -26,6 +26,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.WorkPackageFactory
 
   @architect_phase_id "phase-mcp-architect-test"
+  @child_worker_grant_provenance "child_worker_delegation"
 
   defmodule FailingAuthRepo do
     def get(_schema, _id), do: raise(RuntimeError, "ledger unavailable")
@@ -3492,6 +3493,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(child_status_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_worker"
   end
 
+  test "child worker key minting ignores normal worker grants during replacement", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-MINT-NORMAL-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-NORMAL-CHILD")
+
+    assert {:ok, pending_normal} = AccessGrantService.mint_worker_grant(repo, child_id)
+    assert pending_normal.grant.provenance == nil
+
+    assert {:ok, claimed_normal} = AccessGrantService.mint_worker_grant(repo, child_id)
+    assert claimed_normal.grant.provenance == nil
+    assert {:ok, _normal_assignment} = AccessGrantService.claim(repo, claimed_normal.work_key.secret, claimed_by: "normal-worker")
+
+    first_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => %{}
+      })
+
+    first_delegated_id = get_in(first_response, ["result", "structuredContent", "worker_grant", "id"])
+    assert is_binary(first_delegated_id)
+
+    assert {:ok, first_delegated} = AccessGrantRepository.get(repo, first_delegated_id)
+    assert first_delegated.provenance == @child_worker_grant_provenance
+
+    second_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => %{}
+      })
+
+    second_delegated_id = get_in(second_response, ["result", "structuredContent", "worker_grant", "id"])
+    assert is_binary(second_delegated_id)
+    refute second_delegated_id == first_delegated_id
+
+    assert {:ok, superseded_delegated} = AccessGrantRepository.get(repo, first_delegated_id)
+    assert %DateTime{} = superseded_delegated.revoked_at
+
+    assert {:ok, pending_normal_grant} = AccessGrantRepository.get(repo, pending_normal.grant.id)
+    assert pending_normal_grant.revoked_at == nil
+    assert pending_normal_grant.claimed_at == nil
+    assert pending_normal_grant.provenance == nil
+
+    assert {:ok, claimed_normal_grant} = AccessGrantRepository.get(repo, claimed_normal.grant.id)
+    assert claimed_normal_grant.revoked_at == nil
+    assert %DateTime{} = claimed_normal_grant.claimed_at
+    assert claimed_normal_grant.provenance == nil
+
+    assert {:ok, replacement_delegated} = AccessGrantRepository.get(repo, second_delegated_id)
+    assert replacement_delegated.revoked_at == nil
+    assert replacement_delegated.provenance == @child_worker_grant_provenance
+  end
+
   test "child worker key minting supersedes unclaimed grants and rejects claimed active grants", %{repo: repo} do
     {_anchor, architect_session} =
       create_architect_session(repo, "SYMPP-P7-002-MINT-DUPLICATE-ANCHOR", [
@@ -3527,6 +3585,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute second_secret == first_secret
 
     assert {:ok, first_grant} = AccessGrantRepository.get(repo, first_grant_id)
+    assert first_grant.provenance == @child_worker_grant_provenance
     assert %DateTime{} = first_grant.revoked_at
     assert {:error, :revoked} = AccessGrantService.claim(repo, first_secret, claimed_by: "worker-late")
 
@@ -3553,6 +3612,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert {:ok, second_grant} = AccessGrantRepository.get(repo, second_grant_id)
     assert second_grant.revoked_at == nil
+    assert second_grant.provenance == @child_worker_grant_provenance
   end
 
   test "child worker key minting rejects broader grants and worker callers", %{repo: repo} do
