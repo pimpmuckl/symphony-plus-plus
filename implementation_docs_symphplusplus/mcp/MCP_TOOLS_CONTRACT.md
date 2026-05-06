@@ -31,10 +31,10 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | mint_child_worker_key | Mint a child-scoped worker grant for a same-phase `phase_child` package; worker capabilities are limited to the child worker set and expiry cannot exceed the architect grant. |
 | revoke_child_worker_key | Phase 7 stub for revoking child worker keys; returns `phase7_not_implemented` after architect authorization. |
 | read_child_status | Read the architect grant's scoped anchor package status, or a same-phase child work-package status when the architect grant has child read capabilities. |
-| read_phase_board | Read the architect grant's scoped phase board, filtered to the frozen repo/base branch for explicit phase grants. |
+| read_phase_board | Read the architect grant's scoped phase board, filtered to the frozen repo/base branch for explicit phase grants, including merged-child phase progress. |
 | request_child_replan | Phase 7 stub for child replan requests; returns `phase7_not_implemented` after architect authorization. |
-| approve_child_ready_state | Phase 7 stub for child readiness approval; returns `phase7_not_implemented` after architect authorization. |
-| merge_child_into_phase | Phase 7 stub for merge-to-phase recording; returns `phase7_not_implemented` after architect authorization. |
+| approve_child_ready_state | Approve a same-phase `phase_child` in `ready_for_architect_merge` after readiness gates still pass; records a local audit event and moves the child to `merging_into_phase`. Optional `request_id` is the explicit retry identity. |
+| merge_child_into_phase | Record a local merge artifact for an approved phase child and move it to `merged_into_phase`; does not perform a live Git merge. |
 | split_work_package | Phase 7 stub for child package splitting; returns `phase7_not_implemented` after architect authorization. |
 | publish_phase_update | Phase 7 stub for phase updates; returns `phase7_not_implemented` after architect authorization. |
 
@@ -78,9 +78,35 @@ child-delegated worker grants for that child, ignores unrelated normal worker
 grants, and cannot outlive the transaction-current architect grant.
 `read_child_status` requires both `read:child_progress` and
 `read:child_findings` because its summary includes progress, findings, and
-artifact counts. Remaining Phase 7-dependent tools perform authorization first
-and then return an explicit `phase7_not_implemented` error; they do not approve
-readiness, merge phase artifacts, or publish phase state in P7-002.
+artifact counts. `approve_child_ready_state` revalidates the ready child against
+current readiness evidence, active phase state, and the frozen phase-child
+repo/base/file scope before recording approval. There is no approval override in
+this contract. Exact approval retries replay across renewed architect grants for
+the same actor only when the caller supplies the same `request_id`; the human
+`rationale` is audit text and is not idempotency key material.
+Same-`request_id` retries within the same ready-state cycle replay the original
+approval audit event; retry rationale edits do not mutate the recorded audit
+rationale. Re-approval after a real blocked/reworked/readied cycle records a new
+approval audit event even when the same `request_id` and rationale text are
+reused. Approved children are architect-controlled, except the child worker may
+move `merging_into_phase` back to `blocked` to represent a merge blocker before
+further worker follow-up.
+`merge_child_into_phase` accepts only local merge artifacts with
+`status: "merged_into_phase"` and a nonempty `uri`, records them as a
+`phase_merge` artifact on the child package, and marks the child
+`merged_into_phase`. The full accepted `merge_artifact` is preserved as artifact
+metadata. Exact merge retries replay across renewed scoped architect grants even
+when the renewed grant has a different `claimed_by`; after the child is merged,
+a new valid merge artifact updates the local `phase_merge` record and appends
+an audit event without another lifecycle transition while the phase remains
+active; exact older retries do not overwrite newer artifact data. Merge
+finalization and post-merge artifact updates are rejected after the phase
+closes. Phase-board progress summary totals are computed after backend
+authorization and frozen repo/base scope filters, then remain stable across
+client-side board filters; abandoned children are excluded, and closed children
+still count in the merge-progress denominator but are not open work. Remaining
+Phase 7-dependent tools perform authorization first and then return an explicit
+`phase7_not_implemented` error; they do not publish phase state in P7-003.
 
 ## Resources
 

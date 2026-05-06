@@ -276,6 +276,59 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     refute html =~ ~r/<button[^>]*>\s*Revoke\s*<\/button>/
   end
 
+  test "phase progress summary stays stable across visible board filters" do
+    anchor =
+      create_board_package(%{
+        id: "SYMPP-P7-003-ANCHOR",
+        kind: "dashboard",
+        status: "implementing",
+        title: "Progress anchor",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "symphony-plus-plus/beta"
+      })
+
+    create_board_package(%{
+      id: "SYMPP-P7-003-MERGED",
+      kind: "phase_child",
+      status: "merged_into_phase",
+      title: "Merged visible child",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "symphony-plus-plus/beta",
+      parent_id: anchor.id
+    })
+
+    create_board_package(%{
+      id: "SYMPP-P8-003-READY",
+      kind: "phase_child",
+      status: "ready_for_architect_merge",
+      title: "Ready filtered child",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "symphony-plus-plus/beta",
+      parent_id: anchor.id
+    })
+
+    create_board_package(%{
+      id: "SYMPP-P8-004-BLOCKED",
+      kind: "phase_child",
+      status: "blocked",
+      title: "Blocked filtered child",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "symphony-plus-plus/beta",
+      parent_id: anchor.id
+    })
+
+    secret = create_architect_grant_secret(Repo, anchor.id)
+
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/board?kind=phase_child&phase=P7")
+
+    assert html =~ "Merged visible child"
+    refute html =~ "Progress anchor"
+    refute html =~ "Ready filtered child"
+    refute html =~ "Blocked filtered child"
+    assert html =~ "1/3 children merged"
+    refute html =~ "1/1 children merged"
+  end
+
   test "redacted card fields do not display raw secrets and github sync is optional" do
     create_board_package(%{
       id: "SYMPP-P5-009",
@@ -723,7 +776,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
                  status: attrs.status,
                  title: attrs.title,
                  repo: attrs.repo,
-                 base_branch: attrs.base_branch
+                 base_branch: attrs.base_branch,
+                 parent_id: Map.get(attrs, :parent_id),
+                 phase_id: Map.get(attrs, :phase_id)
                )
              )
 

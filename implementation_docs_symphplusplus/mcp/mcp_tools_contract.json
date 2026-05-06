@@ -98,8 +98,8 @@
     },
     {
       "name": "read_phase_board",
-      "purpose": "Read the architect grant's scoped phase board filtered to the frozen repo/base branch for explicit phase grants.",
-      "scope_policy": "Explicit phase architect grants require the frozen repo/base-branch snapshot; matching grants materialize only same-snapshot package cards, and missing snapshots fail closed without unsafe backfill."
+      "purpose": "Read the architect grant's scoped phase board filtered to the frozen repo/base branch for explicit phase grants, including merged-child phase progress.",
+      "scope_policy": "Explicit phase architect grants require the frozen repo/base-branch snapshot; matching grants materialize only same-snapshot package cards, and missing snapshots fail closed without unsafe backfill. Phase progress summary totals are computed after backend authorization and frozen repo/base scope filters, then remain stable across client-side board filters. Abandoned children are excluded. Closed children still count in the merge-progress denominator but are not open work."
     },
     {
       "name": "request_child_replan",
@@ -107,11 +107,13 @@
     },
     {
       "name": "approve_child_ready_state",
-      "purpose": "Phase 7 stub for child readiness approval; returns phase7_not_implemented after architect authorization."
+      "purpose": "Approve a same-phase phase_child in ready_for_architect_merge after readiness gates still pass; records a local audit event and moves the child to merging_into_phase. Optional request_id is the explicit retry identity.",
+      "scope_policy": "Revalidates the explicit phase grant, frozen repo/base-branch anchor scope, phase-child parent/file scope, and active phase state before approval. No override is part of this contract. Exact retries replay across renewed architect grants for the same actor only when the caller supplies the same request_id; rationale is audit text and is not idempotency key material. Same-request_id retries within the same ready-state cycle replay the original approval audit event; retry rationale edits do not mutate the recorded audit rationale. Re-approval after a real blocked/reworked/readied cycle records a new approval audit event even when the same request_id and rationale text are reused. After approval, the child worker may only move merging_into_phase back to blocked to represent a merge blocker before further worker follow-up."
     },
     {
       "name": "merge_child_into_phase",
-      "purpose": "Phase 7 stub for merge-to-phase recording; returns phase7_not_implemented after architect authorization."
+      "purpose": "Record a local merge artifact for an approved phase child and move it to merged_into_phase; does not perform a live Git merge.",
+      "artifact_policy": "merge_artifact.status must be merged_into_phase and merge_artifact.uri must be nonempty. The tool records a phase_merge artifact on the child package and preserves the full accepted merge_artifact as artifact metadata. Exact retries replay across renewed scoped architect grants even when the renewed grant has a different claimed_by; after the child is already merged, a new valid merge artifact updates the local phase_merge record and appends an audit event without another lifecycle transition while the phase remains active. Exact older retries do not overwrite newer artifact data. Merge finalization and post-merge artifact updates are rejected after the phase closes."
     },
     {
       "name": "split_work_package",
