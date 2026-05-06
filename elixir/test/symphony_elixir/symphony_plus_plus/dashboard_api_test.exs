@@ -2554,6 +2554,60 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end
   end
 
+  test "dashboard API migrates existing ledgers before auth reads scope grant columns" do
+    database_path = WorkPackageFactory.database_path()
+
+    try do
+      {work_package_id, secret} =
+        seed_dashboard_database_at_migration(database_path, 20_260_506_120_000,
+          work_package_id: "SYMPP-PRE-SCOPE-AUTH",
+          grant_id: "grant-pre-scope-auth"
+        )
+
+      assert "phase_id" in table_columns(database_path, "sympp_access_grants")
+      refute "scope_repo" in table_columns(database_path, "sympp_access_grants")
+      refute "scope_base_branch" in table_columns(database_path, "sympp_access_grants")
+      refute "provenance" in table_columns(database_path, "sympp_access_grants")
+
+      with_configured_endpoint_database(database_path, fn ->
+        assert %{"work_package" => %{"id" => ^work_package_id}} =
+                 json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package_id}"), 200)
+      end)
+
+      assert "scope_repo" in table_columns(database_path, "sympp_access_grants")
+      assert "scope_base_branch" in table_columns(database_path, "sympp_access_grants")
+      assert "provenance" in table_columns(database_path, "sympp_access_grants")
+    after
+      File.rm(database_path)
+    end
+  end
+
+  test "dashboard package session migrates existing ledgers before auth reads provenance" do
+    database_path = WorkPackageFactory.database_path()
+
+    try do
+      {work_package_id, secret} =
+        seed_dashboard_database_at_migration(database_path, 20_260_506_143_000,
+          work_package_id: "SYMPP-PRE-PROVENANCE-SESSION",
+          grant_id: "grant-pre-provenance-session"
+        )
+
+      assert "scope_repo" in table_columns(database_path, "sympp_access_grants")
+      assert "scope_base_branch" in table_columns(database_path, "sympp_access_grants")
+      refute "provenance" in table_columns(database_path, "sympp_access_grants")
+
+      with_configured_endpoint_database(database_path, fn ->
+        conn = post(build_conn(), "/sympp/work-packages/#{work_package_id}/session", %{"work_key" => secret})
+
+        assert redirected_to(conn) == "/sympp/work-packages/#{work_package_id}"
+      end)
+
+      assert "provenance" in table_columns(database_path, "sympp_access_grants")
+    after
+      File.rm(database_path)
+    end
+  end
+
   test "dashboard auth preflight treats in-memory SQLite ledgers as absent" do
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
 
@@ -3177,6 +3231,90 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       Repo.put_dynamic_repo(original_repo)
       GenServer.stop(pid)
     end
+  end
+
+  defp seed_dashboard_database_at_migration(database_path, migration_version, opts) do
+    {:ok, pid} = Repo.start_link(database: database_path, name: nil, pool_size: 1, log: false)
+    original_repo = Repo.put_dynamic_repo(pid)
+
+    try do
+      migrated_versions =
+        Ecto.Migrator.run(Repo, WorkPackageRepository.migrations_path(), :up,
+          to: migration_version,
+          log: false
+        )
+
+      assert migration_version in migrated_versions
+
+      now = DateTime.utc_now(:microsecond)
+      expires_at = DateTime.add(now, 86_400, :second)
+      work_key = WorkKey.generate()
+      work_package_id = Keyword.fetch!(opts, :work_package_id)
+      grant_id = Keyword.fetch!(opts, :grant_id)
+      capabilities = opts |> Keyword.get(:capabilities, ["read:package"]) |> Jason.encode!()
+
+      insert_legacy_dashboard_row("sympp_work_packages", [
+        {"id", work_package_id},
+        {"kind", "mcp"},
+        {"title", "Legacy auth package"},
+        {"repo", "Pimpmuckl/symphony-plus-plus"},
+        {"base_branch", "symphony-plus-plus/beta"},
+        {"branch_pattern", nil},
+        {"product_description", nil},
+        {"engineering_scope", nil},
+        {"acceptance_criteria", "[]"},
+        {"status", "created"},
+        {"parent_id", nil},
+        {"owner_id", nil},
+        {"allowed_file_globs", "[]"},
+        {"policy_template", nil},
+        {"phase_id", Keyword.get(opts, :work_package_phase_id, nil)},
+        {"inserted_at", now},
+        {"updated_at", now}
+      ])
+
+      insert_legacy_dashboard_row("sympp_access_grants", [
+        {"id", grant_id},
+        {"work_package_id", work_package_id},
+        {"phase_id", Keyword.get(opts, :grant_phase_id, nil)},
+        {"scope_repo", Keyword.get(opts, :scope_repo, nil)},
+        {"scope_base_branch", Keyword.get(opts, :scope_base_branch, nil)},
+        {"display_key", work_key.display_key},
+        {"secret_hash", WorkKey.secret_hash(work_key.secret)},
+        {"grant_role", Keyword.get(opts, :grant_role, "worker")},
+        {"provenance", Keyword.get(opts, :provenance, nil)},
+        {"capabilities", capabilities},
+        {"expires_at", expires_at},
+        {"revoked_at", nil},
+        {"claimed_at", now},
+        {"claimed_by", Keyword.get(opts, :claimed_by, "worker-1")},
+        {"inserted_at", now},
+        {"updated_at", now}
+      ])
+
+      {work_package_id, work_key.secret}
+    after
+      Repo.put_dynamic_repo(original_repo)
+      GenServer.stop(pid)
+    end
+  end
+
+  defp insert_legacy_dashboard_row(table, attrs)
+       when table in ["sympp_access_grants", "sympp_work_packages"] and is_list(attrs) do
+    columns = table_columns_for_repo(table)
+    row = Enum.filter(attrs, fn {column, _value} -> column in columns end)
+    column_sql = Enum.map_join(row, ", ", &elem(&1, 0))
+    placeholders = Enum.map_join(row, ", ", fn _field -> "?" end)
+    values = Enum.map(row, &elem(&1, 1))
+
+    Repo.query!("INSERT INTO #{table} (#{column_sql}) VALUES (#{placeholders})", values)
+  end
+
+  defp table_columns_for_repo(table) when table in ["sympp_access_grants", "sympp_work_packages"] do
+    "PRAGMA table_info(#{table})"
+    |> Repo.query!([])
+    |> Map.fetch!(:rows)
+    |> Enum.map(fn [_index, name | _rest] -> name end)
   end
 
   defp table_columns(database_path, table) when table in ["sympp_access_grants", "sympp_work_packages"] do

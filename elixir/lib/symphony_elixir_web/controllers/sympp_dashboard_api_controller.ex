@@ -21,6 +21,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @package_session_key "sympp_package_grant_ids"
   @package_session_order_key "sympp_package_grant_order"
   @max_package_sessions 8
+  @access_grant_lazy_migration_columns ["phase_id", "scope_repo", "scope_base_branch", "provenance"]
 
   @spec authorize_board_browser(Conn.t(), term()) :: Conn.t()
   def authorize_board_browser(conn, _opts) do
@@ -400,7 +401,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp handle_existing_auth_storage_error(auth_fun, message) do
     cond do
       missing_schema_message?(message) -> {:error, :unauthorized}
-      missing_phase_column_message?(message) -> with_dashboard_repo(auth_fun, migrate?: true)
+      missing_access_grant_migration_column_message?(message) -> with_dashboard_repo(auth_fun, migrate?: true)
       true -> {:error, {:storage_failed, message}}
     end
   end
@@ -610,7 +611,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp handle_existing_phase_column_storage_error(auth_fun, message) do
-    if missing_phase_column_message?(message) do
+    if missing_access_grant_migration_column_message?(message) do
       with_dashboard_repo(auth_fun, migrate?: true)
     else
       {:error, {:storage_failed, message}}
@@ -1278,9 +1279,11 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     |> String.contains?("no such table")
   end
 
-  defp missing_phase_column_message?(message) do
+  defp missing_access_grant_migration_column_message?(message) do
     message = String.downcase(message)
-    String.contains?(message, "no such column") and String.contains?(message, "phase_id")
+
+    String.contains?(message, "no such column") and
+      Enum.any?(@access_grant_lazy_migration_columns, &String.contains?(message, &1))
   end
 
   defp with_dashboard_repo(fun, opts \\ []) when is_function(fun, 1) and is_list(opts) do
