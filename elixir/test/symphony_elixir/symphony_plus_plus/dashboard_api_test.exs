@@ -2340,6 +2340,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end
   end
 
+  test "dashboard package grant auth migrates pre-phase ledgers before phase package auth reads" do
+    database_path = WorkPackageFactory.database_path()
+
+    try do
+      {work_package_id, _secret} =
+        seed_pre_phase_dashboard_database(database_path,
+          work_package_id: "SYMPP-PRE-PHASE-PACKAGE-AUTH",
+          grant_id: "grant-pre-phase-package-auth",
+          grant_role: "architect",
+          capabilities: ["read:phase"],
+          claimed_by: "architect-pre-phase"
+        )
+
+      refute "phase_id" in table_columns(database_path, "sympp_access_grants")
+      refute "phase_id" in table_columns(database_path, "sympp_work_packages")
+
+      with_configured_endpoint_database(database_path, fn ->
+        assert {:error, :forbidden} =
+                 SymppDashboardApiController.authorize_package_grant_id("grant-pre-phase-package-auth", work_package_id)
+      end)
+
+      assert "phase_id" in table_columns(database_path, "sympp_access_grants")
+      assert "phase_id" in table_columns(database_path, "sympp_work_packages")
+    after
+      File.rm(database_path)
+    end
+  end
+
+  test "dashboard package session migrates pristine pre-phase ledgers before phase package auth reads" do
+    database_path = WorkPackageFactory.database_path()
+
+    try do
+      {work_package_id, secret} =
+        seed_pre_phase_dashboard_database(database_path,
+          work_package_id: "SYMPP-PRE-PHASE-PACKAGE-SESSION",
+          grant_id: "grant-pre-phase-package-session",
+          grant_role: "architect",
+          capabilities: ["read:phase"],
+          claimed_by: "architect-pre-phase"
+        )
+
+      refute "phase_id" in table_columns(database_path, "sympp_access_grants")
+      refute "phase_id" in table_columns(database_path, "sympp_work_packages")
+
+      with_configured_endpoint_database(database_path, fn ->
+        conn = post(build_conn(), "/sympp/work-packages/#{work_package_id}/session", %{"work_key" => secret})
+
+        assert response(conn, 403) =~ "The work key is not allowed to open this package."
+      end)
+
+      assert "phase_id" in table_columns(database_path, "sympp_access_grants")
+      assert "phase_id" in table_columns(database_path, "sympp_work_packages")
+    after
+      File.rm(database_path)
+    end
+  end
+
   test "dashboard auth preflight treats in-memory SQLite ledgers as absent" do
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
 

@@ -594,18 +594,22 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp require_phase_board_with_existing_repo(auth_context) do
     phase_board_auth_fun = fn repo -> require_phase_board(repo, auth_context) end
 
-    case with_dashboard_repo(phase_board_auth_fun, migrate?: false) do
+    retry_existing_phase_column_read(phase_board_auth_fun)
+  end
+
+  defp retry_existing_phase_column_read(auth_fun) when is_function(auth_fun, 1) do
+    case with_dashboard_repo(auth_fun, migrate?: false) do
       {:error, {:storage_failed, message}} when is_binary(message) ->
-        handle_existing_phase_board_storage_error(phase_board_auth_fun, message)
+        handle_existing_phase_column_storage_error(auth_fun, message)
 
       result ->
         result
     end
   end
 
-  defp handle_existing_phase_board_storage_error(phase_board_auth_fun, message) do
+  defp handle_existing_phase_column_storage_error(auth_fun, message) do
     if missing_phase_column_message?(message) do
-      with_dashboard_repo(phase_board_auth_fun, migrate?: true)
+      with_dashboard_repo(auth_fun, migrate?: true)
     else
       {:error, {:storage_failed, message}}
     end
@@ -628,10 +632,9 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp require_work_package_with_existing_repo(auth_context, work_package_id) when is_binary(work_package_id) do
-    with_dashboard_repo(
-      fn repo -> require_work_package(repo, auth_context, work_package_id) end,
-      migrate?: false
-    )
+    work_package_auth_fun = fn repo -> require_work_package(repo, auth_context, work_package_id) end
+
+    retry_existing_phase_column_read(work_package_auth_fun)
   end
 
   defp require_work_package_with_existing_repo(_auth_context, _work_package_id), do: {:error, :not_found}
