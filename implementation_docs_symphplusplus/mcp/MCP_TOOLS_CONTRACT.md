@@ -49,10 +49,11 @@ the live grant's capabilities; stale sessions expose only health and
 worker-facing discovery surface. Architect sessions may call
 `get_current_assignment` and read `sympp://assignment/current` to recover their
 scoped `work_package_id` after reconnect, but architect sessions still cannot
-use worker package read/write tools. `read_phase_board` is limited to the
+use worker package read/write tools. Phase-board readers are limited to the
 session's phase scope; explicit phase grants with a frozen repo/base snapshot
-materialize only matching package cards, and explicit phase grants missing that
-snapshot fail closed rather than being treated as phase-wide. Existing lifecycle
+materialize only matching package cards across MCP, API, and browser board
+surfaces, and explicit phase grants missing that snapshot fail closed rather
+than being treated as phase-wide. Existing lifecycle
 capabilities such as
 `architect:lifecycle.transition` do not imply MCP architect tool capabilities;
 P3-003 requires the explicit MCP capability strings listed in the permission

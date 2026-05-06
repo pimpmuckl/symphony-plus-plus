@@ -580,14 +580,16 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp board_payload(repo, {:grant, %AccessGrant{} = grant} = auth_context) do
     with :ok <- require_phase_board(repo, auth_context),
          {:ok, phase_id} <- phase_scope(repo, grant) do
-      Dashboard.phase_board(repo, phase_id)
+      Dashboard.phase_board_for_grant(repo, phase_id, grant)
     end
   end
 
   defp require_phase_board(repo, {:grant, %AccessGrant{capabilities: capabilities} = grant}) do
     with :ok <- require_capability(capabilities, "read:phase"),
-         {:ok, phase_id} <- phase_scope(repo, grant) do
-      require_architect_phase_anchor(repo, grant, phase_id)
+         {:ok, phase_id} <- phase_scope(repo, grant),
+         :ok <- require_phase_board_anchor(repo, grant, phase_id),
+         {:ok, _filters} <- Dashboard.phase_board_filters_for_grant(grant) do
+      :ok
     end
   end
 
@@ -668,6 +670,16 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp require_architect_phase_anchor(_repo, %AccessGrant{}, _phase_id), do: {:error, :forbidden}
+
+  defp require_phase_board_anchor(repo, %AccessGrant{work_package_id: work_package_id} = grant, phase_id)
+       when is_binary(work_package_id) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, work_package} -> Dashboard.require_phase_board_anchor_scope(work_package, grant, phase_id)
+      {:error, _reason} -> {:error, :forbidden}
+    end
+  end
+
+  defp require_phase_board_anchor(_repo, %AccessGrant{}, _phase_id), do: {:error, :forbidden}
 
   defp phase_scope(_repo, %AccessGrant{phase_id: phase_id}) when is_binary(phase_id) do
     if phase_id == "", do: {:error, :forbidden}, else: {:ok, phase_id}

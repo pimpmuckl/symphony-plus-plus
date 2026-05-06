@@ -70,6 +70,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     defp count_artifact_list_query(_query), do: :ok
   end
 
+  defmodule PhaseBoardMaterializationRepo do
+    @moduledoc false
+
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+    alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+
+    @blocked_key :sympp_api_phase_board_blocked_card_id
+
+    def block_materialization(work_package_id), do: Process.put(@blocked_key, work_package_id)
+    def clear_materialization_block, do: Process.delete(@blocked_key)
+
+    def all(query), do: Repo.all(query)
+    def one(query), do: Repo.one(query)
+    def transaction(fun), do: Repo.transaction(fun)
+
+    def get(WorkPackage, id) do
+      if Process.get(@blocked_key) == id do
+        raise "out-of-scope API phase board card materialized: #{id}"
+      else
+        Repo.get(WorkPackage, id)
+      end
+    end
+
+    def get(schema, id), do: Repo.get(schema, id)
+  end
+
   defmodule MalformedPhaseGrantRepo do
     @moduledoc false
 
@@ -324,6 +350,76 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     assert %{"error" => %{"code" => "forbidden"}} =
              json_response(get(auth_conn(work_key.secret), "/api/v1/sympp/work-packages/#{other_sibling.id}"), 403)
+  end
+
+  test "dashboard API phase board filters scoped grants before card materialization", %{repo: repo} do
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-SCOPED-ANCHOR",
+                 kind: "phase_child",
+                 status: "planning",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta"
+               )
+             )
+
+    assert {:ok, in_scope_sibling} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-SCOPED-SIBLING",
+                 kind: "phase_child",
+                 status: "blocked",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta"
+               )
+             )
+
+    assert {:ok, other_repo} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-SCOPED-OTHER-REPO",
+                 kind: "phase_child",
+                 status: "planning",
+                 repo: "nextide/other-repo",
+                 base_branch: "symphony-plus-plus/beta"
+               )
+             )
+
+    assert {:ok, other_base} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-SCOPED-OTHER-BASE",
+                 kind: "phase_child",
+                 status: "planning",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "main"
+               )
+             )
+
+    secret = create_architect_grant_secret(repo, anchor.id)
+    PhaseBoardMaterializationRepo.block_materialization(other_repo.id)
+
+    payload =
+      try do
+        with_endpoint_repo(PhaseBoardMaterializationRepo, fn ->
+          json_response(get(auth_conn(secret), "/api/v1/sympp/board"), 200)
+        end)
+      after
+        PhaseBoardMaterializationRepo.clear_materialization_block()
+      end
+
+    encoded = Jason.encode!(payload)
+
+    assert payload["total_count"] == 2
+    assert encoded =~ anchor.id
+    assert encoded =~ in_scope_sibling.id
+    refute encoded =~ other_repo.id
+    refute encoded =~ other_base.id
   end
 
   test "board artifact reads are limited to packages that need artifact-backed readiness", %{repo: repo} do

@@ -3913,13 +3913,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   test "phase architect read_child_status revalidates phase anchor drift", %{repo: repo} do
     {anchor, architect_session} =
       create_architect_session(repo, "SYMPP-P7-002-READ-DRIFT-ANCHOR", [
+        "create:child_work_package",
         "read:child_progress",
         "read:child_findings",
         "read:phase"
       ])
 
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-READ-DRIFT-CHILD")
+
     response = mcp_tool(repo, architect_session, "read_child_status", %{"work_package_id" => anchor.id})
     assert get_in(response, ["result", "structuredContent", "work_package", "id"]) == anchor.id
+
+    child_response = mcp_tool(repo, architect_session, "read_child_status", %{"work_package_id" => child_id})
+    assert get_in(child_response, ["result", "structuredContent", "work_package", "id"]) == child_id
 
     assert {:ok, other_phase} = PhaseRepository.create(repo, %{id: "phase-p7-002-read-drift", title: "Read drift"})
     assert {:ok, _anchor} = WorkPackageRepository.update(repo, anchor.id, %{phase_id: other_phase.id})
@@ -3928,6 +3934,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(drifted_response, ["error", "code"]) == -32_003
     assert get_in(drifted_response, ["error", "data", "reason"]) == "outside_session_scope"
+
+    drifted_child_response = mcp_tool(repo, architect_session, "read_child_status", %{"work_package_id" => child_id})
+
+    assert get_in(drifted_child_response, ["error", "code"]) == -32_003
+    assert get_in(drifted_child_response, ["error", "data", "reason"]) == "outside_session_scope"
+  end
+
+  test "phase architect read_child_status rejects detached and repo-drifted anchors", %{repo: repo} do
+    {detached_anchor, detached_session} =
+      create_architect_session(repo, "SYMPP-P7-002-READ-DETACHED-ANCHOR", [
+        "create:child_work_package",
+        "read:child_progress",
+        "read:child_findings",
+        "read:phase"
+      ])
+
+    detached_child_id = create_child_work_package(repo, detached_session, "SYMPP-P7-002-READ-DETACHED-CHILD")
+
+    assert {:ok, _anchor} = WorkPackageRepository.update(repo, detached_anchor.id, %{phase_id: nil})
+
+    detached_anchor_response = mcp_tool(repo, detached_session, "read_child_status", %{"work_package_id" => detached_anchor.id})
+    detached_child_response = mcp_tool(repo, detached_session, "read_child_status", %{"work_package_id" => detached_child_id})
+
+    assert get_in(detached_anchor_response, ["error", "code"]) == -32_003
+    assert get_in(detached_anchor_response, ["error", "data", "reason"]) == "outside_session_scope"
+    assert get_in(detached_child_response, ["error", "code"]) == -32_003
+    assert get_in(detached_child_response, ["error", "data", "reason"]) == "outside_session_scope"
+
+    {repo_drift_anchor, repo_drift_session} =
+      create_architect_session(repo, "SYMPP-P7-002-READ-REPO-DRIFT-ANCHOR", [
+        "read:child_progress",
+        "read:child_findings",
+        "read:phase"
+      ])
+
+    assert {:ok, _anchor} = WorkPackageRepository.update(repo, repo_drift_anchor.id, %{repo: "nextide/other-repo"})
+
+    repo_drift_response = mcp_tool(repo, repo_drift_session, "read_child_status", %{"work_package_id" => repo_drift_anchor.id})
+
+    assert get_in(repo_drift_response, ["error", "code"]) == -32_003
+    assert get_in(repo_drift_response, ["error", "data", "reason"]) == "outside_session_scope"
   end
 
   test "remaining Phase 7 architect stubs return explicit not-yet-implemented errors", %{repo: repo} do

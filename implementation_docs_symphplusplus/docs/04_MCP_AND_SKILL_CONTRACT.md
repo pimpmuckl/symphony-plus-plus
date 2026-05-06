@@ -154,9 +154,9 @@ minted. Legacy null `phase_id` grants may still derive the current explicit
 anchor phase for non-delegation phase reads, but scoped explicit phase-board
 reads and P7 child delegation/status operations fail closed when the frozen
 repo/base-branch snapshot is missing; migrations do not backfill that snapshot
-from mutable anchor state. `read_phase_board(phase_id)` filters explicit phase
-architect grants to the frozen repo/base-branch boundary before package cards
-are materialized.
+from mutable anchor state. MCP, API, and browser phase-board readers filter
+explicit phase architect grants to the frozen repo/base-branch boundary before
+package cards are materialized.
 `create_child_work_package(package)` creates only `phase_child` work inside the
 architect phase anchor, inherits the anchor base branch, and rejects mismatched
 phase, parent, repo, or base branch input. Child creation requires concrete

@@ -1543,8 +1543,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- architect_session(config.repo, session, "read:phase"),
          {:ok, phase_id} <- required_argument(arguments, "phase_id"),
          :ok <- require_architect_phase_scope(config.repo, session, phase_id),
-         {:ok, board_scope} <- require_architect_phase_board_scope(config.repo, session, phase_id),
-         {:ok, board} <- scoped_phase_board(config.repo, phase_id, board_scope) do
+         {:ok, grant} <- require_architect_phase_board_grant(config.repo, session, phase_id),
+         {:ok, board} <- Dashboard.phase_board_for_grant(config.repo, phase_id, grant) do
       {:ok, tool_result(json_safe_payload(board))}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_phase_board", "reason" => reason}}
@@ -1561,44 +1561,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp require_architect_phase_board_scope(repo, %Session{} = session, phase_id) do
+  defp require_architect_phase_board_grant(repo, %Session{} = session, phase_id) do
     with {:ok, grant} <- require_live_architect_grant(repo, session),
          {:ok, anchor} <- architect_anchor_work_package(repo, session),
          :ok <- require_architect_anchor_scope(anchor, grant, phase_id),
-         {:ok, board_scope} <- phase_board_scope_filter(grant) do
-      {:ok, board_scope}
+         {:ok, _filters} <- Dashboard.phase_board_filters_for_grant(grant) do
+      {:ok, grant}
     else
       {:error, :not_found} -> {:error, :phase_scope_not_available}
+      {:error, :forbidden} -> {:error, :phase_scope_not_available}
       {:error, reason} -> {:error, reason}
     end
-  end
-
-  defp phase_board_scope_filter(%AccessGrant{} = grant) do
-    if architect_explicit_phase_grant?(grant) do
-      with {:ok, repo} <- frozen_scope_value(grant.scope_repo),
-           {:ok, base_branch} <- frozen_scope_value(grant.scope_base_branch) do
-        {:ok, {:repo_base, repo, base_branch}}
-      else
-        {:error, reason} -> {:error, reason}
-      end
-    else
-      {:ok, :phase}
-    end
-  end
-
-  defp frozen_scope_value(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> {:error, :phase_scope_not_available}
-      trimmed -> {:ok, trimmed}
-    end
-  end
-
-  defp frozen_scope_value(_value), do: {:error, :phase_scope_not_available}
-
-  defp scoped_phase_board(repo, phase_id, :phase), do: Dashboard.phase_board(repo, phase_id)
-
-  defp scoped_phase_board(repo, phase_id, {:repo_base, scoped_repo, base_branch}) do
-    Dashboard.phase_board(repo, phase_id, repo: scoped_repo, base_branch: base_branch)
   end
 
   defp require_architect_target_scope(repo, %Session{} = session, %{"work_package_id" => work_package_id}) do
@@ -1637,18 +1610,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp require_architect_anchor_status_scope(repo, %Session{} = session) do
-    case architect_anchor_work_package(repo, session) do
-      {:ok, anchor} -> require_anchor_status_phase_scope(repo, session, anchor.phase_id)
+    with {:ok, grant} <- require_live_architect_grant(repo, session),
+         {:ok, anchor} <- architect_anchor_work_package(repo, session) do
+      require_anchor_status_phase_scope(repo, session, anchor, grant)
+    else
       {:error, :not_found} -> {:error, :phase_scope_not_available}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp require_anchor_status_phase_scope(repo, %Session{} = session, phase_id) do
-    if explicit_phase_id?(phase_id) do
-      require_child_phase_anchor_status(repo, session)
-    else
-      :ok
+  defp require_anchor_status_phase_scope(repo, %Session{} = session, %WorkPackage{} = anchor, %AccessGrant{} = grant) do
+    cond do
+      architect_explicit_phase_grant?(grant) ->
+        require_frozen_anchor_scope(anchor, grant)
+
+      explicit_phase_id?(anchor.phase_id) ->
+        require_child_phase_anchor_status(repo, session)
+
+      true ->
+        :ok
     end
   end
 

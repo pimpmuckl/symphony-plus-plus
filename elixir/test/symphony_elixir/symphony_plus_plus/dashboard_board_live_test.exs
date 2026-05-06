@@ -1002,6 +1002,53 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     refute response(conn, 403) =~ "Explicit anchor board package"
   end
 
+  test "browser board filters scoped phase grants to frozen repo and base branch" do
+    anchor =
+      create_board_package(%{
+        id: "SYMPP-LIVE-SCOPED-ANCHOR",
+        kind: "dashboard",
+        status: "implementing",
+        title: "Scoped live anchor",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "symphony-plus-plus/beta"
+      })
+
+    create_board_package(%{
+      id: "SYMPP-LIVE-SCOPED-SIBLING",
+      kind: "dashboard",
+      status: "planning",
+      title: "Scoped live sibling",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "symphony-plus-plus/beta"
+    })
+
+    create_board_package(%{
+      id: "SYMPP-LIVE-SCOPED-OTHER-REPO",
+      kind: "dashboard",
+      status: "planning",
+      title: "Other repo live sibling",
+      repo: "nextide/other-repo",
+      base_branch: "symphony-plus-plus/beta"
+    })
+
+    create_board_package(%{
+      id: "SYMPP-LIVE-SCOPED-OTHER-BASE",
+      kind: "dashboard",
+      status: "blocked",
+      title: "Other base live sibling",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "main"
+    })
+
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/board")
+
+    assert html =~ "Scoped live anchor"
+    assert html =~ "Scoped live sibling"
+    refute html =~ "Other repo live sibling"
+    refute html =~ "Other base live sibling"
+  end
+
   test "browser board session trims pasted work keys" do
     create_board_package(%{
       id: "SYMPP-P5-025",

@@ -194,16 +194,16 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   defp phase_board_for_grant(repo, %AccessGrant{} = grant) do
     with {:ok, phase_id} <- phase_scope(repo, grant) do
-      Dashboard.phase_board(repo, phase_id)
+      Dashboard.phase_board_for_grant(repo, phase_id, grant)
     end
   end
 
-  defp phase_scope(repo, %AccessGrant{phase_id: phase_id, work_package_id: work_package_id})
+  defp phase_scope(repo, %AccessGrant{phase_id: phase_id, work_package_id: work_package_id} = grant)
        when is_binary(phase_id) and is_binary(work_package_id) do
     if phase_id == "" do
       {:error, :forbidden}
     else
-      require_anchor_phase(repo, work_package_id, phase_id)
+      require_anchor_phase(repo, work_package_id, phase_id, grant)
     end
   end
 
@@ -213,11 +213,15 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   defp phase_scope(_repo, %AccessGrant{}), do: {:error, :forbidden}
 
-  defp require_anchor_phase(repo, work_package_id, phase_id) do
-    case anchor_phase_scope(repo, work_package_id) do
-      {:ok, ^phase_id} -> {:ok, phase_id}
-      {:ok, _other_phase_id} -> {:error, :forbidden}
-      {:error, reason} -> {:error, reason}
+  defp require_anchor_phase(repo, work_package_id, phase_id, %AccessGrant{} = grant) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, work_package} ->
+        with :ok <- Dashboard.require_phase_board_anchor_scope(work_package, grant, phase_id) do
+          {:ok, phase_id}
+        end
+
+      {:error, _reason} ->
+        {:error, :forbidden}
     end
   end
 
