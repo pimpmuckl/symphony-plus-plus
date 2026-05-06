@@ -21,6 +21,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @package_session_key "sympp_package_grant_ids"
   @package_session_order_key "sympp_package_grant_order"
   @max_package_sessions 8
+  @access_grant_lazy_migration_columns ["phase_id", "scope_repo", "scope_base_branch", "provenance"]
 
   @spec authorize_board_browser(Conn.t(), term()) :: Conn.t()
   def authorize_board_browser(conn, _opts) do
@@ -400,7 +401,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp handle_existing_auth_storage_error(auth_fun, message) do
     cond do
       missing_schema_message?(message) -> {:error, :unauthorized}
-      missing_phase_column_message?(message) -> with_dashboard_repo(auth_fun, migrate?: true)
+      missing_access_grant_migration_column_message?(message) -> with_dashboard_repo(auth_fun, migrate?: true)
       true -> {:error, {:storage_failed, message}}
     end
   end
@@ -580,14 +581,16 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp board_payload(repo, {:grant, %AccessGrant{} = grant} = auth_context) do
     with :ok <- require_phase_board(repo, auth_context),
          {:ok, phase_id} <- phase_scope(repo, grant) do
-      Dashboard.phase_board(repo, phase_id)
+      Dashboard.phase_board_for_grant(repo, phase_id, grant)
     end
   end
 
   defp require_phase_board(repo, {:grant, %AccessGrant{capabilities: capabilities} = grant}) do
     with :ok <- require_capability(capabilities, "read:phase"),
-         {:ok, phase_id} <- phase_scope(repo, grant) do
-      require_architect_phase_anchor(repo, grant, phase_id)
+         {:ok, phase_id} <- phase_scope(repo, grant),
+         :ok <- require_phase_board_anchor(repo, grant, phase_id),
+         {:ok, _filters} <- Dashboard.phase_board_filters_for_grant(grant) do
+      :ok
     end
   end
 
@@ -608,7 +611,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp handle_existing_phase_column_storage_error(auth_fun, message) do
-    if missing_phase_column_message?(message) do
+    if missing_access_grant_migration_column_message?(message) do
       with_dashboard_repo(auth_fun, migrate?: true)
     else
       {:error, {:storage_failed, message}}
@@ -651,23 +654,32 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
          :ok <- require_architect_phase_anchor(repo, grant, phase_id),
          {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id) do
       if work_package.phase_id == phase_id do
-        :ok
+        Dashboard.require_phase_board_work_package_scope(work_package, grant)
       else
         {:error, :forbidden}
       end
     end
   end
 
-  defp require_architect_phase_anchor(repo, %AccessGrant{work_package_id: work_package_id}, phase_id)
+  defp require_architect_phase_anchor(repo, %AccessGrant{work_package_id: work_package_id} = grant, phase_id)
        when is_binary(work_package_id) do
     case WorkPackageRepository.get(repo, work_package_id) do
-      {:ok, %{phase_id: ^phase_id}} -> :ok
-      {:ok, _work_package} -> {:error, :forbidden}
+      {:ok, work_package} -> Dashboard.require_phase_board_anchor_scope(work_package, grant, phase_id)
       {:error, _reason} -> {:error, :forbidden}
     end
   end
 
   defp require_architect_phase_anchor(_repo, %AccessGrant{}, _phase_id), do: {:error, :forbidden}
+
+  defp require_phase_board_anchor(repo, %AccessGrant{work_package_id: work_package_id} = grant, phase_id)
+       when is_binary(work_package_id) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, work_package} -> Dashboard.require_phase_board_anchor_scope(work_package, grant, phase_id)
+      {:error, _reason} -> {:error, :forbidden}
+    end
+  end
+
+  defp require_phase_board_anchor(_repo, %AccessGrant{}, _phase_id), do: {:error, :forbidden}
 
   defp phase_scope(_repo, %AccessGrant{phase_id: phase_id}) when is_binary(phase_id) do
     if phase_id == "", do: {:error, :forbidden}, else: {:ok, phase_id}
@@ -1267,9 +1279,11 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     |> String.contains?("no such table")
   end
 
-  defp missing_phase_column_message?(message) do
+  defp missing_access_grant_migration_column_message?(message) do
     message = String.downcase(message)
-    String.contains?(message, "no such column") and String.contains?(message, "phase_id")
+
+    String.contains?(message, "no such column") and
+      Enum.any?(@access_grant_lazy_migration_columns, &String.contains?(message, &1))
   end
 
   defp with_dashboard_repo(fun, opts \\ []) when is_function(fun, 1) and is_list(opts) do

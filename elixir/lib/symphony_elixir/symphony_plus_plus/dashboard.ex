@@ -36,7 +36,58 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   @spec phase_board(repo(), String.t()) :: {:ok, map()} | {:error, dashboard_error()}
   def phase_board(repo, phase_id) when is_atom(repo) and is_binary(phase_id) do
-    safe_read(fn -> build_phase_board(repo, phase_id) end)
+    phase_board(repo, phase_id, [])
+  end
+
+  @spec phase_board(repo(), String.t(), keyword()) :: {:ok, map()} | {:error, dashboard_error()}
+  def phase_board(repo, phase_id, filters) when is_atom(repo) and is_binary(phase_id) and is_list(filters) do
+    safe_read(fn -> build_phase_board(repo, phase_id, filters) end)
+  end
+
+  @spec phase_board_for_grant(repo(), String.t(), AccessGrant.t()) :: {:ok, map()} | {:error, dashboard_error()}
+  def phase_board_for_grant(repo, phase_id, %AccessGrant{} = grant) when is_atom(repo) and is_binary(phase_id) do
+    with {:ok, filters} <- phase_board_filters_for_grant(grant) do
+      phase_board(repo, phase_id, filters)
+    end
+  end
+
+  @spec phase_board_filters_for_grant(AccessGrant.t()) :: {:ok, keyword()} | {:error, :forbidden}
+  def phase_board_filters_for_grant(%AccessGrant{} = grant) do
+    if explicit_phase_architect_grant?(grant) do
+      with {:ok, repo} <- frozen_scope_value(grant.scope_repo),
+           {:ok, base_branch} <- frozen_scope_value(grant.scope_base_branch) do
+        {:ok, repo: repo, base_branch: base_branch}
+      else
+        {:error, :forbidden} -> {:error, :forbidden}
+      end
+    else
+      {:ok, []}
+    end
+  end
+
+  @spec require_phase_board_anchor_scope(WorkPackage.t(), AccessGrant.t(), String.t()) :: :ok | {:error, :forbidden}
+  def require_phase_board_anchor_scope(%WorkPackage{} = anchor, %AccessGrant{} = grant, phase_id) when is_binary(phase_id) do
+    cond do
+      anchor.phase_id != phase_id ->
+        {:error, :forbidden}
+
+      explicit_phase_architect_grant?(grant) ->
+        require_frozen_scope_match(anchor, grant)
+
+      true ->
+        :ok
+    end
+  end
+
+  @spec require_phase_board_work_package_scope(WorkPackage.t(), AccessGrant.t()) :: :ok | {:error, :forbidden}
+  def require_phase_board_work_package_scope(%WorkPackage{} = work_package, %AccessGrant{} = grant) do
+    with {:ok, filters} <- phase_board_filters_for_grant(grant) do
+      if phase_work_package_matches_filters?(work_package, filters) do
+        :ok
+      else
+        {:error, :forbidden}
+      end
+    end
   end
 
   @spec detail(repo(), String.t()) :: {:ok, map()} | {:error, dashboard_error()}
@@ -240,10 +291,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
-  defp build_phase_board(repo, phase_id) do
+  defp build_phase_board(repo, phase_id, filters) do
     with {:ok, phase} <- PhaseRepository.get(repo, phase_id),
          {:ok, work_packages} <- WorkPackageRepository.list_for_phase(repo, phase_id),
-         {:ok, cards} <- cards_for_packages(repo, work_packages) do
+         scoped_work_packages = filter_phase_work_packages(work_packages, filters),
+         {:ok, cards} <- cards_for_packages(repo, scoped_work_packages) do
       {:ok,
        %{
          phase: phase(phase),
@@ -251,6 +303,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
          statuses: WorkPackage.statuses(),
          total_count: length(cards)
        }}
+    end
+  end
+
+  defp filter_phase_work_packages(work_packages, filters) do
+    Enum.filter(work_packages, &phase_work_package_matches_filters?(&1, filters))
+  end
+
+  defp phase_work_package_matches_filters?(%WorkPackage{} = work_package, filters) do
+    Enum.all?(filters, fn
+      {:repo, repo} when is_binary(repo) -> work_package.repo == repo
+      {:base_branch, base_branch} when is_binary(base_branch) -> work_package.base_branch == base_branch
+      _filter -> true
+    end)
+  end
+
+  defp explicit_phase_architect_grant?(%AccessGrant{grant_role: "architect", phase_id: phase_id}) when is_binary(phase_id) do
+    String.trim(phase_id) != ""
+  end
+
+  defp explicit_phase_architect_grant?(%AccessGrant{}), do: false
+
+  defp frozen_scope_value(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> {:error, :forbidden}
+      trimmed -> {:ok, trimmed}
+    end
+  end
+
+  defp frozen_scope_value(_value), do: {:error, :forbidden}
+
+  defp require_frozen_scope_match(%WorkPackage{} = anchor, %AccessGrant{} = grant) do
+    if grant.scope_repo == anchor.repo and grant.scope_base_branch == anchor.base_branch do
+      :ok
+    else
+      {:error, :forbidden}
     end
   end
 

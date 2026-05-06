@@ -78,11 +78,13 @@
   "architect_tools": [
     {
       "name": "create_child_work_package",
-      "purpose": "Phase 7 stub for creating phase-scoped child work; returns phase7_not_implemented after architect authorization."
+      "purpose": "Create a phase_child work package inside the architect grant's frozen phase/repo/base-branch anchor scope; child repo, phase, parent, and base branch are constrained to that anchor.",
+      "scope_policy": "Rejects mismatched phase_id, parent_id, repo, or base_branch, inherits the anchor base branch because there is no separate phase base-branch policy field, requires concrete nonempty child file globs, and revalidates anchor scope in the insert transaction. Empty anchor globs are allowed only when the child explicitly supplies nonempty, non-overbroad globs; nonempty anchor globs remain the upper bound."
     },
     {
       "name": "mint_child_worker_key",
-      "purpose": "Phase 7 stub for minting child worker keys; returns phase7_not_implemented after architect authorization."
+      "purpose": "Mint a child-scoped worker grant for a same-phase phase_child package.",
+      "scope_policy": "Worker grants are single-package grants, capabilities are limited to worker:claim and worker:lifecycle.transition, unclaimed active child-delegated worker grants for the same child may be superseded transactionally, claimed active child-delegated worker grants for the child are rejected, unrelated normal worker grants are ignored, and expiry cannot exceed the transaction-current architect grant."
     },
     {
       "name": "revoke_child_worker_key",
@@ -90,13 +92,14 @@
     },
     {
       "name": "read_child_status",
-      "purpose": "Read the architect grant's scoped work-package status without Phase 7 delegation.",
+      "purpose": "Read the architect grant's scoped anchor package status or a same-phase child work-package status.",
       "required_capabilities": ["read:child_progress", "read:child_findings"],
-      "scope_policy": "Until Phase 7 phase-child relationships exist, this only reads the work package bound to the architect grant."
+      "scope_policy": "Anchor reads remain package-scoped; child reads require the child package to be in the architect grant's current phase and match the phase anchor repo/base branch. Missing arbitrary child IDs fail closed with the same scoped-denial shape as out-of-scope children."
     },
     {
       "name": "read_phase_board",
-      "purpose": "Phase 7 stub for phase board reads; returns phase7_not_implemented after architect authorization."
+      "purpose": "Read the architect grant's scoped phase board filtered to the frozen repo/base branch for explicit phase grants.",
+      "scope_policy": "Explicit phase architect grants require the frozen repo/base-branch snapshot; matching grants materialize only same-snapshot package cards, and missing snapshots fail closed without unsafe backfill."
     },
     {
       "name": "request_child_replan",
@@ -119,7 +122,7 @@
       "purpose": "Phase 7 stub for phase updates; returns phase7_not_implemented after architect authorization."
     }
   ],
-  "architect_authorization_policy": "Architect tools require a live architect grant session and the matching architect capability. Worker grants and architect grants without the required capability are denied. Worker grants cannot be minted with architect-only MCP capabilities.",
+  "architect_authorization_policy": "Architect tools require a live architect grant session and the matching architect capability. Phase architect grants are revalidated against the frozen phase/repo/base-branch anchor scope before phase-dependent actions; scoped explicit phase-board reads and P7 child delegation/status operations fail closed if that snapshot is missing. Missing snapshots are not backfilled from mutable anchor state. Worker grants and architect grants without the required capability are denied. Worker grants cannot be minted with architect-only MCP capabilities.",
   "architect_discovery_policy": "tools/list advertises architect tools only for already-bound architect sessions and filters them to the live grant capabilities. Stale sessions expose only health and claim_work_key for refresh. Anonymous and worker sessions receive the worker-facing tool surface. Architect sessions may call get_current_assignment and read sympp://assignment/current for scoped assignment introspection, but cannot use worker package read/write tools. Lifecycle capabilities such as architect:lifecycle.transition do not imply MCP architect tool capabilities; explicit MCP capability strings are required.",
   "resources": [
     "sympp://assignment/current",

@@ -12,14 +12,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
   @derive {Inspect, except: [:secret_hash]}
 
   @roles ["worker", "architect"]
+  @provenances ["child_worker_delegation"]
 
   @type t :: %__MODULE__{
           id: String.t() | nil,
           work_package_id: String.t() | nil,
           phase_id: String.t() | nil,
+          scope_repo: String.t() | nil,
+          scope_base_branch: String.t() | nil,
           display_key: String.t() | nil,
           secret_hash: String.t() | nil,
           grant_role: String.t() | nil,
+          provenance: String.t() | nil,
           capabilities: [String.t()],
           expires_at: DateTime.t() | nil,
           revoked_at: DateTime.t() | nil,
@@ -32,9 +36,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
   schema "sympp_access_grants" do
     field(:work_package_id, :string)
     field(:phase_id, :string)
+    field(:scope_repo, :string)
+    field(:scope_base_branch, :string)
     field(:display_key, :string)
     field(:secret_hash, :string)
     field(:grant_role, :string)
+    field(:provenance, :string)
     field(:capabilities, StringList, default: [])
     field(:expires_at, :utc_datetime_usec)
     field(:revoked_at, :utc_datetime_usec)
@@ -87,9 +94,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
       :id,
       :work_package_id,
       :phase_id,
+      :scope_repo,
+      :scope_base_branch,
       :display_key,
       :secret_hash,
       :grant_role,
+      :provenance,
       :capabilities,
       :expires_at,
       :revoked_at,
@@ -108,6 +118,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
     |> validate_length(:display_key, is: 4)
     |> validate_length(:secret_hash, is: 64)
     |> validate_inclusion(:grant_role, @roles)
+    |> validate_inclusion(:provenance, @provenances)
     |> validate_scope()
     |> validate_worker_capabilities()
   end

@@ -233,8 +233,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
       work_package_id = Changeset.get_field(changeset, :work_package_id)
 
       with :ok <- validate_phase_anchor_phase(repo, changeset, phase_id),
-           :ok <- validate_phase_anchor_work_package(repo, changeset, work_package_id, phase_id) do
-        {:ok, changeset}
+           {:ok, anchor} <- validate_phase_anchor_work_package(repo, changeset, work_package_id, phase_id) do
+        {:ok, freeze_architect_anchor_scope(changeset, anchor)}
       else
         {:error, %Changeset{} = changeset} -> {:error, changeset}
       end
@@ -245,8 +245,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
 
   defp architect_phase_grant?(%Changeset{} = changeset) do
     Changeset.get_field(changeset, :grant_role) == "architect" and
-      "read:phase" in Changeset.get_field(changeset, :capabilities, [])
+      explicit_phase_id?(Changeset.get_field(changeset, :phase_id))
   end
+
+  defp explicit_phase_id?(phase_id) when is_binary(phase_id), do: String.trim(phase_id) != ""
+  defp explicit_phase_id?(_phase_id), do: false
 
   defp validate_phase_anchor_phase(repo, changeset, phase_id) do
     case PhaseRepository.get(repo, phase_id) do
@@ -256,13 +259,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     end
   end
 
+  defp validate_phase_anchor_work_package(_repo, changeset, work_package_id, _phase_id)
+       when not is_binary(work_package_id) do
+    {:error, Changeset.add_error(changeset, :work_package_id, "architect phase grants require work package anchor")}
+  end
+
   defp validate_phase_anchor_work_package(repo, changeset, work_package_id, phase_id) do
+    if String.trim(work_package_id) == "" do
+      {:error, Changeset.add_error(changeset, :work_package_id, "architect phase grants require work package anchor")}
+    else
+      validate_phase_anchor_work_package_id(repo, changeset, work_package_id, phase_id)
+    end
+  end
+
+  defp validate_phase_anchor_work_package_id(repo, changeset, work_package_id, phase_id) do
     case WorkPackageRepository.get(repo, work_package_id) do
-      {:ok, %{phase_id: ^phase_id}} -> :ok
+      {:ok, %{phase_id: ^phase_id} = work_package} -> {:ok, work_package}
       {:ok, _work_package} -> {:error, Changeset.add_error(changeset, :work_package_id, "must belong to architect phase")}
       {:error, :not_found} -> {:error, Changeset.add_error(changeset, :work_package_id, "does not exist")}
       {:error, reason} -> {:error, Changeset.add_error(changeset, :work_package_id, inspect(reason))}
     end
+  end
+
+  defp freeze_architect_anchor_scope(%Changeset{} = changeset, %{repo: repo, base_branch: base_branch}) do
+    changeset
+    |> Changeset.put_change(:scope_repo, repo)
+    |> Changeset.put_change(:scope_base_branch, base_branch)
   end
 
   defp duplicate_id?(changeset) do

@@ -317,6 +317,151 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     assert "does not exist" in errors_on(changeset).phase_id
   end
 
+  test "architect phase grants freeze anchor scope without read phase", %{repo: repo} do
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-grant-delegation", title: "Delegation phase"})
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-GRANT-DELEGATION",
+                 kind: "mcp",
+                 phase_id: phase.id,
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta"
+               )
+             )
+
+    assert {:ok, %{grant: grant}} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               capabilities: ["create:child_work_package", "mint:child_worker_key"]
+             )
+
+    assert grant.phase_id == phase.id
+    assert grant.scope_repo == work_package.repo
+    assert grant.scope_base_branch == work_package.base_branch
+  end
+
+  test "architect phase grants without read phase require a valid anchor", %{repo: repo} do
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-grant-delegation-anchor", title: "Delegation anchor"})
+    work_key = WorkKey.generate()
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Repository.create(repo, %{
+               phase_id: phase.id,
+               display_key: work_key.display_key,
+               secret_hash: WorkKey.secret_hash(work_key.secret),
+               grant_role: "architect",
+               capabilities: ["create:child_work_package", "mint:child_worker_key"],
+               expires_at: DateTime.add(DateTime.utc_now(:microsecond), 60, :second)
+             })
+
+    assert Enum.any?(
+             errors_on(changeset).work_package_id,
+             &(&1 in ["can't be blank", "architect phase grants require work package anchor"])
+           )
+  end
+
+  test "scope snapshot migration does not backfill legacy phase grants from current anchors" do
+    database_path = WorkPackageFactory.database_path()
+    {:ok, pid} = Repo.start_link(database: database_path, name: nil, pool_size: 1, log: false)
+    original_repo = Repo.put_dynamic_repo(pid)
+
+    try do
+      pre_scope_snapshot_migration = 20_260_506_120_000
+
+      migrated_versions =
+        Ecto.Migrator.run(Repo, WorkPackageRepository.migrations_path(), :up,
+          to: pre_scope_snapshot_migration,
+          log: false
+        )
+
+      assert pre_scope_snapshot_migration in migrated_versions
+
+      now = DateTime.utc_now(:microsecond)
+      expires_at = DateTime.add(now, 86_400, :second)
+      work_key = WorkKey.generate()
+
+      Repo.query!(
+        """
+        INSERT INTO sympp_phases
+          (id, title, description, status, inserted_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ["phase-legacy-scope", "Legacy scope", nil, "active", now, now]
+      )
+
+      Repo.query!(
+        """
+        INSERT INTO sympp_work_packages
+          (id, kind, title, repo, base_branch, branch_pattern, product_description,
+           engineering_scope, acceptance_criteria, status, parent_id, owner_id,
+           allowed_file_globs, policy_template, phase_id, inserted_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+          "SYMPP-LEGACY-SCOPE",
+          "mcp",
+          "Legacy scope",
+          "nextide/drifted",
+          "main",
+          nil,
+          nil,
+          nil,
+          "[]",
+          "planning",
+          nil,
+          nil,
+          "[\"elixir/lib/**\"]",
+          nil,
+          "phase-legacy-scope",
+          now,
+          now
+        ]
+      )
+
+      Repo.query!(
+        """
+        INSERT INTO sympp_access_grants
+          (id, work_package_id, phase_id, display_key, secret_hash, grant_role,
+           capabilities, expires_at, revoked_at, claimed_at, claimed_by,
+           inserted_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+          "grant-legacy-scope",
+          "SYMPP-LEGACY-SCOPE",
+          "phase-legacy-scope",
+          work_key.display_key,
+          WorkKey.secret_hash(work_key.secret),
+          "architect",
+          Jason.encode!(["create:child_work_package"]),
+          expires_at,
+          nil,
+          nil,
+          nil,
+          now,
+          now
+        ]
+      )
+
+      Ecto.Migrator.run(Repo, WorkPackageRepository.migrations_path(), :up, all: true, log: false)
+
+      result =
+        Repo.query!(
+          "SELECT scope_repo, scope_base_branch FROM sympp_access_grants WHERE id = ?",
+          ["grant-legacy-scope"]
+        )
+
+      assert [[nil, nil]] = result.rows
+    after
+      Repo.put_dynamic_repo(original_repo)
+      GenServer.stop(pid)
+      File.rm(database_path)
+    end
+  end
+
   test "non-id constraint failures are not reported as duplicate ids", %{repo: repo} do
     work_key = WorkKey.generate()
 

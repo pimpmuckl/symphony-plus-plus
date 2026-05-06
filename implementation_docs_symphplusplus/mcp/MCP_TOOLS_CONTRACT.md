@@ -27,11 +27,11 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 
 | Tool | Purpose |
 |---|---|
-| create_child_work_package | Phase 7 stub for creating phase-scoped child work; returns `phase7_not_implemented` after architect authorization. |
-| mint_child_worker_key | Phase 7 stub for minting child worker keys; returns `phase7_not_implemented` after architect authorization. |
+| create_child_work_package | Create a `phase_child` work package inside the architect grant's current phase; child repo, phase, parent, and base branch are constrained to the architect phase anchor. |
+| mint_child_worker_key | Mint a child-scoped worker grant for a same-phase `phase_child` package; worker capabilities are limited to the child worker set and expiry cannot exceed the architect grant. |
 | revoke_child_worker_key | Phase 7 stub for revoking child worker keys; returns `phase7_not_implemented` after architect authorization. |
-| read_child_status | Read the architect grant's scoped work-package status without Phase 7 delegation. |
-| read_phase_board | Phase 7 stub for phase board reads; returns `phase7_not_implemented` after architect authorization. |
+| read_child_status | Read the architect grant's scoped anchor package status, or a same-phase child work-package status when the architect grant has child read capabilities. |
+| read_phase_board | Read the architect grant's scoped phase board, filtered to the frozen repo/base branch for explicit phase grants. |
 | request_child_replan | Phase 7 stub for child replan requests; returns `phase7_not_implemented` after architect authorization. |
 | approve_child_ready_state | Phase 7 stub for child readiness approval; returns `phase7_not_implemented` after architect authorization. |
 | merge_child_into_phase | Phase 7 stub for merge-to-phase recording; returns `phase7_not_implemented` after architect authorization. |
@@ -49,18 +49,38 @@ the live grant's capabilities; stale sessions expose only health and
 worker-facing discovery surface. Architect sessions may call
 `get_current_assignment` and read `sympp://assignment/current` to recover their
 scoped `work_package_id` after reconnect, but architect sessions still cannot
-use worker package read/write tools. Existing lifecycle capabilities such as
+use worker package read/write tools. Phase-board readers are limited to the
+session's phase scope; explicit phase grants with a frozen repo/base snapshot
+materialize only matching package cards across MCP, API, and browser board
+surfaces, and explicit phase grants missing that snapshot fail closed rather
+than being treated as phase-wide. Existing lifecycle
+capabilities such as
 `architect:lifecycle.transition` do not imply MCP architect tool capabilities;
 P3-003 requires the explicit MCP capability strings listed in the permission
-model. Until Phase 7 introduces phase
-entities and phase-child scope checks, `read_child_status` requires both
-`read:child_progress` and `read:child_findings` because its summary includes
-progress, findings, and artifact counts, and it is intentionally limited to the
-work package bound to the architect grant. Requests for unrelated work packages
-are denied rather than guessed from absent phase relationships.
-Phase 7-dependent tools perform authorization first and then return an explicit
-`phase7_not_implemented` error; they do not create children, mint grants,
-approve readiness, merge phase artifacts, or publish phase state in P3-003.
+model. Phase-dependent architect tools revalidate the grant's explicit phase
+scope plus the anchor repo/base-branch scope frozen when the phase architect
+grant was minted. Legacy null-`phase_id` grants may still derive the current
+explicit anchor phase for non-delegation phase reads, but P7 child
+delegation/status operations fail closed when the frozen repo/base-branch
+snapshot is missing. `create_child_work_package` always creates a `phase_child`
+package under the architect phase anchor, rejects mismatched `phase_id`,
+`parent_id`, `repo`, or `base_branch`, inherits the anchor base branch because
+there is no separate phase base-branch policy field, requires concrete nonempty
+child file globs, and revalidates anchor scope in the insert transaction. Empty
+anchor file globs are allowed only when the child explicitly supplies nonempty,
+non-overbroad globs; nonempty anchor globs remain the upper bound. It does not
+support context-slice input in this contract. `mint_child_worker_key` only mints
+single-package worker grants for same-phase child packages; the minted worker
+grant cannot include architect capabilities, cannot include capabilities outside
+the child worker capability set, transactionally supersedes unclaimed active
+child-delegated worker grants for the same child, rejects claimed active
+child-delegated worker grants for that child, ignores unrelated normal worker
+grants, and cannot outlive the transaction-current architect grant.
+`read_child_status` requires both `read:child_progress` and
+`read:child_findings` because its summary includes progress, findings, and
+artifact counts. Remaining Phase 7-dependent tools perform authorization first
+and then return an explicit `phase7_not_implemented` error; they do not approve
+readiness, merge phase artifacts, or publish phase state in P7-002.
 
 ## Resources
 

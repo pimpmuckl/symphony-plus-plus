@@ -133,11 +133,10 @@ split_work_package(work_package_id, child_specs)
 publish_phase_update(phase_id, update)
 ```
 
-P3-003 exposes this architect-facing tool surface but does not implement Phase
-7 delegation. Architect tools require a live architect grant and the matching
-architect capability; worker grants and insufficient architect grants are
-denied. Worker grants cannot be minted with architect-only MCP capabilities,
-including unprefixed P3/P7 capability strings such as `read:phase` or
+Architect tools require a live architect grant and the matching architect
+capability; worker grants and insufficient architect grants are denied. Worker
+grants cannot be minted with architect-only MCP capabilities, including
+unprefixed P3/P7 capability strings such as `read:phase` or
 `mint:child_worker_key`. `tools/list` advertises architect tools only when an
 architect session is already bound and filters them to the live grant's
 capabilities. Stale sessions expose only health and `claim_work_key` for
@@ -146,17 +145,36 @@ surface. Architect sessions may call `get_current_assignment()` and read
 `sympp://assignment/current` to recover their scoped `work_package_id` after
 reconnect, but they still cannot use worker package read/write tools.
 Lifecycle capabilities such as `architect:lifecycle.transition` do not imply
-MCP architect tool capabilities; P3-003 requires the explicit MCP capability
-strings listed in the permission model.
-`read_child_status(work_package_id)` is the
-only safe read-only tool implemented before Phase 7. It requires both
-`read:child_progress` and `read:child_findings` because its status payload
-includes progress, finding, and artifact counts, and it is limited to the work
-package currently scoped to the architect grant because phase-child
-relationships do not exist yet. The remaining architect tools return explicit
-`phase7_not_implemented`
-errors after authorization and must not create child work, mint worker keys,
-approve ready children, merge into a phase, or publish phase state.
+MCP architect tool capabilities; the explicit MCP capability strings listed in
+the permission model are required.
+
+Phase-dependent architect tools revalidate the grant's explicit phase scope plus
+the anchor repo/base-branch scope frozen when the phase architect grant was
+minted. Legacy null `phase_id` grants may still derive the current explicit
+anchor phase for non-delegation phase reads, but scoped explicit phase-board
+reads and P7 child delegation/status operations fail closed when the frozen
+repo/base-branch snapshot is missing; migrations do not backfill that snapshot
+from mutable anchor state. MCP, API, and browser phase-board readers filter
+explicit phase architect grants to the frozen repo/base-branch boundary before
+package cards are materialized.
+`create_child_work_package(package)` creates only `phase_child` work inside the
+architect phase anchor, inherits the anchor base branch, and rejects mismatched
+phase, parent, repo, or base branch input. Child creation requires concrete
+nonempty file globs; empty anchor globs may be used only when the child supplies
+explicit nonempty, non-overbroad globs, while nonempty anchor globs remain the
+upper bound. Child creation revalidates that anchor scope in the insert
+transaction. Context-slice input is not part of the current contract.
+`mint_child_worker_key` mints only single-package worker grants for same-phase
+children, revalidates the live architect grant in the mint transaction, rejects
+claimed active child-delegated worker grants for the same child,
+transactionally supersedes unclaimed active child-delegated worker grants,
+ignores unrelated normal worker grants, and caps child capabilities and expiry
+to that current grant.
+`read_child_status(work_package_id)` requires both `read:child_progress` and
+`read:child_findings`; it can read the architect anchor package or a same-phase
+child package. The remaining architect tools return explicit
+`phase7_not_implemented` errors after authorization and must not approve ready
+children, merge into a phase, or publish phase state.
 
 ## Skill rules
 

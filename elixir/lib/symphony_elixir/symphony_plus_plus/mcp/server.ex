@@ -4,6 +4,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   import Ecto.Query, only: [from: 2]
 
   alias Ecto.Adapters.SQL
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
@@ -56,8 +57,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "publish_phase_update"
   ]
   @phase7_stub_architect_tools [
-    "create_child_work_package",
-    "mint_child_worker_key",
     "revoke_child_worker_key",
     "request_child_replan",
     "approve_child_ready_state",
@@ -65,6 +64,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "split_work_package",
     "publish_phase_update"
   ]
+  @child_work_package_keys [
+    "acceptance_criteria",
+    "allowed_file_globs",
+    "base_branch",
+    "branch_pattern",
+    "engineering_scope",
+    "id",
+    "kind",
+    "owner_id",
+    "parent_id",
+    "phase_id",
+    "policy_template",
+    "product_description",
+    "repo",
+    "status",
+    "title"
+  ]
+  @child_worker_template_keys ["capabilities", "expires_at"]
+  @child_worker_capabilities ["worker:claim", "worker:lifecycle.transition"]
+  @child_worker_grant_provenance "child_worker_delegation"
   @version_resource "sympp://health/version"
   @assignment_resource "sympp://assignment/current"
   @finding_replay_retry_attempts 50
@@ -834,6 +853,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "Read the architect grant's scoped child work-package status without Phase 7 delegation."
   end
 
+  defp architect_tool_description("create_child_work_package") do
+    "Create a phase-child work package inside the architect grant's current phase."
+  end
+
+  defp architect_tool_description("mint_child_worker_key") do
+    "Mint a narrower worker grant for a phase-child work package in the architect grant's current phase."
+  end
+
   defp architect_tool_description("approve_scope_expansion") do
     "Approve additional allowed file globs for this scoped work package."
   end
@@ -1456,7 +1483,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool("read_child_status", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- architect_session(config.repo, session, ["read:child_progress", "read:child_findings"]),
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
-         :ok <- require_architect_work_package_scope(session, work_package_id),
+         :ok <- require_architect_child_status_scope(config.repo, session, work_package_id),
          {:ok, summary} <- PlanningRepository.get_status_summary(config.repo, work_package_id) do
       {:ok,
        tool_result(%{
@@ -1469,6 +1496,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_child_status", "reason" => reason}}
       {:error, reason} -> architect_error(reason, "read_child_status")
+    end
+  end
+
+  defp architect_tool("create_child_work_package", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "create:child_work_package"),
+         {:ok, package} <- required_object(arguments, "package"),
+         {:ok, work_package} <- create_child_work_package_transaction(config.repo, session, package) do
+      {:ok, tool_result(%{"work_package" => child_work_package_payload(work_package)})}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "create_child_work_package", "reason" => reason}}
+      {:error, reason} -> architect_error(reason, "create_child_work_package")
+    end
+  end
+
+  defp architect_tool("mint_child_worker_key", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "mint:child_worker_key"),
+         {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
+         {:ok, template} <- required_object(arguments, "template"),
+         {:ok, {child, minted}} <- mint_child_worker_key_transaction(config.repo, session, work_package_id, template) do
+      {:ok,
+       tool_result(%{
+         "work_package" => child_work_package_payload(child),
+         "worker_grant" => child_worker_grant_payload(minted)
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "mint_child_worker_key", "reason" => reason}}
+      {:error, reason} -> architect_error(reason, "mint_child_worker_key")
     end
   end
 
@@ -1490,8 +1544,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- architect_session(config.repo, session, "read:phase"),
          {:ok, phase_id} <- required_argument(arguments, "phase_id"),
          :ok <- require_architect_phase_scope(config.repo, session, phase_id),
-         :ok <- require_architect_phase_anchor(config.repo, session, phase_id),
-         {:ok, board} <- Dashboard.phase_board(config.repo, phase_id) do
+         {:ok, grant} <- require_architect_phase_board_grant(config.repo, session, phase_id),
+         {:ok, board} <- Dashboard.phase_board_for_grant(config.repo, phase_id, grant) do
       {:ok, tool_result(json_safe_payload(board))}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_phase_board", "reason" => reason}}
@@ -1505,6 +1559,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       phase7_not_implemented(name)
     else
       {:error, reason} -> architect_error(reason, name)
+    end
+  end
+
+  defp require_architect_phase_board_grant(repo, %Session{} = session, phase_id) do
+    with {:ok, grant} <- require_live_architect_grant(repo, session),
+         {:ok, anchor} <- architect_anchor_work_package(repo, session),
+         :ok <- require_architect_anchor_scope(anchor, grant, phase_id),
+         {:ok, _filters} <- Dashboard.phase_board_filters_for_grant(grant) do
+      {:ok, grant}
+    else
+      {:error, :not_found} -> {:error, :phase_scope_not_available}
+      {:error, :forbidden} -> {:error, :phase_scope_not_available}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -1528,6 +1595,698 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case architect_phase_scope(repo, session) do
       {:ok, phase_id} -> require_architect_phase_anchor(repo, session, phase_id)
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_architect_child_status_scope(repo, %Session{} = session, work_package_id) do
+    if Session.work_package_id(session) == work_package_id do
+      require_architect_anchor_status_scope(repo, session)
+    else
+      case require_architect_child_work_package_scope(repo, session, work_package_id) do
+        {:ok, _child} -> :ok
+        {:error, reason} -> {:error, reason}
+        {:tool_error, _reason} -> {:error, :phase_scope_not_available}
+      end
+    end
+  end
+
+  defp require_architect_anchor_status_scope(repo, %Session{} = session) do
+    with {:ok, grant} <- require_live_architect_grant(repo, session),
+         {:ok, anchor} <- architect_anchor_work_package(repo, session) do
+      require_anchor_status_phase_scope(repo, session, anchor, grant)
+    else
+      {:error, :not_found} -> {:error, :phase_scope_not_available}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_anchor_status_phase_scope(repo, %Session{} = session, %WorkPackage{} = anchor, %AccessGrant{} = grant) do
+    cond do
+      architect_explicit_phase_grant?(grant) ->
+        require_frozen_anchor_scope(anchor, grant)
+
+      explicit_phase_id?(anchor.phase_id) ->
+        require_child_phase_anchor_status(repo, session)
+
+      true ->
+        :ok
+    end
+  end
+
+  defp require_child_phase_anchor_status(repo, %Session{} = session) do
+    case architect_child_phase_anchor(repo, session) do
+      {:ok, _phase_id, _anchor} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_architect_child_work_package_scope(repo, %Session{} = session, work_package_id) do
+    with {:ok, phase_id, anchor} <- architect_child_phase_anchor(repo, session),
+         {:ok, child} <- scoped_child_work_package(repo, work_package_id),
+         :ok <- require_phase_child_scope(child, anchor, phase_id) do
+      {:ok, child}
+    end
+  end
+
+  defp scoped_child_work_package(repo, work_package_id) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, child} -> {:ok, child}
+      {:error, :not_found} -> {:error, :phase_scope_not_available}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_phase_child_scope(%WorkPackage{kind: "phase_child", phase_id: phase_id} = child, anchor, phase_id) do
+    cond do
+      child.parent_id != anchor.id -> {:error, :phase_scope_not_available}
+      child.repo != anchor.repo -> {:tool_error, "repo_scope_mismatch"}
+      child.base_branch != anchor.base_branch -> {:tool_error, "base_branch_scope_mismatch"}
+      true -> require_phase_child_file_scope(child, anchor)
+    end
+  end
+
+  defp require_phase_child_scope(%WorkPackage{}, _anchor, _phase_id), do: {:error, :phase_scope_not_available}
+
+  defp require_phase_child_file_scope(%WorkPackage{} = child, %WorkPackage{} = anchor) do
+    with {:ok, anchor_globs} <- normalize_child_scope_globs(anchor.allowed_file_globs || []),
+         {:ok, child_globs} <- normalize_child_scope_globs(child.allowed_file_globs || []),
+         :ok <- require_child_file_scope_present(child_globs),
+         :ok <- reject_overbroad_child_globs(child_globs) do
+      require_child_globs_within_anchor(child_globs, anchor_globs)
+    end
+  end
+
+  defp create_child_work_package_transaction(repo, %Session{} = session, package) do
+    case repo.transaction(fn ->
+           create_child_work_package_or_rollback(repo, session, package)
+         end) do
+      {:ok, result} -> {:ok, result}
+      {:error, {:tool_error, reason}} -> {:tool_error, reason}
+      {:error, {:error, reason}} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp create_child_work_package_or_rollback(repo, %Session{} = session, package) do
+    case create_child_work_package_in_transaction(repo, session, package) do
+      {:ok, result} -> result
+      {:tool_error, reason} -> repo.rollback({:tool_error, reason})
+      {:error, reason} -> repo.rollback({:error, reason})
+    end
+  end
+
+  defp create_child_work_package_in_transaction(repo, %Session{} = session, package) do
+    with :ok <- lock_access_grant(repo, session.assignment.grant_id),
+         {:ok, _architect_grant} <- require_live_architect_grant(repo, session),
+         :ok <- lock_work_package(repo, Session.work_package_id(session)),
+         {:ok, attrs} <- child_work_package_attrs(repo, session, package) do
+      WorkPackageRepository.create(repo, attrs)
+    end
+  end
+
+  defp mint_child_worker_key_transaction(repo, %Session{} = session, work_package_id, template) do
+    case repo.transaction(fn ->
+           mint_child_worker_key_or_rollback(repo, session, work_package_id, template)
+         end) do
+      {:ok, result} -> {:ok, result}
+      {:error, {:tool_error, reason}} -> {:tool_error, reason}
+      {:error, {:error, reason}} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp mint_child_worker_key_or_rollback(repo, %Session{} = session, work_package_id, template) do
+    case mint_child_worker_key_in_transaction(repo, session, work_package_id, template) do
+      {:ok, result} -> result
+      {:tool_error, reason} -> repo.rollback({:tool_error, reason})
+      {:error, reason} -> repo.rollback({:error, reason})
+    end
+  end
+
+  defp mint_child_worker_key_in_transaction(repo, %Session{} = session, work_package_id, template) do
+    with :ok <- lock_access_grant(repo, session.assignment.grant_id),
+         {:ok, architect_grant} <- require_live_architect_grant(repo, session),
+         :ok <- lock_work_package(repo, Session.work_package_id(session)),
+         {:ok, phase_id, anchor} <- architect_child_phase_anchor(repo, session, architect_grant),
+         {:ok, grant_opts} <- child_worker_grant_opts(template, architect_grant),
+         {:ok, _prechecked_child} <- require_transaction_current_child_scope(repo, work_package_id, anchor, phase_id),
+         :ok <- reject_claimed_active_child_worker_grant(repo, work_package_id),
+         {:ok, child} <- require_child_ready_for_mint(repo, work_package_id, anchor, phase_id),
+         :ok <- supersede_unclaimed_child_worker_grants(repo, work_package_id),
+         {:ok, minted} <- AccessGrantService.mint_worker_grant(repo, child.id, grant_opts) do
+      {:ok, {child, minted}}
+    end
+  end
+
+  defp require_child_ready_for_mint(repo, work_package_id, %WorkPackage{} = anchor, phase_id) when is_binary(work_package_id) do
+    now = DateTime.utc_now(:microsecond)
+
+    query =
+      from(work_package in WorkPackage,
+        where:
+          work_package.id == ^work_package_id and work_package.status == "ready_for_worker" and
+            work_package.kind == "phase_child" and work_package.phase_id == ^phase_id and work_package.parent_id == ^anchor.id and
+            work_package.repo == ^anchor.repo and work_package.base_branch == ^anchor.base_branch
+      )
+
+    case repo.update_all(query, set: [updated_at: now]) do
+      {1, _rows} -> require_transaction_current_child_scope(repo, work_package_id, anchor, phase_id)
+      {0, _rows} -> classify_child_ready_mint_miss(repo, work_package_id, anchor, phase_id)
+    end
+  end
+
+  defp require_transaction_current_child_scope(repo, work_package_id, anchor, phase_id) do
+    with {:ok, child} <- scoped_child_work_package(repo, work_package_id),
+         :ok <- require_phase_child_scope(child, anchor, phase_id) do
+      {:ok, child}
+    end
+  end
+
+  defp classify_child_ready_mint_miss(repo, work_package_id, anchor, phase_id) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, child} ->
+        case require_phase_child_scope(child, anchor, phase_id) do
+          :ok -> {:tool_error, "child_not_ready_for_worker"}
+          {:error, reason} -> {:error, reason}
+          {:tool_error, reason} -> {:tool_error, reason}
+        end
+
+      {:error, _reason} ->
+        {:error, :phase_scope_not_available}
+    end
+  end
+
+  defp reject_claimed_active_child_worker_grant(repo, work_package_id) do
+    now = DateTime.utc_now(:microsecond)
+
+    query =
+      from(grant in AccessGrant,
+        where:
+          grant.work_package_id == ^work_package_id and grant.grant_role == "worker" and is_nil(grant.revoked_at) and
+            grant.provenance == ^@child_worker_grant_provenance and not is_nil(grant.claimed_at) and
+            grant.expires_at > ^now,
+        select: count(grant.id)
+      )
+
+    case repo.one(query) do
+      0 -> :ok
+      nil -> :ok
+      _active_count -> {:tool_error, "active_child_worker_grant_exists"}
+    end
+  end
+
+  defp supersede_unclaimed_child_worker_grants(repo, work_package_id) do
+    now = DateTime.utc_now(:microsecond)
+
+    active_query =
+      from(grant in AccessGrant,
+        where:
+          grant.work_package_id == ^work_package_id and grant.grant_role == "worker" and is_nil(grant.revoked_at) and
+            grant.provenance == ^@child_worker_grant_provenance and grant.expires_at > ^now
+      )
+
+    active_grants = repo.all(active_query)
+
+    if Enum.any?(active_grants, &match?(%DateTime{}, &1.claimed_at)) do
+      {:tool_error, "active_child_worker_grant_exists"}
+    else
+      supersede_unclaimed_child_worker_grants(repo, active_grants, now)
+    end
+  end
+
+  defp supersede_unclaimed_child_worker_grants(_repo, [], _now), do: :ok
+
+  defp supersede_unclaimed_child_worker_grants(repo, active_grants, now) do
+    grant_ids = Enum.map(active_grants, & &1.id)
+
+    revoke_query =
+      from(grant in AccessGrant,
+        where: grant.id in ^grant_ids and is_nil(grant.claimed_at) and is_nil(grant.revoked_at) and grant.expires_at > ^now
+      )
+
+    case repo.update_all(revoke_query, set: [revoked_at: now, updated_at: now]) do
+      {count, _rows} when count == length(grant_ids) -> :ok
+      _stale_or_claimed -> {:tool_error, "active_child_worker_grant_exists"}
+    end
+  end
+
+  defp architect_anchor_work_package(repo, %Session{} = session) do
+    case Session.work_package_id(session) do
+      work_package_id when is_binary(work_package_id) -> WorkPackageRepository.get(repo, work_package_id)
+      _work_package_id -> {:error, :phase_scope_not_available}
+    end
+  end
+
+  defp child_work_package_attrs(repo, %Session{} = session, package) do
+    with {:ok, phase_id, anchor} <- architect_child_phase_anchor(repo, session),
+         :ok <- validate_child_work_package_keys(package),
+         {:ok, title} <- required_argument(package, "title"),
+         {:ok, acceptance_criteria} <- required_string_list(package, "acceptance_criteria"),
+         {:ok, allowed_file_globs} <- child_allowed_file_globs(package, anchor),
+         :ok <- require_child_field_match(package, "kind", "phase_child", "invalid_child_kind"),
+         :ok <- require_child_field_match(package, "policy_template", "phase_child", "invalid_policy_template"),
+         :ok <- require_child_field_match(package, "status", "ready_for_worker", "invalid_child_status"),
+         :ok <- require_child_field_match(package, "repo", anchor.repo, "repo_scope_mismatch"),
+         :ok <- require_child_field_match(package, "base_branch", anchor.base_branch, "base_branch_scope_mismatch"),
+         :ok <- require_child_field_match(package, "phase_id", phase_id, :phase_scope_not_available),
+         :ok <- require_child_field_match(package, "parent_id", anchor.id, "parent_scope_mismatch"),
+         {:ok, branch_pattern} <- optional_child_string(package, "branch_pattern"),
+         {:ok, product_description} <- optional_child_string(package, "product_description", anchor.product_description),
+         {:ok, engineering_scope} <- optional_child_string(package, "engineering_scope", anchor.engineering_scope),
+         {:ok, owner_id} <- optional_child_string(package, "owner_id") do
+      attrs =
+        %{
+          "acceptance_criteria" => acceptance_criteria,
+          "allowed_file_globs" => allowed_file_globs,
+          "base_branch" => anchor.base_branch,
+          "kind" => "phase_child",
+          "parent_id" => anchor.id,
+          "phase_id" => phase_id,
+          "policy_template" => "phase_child",
+          "repo" => anchor.repo,
+          "status" => "ready_for_worker",
+          "title" => title
+        }
+        |> maybe_put_id(package)
+        |> put_optional_child_value("branch_pattern", branch_pattern)
+        |> put_optional_child_value("product_description", product_description)
+        |> put_optional_child_value("engineering_scope", engineering_scope)
+        |> put_optional_child_value("owner_id", owner_id)
+
+      {:ok, attrs}
+    end
+  end
+
+  defp validate_child_work_package_keys(package) do
+    unexpected = package |> Map.keys() |> Enum.reject(&(&1 in @child_work_package_keys))
+
+    cond do
+      "context_slice" in unexpected -> {:tool_error, "unsupported_context_slice"}
+      unexpected == [] -> :ok
+      true -> {:tool_error, "unexpected_package_field"}
+    end
+  end
+
+  defp child_allowed_file_globs(package, %WorkPackage{} = anchor) do
+    with {:ok, default_globs} <- normalize_child_scope_globs(anchor.allowed_file_globs || []),
+         {:ok, globs} <- optional_child_string_list(package, "allowed_file_globs", default_globs),
+         :ok <- require_child_file_scope_present(globs),
+         :ok <- reject_overbroad_child_globs(globs),
+         :ok <- require_child_globs_within_anchor(globs, default_globs) do
+      {:ok, globs}
+    end
+  end
+
+  defp require_child_file_scope_present([]), do: {:tool_error, "missing_allowed_file_globs"}
+  defp require_child_file_scope_present(_globs), do: :ok
+
+  defp reject_overbroad_child_globs(globs) do
+    if Enum.any?(globs, &ScopeGuard.overbroad_glob?/1) do
+      {:tool_error, "overbroad_allowed_file_globs"}
+    else
+      :ok
+    end
+  end
+
+  defp require_child_globs_within_anchor(_child_globs, []), do: :ok
+
+  defp require_child_globs_within_anchor(child_globs, anchor_globs) do
+    if Enum.all?(child_globs, &glob_within_any_anchor?(&1, anchor_globs)) do
+      :ok
+    else
+      {:tool_error, "child_scope_outside_phase"}
+    end
+  end
+
+  defp glob_within_any_anchor?(child_glob, anchor_globs) do
+    Enum.any?(anchor_globs, &glob_within_anchor?(child_glob, &1))
+  end
+
+  defp glob_within_anchor?(child_glob, anchor_glob) do
+    with {:ok, child_segments} <- child_glob_segments(child_glob),
+         {:ok, anchor_segments} <- child_glob_segments(anchor_glob) do
+      glob_segments_within?(child_segments, anchor_segments)
+    else
+      {:tool_error, _reason} -> false
+    end
+  end
+
+  defp child_glob_segments(glob) do
+    glob = normalize_child_glob(glob)
+
+    cond do
+      glob == "" -> {:tool_error, "missing_allowed_file_globs"}
+      traversal_glob?(glob) -> {:tool_error, "path_traversal_allowed_file_globs"}
+      encoded_separator_glob?(glob) -> {:tool_error, "invalid_allowed_file_globs"}
+      true -> {:ok, String.split(glob, "/", trim: true)}
+    end
+  end
+
+  defp glob_segments_within?([], []), do: true
+  defp glob_segments_within?([], _anchor_segments), do: false
+  defp glob_segments_within?(_child_segments, []), do: false
+  defp glob_segments_within?(child_segments, ["**"]), do: not Enum.any?(child_segments, &traversal_segment?/1)
+
+  defp glob_segments_within?(["**" | child_tail], ["**" | anchor_tail]) do
+    glob_segments_within?(child_tail, ["**" | anchor_tail])
+  end
+
+  defp glob_segments_within?(child_segments, ["**" | anchor_tail]) do
+    glob_segments_within?(child_segments, anchor_tail) or
+      case child_segments do
+        [] -> false
+        [_child_head | child_tail] -> glob_segments_within?(child_tail, ["**" | anchor_tail])
+      end
+  end
+
+  defp glob_segments_within?(["**" | _child_tail], [_anchor_head | _anchor_tail]), do: false
+
+  defp glob_segments_within?([child_head | child_tail], [anchor_head | anchor_tail]) do
+    segment_within_anchor?(child_head, anchor_head) and glob_segments_within?(child_tail, anchor_tail)
+  end
+
+  defp segment_within_anchor?(child_segment, anchor_segment) do
+    cond do
+      child_segment == anchor_segment -> true
+      anchor_segment == "*" -> child_segment != "**"
+      child_segment == "**" -> false
+      literal_glob?(child_segment) -> ScopeGuard.glob_match?(anchor_segment, child_segment)
+      simple_star_segment_subset?(child_segment, anchor_segment) -> true
+      true -> false
+    end
+  end
+
+  defp literal_glob?(glob), do: not String.contains?(glob, ["*", "?", "["])
+
+  defp simple_star_segment_subset?(child_segment, anchor_segment) do
+    with {:ok, {anchor_prefix, anchor_suffix}} <- simple_star_bounds(anchor_segment),
+         {child_prefix, child_suffix} <- segment_literal_bounds(child_segment) do
+      String.starts_with?(child_prefix, anchor_prefix) and String.ends_with?(child_suffix, anchor_suffix)
+    else
+      :error -> false
+    end
+  end
+
+  defp simple_star_bounds(segment) do
+    cond do
+      String.contains?(segment, ["?", "["]) -> :error
+      segment |> String.graphemes() |> Enum.count(&(&1 == "*")) != 1 -> :error
+      true -> {:ok, segment |> String.split("*", parts: 2) |> List.to_tuple()}
+    end
+  end
+
+  defp segment_literal_bounds(segment) do
+    tokens = segment_tokens(String.graphemes(segment), [])
+
+    prefix =
+      tokens
+      |> Enum.take_while(&match?({:literal, _char}, &1))
+      |> literal_token_string()
+
+    suffix =
+      tokens
+      |> Enum.reverse()
+      |> Enum.take_while(&match?({:literal, _char}, &1))
+      |> Enum.reverse()
+      |> literal_token_string()
+
+    {prefix, suffix}
+  end
+
+  defp segment_tokens([], acc), do: Enum.reverse(acc)
+  defp segment_tokens(["*" | rest], acc), do: segment_tokens(rest, [:wildcard | acc])
+  defp segment_tokens(["?" | rest], acc), do: segment_tokens(rest, [:wildcard | acc])
+
+  defp segment_tokens(["[" | rest], acc) do
+    case drop_character_class(rest, false) do
+      {:ok, rest} -> segment_tokens(rest, [:wildcard | acc])
+      :error -> segment_tokens(rest, [{:literal, "["} | acc])
+    end
+  end
+
+  defp segment_tokens([char | rest], acc), do: segment_tokens(rest, [{:literal, char} | acc])
+
+  defp drop_character_class([], _has_content?), do: :error
+  defp drop_character_class(["]" | _rest], false), do: :error
+  defp drop_character_class(["]" | rest], true), do: {:ok, rest}
+  defp drop_character_class([_char | rest], _has_content?), do: drop_character_class(rest, true)
+
+  defp literal_token_string(tokens) do
+    Enum.map_join(tokens, "", fn {:literal, char} -> char end)
+  end
+
+  defp require_child_field_match(package, key, expected, reason) do
+    case Map.fetch(package, key) do
+      :error -> :ok
+      {:ok, nil} -> {:tool_error, "invalid_#{key}"}
+      {:ok, value} when is_binary(value) -> require_nonblank_field_match(value, key, expected, reason)
+      {:ok, _value} -> {:tool_error, "invalid_#{key}"}
+    end
+  end
+
+  defp require_nonblank_field_match(value, key, expected, reason) do
+    case String.trim(value) do
+      "" -> {:tool_error, "invalid_#{key}"}
+      trimmed -> reject_null_string_field(trimmed, key, expected, reason)
+    end
+  end
+
+  defp reject_null_string_field(trimmed, key, expected, reason) do
+    if String.downcase(trimmed) == "null" do
+      {:tool_error, "invalid_#{key}"}
+    else
+      require_optional_field_match(trimmed, expected, reason)
+    end
+  end
+
+  defp require_optional_field_match(expected, expected, _reason), do: :ok
+  defp require_optional_field_match(_value, _expected, reason) when is_atom(reason), do: {:error, reason}
+  defp require_optional_field_match(_value, _expected, reason), do: {:tool_error, reason}
+
+  defp optional_child_string(package, key, default \\ nil) do
+    case Map.fetch(package, key) do
+      :error -> {:ok, default}
+      {:ok, nil} -> {:ok, default}
+      {:ok, value} when is_binary(value) -> {:ok, blank_default(value, default)}
+      {:ok, _value} -> {:tool_error, "invalid_#{key}"}
+    end
+  end
+
+  defp optional_child_string_list(package, key, default) do
+    case Map.fetch(package, key) do
+      :error -> {:ok, default}
+      {:ok, nil} -> {:ok, default}
+      {:ok, values} when is_list(values) -> normalize_child_string_list(values, key)
+      {:ok, _value} -> {:tool_error, "invalid_#{key}"}
+    end
+  end
+
+  defp normalize_child_string_list([], key), do: {:tool_error, "missing_#{key}"}
+
+  defp normalize_child_string_list(values, key) do
+    if Enum.all?(values, &(is_binary(&1) and normalize_child_glob(&1) != "")) do
+      case normalize_child_scope_globs(values) do
+        {:ok, []} -> {:tool_error, "missing_#{key}"}
+        {:ok, globs} -> {:ok, globs}
+        {:tool_error, reason} -> {:tool_error, reason}
+      end
+    else
+      {:tool_error, "invalid_#{key}"}
+    end
+  end
+
+  defp normalize_child_scope_globs(globs) when is_list(globs) do
+    normalized_globs =
+      globs
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(&normalize_child_glob/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+
+    cond do
+      Enum.any?(normalized_globs, &traversal_glob?/1) ->
+        {:tool_error, "path_traversal_allowed_file_globs"}
+
+      Enum.any?(normalized_globs, &encoded_separator_glob?/1) ->
+        {:tool_error, "invalid_allowed_file_globs"}
+
+      true ->
+        {:ok, normalized_globs}
+    end
+  end
+
+  defp normalize_child_scope_globs(_globs), do: {:ok, []}
+
+  defp normalize_child_glob(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.replace("\\", "/")
+    |> String.replace(~r/\A\.\//, "")
+  end
+
+  defp normalize_child_glob(_value), do: ""
+
+  defp traversal_glob?(glob) when is_binary(glob) do
+    glob
+    |> String.split("/", trim: true)
+    |> Enum.any?(&traversal_segment?/1)
+  end
+
+  defp traversal_glob?(_glob), do: false
+
+  defp encoded_separator_glob?(glob) when is_binary(glob) do
+    glob
+    |> String.split("/", trim: true)
+    |> Enum.any?(&encoded_separator_segment?/1)
+  end
+
+  defp encoded_separator_glob?(_glob), do: false
+
+  defp encoded_separator_segment?(segment) when is_binary(segment) do
+    segment
+    |> String.trim()
+    |> String.downcase()
+    |> encoded_separator_segment?(0)
+  end
+
+  defp encoded_separator_segment?(_segment), do: false
+
+  defp encoded_separator_segment?(segment, depth) do
+    cond do
+      String.contains?(segment, ["/", "\\"]) ->
+        true
+
+      depth >= 3 ->
+        false
+
+      true ->
+        decoded_segment = URI.decode(segment)
+
+        decoded_segment != segment and encoded_separator_segment?(decoded_segment, depth + 1)
+    end
+  rescue
+    ArgumentError -> false
+  end
+
+  defp traversal_segment?(segment) when is_binary(segment) do
+    segment
+    |> String.trim()
+    |> String.downcase()
+    |> traversal_segment?(0)
+  end
+
+  defp traversal_segment?(_segment), do: false
+
+  defp traversal_segment?(segment, depth) do
+    cond do
+      segment in [".", ".."] ->
+        true
+
+      segment |> path_separator_segments() |> Enum.any?(&(&1 in [".", ".."])) ->
+        true
+
+      depth >= 3 ->
+        false
+
+      true ->
+        decoded_segment = segment |> URI.decode() |> String.replace("\\", "/")
+
+        decoded_segment != segment and traversal_segment?(decoded_segment, depth + 1)
+    end
+  rescue
+    ArgumentError -> false
+  end
+
+  defp path_separator_segments(segment) do
+    segment
+    |> String.replace("\\", "/")
+    |> String.split("/", trim: true)
+  end
+
+  defp blank_default(value, default) do
+    case String.trim(value) do
+      "" -> default
+      trimmed -> trimmed
+    end
+  end
+
+  defp put_optional_child_value(attrs, _key, nil), do: attrs
+  defp put_optional_child_value(attrs, key, value), do: Map.put(attrs, key, value)
+
+  defp child_worker_grant_opts(template, %AccessGrant{} = architect_grant) do
+    with :ok <- validate_child_worker_template_keys(template),
+         {:ok, capabilities} <- child_worker_capabilities(template),
+         {:ok, expires_at} <- child_worker_expires_at(template, architect_grant) do
+      {:ok, [capabilities: capabilities, expires_at: expires_at, provenance: @child_worker_grant_provenance]}
+    end
+  end
+
+  defp validate_child_worker_template_keys(template) do
+    unexpected = template |> Map.keys() |> Enum.reject(&(&1 in @child_worker_template_keys))
+    if unexpected == [], do: :ok, else: {:tool_error, "unexpected_template_field"}
+  end
+
+  defp child_worker_capabilities(template) do
+    case Map.fetch(template, "capabilities") do
+      :error -> {:ok, @child_worker_capabilities}
+      {:ok, nil} -> {:ok, @child_worker_capabilities}
+      {:ok, capabilities} when is_list(capabilities) -> normalize_child_worker_capabilities(capabilities)
+      {:ok, _capabilities} -> {:tool_error, "invalid_capabilities"}
+    end
+  end
+
+  defp normalize_child_worker_capabilities([_head | _tail] = capabilities) do
+    if Enum.all?(capabilities, &(is_binary(&1) and String.trim(&1) != "")) do
+      capabilities = capabilities |> Enum.map(&String.trim/1) |> Enum.uniq()
+
+      if Enum.all?(capabilities, &(&1 in @child_worker_capabilities)) do
+        {:ok, capabilities}
+      else
+        {:tool_error, "broader_child_grant"}
+      end
+    else
+      {:tool_error, "invalid_capabilities"}
+    end
+  end
+
+  defp normalize_child_worker_capabilities(_capabilities), do: {:tool_error, "invalid_capabilities"}
+
+  defp child_worker_expires_at(template, %{expires_at: %DateTime{} = architect_expires_at}) do
+    with {:ok, expires_at} <- optional_child_worker_expires_at(template, architect_expires_at),
+         :ok <- require_child_expires_before_architect(expires_at, architect_expires_at) do
+      {:ok, expires_at}
+    end
+  end
+
+  defp child_worker_expires_at(_template, _architect_grant), do: {:error, :phase_scope_not_available}
+
+  defp optional_child_worker_expires_at(template, default) do
+    case Map.fetch(template, "expires_at") do
+      :error -> {:ok, default}
+      {:ok, nil} -> {:ok, default}
+      {:ok, value} when is_binary(value) -> parse_child_worker_expires_at(value)
+      {:ok, _value} -> {:tool_error, "invalid_expires_at"}
+    end
+  end
+
+  defp parse_child_worker_expires_at(value) do
+    case String.trim(value) do
+      "" ->
+        {:tool_error, "invalid_expires_at"}
+
+      trimmed ->
+        case DateTime.from_iso8601(trimmed) do
+          {:ok, datetime, _offset} -> {:ok, DateTime.truncate(datetime, :microsecond)}
+          {:error, _reason} -> {:tool_error, "invalid_expires_at"}
+        end
+    end
+  end
+
+  defp require_child_expires_before_architect(expires_at, architect_expires_at) do
+    cond do
+      DateTime.compare(expires_at, architect_expires_at) == :gt -> {:tool_error, "broader_child_grant"}
+      DateTime.compare(expires_at, DateTime.utc_now(:microsecond)) != :gt -> {:tool_error, "invalid_expires_at"}
+      true -> :ok
     end
   end
 
@@ -2348,6 +3107,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp require_live_architect_grant(repo, %Session{} = session) do
+    case AccessGrantRepository.get(repo, session.assignment.grant_id) do
+      {:ok, %AccessGrant{} = grant} ->
+        with :ok <- require_session_grant_match(session.assignment, grant),
+             :ok <- require_live_grant(grant, DateTime.utc_now(:microsecond)),
+             :ok <- require_architect_assignment(session.assignment) do
+          {:ok, grant}
+        end
+
+      {:error, :not_found} ->
+        {:error, :phase_scope_not_available}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp require_session_grant_match(assignment, %AccessGrant{} = grant) do
+    if assignment.grant_id == grant.id and
+         assignment.work_package_id == grant.work_package_id and
+         assignment.phase_id == grant.phase_id and
+         assignment.display_key == grant.display_key and
+         assignment.grant_role == grant.grant_role and
+         assignment.capabilities == grant.capabilities and
+         assignment.claimed_at == grant.claimed_at and
+         assignment.claimed_by == grant.claimed_by do
+      :ok
+    else
+      {:error, :phase_scope_not_available}
+    end
+  end
+
+  defp require_live_grant(%AccessGrant{revoked_at: %DateTime{}}, _now), do: {:error, :assignment_revoked}
+
+  defp require_live_grant(%AccessGrant{expires_at: %DateTime{} = expires_at}, %DateTime{} = now) do
+    if DateTime.compare(expires_at, now) == :gt do
+      :ok
+    else
+      {:error, :expired}
+    end
+  end
+
+  defp require_live_grant(%AccessGrant{}, _now), do: {:error, :phase_scope_not_available}
+
   defp require_architect_capabilities(assignment, capabilities) do
     Enum.reduce_while(capabilities, :ok, fn capability, :ok ->
       case require_architect_capability(assignment, capability) do
@@ -2398,17 +3201,62 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp require_architect_phase_anchor(repo, %Session{} = session, phase_id) when is_atom(repo) and is_binary(phase_id) do
-    case Session.work_package_id(session) do
-      work_package_id when is_binary(work_package_id) ->
-        case WorkPackageRepository.get(repo, work_package_id) do
-          {:ok, %{phase_id: ^phase_id}} -> :ok
-          {:ok, _work_package} -> {:error, :phase_scope_not_available}
-          {:error, _reason} -> {:error, :phase_scope_not_available}
-        end
+  defp architect_child_phase_anchor(repo, %Session{} = session) do
+    with {:ok, grant} <- require_live_architect_grant(repo, session) do
+      architect_child_phase_anchor(repo, session, grant)
+    end
+  end
 
-      _work_package_id ->
+  defp architect_child_phase_anchor(repo, %Session{} = session, %AccessGrant{} = grant) do
+    with {:ok, phase_id} <- explicit_grant_phase_id(grant),
+         {:ok, anchor} <- architect_anchor_work_package(repo, session),
+         :ok <- require_frozen_anchor_scope(anchor, grant) do
+      {:ok, phase_id, anchor}
+    else
+      {:error, :not_found} -> {:error, :phase_scope_not_available}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp explicit_grant_phase_id(%AccessGrant{phase_id: phase_id}) when is_binary(phase_id) and phase_id != "", do: {:ok, phase_id}
+  defp explicit_grant_phase_id(%AccessGrant{}), do: {:error, :phase_scope_not_available}
+
+  defp require_architect_phase_anchor(repo, %Session{} = session, phase_id) when is_atom(repo) and is_binary(phase_id) do
+    with {:ok, grant} <- require_live_architect_grant(repo, session),
+         {:ok, anchor} <- architect_anchor_work_package(repo, session) do
+      require_architect_anchor_scope(anchor, grant, phase_id)
+    else
+      {:error, :not_found} -> {:error, :phase_scope_not_available}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_architect_anchor_scope(%WorkPackage{} = anchor, %AccessGrant{} = grant, phase_id) do
+    cond do
+      anchor.phase_id != phase_id ->
         {:error, :phase_scope_not_available}
+
+      architect_explicit_phase_grant?(grant) ->
+        require_frozen_anchor_scope(anchor, grant)
+
+      true ->
+        :ok
+    end
+  end
+
+  defp architect_explicit_phase_grant?(%AccessGrant{grant_role: "architect", phase_id: phase_id}) when is_binary(phase_id) and phase_id != "",
+    do: true
+
+  defp architect_explicit_phase_grant?(%AccessGrant{}), do: false
+
+  defp explicit_phase_id?(phase_id) when is_binary(phase_id), do: String.trim(phase_id) != ""
+  defp explicit_phase_id?(_phase_id), do: false
+
+  defp require_frozen_anchor_scope(%WorkPackage{} = anchor, %AccessGrant{} = grant) do
+    if grant.phase_id == anchor.phase_id and grant.scope_repo == anchor.repo and grant.scope_base_branch == anchor.base_branch do
+      :ok
+    else
+      {:error, :phase_scope_not_available}
     end
   end
 
@@ -2429,7 +3277,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        "tool" => tool,
        "reason" => "phase7_not_implemented",
        "phase" => "Phase 7",
-       "detail" => "Phase entities and architect delegation are not implemented in SYMPP-P3-003."
+       "detail" => "This Phase 7 architect workflow is not implemented in the current package."
      }}
   end
 
@@ -2538,6 +3386,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case repo.update_all(query, set: [id: work_package_id]) do
       {1, _rows} -> :ok
       {0, _rows} -> {:error, :not_found}
+    end
+  end
+
+  defp lock_access_grant(repo, grant_id) do
+    query = from(access_grant in AccessGrant, where: access_grant.id == ^grant_id)
+
+    case repo.update_all(query, set: [id: grant_id]) do
+      {1, _rows} -> :ok
+      {0, _rows} -> {:error, :phase_scope_not_available}
     end
   end
 
@@ -4387,6 +5244,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp required_object(arguments, key) do
+    case Map.get(arguments, key) do
+      value when is_map(value) -> {:ok, value}
+      _value -> {:tool_error, "missing_#{key}"}
+    end
+  end
+
   defp required_integer(arguments, key) do
     case Map.get(arguments, key) do
       value when is_integer(value) -> {:ok, value}
@@ -4577,6 +5441,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp work_package_payload(%WorkPackage{} = work_package) do
     %{"id" => work_package.id, "kind" => work_package.kind, "status" => work_package.status}
+  end
+
+  defp child_work_package_payload(%WorkPackage{} = work_package) do
+    work_package
+    |> work_package_payload()
+    |> Map.merge(%{
+      "acceptance_criteria" => work_package.acceptance_criteria || [],
+      "allowed_file_globs" => work_package.allowed_file_globs || [],
+      "base_branch" => work_package.base_branch,
+      "parent_id" => work_package.parent_id,
+      "phase_id" => work_package.phase_id,
+      "policy_template" => work_package.policy_template,
+      "repo" => work_package.repo,
+      "title" => work_package.title
+    })
+  end
+
+  defp child_worker_grant_payload(%{grant: grant, work_key: work_key}) do
+    %{
+      "id" => grant.id,
+      "work_package_id" => grant.work_package_id,
+      "display_key" => grant.display_key,
+      "grant_role" => grant.grant_role,
+      "capabilities" => grant.capabilities || [],
+      "expires_at" => DateTime.to_iso8601(grant.expires_at),
+      "secret" => work_key.secret,
+      "secret_returned_once" => true
+    }
   end
 
   defp json_resource(uri, payload) do

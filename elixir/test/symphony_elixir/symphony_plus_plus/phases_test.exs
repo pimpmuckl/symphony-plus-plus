@@ -15,6 +15,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
 
+  defmodule PhaseBoardMaterializationRepo do
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+    alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+
+    @blocked_key :sympp_phase_board_blocked_card_id
+
+    def block_materialization(work_package_id), do: Process.put(@blocked_key, work_package_id)
+    def clear_materialization_block, do: Process.delete(@blocked_key)
+
+    def get(WorkPackage, id) do
+      if Process.get(@blocked_key) == id do
+        raise "out-of-scope phase board card materialized: #{id}"
+      else
+        Repo.get(WorkPackage, id)
+      end
+    end
+
+    def get(schema, id), do: Repo.get(schema, id)
+    def all(query), do: Repo.all(query)
+    def one(query), do: Repo.one(query)
+    def transaction(fun), do: Repo.transaction(fun)
+    def rollback(value), do: Repo.rollback(value)
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
 
@@ -123,6 +147,110 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
 
     assert get_in(unrelated_response, ["error", "code"]) == -32_003
     assert get_in(unrelated_response, ["error", "data", "reason"]) == "outside_session_scope"
+  end
+
+  test "explicit phase grant phase board filters to frozen repo and base branch", %{repo: repo} do
+    assert {:ok, phase} = PhaseService.create(repo, %{id: "phase-board-scope", title: "Scoped board"})
+
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-P7-BOARD-SCOPE-ANCHOR",
+                 kind: "phase_child",
+                 phase_id: phase.id,
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta",
+                 status: "planning"
+               )
+             )
+
+    assert {:ok, in_scope_sibling} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-P7-BOARD-SCOPE-SIBLING",
+                 kind: "phase_child",
+                 phase_id: phase.id,
+                 repo: anchor.repo,
+                 base_branch: anchor.base_branch,
+                 status: "blocked"
+               )
+             )
+
+    assert {:ok, other_repo} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-P7-BOARD-OTHER-REPO",
+                 kind: "phase_child",
+                 phase_id: phase.id,
+                 repo: "nextide/other",
+                 base_branch: anchor.base_branch,
+                 status: "planning"
+               )
+             )
+
+    assert {:ok, other_base} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-P7-BOARD-OTHER-BASE",
+                 kind: "phase_child",
+                 phase_id: phase.id,
+                 repo: anchor.repo,
+                 base_branch: "main",
+                 status: "planning"
+               )
+             )
+
+    assert {:ok, minted} = AccessGrantService.mint_architect_grant(repo, phase.id, work_package_id: anchor.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "architect-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    response = read_phase_board(repo, session, phase.id)
+    encoded = Jason.encode!(get_in(response, ["result", "structuredContent"]))
+
+    assert get_in(response, ["result", "structuredContent", "total_count"]) == 2
+    assert encoded =~ anchor.id
+    assert encoded =~ in_scope_sibling.id
+    refute encoded =~ other_repo.id
+    refute encoded =~ other_base.id
+
+    PhaseBoardMaterializationRepo.block_materialization(other_repo.id)
+
+    materialization_response =
+      try do
+        read_phase_board(PhaseBoardMaterializationRepo, session, phase.id)
+      after
+        PhaseBoardMaterializationRepo.clear_materialization_block()
+      end
+
+    assert get_in(materialization_response, ["result", "structuredContent", "total_count"]) == 2
+  end
+
+  test "explicit phase grant without frozen scope snapshot fails phase board closed", %{repo: repo} do
+    assert {:ok, phase} = PhaseService.create(repo, %{id: "phase-board-missing-snapshot", title: "Missing board snapshot"})
+
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-P7-BOARD-MISSING-SNAPSHOT", kind: "phase_child", phase_id: phase.id)
+             )
+
+    assert {:ok, minted} = AccessGrantService.mint_architect_grant(repo, phase.id, work_package_id: anchor.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "architect-1")
+
+    repo.query!(
+      "UPDATE sympp_access_grants SET scope_repo = NULL, scope_base_branch = NULL WHERE id = ?",
+      [assignment.grant_id]
+    )
+
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+    response = read_phase_board(repo, session, phase.id)
+
+    assert get_in(response, ["error", "code"]) == -32_003
+    assert get_in(response, ["error", "data", "reason"]) == "outside_session_scope"
   end
 
   test "legacy null phase grant with unphased anchor is denied MCP phase board", %{repo: repo} do
