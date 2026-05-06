@@ -5644,6 +5644,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
   end
 
+  test "architect approval repairs overbroad existing scope constraints", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-SCOPE-GUARD-REPAIR",
+                 kind: "mcp",
+                 status: "ci_waiting",
+                 policy_template: "mcp_changed_file_scope_guard",
+                 allowed_file_globs: ["**"]
+               )
+             )
+
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["approve:scope_expansion"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    architect_session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+
+    approval_response =
+      attach_tool(repo, architect_session, "approve_scope_expansion", %{
+        "work_package_id" => package.id,
+        "allowed_file_globs" => ["docs/**"],
+        "rationale" => "Replace invalid catch-all with scoped package docs."
+      })
+
+    assert get_in(approval_response, ["result", "structuredContent", "allowed_file_globs"]) == ["docs/**"]
+    payload = get_in(approval_response, ["result", "structuredContent", "progress_event", "payload"])
+    assert payload["previous_allowed_file_globs"] == ["**"]
+    assert payload["allowed_file_globs"] == ["docs/**"]
+
+    assert {:ok, repaired_package} = WorkPackageRepository.get(repo, package.id)
+    assert repaired_package.allowed_file_globs == ["docs/**"]
+  end
+
   test "review-suite result rejects missing head, wrong package, stale head, non-passing verdicts, and failed-result override", %{repo: repo} do
     assert {:ok, package} =
              WorkPackageRepository.create(

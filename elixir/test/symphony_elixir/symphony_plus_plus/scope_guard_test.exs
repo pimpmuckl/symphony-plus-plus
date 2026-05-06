@@ -66,6 +66,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
     assert {:error, "overbroad_allowed_file_globs"} = ScopeGuard.approve_file_globs(package, ["./**/*"])
   end
 
+  test "approved expansion repairs overbroad existing package globs" do
+    package = package(["elixir/lib/**", "**"])
+
+    assert {:ok, ["elixir/lib/**", "docs/**"]} = ScopeGuard.approve_file_globs(package, ["docs/**"])
+  end
+
   test "overbroad configured package globs fail scope guard" do
     package = package(["**"])
 

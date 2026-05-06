@@ -172,6 +172,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     assert "scope_guard" in request["policy"].required_gates
     assert "review_suite_result" in request["policy"].required_gates
 
+    assert {:error, :missing_allowed_file_globs} =
+             CreateWork.parse_request(%{
+               repo: "symphony-plus-plus",
+               base_branch: "symphony-plus-plus/beta",
+               title: "Missing changed-file scope",
+               acceptance_criteria: ["Changed files stay in scope."],
+               policy_template: "mcp_changed_file_scope_guard"
+             })
+
+    assert {:error, :overbroad_allowed_file_globs} =
+             CreateWork.parse_request(%{
+               repo: "symphony-plus-plus",
+               base_branch: "symphony-plus-plus/beta",
+               title: "Overbroad changed-file scope",
+               acceptance_criteria: ["Changed files stay in scope."],
+               policy_template: "mcp_changed_file_scope_guard",
+               allowed_file_globs: ["**"]
+             })
+
     assert {:ok, request} =
              CreateWork.parse_request(%{
                repo: "symphony-plus-plus",
