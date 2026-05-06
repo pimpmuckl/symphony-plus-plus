@@ -1544,8 +1544,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, phase_id} <- required_argument(arguments, "phase_id"),
          :ok <- require_architect_phase_scope(config.repo, session, phase_id),
          {:ok, board_scope} <- require_architect_phase_board_scope(config.repo, session, phase_id),
-         {:ok, board} <- Dashboard.phase_board(config.repo, phase_id) do
-      {:ok, tool_result(json_safe_payload(filter_phase_board(board, board_scope)))}
+         {:ok, board} <- scoped_phase_board(config.repo, phase_id, board_scope) do
+      {:ok, tool_result(json_safe_payload(board))}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_phase_board", "reason" => reason}}
       {:error, reason} -> architect_error(reason, "read_phase_board")
@@ -1595,27 +1595,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp frozen_scope_value(_value), do: {:error, :phase_scope_not_available}
 
-  defp filter_phase_board(board, :phase), do: board
+  defp scoped_phase_board(repo, phase_id, :phase), do: Dashboard.phase_board(repo, phase_id)
 
-  defp filter_phase_board(%{groups: groups} = board, {:repo_base, repo, base_branch}) do
-    filtered_groups =
-      Map.new(groups, fn {status, cards} ->
-        {status, Enum.filter(cards, &phase_board_card_in_scope?(&1, repo, base_branch))}
-      end)
-
-    %{board | groups: filtered_groups, total_count: phase_board_total_count(filtered_groups)}
-  end
-
-  defp phase_board_card_in_scope?(%{repo: card_repo, base_branch: card_base_branch}, repo, base_branch),
-    do: card_repo == repo and card_base_branch == base_branch
-
-  defp phase_board_card_in_scope?(_card, _repo, _base_branch), do: false
-
-  defp phase_board_total_count(groups) do
-    groups
-    |> Map.values()
-    |> Enum.map(&length/1)
-    |> Enum.sum()
+  defp scoped_phase_board(repo, phase_id, {:repo_base, scoped_repo, base_branch}) do
+    Dashboard.phase_board(repo, phase_id, repo: scoped_repo, base_branch: base_branch)
   end
 
   defp require_architect_target_scope(repo, %Session{} = session, %{"work_package_id" => work_package_id}) do
@@ -1678,9 +1661,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_architect_child_work_package_scope(repo, %Session{} = session, work_package_id) do
     with {:ok, phase_id, anchor} <- architect_child_phase_anchor(repo, session),
-         {:ok, child} <- WorkPackageRepository.get(repo, work_package_id),
+         {:ok, child} <- scoped_child_work_package(repo, work_package_id),
          :ok <- require_phase_child_scope(child, anchor, phase_id) do
       {:ok, child}
+    end
+  end
+
+  defp scoped_child_work_package(repo, work_package_id) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, child} -> {:ok, child}
+      {:error, :not_found} -> {:error, :phase_scope_not_available}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -1748,6 +1739,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          :ok <- lock_work_package(repo, Session.work_package_id(session)),
          {:ok, phase_id, anchor} <- architect_child_phase_anchor(repo, session, architect_grant),
          {:ok, grant_opts} <- child_worker_grant_opts(template, architect_grant),
+         {:ok, _prechecked_child} <- require_transaction_current_child_scope(repo, work_package_id, anchor, phase_id),
+         :ok <- reject_active_child_worker_grant(repo, work_package_id),
          {:ok, child} <- require_child_ready_for_mint(repo, work_package_id, anchor, phase_id),
          {:ok, minted} <- AccessGrantService.mint_worker_grant(repo, child.id, grant_opts) do
       {:ok, {child, minted}}
@@ -1772,7 +1765,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp require_transaction_current_child_scope(repo, work_package_id, anchor, phase_id) do
-    with {:ok, child} <- WorkPackageRepository.get(repo, work_package_id),
+    with {:ok, child} <- scoped_child_work_package(repo, work_package_id),
          :ok <- require_phase_child_scope(child, anchor, phase_id) do
       {:ok, child}
     end
@@ -1789,6 +1782,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
       {:error, _reason} ->
         {:error, :phase_scope_not_available}
+    end
+  end
+
+  defp reject_active_child_worker_grant(repo, work_package_id) do
+    now = DateTime.utc_now(:microsecond)
+
+    query =
+      from(grant in AccessGrant,
+        where:
+          grant.work_package_id == ^work_package_id and grant.grant_role == "worker" and is_nil(grant.revoked_at) and
+            grant.expires_at > ^now,
+        select: count(grant.id)
+      )
+
+    case repo.one(query) do
+      0 -> :ok
+      nil -> :ok
+      _active_count -> {:tool_error, "active_child_worker_grant_exists"}
     end
   end
 
@@ -1870,7 +1881,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp require_child_globs_within_anchor(_child_globs, []), do: {:tool_error, "child_scope_outside_phase"}
+  defp require_child_globs_within_anchor(_child_globs, []), do: :ok
 
   defp require_child_globs_within_anchor(child_globs, anchor_globs) do
     if Enum.all?(child_globs, &glob_within_any_anchor?(&1, anchor_globs)) do

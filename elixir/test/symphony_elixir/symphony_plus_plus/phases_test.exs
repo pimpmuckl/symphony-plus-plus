@@ -15,6 +15,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
 
+  defmodule PhaseBoardMaterializationRepo do
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+    alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+
+    @blocked_key :sympp_phase_board_blocked_card_id
+
+    def block_materialization(work_package_id), do: Process.put(@blocked_key, work_package_id)
+    def clear_materialization_block, do: Process.delete(@blocked_key)
+
+    def get(WorkPackage, id) do
+      if Process.get(@blocked_key) == id do
+        raise "out-of-scope phase board card materialized: #{id}"
+      else
+        Repo.get(WorkPackage, id)
+      end
+    end
+
+    def get(schema, id), do: Repo.get(schema, id)
+    def all(query), do: Repo.all(query)
+    def one(query), do: Repo.one(query)
+    def transaction(fun), do: Repo.transaction(fun)
+    def rollback(value), do: Repo.rollback(value)
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
 
@@ -192,6 +216,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
     assert encoded =~ in_scope_sibling.id
     refute encoded =~ other_repo.id
     refute encoded =~ other_base.id
+
+    PhaseBoardMaterializationRepo.block_materialization(other_repo.id)
+
+    materialization_response =
+      try do
+        read_phase_board(PhaseBoardMaterializationRepo, session, phase.id)
+      after
+        PhaseBoardMaterializationRepo.clear_materialization_block()
+      end
+
+    assert get_in(materialization_response, ["result", "structuredContent", "total_count"]) == 2
   end
 
   test "explicit phase grant without frozen scope snapshot fails phase board closed", %{repo: repo} do

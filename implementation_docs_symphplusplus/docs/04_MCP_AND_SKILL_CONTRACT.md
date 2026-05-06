@@ -155,14 +155,19 @@ anchor phase for non-delegation phase reads, but scoped explicit phase-board
 reads and P7 child delegation/status operations fail closed when the frozen
 repo/base-branch snapshot is missing; migrations do not backfill that snapshot
 from mutable anchor state. `read_phase_board(phase_id)` filters explicit phase
-architect grants to the frozen repo/base-branch boundary.
+architect grants to the frozen repo/base-branch boundary before package cards
+are materialized.
 `create_child_work_package(package)` creates only `phase_child` work inside the
 architect phase anchor, inherits the anchor base branch, and rejects mismatched
-phase, parent, repo, or base branch input. Child creation revalidates that
-anchor scope in the insert transaction. Context-slice input is not part of the
-current contract. `mint_child_worker_key` mints only single-package worker
-grants for same-phase children, revalidates the live architect grant in the mint
-transaction, and caps child capabilities and expiry to that current grant.
+phase, parent, repo, or base branch input. Child creation requires concrete
+nonempty file globs; empty anchor globs may be used only when the child supplies
+explicit nonempty, non-overbroad globs, while nonempty anchor globs remain the
+upper bound. Child creation revalidates that anchor scope in the insert
+transaction. Context-slice input is not part of the current contract.
+`mint_child_worker_key` mints only single-package worker grants for same-phase
+children, revalidates the live architect grant in the mint transaction, rejects
+duplicate active worker grants for the same child, and caps child capabilities
+and expiry to that current grant.
 `read_child_status(work_package_id)` requires both `read:child_progress` and
 `read:child_findings`; it can read the architect anchor package or a same-phase
 child package. The remaining architect tools return explicit

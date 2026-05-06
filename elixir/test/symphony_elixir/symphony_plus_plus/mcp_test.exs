@@ -100,6 +100,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     def get(schema, id), do: Repo.get(schema, id)
     def insert(changeset), do: Repo.insert(changeset)
+    def one(query), do: Repo.one(query)
     def update_all(query, updates), do: Repo.update_all(query, updates)
     def rollback(value), do: Repo.rollback(value)
   end
@@ -119,6 +120,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     def get(schema, id), do: Repo.get(schema, id)
     def insert(changeset), do: Repo.insert(changeset)
+    def one(query), do: Repo.one(query)
 
     def update_all(query, updates) do
       case Process.get(@race_key) do
@@ -169,6 +171,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     def get(schema, id), do: Repo.get(schema, id)
     def insert(changeset), do: Repo.insert(changeset)
+    def one(query), do: Repo.one(query)
     def update_all(query, updates), do: Repo.update_all(query, updates)
     def rollback(value), do: Repo.rollback(value)
   end
@@ -202,6 +205,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     def get(schema, id), do: Repo.get(schema, id)
     def insert(changeset), do: Repo.insert(changeset)
+    def one(query), do: Repo.one(query)
     def update_all(query, updates), do: Repo.update_all(query, updates)
     def rollback(value), do: Repo.rollback(value)
   end
@@ -2913,7 +2917,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-EMPTY-GLOBS")
   end
 
-  test "phase architect cannot create child work package with inherited empty file scope", %{repo: repo} do
+  test "phase architect with empty anchor globs requires explicit child file scope", %{repo: repo} do
     {_anchor, session} =
       create_architect_session(
         repo,
@@ -2935,19 +2939,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(inherited_empty_response, ["error", "data", "reason"]) == "missing_allowed_file_globs"
     assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-INHERITED-EMPTY-GLOBS")
 
+    explicit_empty_response =
+      mcp_tool(repo, session, "create_child_work_package", %{
+        "package" => %{
+          "id" => "SYMPP-P7-002-EXPLICIT-EMPTY-GLOBS",
+          "title" => "Explicit empty globs",
+          "allowed_file_globs" => [],
+          "acceptance_criteria" => ["Should not be created"]
+        }
+      })
+
+    assert get_in(explicit_empty_response, ["error", "code"]) == -32_602
+    assert get_in(explicit_empty_response, ["error", "data", "reason"]) == "missing_allowed_file_globs"
+    assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-EXPLICIT-EMPTY-GLOBS")
+
     explicit_scope_response =
       mcp_tool(repo, session, "create_child_work_package", %{
         "package" => %{
           "id" => "SYMPP-P7-002-UNBOUNDED-EXPLICIT-GLOBS",
           "title" => "Explicit globs without anchor scope",
           "allowed_file_globs" => ["elixir/lib/**"],
-          "acceptance_criteria" => ["Should not be created"]
+          "acceptance_criteria" => ["Child carries concrete file scope"]
         }
       })
 
-    assert get_in(explicit_scope_response, ["error", "code"]) == -32_602
-    assert get_in(explicit_scope_response, ["error", "data", "reason"]) == "child_scope_outside_phase"
-    assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-UNBOUNDED-EXPLICIT-GLOBS")
+    assert get_in(explicit_scope_response, ["result", "structuredContent", "work_package", "id"]) ==
+             "SYMPP-P7-002-UNBOUNDED-EXPLICIT-GLOBS"
+
+    assert {:ok, child} = WorkPackageRepository.get(repo, "SYMPP-P7-002-UNBOUNDED-EXPLICIT-GLOBS")
+    assert child.allowed_file_globs == ["elixir/lib/**"]
   end
 
   test "phase architect child delegation fails closed after anchor repo or base branch drift", %{repo: repo} do
@@ -3038,6 +3058,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(status_response, ["error", "code"]) == -32_003
     assert get_in(status_response, ["error", "data", "reason"]) == "outside_session_scope"
+  end
+
+  test "phase architect read_child_status fails closed for missing child IDs", %{repo: repo} do
+    {_anchor, session} =
+      create_architect_session(repo, "SYMPP-P7-002-MISSING-STATUS-ANCHOR", [
+        "read:child_progress",
+        "read:child_findings",
+        "read:phase"
+      ])
+
+    response = mcp_tool(repo, session, "read_child_status", %{"work_package_id" => "SYMPP-P7-002-MISSING-STATUS-CHILD"})
+
+    assert get_in(response, ["error", "code"]) == -32_003
+    assert get_in(response, ["error", "data", "reason"]) == "outside_session_scope"
   end
 
   test "legacy nil-phase architect grant cannot use child delegation or status", %{repo: repo} do
@@ -3453,6 +3487,48 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(child_status_response, ["result", "structuredContent", "work_package", "id"]) == child_id
     assert get_in(child_status_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_worker"
+  end
+
+  test "child worker key minting rejects a second active worker grant", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-MINT-DUPLICATE-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-DUPLICATE-CHILD")
+
+    first_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => %{}
+      })
+
+    first_grant_id = get_in(first_response, ["result", "structuredContent", "worker_grant", "id"])
+    assert is_binary(first_grant_id)
+    grants_before_second = repo.aggregate(AccessGrant, :count)
+
+    second_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => %{}
+      })
+
+    assert get_in(second_response, ["error", "code"]) == -32_602
+    assert get_in(second_response, ["error", "data", "reason"]) == "active_child_worker_grant_exists"
+    assert repo.aggregate(AccessGrant, :count) == grants_before_second
+
+    assert {:ok, _revoked} = AccessGrantService.revoke(repo, first_grant_id)
+
+    remint_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => %{}
+      })
+
+    assert get_in(remint_response, ["result", "structuredContent", "worker_grant", "work_package_id"]) == child_id
+    refute get_in(remint_response, ["result", "structuredContent", "worker_grant", "id"]) == first_grant_id
   end
 
   test "child worker key minting rejects broader grants and worker callers", %{repo: repo} do

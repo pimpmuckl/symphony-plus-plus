@@ -36,7 +36,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   @spec phase_board(repo(), String.t()) :: {:ok, map()} | {:error, dashboard_error()}
   def phase_board(repo, phase_id) when is_atom(repo) and is_binary(phase_id) do
-    safe_read(fn -> build_phase_board(repo, phase_id) end)
+    phase_board(repo, phase_id, [])
+  end
+
+  @spec phase_board(repo(), String.t(), keyword()) :: {:ok, map()} | {:error, dashboard_error()}
+  def phase_board(repo, phase_id, filters) when is_atom(repo) and is_binary(phase_id) and is_list(filters) do
+    safe_read(fn -> build_phase_board(repo, phase_id, filters) end)
   end
 
   @spec detail(repo(), String.t()) :: {:ok, map()} | {:error, dashboard_error()}
@@ -240,10 +245,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
-  defp build_phase_board(repo, phase_id) do
+  defp build_phase_board(repo, phase_id, filters) do
     with {:ok, phase} <- PhaseRepository.get(repo, phase_id),
          {:ok, work_packages} <- WorkPackageRepository.list_for_phase(repo, phase_id),
-         {:ok, cards} <- cards_for_packages(repo, work_packages) do
+         scoped_work_packages = filter_phase_work_packages(work_packages, filters),
+         {:ok, cards} <- cards_for_packages(repo, scoped_work_packages) do
       {:ok,
        %{
          phase: phase(phase),
@@ -252,6 +258,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
          total_count: length(cards)
        }}
     end
+  end
+
+  defp filter_phase_work_packages(work_packages, filters) do
+    Enum.filter(work_packages, &phase_work_package_matches_filters?(&1, filters))
+  end
+
+  defp phase_work_package_matches_filters?(%WorkPackage{} = work_package, filters) do
+    Enum.all?(filters, fn
+      {:repo, repo} when is_binary(repo) -> work_package.repo == repo
+      {:base_branch, base_branch} when is_binary(base_branch) -> work_package.base_branch == base_branch
+      _filter -> true
+    end)
   end
 
   defp cards_for_packages(repo, work_packages) do

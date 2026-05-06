@@ -51,8 +51,9 @@ worker-facing discovery surface. Architect sessions may call
 scoped `work_package_id` after reconnect, but architect sessions still cannot
 use worker package read/write tools. `read_phase_board` is limited to the
 session's phase scope; explicit phase grants with a frozen repo/base snapshot
-see only matching package cards, and explicit phase grants missing that snapshot
-fail closed rather than being treated as phase-wide. Existing lifecycle capabilities such as
+materialize only matching package cards, and explicit phase grants missing that
+snapshot fail closed rather than being treated as phase-wide. Existing lifecycle
+capabilities such as
 `architect:lifecycle.transition` do not imply MCP architect tool capabilities;
 P3-003 requires the explicit MCP capability strings listed in the permission
 model. Phase-dependent architect tools revalidate the grant's explicit phase
@@ -63,12 +64,15 @@ delegation/status operations fail closed when the frozen repo/base-branch
 snapshot is missing. `create_child_work_package` always creates a `phase_child`
 package under the architect phase anchor, rejects mismatched `phase_id`,
 `parent_id`, `repo`, or `base_branch`, inherits the anchor base branch because
-there is no separate phase base-branch policy field, and revalidates anchor
-scope in the insert transaction. It does not support context-slice input in this
-contract. `mint_child_worker_key` only mints single-package worker grants for
-same-phase child packages; the minted worker grant cannot include architect
-capabilities, cannot include capabilities outside the child worker capability
-set, and cannot outlive the transaction-current architect grant.
+there is no separate phase base-branch policy field, requires concrete nonempty
+child file globs, and revalidates anchor scope in the insert transaction. Empty
+anchor file globs are allowed only when the child explicitly supplies nonempty,
+non-overbroad globs; nonempty anchor globs remain the upper bound. It does not
+support context-slice input in this contract. `mint_child_worker_key` only mints
+single-package worker grants for same-phase child packages; the minted worker
+grant cannot include architect capabilities, cannot include capabilities outside
+the child worker capability set, cannot duplicate an active worker grant for the
+same child, and cannot outlive the transaction-current architect grant.
 `read_child_status` requires both `read:child_progress` and
 `read:child_findings` because its summary includes progress, findings, and
 artifact counts. Remaining Phase 7-dependent tools perform authorization first

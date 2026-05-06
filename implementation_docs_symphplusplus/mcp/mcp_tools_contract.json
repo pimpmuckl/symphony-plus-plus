@@ -79,12 +79,12 @@
     {
       "name": "create_child_work_package",
       "purpose": "Create a phase_child work package inside the architect grant's frozen phase/repo/base-branch anchor scope; child repo, phase, parent, and base branch are constrained to that anchor.",
-      "scope_policy": "Rejects mismatched phase_id, parent_id, repo, or base_branch, inherits the anchor base branch because there is no separate phase base-branch policy field, and revalidates anchor scope in the insert transaction."
+      "scope_policy": "Rejects mismatched phase_id, parent_id, repo, or base_branch, inherits the anchor base branch because there is no separate phase base-branch policy field, requires concrete nonempty child file globs, and revalidates anchor scope in the insert transaction. Empty anchor globs are allowed only when the child explicitly supplies nonempty, non-overbroad globs; nonempty anchor globs remain the upper bound."
     },
     {
       "name": "mint_child_worker_key",
       "purpose": "Mint a child-scoped worker grant for a same-phase phase_child package.",
-      "scope_policy": "Worker grants are single-package grants, capabilities are limited to worker:claim and worker:lifecycle.transition, and expiry cannot exceed the transaction-current architect grant."
+      "scope_policy": "Worker grants are single-package grants, capabilities are limited to worker:claim and worker:lifecycle.transition, duplicate active worker grants for the same child are rejected, and expiry cannot exceed the transaction-current architect grant."
     },
     {
       "name": "revoke_child_worker_key",
@@ -94,12 +94,12 @@
       "name": "read_child_status",
       "purpose": "Read the architect grant's scoped anchor package status or a same-phase child work-package status.",
       "required_capabilities": ["read:child_progress", "read:child_findings"],
-      "scope_policy": "Anchor reads remain package-scoped; child reads require the child package to be in the architect grant's current phase and match the phase anchor repo/base branch."
+      "scope_policy": "Anchor reads remain package-scoped; child reads require the child package to be in the architect grant's current phase and match the phase anchor repo/base branch. Missing arbitrary child IDs fail closed with the same scoped-denial shape as out-of-scope children."
     },
     {
       "name": "read_phase_board",
       "purpose": "Read the architect grant's scoped phase board filtered to the frozen repo/base branch for explicit phase grants.",
-      "scope_policy": "Explicit phase architect grants require the frozen repo/base-branch snapshot; matching grants see only same-snapshot package cards, and missing snapshots fail closed without unsafe backfill."
+      "scope_policy": "Explicit phase architect grants require the frozen repo/base-branch snapshot; matching grants materialize only same-snapshot package cards, and missing snapshots fail closed without unsafe backfill."
     },
     {
       "name": "request_child_replan",
