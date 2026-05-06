@@ -1514,9 +1514,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
          {:ok, template} <- required_object(arguments, "template"),
          {:ok, child} <- require_architect_child_work_package_scope(config.repo, session, work_package_id),
-         :ok <- require_child_ready_for_worker(child),
          {:ok, grant_opts} <- child_worker_grant_opts(config.repo, session, template),
-         {:ok, minted} <- AccessGrantService.mint_worker_grant(config.repo, child.id, grant_opts) do
+         {:ok, {child, minted}} <- mint_child_worker_key_transaction(config.repo, session, child.id, grant_opts) do
       {:ok,
        tool_result(%{
          "work_package" => child_work_package_payload(child),
@@ -1628,8 +1627,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_phase_child_scope(%WorkPackage{}, _anchor, _phase_id), do: {:error, :phase_scope_not_available}
 
-  defp require_child_ready_for_worker(%WorkPackage{status: "ready_for_worker"}), do: :ok
-  defp require_child_ready_for_worker(%WorkPackage{}), do: {:tool_error, "child_not_ready_for_worker"}
+  defp mint_child_worker_key_transaction(repo, %Session{} = session, work_package_id, grant_opts) do
+    case repo.transaction(fn ->
+           mint_child_worker_key_or_rollback(repo, session, work_package_id, grant_opts)
+         end) do
+      {:ok, result} -> {:ok, result}
+      {:error, {:tool_error, reason}} -> {:tool_error, reason}
+      {:error, {:error, reason}} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp mint_child_worker_key_or_rollback(repo, %Session{} = session, work_package_id, grant_opts) do
+    case mint_child_worker_key_in_transaction(repo, session, work_package_id, grant_opts) do
+      {:ok, result} -> result
+      {:tool_error, reason} -> repo.rollback({:tool_error, reason})
+      {:error, reason} -> repo.rollback({:error, reason})
+    end
+  end
+
+  defp mint_child_worker_key_in_transaction(repo, %Session{} = session, work_package_id, grant_opts) do
+    with {:ok, child} <- require_architect_child_work_package_scope(repo, session, work_package_id),
+         {:ok, child} <- require_child_ready_for_mint(repo, child),
+         {:ok, minted} <- AccessGrantService.mint_worker_grant(repo, child.id, grant_opts) do
+      {:ok, {child, minted}}
+    end
+  end
+
+  defp require_child_ready_for_mint(repo, %WorkPackage{id: work_package_id}) do
+    now = DateTime.utc_now(:microsecond)
+
+    query =
+      from(work_package in WorkPackage,
+        where: work_package.id == ^work_package_id and work_package.status == "ready_for_worker"
+      )
+
+    case repo.update_all(query, set: [updated_at: now]) do
+      {1, _rows} -> WorkPackageRepository.get(repo, work_package_id)
+      {0, _rows} -> {:tool_error, "child_not_ready_for_worker"}
+    end
+  end
 
   defp architect_anchor_work_package(repo, %Session{} = session) do
     case Session.work_package_id(session) do
@@ -1691,9 +1728,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp child_allowed_file_globs(package, %WorkPackage{} = anchor) do
-    default_globs = normalize_child_globs(anchor.allowed_file_globs || [])
-
-    with {:ok, globs} <- optional_child_string_list(package, "allowed_file_globs", default_globs),
+    with {:ok, default_globs} <- normalize_child_scope_globs(anchor.allowed_file_globs || []),
+         {:ok, globs} <- optional_child_string_list(package, "allowed_file_globs", default_globs),
          :ok <- require_child_file_scope_present(globs),
          :ok <- reject_overbroad_child_globs(globs),
          :ok <- require_child_globs_within_anchor(globs, default_globs) do
@@ -1726,37 +1762,115 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     Enum.any?(anchor_globs, &glob_within_anchor?(child_glob, &1))
   end
 
-  defp glob_within_anchor?(child_glob, child_glob), do: true
-
   defp glob_within_anchor?(child_glob, anchor_glob) do
-    child_glob = normalize_child_glob(child_glob)
-    anchor_glob = normalize_child_glob(anchor_glob)
+    with {:ok, child_segments} <- child_glob_segments(child_glob),
+         {:ok, anchor_segments} <- child_glob_segments(anchor_glob) do
+      glob_segments_within?(child_segments, anchor_segments)
+    else
+      {:tool_error, _reason} -> false
+    end
+  end
+
+  defp child_glob_segments(glob) do
+    glob = normalize_child_glob(glob)
 
     cond do
-      String.ends_with?(anchor_glob, "/**") ->
-        anchor_prefix = String.replace_suffix(anchor_glob, "/**", "/")
-        String.starts_with?(child_glob, anchor_prefix)
+      glob == "" -> {:tool_error, "missing_allowed_file_globs"}
+      traversal_glob?(glob) -> {:tool_error, "path_traversal_allowed_file_globs"}
+      true -> {:ok, String.split(glob, "/", trim: true)}
+    end
+  end
 
-      literal_glob?(child_glob) ->
-        ScopeGuard.glob_match?(anchor_glob, child_glob)
+  defp glob_segments_within?([], []), do: true
+  defp glob_segments_within?(_child_segments, []), do: false
+  defp glob_segments_within?(child_segments, ["**"]), do: not Enum.any?(child_segments, &traversal_segment?/1)
 
-      double_star_subset?(child_glob, anchor_glob) ->
-        true
+  defp glob_segments_within?(["**" | child_tail], ["**" | anchor_tail]) do
+    glob_segments_within?(child_tail, ["**" | anchor_tail])
+  end
 
-      true ->
-        false
+  defp glob_segments_within?(child_segments, ["**" | anchor_tail]) do
+    glob_segments_within?(child_segments, anchor_tail) or
+      case child_segments do
+        [] -> false
+        [_child_head | child_tail] -> glob_segments_within?(child_tail, ["**" | anchor_tail])
+      end
+  end
+
+  defp glob_segments_within?(["**" | _child_tail], [_anchor_head | _anchor_tail]), do: false
+
+  defp glob_segments_within?([child_head | child_tail], [anchor_head | anchor_tail]) do
+    segment_within_anchor?(child_head, anchor_head) and glob_segments_within?(child_tail, anchor_tail)
+  end
+
+  defp segment_within_anchor?(child_segment, anchor_segment) do
+    cond do
+      child_segment == anchor_segment -> true
+      anchor_segment == "*" -> child_segment != "**"
+      child_segment == "**" -> false
+      literal_glob?(child_segment) -> ScopeGuard.glob_match?(anchor_segment, child_segment)
+      simple_star_segment_subset?(child_segment, anchor_segment) -> true
+      true -> false
     end
   end
 
   defp literal_glob?(glob), do: not String.contains?(glob, ["*", "?", "["])
 
-  defp double_star_subset?(child_glob, anchor_glob) do
-    with [anchor_prefix, anchor_suffix] <- String.split(anchor_glob, "**", parts: 2),
-         [child_prefix, child_suffix] <- String.split(child_glob, "**", parts: 2) do
-      String.starts_with?(child_prefix, anchor_prefix) and child_suffix == anchor_suffix
+  defp simple_star_segment_subset?(child_segment, anchor_segment) do
+    with {:ok, {anchor_prefix, anchor_suffix}} <- simple_star_bounds(anchor_segment),
+         {child_prefix, child_suffix} <- segment_literal_bounds(child_segment) do
+      String.starts_with?(child_prefix, anchor_prefix) and String.ends_with?(child_suffix, anchor_suffix)
     else
-      _parts -> false
+      :error -> false
     end
+  end
+
+  defp simple_star_bounds(segment) do
+    cond do
+      String.contains?(segment, ["?", "["]) -> :error
+      segment |> String.graphemes() |> Enum.count(&(&1 == "*")) != 1 -> :error
+      true -> {:ok, segment |> String.split("*", parts: 2) |> List.to_tuple()}
+    end
+  end
+
+  defp segment_literal_bounds(segment) do
+    tokens = segment_tokens(String.graphemes(segment), [])
+
+    prefix =
+      tokens
+      |> Enum.take_while(&match?({:literal, _char}, &1))
+      |> literal_token_string()
+
+    suffix =
+      tokens
+      |> Enum.reverse()
+      |> Enum.take_while(&match?({:literal, _char}, &1))
+      |> Enum.reverse()
+      |> literal_token_string()
+
+    {prefix, suffix}
+  end
+
+  defp segment_tokens([], acc), do: Enum.reverse(acc)
+  defp segment_tokens(["*" | rest], acc), do: segment_tokens(rest, [:wildcard | acc])
+  defp segment_tokens(["?" | rest], acc), do: segment_tokens(rest, [:wildcard | acc])
+
+  defp segment_tokens(["[" | rest], acc) do
+    case drop_character_class(rest, false) do
+      {:ok, rest} -> segment_tokens(rest, [:wildcard | acc])
+      :error -> segment_tokens(rest, [{:literal, "["} | acc])
+    end
+  end
+
+  defp segment_tokens([char | rest], acc), do: segment_tokens(rest, [{:literal, char} | acc])
+
+  defp drop_character_class([], _has_content?), do: :error
+  defp drop_character_class(["]" | _rest], false), do: :error
+  defp drop_character_class(["]" | rest], true), do: {:ok, rest}
+  defp drop_character_class([_char | rest], _has_content?), do: drop_character_class(rest, true)
+
+  defp literal_token_string(tokens) do
+    Enum.map_join(tokens, "", fn {:literal, char} -> char end)
   end
 
   defp require_child_field_match(package, key, expected, reason) do
@@ -1809,22 +1923,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp normalize_child_string_list(values, key) do
     if Enum.all?(values, &(is_binary(&1) and normalize_child_glob(&1) != "")) do
-      case normalize_child_globs(values) do
-        [] -> {:tool_error, "missing_#{key}"}
-        globs -> {:ok, globs}
+      case normalize_child_scope_globs(values) do
+        {:ok, []} -> {:tool_error, "missing_#{key}"}
+        {:ok, globs} -> {:ok, globs}
+        {:tool_error, reason} -> {:tool_error, reason}
       end
     else
       {:tool_error, "invalid_#{key}"}
     end
   end
 
-  defp normalize_child_globs(globs) when is_list(globs) do
-    globs
-    |> Enum.filter(&is_binary/1)
-    |> Enum.map(&normalize_child_glob/1)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.uniq()
+  defp normalize_child_scope_globs(globs) when is_list(globs) do
+    normalized_globs =
+      globs
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(&normalize_child_glob/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+
+    if Enum.any?(normalized_globs, &traversal_glob?/1) do
+      {:tool_error, "path_traversal_allowed_file_globs"}
+    else
+      {:ok, normalized_globs}
+    end
   end
+
+  defp normalize_child_scope_globs(_globs), do: {:ok, []}
 
   defp normalize_child_glob(value) when is_binary(value) do
     value
@@ -1834,6 +1958,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp normalize_child_glob(_value), do: ""
+
+  defp traversal_glob?(glob) when is_binary(glob) do
+    glob
+    |> String.split("/", trim: true)
+    |> Enum.any?(&traversal_segment?/1)
+  end
+
+  defp traversal_glob?(_glob), do: false
+
+  defp traversal_segment?(segment) when is_binary(segment) do
+    segment
+    |> String.trim()
+    |> String.downcase()
+    |> traversal_segment?(0)
+  end
+
+  defp traversal_segment?(_segment), do: false
+
+  defp traversal_segment?(segment, depth) do
+    cond do
+      segment in [".", ".."] ->
+        true
+
+      segment |> String.split("/", trim: true) |> Enum.any?(&(&1 in [".", ".."])) ->
+        true
+
+      depth >= 3 ->
+        false
+
+      true ->
+        decoded_segment = URI.decode(segment)
+
+        decoded_segment != segment and traversal_segment?(decoded_segment, depth + 1)
+    end
+  rescue
+    ArgumentError -> false
+  end
 
   defp blank_default(value, default) do
     case String.trim(value) do

@@ -67,6 +67,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     def all(_query), do: raise(%Exqlite.Error{message: "database is locked"})
   end
 
+  defmodule MintReadyRaceRepo do
+    import Ecto.Query, only: [from: 2]
+
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+    alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+
+    @race_key :sympp_mint_child_ready_race_id
+
+    def arm(child_id), do: Process.put(@race_key, child_id)
+    def disarm, do: Process.delete(@race_key)
+
+    def transaction(fun) do
+      Repo.transaction(fn ->
+        case Process.get(@race_key) do
+          child_id when is_binary(child_id) ->
+            Process.delete(@race_key)
+
+            Repo.update_all(
+              from(work_package in WorkPackage, where: work_package.id == ^child_id),
+              set: [status: "claimed", updated_at: DateTime.utc_now(:microsecond)]
+            )
+
+          _child_id ->
+            :ok
+        end
+
+        fun.()
+      end)
+    end
+
+    def get(schema, id), do: Repo.get(schema, id)
+    def insert(changeset), do: Repo.insert(changeset)
+    def update_all(query, updates), do: Repo.update_all(query, updates)
+    def rollback(value), do: Repo.rollback(value)
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
 
@@ -2839,6 +2875,97 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert child.allowed_file_globs == ["elixir/lib/**/*.ex"]
   end
 
+  test "phase architect child glob scope rejects traversal and invalid broadening", %{repo: repo} do
+    {_anchor, session} =
+      create_architect_session(
+        repo,
+        "SYMPP-P7-002-GLOB-SCOPE-ANCHOR",
+        ["create:child_work_package", "read:phase"],
+        allowed_file_globs: ["elixir/lib/foo/*.ex"]
+      )
+
+    traversal_response =
+      mcp_tool(repo, session, "create_child_work_package", %{
+        "package" => %{
+          "id" => "SYMPP-P7-002-GLOB-TRAVERSAL",
+          "title" => "Traversal child",
+          "allowed_file_globs" => ["elixir/lib/../../priv/**"],
+          "acceptance_criteria" => ["Should not be created"]
+        }
+      })
+
+    assert get_in(traversal_response, ["error", "code"]) == -32_602
+    assert get_in(traversal_response, ["error", "data", "reason"]) == "path_traversal_allowed_file_globs"
+    assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-GLOB-TRAVERSAL")
+
+    encoded_traversal_response =
+      mcp_tool(repo, session, "create_child_work_package", %{
+        "package" => %{
+          "id" => "SYMPP-P7-002-GLOB-ENCODED-TRAVERSAL",
+          "title" => "Encoded traversal child",
+          "allowed_file_globs" => ["elixir/lib/%2e%2e/priv/**"],
+          "acceptance_criteria" => ["Should not be created"]
+        }
+      })
+
+    assert get_in(encoded_traversal_response, ["error", "data", "reason"]) == "path_traversal_allowed_file_globs"
+    assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-GLOB-ENCODED-TRAVERSAL")
+
+    encoded_slash_traversal_response =
+      mcp_tool(repo, session, "create_child_work_package", %{
+        "package" => %{
+          "id" => "SYMPP-P7-002-GLOB-ENCODED-SLASH-TRAVERSAL",
+          "title" => "Encoded slash traversal child",
+          "allowed_file_globs" => ["elixir/lib%2f..%2fpriv/**"],
+          "acceptance_criteria" => ["Should not be created"]
+        }
+      })
+
+    assert get_in(encoded_slash_traversal_response, ["error", "data", "reason"]) ==
+             "path_traversal_allowed_file_globs"
+
+    assert {:error, :not_found} =
+             WorkPackageRepository.get(repo, "SYMPP-P7-002-GLOB-ENCODED-SLASH-TRAVERSAL")
+
+    broadening_response =
+      mcp_tool(repo, session, "create_child_work_package", %{
+        "package" => %{
+          "id" => "SYMPP-P7-002-GLOB-BROADENING",
+          "title" => "Broadening child",
+          "allowed_file_globs" => ["elixir/*/foo/*.ex"],
+          "acceptance_criteria" => ["Should not be created"]
+        }
+      })
+
+    assert get_in(broadening_response, ["error", "code"]) == -32_602
+    assert get_in(broadening_response, ["error", "data", "reason"]) == "child_scope_outside_phase"
+    assert {:error, :not_found} = WorkPackageRepository.get(repo, "SYMPP-P7-002-GLOB-BROADENING")
+  end
+
+  test "phase architect can narrow wildcard child globs inside wildcard anchor globs", %{repo: repo} do
+    {_anchor, session} =
+      create_architect_session(
+        repo,
+        "SYMPP-P7-002-WILDCARD-ANCHOR",
+        ["create:child_work_package", "read:phase"],
+        allowed_file_globs: ["elixir/*/foo/*.ex"]
+      )
+
+    response =
+      mcp_tool(repo, session, "create_child_work_package", %{
+        "package" => %{
+          "id" => "SYMPP-P7-002-WILDCARD-CHILD",
+          "title" => "Wildcard narrowed child",
+          "allowed_file_globs" => ["elixir/lib/foo/*.ex"],
+          "acceptance_criteria" => ["Child wildcard scope stays inside anchor glob"]
+        }
+      })
+
+    assert get_in(response, ["result", "structuredContent", "work_package", "id"]) == "SYMPP-P7-002-WILDCARD-CHILD"
+    assert {:ok, child} = WorkPackageRepository.get(repo, "SYMPP-P7-002-WILDCARD-CHILD")
+    assert child.allowed_file_globs == ["elixir/lib/foo/*.ex"]
+  end
+
   test "phase architect mints child worker grant and worker is isolated to child package", %{repo: repo} do
     {_anchor, architect_session} =
       create_architect_session(repo, "SYMPP-P7-002-MINT-ANCHOR", [
@@ -2967,6 +3094,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(response, ["error", "code"]) == -32_602
     assert get_in(response, ["error", "data", "reason"]) == "child_not_ready_for_worker"
     assert repo.aggregate(AccessGrant, :count) == grants_before
+  end
+
+  test "child worker key minting revalidates ready state inside the mint transaction", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-MINT-RACE-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-RACE-CHILD")
+    grants_before = repo.aggregate(AccessGrant, :count)
+    MintReadyRaceRepo.arm(child_id)
+
+    response =
+      try do
+        MCPHarness.request(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "mint_child_worker_key",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "mint_child_worker_key",
+              "arguments" => %{"work_package_id" => child_id, "template" => %{}}
+            }
+          },
+          config: Config.default(repo: MintReadyRaceRepo),
+          session: architect_session
+        )
+      after
+        MintReadyRaceRepo.disarm()
+      end
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "reason"]) == "child_not_ready_for_worker"
+    assert repo.aggregate(AccessGrant, :count) == grants_before
+
+    assert {:ok, child} = WorkPackageRepository.get(repo, child_id)
+    assert child.status == "ready_for_worker"
   end
 
   test "phase architect cannot mint or read child worker key for sibling anchor, sibling phase, or mismatched base branch", %{repo: repo} do
