@@ -1661,11 +1661,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       child.parent_id != anchor.id -> {:error, :phase_scope_not_available}
       child.repo != anchor.repo -> {:tool_error, "repo_scope_mismatch"}
       child.base_branch != anchor.base_branch -> {:tool_error, "base_branch_scope_mismatch"}
-      true -> :ok
+      true -> require_phase_child_file_scope(child, anchor)
     end
   end
 
   defp require_phase_child_scope(%WorkPackage{}, _anchor, _phase_id), do: {:error, :phase_scope_not_available}
+
+  defp require_phase_child_file_scope(%WorkPackage{} = child, %WorkPackage{} = anchor) do
+    with {:ok, anchor_globs} <- normalize_child_scope_globs(anchor.allowed_file_globs || []),
+         {:ok, child_globs} <- normalize_child_scope_globs(child.allowed_file_globs || []),
+         :ok <- require_child_file_scope_present(child_globs),
+         :ok <- reject_overbroad_child_globs(child_globs) do
+      require_child_globs_within_anchor(child_globs, anchor_globs)
+    end
+  end
 
   defp create_child_work_package_transaction(repo, %Session{} = session, package) do
     case repo.transaction(fn ->

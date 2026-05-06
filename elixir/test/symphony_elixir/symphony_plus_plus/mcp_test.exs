@@ -3994,6 +3994,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert unchanged_wrong_base_child.updated_at == wrong_base_child_updated_at
   end
 
+  test "phase architect mint revalidates child file scope before worker grant creation", %{repo: repo} do
+    {anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-MINT-FILE-SCOPE-ANCHOR", [
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    assert {:ok, broader_file_child} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-P7-002-MINT-BROADER-FILE-SCOPE",
+                 kind: "phase_child",
+                 policy_template: "phase_child",
+                 phase_id: @architect_phase_id,
+                 parent_id: anchor.id,
+                 base_branch: anchor.base_branch,
+                 repo: anchor.repo,
+                 status: "ready_for_worker",
+                 allowed_file_globs: ["**"]
+               )
+             )
+
+    broader_file_child_updated_at = broader_file_child.updated_at
+    grants_before_mint = repo.aggregate(AccessGrant, :count)
+
+    response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => broader_file_child.id,
+        "template" => %{}
+      })
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "reason"]) == "overbroad_allowed_file_globs"
+    assert repo.aggregate(AccessGrant, :count) == grants_before_mint
+
+    assert {:ok, unchanged_child} = WorkPackageRepository.get(repo, broader_file_child.id)
+    assert unchanged_child.updated_at == broader_file_child_updated_at
+  end
+
   test "phase architect read_child_status revalidates phase anchor drift", %{repo: repo} do
     {anchor, architect_session} =
       create_architect_session(repo, "SYMPP-P7-002-READ-DRIFT-ANCHOR", [
