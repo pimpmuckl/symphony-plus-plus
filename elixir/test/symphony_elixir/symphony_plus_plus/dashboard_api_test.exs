@@ -11,6 +11,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
+  alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Finding
   alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
@@ -24,6 +26,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixirWeb.SymppDashboardApiController
 
   @endpoint SymphonyElixirWeb.Endpoint
+  @dashboard_phase_id "phase-dashboard-test"
 
   defmodule BusyRepo do
     @moduledoc false
@@ -96,6 +99,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     repo.delete_all(PlanNode)
     repo.delete_all(AccessGrant)
     repo.delete_all(WorkPackage)
+    repo.delete_all(Phase)
     :ok
   end
 
@@ -128,6 +132,85 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              "work_package" => %{"id" => "SYMPP-DASH-2"},
              "summary" => %{"artifact_count" => 0, "progress_event_count" => 0}
            } = json_response(get(auth_conn(architect_secret), "/api/v1/sympp/work-packages/SYMPP-DASH-2"), 200)
+  end
+
+  test "phase board authorization preserves exact persisted phase ids", %{repo: repo} do
+    phase_id = "phase-dashboard-exact "
+    assert {:ok, _phase} = PhaseRepository.create(repo, %{id: phase_id, title: "Exact phase"})
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-DASH-EXACT-PHASE", kind: "phase_child", phase_id: phase_id, status: "planning")
+             )
+
+    work_key = WorkKey.generate()
+
+    assert {:ok, grant} =
+             AccessGrantRepository.create(repo, %{
+               work_package_id: work_package.id,
+               phase_id: phase_id,
+               display_key: work_key.display_key,
+               secret_hash: WorkKey.secret_hash(work_key.secret),
+               grant_role: "architect",
+               capabilities: ["read:phase"],
+               expires_at: DateTime.add(DateTime.utc_now(:microsecond), 3600, :second)
+             })
+
+    assert {:ok, _assignment} =
+             AccessGrantRepository.claim(repo, work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    assert grant.phase_id == phase_id
+
+    payload = json_response(get(auth_conn(work_key.secret), "/api/v1/sympp/board"), 200)
+
+    assert payload["phase"]["id"] == phase_id
+    assert payload["total_count"] == 1
+    assert [%{"id" => "SYMPP-DASH-EXACT-PHASE"}] = payload["groups"]["planning"]
+  end
+
+  test "phase board grants are denied after their architect anchor leaves the phase", %{repo: repo} do
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-dashboard-anchor", title: "Anchor phase"})
+    assert {:ok, other_phase} = PhaseRepository.create(repo, %{id: "phase-dashboard-anchor-other", title: "Other phase"})
+
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-DASH-ANCHOR", kind: "phase_child", phase_id: phase.id, status: "planning")
+             )
+
+    assert {:ok, sibling} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-DASH-ANCHOR-SIBLING", kind: "phase_child", phase_id: phase.id, status: "planning")
+             )
+
+    work_key = WorkKey.generate()
+
+    assert {:ok, _grant} =
+             AccessGrantRepository.create(repo, %{
+               work_package_id: anchor.id,
+               phase_id: phase.id,
+               display_key: work_key.display_key,
+               secret_hash: WorkKey.secret_hash(work_key.secret),
+               grant_role: "architect",
+               capabilities: ["read:phase"],
+               expires_at: DateTime.add(DateTime.utc_now(:microsecond), 3600, :second)
+             })
+
+    assert {:ok, _assignment} =
+             AccessGrantRepository.claim(repo, work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    assert %{"phase" => %{"id" => "phase-dashboard-anchor"}} =
+             json_response(get(auth_conn(work_key.secret), "/api/v1/sympp/board"), 200)
+
+    assert {:ok, _updated_anchor} = WorkPackageRepository.update(repo, anchor.id, %{phase_id: other_phase.id})
+
+    assert %{"error" => %{"code" => "forbidden"}} =
+             json_response(get(auth_conn(work_key.secret), "/api/v1/sympp/board"), 403)
+
+    assert %{"error" => %{"code" => "forbidden"}} =
+             json_response(get(auth_conn(work_key.secret), "/api/v1/sympp/work-packages/#{sibling.id}"), 403)
   end
 
   test "board artifact reads are limited to packages that need artifact-backed readiness", %{repo: repo} do
@@ -2408,11 +2491,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   end
 
   defp create_architect_grant_secret(repo, work_package_id) do
+    phase_id = ensure_dashboard_phase(repo)
+    assign_existing_packages_to_phase(repo, phase_id)
     work_key = WorkKey.generate()
 
     assert {:ok, grant} =
              AccessGrantRepository.create(repo, %{
                work_package_id: work_package_id,
+               phase_id: phase_id,
                display_key: work_key.display_key,
                secret_hash: WorkKey.secret_hash(work_key.secret),
                grant_role: "architect",
@@ -2425,6 +2511,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     assert grant.display_key == work_key.display_key
     work_key.secret
+  end
+
+  defp ensure_dashboard_phase(repo) do
+    case PhaseRepository.get(repo, @dashboard_phase_id) do
+      {:ok, phase} ->
+        phase.id
+
+      {:error, :not_found} ->
+        assert {:ok, phase} = PhaseRepository.create(repo, %{id: @dashboard_phase_id, title: "Dashboard test phase"})
+        phase.id
+    end
+  end
+
+  defp assign_existing_packages_to_phase(repo, phase_id) do
+    assert {:ok, packages} = WorkPackageRepository.list(repo)
+
+    Enum.each(packages, fn package ->
+      assert {:ok, _updated} = WorkPackageRepository.update(repo, package.id, %{phase_id: phase_id})
+    end)
   end
 
   defp create_claimed_worker_grant(repo, work_package_id, claimed_by) do

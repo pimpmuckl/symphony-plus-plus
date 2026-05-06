@@ -16,6 +16,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
   @type t :: %__MODULE__{
           id: String.t() | nil,
           work_package_id: String.t() | nil,
+          phase_id: String.t() | nil,
           display_key: String.t() | nil,
           secret_hash: String.t() | nil,
           grant_role: String.t() | nil,
@@ -30,6 +31,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
 
   schema "sympp_access_grants" do
     field(:work_package_id, :string)
+    field(:phase_id, :string)
     field(:display_key, :string)
     field(:secret_hash, :string)
     field(:grant_role, :string)
@@ -84,6 +86,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
     |> cast(normalize_keys(attrs), [
       :id,
       :work_package_id,
+      :phase_id,
       :display_key,
       :secret_hash,
       :grant_role,
@@ -105,8 +108,56 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
     |> validate_length(:display_key, is: 4)
     |> validate_length(:secret_hash, is: 64)
     |> validate_inclusion(:grant_role, @roles)
+    |> validate_scope()
     |> validate_worker_capabilities()
   end
+
+  defp validate_scope(changeset) do
+    role = get_field(changeset, :grant_role)
+    work_package_id = string_scope(get_field(changeset, :work_package_id))
+    phase_id = string_scope(get_field(changeset, :phase_id))
+    capabilities = get_field(changeset, :capabilities, [])
+
+    changeset
+    |> validate_worker_scope(role, work_package_id, phase_id)
+    |> validate_architect_phase_scope(role, capabilities, work_package_id, phase_id)
+  end
+
+  defp validate_worker_scope(changeset, "worker", nil, _phase_id), do: add_error(changeset, :work_package_id, "can't be blank")
+
+  defp validate_worker_scope(changeset, "worker", _work_package_id, phase_id) when not is_nil(phase_id),
+    do: add_error(changeset, :phase_id, "worker grants cannot be phase scoped")
+
+  defp validate_worker_scope(changeset, _role, _work_package_id, _phase_id), do: changeset
+
+  defp validate_architect_phase_scope(changeset, "architect", capabilities, work_package_id, phase_id) do
+    if "read:phase" in capabilities do
+      changeset
+      |> require_architect_phase_anchor(work_package_id)
+      |> require_architect_phase_scope(phase_id)
+    else
+      changeset
+    end
+  end
+
+  defp validate_architect_phase_scope(changeset, _role, _capabilities, _work_package_id, _phase_id), do: changeset
+
+  defp require_architect_phase_anchor(changeset, nil),
+    do: add_error(changeset, :work_package_id, "architect read phase grants require work package anchor")
+
+  defp require_architect_phase_anchor(changeset, _work_package_id), do: changeset
+
+  defp require_architect_phase_scope(changeset, nil),
+    do: add_error(changeset, :phase_id, "architect read phase grants require phase scope")
+
+  defp require_architect_phase_scope(changeset, _phase_id), do: changeset
+
+  defp string_scope(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
+
+  defp string_scope(_value), do: nil
 
   defp validate_worker_capabilities(changeset) do
     role = get_field(changeset, :grant_role)

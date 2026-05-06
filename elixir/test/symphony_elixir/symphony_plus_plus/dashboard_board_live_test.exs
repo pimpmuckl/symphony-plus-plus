@@ -11,6 +11,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
+  alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
+  alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Finding
   alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
@@ -25,6 +27,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
   alias SymphonyElixirWeb.SymppDashboardApiController
 
   @endpoint SymphonyElixirWeb.Endpoint
+  @dashboard_phase_id "phase-dashboard-live-test"
 
   defmodule CustomBoardRepo do
     @moduledoc false
@@ -61,6 +64,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     Repo.delete_all(PlanNode)
     Repo.delete_all(AccessGrant)
     Repo.delete_all(WorkPackage)
+    Repo.delete_all(Phase)
     :ok
   end
 
@@ -1080,39 +1084,68 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
   end
 
   defp create_unclaimed_grant_secret(repo, work_package_id, role, capabilities) do
+    phase_id = if role == "architect" and "read:phase" in capabilities, do: ensure_dashboard_phase(repo)
+    if phase_id, do: assign_existing_packages_to_phase(repo, phase_id)
     work_key = WorkKey.generate()
 
-    assert {:ok, grant} =
-             AccessGrantRepository.create(repo, %{
-               work_package_id: work_package_id,
-               display_key: work_key.display_key,
-               secret_hash: WorkKey.secret_hash(work_key.secret),
-               grant_role: role,
-               capabilities: capabilities,
-               expires_at: DateTime.add(DateTime.utc_now(:microsecond), 3600, :second)
-             })
+    attrs = %{
+      work_package_id: work_package_id,
+      display_key: work_key.display_key,
+      secret_hash: WorkKey.secret_hash(work_key.secret),
+      grant_role: role,
+      capabilities: capabilities,
+      expires_at: DateTime.add(DateTime.utc_now(:microsecond), 3600, :second)
+    }
+
+    attrs = if phase_id, do: Map.put(attrs, :phase_id, phase_id), else: attrs
+
+    assert {:ok, grant} = AccessGrantRepository.create(repo, attrs)
 
     {work_key.secret, grant.id}
   end
 
   defp create_claimed_grant_secret(repo, work_package_id, role, capabilities, claimed_by) do
+    phase_id = if role == "architect" and "read:phase" in capabilities, do: ensure_dashboard_phase(repo)
+    if phase_id, do: assign_existing_packages_to_phase(repo, phase_id)
     work_key = WorkKey.generate()
 
-    assert {:ok, grant} =
-             AccessGrantRepository.create(repo, %{
-               work_package_id: work_package_id,
-               display_key: work_key.display_key,
-               secret_hash: WorkKey.secret_hash(work_key.secret),
-               grant_role: role,
-               capabilities: capabilities,
-               expires_at: DateTime.add(DateTime.utc_now(:microsecond), 3600, :second)
-             })
+    attrs = %{
+      work_package_id: work_package_id,
+      display_key: work_key.display_key,
+      secret_hash: WorkKey.secret_hash(work_key.secret),
+      grant_role: role,
+      capabilities: capabilities,
+      expires_at: DateTime.add(DateTime.utc_now(:microsecond), 3600, :second)
+    }
+
+    attrs = if phase_id, do: Map.put(attrs, :phase_id, phase_id), else: attrs
+
+    assert {:ok, grant} = AccessGrantRepository.create(repo, attrs)
 
     assert {:ok, _assignment} =
              AccessGrantRepository.claim(repo, work_key.secret, %{claimed_by: claimed_by}, DateTime.utc_now(:microsecond))
 
     assert grant.display_key == work_key.display_key
     work_key.secret
+  end
+
+  defp ensure_dashboard_phase(repo) do
+    case PhaseRepository.get(repo, @dashboard_phase_id) do
+      {:ok, phase} ->
+        phase.id
+
+      {:error, :not_found} ->
+        assert {:ok, phase} = PhaseRepository.create(repo, %{id: @dashboard_phase_id, title: "Dashboard live test phase"})
+        phase.id
+    end
+  end
+
+  defp assign_existing_packages_to_phase(repo, phase_id) do
+    assert {:ok, packages} = WorkPackageRepository.list(repo)
+
+    Enum.each(packages, fn package ->
+      assert {:ok, _updated} = WorkPackageRepository.update(repo, package.id, %{phase_id: phase_id})
+    end)
   end
 
   defp auth_conn(secret) do
@@ -1167,7 +1200,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
       Ecto.Migrator.run(Repo, WorkPackageRepository.migrations_path(), :up,
         dynamic_repo: pid,
         log: false,
-        to: 20_260_430_173_000
+        all: true
       )
 
       fun.()
@@ -1237,7 +1270,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
 
     Ecto.Migrator.run(CustomBoardRepo, WorkPackageRepository.migrations_path(), :up,
       log: false,
-      to: 20_260_430_173_000
+      all: true
     )
 
     fun.()

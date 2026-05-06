@@ -68,6 +68,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
           acceptance_criteria: [String.t()],
           status: String.t() | nil,
           parent_id: String.t() | nil,
+          phase_id: String.t() | nil,
           owner_id: String.t() | nil,
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
@@ -86,6 +87,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
     field(:acceptance_criteria, StringList, default: [])
     field(:status, :string)
     field(:parent_id, :string)
+    field(:phase_id, :string)
     field(:owner_id, :string)
 
     timestamps(type: :utc_datetime_usec)
@@ -133,6 +135,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
       :acceptance_criteria,
       :status,
       :parent_id,
+      :phase_id,
       :owner_id
     ])
     |> validate_required([:id, :kind, :title, :repo, :base_branch, :acceptance_criteria, :status])
