@@ -1298,7 +1298,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
     case configured_repo() do
       Repo -> with_configured_sympp_repo(fun, migrate?)
-      repo when is_atom(repo) -> with_custom_repo(repo, fun, migrate?)
+      repo when is_atom(repo) and not is_nil(repo) -> with_custom_repo(repo, fun, migrate?)
       nil -> with_dynamic_dashboard_repo(fun, migrate?)
     end
   end
