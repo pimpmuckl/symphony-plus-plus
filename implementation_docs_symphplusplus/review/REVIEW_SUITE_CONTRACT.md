@@ -2,6 +2,9 @@
 
 Review-suite results are first-class artifacts. They must be attached to a WorkPackage and, when a PR exists, to the current PR head SHA.
 
+For human review expectations and scope boundaries, use
+`REVIEWER_CHECKLIST.md`.
+
 ## JSON shape
 
 `attach_review_suite_result` records the canonical result shape workers may use

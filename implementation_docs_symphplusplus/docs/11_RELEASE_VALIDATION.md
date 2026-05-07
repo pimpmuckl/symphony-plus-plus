@@ -59,3 +59,33 @@ A release candidate is honest only when the PR records:
 - The exact `mix test --cover` result and coverage percentage.
 - Lint/static gate results.
 - Known gaps that are not being fixed in the release candidate.
+
+## Release gate checklist
+
+- `make -C elixir all` is green for the release candidate, or the PR records
+  the exact environment blocker. PR #39 restored this gate on the beta line;
+  later PRs should refresh it when they touch runtime code, tests, build files,
+  or release-critical policy.
+- Coverage passes the ratchet in `elixir/mix.exs`. The ratchet is near current
+  measured coverage; do not describe it as a full-coverage requirement.
+- Required review-suite lanes from the package policy or PR assignment are
+  complete for the current PR head.
+- The PR diff is scoped to the assigned WorkPackage and owned paths.
+- No raw secrets or secret-bearing URLs appear in committed files, PR text,
+  logs, or review artifacts.
+- Known limitations and any blocked validation are documented before merge.
+
+## Known limitations
+
+- Symphony++ readiness gates control Symphony++ package state; they do not
+  replace GitHub branch protection or a human merge decision.
+- Local filesystem isolation depends on the runner/worktree setup. Pair package
+  scope with changed-file review and branch protection.
+- Secret-dependent validation must be reported as blocked when safe test
+  credentials are unavailable.
+- Existing OpenAI/Symphony implementation docs are not removed by this release
+  readiness slice. Cleanup of older docs is a later architect decision.
+- The Kraken pilot playbook remains a pilot migration guide, not proof that all
+  future migrations are production-ready.
+- `100%` coverage is a future strict-coverage campaign, not a current release
+  blocker.

@@ -14,6 +14,12 @@ A WorkPackage can be marked ready only when all gates required by its policy tem
 - Changed files are within allowed scope.
 - Base branch matches package constraints.
 
+These gates are readiness evidence for Symphony++ package state. They do not
+automatically merge code, bypass branch protection, or prove production
+readiness beyond the package's recorded validation. Use
+`REVIEWER_CHECKLIST.md` for PR review and `../docs/11_RELEASE_VALIDATION.md`
+for release-candidate evidence.
+
 ## Phase-child additional gates
 
 - Parent phase is active.
