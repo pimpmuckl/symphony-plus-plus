@@ -24,4 +24,5 @@
 ## Documentation conventions
 
 - Update implementation notes when discovering constraints.
-- Keep `planning/Symphony-plus-plus/work_packages/00_INDEX.md` current if packages are split or merged.
+- Keep live WorkPackage state, findings, progress, acceptance evidence, and
+  review evidence current when packages are split or merged.

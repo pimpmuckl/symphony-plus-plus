@@ -23,8 +23,10 @@ runbook is the shorter command-flow reference.
 
 1. Create phase container.
 2. Mint architect grant.
-3. Give architect this package and `00_ARCHITECT_AGENT_HANDOFF.md`.
-4. Architect creates child packages from `work_packages/`.
+3. Give architect this package, `00_ARCHITECT_AGENT_HANDOFF.md`, and the
+   operator-approved phase scope.
+4. Architect creates child packages from the phase scope and records dependency
+   order in Symphony++ state.
 5. Architect mints worker keys.
 6. Workers implement child packages.
 7. Architect merges accepted child PRs into phase branch.

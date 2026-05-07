@@ -1,40 +1,62 @@
-# Symphony
+# Symphony++
 
-Symphony turns project work into isolated, autonomous implementation runs, allowing teams to manage
-work instead of supervising coding agents.
+Symphony++ is a permissioned work-package control plane built on the OpenAI
+Symphony Elixir runtime. It lets operators create bounded WorkPackages, mint
+scoped worker grants, expose virtual planning files through MCP, attach
+GitHub/review evidence, and gate readiness before human merge.
 
-[![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](.github/media/symphony-demo.mp4)
+The upstream Symphony runtime remains in `elixir/`. Symphony++ extends it with
+WorkPackage ledger, access grant, MCP, dashboard, GitHub/review, and release
+readiness surfaces without replacing the base Linear-oriented runtime docs.
 
-_In this [demo video](.github/media/symphony-demo.mp4), Symphony monitors a Linear board for work and spawns agents to handle the tasks. The agents complete the tasks and provide proof of work: CI status, PR review feedback, complexity analysis, and walkthrough videos. When accepted, the agents land the PR safely. Engineers do not need to supervise Codex; they can manage the work at a higher level._
+## Start Here
 
-> [!WARNING]
-> Symphony is a low-key engineering preview for testing in trusted environments.
+- Runtime setup and workflow configuration: `elixir/README.md`
+- Current product and architecture contract:
+  `implementation_docs_symphplusplus/docs/02_SYSTEM_SPEC.md`
+- Operator flow: `implementation_docs_symphplusplus/docs/12_OPERATOR_TRAINING.md`
+- Short operational runbook:
+  `implementation_docs_symphplusplus/docs/09_OPERATIONAL_RUNBOOK.md`
+- Release validation:
+  `implementation_docs_symphplusplus/docs/11_RELEASE_VALIDATION.md`
+- Security and guardrails:
+  `implementation_docs_symphplusplus/docs/06_SECURITY_AND_GUARDRAILS.md`
+- MCP and worker skill contract:
+  `implementation_docs_symphplusplus/docs/04_MCP_AND_SKILL_CONTRACT.md`
 
-## Running Symphony
+## Validation
 
-### Requirements
+Run the full local gate from the repository root when `make` and `mix` are
+already on `PATH`:
 
-Symphony works best in codebases that have adopted
-[harness engineering](https://openai.com/index/harness-engineering/). Symphony is the next step --
-moving from managing coding agents to managing work that needs to get done.
+```powershell
+make -C elixir all
+```
 
-### Option 1. Make your own
+If the Elixir toolchain is managed by `mise`, run the validated command from
+the Elixir project:
 
-Tell your favorite coding agent to build Symphony in a programming language of your choice:
+```powershell
+cd elixir
+mise exec -- make all
+```
 
-> Implement Symphony according to the following spec:
-> https://github.com/openai/symphony/blob/main/SPEC.md
+See `implementation_docs_symphplusplus/docs/11_RELEASE_VALIDATION.md` for the
+release checklist, coverage ratchet notes, and blocked-validation reporting
+rules.
 
-### Option 2. Use our experimental reference implementation
+## Repository Map
 
-Check out [elixir/README.md](elixir/README.md) for instructions on how to set up your environment
-and run the Elixir-based Symphony implementation. You can also ask your favorite coding agent to
-help with the setup:
-
-> Set up Symphony for my repository based on
-> https://github.com/openai/symphony/blob/main/elixir/README.md
-
----
+- `elixir/` contains the runnable Symphony Elixir service and upstream runtime
+  documentation.
+- `.codex/skills/symphony-work-package/` contains the installable worker skill.
+- `implementation_docs_symphplusplus/docs/` contains the product, permission,
+  MCP, dashboard, GitHub, operator, and release contracts.
+- `implementation_docs_symphplusplus/runbooks/` contains operator runbooks.
+- `implementation_docs_symphplusplus/review/` contains readiness and reviewer
+  checklists.
+- `implementation_docs_symphplusplus/templates/`, `schemas/`, and `mcp/`
+  contain live templates and contracts used by operators and workers.
 
 ## License
 

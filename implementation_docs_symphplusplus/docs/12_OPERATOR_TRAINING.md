@@ -42,8 +42,9 @@ their assigned packages.
 1. Read `00_ARCHITECT_AGENT_HANDOFF.md`.
 2. Create or select the phase branch and confirm dependency packages are merged.
 3. Mint an architect grant for the phase, not a broad worker grant.
-4. Give the architect `../work_packages/00_INDEX.md`, the relevant package
-   specs, and the phase constraints.
+4. Give the architect the phase objective, package constraints, owned paths,
+   acceptance criteria, and any dependency summaries needed to split child
+   packages.
 5. Require one worker PR per package unless the architect explicitly splits or
    combines scope with rationale.
 6. Require each worker to prove package acceptance and review gates on its own

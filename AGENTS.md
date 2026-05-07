@@ -10,10 +10,14 @@
 
 ## Planning Assets
 
-- Treat `implementation_docs_symphplusplus/` as the stable planning package location.
-- Use `implementation_docs_symphplusplus/work_packages/00_INDEX.md` as the architecture queue.
-- Use the matching file in `implementation_docs_symphplusplus/work_packages/` as the source of truth for package scope, acceptance criteria, and test plan.
-- Keep `implementation_docs_symphplusplus/templates/WORKFLOW.symfony_pp.md` as a draft template until a later package wires Symphony++ runtime behavior.
+- Treat `implementation_docs_symphplusplus/` as the stable operator and
+  product-contract location.
+- Use the current WorkPackage ledger, MCP resources, operator docs, and
+  package-specific assignment text as the source of truth for package scope,
+  acceptance criteria, and test plans.
+- Keep `implementation_docs_symphplusplus/templates/WORKFLOW.symfony_pp.md` as
+  an explicit-copy workflow template for Symphony++ lanes. It is not a runtime
+  default; validate any copied workflow through the assigned package before use.
 
 ## Worker Prompt Conventions
 
