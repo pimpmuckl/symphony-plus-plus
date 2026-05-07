@@ -15,7 +15,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Artifact do
           title: String.t() | nil,
           kind: String.t() | nil,
           uri: String.t() | nil,
-          metadata: map(),
+          metadata: map() | nil,
           sequence: non_neg_integer() | nil,
           created_at: DateTime.t() | nil,
           inserted_at: DateTime.t() | nil,

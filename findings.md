@@ -217,3 +217,28 @@
 - Fresh T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T094632Z-580dcb60` on `79a154081da494892bd4541533f5dcb77c8e9a74` had Bravo clean and one Alpha finding asking explicit response-only `state_key` callers to preserve claimed worker sessions across requests.
 - That Alpha finding conflicts with the overseer product/security decision that explicit `state_key` is handshake/initialize continuity only, not a bearer capability; workers must call `claim_work_key(secret, claimed_by)` again after reconnect initialize. Need overseer decision before changing this contract.
 - Overseer decision: keep the current product/security contract. Treat state-key-only claimed-session persistence objections as invalid/out-of-scope for P3-002; rerun T2 with append-only reviewer instructions instead of changing the contract.
+
+## SYMPP-P8-004 Dialyzer Release-Gate Findings - 2026-05-07
+
+### Baseline Warning Taxonomy
+
+- `call`/`call_without_opaque`: likely exception-message and `MapSet` type/spec mismatches, not intended behavior changes.
+- `contract_with_opaque`: tracker state set specs likely use raw map shapes where Dialyzer expects `MapSet.t(...)`.
+- `guard_fail`: usually impossible type guards after earlier pattern refinement; review individually before removing.
+- `pattern_match` / `pattern_match_cov`: mixed causes. Some are genuinely redundant branches, while repository/API error branches may be defensive behavior hidden by underspecified specs.
+- `unused_fun`: `mcp/auth.ex` has a private helper that current code no longer reaches.
+
+### Risk Notes
+
+- Repository and MCP boundary warnings are medium risk because removing `{:error, _}` branches could hide real storage or service failures.
+- Dashboard/LiveView simplifications need focused tests or existing coverage because they are user-facing.
+- Planning redactor and tracker state warnings look mechanical if inspection confirms no behavior intent behind the impossible matches.
+
+### Implemented Resolution Notes
+
+- Repository warnings were not fixed by deleting defensive `{:error, _}` branches; repository specs now model SQLite busy/storage failures and storage calls normalize Exqlite exceptions into those typed errors.
+- `MCP.Auth` keeps the existing unexpected grant lookup defensive behavior for dynamic repository modules; the lookup is routed through a local function capture so Dialyzer does not erase that tested boundary path.
+- Covered MCP/Dashboard/LiveView branches were removed only where the local API shape makes the branch impossible, such as already-normalized required objects, binary-only parser outputs, and non-returned auth variants.
+- Tracker MapSet warnings came from exposing non-opaque map shapes in state-set helpers; call sites now build opaque MapSets from canonical state names before using MapSet APIs.
+- The final planning redactor warning was a true private-helper inference issue: `secret_text?/1` is only called with query string binaries, so the impossible non-binary check was removed by making the helper binary-guarded.
+- No broad `@dialyzer` suppression or ignore file was added.

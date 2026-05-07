@@ -240,7 +240,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Redactor do
       String.ends_with?(normalized, "_sig")
   end
 
-  defp secret_text?(value), do: is_binary(value) and Regex.match?(@sensitive_text_pattern, value)
+  defp secret_text?(value) when is_binary(value), do: Regex.match?(@sensitive_text_pattern, value)
 
   defp decode_www_form(value) do
     URI.decode_www_form(value)

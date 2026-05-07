@@ -745,9 +745,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp readiness_context(%WorkPackage{} = work_package, plan_nodes, progress_events, artifacts, findings) do
-    artifacts = artifacts || []
-    findings = findings || []
-
     %{
       work_package: work_package,
       plan_nodes: plan_nodes,

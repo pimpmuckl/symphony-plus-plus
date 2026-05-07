@@ -1899,6 +1899,45 @@
 
 - Commit/push this T2 fix, rerun full-diff T2 against `symphony-plus-plus/beta` on the new pushed head, then proceed to GitHub review only if that same-head T2 is clean.
 
+## SYMPP-P8-004 Dialyzer Gate Progress - 2026-05-07
+
+### Implementation Update
+
+- Reduced the Dialyzer baseline from 53 warnings to 0 by applying typed repository/storage error contracts, schema field nilability fixes, targeted dead-branch removal, tracker MapSet typing cleanup, and the final binary-only redactor helper fix.
+- Removed the temporary redactor debug script and generated `erl_crash.dump` artifact used while isolating the last warning.
+
+### Validation Results
+
+| Command | Result | Notes |
+|---|---|---|
+| `make -C elixir dialyzer` | pass | `Total errors: 0`. Windows emitted the known Phoenix LiveView colocated JS symlink warning during compile. |
+| `mix test test/symphony_elixir/symphony_plus_plus test/mix/tasks/sympp_create_work_test.exs` | pass | 592 tests, 0 failures. Validated touched Symphony++ repository, MCP, dashboard, planning, tracker, and create-work seams. |
+| `mix test test/symphony_elixir/symphony_plus_plus/access_grants_test.exs test/symphony_elixir/symphony_plus_plus/agent_runs_test.exs test/symphony_elixir/symphony_plus_plus/phases_test.exs test/symphony_elixir/symphony_plus_plus/work_packages_test.exs` | pass | 75 tests, 0 failures after adding canonical repository coverage for SQLite busy/storage normalization. |
+| `git diff --check` | pass | No whitespace errors. |
+| `make -C elixir all` | pass | Setup, build, format check, lint, coverage, and Dialyzer all passed. Coverage: 83.17% against 83.10%; final Dialyzer step: `Total errors: 0`. |
+
+### Next Steps
+
+- Prepare and validate the PR body, then commit/push and run T1, T2, and GitHub review.
+
+## SYMPP-P8-004 Dialyzer Release-Gate Follow-Up - 2026-05-07
+
+### Session Log
+
+- 2026-05-07T15:52:26+02:00: Started in assigned worktree `C:\Users\jonat\.codex\worktrees\symphony-plus-plus-SYMPP-P8-004-dialyzer` on branch `agent/SYMPP-P8-004/dialyzer-gate-cleanup` at base `1a8d121`.
+- Added Dialyzer-specific plan and warning classification to local `task_plan.md` and `findings.md` before implementation edits.
+
+### Next Steps
+
+- Confirm current `make -C elixir dialyzer` output in this worktree.
+- Inspect warning sites and apply minimal spec/control-flow fixes.
+
+### Baseline Validation
+
+| Command | Result | Notes |
+|---|---|---|
+| `make -C elixir dialyzer` | fail | Exit 2 with 53 Dialyzer warnings, matching the parent-observed blocker list. Fresh worktree also emitted the known Windows Phoenix LiveView symlink warning during compile. |
+
 ### Current State
 
 - Latest pushed code head before planning-note commit: `79a154081da494892bd4541533f5dcb77c8e9a74`.

@@ -9,6 +9,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
 
+  defmodule LockedWorkPackageRepo do
+    def get(_schema, _id), do: raise(%Exqlite.Error{message: "database is locked"})
+  end
+
+  defmodule BrokenWorkPackageRepo do
+    def get(_schema, _id), do: raise(%Exqlite.Error{message: "disk I/O failed"})
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
 
@@ -117,6 +125,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
   test "returns not found for missing work packages", %{repo: repo} do
     assert {:error, :not_found} = Repository.get(repo, "missing")
     assert {:error, :not_found} = Repository.update(repo, "missing", %{title: "Nope"})
+  end
+
+  test "repository normalizes SQLite read failures" do
+    assert {:error, :database_busy} = Repository.get(LockedWorkPackageRepo, "wp-1")
+    assert {:error, {:storage_failed, "disk I/O failed"}} = Repository.get(BrokenWorkPackageRepo, "wp-1")
   end
 
   test "rejects duplicate caller-provided ids", %{repo: repo} do

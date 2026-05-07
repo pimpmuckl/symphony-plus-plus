@@ -14,6 +14,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
 
   @type error ::
           :already_claimed
+          | :database_busy
           | :display_key_only
           | :expired
           | :id_already_exists
@@ -23,6 +24,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
           | :revoked
           | {:constraint_failed, String.t()}
           | {:migration_failed, term()}
+          | {:storage_failed, String.t()}
           | Changeset.t()
 
   @spec migrate(repo()) :: :ok | {:error, error()}
@@ -44,6 +46,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     end
   rescue
     error in Ecto.ConstraintError -> normalize_constraint_error(error)
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec get(repo(), String.t()) :: {:ok, AccessGrant.t()} | {:error, error()}
@@ -52,6 +55,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
       nil -> {:error, :not_found}
       access_grant -> {:ok, access_grant}
     end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec list_for_work_package(repo(), String.t()) :: {:ok, [AccessGrant.t()]} | {:error, error()}
@@ -65,6 +70,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
       )
 
     {:ok, grants}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec list_for_phase(repo(), String.t()) :: {:ok, [AccessGrant.t()]} | {:error, error()}
@@ -78,6 +85,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
       )
 
     {:ok, grants}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec find_by_secret_hash(repo(), String.t()) :: {:ok, AccessGrant.t()} | {:error, error()}
@@ -88,6 +97,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
       nil -> {:error, :invalid_secret}
       access_grant -> {:ok, access_grant}
     end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec claim(repo(), String.t(), map(), DateTime.t()) :: {:ok, Assignment.t()} | {:error, error()}
@@ -107,6 +118,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
       false -> {:error, :invalid_secret}
       {:error, _reason} = error -> error
     end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec revoke(repo(), String.t(), DateTime.t()) :: {:ok, AccessGrant.t()} | {:error, error()}
@@ -116,6 +129,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
       |> AccessGrant.revoke_changeset(now)
       |> repo.update()
     end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec validate_work_package(repo(), String.t()) :: :ok | {:error, error()}
@@ -304,6 +319,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
 
   defp normalize_constraint_error(%Ecto.ConstraintError{type: type}) do
     {:error, {:constraint_failed, Atom.to_string(type)}}
+  end
+
+  defp normalize_exqlite_error(error) do
+    message = Exception.message(error)
+    normalized_message = String.downcase(message)
+
+    if String.contains?(normalized_message, "busy") or String.contains?(normalized_message, "locked") do
+      {:error, :database_busy}
+    else
+      {:error, {:storage_failed, message}}
+    end
   end
 
   defp migrations_path do

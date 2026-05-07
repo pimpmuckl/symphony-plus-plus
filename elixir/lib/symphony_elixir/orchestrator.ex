@@ -671,8 +671,6 @@ defmodule SymphonyElixir.Orchestrator do
     :ok
   end
 
-  defp start_agent_runner_task(_pid), do: {:error, :invalid_worker_task}
-
   defp codex_update_recipient(opts) when is_list(opts) do
     case Keyword.get(opts, :name, __MODULE__) do
       name when is_atom(name) -> name

@@ -346,3 +346,42 @@ Phase 3
 - Do not create live Linear state.
 - Do not log or expose raw work keys, bearer tokens, API keys, or secrets.
 - Ask the overseeing architecture agent before making backward-compatibility-sensitive or broader-scope decisions.
+
+## SYMPP-P8-004 Dialyzer Release-Gate Follow-Up - 2026-05-07
+
+### Goal
+
+Make `make -C elixir dialyzer` meaningful and green for the release gate without broad suppressions or product-behavior drift.
+
+### Scope Boundaries
+
+- Own only the Dialyzer cleanup split from SYMPP-P8-004 after PR #38.
+- Preserve upstream Symphony and Linear behavior unless current tests/code prove a branch is impossible.
+- Prefer truthful specs, helper return types, and control-flow tightening over ignores.
+- Keep defensive runtime branches when the warning is caused by underspecified repository/API typing.
+
+### Warning Classification
+
+| Class | Examples | Likely fix | Risk |
+|---|---|---|---|
+| Underspecified return/specs | repository `{:error, _}` branches, phase/artifact lookups, MCP tool helpers | Broaden or correct specs/typespecs to include real error shapes | Medium: must not delete defensive handling for storage/service failures |
+| Over-narrow helper success typing | tool result helpers, dashboard/MCP guards, return-shape mismatches | Normalize helper specs and call sites to the actual tagged result shape | Medium: product-visible tool errors must stay stable |
+| Impossible/dead control flow | covered pattern matches, impossible guards, unused private helper | Remove redundant clause or simplify branch only where runtime shape is truly impossible | Low/medium: verify tests for touched user-facing paths |
+| Opaque MapSet misuse | tracker state sets and tracker adapter set ops | Use `MapSet.t(...)` specs and pass MapSets to MapSet APIs | Low: mechanical typing cleanup |
+| Macro/module attribute match artifact | planning redactor module-level pattern | Rewrite to a direct compile-time conditional or simple module body | Low: no product behavior intended |
+| CLI task exception typing | `mix sympp.create_work` error formatting | Use exception-message API that matches `rescue` typing | Low: preserve CLI output semantics |
+
+### Implementation Plan
+
+1. Confirm the current Dialyzer output in this worktree and capture any drift from the parent-observed list.
+2. Inspect each touched seam and group edits by truthful cause, keeping the diff reviewable.
+3. Apply minimal code/spec fixes and focused tests for behavior-sensitive seams.
+4. Run formatting, focused tests, `git diff --check`, `make -C elixir dialyzer`, and `make -C elixir all` if Dialyzer is green.
+5. Commit, push, create PR with the required title/template, then run T1, T2, and GitHub review-suite lanes.
+
+### Current Status
+
+- Completed: baseline Dialyzer output was confirmed at 53 warnings and classified by cause/risk before code edits.
+- Completed: warning cleanup is implemented as targeted spec, storage-error typing, opaque MapSet, and dead-control-flow fixes without broad Dialyzer suppression.
+- Completed: `make -C elixir dialyzer` is green with `Total errors: 0`.
+- In progress: focused validation, full release gate validation, PR publication, and required review-suite lanes.

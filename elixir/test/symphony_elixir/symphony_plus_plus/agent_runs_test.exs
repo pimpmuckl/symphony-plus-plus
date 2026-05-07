@@ -12,6 +12,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
 
+  defmodule LockedAgentRunRepo do
+    def get(_schema, _id), do: raise(%Exqlite.Error{message: "database is locked"})
+  end
+
+  defmodule BrokenAgentRunRepo do
+    def get(_schema, _id), do: raise(%Exqlite.Error{message: "disk I/O failed"})
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
 
@@ -154,6 +162,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
     assert {:ok, replaced} = Repository.get(repo, starting.id)
     assert replaced.status == "failed"
     assert replaced.reason == "replaced by retry dispatch"
+  end
+
+  test "repository normalizes SQLite read failures" do
+    assert {:error, :database_busy} = Repository.get(LockedAgentRunRepo, "run-1")
+    assert {:error, {:storage_failed, "disk I/O failed"}} = Repository.get(BrokenAgentRunRepo, "run-1")
   end
 
   test "replacement retry does not fail starting row that already promoted to running", %{repo: repo} do

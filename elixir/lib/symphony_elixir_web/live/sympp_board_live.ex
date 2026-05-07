@@ -308,8 +308,6 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     _error in Exqlite.Error -> false
   end
 
-  defp start_custom_dashboard_repo(nil, _repo, _fun), do: {:error, :not_found}
-
   defp start_custom_dashboard_repo(database_path, repo, fun) do
     case repo.start_link(database: database_path, name: nil) do
       {:ok, pid} -> call_owned_custom_repo(unlink_transient_repo(pid), repo, database_path, fun)

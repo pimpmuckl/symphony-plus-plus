@@ -6,11 +6,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment do
 
   @type t :: %__MODULE__{
           grant_id: String.t(),
-          work_package_id: String.t(),
+          work_package_id: String.t() | nil,
           phase_id: String.t() | nil,
           display_key: String.t(),
           grant_role: String.t(),
-          capabilities: [String.t()],
+          capabilities: [String.t()] | nil,
           claimed_at: DateTime.t(),
           claimed_by: String.t()
         }

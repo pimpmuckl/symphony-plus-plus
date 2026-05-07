@@ -74,7 +74,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
     }
   end
 
-  @spec work_package_id(t()) :: String.t()
+  @spec work_package_id(t()) :: String.t() | nil
   def work_package_id(%__MODULE__{assignment: %Assignment{work_package_id: work_package_id}}), do: work_package_id
 
   @spec phase_id(t()) :: String.t() | nil

@@ -16,7 +16,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Auth do
   def require_session(%Session{} = session, repo) when is_atom(repo) do
     grant_id = session.assignment.grant_id
 
-    case AccessGrantRepository.get(repo, grant_id) do
+    case fetch_grant(repo, grant_id) do
       {:ok, %AccessGrant{} = grant} ->
         with :ok <- require_proof(session, grant),
              {:ok, live_session} <-
@@ -43,6 +43,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Auth do
 
   def require_session(_session, repo) when is_atom(repo), do: {:error, {:unauthorized, :invalid_session}}
 
+  defp fetch_grant(repo, grant_id) do
+    fetch = &AccessGrantRepository.get/2
+    fetch.(repo, grant_id)
+  end
+
   defp require_proof(%Session{proof_hash: proof_hash}, %AccessGrant{secret_hash: secret_hash})
        when is_binary(proof_hash) and is_binary(secret_hash) do
     if Plug.Crypto.secure_compare(proof_hash, secret_hash) do
@@ -54,6 +59,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Auth do
 
   defp require_proof(_session, _grant), do: {:error, :missing_session_proof}
 
+  defp term_type(%module{}), do: module
+  defp term_type(term) when is_tuple(term), do: :tuple
+  defp term_type(term) when is_map(term), do: :map
+  defp term_type(term) when is_list(term), do: :list
+  defp term_type(term) when is_atom(term), do: :atom
+  defp term_type(term) when is_binary(term), do: :binary
+  defp term_type(_term), do: :term
+
   @spec require_work_package(Session.t() | nil, String.t(), module()) :: {:ok, Session.t()} | {:error, denial()}
   def require_work_package(session, work_package_id, repo) when is_binary(work_package_id) and is_atom(repo) do
     with {:ok, %Session{} = session} <- require_session(session, repo) do
@@ -64,12 +77,4 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Auth do
       end
     end
   end
-
-  defp term_type(%module{}), do: module
-  defp term_type(term) when is_tuple(term), do: :tuple
-  defp term_type(term) when is_map(term), do: :map
-  defp term_type(term) when is_list(term), do: :list
-  defp term_type(term) when is_atom(term), do: :atom
-  defp term_type(term) when is_binary(term), do: :binary
-  defp term_type(_term), do: :term
 end

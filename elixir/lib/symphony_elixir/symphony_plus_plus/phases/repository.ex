@@ -9,9 +9,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Phases.Repository do
 
   @type repo :: module()
   @type error ::
-          :id_already_exists
+          :database_busy
+          | :id_already_exists
           | :not_found
           | {:migration_failed, term()}
+          | {:storage_failed, String.t()}
           | Changeset.t()
 
   @spec migrate(repo()) :: :ok | {:error, error()}
@@ -30,6 +32,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Phases.Repository do
     |> normalize_insert_result()
   rescue
     _error in Ecto.ConstraintError -> {:error, :id_already_exists}
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec get(repo(), String.t()) :: {:ok, Phase.t()} | {:error, error()}
@@ -38,6 +41,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Phases.Repository do
       nil -> {:error, :not_found}
       phase -> {:ok, phase}
     end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec list(repo()) :: {:ok, [Phase.t()]} | {:error, error()}
@@ -50,6 +55,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Phases.Repository do
       )
 
     {:ok, phases}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   defp normalize_insert_result({:ok, phase}), do: {:ok, phase}
@@ -67,5 +74,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Phases.Repository do
       {:id, {_message, options}} -> Keyword.get(options, :constraint) == :unique
       _error -> false
     end)
+  end
+
+  defp normalize_exqlite_error(error) do
+    message = Exception.message(error)
+    normalized_message = String.downcase(message)
+
+    if String.contains?(normalized_message, "busy") or String.contains?(normalized_message, "locked") do
+      {:error, :database_busy}
+    else
+      {:error, {:storage_failed, message}}
+    end
   end
 end

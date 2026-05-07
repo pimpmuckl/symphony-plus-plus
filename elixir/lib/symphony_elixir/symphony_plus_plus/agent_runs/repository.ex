@@ -11,11 +11,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
   @type error ::
           :active_run_exists
           | :agent_run_work_package_mismatch
+          | :database_busy
           | :id_already_exists
           | :not_active
           | :not_found
           | {:constraint_failed, String.t()}
           | {:migration_failed, term()}
+          | {:storage_failed, String.t()}
           | Changeset.t()
 
   @spec migrate(repo()) :: :ok | {:error, error()}
@@ -32,6 +34,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
       {:ok, agent_run} -> {:ok, agent_run}
       {:error, reason} -> {:error, reason}
     end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec get(repo(), String.t()) :: {:ok, AgentRun.t()} | {:error, error()}
@@ -40,6 +44,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
       nil -> {:error, :not_found}
       agent_run -> {:ok, agent_run}
     end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec list_for_work_package(repo(), String.t()) :: {:ok, [AgentRun.t()]} | {:error, error()}
@@ -53,6 +59,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
       )
 
     {:ok, agent_runs}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec list_active(repo()) :: {:ok, [AgentRun.t()]} | {:error, error()}
@@ -66,6 +74,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
       )
 
     {:ok, agent_runs}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec active_for_work_package(repo(), String.t()) :: {:ok, AgentRun.t()} | {:error, error()}
@@ -82,6 +92,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
       nil -> {:error, :not_found}
       agent_run -> {:ok, agent_run}
     end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec heartbeat(repo(), String.t(), map()) :: {:ok, AgentRun.t()} | {:error, error()}
@@ -144,6 +156,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
     |> normalize_insert_result()
   rescue
     error in Ecto.ConstraintError -> normalize_constraint_error(error)
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   defp release_previous_attempt(_repo, previous_agent_run_id, _work_package_id, _opts)
@@ -415,6 +428,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
 
   defp normalize_constraint_error(%Ecto.ConstraintError{type: type}) do
     {:error, {:constraint_failed, Atom.to_string(type)}}
+  end
+
+  defp normalize_exqlite_error(error) do
+    message = Exception.message(error)
+    normalized_message = String.downcase(message)
+
+    if String.contains?(normalized_message, "busy") or String.contains?(normalized_message, "locked") do
+      {:error, :database_busy}
+    else
+      {:error, {:storage_failed, message}}
+    end
   end
 
   defp migrations_path do

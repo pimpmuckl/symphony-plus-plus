@@ -1111,7 +1111,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp claimable_tool_specs, do: [health_tool_spec(), worker_tool_spec("claim_work_key")]
 
-  defp architect_tool_specs_for_session(%Session{assignment: %{capabilities: capabilities}}) do
+  defp architect_tool_specs_for_session(%Session{assignment: %{capabilities: capabilities}}) when is_list(capabilities) do
     @architect_tools
     |> Enum.filter(&(architect_tool_required_capabilities(&1) -- capabilities == []))
     |> Enum.map(&architect_tool_spec/1)
@@ -1373,7 +1373,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, code, message, data} -> {:error, code, message, data}
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "claim_work_key", "reason" => reason}}
       {:error, reason} -> claim_error(reason)
-      _not_same_session -> {:error, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => "session_already_bound"}}
     end
   rescue
     _error -> {:error, -32_000, "Server error", %{"tool" => "claim_work_key", "reason" => "ledger_unavailable"}}
@@ -1503,7 +1502,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp claim_error(:database_busy), do: service_error(:database_busy, "claim_work_key")
   defp claim_error({:storage_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
-  defp claim_error({:migration_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
   defp claim_error(reason), do: {:error, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => reason_text(reason)}}
 
   defp architect_tool("read_child_status", arguments, %__MODULE__{config: config, session: session}) do
@@ -2220,8 +2218,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp normalized_merge_artifact(_merge_artifact), do: {:tool_error, "invalid_merge_artifact"}
-
   defp merge_artifact_string(merge_artifact, key) do
     case Map.get(merge_artifact, key) do
       value when is_binary(value) ->
@@ -2588,10 +2584,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp glob_segments_within?(child_segments, ["**" | anchor_tail]) do
     glob_segments_within?(child_segments, anchor_tail) or
-      case child_segments do
-        [] -> false
-        [_child_head | child_tail] -> glob_segments_within?(child_tail, ["**" | anchor_tail])
-      end
+      glob_segments_within?(tl(child_segments), ["**" | anchor_tail])
   end
 
   defp glob_segments_within?(["**" | _child_tail], [_anchor_head | _anchor_tail]), do: false
@@ -3160,9 +3153,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:tool_error, reason} ->
         {:tool_error, reason}
 
-      {:ok, nil} ->
-        {:error, :not_found}
-
       {:error, reason} when reason in [:database_busy] ->
         {:error, reason}
 
@@ -3427,9 +3417,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
       {:ok, %WorkPackage{}} ->
         {:ok, payload}
-
-      {:ok, nil} ->
-        {:error, :not_found}
 
       {:error, reason} ->
         {:error, reason}
@@ -4708,7 +4695,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case metadata_event_attrs(session, arguments, tool, status, payload) do
       {:ok, idempotency_key, attrs} -> append_progress_event_or_replay(repo, session, attrs, idempotency_key, tool)
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason}}
-      {:error, reason} -> worker_error(reason, tool)
     end
   end
 
@@ -4849,9 +4835,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
       {:tool_error, reason} ->
         {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason}}
-
-      {:error, reason} ->
-        worker_error(reason, tool)
     end
   end
 
@@ -4963,9 +4946,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
       {:error, code, message, data} ->
         repo.rollback({:mcp_error, code, message, data})
-
-      {:error, reason} ->
-        repo.rollback(reason)
     end
   end
 
@@ -4982,7 +4962,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case metadata_event_attrs(session, arguments, "attach_review_suite_result", "review_suite_passed", replay_payload) do
       {:ok, idempotency_key, attrs} -> replay_existing_review_suite_result_event(repo, session, idempotency_key, attrs)
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "attach_review_suite_result", "reason" => reason}}
-      {:error, reason} -> worker_error(reason, "attach_review_suite_result")
     end
   end
 

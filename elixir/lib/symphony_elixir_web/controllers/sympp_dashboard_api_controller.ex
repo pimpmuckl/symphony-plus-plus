@@ -524,7 +524,6 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       else
         false -> {:error, :unauthorized}
         {:error, :invalid_secret} -> {:error, :unauthorized}
-        {:error, :not_found} -> {:error, :unauthorized}
         {:error, reason} -> {:error, reason}
       end
     end)
