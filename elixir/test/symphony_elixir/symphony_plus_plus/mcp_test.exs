@@ -4327,6 +4327,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(merge_response, ["result", "structuredContent", "artifact", "kind"]) == "phase_merge"
     assert get_in(merge_response, ["result", "structuredContent", "merge_artifact", "status"]) == "merged_into_phase"
     assert get_in(merge_response, ["result", "structuredContent", "artifact", "metadata", "commit_sha"]) == "p7-003-flow-head"
+    merge_event = repo.get!(ProgressEvent, get_in(merge_response, ["result", "structuredContent", "merge", "id"]))
+    assert merge_event.actor_id == architect_session.assignment.claimed_by
+    assert merge_event.actor_type == "architect"
+    assert merge_event.access_grant_id == architect_session.assignment.grant_id
+    assert merge_event.payload["source_tool"] == "merge_child_into_phase"
 
     post_merge_worker_report_blocker_response =
       mcp_tool(repo, worker_session, "report_blocker", %{
@@ -5292,7 +5297,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "payload" => %{
                 "Authorization: Bearer #{leaked_secret}" => "present",
                 "Authorization: Bearer #{second_leaked_secret}" => "also present",
-                "note" => "Before Bearer #{leaked_secret} after"
+                "note" => "Before Bearer #{leaked_secret} after",
+                "safe_url" => "Review https://example.test/issues/1?w=1",
+                "signed_url" => "Fetch https://example.test/download?sig=#{leaked_secret}&page=1"
               }
             }
           }
@@ -5306,6 +5313,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     text_redacted_payload = get_in(text_redacted_progress_response, ["result", "structuredContent", "progress_event", "payload"])
     assert text_redacted_payload["note"] == "Before [REDACTED] after"
+    assert text_redacted_payload["safe_url"] == "Review https://example.test/issues/1?w=1"
+    assert text_redacted_payload["signed_url"] == "Fetch https://example.test/download?sig=[REDACTED]&page=1"
 
     redacted_auth_values =
       text_redacted_payload

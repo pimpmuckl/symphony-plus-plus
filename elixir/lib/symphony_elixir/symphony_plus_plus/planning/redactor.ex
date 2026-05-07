@@ -2,9 +2,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Redactor do
   @moduledoc false
 
   @redacted "[REDACTED]"
-  @redacted_url "[REDACTED_URL]"
   @sensitive_text_pattern ~r/(bearer\s+[A-Za-z0-9._~+\/=-]{8,}|wk_[A-Za-z0-9_-]{43,}|raw[_-]?secret[_-][A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})/i
-  @signed_url_pattern ~r/https?:\/\/[^\s<>"']+\?[^\s<>"']*/i
+  @url_pattern ~r/https?:\/\/[^\s<>"']+/i
 
   @sensitive_keys MapSet.new([
                     "access_token",
@@ -25,6 +24,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Redactor do
                     "work_key",
                     "work_key_secret"
                   ])
+
+  @sensitive_query_keys MapSet.new([
+                          "access_key_id",
+                          "access_token",
+                          "api_key",
+                          "apikey",
+                          "authorization",
+                          "aws_access_key_id",
+                          "client_secret",
+                          "credential",
+                          "raw_secret",
+                          "refresh_token",
+                          "secret",
+                          "secret_key",
+                          "security_token",
+                          "session_token",
+                          "sig",
+                          "signature",
+                          "token",
+                          "x_amz_credential",
+                          "x_amz_security_token",
+                          "x_amz_signature",
+                          "x_goog_credential",
+                          "x_goog_signature"
+                        ])
 
   @spec redact(term()) :: term()
   def redact(%DateTime{} = datetime), do: datetime
@@ -164,7 +188,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Redactor do
   defp redact_sensitive_text(value), do: Regex.replace(@sensitive_text_pattern, value, @redacted)
 
   defp redact_signed_url_text(value) do
-    Regex.replace(@signed_url_pattern, value, @redacted_url)
+    Regex.replace(@url_pattern, value, &redact_url_query/1)
+  end
+
+  defp redact_url_query(url) do
+    uri = URI.parse(url)
+
+    if is_binary(uri.query) do
+      uri
+      |> Map.put(:query, redact_query(uri.query))
+      |> URI.to_string()
+    else
+      url
+    end
+  rescue
+    _ -> url
+  end
+
+  defp redact_query(query) do
+    query
+    |> String.split("&", trim: false)
+    |> Enum.map_join("&", &redact_query_part/1)
+  end
+
+  defp redact_query_part(part) do
+    case String.split(part, "=", parts: 2) do
+      [key, value] ->
+        if sensitive_query_key?(key) or secret_text?(value) or secret_text?(decode_www_form(value)) do
+          "#{key}=#{@redacted}"
+        else
+          "#{key}=#{redact_sensitive_text(value)}"
+        end
+
+      [key] ->
+        if sensitive_query_key?(key), do: "#{key}=#{@redacted}", else: key
+    end
+  end
+
+  defp sensitive_query_key?(key) do
+    normalized =
+      key
+      |> decode_www_form()
+      |> camel_to_snake()
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9]+/, "_")
+      |> String.trim("_")
+
+    MapSet.member?(@sensitive_query_keys, normalized) or String.ends_with?(normalized, "_token") or
+      String.ends_with?(normalized, "_secret") or String.ends_with?(normalized, "_signature") or
+      String.ends_with?(normalized, "_sig")
+  end
+
+  defp secret_text?(value), do: is_binary(value) and Regex.match?(@sensitive_text_pattern, value)
+
+  defp decode_www_form(value) do
+    URI.decode_www_form(value)
+  rescue
+    _ -> value
   end
 
   defp redact_key_value(key, value) do
