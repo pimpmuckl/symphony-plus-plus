@@ -78,3 +78,38 @@ Verify worker cannot access another package.
 ```
 
 This scenario should become the primary regression test before any Kraken pilot.
+
+## Symphony++ integration harness
+
+Run the deterministic core integration profile from the Elixir project:
+
+```powershell
+cd elixir
+mise exec -- mix sympp.integration
+```
+
+The profile runs `test/symphony_elixir/symphony_plus_plus/integration_harness_test.exs`.
+It uses local SQLite ledgers and in-process MCP calls only. GitHub metadata,
+review-suite results, branch heads, PR URLs, and phase merge artifacts are
+deterministic fixtures; the harness must not call GitHub, Linear, OpenAI, MCP
+workers, or production services.
+
+Covered scenarios:
+
+- Standalone hotfix creation, MCP worker claim, virtual-file access, local
+  progress evidence, fake GitHub metadata, fake review evidence, and readiness.
+- MCP package readiness through changed-file scope, current PR metadata, and
+  persisted review-suite artifacts.
+- Two-package phase architect delegation, child worker readiness, architect
+  approval, and phase merge records.
+- Security denials for invalid work-key claims, revoked grants, sibling
+  resource access, and architect phase-scope drift.
+
+CI feasibility:
+
+- The profile is intended to be CI-friendly because it uses no network and no
+  credentials.
+- On the current Windows host, the profile is the documented core harness while
+  the repository-wide `mix test` can still encounter known environment blockers
+  documented in `SETUP_NOTES.md`: Phoenix LiveView symlink permissions,
+  path-canonicalization differences, and fake shell/SSH interception behavior.
