@@ -17,6 +17,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Renderer, as: PlanningRenderer
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
@@ -6173,21 +6174,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp progress_event_payload(%ProgressEvent{} = event) do
     %{
       "id" => event.id,
-      "summary" => event.summary,
-      "status" => event.status,
-      "idempotency_key" => event.idempotency_key,
-      "payload" => event.payload || %{}
+      "summary" => Redactor.redact_text(event.summary),
+      "status" => Redactor.redact_text(event.status),
+      "idempotency_key" => Redactor.redact_text(event.idempotency_key),
+      "payload" => Redactor.redact_output(event.payload || %{})
     }
   end
 
   defp artifact_payload(%Artifact{} = artifact) do
     %{
       "id" => artifact.id,
-      "path" => artifact.path,
-      "title" => artifact.title,
+      "path" => Redactor.redact_text(artifact.path),
+      "title" => Redactor.redact_text(artifact.title),
       "kind" => artifact.kind,
-      "uri" => artifact.uri,
-      "metadata" => artifact.metadata || %{}
+      "uri" => Redactor.redact_text(artifact.uri),
+      "metadata" => Redactor.redact_output(artifact.metadata || %{})
     }
   end
 

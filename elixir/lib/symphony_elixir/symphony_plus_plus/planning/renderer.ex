@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Finding
   alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.State
   alias SymphonyElixir.SymphonyPlusPlus.Policies.Templates
@@ -425,7 +426,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
   end
 
   defp text_or_empty(value) when is_binary(value) do
-    if blank?(value), do: "Not recorded.", else: value
+    if blank?(value), do: "Not recorded.", else: Redactor.redact_text(value)
   end
 
   defp text_or_empty(_value), do: "Not recorded."
