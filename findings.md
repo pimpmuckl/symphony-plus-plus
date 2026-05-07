@@ -258,3 +258,5 @@
 - Phase-board authorization helpers in `SymppDashboardApiController` and `SymppBoardLive` now preserve `:database_busy` and `{:storage_failed, _}` from anchor work-package reads, while still mapping missing/scope-invalid anchors to `:forbidden`.
 - Second T2 round `phase_gate-symphony-plus-plus-sympp-p8-004-dialyzer-8d4e36-20260507T150914Z-ae8db12e` found valid follow-ups: a live non-expiring mismatched grant regressed to `CaseClauseError`, and MCP session parsing rejected explicit nil assignment fields that the now-nilable assignment type and `public_assignment/1` can emit.
 - The follow-up restores the `%AccessGrant{}` mismatch fallback after revoked/expiry classification, and `Session.from_map/1` now distinguishes explicit nil from missing keys for `work_package_id` and `capabilities`.
+- Fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p8-004-dialyzer-8d4e36-20260507T152916Z-3434b937` had Alpha clean and one valid Bravo auth finding.
+- Dashboard secret auth now normalizes `:not_found` to `:unauthorized`, matching invalid-secret and grant-id auth so bad work keys stay 401/login responses instead of 404/not-found responses.

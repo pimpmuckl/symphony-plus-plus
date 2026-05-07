@@ -2489,6 +2489,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              json_response(get(unknown_work_key_conn, "/api/v1/sympp/board"), 401)
   end
 
+  test "dashboard browser sessions reject unknown work keys with login responses", %{repo: repo} do
+    %{work_package: work_package} = create_dashboard_fixture(repo)
+    unknown_secret = WorkKey.generate().secret
+
+    board_conn = post(build_conn(), "/sympp/board/session", %{"work_key" => unknown_secret})
+
+    assert response(board_conn, 401) =~ "The work key could not access the board."
+
+    package_conn =
+      post(build_conn(), "/sympp/work-packages/#{work_package.id}/session", %{"work_key" => unknown_secret})
+
+    assert response(package_conn, 401) =~ "The work key could not access this package."
+  end
+
   test "dashboard API rejects missing bearer auth before dynamic repo bootstrap" do
     database_path = WorkPackageFactory.database_path()
     File.rm(database_path)

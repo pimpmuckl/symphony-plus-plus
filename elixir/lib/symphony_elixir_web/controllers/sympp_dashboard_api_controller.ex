@@ -523,11 +523,15 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         {:ok, {:grant, grant}}
       else
         false -> {:error, :unauthorized}
-        {:error, :invalid_secret} -> {:error, :unauthorized}
-        {:error, reason} -> {:error, reason}
+        {:error, reason} -> secret_auth_error(reason)
       end
     end)
   end
+
+  @doc false
+  @spec secret_auth_error(term()) :: {:error, term()}
+  def secret_auth_error(reason) when reason in [:invalid_secret, :not_found], do: {:error, :unauthorized}
+  def secret_auth_error(reason), do: {:error, reason}
 
   defp grant_id_auth_context(repo, grant_id) do
     normalize_storage_errors(fn ->
