@@ -20,8 +20,10 @@ assigned package and the current PR head.
 ## Validation
 
 - Required package tests or docs checks ran on the current head.
-- For release-readiness PRs, `make -C elixir all` evidence is current unless the
-  diff is documentation-only and the PR explains the reused green gate.
+- For release-readiness PRs, `make -C elixir all` evidence is current when
+  the diff touches runtime code, tests, build files, release-critical policy, or
+  reviewer guidance. Documentation-only PRs may reuse prior green evidence only
+  when they do not change release-critical policy or review requirements.
 - Coverage ratchet evidence references the current `elixir/mix.exs` threshold
   and does not claim `100%` coverage as a current blocker.
 - Review-suite evidence is attached to the current PR head SHA.

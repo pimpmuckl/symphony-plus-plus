@@ -19,19 +19,22 @@ their assigned packages.
 
 1. Read `../runbooks/HOTFIX_RUNBOOK.md`.
 2. Pick the correct base branch and keep the acceptance criteria narrow.
-3. Create the package from `../templates/create_work_package.hotfix.example.yaml`
-   or a copied file with the incident-specific title, scope, tests, and base.
+3. Create the package from an edited copy of
+   `../templates/create_work_package.hotfix.example.yaml` with the
+   incident-specific title, scope, tests, and base.
 4. Run the create-work command from the runbook and capture the returned worker
    grant secret only in the private handoff channel.
-5. Hand the worker the package id, base branch, target branch naming, worker
+5. Install or copy `.codex/skills/symphony-work-package/` into the worker repo
+   and configure the Symphony++ MCP stdio dependency before dispatch.
+6. Hand the worker the package id, base branch, target branch naming, worker
    prompt, and secret. Do not put the secret in files, logs, PR bodies, or chat
    transcripts that will be committed or archived broadly.
-6. Watch the dashboard/API timeline for claim, plan, findings, progress,
+7. Watch the dashboard/API timeline for claim, plan, findings, progress,
    branch/PR attachment, validation, and review evidence.
-7. Review the PR against `../review/REVIEWER_CHECKLIST.md`.
-8. Confirm `../review/READINESS_GATES.md` and
+8. Review the PR against `../review/REVIEWER_CHECKLIST.md`.
+9. Confirm `../review/READINESS_GATES.md` and
    `11_RELEASE_VALIDATION.md` evidence are current for the PR head.
-9. Merge only after branch protection and human review pass, then archive the
+10. Merge only after branch protection and human review pass, then archive the
    package evidence and close the incident notes.
 
 ## Phase-based flow
