@@ -3,6 +3,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
   @repo_root Path.expand("../../../../", __DIR__)
   @skill_path Path.join(@repo_root, ".codex/skills/symphony-work-package/SKILL.md")
+  @plugin_manifest_path Path.join(@repo_root, "plugins/symphony-plus-plus/.codex-plugin/plugin.json")
+  @plugin_skill_path Path.join(@repo_root, "plugins/symphony-plus-plus/skills/symphony-work-package/SKILL.md")
+  @marketplace_path Path.join(@repo_root, ".agents/plugins/marketplace.json")
+  @plugin_readme_path Path.join(@repo_root, "plugins/symphony-plus-plus/README.md")
+  @refresh_script_path Path.join(@repo_root, "scripts/refresh-local-plugin.ps1")
+  @worker_secret_script_path Path.join(@repo_root, "scripts/sympp-worker-secret.ps1")
+  @worker_secret_shell_path Path.join(@repo_root, "scripts/sympp-worker-secret.sh")
   @prompt_path Path.join(@repo_root, ".codex/skills/symphony-work-package/references/worker_prompt.md")
   @wiring_path Path.join(@repo_root, ".codex/skills/symphony-work-package/references/mcp_wiring.md")
   @handoff_path Path.join(@repo_root, "implementation_docs_symphplusplus/docs/00_ARCHITECT_AGENT_HANDOFF.md")
@@ -42,6 +49,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
 
     assert skill =~ "sympp://work-packages/{id}/acceptance.md"
+    assert skill =~ "--work-key-secret-env <env-var> --claimed-by <stable-worker-id>"
+    assert skill =~ "Do not ask for, paste, print, or log the raw secret."
     assert skill =~ "Do not create local `task_plan.md`, `findings.md`, or `progress.md` files as"
     assert skill =~ "Worker grants are scoped to exactly one WorkPackage."
     assert skill =~ "`state_key` preserves initialized MCP handshake continuity only."
@@ -55,7 +64,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     for content <- [prompt, template_prompt] do
       assert String.starts_with?(content, "You are assigned Symphony++ work package")
       assert content =~ "<WORK_PACKAGE_ID>"
-      assert content =~ "claim_work_key(secret, claimed_by)"
+      assert content =~ "Work key handoff: configured in the local MCP private-store bootstrap"
+      assert content =~ "Handoff target: <HANDOFF_TARGET>"
       assert content =~ "update_task_plan(patch, expected_version)"
       assert content =~ "resolve_blocker(blocker_id, resolution, summary, idempotency_key)"
       assert content =~ "request_scope_expansion(summary, idempotency_key, payload)"
@@ -73,9 +83,193 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
     assert wiring =~ "mise exec -- mix sympp.mcp --mode stdio"
     assert wiring =~ "[mcp_servers.symphony_plus_plus]"
-    assert wiring =~ "claim_work_key(secret, claimed_by)"
+    assert wiring =~ "sympp-worker-secret.ps1"
+    assert wiring =~ "sympp-worker-secret.sh"
+    assert wiring =~ "--work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by <stable-worker-id>"
     assert wiring =~ "should not embed raw work-key secrets or bearer tokens"
     refute wiring =~ "sympp_live_"
+  end
+
+  test "Codex plugin package mirrors the repo-local worker skill" do
+    manifest =
+      @plugin_manifest_path
+      |> File.read!()
+      |> Jason.decode!()
+
+    marketplace =
+      @marketplace_path
+      |> File.read!()
+      |> Jason.decode!()
+
+    assert manifest["name"] == "symphony-plus-plus"
+    assert manifest["skills"] == "./skills/"
+    assert manifest["interface"]["displayName"] == "Symphony++"
+    assert File.read!(@plugin_skill_path) == File.read!(@skill_path)
+
+    assert Enum.any?(marketplace["plugins"], fn plugin ->
+             plugin["name"] == "symphony-plus-plus" and
+               plugin["source"] == %{"source" => "local", "path" => "./plugins/symphony-plus-plus"}
+           end)
+
+    assert File.exists?(@refresh_script_path)
+    assert File.exists?(@worker_secret_script_path)
+    assert File.exists?(@worker_secret_shell_path)
+    assert File.read!(@plugin_readme_path) =~ ~s("path": "./plugins/symphony-plus-plus")
+    refute File.read!(@plugin_readme_path) =~ "../../Code/"
+    assert File.read!(@worker_secret_script_path) =~ "CRED_PERSIST_LOCAL_MACHINE"
+    refute File.read!(@worker_secret_script_path) =~ "CRED_PERSIST_SESSION"
+  end
+
+  test "refresh script installs the repo-local plugin into the requested Codex home" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-refresh-#{System.unique_integer([:positive])}")
+
+    if powershell do
+      try do
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-ExecutionPolicy",
+              "Bypass",
+              "-File",
+              @refresh_script_path,
+              "-CodexHome",
+              temp_codex_home
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+
+        refreshed_manifest_path =
+          Path.join([
+            temp_codex_home,
+            "plugins",
+            "cache",
+            "jonat-local",
+            "symphony-plus-plus",
+            "local",
+            ".codex-plugin",
+            "plugin.json"
+          ])
+
+        assert refreshed_manifest_path |> File.read!() |> Jason.decode!() |> Map.fetch!("name") == "symphony-plus-plus"
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
+  test "refresh script rejects unresolved marketplace source paths" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-refresh-#{System.unique_integer([:positive])}")
+    marketplace_path = Path.join(System.tmp_dir!(), "sympp-marketplace-#{System.unique_integer([:positive])}.json")
+
+    if powershell do
+      marketplace = %{
+        name: "jonat-local",
+        plugins: [
+          %{
+            name: "symphony-plus-plus",
+            source: %{source: "local", path: "missing/symphony-plus-plus"},
+            policy: %{installation: "AVAILABLE", authentication: "ON_USE"},
+            category: "Coding"
+          }
+        ]
+      }
+
+      try do
+        File.write!(marketplace_path, Jason.encode!(marketplace))
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-ExecutionPolicy",
+              "Bypass",
+              "-File",
+              @refresh_script_path,
+              "-MarketplacePath",
+              marketplace_path,
+              "-CodexHome",
+              temp_codex_home
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status != 0
+        assert output =~ "Configured plugin source path"
+        refute File.exists?(Path.join([temp_codex_home, "plugins", "cache", "jonat-local", "symphony-plus-plus"]))
+      after
+        File.rm(marketplace_path)
+        File.rm_rf(temp_codex_home)
+      end
+    end
+  end
+
+  test "refresh script resolves repo-root relative source paths from marketplace file" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-refresh-#{System.unique_integer([:positive])}")
+
+    marketplace_path =
+      Path.join(@repo_root, "plugins/symphony-plus-plus/sympp-marketplace-test-#{System.unique_integer([:positive])}.json")
+
+    if powershell do
+      marketplace = %{
+        name: "jonat-local",
+        plugins: [
+          %{
+            name: "symphony-plus-plus",
+            source: %{source: "local", path: "./plugins/symphony-plus-plus"},
+            policy: %{installation: "AVAILABLE", authentication: "ON_USE"},
+            category: "Coding"
+          }
+        ]
+      }
+
+      try do
+        File.write!(marketplace_path, Jason.encode!(marketplace))
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-ExecutionPolicy",
+              "Bypass",
+              "-File",
+              @refresh_script_path,
+              "-MarketplacePath",
+              marketplace_path,
+              "-CodexHome",
+              temp_codex_home
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+
+        refreshed_manifest_path =
+          Path.join([
+            temp_codex_home,
+            "plugins",
+            "cache",
+            "jonat-local",
+            "symphony-plus-plus",
+            "local",
+            ".codex-plugin",
+            "plugin.json"
+          ])
+
+        assert refreshed_manifest_path |> File.read!() |> Jason.decode!() |> Map.fetch!("name") == "symphony-plus-plus"
+      after
+        File.rm(marketplace_path)
+        File.rm_rf(temp_codex_home)
+      end
+    end
   end
 
   test "template skill mirrors installable skill metadata" do
@@ -95,6 +289,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
     for content <- [handoff, runbook] do
       assert content =~ ".codex/skills/symphony-work-package/"
+      assert content =~ "plugins/symphony-plus-plus/"
       assert content =~ "mcp_wiring.md"
       assert content =~ "templates/worker_agent_prompt.md"
     end

@@ -314,7 +314,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert %Config{mode: :stdio, repo: Repo, version: version} = Config.default()
     assert is_binary(version)
     assert {:ok, %Config{mode: :stdio, database: "tmp/sympp.sqlite3"}} = Config.parse(["--database", "tmp/sympp.sqlite3"])
-    assert {:ok, %Config{work_key_secret_env: "SYMPP_MCP_SECRET"}} = Config.parse(["--work-key-secret-env", "SYMPP_MCP_SECRET"])
+    assert {:error, secret_env_message} = Config.parse(["--work-key-secret-env", "SYMPP_MCP_SECRET"])
+    assert secret_env_message == Config.usage()
+
+    assert {:ok, %Config{work_key_secret_env: "SYMPP_MCP_SECRET", claimed_by: "worker-1"}} =
+             Config.parse(["--work-key-secret-env", "SYMPP_MCP_SECRET", "--claimed-by", "worker-1"])
+
     assert {:error, message} = Config.parse(["--mode", "http"])
     assert message =~ "Only STDIO MCP mode is supported"
     assert {:error, invalid_message} = Config.parse(["--unknown"])
@@ -401,7 +406,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
       output =
         capture_io(input, fn ->
-          McpTask.run(["--work-key-secret-env", env_var])
+          McpTask.run(["--work-key-secret-env", env_var, "--claimed-by", "worker-1"])
         end)
 
       [_init_response, response] = decode_json_lines(output)
@@ -409,6 +414,86 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
       assert Jason.decode!(text)["work_package_id"] == "SYMPP-P3-001"
       assert Repo.get_dynamic_repo() == pid
+    after
+      System.delete_env(env_var)
+      Repo.put_dynamic_repo(original_repo)
+      GenServer.stop(pid)
+      File.rm(database_path)
+    end
+  end
+
+  test "mix task rejects work key secret environment without claimed_by" do
+    database_path = WorkPackageFactory.database_path()
+    original_repo = Repo.get_dynamic_repo()
+    env_var = "SYMPP_MCP_TEST_SECRET_#{System.unique_integer([:positive])}"
+
+    {:ok, pid} =
+      Repo.start_link(database: database_path, name: Repo.process_name(database_path), pool_size: 1, log: false)
+
+    try do
+      Repo.put_dynamic_repo(pid)
+      assert :ok = WorkPackageRepository.migrate(Repo)
+      assert {:ok, package} = WorkPackageRepository.create(Repo, WorkPackageFactory.attrs(id: "SYMPP-P3-CLAIMED-BY"))
+      assert {:ok, minted} = AccessGrantService.mint_worker_grant(Repo, package.id)
+      System.put_env(env_var, minted.work_key.secret)
+
+      assert_raise Mix.Error, ~r/Usage: mix sympp\.mcp/, fn ->
+        capture_io("", fn ->
+          McpTask.run(["--work-key-secret-env", env_var])
+        end)
+      end
+
+      assert {:error, usage} = Config.parse(["--work-key-secret-env", env_var, "--claimed-by", "  "])
+      assert usage =~ "Usage: mix sympp.mcp"
+    after
+      System.delete_env(env_var)
+      Repo.put_dynamic_repo(original_repo)
+      GenServer.stop(pid)
+      File.rm(database_path)
+    end
+  end
+
+  test "mix task claims an unclaimed work key from environment when claimed_by is provided" do
+    database_path = WorkPackageFactory.database_path()
+    original_repo = Repo.get_dynamic_repo()
+    env_var = "SYMPP_MCP_TEST_SECRET_#{System.unique_integer([:positive])}"
+
+    {:ok, pid} =
+      Repo.start_link(database: database_path, name: Repo.process_name(database_path), pool_size: 1, log: false)
+
+    try do
+      Repo.put_dynamic_repo(pid)
+      assert :ok = WorkPackageRepository.migrate(Repo)
+      assert {:ok, package} = WorkPackageRepository.create(Repo, WorkPackageFactory.attrs(id: "SYMPP-P10-003"))
+      assert {:ok, minted} = AccessGrantService.mint_worker_grant(Repo, package.id)
+      System.put_env(env_var, minted.work_key.secret)
+
+      input =
+        [
+          Jason.encode!(%{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()}),
+          Jason.encode!(%{
+            "jsonrpc" => "2.0",
+            "id" => 1,
+            "method" => "resources/read",
+            "params" => %{"uri" => "sympp://assignment/current"}
+          })
+        ]
+        |> Enum.join("\n")
+        |> Kernel.<>("\n")
+
+      output =
+        capture_io(input, fn ->
+          McpTask.run(["--work-key-secret-env", env_var, "--claimed-by", "worker-env-1"])
+        end)
+
+      refute output =~ minted.work_key.secret
+      [_init_response, response] = decode_json_lines(output)
+      assignment = Jason.decode!(get_in(response, ["result", "contents", Access.at(0), "text"]))
+
+      assert assignment["work_package_id"] == "SYMPP-P10-003"
+      assert assignment["claimed_by"] == "worker-env-1"
+      assert {:ok, claimed_grant} = AccessGrantRepository.get(Repo, minted.grant.id)
+      assert claimed_grant.claimed_by == "worker-env-1"
     after
       System.delete_env(env_var)
       Repo.put_dynamic_repo(original_repo)

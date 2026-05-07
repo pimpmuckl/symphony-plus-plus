@@ -10,12 +10,15 @@ context.
    `implementation_docs_symphplusplus/templates/create_work_package.hotfix.example.yaml`
    to an edited request file outside the shared template, for example
    `scratch/hotfix-request.yaml`.
-3. Create the hotfix work package from `elixir/` with the edited file path:
-   `cd elixir && mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../scratch/hotfix-request.yaml`
+3. Create the hotfix work package from `elixir/` with the edited file path and
+   stable worker identity:
+   `cd elixir && mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../scratch/hotfix-request.yaml --claimed-by <stable-worker-id>`
 4. Confirm the edited request sets the correct base branch.
 5. Confirm acceptance criteria are narrow and testable.
-6. Dispatch worker with the returned one-time `worker_grant.secret`; normal package reads and virtual file renders do not expose it again.
-7. Have the worker claim with `claim_work_key(secret, claimed_by)`.
+6. Dispatch worker with the returned handoff target and stable `claimed_by`
+   identity; normal command output must not include `worker_grant.secret`.
+7. Configure worker MCP through the private-store bootstrap so the session is
+   bound before the worker calls `get_current_assignment()`.
 8. Watch progress timeline.
 9. Require PR and hotfix review-suite artifact.
 10. Review scope guard and changed files.
@@ -42,7 +45,7 @@ context.
 Send the worker only what they need:
 
 - WorkPackage id, base branch, target branch, and PR title convention.
-- The private one-time work key secret and stable `claimed_by` identity.
+- The private handoff target and stable `claimed_by` identity.
 - The package scope, owned files, acceptance criteria, and stop conditions.
 - The validation target and required review lanes.
 - A reminder that raw secrets must not be printed, committed, or placed in PR
@@ -54,10 +57,13 @@ Create a quick-fix package with:
 
 ```bash
 cd elixir
-mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../implementation_docs_symphplusplus/templates/create_work_package.quick_fix.example.yaml
+mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../implementation_docs_symphplusplus/templates/create_work_package.quick_fix.example.yaml --claimed-by <stable-worker-id>
 ```
 
-The command creates a parentless WorkPackage, applies the `quick_fix` policy, renders the initial virtual planning files, and returns the worker grant secret only in that creation response.
+The command creates a parentless WorkPackage, applies the `quick_fix` policy,
+renders the initial virtual planning files, stores the worker grant secret in
+the local private handoff store, and returns only non-secret handoff metadata in
+normal command output.
 
 ## Investigation Example
 
@@ -65,7 +71,7 @@ Create an investigation package with:
 
 ```bash
 cd elixir
-mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../implementation_docs_symphplusplus/templates/create_work_package.investigation.example.yaml
+mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../implementation_docs_symphplusplus/templates/create_work_package.investigation.example.yaml --claimed-by <stable-worker-id>
 ```
 
 The investigation policy does not require a PR. It requires findings plus the canonical `recommendation.md` artifact recorded through `request_scope_expansion`; stored legacy recommendation events do not satisfy readiness unless that canonical artifact already exists.

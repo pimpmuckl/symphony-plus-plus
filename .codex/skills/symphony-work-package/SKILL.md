@@ -10,10 +10,14 @@ or Symphony++ MCP server context.
 
 ## Start
 
-1. Claim the assignment with `claim_work_key(secret, claimed_by)`.
-2. Use the same stable `claimed_by` identity for reconnects.
-3. Call `get_current_assignment()` and treat the returned WorkPackage as the
+1. Prefer a configured private-store MCP bootstrap. The MCP server should start
+   with `--work-key-secret-env <env-var> --claimed-by <stable-worker-id>` so
+   the raw work-key secret stays out of prompts, tool-call logs, PRs, and
+   normal command output.
+2. Call `get_current_assignment()` and treat the returned WorkPackage as the
    only authority for scope.
+3. If the MCP session is not already bound, stop and ask the operator to fix the
+   private-store handoff. Do not ask for, paste, print, or log the raw secret.
 4. Read the virtual planning resources before implementation:
    - `read_context()`
    - `read_task_plan()`
@@ -88,8 +92,10 @@ unless replaying a previously recorded idempotent write.
 
 `state_key` preserves initialized MCP handshake continuity only. It is not a
 bearer capability and does not restore claimed worker authorization. After
-reconnect initialize, call `claim_work_key(secret, claimed_by)` again with the
-same owner identity.
+reconnect initialize, the private-store MCP bootstrap must present the same
+secret proof and `claimed_by` identity again. `claim_work_key` remains a server
+tool for controlled recovery, but first-use workers should not paste raw
+secrets into prompts or ordinary tool calls.
 
 ## References
 

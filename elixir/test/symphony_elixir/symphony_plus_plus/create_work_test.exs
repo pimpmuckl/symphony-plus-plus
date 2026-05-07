@@ -16,6 +16,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
 
+  @repo_root Path.expand("../../../../", __DIR__)
+  @windows match?({:win32, _}, :os.type())
+
+  defmodule FailingReadyRenderer do
+    def render_all(_repo, _work_package_id), do: {:error, :render_failed}
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
 
@@ -386,6 +393,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     assert creation.work_package.status == "ready_for_worker"
     assert creation.policy.template == "quick_fix"
     assert creation.policy.review_suite.required == ["review_t1"]
+    assert creation.virtual_files["context.md"] =~ "- Status: `ready_for_worker`"
+    assert creation.virtual_files["handoff.md"] =~ "- Status: `ready_for_worker`"
+    refute creation.virtual_files["context.md"] =~ "- Status: `created`"
+    refute creation.virtual_files["handoff.md"] =~ "- Status: `created`"
 
     assert %{secret: secret, display_key: display_key} = creation.worker_grant
     assert is_binary(secret)
@@ -402,6 +413,135 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     refute inspect(rendered) =~ secret
 
     refute Enum.any?(creation.virtual_files, fn {_name, markdown} -> String.contains?(markdown, secret) end)
+  end
+
+  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
+
+  test "removes stored worker secret when ready promotion fails after handoff", %{repo: repo} do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-ready-failure-handoff-#{System.unique_integer([:positive])}")
+
+    repo.query!("DROP TRIGGER IF EXISTS sympp_force_ready_stale")
+
+    repo.query!("""
+    CREATE TRIGGER sympp_force_ready_stale
+    AFTER INSERT ON sympp_work_packages
+    WHEN NEW.title = 'Force ready promotion failure'
+    BEGIN
+      UPDATE sympp_work_packages SET status = 'planning' WHERE id = NEW.id;
+    END;
+    """)
+
+    try do
+      assert {:error, :stale_status} =
+               CreateWork.create_with_worker_secret_handoff(
+                 repo,
+                 %{
+                   repo: "kraken",
+                   base_branch: "main",
+                   title: "Force ready promotion failure",
+                   acceptance_criteria: ["Rollback removes stored handoff secret."]
+                 },
+                 mode: "local-private-file",
+                 store_dir: store_dir,
+                 claimed_by: "worker-ready-failure",
+                 repo_root: @repo_root
+               )
+
+      assert repo.aggregate(WorkPackage, :count, :id) == 0
+      assert repo.aggregate(AccessGrant, :count, :id) == 0
+      assert Path.wildcard(Path.join(store_dir, "*.secret")) == []
+    after
+      repo.query!("DROP TRIGGER IF EXISTS sympp_force_ready_stale")
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
+
+  test "removes stored worker secret when ready rerender fails after handoff", %{repo: repo} do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-ready-render-failure-handoff-#{System.unique_integer([:positive])}")
+
+    try do
+      assert {:error, :render_failed} =
+               CreateWork.create_with_worker_secret_handoff(
+                 repo,
+                 %{
+                   repo: "kraken",
+                   base_branch: "main",
+                   title: "Force ready render failure",
+                   acceptance_criteria: ["Rollback removes stored handoff secret."]
+                 },
+                 mode: "local-private-file",
+                 store_dir: store_dir,
+                 claimed_by: "worker-ready-render-failure",
+                 repo_root: @repo_root,
+                 renderer: FailingReadyRenderer
+               )
+
+      assert repo.aggregate(WorkPackage, :count, :id) == 0
+      assert repo.aggregate(AccessGrant, :count, :id) == 0
+      assert Path.wildcard(Path.join(store_dir, "*.secret")) == []
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
+
+  test "reports recovery identifiers when handoff failure cleanup also fails", %{repo: repo} do
+    store_path = Path.join(System.tmp_dir!(), "sympp-secret-store-blocker-#{System.unique_integer([:positive])}")
+
+    File.write!(store_path, "not a directory")
+    repo.query!("DROP TRIGGER IF EXISTS sympp_block_work_package_cleanup")
+
+    repo.query!("""
+    CREATE TRIGGER sympp_block_work_package_cleanup
+    BEFORE DELETE ON sympp_work_packages
+    BEGIN
+      SELECT RAISE(ABORT, 'cleanup blocked');
+    END;
+    """)
+
+    try do
+      assert {:error, {:handoff_cleanup_failed, {:local_private_file_failed, _reason}, _cleanup_reason, recovery}} =
+               CreateWork.create_with_worker_secret_handoff(
+                 repo,
+                 %{
+                   repo: "kraken",
+                   base_branch: "main",
+                   title: "Force handoff cleanup failure",
+                   acceptance_criteria: ["Recovery identifiers are reported."]
+                 },
+                 mode: "local-private-file",
+                 store_dir: store_path,
+                 claimed_by: "worker-handoff-cleanup-failure",
+                 repo_root: @repo_root
+               )
+
+      assert recovery.work_package_id
+      assert recovery.worker_grant_id
+      assert recovery.worker_grant_display_key
+
+      message =
+        CreateWork.error_message({:handoff_cleanup_failed, {:local_private_file_failed, :eacces}, :cleanup_failed, recovery})
+
+      assert message =~ recovery.work_package_id
+      assert message =~ recovery.worker_grant_id
+    after
+      repo.query!("DROP TRIGGER IF EXISTS sympp_block_work_package_cleanup")
+      File.rm(store_path)
+    end
+  end
+
+  test "reports ready-promotion cleanup failures as handoff cleanup failures" do
+    cleanup_reason = {:secret_handoff_cleanup_failed, {:local_private_file_delete_failed, :eacces}}
+
+    message =
+      CreateWork.error_message({:handoff_ready_cleanup_failed, :stale_status, cleanup_reason})
+
+    assert message =~ "Failed to mark worker secret handoff ready after storing the secret"
+    assert message =~ "cleanup failed"
+    assert message =~ "local_private_file_delete_failed"
   end
 
   test "creates acceptance-less quick fix work when the policy does not require criteria", %{repo: repo} do

@@ -28,9 +28,9 @@ For each worker, send:
 1. The WorkPackage id, target branch, base branch, owned paths, acceptance
    criteria, and required review-suite lanes.
 2. The verbatim prompt in `templates/worker_agent_prompt.md`.
-3. The `symphony-work-package` skill package from
-   `.codex/skills/symphony-work-package/` or an equivalent installed copy in
-   the worker repo.
+3. The `symphony-work-package` skill package from the
+   `plugins/symphony-plus-plus/` Codex plugin, `.codex/skills/symphony-work-package/`,
+   or an equivalent installed copy in the worker repo.
 4. MCP setup for the Symphony++ stdio server; see
    `.codex/skills/symphony-work-package/references/mcp_wiring.md`.
 5. Any dependency summaries or operator decisions needed to avoid scope drift.

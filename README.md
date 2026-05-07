@@ -17,6 +17,8 @@ readiness surfaces without replacing the base Linear-oriented runtime docs.
 - Operator flow: `implementation_docs_symphplusplus/docs/12_OPERATOR_TRAINING.md`
 - Short operational runbook:
   `implementation_docs_symphplusplus/docs/09_OPERATIONAL_RUNBOOK.md`
+- Codex plugin and private worker-secret handoff:
+  `plugins/symphony-plus-plus/README.md`
 - Release validation:
   `implementation_docs_symphplusplus/docs/11_RELEASE_VALIDATION.md`
 - Security and guardrails:
@@ -49,7 +51,13 @@ rules.
 
 - `elixir/` contains the runnable Symphony Elixir service and upstream runtime
   documentation.
-- `.codex/skills/symphony-work-package/` contains the installable worker skill.
+- `.codex/skills/symphony-work-package/` contains the repo-local worker skill.
+- `plugins/symphony-plus-plus/` contains the Codex-local plugin package for the
+  same skill.
+- `scripts/sympp-worker-secret.ps1` contains the Windows MCP bootstrap wrapper
+  for worker secrets from Credential Manager or a local private file.
+- `scripts/sympp-worker-secret.sh` contains the non-Windows local private-file
+  MCP bootstrap wrapper for worker secrets.
 - `implementation_docs_symphplusplus/docs/` contains the product, permission,
   MCP, dashboard, GitHub, operator, and release contracts.
 - `implementation_docs_symphplusplus/runbooks/` contains operator runbooks.

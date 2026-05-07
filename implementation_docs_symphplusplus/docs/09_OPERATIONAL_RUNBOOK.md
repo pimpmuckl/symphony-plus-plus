@@ -9,11 +9,18 @@ runbook is the shorter command-flow reference.
    `../runbooks/HOTFIX_RUNBOOK.md`.
 2. Set repo, base branch, owned paths, and target branch.
 3. Set acceptance criteria and review-suite requirement.
-4. Mint worker grant and send the one-time secret only out of band.
-5. Install or copy `.codex/skills/symphony-work-package/` into the worker repo.
-6. Configure the Symphony++ MCP stdio dependency; see
+4. Mint the worker grant with `mix sympp.create_work`. Normal command output
+   stores the one-time secret in the configured local private handoff store and
+   returns only non-secret handoff metadata.
+5. Install the `symphony-plus-plus` Codex plugin from
+   `plugins/symphony-plus-plus/` or copy
+   `.codex/skills/symphony-work-package/` into the worker repo.
+6. Configure the Symphony++ MCP stdio dependency through the private-store
+   bootstrap; see
    `.codex/skills/symphony-work-package/references/mcp_wiring.md`.
-7. Hand worker the key and the verbatim `templates/worker_agent_prompt.md`.
+7. Hand worker the package id, handoff target, stable `claimed_by` identity, and
+   verbatim `templates/worker_agent_prompt.md`. Do not hand the raw secret in
+   prompts or chat.
 8. Watch dashboard/API for progress.
 9. Review PR and readiness evidence with `../review/REVIEWER_CHECKLIST.md`.
 10. Human merges only after branch protection, review-suite evidence, and

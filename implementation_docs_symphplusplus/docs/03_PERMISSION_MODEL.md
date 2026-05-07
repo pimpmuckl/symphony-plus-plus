@@ -39,8 +39,11 @@ Never log:
 ```text
 1. Create WorkPackage.
 2. Mint AccessGrant.
-3. Return claim secret once.
-4. Agent calls claim_work_key(secret, claimed_by).
+3. Store the one-time secret in a local private handoff store and return only
+   non-secret handoff metadata in normal command output.
+4. Worker MCP starts through the private-store bootstrap, which injects the
+   secret only into the MCP child process environment and passes the stable
+   `claimed_by` owner identity.
 5. Server validates hash, expiry, revocation, claimed owner, and not already bound to a different owner.
 6. Server binds grant to the worker session with the claimed_by owner identity.
 7. Reconnects are accepted only for the same owner identity and secret proof.
@@ -50,6 +53,13 @@ Never log:
 This is the Symphony++ worker MCP API decision for the pre-production worker
 surface: workers must claim with an explicit owner identity rather than relying
 on ambiguous anonymous ownership.
+
+`claim_work_key(secret, claimed_by)` remains the server-side recovery primitive,
+but first-use Codex workers should not paste raw secrets into prompts or normal
+tool calls. On Windows, the local bootstrap uses Windows Credential Manager. On
+non-Windows systems, the fallback is a user-local private file store whose ACL
+strength depends on the local profile and should be treated as a smaller
+development fallback.
 
 ## Worker capabilities
 

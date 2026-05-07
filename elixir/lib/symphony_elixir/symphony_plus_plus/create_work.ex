@@ -2,14 +2,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   @moduledoc false
 
   alias Ecto.Changeset
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
+  alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Finding
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Renderer
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Policies.Templates
   alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
+  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+
+  import Ecto.Query, only: [from: 2]
 
   @default_kind "quick_fix"
   @required_fields ["repo", "base_branch", "title"]
@@ -47,6 +56,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
           | PlanningRepository.error()
           | AccessGrantService.error()
           | Renderer.error()
+          | SecretHandoff.error()
+          | {:handoff_cleanup_failed, SecretHandoff.error(), term()}
+          | {:handoff_cleanup_failed, SecretHandoff.error(), term(), map()}
+          | {:handoff_ready_cleanup_failed, term(), term()}
 
   @spec parse_request(term()) :: {:ok, request()} | {:error, error()}
   def parse_request(raw_request) when is_map(raw_request) do
@@ -115,16 +128,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     end
   end
 
-  @spec response_payload(creation()) :: map()
-  def response_payload(%{work_package: work_package, worker_grant: worker_grant, virtual_files: virtual_files, policy: policy}) do
+  @spec create_with_worker_secret_handoff(module(), map(), keyword()) ::
+          {:ok, {creation(), map()}} | {:error, error()}
+  def create_with_worker_secret_handoff(repo, request, handoff_opts)
+      when is_atom(repo) and is_map(request) and is_list(handoff_opts) do
+    with {:ok, request} <- parse_request(request),
+         {:ok, creation} <- create_parsed_request(repo, Map.put(request, "status", "created")),
+         {:ok, {creation, worker_secret_handoff}} <- store_worker_secret_handoff(repo, creation, handoff_opts),
+         {:ok, ready_creation} <- mark_worker_handoff_ready(repo, creation, worker_secret_handoff, handoff_opts) do
+      {:ok, {ready_creation, worker_secret_handoff}}
+    end
+  end
+
+  @spec response_payload(creation(), keyword()) :: map()
+  def response_payload(%{work_package: work_package, worker_grant: worker_grant, virtual_files: virtual_files, policy: policy}, opts \\ []) do
+    worker_secret_handoff = Keyword.get(opts, :worker_secret_handoff)
+
     %{
       work_package: work_package_payload(work_package),
-      worker_grant: worker_grant,
+      worker_grant: worker_grant_payload_for_response(worker_grant, worker_secret_handoff),
       policy: policy_payload(policy),
       virtual_files: virtual_files,
-      secret_returned_once: true,
-      secret_not_persisted: true
+      secret_returned_once: is_nil(worker_secret_handoff),
+      secret_not_persisted: is_nil(worker_secret_handoff),
+      secret_in_stdout: is_nil(worker_secret_handoff),
+      ledger_secret_not_persisted: true
     }
+    |> maybe_put_worker_secret_handoff(worker_secret_handoff)
   end
 
   @spec error_message(term()) :: String.t()
@@ -149,6 +179,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   def error_message({:invalid_json, reason}), do: "Invalid JSON create-work request: #{inspect(reason)}"
   def error_message({:invalid_yaml, reason}), do: "Invalid YAML create-work request: #{inspect(reason)}"
   def error_message({:read_failed, path, reason}), do: "Failed to read create-work request #{path}: #{reason}"
+
+  def error_message({:handoff_cleanup_failed, handoff_reason, cleanup_reason}) do
+    "Failed to store worker secret handoff: #{SecretHandoff.error_message(handoff_reason)}; cleanup failed: #{inspect(cleanup_reason)}"
+  end
+
+  def error_message({:handoff_cleanup_failed, handoff_reason, cleanup_reason, recovery}) do
+    "#{error_message({:handoff_cleanup_failed, handoff_reason, cleanup_reason})}; recovery: #{inspect(recovery)}"
+  end
+
+  def error_message({:handoff_ready_cleanup_failed, reason, cleanup_reason}) do
+    "Failed to mark worker secret handoff ready after storing the secret: #{error_message(reason)}; cleanup failed: #{inspect(cleanup_reason)}"
+  end
+
   def error_message(%Changeset{} = changeset), do: "Invalid create-work request: #{inspect(changeset.errors)}"
   def error_message(reason), do: "Failed to create standalone work: #{inspect(reason)}"
 
@@ -160,6 +203,122 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
       end
     end)
   end
+
+  defp store_worker_secret_handoff(repo, creation, handoff_opts) do
+    case SecretHandoff.store_worker_secret(creation, handoff_opts) do
+      {:ok, worker_secret_handoff} ->
+        {:ok, {creation, worker_secret_handoff}}
+
+      {:error, reason} ->
+        handle_worker_secret_handoff_error(repo, creation, reason)
+    end
+  end
+
+  defp mark_worker_handoff_ready(
+         repo,
+         %{work_package: %WorkPackage{} = work_package} = creation,
+         worker_secret_handoff,
+         handoff_opts
+       ) do
+    case WorkPackageRepository.update_status(repo, work_package.id, "created", "ready_for_worker") do
+      {:ok, ready_work_package} ->
+        ready_creation = %{creation | work_package: ready_work_package}
+
+        renderer = Keyword.get(handoff_opts, :renderer, Renderer)
+
+        case renderer.render_all(repo, ready_work_package.id) do
+          {:ok, virtual_files} ->
+            {:ok, %{ready_creation | virtual_files: virtual_files}}
+
+          {:error, reason} ->
+            handle_worker_secret_handoff_ready_error(repo, ready_creation, worker_secret_handoff, handoff_opts, reason)
+        end
+
+      {:error, reason} ->
+        handle_worker_secret_handoff_ready_error(repo, creation, worker_secret_handoff, handoff_opts, reason)
+    end
+  end
+
+  defp handle_worker_secret_handoff_error(repo, %{work_package: %WorkPackage{} = work_package} = creation, reason) do
+    work_package_id = work_package.id
+
+    case cleanup_created_work_package(repo, work_package_id) do
+      :ok -> {:error, reason}
+      {:error, cleanup_reason} -> {:error, {:handoff_cleanup_failed, reason, cleanup_reason, recovery_metadata(creation)}}
+    end
+  end
+
+  defp handle_worker_secret_handoff_ready_error(
+         repo,
+         %{work_package: %WorkPackage{} = work_package} = creation,
+         worker_secret_handoff,
+         handoff_opts,
+         reason
+       ) do
+    work_package_id = work_package.id
+    recovery = recovery_metadata(creation, worker_secret_handoff)
+
+    case cleanup_created_work_package(repo, work_package_id) do
+      :ok ->
+        case SecretHandoff.delete_worker_secret(worker_secret_handoff, handoff_opts) do
+          :ok ->
+            {:error, reason}
+
+          {:error, handoff_cleanup_reason} ->
+            cleanup_reason = %{
+              recovery: recovery,
+              secret_handoff: {:secret_handoff_cleanup_failed, handoff_cleanup_reason}
+            }
+
+            {:error, {:handoff_ready_cleanup_failed, reason, cleanup_reason}}
+        end
+
+      {:error, ledger_cleanup_reason} ->
+        cleanup_reason = %{
+          ledger: ledger_cleanup_reason,
+          recovery: recovery,
+          secret_handoff: :skipped_to_preserve_recovery_secret
+        }
+
+        {:error, {:handoff_ready_cleanup_failed, reason, cleanup_reason}}
+    end
+  end
+
+  defp cleanup_created_work_package(repo, work_package_id) do
+    repo.transaction(fn ->
+      delete_by_work_package_id(repo, AgentRun, work_package_id)
+      delete_by_work_package_id(repo, Artifact, work_package_id)
+      delete_by_work_package_id(repo, ProgressEvent, work_package_id)
+      delete_by_work_package_id(repo, Finding, work_package_id)
+      delete_by_work_package_id(repo, PlanNode, work_package_id)
+      delete_by_work_package_id(repo, AccessGrant, work_package_id)
+
+      repo.delete_all(from(work_package in WorkPackage, where: work_package.id == ^work_package_id))
+      :ok
+    end)
+    |> case do
+      {:ok, :ok} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  rescue
+    error in Exqlite.Error -> {:error, {:storage_failed, Exception.message(error)}}
+  end
+
+  defp delete_by_work_package_id(repo, schema, work_package_id) do
+    repo.delete_all(from(row in schema, where: row.work_package_id == ^work_package_id))
+  end
+
+  defp recovery_metadata(%{work_package: %WorkPackage{} = work_package, worker_grant: worker_grant}, worker_secret_handoff \\ nil) do
+    %{
+      work_package_id: work_package.id,
+      worker_grant_id: Map.get(worker_grant, :id) || Map.get(worker_grant, "id"),
+      worker_grant_display_key: Map.get(worker_grant, :display_key) || Map.get(worker_grant, "display_key")
+    }
+    |> maybe_put_recovery_handoff(worker_secret_handoff)
+  end
+
+  defp maybe_put_recovery_handoff(recovery, nil), do: recovery
+  defp maybe_put_recovery_handoff(recovery, worker_secret_handoff), do: Map.put(recovery, :worker_secret_handoff, worker_secret_handoff)
 
   defp create_transaction(repo, request) do
     policy = Map.fetch!(request, "policy")
@@ -246,6 +405,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
       secret: work_key.secret
     }
   end
+
+  defp worker_grant_payload_for_response(worker_grant, nil), do: worker_grant
+
+  defp worker_grant_payload_for_response(worker_grant, worker_secret_handoff) do
+    SecretHandoff.redacted_worker_grant(worker_grant, worker_secret_handoff)
+  end
+
+  defp maybe_put_worker_secret_handoff(payload, nil), do: payload
+  defp maybe_put_worker_secret_handoff(payload, handoff), do: Map.put(payload, :worker_secret_handoff, handoff)
 
   defp work_package_payload(%WorkPackage{} = work_package) do
     %{

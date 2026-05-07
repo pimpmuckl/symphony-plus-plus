@@ -44,6 +44,12 @@ ownership contract. The call binds the session to an existing worker or
 architect grant and does not mint new grants. Reconnects are accepted only when
 the same secret proof is presented by the same `claimed_by` owner.
 
+For Codex first-use worker dispatch, the preferred path is private-store MCP
+bootstrap rather than an explicit worker tool call containing the raw secret.
+`sympp.mcp --work-key-secret-env <env-var> --claimed-by <worker-id>` reads the
+secret from the MCP process environment, claims or reconnects the grant, and
+binds the session before the worker calls `get_current_assignment()`.
+
 For stateless MCP transports, an explicit `state_key` is continuity metadata for
 the initialized handshake only. It is not a bearer capability for a claimed
 worker assignment. After reconnect initialize, workers must call
@@ -210,7 +216,7 @@ authorization and must not publish phase state.
 
 The Codex Skill must instruct workers to:
 
-1. Claim or load the current assignment first.
+1. Load the current assignment first through private-store MCP bootstrap.
 2. Read context, task plan, findings, progress, acceptance criteria, and review-suite requirements.
 3. Update the task plan before implementation.
 4. Append findings after meaningful discovery.
@@ -230,7 +236,8 @@ The repo-local skill package lives at:
 ```
 
 Install or copy that directory into the worker repository's `.codex/skills/`
-directory when Symphony++ runs against a downstream codebase. The skill expects a
+directory when Symphony++ runs against a downstream codebase, or install the
+Codex-local plugin from `plugins/symphony-plus-plus/`. The skill expects a
 configured Symphony++ MCP stdio server. From this repository's Elixir
 implementation, the MCP server command is:
 
@@ -241,10 +248,11 @@ mise exec -- mix sympp.mcp --mode stdio --database <ledger-path>
 
 Codex MCP configuration should start that command from the `elixir/` directory
 as a stdio MCP dependency. Do not embed raw work-key secrets or bearer tokens in
-that configuration; workers claim assignments with
-`claim_work_key(secret, claimed_by)` after MCP initialize. For stateless
+that configuration. For first-use worker dispatch, use the private-store wrapper
+documented in `mcp_wiring.md`; it injects `SYMPP_WORK_KEY_SECRET` only into the
+MCP child process and passes `--claimed-by <worker-id>`. For stateless
 transports, `state_key` is only handshake continuity and does not replace the
-claim call.
+same secret proof plus owner identity.
 
 ## Hook role
 
