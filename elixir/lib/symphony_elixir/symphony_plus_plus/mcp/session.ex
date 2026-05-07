@@ -36,11 +36,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
   @spec from_map(map()) :: {:ok, t()} | {:error, term()}
   def from_map(attrs) when is_map(attrs) do
     with {:ok, grant_id} <- required_string(attrs, "grant_id"),
-         {:ok, work_package_id} <- required_string(attrs, "work_package_id"),
+         {:ok, work_package_id} <- nullable_string(attrs, "work_package_id"),
          {:ok, phase_id} <- optional_string(attrs, "phase_id"),
          {:ok, display_key} <- required_string(attrs, "display_key"),
          {:ok, grant_role} <- required_string(attrs, "grant_role"),
-         {:ok, capabilities} <- string_list(attrs, "capabilities"),
+         {:ok, capabilities} <- nullable_string_list(attrs, "capabilities"),
          {:ok, claimed_by} <- required_string(attrs, "claimed_by"),
          {:ok, claimed_at} <- optional_datetime(attrs, "claimed_at") do
       {:ok,
@@ -74,7 +74,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
     }
   end
 
-  @spec work_package_id(t()) :: String.t()
+  @spec work_package_id(t()) :: String.t() | nil
   def work_package_id(%__MODULE__{assignment: %Assignment{work_package_id: work_package_id}}), do: work_package_id
 
   @spec phase_id(t()) :: String.t() | nil
@@ -119,6 +119,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
     end
   end
 
+  defp nullable_string(attrs, key) do
+    case fetch_attr(attrs, key) do
+      {:ok, nil} ->
+        {:ok, nil}
+
+      {:ok, value} when is_binary(value) ->
+        if String.trim(value) == "" do
+          {:error, {:blank, key}}
+        else
+          {:ok, value}
+        end
+
+      {:ok, _value} ->
+        {:error, {:invalid, key}}
+
+      :error ->
+        {:error, {:missing, key}}
+    end
+  end
+
   defp optional_string(attrs, key) do
     case Map.get(attrs, key) || Map.get(attrs, String.to_atom(key)) do
       nil ->
@@ -136,9 +156,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
     end
   end
 
-  defp string_list(attrs, key) do
-    case Map.get(attrs, key) || Map.get(attrs, String.to_atom(key)) do
-      values when is_list(values) ->
+  defp nullable_string_list(attrs, key) do
+    case fetch_attr(attrs, key) do
+      {:ok, nil} ->
+        {:ok, nil}
+
+      {:ok, values} when is_list(values) ->
         if Enum.all?(values, &is_binary/1) do
           {:ok, values}
         else
@@ -160,4 +183,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
 
   defp normalize_datetime_result({:ok, datetime, _offset}, _key), do: {:ok, datetime}
   defp normalize_datetime_result({:error, reason}, key), do: {:error, {:invalid, key, reason}}
+
+  defp fetch_attr(attrs, key) do
+    atom_key = String.to_atom(key)
+
+    cond do
+      Map.has_key?(attrs, key) -> {:ok, Map.get(attrs, key)}
+      Map.has_key?(attrs, atom_key) -> {:ok, Map.get(attrs, atom_key)}
+      true -> :error
+    end
+  end
 end

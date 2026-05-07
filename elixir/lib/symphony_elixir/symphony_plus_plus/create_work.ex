@@ -127,7 +127,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     }
   end
 
-  @spec error_message(error()) :: String.t()
+  @spec error_message(term()) :: String.t()
   def error_message({:missing_required_field, field}), do: "Missing required create-work field: #{field}"
   def error_message(:empty_request_file), do: "Create-work request file is empty"
   def error_message(:invalid_acceptance_criteria), do: "acceptance_criteria must be a list of nonblank strings"

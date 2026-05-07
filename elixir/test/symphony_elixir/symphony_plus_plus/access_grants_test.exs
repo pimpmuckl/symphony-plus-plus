@@ -15,6 +15,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
 
+  defmodule LockedAccessGrantRepo do
+    def get(_schema, _id), do: raise(%Exqlite.Error{message: "database is locked"})
+  end
+
+  defmodule BrokenAccessGrantRepo do
+    def get(_schema, _id), do: raise(%Exqlite.Error{message: "disk I/O failed"})
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
 
@@ -128,6 +136,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     assert {:ok, persisted} = Repository.get(repo, minted.grant.id)
     assert persisted.claimed_at == nil
     assert persisted.claimed_by == nil
+  end
+
+  test "repository normalizes SQLite read failures" do
+    assert {:error, :database_busy} = Repository.get(LockedAccessGrantRepo, "grant-1")
+    assert {:error, {:storage_failed, "disk I/O failed"}} = Repository.get(BrokenAccessGrantRepo, "grant-1")
   end
 
   test "expired grants reject claims", %{repo: repo} do

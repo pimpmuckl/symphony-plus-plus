@@ -256,8 +256,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
     if String.match?(value, ~r/^[A-Za-z0-9_.-]+$/), do: :ok, else: {:error, :invalid_repository}
   end
 
-  defp validate_repo_part(_value), do: {:error, :invalid_repository}
-
   defp metadata_head_sha(metadata, fallback_head_sha) do
     explicit_head_sha = clean_head_sha(fallback_head_sha)
     metadata_head_sha = clean_head_sha(Map.get(metadata, "head_sha") || get_in(metadata, ["head", "sha"]))

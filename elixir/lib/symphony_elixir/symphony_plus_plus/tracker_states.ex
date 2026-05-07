@@ -32,6 +32,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerStates do
     "duplicate" => "closed"
   }
 
+  @type state_set :: %MapSet{}
+
   @spec tracker_kind?(term()) :: boolean()
   def tracker_kind?(kind), do: not is_nil(canonical_tracker_kind(kind))
 
@@ -57,7 +59,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerStates do
   @spec worker_dispatchable_state_names() :: [String.t()]
   def worker_dispatchable_state_names, do: @worker_dispatchable_states
 
-  @spec lookup_state_set(term()) :: MapSet.t(String.t())
+  @spec lookup_state_set(term()) :: state_set()
   def lookup_state_set(state_names), do: state_set(state_names, [])
 
   @spec lookup_state_query_names(term()) :: [String.t()]
@@ -80,10 +82,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerStates do
 
   def lookup_state_query_names(_state_names), do: []
 
-  @spec active_state_set(term()) :: MapSet.t(String.t())
+  @spec active_state_set(term()) :: state_set()
   def active_state_set(state_names), do: state_set(active_state_names(state_names), [])
 
-  @spec terminal_state_set(term()) :: MapSet.t(String.t())
+  @spec terminal_state_set(term()) :: state_set()
   def terminal_state_set(state_names), do: state_set(terminal_state_names(state_names), [])
 
   @spec normalize_state(term()) :: String.t()
@@ -101,12 +103,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerStates do
     Map.get(@state_aliases, normalized, normalized)
   end
 
+  @spec state_names(term(), [String.t()]) :: [String.t()]
   defp state_names(nil, default), do: default
 
   defp state_names(state_names, _default) when is_list(state_names), do: normalized_state_names(state_names)
 
   defp state_names(_state_names, default), do: default
 
+  @spec state_set(term(), [String.t()]) :: state_set()
   defp state_set(nil, default), do: MapSet.new(default)
 
   defp state_set(state_names, _default) when is_list(state_names) do
@@ -118,6 +122,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerStates do
 
   defp state_set(_state_names, default), do: MapSet.new(default)
 
+  @spec normalized_state_names(term()) :: [String.t()]
   defp normalized_state_names(state_names) when is_list(state_names) do
     state_names
     |> Enum.map(&canonical_state_name/1)

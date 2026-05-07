@@ -205,11 +205,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
     not MapSet.disjoint?(MapSet.new(expected_forms), MapSet.new(actual_forms))
   end
 
-  defp trim_ref_prefix(value) when is_binary(value), do: String.replace_prefix(value, "refs/heads/", "")
-  defp trim_ref_prefix(value), do: value
-
   defp branch_match_forms(value, repo) when is_binary(value) do
-    value = trim_ref_prefix(value)
+    value = String.replace_prefix(value, "refs/heads/", "")
     repo_name = repo_name(repo)
 
     [value | repo_authoritative_branch_forms(value, repo_name)]

@@ -223,8 +223,8 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
           {:ok, phase_id}
         end
 
-      {:error, _reason} ->
-        {:error, :forbidden}
+      {:error, reason} ->
+        phase_scope_lookup_error(reason)
     end
   end
 
@@ -232,9 +232,13 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     case WorkPackageRepository.get(repo, work_package_id) do
       {:ok, %{phase_id: phase_id}} when is_binary(phase_id) and phase_id != "" -> {:ok, phase_id}
       {:ok, _work_package} -> {:error, :forbidden}
-      {:error, _reason} -> {:error, :forbidden}
+      {:error, reason} -> phase_scope_lookup_error(reason)
     end
   end
+
+  defp phase_scope_lookup_error(:database_busy), do: {:error, :database_busy}
+  defp phase_scope_lookup_error({:storage_failed, _reason} = reason), do: {:error, reason}
+  defp phase_scope_lookup_error(_reason), do: {:error, :forbidden}
 
   defp authorized_grant({:ok, grant}), do: grant
   defp authorized_grant(_authorization), do: nil
@@ -307,8 +311,6 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   rescue
     _error in Exqlite.Error -> false
   end
-
-  defp start_custom_dashboard_repo(nil, _repo, _fun), do: {:error, :not_found}
 
   defp start_custom_dashboard_repo(database_path, repo, fun) do
     case repo.start_link(database: database_path, name: nil) do

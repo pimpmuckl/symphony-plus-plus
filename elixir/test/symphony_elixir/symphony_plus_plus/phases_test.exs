@@ -15,6 +15,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
 
+  defmodule LockedPhaseRepo do
+    def get(_schema, _id), do: raise(%Exqlite.Error{message: "database is locked"})
+  end
+
+  defmodule BrokenPhaseRepo do
+    def get(_schema, _id), do: raise(%Exqlite.Error{message: "disk I/O failed"})
+  end
+
   defmodule PhaseBoardMaterializationRepo do
     alias SymphonyElixir.SymphonyPlusPlus.Repo
     alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
@@ -71,6 +79,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PhasesTest do
 
     assert {:ok, fetched} = PhaseService.get(repo, phase.id)
     assert fetched == phase
+  end
+
+  test "repository normalizes SQLite read failures" do
+    assert {:error, :database_busy} = PhaseRepository.get(LockedPhaseRepo, "phase-1")
+    assert {:error, {:storage_failed, "disk I/O failed"}} = PhaseRepository.get(BrokenPhaseRepo, "phase-1")
   end
 
   test "architect grant reads only its own phase board", %{repo: repo} do

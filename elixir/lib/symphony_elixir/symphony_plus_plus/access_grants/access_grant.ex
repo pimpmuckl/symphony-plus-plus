@@ -24,7 +24,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
           secret_hash: String.t() | nil,
           grant_role: String.t() | nil,
           provenance: String.t() | nil,
-          capabilities: [String.t()],
+          capabilities: [String.t()] | nil,
           expires_at: DateTime.t() | nil,
           revoked_at: DateTime.t() | nil,
           claimed_at: DateTime.t() | nil,

@@ -301,8 +301,9 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
 
   defp package_session_grant_id(_sessions, _work_package_id), do: nil
 
-  defp phase_reader?(%AccessGrant{capabilities: capabilities}) when is_list(capabilities), do: "read:phase" in capabilities
-  defp phase_reader?(_grant), do: false
+  defp phase_reader?(%AccessGrant{capabilities: capabilities}) do
+    is_list(capabilities) and "read:phase" in capabilities
+  end
 
   defp assign_detail(socket) do
     work_package_id = socket.assigns.work_package_id

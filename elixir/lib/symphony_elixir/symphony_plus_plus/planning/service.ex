@@ -205,9 +205,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Service do
     case AccessGrantRepository.get(repo, grant_id) do
       {:ok, %AccessGrant{revoked_at: %DateTime{}}} -> {:error, :assignment_revoked}
       {:ok, %AccessGrant{expires_at: %DateTime{} = expires_at}} -> expired_assignment_error(expires_at)
-      _grant -> {:error, :assignment_mismatch}
+      {:ok, %AccessGrant{}} -> {:error, :assignment_mismatch}
+      {:error, reason} -> assignment_lookup_error(reason)
     end
   end
+
+  defp assignment_lookup_error(:database_busy), do: {:error, :database_busy}
+  defp assignment_lookup_error({:storage_failed, _reason} = reason), do: {:error, reason}
+  defp assignment_lookup_error(_reason), do: {:error, :assignment_mismatch}
 
   defp expired_assignment_error(%DateTime{} = expires_at) do
     if DateTime.compare(expires_at, DateTime.utc_now(:microsecond)) == :gt do

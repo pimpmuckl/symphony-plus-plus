@@ -38,8 +38,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
     tracker = Config.settings!().tracker
-    active_states = TrackerStates.active_state_set(tracker.active_states)
-    terminal_states = TrackerStates.terminal_state_set(tracker.terminal_states)
+    active_states = tracker.active_states |> TrackerStates.active_state_names() |> MapSet.new()
+    terminal_states = tracker.terminal_states |> TrackerStates.terminal_state_names() |> MapSet.new()
     candidate_states = active_states |> MapSet.difference(terminal_states) |> MapSet.to_list()
     filters = tracker.filters
 
@@ -53,7 +53,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
   def fetch_issues_by_states(state_names) when is_list(state_names) do
     normalized_states =
       state_names
-      |> TrackerStates.lookup_state_set()
+      |> Enum.map(&TrackerStates.canonical_state_name/1)
+      |> MapSet.new()
       |> MapSet.delete("")
 
     if MapSet.size(normalized_states) == 0 do
@@ -474,33 +475,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
     end)
   end
 
-  defp ensure_repo_migrated_under_process_lock(_database_path, 0), do: {:error, :repo_migration_lock_busy}
-
-  defp ensure_repo_migrated_under_process_lock(database_path, retries_left) do
+  defp ensure_repo_migrated_under_process_lock(database_path, :infinity) do
     lock_id = {{__MODULE__, :repo_migration}, Repo.database_key(database_path)}
 
     case global_transaction(
            lock_id,
            fn -> ensure_repo_migrated_under_lock(database_path) end,
-           process_migration_lock_retries(retries_left)
+           :infinity
          ) do
       :aborted ->
-        retry_repo_migration_lock(database_path, retries_left)
+        {:error, :repo_migration_lock_busy}
 
       result ->
         result
     end
   end
-
-  defp retry_repo_migration_lock(_database_path, :infinity), do: {:error, :repo_migration_lock_busy}
-
-  defp retry_repo_migration_lock(database_path, retries_left) do
-    Process.sleep(@migration_lock_retry_delay_ms)
-    ensure_repo_migrated_under_process_lock(database_path, retries_left - 1)
-  end
-
-  defp process_migration_lock_retries(:infinity), do: :infinity
-  defp process_migration_lock_retries(_retries_left), do: 1
 
   defp with_migration_file_lock(database_path, fun, retries \\ @migration_lock_retries)
 

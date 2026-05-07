@@ -8,12 +8,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
 
   @type repo :: module()
   @type error ::
-          :not_found
+          :database_busy
+          | :not_found
           | :id_already_exists
           | :invalid_status
           | :stale_status
           | {:constraint_failed, String.t()}
           | {:migration_failed, term()}
+          | {:storage_failed, String.t()}
           | Changeset.t()
 
   @spec migrate(repo()) :: :ok | {:error, error()}
@@ -32,6 +34,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
     |> normalize_insert_result()
   rescue
     error in Ecto.ConstraintError -> normalize_constraint_error(error)
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec get(repo(), String.t()) :: {:ok, WorkPackage.t()} | {:error, error()}
@@ -40,6 +43,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
       nil -> {:error, :not_found}
       work_package -> {:ok, work_package}
     end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec list(repo()) :: {:ok, [WorkPackage.t()]} | {:error, error()}
@@ -52,6 +57,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
       )
 
     {:ok, work_packages}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec list_for_phase(repo(), String.t()) :: {:ok, [WorkPackage.t()]} | {:error, error()}
@@ -65,6 +72,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
       )
 
     {:ok, work_packages}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec update(repo(), String.t(), map()) :: {:ok, WorkPackage.t()} | {:error, error()}
@@ -76,6 +85,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
     end
   rescue
     error in Ecto.ConstraintError -> normalize_constraint_error(error)
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec update_status(repo(), String.t(), String.t(), String.t()) :: {:ok, WorkPackage.t()} | {:error, error()}
@@ -150,6 +160,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
     case get(repo, id) do
       {:ok, _work_package} -> {:error, :stale_status}
       {:error, :not_found} = error -> error
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -157,6 +168,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
     from(work_package in WorkPackage,
       where: work_package.id == ^id and work_package.status == ^current_status
     )
+  end
+
+  defp normalize_exqlite_error(error) do
+    message = Exception.message(error)
+    normalized_message = String.downcase(message)
+
+    if String.contains?(normalized_message, "busy") or String.contains?(normalized_message, "locked") do
+      {:error, :database_busy}
+    else
+      {:error, {:storage_failed, message}}
+    end
   end
 
   @doc false
