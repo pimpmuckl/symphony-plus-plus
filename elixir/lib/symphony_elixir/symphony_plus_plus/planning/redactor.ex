@@ -226,15 +226,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Redactor do
   end
 
   defp sensitive_query_key?(key) do
+    decoded_key = decode_www_form(key)
+
     normalized =
-      key
-      |> decode_www_form()
+      decoded_key
       |> camel_to_snake()
       |> String.downcase()
       |> String.replace(~r/[^a-z0-9]+/, "_")
       |> String.trim("_")
 
-    MapSet.member?(@sensitive_query_keys, normalized) or String.ends_with?(normalized, "_token") or
+    sensitive_key?(decoded_key) or MapSet.member?(@sensitive_query_keys, normalized) or String.ends_with?(normalized, "_token") or
       String.ends_with?(normalized, "_secret") or String.ends_with?(normalized, "_signature") or
       String.ends_with?(normalized, "_sig")
   end
