@@ -109,10 +109,9 @@ CI feasibility:
 
 - The profile is intended to be CI-friendly because it uses no network and no
   credentials.
-- On the current Windows host, the profile is the documented core harness while
-  the repository-wide `mix test` can still encounter known environment blockers
-  documented in `SETUP_NOTES.md`: Phoenix LiveView symlink permissions,
-  path-canonicalization differences, and fake shell/SSH interception behavior.
+- Symlink-dependent security tests run on hosts that can create symlinks. Hosts
+  without symlink permission skip those cases instead of failing before the
+  underlying security behavior can be exercised.
 
 ## Coverage ratchet
 

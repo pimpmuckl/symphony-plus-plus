@@ -116,59 +116,69 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
-  test "workspace rejects symlink escapes under the configured root" do
-    test_root =
-      Path.join(
-        System.tmp_dir!(),
-        "symphony-elixir-workspace-symlink-#{System.unique_integer([:positive])}"
-      )
+  if symlink_supported?() do
+    test "workspace rejects symlink escapes under the configured root" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-workspace-symlink-#{System.unique_integer([:positive])}"
+        )
 
-    try do
-      workspace_root = Path.join(test_root, "workspaces")
-      outside_root = Path.join(test_root, "outside")
-      symlink_path = Path.join(workspace_root, "MT-SYM")
+      try do
+        workspace_root = Path.join(test_root, "workspaces")
+        outside_root = Path.join(test_root, "outside")
+        symlink_path = Path.join(workspace_root, "MT-SYM")
 
-      File.mkdir_p!(workspace_root)
-      File.mkdir_p!(outside_root)
-      File.ln_s!(outside_root, symlink_path)
+        File.mkdir_p!(workspace_root)
+        File.mkdir_p!(outside_root)
+        File.ln_s!(outside_root, symlink_path)
 
-      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+        write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
 
-      assert {:ok, canonical_outside_root} = SymphonyElixir.PathSafety.canonicalize(outside_root)
-      assert {:ok, canonical_workspace_root} = SymphonyElixir.PathSafety.canonicalize(workspace_root)
+        assert {:ok, canonical_outside_root} = SymphonyElixir.PathSafety.canonicalize(outside_root)
+        assert {:ok, canonical_workspace_root} = SymphonyElixir.PathSafety.canonicalize(workspace_root)
 
-      assert {:error, {:workspace_outside_root, ^canonical_outside_root, ^canonical_workspace_root}} =
-               Workspace.create_for_issue("MT-SYM")
-    after
-      File.rm_rf(test_root)
+        assert {:error, {:workspace_outside_root, ^canonical_outside_root, ^canonical_workspace_root}} =
+                 Workspace.create_for_issue("MT-SYM")
+      after
+        File.rm_rf(test_root)
+      end
     end
+  else
+    @tag skip: "host cannot create symlinks"
+    test "workspace rejects symlink escapes under the configured root"
   end
 
-  test "workspace canonicalizes symlinked workspace roots before creating issue directories" do
-    test_root =
-      Path.join(
-        System.tmp_dir!(),
-        "symphony-elixir-workspace-root-symlink-#{System.unique_integer([:positive])}"
-      )
+  if symlink_supported?() do
+    test "workspace canonicalizes symlinked workspace roots before creating issue directories" do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-elixir-workspace-root-symlink-#{System.unique_integer([:positive])}"
+        )
 
-    try do
-      actual_root = Path.join(test_root, "actual-workspaces")
-      linked_root = Path.join(test_root, "linked-workspaces")
+      try do
+        actual_root = Path.join(test_root, "actual-workspaces")
+        linked_root = Path.join(test_root, "linked-workspaces")
 
-      File.mkdir_p!(actual_root)
-      File.ln_s!(actual_root, linked_root)
+        File.mkdir_p!(actual_root)
+        File.ln_s!(actual_root, linked_root)
 
-      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: linked_root)
+        write_workflow_file!(Workflow.workflow_file_path(), workspace_root: linked_root)
 
-      assert {:ok, canonical_workspace} =
-               SymphonyElixir.PathSafety.canonicalize(Path.join(actual_root, "MT-LINK"))
+        assert {:ok, canonical_workspace} =
+                 SymphonyElixir.PathSafety.canonicalize(Path.join(actual_root, "MT-LINK"))
 
-      assert {:ok, workspace} = Workspace.create_for_issue("MT-LINK")
-      assert workspace == canonical_workspace
-      assert File.dir?(workspace)
-    after
-      File.rm_rf(test_root)
+        assert {:ok, workspace} = Workspace.create_for_issue("MT-LINK")
+        assert workspace == canonical_workspace
+        assert File.dir?(workspace)
+      after
+        File.rm_rf(test_root)
+      end
     end
+  else
+    @tag skip: "host cannot create symlinks"
+    test "workspace canonicalizes symlinked workspace roots before creating issue directories"
   end
 
   test "workspace remove rejects the workspace root itself with a distinct error" do
