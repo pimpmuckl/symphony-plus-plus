@@ -1936,10 +1936,6 @@
 | `mix dialyzer --format short` | pass | `Total errors: 0`; Windows emitted the known Phoenix LiveView colocated JS symlink warning during compile. |
 | `mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs test/symphony_elixir/symphony_plus_plus/access_grants_test.exs` | pass | 211 tests, 0 failures; Windows emitted known symlink and migration redefinition warnings. |
 
-### Next Steps
-
-- Commit/push the T1 follow-up, then run T2 and GitHub review on the pushed head.
-
 ### T2 Follow-Up - 2026-05-07
 
 - Ran T2 round `phase_gate-symphony-plus-plus-sympp-p8-004-dialyzer-8d4e36-20260507T145332Z-9976a4e9`; Alpha, Bravo, and Charlie were clean, Delta found valid storage-error propagation bugs, and the gate was closed as findings.
@@ -1953,10 +1949,6 @@
 |---|---|---|
 | `mix test test/symphony_elixir/symphony_plus_plus/planning_test.exs test/symphony_elixir/symphony_plus_plus/dashboard_api_test.exs` | pass | 95 tests, 0 failures; Windows emitted known symlink and migration redefinition warnings. |
 
-### Next Steps
-
-- Run Dialyzer/lint/release-gate validation, commit/push this T2 fix, rerun T2, then run GitHub review if T2 is clean.
-
 ### Second T2 Follow-Up - 2026-05-07
 
 - Ran second T2 round `phase_gate-symphony-plus-plus-sympp-p8-004-dialyzer-8d4e36-20260507T150914Z-ae8db12e`; Alpha and Bravo each reported one valid follow-up finding, and the gate was closed as findings.
@@ -1964,20 +1956,12 @@
 - Updated `MCP.Session.from_map/1` to accept explicit nil `work_package_id` and `capabilities` values while still rejecting missing keys, matching the nilable assignment struct and `public_assignment/1` output.
 - Added focused regression coverage in the existing planning and MCP suites.
 
-### Next Steps
-
-- Run focused validation plus Dialyzer/lint/release-gate checks, commit/push the second T2 follow-up, rerun T2 on the pushed head, then proceed to GitHub review if clean.
-
 ### Full-Diff T2 Auth Follow-Up - 2026-05-07
 
 - Ran fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p8-004-dialyzer-8d4e36-20260507T152916Z-3434b937` on pushed head `2a7a908`.
 - Alpha was clean; Bravo found one valid dashboard auth regression risk around propagating missing work-key lookup as `:not_found`.
 - Closed the gate as findings and fixed the auth context to normalize `:not_found` to `:unauthorized`, matching invalid-secret and grant-id auth behavior.
 - Added browser-session coverage that unknown board/package work keys return 401 login responses.
-
-### Next Steps
-
-- Run focused dashboard validation plus Dialyzer/lint checks, commit/push the auth follow-up, rerun T2, then proceed to GitHub review if clean.
 
 ### Auth Follow-Up Validation
 
@@ -1987,10 +1971,6 @@
 | `git diff --check` | pass | No whitespace errors. |
 | `mix credo --strict` | pass | 124 files checked, no issues. |
 | `mix dialyzer --format short` | pass | `Total errors: 0`; Windows emitted the known Phoenix LiveView symlink warning during compile. |
-
-### Next Steps
-
-- Commit/push the auth follow-up, rerun T2, then proceed to GitHub review if clean.
 
 ### Final Review and Handoff Status - 2026-05-07
 
