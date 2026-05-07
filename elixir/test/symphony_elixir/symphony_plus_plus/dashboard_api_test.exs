@@ -2789,6 +2789,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end
   end
 
+  test "dashboard browser sessions use the default database when endpoint sympp_repo is unset" do
+    database_path = WorkPackageFactory.database_path()
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+
+    try do
+      {work_package_id, board_secret, package_secret} = seed_dashboard_session_database(database_path)
+      Application.put_env(:symphony_elixir, :sympp_repo_database, database_path)
+
+      with_runtime_endpoint_repo(nil, fn ->
+        board_conn = post(build_conn(), "/sympp/board/session", %{"work_key" => board_secret})
+        assert redirected_to(board_conn) == "/sympp/board"
+
+        package_conn =
+          post(build_conn(), "/sympp/work-packages/#{work_package_id}/session", %{"work_key" => package_secret})
+
+        assert redirected_to(package_conn) == "/sympp/work-packages/#{work_package_id}"
+      end)
+    after
+      case original_database do
+        nil -> Application.delete_env(:symphony_elixir, :sympp_repo_database)
+        value -> Application.put_env(:symphony_elixir, :sympp_repo_database, value)
+      end
+
+      File.rm(database_path)
+    end
+  end
+
   test "dashboard API authenticates an existing explicit database while local Repo uses another ledger" do
     database_path = WorkPackageFactory.database_path()
 
@@ -3237,6 +3264,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end
   end
 
+  defp with_runtime_endpoint_repo(repo, fun) when is_atom(repo) and is_function(fun, 0) do
+    endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
+    original_runtime_repo = SymphonyElixirWeb.Endpoint.config(:sympp_repo)
+
+    Application.put_env(
+      :symphony_elixir,
+      SymphonyElixirWeb.Endpoint,
+      Keyword.put(endpoint_config, :sympp_repo, repo)
+    )
+
+    SymphonyElixirWeb.Endpoint.config_change([{SymphonyElixirWeb.Endpoint, [sympp_repo: repo]}], [])
+
+    try do
+      fun.()
+    after
+      Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
+      SymphonyElixirWeb.Endpoint.config_change([{SymphonyElixirWeb.Endpoint, [sympp_repo: original_runtime_repo]}], [])
+    end
+  end
+
   defp with_dynamic_endpoint_database(database_path, fun) when is_function(fun, 0) do
     endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
@@ -3320,6 +3367,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       assert :ok = WorkPackageRepository.migrate(Repo)
       %{work_package: work_package, work_key_secret: secret} = create_dashboard_fixture(Repo, id: "SYMPP-ALT-DB")
       {work_package.id, secret}
+    after
+      Repo.put_dynamic_repo(original_repo)
+      GenServer.stop(pid)
+    end
+  end
+
+  defp seed_dashboard_session_database(database_path) do
+    {:ok, pid} = Repo.start_link(database: database_path, name: nil, pool_size: 1, log: false)
+    original_repo = Repo.put_dynamic_repo(pid)
+
+    try do
+      assert :ok = WorkPackageRepository.migrate(Repo)
+
+      %{work_package: work_package, work_key_secret: package_secret} =
+        create_dashboard_fixture(Repo, id: "SYMPP-DEFAULT-SESSION")
+
+      board_secret = create_architect_grant_secret(Repo, work_package.id)
+
+      {work_package.id, board_secret, package_secret}
     after
       Repo.put_dynamic_repo(original_repo)
       GenServer.stop(pid)
