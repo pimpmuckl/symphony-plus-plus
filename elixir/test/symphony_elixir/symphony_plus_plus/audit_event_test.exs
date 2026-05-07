@@ -296,16 +296,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AuditEventTest do
              PlanningService.append_progress_event(repo, %{
                work_package_id: work_package.id,
                idempotency_key: "progress:secret-shaped-source",
-               summary: "Worker pasted #{secret}",
-               body: "Authorization: Bearer #{secret}",
+               summary: "Worker pasted #{secret} then kept going",
+               body: "See https://example.test/download?sig=#{secret} then continue",
                status: "working"
              })
 
     assert {:ok, progress_markdown} = Renderer.render(repo, work_package.id, "progress.md")
 
     assert progress_markdown =~ "[REDACTED]"
+    assert progress_markdown =~ "Worker pasted [REDACTED] then kept going"
+    assert progress_markdown =~ "See [REDACTED_URL] then continue"
     refute progress_markdown =~ secret
-    refute progress_markdown =~ "Authorization: Bearer"
+    refute progress_markdown =~ "sig="
   end
 
   test "direct progress append also bounds stored payloads", %{repo: repo} do

@@ -2,6 +2,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Redactor do
   @moduledoc false
 
   @redacted "[REDACTED]"
+  @redacted_url "[REDACTED_URL]"
+  @sensitive_text_pattern ~r/(bearer\s+[A-Za-z0-9._~+\/=-]{8,}|wk_[A-Za-z0-9_-]{43,}|raw[_-]?secret[_-][A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})/i
+  @signed_url_pattern ~r/https?:\/\/[^\s<>"']+\?[^\s<>"']*/i
 
   @sensitive_keys MapSet.new([
                     "access_token",
@@ -64,13 +67,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Redactor do
   def redact_text(nil), do: nil
 
   def redact_text(value) when is_binary(value) do
-    redacted = redact_signed_url_text(value)
-
-    cond do
-      redacted != value -> @redacted
-      sensitive_text?(value) -> @redacted
-      true -> value
-    end
+    value
+    |> redact_signed_url_text()
+    |> redact_sensitive_text()
   end
 
   def redact_text(value), do: value
@@ -143,20 +142,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Redactor do
       String.ends_with?(normalized, "_apikey")
   end
 
-  defp redact_text_values(%{} = value), do: Map.new(value, fn {key, field_value} -> {key, redact_text_values(field_value)} end)
+  defp redact_text_values(%{} = value) do
+    Map.new(value, fn {key, field_value} ->
+      {redact_text(key), redact_text_values(field_value)}
+    end)
+  end
+
   defp redact_text_values(values) when is_list(values), do: Enum.map(values, &redact_text_values/1)
   defp redact_text_values(value) when is_binary(value), do: redact_text(value)
   defp redact_text_values(value), do: value
 
-  defp sensitive_text?(value) do
-    String.match?(
-      value,
-      ~r/(bearer\s+\S+|wk_[A-Za-z0-9_-]{43,}|raw[_-]?secret[_-][A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})/i
-    )
-  end
+  defp redact_sensitive_text(value), do: Regex.replace(@sensitive_text_pattern, value, @redacted)
 
   defp redact_signed_url_text(value) do
-    Regex.replace(~r/https?:\/\/[^\s<>"']+\?[^\s<>"']*/i, value, @redacted)
+    Regex.replace(@signed_url_pattern, value, @redacted_url)
   end
 
   defp redact_key_value(key, value) do

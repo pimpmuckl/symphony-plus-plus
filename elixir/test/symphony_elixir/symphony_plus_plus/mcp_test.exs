@@ -5286,9 +5286,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "params" => %{
             "name" => "append_progress",
             "arguments" => %{
-              "summary" => "Worker pasted #{leaked_secret}",
+              "summary" => "Worker pasted #{leaked_secret} then kept going",
               "idempotency_key" => "worker-progress-text-redacted",
-              "payload" => %{"note" => "Authorization: Bearer #{leaked_secret}"}
+              "payload" => %{
+                "Authorization: Bearer #{leaked_secret}" => "present",
+                "note" => "Before Bearer #{leaked_secret} after"
+              }
             }
           }
         },
@@ -5296,8 +5299,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         session: session
       )
 
-    assert get_in(text_redacted_progress_response, ["result", "structuredContent", "progress_event", "summary"]) == "[REDACTED]"
-    assert get_in(text_redacted_progress_response, ["result", "structuredContent", "progress_event", "payload", "note"]) == "[REDACTED]"
+    assert get_in(text_redacted_progress_response, ["result", "structuredContent", "progress_event", "summary"]) ==
+             "Worker pasted [REDACTED] then kept going"
+
+    text_redacted_payload = get_in(text_redacted_progress_response, ["result", "structuredContent", "progress_event", "payload"])
+    assert text_redacted_payload["note"] == "Before [REDACTED] after"
+    assert text_redacted_payload["Authorization: [REDACTED]"] == "present"
     refute Jason.encode!(get_in(text_redacted_progress_response, ["result", "structuredContent"])) =~ leaked_secret
 
     redacted_replay_response =
