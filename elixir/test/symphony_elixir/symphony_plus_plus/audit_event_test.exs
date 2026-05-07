@@ -291,12 +291,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AuditEventTest do
   test "progress rendering redacts secret-shaped source text", %{repo: repo} do
     assert {:ok, work_package} = create_work_package(repo)
     secret = WorkKey.generate().secret
+    fine_grained_pat = "github_pat_" <> Base.encode16(:crypto.strong_rand_bytes(18), case: :lower)
 
     assert {:ok, _event} =
              PlanningService.append_progress_event(repo, %{
                work_package_id: work_package.id,
                idempotency_key: "progress:secret-shaped-source",
-               summary: "Worker pasted #{secret} then kept going",
+               summary: "Worker pasted #{secret} and #{fine_grained_pat} then kept going",
                body: "See https://example.test/download?sig=#{secret}&page=1 then https://example.test/issues/1?w=1",
                status: "working"
              })
@@ -304,9 +305,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AuditEventTest do
     assert {:ok, progress_markdown} = Renderer.render(repo, work_package.id, "progress.md")
 
     assert progress_markdown =~ "[REDACTED]"
-    assert progress_markdown =~ "Worker pasted [REDACTED] then kept going"
+    assert progress_markdown =~ "Worker pasted [REDACTED] and [REDACTED] then kept going"
     assert progress_markdown =~ "See https://example.test/download?sig=[REDACTED]&page=1 then https://example.test/issues/1?w=1"
     refute progress_markdown =~ secret
+    refute progress_markdown =~ fine_grained_pat
   end
 
   test "direct progress append also bounds stored payloads", %{repo: repo} do

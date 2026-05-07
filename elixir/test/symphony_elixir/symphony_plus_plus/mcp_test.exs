@@ -5282,6 +5282,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     leaked_secret = WorkKey.generate().secret
     second_leaked_secret = WorkKey.generate().secret
+    fine_grained_pat = "github_pat_" <> Base.encode16(:crypto.strong_rand_bytes(18), case: :lower)
 
     text_redacted_progress_response =
       MCPHarness.request(
@@ -5297,6 +5298,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "payload" => %{
                 "Authorization: Bearer #{leaked_secret}" => "present",
                 "Authorization: Bearer #{second_leaked_secret}" => "also present",
+                "fine_grained_pat" => "Saw #{fine_grained_pat}",
                 "note" => "Before Bearer #{leaked_secret} after",
                 "safe_url" => "Review https://example.test/issues/1?w=1",
                 "signed_url" => "Fetch https://example.test/download?sig=#{leaked_secret}&page=1"
@@ -5313,6 +5315,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     text_redacted_payload = get_in(text_redacted_progress_response, ["result", "structuredContent", "progress_event", "payload"])
     assert text_redacted_payload["note"] == "Before [REDACTED] after"
+    assert text_redacted_payload["fine_grained_pat"] == "Saw [REDACTED]"
     assert text_redacted_payload["safe_url"] == "Review https://example.test/issues/1?w=1"
     assert text_redacted_payload["signed_url"] == "Fetch https://example.test/download?sig=[REDACTED]&page=1"
 
@@ -5326,6 +5329,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     encoded_text_redacted_response = Jason.encode!(get_in(text_redacted_progress_response, ["result", "structuredContent"]))
     refute encoded_text_redacted_response =~ leaked_secret
     refute encoded_text_redacted_response =~ second_leaked_secret
+    refute encoded_text_redacted_response =~ fine_grained_pat
 
     redacted_replay_response =
       MCPHarness.request(
