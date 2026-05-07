@@ -1,5 +1,7 @@
 # Task Plan: SYMPP-P3-002 Worker MCP Tools and Resources
 
+> Active lane note, 2026-05-07: this worktree is currently assigned to SYMPP-P8-004 Dialyzer release-gate cleanup. Older SYMPP-P3-002 entries below are historical carry-forward and are not active tasks for this PR.
+
 ## Goal
 
 Implement only SYMPP-P3-002: worker-scoped MCP tools/resources for claim, current assignment, virtual planning files, plan/progress/finding writes, status/blocker/scope-expansion reporting, branch/PR attachment, and readiness checks.
@@ -384,4 +386,5 @@ Make `make -C elixir dialyzer` meaningful and green for the release gate without
 - Completed: baseline Dialyzer output was confirmed at 53 warnings and classified by cause/risk before code edits.
 - Completed: warning cleanup is implemented as targeted spec, storage-error typing, opaque MapSet, and dead-control-flow fixes without broad Dialyzer suppression.
 - Completed: `make -C elixir dialyzer` is green with `Total errors: 0`.
-- In progress: focused validation, full release gate validation, PR publication, and required review-suite lanes.
+- Completed: T1 review produced two follow-up findings; the valid claim-error classification concern is fixed and focused MCP/access-grants validation is green.
+- In progress: commit/push the T1 follow-up, then run required T2 and GitHub review-suite lanes on the pushed head.

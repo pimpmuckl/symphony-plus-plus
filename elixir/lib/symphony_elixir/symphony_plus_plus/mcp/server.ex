@@ -1429,7 +1429,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp claim_or_reconnect_session(repo, secret, proof_hash, claimed_by) do
-    case AccessGrantService.claim(repo, secret, claimed_by: claimed_by) do
+    case claim_access_grant(repo, secret, claimed_by: claimed_by) do
       {:ok, assignment} ->
         with :ok <- require_mcp_claimable_assignment(assignment) do
           {:ok, Session.new(assignment, proof_hash: proof_hash)}
@@ -1441,6 +1441,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp claim_access_grant(repo, secret, opts) do
+    claim = &AccessGrantService.claim/3
+    claim.(repo, secret, opts)
   end
 
   defp reconnect_claimed_session(repo, proof_hash, claimed_by) do
@@ -1502,6 +1507,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp claim_error(:database_busy), do: service_error(:database_busy, "claim_work_key")
   defp claim_error({:storage_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
+  defp claim_error({:migration_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
   defp claim_error(reason), do: {:error, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => reason_text(reason)}}
 
   defp architect_tool("read_child_status", arguments, %__MODULE__{config: config, session: session}) do
@@ -2582,9 +2588,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     glob_segments_within?(child_tail, ["**" | anchor_tail])
   end
 
-  defp glob_segments_within?(child_segments, ["**" | anchor_tail]) do
+  defp glob_segments_within?([_child_head | child_tail] = child_segments, ["**" | anchor_tail]) do
     glob_segments_within?(child_segments, anchor_tail) or
-      glob_segments_within?(tl(child_segments), ["**" | anchor_tail])
+      glob_segments_within?(child_tail, ["**" | anchor_tail])
   end
 
   defp glob_segments_within?(["**" | _child_tail], [_anchor_head | _anchor_tail]), do: false

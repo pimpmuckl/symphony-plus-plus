@@ -1,5 +1,7 @@
 # Progress Log: SYMPP-P3-002
 
+> Active lane note, 2026-05-07: this worktree is currently assigned to SYMPP-P8-004 Dialyzer release-gate cleanup. Older SYMPP-P3-002 entries below are historical carry-forward and are not active tasks for this PR.
+
 ## Session: 2026-05-02
 
 ### Current Status
@@ -1919,6 +1921,24 @@
 ### Next Steps
 
 - Prepare and validate the PR body, then commit/push and run T1, T2, and GitHub review.
+
+### T1 Follow-Up - 2026-05-07
+
+- Ran required T1 round `phase_review-symphony-plus-plus-sympp-p8-004-dialyzer-8d4e36-20260507T143858Z-3c30f702`; Alpha was clean and Bravo reported two findings. The valid behavior finding was claim-error classification for migration/setup failures.
+- Preserved `claim_work_key` service-error classification for `{:migration_failed, _}` and made the AccessGrant claim call use a public-contract function-capture boundary so Dialyzer keeps the defensive classifier reachable.
+- Made the `glob_segments_within?/2` `"**"` recursive clause explicitly non-empty, clarifying the existing empty-list invariant.
+
+### T1 Follow-Up Validation
+
+| Command | Result | Notes |
+|---|---|---|
+| `mix format lib/symphony_elixir/symphony_plus_plus/mcp/server.ex` | pass | Formatted the T1 follow-up edits. |
+| `mix dialyzer --format short` | pass | `Total errors: 0`; Windows emitted the known Phoenix LiveView colocated JS symlink warning during compile. |
+| `mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs test/symphony_elixir/symphony_plus_plus/access_grants_test.exs` | pass | 211 tests, 0 failures; Windows emitted known symlink and migration redefinition warnings. |
+
+### Next Steps
+
+- Commit/push the T1 follow-up, then run T2 and GitHub review on the pushed head.
 
 ## SYMPP-P8-004 Dialyzer Release-Gate Follow-Up - 2026-05-07
 

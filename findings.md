@@ -1,5 +1,7 @@
 # Findings & Decisions: SYMPP-P3-002
 
+> Active lane note, 2026-05-07: this worktree is currently assigned to SYMPP-P8-004 Dialyzer release-gate cleanup. Older SYMPP-P3-002 entries below are historical carry-forward and are not active tasks for this PR.
+
 ## Requirements
 
 - Implement worker MCP tools/resources from `implementation_docs_symphplusplus/work_packages/SYMPP-P3-002_worker-mcp-tools-and-resources.md`.
@@ -242,3 +244,9 @@
 - Tracker MapSet warnings came from exposing non-opaque map shapes in state-set helpers; call sites now build opaque MapSets from canonical state names before using MapSet APIs.
 - The final planning redactor warning was a true private-helper inference issue: `secret_text?/1` is only called with query string binaries, so the impossible non-binary check was removed by making the helper binary-guarded.
 - No broad `@dialyzer` suppression or ignore file was added.
+
+### T1 Follow-Up Findings
+
+- T1 round `phase_review-symphony-plus-plus-sympp-p8-004-dialyzer-8d4e36-20260507T143858Z-3c30f702` found one valid behavior risk: `claim_work_key` should continue classifying migration/storage setup failures as service errors, not unauthorized auth failures.
+- The fix preserves the `{:migration_failed, _}` classifier and routes `AccessGrantService.claim/3` through a small public-contract function-capture boundary, matching the `MCP.Auth` pattern used for dynamic repository lookups.
+- T1 also called out `glob_segments_within?/2` for an unconditional `tl/1`; the existing empty-list clauses already prevented a runtime crash, but the clause is now explicitly non-empty so the invariant is visible in code.
