@@ -45,12 +45,14 @@
 
 ## Pilot migration with Kraken
 
+Use the detailed operator playbook in
+`../runbooks/KRAKEN_PILOT_MIGRATION_PLAYBOOK.md`.
+
 Do not migrate the whole Kraken rewrite first.
 
 Pilot sequence:
 
 1. One standalone low-risk quick fix.
-2. One hotfix-style package against dev/main.
-3. One phase-child package in a non-critical phase branch.
-4. One mini-phase with two child packages and an architect agent.
-5. Only then migrate the active Kraken rewrite phase.
+2. One hotfix-style package against `main`.
+3. One mini-phase with two child packages and an architect agent.
+4. Only then migrate the active Kraken rewrite phase.
