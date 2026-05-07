@@ -4,8 +4,10 @@ Use this runbook for standalone hotfix packages. Use
 `../docs/12_OPERATOR_TRAINING.md` first if you need the broader role and gate
 context.
 
-1. Copy `../templates/create_work_package.hotfix.example.yaml` to an edited
-   request file outside the shared template, for example `scratch/hotfix-request.yaml`.
+1. From the repository root, copy
+   `implementation_docs_symphplusplus/templates/create_work_package.hotfix.example.yaml`
+   to an edited request file outside the shared template, for example
+   `scratch/hotfix-request.yaml`.
 2. Create the hotfix work package from `elixir/` with the edited file path:
    `cd elixir && mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../scratch/hotfix-request.yaml`
 3. Confirm the edited request sets the correct base branch.
