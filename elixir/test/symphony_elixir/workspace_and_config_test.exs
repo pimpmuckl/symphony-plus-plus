@@ -116,8 +116,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
-  if symlink_supported?() do
-    test "workspace rejects symlink escapes under the configured root" do
+  test "workspace rejects symlink escapes under the configured root" do
+    if symlink_supported?() do
       test_root =
         Path.join(
           System.tmp_dir!(),
@@ -144,13 +144,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         File.rm_rf(test_root)
       end
     end
-  else
-    @tag skip: "host cannot create symlinks"
-    test "workspace rejects symlink escapes under the configured root"
   end
 
-  if symlink_supported?() do
-    test "workspace canonicalizes symlinked workspace roots before creating issue directories" do
+  test "workspace canonicalizes symlinked workspace roots before creating issue directories" do
+    if symlink_supported?() do
       test_root =
         Path.join(
           System.tmp_dir!(),
@@ -176,9 +173,6 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         File.rm_rf(test_root)
       end
     end
-  else
-    @tag skip: "host cannot create symlinks"
-    test "workspace canonicalizes symlinked workspace roots before creating issue directories"
   end
 
   test "workspace remove rejects the workspace root itself with a distinct error" do

@@ -39,8 +39,8 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  if symlink_supported?() do
-    test "app server rejects symlink escape cwd paths under the workspace root" do
+  test "app server rejects symlink escape cwd paths under the workspace root" do
+    if symlink_supported?() do
       test_root =
         Path.join(
           System.tmp_dir!(),
@@ -78,9 +78,6 @@ defmodule SymphonyElixir.AppServerTest do
         File.rm_rf(test_root)
       end
     end
-  else
-    @tag skip: "host cannot create symlinks"
-    test "app server rejects symlink escape cwd paths under the workspace root"
   end
 
   test "app server passes explicit turn sandbox policies through unchanged" do

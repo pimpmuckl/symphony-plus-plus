@@ -110,8 +110,8 @@ CI feasibility:
 - The profile is intended to be CI-friendly because it uses no network and no
   credentials.
 - Symlink-dependent security tests run on hosts that can create symlinks. Hosts
-  without symlink permission skip those cases instead of failing before the
-  underlying security behavior can be exercised.
+  without symlink permission short-circuit those cases at runtime instead of
+  failing before the underlying security behavior can be exercised.
 
 ## Coverage ratchet
 
