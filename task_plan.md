@@ -388,4 +388,5 @@ Make `make -C elixir dialyzer` meaningful and green for the release gate without
 - Completed: `make -C elixir dialyzer` is green with `Total errors: 0`.
 - Completed: T1 review produced two follow-up findings; the valid claim-error classification concern is fixed and focused MCP/access-grants validation is green.
 - Completed: T2 found storage-error propagation gaps in planning assignment validation and phase-board authorization; both now preserve database-busy/storage failures instead of collapsing them into auth denials.
-- In progress: run release-gate validation, commit/push the T2 fix, then rerun T2 and GitHub review-suite lanes on the pushed head.
+- Completed: second T2 found two valid follow-up regressions; the planning assignment mismatch fallback is restored and MCP session parsing accepts explicit nil assignment fields that `public_assignment/1` can emit.
+- In progress: validate the second T2 follow-up, commit/push it, then rerun T2 and GitHub review-suite lanes on the pushed head.

@@ -1957,6 +1957,17 @@
 
 - Run Dialyzer/lint/release-gate validation, commit/push this T2 fix, rerun T2, then run GitHub review if T2 is clean.
 
+### Second T2 Follow-Up - 2026-05-07
+
+- Ran second T2 round `phase_gate-symphony-plus-plus-sympp-p8-004-dialyzer-8d4e36-20260507T150914Z-ae8db12e`; Alpha and Bravo each reported one valid follow-up finding, and the gate was closed as findings.
+- Restored `Planning.Service.assignment_error/2` fallback for live but mismatched access grants so invalid assignments return `{:error, :assignment_mismatch}` instead of raising.
+- Updated `MCP.Session.from_map/1` to accept explicit nil `work_package_id` and `capabilities` values while still rejecting missing keys, matching the nilable assignment struct and `public_assignment/1` output.
+- Added focused regression coverage in the existing planning and MCP suites.
+
+### Next Steps
+
+- Run focused validation plus Dialyzer/lint/release-gate checks, commit/push the second T2 follow-up, rerun T2 on the pushed head, then proceed to GitHub review if clean.
+
 ## SYMPP-P8-004 Dialyzer Release-Gate Follow-Up - 2026-05-07
 
 ### Session Log

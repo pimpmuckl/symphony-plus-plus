@@ -253,6 +253,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, nil_session} = Session.from_map(%{attrs | "claimed_at" => nil})
     assert nil_session.assignment.claimed_at == nil
 
+    assert {:ok, nullable_session} = Session.from_map(%{attrs | "work_package_id" => nil, "capabilities" => nil})
+    assert nullable_session.assignment.work_package_id == nil
+    assert nullable_session.assignment.capabilities == nil
+
     assert Session.from_map(%{attrs | "grant_id" => " "}) == {:error, {:blank, "grant_id"}}
     assert Session.from_map(Map.delete(attrs, "work_package_id")) == {:error, {:missing, "work_package_id"}}
     assert Session.from_map(%{attrs | "capabilities" => ["read:own", :bad]}) == {:error, {:invalid, "capabilities"}}

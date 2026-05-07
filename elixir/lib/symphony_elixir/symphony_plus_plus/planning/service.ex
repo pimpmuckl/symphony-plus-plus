@@ -205,6 +205,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Service do
     case AccessGrantRepository.get(repo, grant_id) do
       {:ok, %AccessGrant{revoked_at: %DateTime{}}} -> {:error, :assignment_revoked}
       {:ok, %AccessGrant{expires_at: %DateTime{} = expires_at}} -> expired_assignment_error(expires_at)
+      {:ok, %AccessGrant{}} -> {:error, :assignment_mismatch}
       {:error, reason} -> assignment_lookup_error(reason)
     end
   end

@@ -446,6 +446,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
     assert {:error, {:storage_failed, "disk I/O failed"}} =
              Service.require_valid_assignment(__MODULE__.BrokenAssignmentLookupRepo, assignment)
+
+    assert {:error, :assignment_mismatch} =
+             Service.require_valid_assignment(__MODULE__.LiveAssignmentMismatchRepo, assignment)
   end
 
   test "state read retry delay is independent from append retry attempts" do
@@ -779,6 +782,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
   defmodule BrokenAssignmentLookupRepo do
     def update_all(_query, _updates), do: {0, []}
     def get(AccessGrant, _id), do: raise(%Exqlite.Error{message: "disk I/O failed"})
+  end
+
+  defmodule LiveAssignmentMismatchRepo do
+    def update_all(_query, _updates), do: {0, []}
+    def get(AccessGrant, _id), do: %AccessGrant{expires_at: nil}
   end
 
   defmodule StalePlanNodeRepo do
