@@ -5284,6 +5284,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     second_leaked_secret = WorkKey.generate().secret
     fine_grained_pat = "github_pat_" <> Base.encode16(:crypto.strong_rand_bytes(18), case: :lower)
     query_password = "pw-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+    legacy_aws_access_key_id = "AKIA" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :upper)
+    legacy_aws_signature = Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
 
     text_redacted_progress_response =
       MCPHarness.request(
@@ -5302,6 +5304,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                 "fine_grained_pat" => "Saw #{fine_grained_pat}",
                 "note" => "Before Bearer #{leaked_secret} after",
                 "password_url" => "Login https://example.test/login?password=#{query_password}&page=1",
+                "s3_url" => "Fetch https://bucket.s3.amazonaws.test/object?AWSAccessKeyId=#{legacy_aws_access_key_id}&Signature=#{legacy_aws_signature}&Expires=1",
                 "safe_url" => "Review https://example.test/issues/1?w=1",
                 "signed_url" => "Fetch https://example.test/download?sig=#{leaked_secret}&page=1"
               }
@@ -5319,6 +5322,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert text_redacted_payload["note"] == "Before [REDACTED] after"
     assert text_redacted_payload["fine_grained_pat"] == "Saw [REDACTED]"
     assert text_redacted_payload["password_url"] == "Login https://example.test/login?password=[REDACTED]&page=1"
+
+    assert text_redacted_payload["s3_url"] ==
+             "Fetch https://bucket.s3.amazonaws.test/object?AWSAccessKeyId=[REDACTED]&Signature=[REDACTED]&Expires=1"
+
     assert text_redacted_payload["safe_url"] == "Review https://example.test/issues/1?w=1"
     assert text_redacted_payload["signed_url"] == "Fetch https://example.test/download?sig=[REDACTED]&page=1"
 
@@ -5334,6 +5341,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute encoded_text_redacted_response =~ second_leaked_secret
     refute encoded_text_redacted_response =~ fine_grained_pat
     refute encoded_text_redacted_response =~ query_password
+    refute encoded_text_redacted_response =~ legacy_aws_access_key_id
+    refute encoded_text_redacted_response =~ legacy_aws_signature
 
     redacted_replay_response =
       MCPHarness.request(
