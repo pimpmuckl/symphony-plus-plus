@@ -391,4 +391,6 @@ Make `make -C elixir dialyzer` meaningful and green for the release gate without
 - Completed: second T2 found two valid follow-up regressions; the planning assignment mismatch fallback is restored and MCP session parsing accepts explicit nil assignment fields that `public_assignment/1` can emit.
 - Completed: fresh full-diff T2 found one dashboard auth normalization follow-up; the fix keeps unknown work keys on unauthorized/login responses.
 - Completed: dashboard auth follow-up focused tests, whitespace, Credo, and Dialyzer are green.
-- In progress: commit/push the dashboard auth follow-up, then rerun T2 and GitHub review-suite lanes on the pushed head.
+- Completed: final release-gate validation is green on the finished code head: `make -C elixir dialyzer` reports `Total errors: 0` and `make -C elixir all` passes.
+- Completed: required review-suite lanes are clean for the finished code head: T2 signoff is clean and GitHub review found no major issues.
+- **Status:** complete; no implementation, validation, PR, or planning-file tasks remain open for SYMPP-P8-004 Dialyzer cleanup.

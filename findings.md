@@ -260,3 +260,5 @@
 - The follow-up restores the `%AccessGrant{}` mismatch fallback after revoked/expiry classification, and `Session.from_map/1` now distinguishes explicit nil from missing keys for `work_package_id` and `capabilities`.
 - Fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p8-004-dialyzer-8d4e36-20260507T152916Z-3434b937` had Alpha clean and one valid Bravo auth finding.
 - Dashboard secret auth now normalizes `:not_found` to `:unauthorized`, matching invalid-secret and grant-id auth so bad work keys stay 401/login responses instead of 404/not-found responses.
+- Final T2 signoff round `phase_gate-symphony-plus-plus-sympp-p8-004-dialyzer-8d4e36-20260507T154529Z-bcb8f3f5` was clean, and GitHub review on PR #39 returned no major issues.
+- No remaining known risks or open findings for the Dialyzer release-gate cleanup.
