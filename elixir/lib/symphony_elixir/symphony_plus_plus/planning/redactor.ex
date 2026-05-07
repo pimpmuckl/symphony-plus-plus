@@ -143,14 +143,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Redactor do
   end
 
   defp redact_text_values(%{} = value) do
-    Map.new(value, fn {key, field_value} ->
-      {redact_text(key), redact_text_values(field_value)}
+    Enum.reduce(value, %{}, fn {key, field_value}, redacted ->
+      redacted_key = key |> redact_text() |> unique_redacted_text_key(redacted)
+      Map.put(redacted, redacted_key, redact_text_values(field_value))
     end)
   end
 
   defp redact_text_values(values) when is_list(values), do: Enum.map(values, &redact_text_values/1)
   defp redact_text_values(value) when is_binary(value), do: redact_text(value)
   defp redact_text_values(value), do: value
+
+  defp unique_redacted_text_key(key, redacted) do
+    if Map.has_key?(redacted, key) do
+      disambiguated_output_key(key, redacted, 2)
+    else
+      key
+    end
+  end
 
   defp redact_sensitive_text(value), do: Regex.replace(@sensitive_text_pattern, value, @redacted)
 

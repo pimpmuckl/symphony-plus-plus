@@ -5276,6 +5276,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(redacted_progress_response, ["result", "structuredContent", "progress_event", "payload", "token"]) == "[REDACTED]"
 
     leaked_secret = WorkKey.generate().secret
+    second_leaked_secret = WorkKey.generate().secret
 
     text_redacted_progress_response =
       MCPHarness.request(
@@ -5290,6 +5291,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "idempotency_key" => "worker-progress-text-redacted",
               "payload" => %{
                 "Authorization: Bearer #{leaked_secret}" => "present",
+                "Authorization: Bearer #{second_leaked_secret}" => "also present",
                 "note" => "Before Bearer #{leaked_secret} after"
               }
             }
@@ -5304,8 +5306,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     text_redacted_payload = get_in(text_redacted_progress_response, ["result", "structuredContent", "progress_event", "payload"])
     assert text_redacted_payload["note"] == "Before [REDACTED] after"
-    assert text_redacted_payload["Authorization: [REDACTED]"] == "present"
-    refute Jason.encode!(get_in(text_redacted_progress_response, ["result", "structuredContent"])) =~ leaked_secret
+
+    redacted_auth_values =
+      text_redacted_payload
+      |> Enum.filter(fn {key, _value} -> String.starts_with?(key, "Authorization: [REDACTED]") end)
+      |> Enum.map(fn {_key, value} -> value end)
+      |> Enum.sort()
+
+    assert redacted_auth_values == ["also present", "present"]
+    encoded_text_redacted_response = Jason.encode!(get_in(text_redacted_progress_response, ["result", "structuredContent"]))
+    refute encoded_text_redacted_response =~ leaked_secret
+    refute encoded_text_redacted_response =~ second_leaked_secret
 
     redacted_replay_response =
       MCPHarness.request(
