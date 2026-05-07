@@ -4,21 +4,23 @@ Use this runbook for standalone hotfix packages. Use
 `../docs/12_OPERATOR_TRAINING.md` first if you need the broader role and gate
 context.
 
-1. From the repository root, copy
+1. From the repository root, create `scratch/` if needed:
+   `mkdir scratch`
+2. Copy
    `implementation_docs_symphplusplus/templates/create_work_package.hotfix.example.yaml`
    to an edited request file outside the shared template, for example
    `scratch/hotfix-request.yaml`.
-2. Create the hotfix work package from `elixir/` with the edited file path:
+3. Create the hotfix work package from `elixir/` with the edited file path:
    `cd elixir && mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../scratch/hotfix-request.yaml`
-3. Confirm the edited request sets the correct base branch.
-4. Confirm acceptance criteria are narrow and testable.
-5. Dispatch worker with the returned one-time `worker_grant.secret`; normal package reads and virtual file renders do not expose it again.
-6. Have the worker claim with `claim_work_key(secret, claimed_by)`.
-7. Watch progress timeline.
-8. Require PR and hotfix review-suite artifact.
-9. Review scope guard and changed files.
-10. Human merges after branch protection passes.
-11. Record release-validation evidence or blocked validation from
+4. Confirm the edited request sets the correct base branch.
+5. Confirm acceptance criteria are narrow and testable.
+6. Dispatch worker with the returned one-time `worker_grant.secret`; normal package reads and virtual file renders do not expose it again.
+7. Have the worker claim with `claim_work_key(secret, claimed_by)`.
+8. Watch progress timeline.
+9. Require PR and hotfix review-suite artifact.
+10. Review scope guard and changed files.
+11. Human merges after branch protection passes.
+12. Record release-validation evidence or blocked validation from
     `../docs/11_RELEASE_VALIDATION.md`, then close package and archive evidence.
 
 ## Hotfix package checklist
