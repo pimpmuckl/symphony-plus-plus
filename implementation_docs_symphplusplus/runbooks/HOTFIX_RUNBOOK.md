@@ -5,8 +5,8 @@ Use this runbook for standalone hotfix packages. Use
 context.
 
 1. Create hotfix work package with one standalone command:
-   `cd elixir && mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../implementation_docs_symphplusplus/templates/create_work_package.hotfix.example.yaml`
-2. Confirm base branch is correct.
+   `cd elixir && mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file <edited-hotfix-request.yaml>`
+2. Confirm the edited request sets the correct base branch.
 3. Confirm acceptance criteria are narrow and testable.
 4. Dispatch worker with the returned one-time `worker_grant.secret`; normal package reads and virtual file renders do not expose it again.
 5. Have the worker claim with `claim_work_key(secret, claimed_by)`.
@@ -14,7 +14,8 @@ context.
 7. Require PR and hotfix review-suite artifact.
 8. Review scope guard and changed files.
 9. Human merges after branch protection passes.
-10. Close package and archive evidence.
+10. Record release-validation evidence or blocked validation from
+    `../docs/11_RELEASE_VALIDATION.md`, then close package and archive evidence.
 
 ## Hotfix package checklist
 
@@ -27,6 +28,8 @@ context.
 - Require the worker to attach the PR URL and current head SHA before readiness.
 - Confirm review evidence applies to the current PR head, not an older commit.
 - Record any skipped validation as blocked with the exact blocker and owner.
+- Use `../review/REVIEWER_CHECKLIST.md` and `../docs/11_RELEASE_VALIDATION.md`
+  before merge.
 
 ## Worker handoff
 

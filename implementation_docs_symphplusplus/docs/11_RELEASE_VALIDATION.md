@@ -68,8 +68,8 @@ A release candidate is honest only when the PR records:
   or release-critical policy.
 - Coverage passes the ratchet in `elixir/mix.exs`. The ratchet is near current
   measured coverage; do not describe it as a full-coverage requirement.
-- Required review-suite lanes are complete for the current PR head. For the
-  P8-004 docs slice, that means T1, then T2, then GitHub review evidence.
+- Required review-suite lanes from the package policy or PR assignment are
+  complete for the current PR head.
 - The PR diff is scoped to the assigned WorkPackage and owned paths.
 - No raw secrets or secret-bearing URLs appear in committed files, PR text,
   logs, or review artifacts.

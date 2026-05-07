@@ -23,7 +23,7 @@ runbook is the shorter command-flow reference.
 
 1. Create phase container.
 2. Mint architect grant.
-3. Give architect this package and `docs/00_ARCHITECT_AGENT_HANDOFF.md`.
+3. Give architect this package and `00_ARCHITECT_AGENT_HANDOFF.md`.
 4. Architect creates child packages from `work_packages/`.
 5. Architect mints worker keys.
 6. Workers implement child packages.
