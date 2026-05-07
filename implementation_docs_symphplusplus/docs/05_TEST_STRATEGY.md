@@ -117,7 +117,7 @@ CI feasibility:
 ## Coverage ratchet
 
 The Elixir coverage threshold is a release ratchet, not an aspirational target.
-Keep `test_coverage.summary.threshold` in `elixir/mix.exs` near the current
+Keep `test_coverage.summary.threshold` in `elixir/mix.exs` close to the current
 measured total coverage so `mix test --cover` catches regressions without
 blocking release readiness on future strict/integration coverage work.
 

@@ -6,20 +6,35 @@ known gaps are documented with evidence.
 
 ## Current release gate
 
-Run from the repository root:
+Run from the repository root when `make` and `mix` are on `PATH`:
 
 ```powershell
 make -C elixir all
 ```
 
+If Elixir is managed by `mise` instead of being on `PATH`, pass the Mix command
+through the Makefile:
+
+```powershell
+make -C elixir all MIX="mise exec -- mix"
+```
+
 That gate runs dependency setup, build, format check, lint/static checks,
 coverage, and Dialyzer through the Elixir `Makefile`.
 
-When diagnosing a coverage-only change, run the coverage gate directly:
+When diagnosing a coverage-only change, run the coverage gate directly from the
+Elixir project:
 
 ```powershell
 cd elixir
 mix test --cover
+```
+
+With `mise`:
+
+```powershell
+cd elixir
+mise exec -- mix test --cover
 ```
 
 The current coverage ratchet is the `test_coverage.summary.threshold` value in
