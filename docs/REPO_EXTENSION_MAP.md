@@ -10,10 +10,8 @@ below as implemented by this package.
 - Upstream behavior to preserve: Linear polling, normalized Linear issues,
   workspace creation, Codex app-server runs, retry/reconciliation semantics,
   dashboard/API observability, and the existing `linear_graphql` dynamic tool.
-- P0-001 local baseline: `SETUP_NOTES.md` reports that PowerShell lacks
-  `make`, `mise`, `elixir`, and `mix`; WSL has `make` but lacks `mise`,
-  `elixir`, and `mix`. Elixir gates were therefore not executed in that
-  baseline, and live Linear checks were skipped without `LINEAR_API_KEY`.
+- Runtime setup lives in `elixir/README.md`; current release validation lives
+  in `implementation_docs_symphplusplus/docs/11_RELEASE_VALIDATION.md`.
 - Secret rule: do not print, log, commit, or mirror raw Linear/API token values.
 
 ## Current Runtime Map

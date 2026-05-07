@@ -83,8 +83,8 @@ A release candidate is honest only when the PR records:
   scope with changed-file review and branch protection.
 - Secret-dependent validation must be reported as blocked when safe test
   credentials are unavailable.
-- Existing OpenAI/Symphony implementation docs are not removed by this release
-  readiness slice. Cleanup of older docs is a later architect decision.
+- Historical P0-P8 implementation backlog artifacts are not release inputs.
+  Use current operator docs, live WorkPackage state, and PR evidence instead.
 - The Kraken pilot playbook remains a pilot migration guide, not proof that all
   future migrations are production-ready.
 - `100%` coverage is a future strict-coverage campaign, not a current release

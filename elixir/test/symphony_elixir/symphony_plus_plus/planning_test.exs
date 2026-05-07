@@ -232,7 +232,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert {:ok, _artifact} =
              Service.append_artifact(repo, %{
                work_package_id: work_package.id,
-               path: "implementation_docs_symphplusplus/work_packages/SYMPP-P1-004_virtual-planning-file-renderers.md",
+               path: "implementation_docs_symphplusplus/docs/02_SYSTEM_SPEC.md",
                title: "Package spec",
                kind: "spec"
              })
