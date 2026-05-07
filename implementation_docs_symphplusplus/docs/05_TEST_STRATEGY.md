@@ -109,7 +109,16 @@ CI feasibility:
 
 - The profile is intended to be CI-friendly because it uses no network and no
   credentials.
-- On the current Windows host, the profile is the documented core harness while
-  the repository-wide `mix test` can still encounter known environment blockers
-  documented in `SETUP_NOTES.md`: Phoenix LiveView symlink permissions,
-  path-canonicalization differences, and fake shell/SSH interception behavior.
+- Symlink-dependent security tests run on hosts that can create symlinks. Hosts
+  without symlink permission short-circuit those cases at runtime instead of
+  failing before the underlying security behavior can be exercised.
+
+## Coverage ratchet
+
+The Elixir coverage threshold is a release ratchet, not an aspirational target.
+Keep `test_coverage.summary.threshold` in `elixir/mix.exs` close to the current
+measured total coverage so `mix test --cover` catches regressions without
+blocking release readiness on future strict/integration coverage work.
+
+`100%` coverage remains a future campaign lane. It is not a blocker for the
+current Symphony++ release gate; see `11_RELEASE_VALIDATION.md`.

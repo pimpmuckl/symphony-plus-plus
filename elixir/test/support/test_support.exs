@@ -29,7 +29,8 @@ defmodule SymphonyElixir.TestSupport do
           stop_default_http_server: 0,
           path_with_prepended: 2,
           shell_path: 1,
-          shell_script_command: 1
+          shell_script_command: 1,
+          symlink_supported?: 0
         ]
 
       setup do
@@ -76,6 +77,29 @@ defmodule SymphonyElixir.TestSupport do
 
   def restore_env(key, nil), do: System.delete_env(key)
   def restore_env(key, value), do: System.put_env(key, value)
+
+  def symlink_supported? do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-symlink-capability-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      target = Path.join(test_root, "target")
+      link = Path.join(test_root, "link")
+
+      File.mkdir_p!(target)
+
+      case File.ln_s(target, link) do
+        :ok -> true
+        {:error, reason} when reason in [:eperm, :eacces, :enotsup] -> false
+        {:error, reason} -> raise File.LinkError, reason: reason, existing: target, new: link
+      end
+    after
+      File.rm_rf(test_root)
+    end
+  end
 
   def shell_path(path) when is_binary(path) do
     path

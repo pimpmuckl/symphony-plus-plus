@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Tracker.Memory
+
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -156,27 +158,27 @@ defmodule SymphonyElixir.CoreTest do
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [open_issue, :not_an_issue, closed_issue])
     Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
 
-    assert {:ok, [^open_issue, ^closed_issue]} = SymphonyElixir.Tracker.Memory.fetch_candidate_issues()
-    assert {:ok, [^open_issue]} = SymphonyElixir.Tracker.Memory.fetch_issues_by_states(["in progress"])
-    assert {:ok, [^closed_issue]} = SymphonyElixir.Tracker.Memory.fetch_issue_states_by_ids(["ISSUE-2"])
+    assert {:ok, [^open_issue, ^closed_issue]} = Memory.fetch_candidate_issues()
+    assert {:ok, [^open_issue]} = Memory.fetch_issues_by_states(["in progress"])
+    assert {:ok, [^closed_issue]} = Memory.fetch_issue_states_by_ids(["ISSUE-2"])
 
-    assert SymphonyElixir.Tracker.Memory.dispatch_filters_match?(open_issue)
-    assert SymphonyElixir.Tracker.Memory.dispatch_filters_match?(:anything)
+    assert Memory.dispatch_filters_match?(open_issue)
+    assert Memory.dispatch_filters_match?(:anything)
 
-    assert :ok = SymphonyElixir.Tracker.Memory.create_comment("ISSUE-1", "hello")
+    assert :ok = Memory.create_comment("ISSUE-1", "hello")
     assert_receive {:memory_tracker_comment, "ISSUE-1", "hello"}
 
-    assert :ok = SymphonyElixir.Tracker.Memory.update_issue_state("ISSUE-1", "Review")
+    assert :ok = Memory.update_issue_state("ISSUE-1", "Review")
     assert_receive {:memory_tracker_state_update, "ISSUE-1", "Review"}
 
-    assert SymphonyElixir.Tracker.Memory.start_agent_run(open_issue, []) == {:ok, nil}
-    assert SymphonyElixir.Tracker.Memory.list_active_agent_runs() == {:ok, []}
-    assert SymphonyElixir.Tracker.Memory.heartbeat_agent_run("run-1", %{}) == {:ok, nil}
-    assert SymphonyElixir.Tracker.Memory.mark_agent_run_retrying("run-1", "retry") == {:ok, nil}
-    assert SymphonyElixir.Tracker.Memory.mark_agent_run_running("run-1", nil) == {:ok, nil}
-    assert SymphonyElixir.Tracker.Memory.mark_agent_run_completed("run-1", nil) == {:ok, nil}
-    assert SymphonyElixir.Tracker.Memory.mark_agent_run_failed("run-1", "failed") == {:ok, nil}
-    assert SymphonyElixir.Tracker.Memory.mark_agent_run_stopped("run-1", "stopped") == {:ok, nil}
+    assert Memory.start_agent_run(open_issue, []) == {:ok, nil}
+    assert Memory.list_active_agent_runs() == {:ok, []}
+    assert Memory.heartbeat_agent_run("run-1", %{}) == {:ok, nil}
+    assert Memory.mark_agent_run_retrying("run-1", "retry") == {:ok, nil}
+    assert Memory.mark_agent_run_running("run-1", nil) == {:ok, nil}
+    assert Memory.mark_agent_run_completed("run-1", nil) == {:ok, nil}
+    assert Memory.mark_agent_run_failed("run-1", "failed") == {:ok, nil}
+    assert Memory.mark_agent_run_stopped("run-1", "stopped") == {:ok, nil}
   end
 
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do
