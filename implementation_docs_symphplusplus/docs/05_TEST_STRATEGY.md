@@ -113,3 +113,13 @@ CI feasibility:
   the repository-wide `mix test` can still encounter known environment blockers
   documented in `SETUP_NOTES.md`: Phoenix LiveView symlink permissions,
   path-canonicalization differences, and fake shell/SSH interception behavior.
+
+## Coverage ratchet
+
+The Elixir coverage threshold is a release ratchet, not an aspirational target.
+Keep `test_coverage.summary.threshold` in `elixir/mix.exs` near the current
+measured total coverage so `mix test --cover` catches regressions without
+blocking release readiness on future strict/integration coverage work.
+
+`100%` coverage remains a future campaign lane. It is not a blocker for the
+current Symphony++ release gate; see `11_RELEASE_VALIDATION.md`.

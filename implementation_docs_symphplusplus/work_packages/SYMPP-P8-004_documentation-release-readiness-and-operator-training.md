@@ -13,6 +13,10 @@
 
 Finalize documentation for operators, architects, workers, reviewers, setup, troubleshooting, and release gates.
 
+This narrowed slice only owns the release validation policy ratchet and focused
+release-readiness documentation. The broader operator-training rewrite remains
+outside this PR.
+
 ## Implementation tasks
 
 - Write operator guide.
