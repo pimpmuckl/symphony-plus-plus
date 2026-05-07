@@ -204,10 +204,10 @@ Phase 3
 - [x] Fix fifty-second T2 nil/blank explicit state-key isolation finding locally.
 - [x] Validate fifty-second T2 fix locally.
 - [x] Commit and push fifty-second T2 fix.
-- [ ] Commit and push fifty-sixth T2 fix.
-- [ ] Run T2 follow-up/full T2 until green, then GitHub review.
-- [ ] Reply to and resolve GitHub inline findings where applicable.
-- **Status:** active: fifty-sixth T2 fix is validated locally, docs/planning updated, pending commit/push plus fresh full-diff T2.
+- Historical inactive carry-forward: commit and push fifty-sixth T2 fix.
+- Historical inactive carry-forward: run T2 follow-up/full T2 until green, then GitHub review.
+- Historical inactive carry-forward: reply to and resolve GitHub inline findings where applicable.
+- **Historical status:** inactive carry-forward from SYMPP-P3-002; not active for this SYMPP-P8-004 PR.
 
 ### High-Pressure Coherence Review
 

@@ -1918,9 +1918,9 @@
 | `git diff --check` | pass | No whitespace errors. |
 | `make -C elixir all` | pass | Setup, build, format check, lint, coverage, and Dialyzer all passed. Coverage: 83.17% against 83.10%; final Dialyzer step: `Total errors: 0`. |
 
-### Next Steps
+### PR and Review Status
 
-- Prepare and validate the PR body, then commit/push and run T1, T2, and GitHub review.
+- PR body was prepared and validated, changes were committed and pushed, and required T1, T2, and GitHub review-suite lanes were completed.
 
 ### T1 Follow-Up - 2026-05-07
 
@@ -1980,21 +1980,9 @@
 - Fresh T2 signoff round `phase_gate-symphony-plus-plus-sympp-p8-004-dialyzer-8d4e36-20260507T154529Z-bcb8f3f5` had Alpha and Bravo clean and was closed as clean.
 - GitHub review on PR #39 at code head `a536c7ca6a8621ab13ef21c5fa8c04a597941dcc` returned no major issues.
 
-### Next Steps
+### Completion State
 
-- None for this work package; final handoff should report the PR URL, final SHA, validation, review evidence, and remaining risks.
-
-## SYMPP-P8-004 Dialyzer Release-Gate Follow-Up - 2026-05-07
-
-### Session Log
-
-- 2026-05-07T15:52:26+02:00: Started in assigned worktree `C:\Users\jonat\.codex\worktrees\symphony-plus-plus-SYMPP-P8-004-dialyzer` on branch `agent/SYMPP-P8-004/dialyzer-gate-cleanup` at base `1a8d121`.
-- Added Dialyzer-specific plan and warning classification to local `task_plan.md` and `findings.md` before implementation edits.
-
-### Next Steps
-
-- Confirm current `make -C elixir dialyzer` output in this worktree.
-- Inspect warning sites and apply minimal spec/control-flow fixes.
+- None for this work package; no active implementation, validation, review, PR, or planning-file tasks remain open for SYMPP-P8-004 Dialyzer cleanup.
 
 ### Baseline Validation
 
