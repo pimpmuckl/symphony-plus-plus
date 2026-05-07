@@ -94,7 +94,7 @@ defmodule SymphonyElixir.TestSupport do
       case File.ln_s(target, link) do
         :ok -> true
         {:error, reason} when reason in [:eperm, :eacces, :enotsup] -> false
-        {:error, reason} -> raise File.LinkError, action: "create symlink", reason: reason, path: link
+        {:error, reason} -> raise File.LinkError, reason: reason, existing: target, new: link
       end
     after
       File.rm_rf(test_root)
