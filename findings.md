@@ -1,7 +1,5 @@
 # Findings & Decisions: SYMPP-P3-002
 
-> Active lane note, 2026-05-07: this worktree is currently assigned to SYMPP-P8-004 Dialyzer release-gate cleanup. Older SYMPP-P3-002 entries below are historical carry-forward and are not active tasks for this PR.
-
 ## Requirements
 
 - Implement worker MCP tools/resources from `implementation_docs_symphplusplus/work_packages/SYMPP-P3-002_worker-mcp-tools-and-resources.md`.
@@ -219,46 +217,3 @@
 - Fresh T2 round `phase_gate-symphony-plus-plus-sympp-p3-002-e4d006-20260503T094632Z-580dcb60` on `79a154081da494892bd4541533f5dcb77c8e9a74` had Bravo clean and one Alpha finding asking explicit response-only `state_key` callers to preserve claimed worker sessions across requests.
 - That Alpha finding conflicts with the overseer product/security decision that explicit `state_key` is handshake/initialize continuity only, not a bearer capability; workers must call `claim_work_key(secret, claimed_by)` again after reconnect initialize. Need overseer decision before changing this contract.
 - Overseer decision: keep the current product/security contract. Treat state-key-only claimed-session persistence objections as invalid/out-of-scope for P3-002; rerun T2 with append-only reviewer instructions instead of changing the contract.
-
-## SYMPP-P8-004 Dialyzer Release-Gate Findings - 2026-05-07
-
-### Baseline Warning Taxonomy
-
-- `call`/`call_without_opaque`: likely exception-message and `MapSet` type/spec mismatches, not intended behavior changes.
-- `contract_with_opaque`: tracker state set specs likely use raw map shapes where Dialyzer expects `MapSet.t(...)`.
-- `guard_fail`: usually impossible type guards after earlier pattern refinement; review individually before removing.
-- `pattern_match` / `pattern_match_cov`: mixed causes. Some are genuinely redundant branches, while repository/API error branches may be defensive behavior hidden by underspecified specs.
-- `unused_fun`: `mcp/auth.ex` has a private helper that current code no longer reaches.
-
-### Risk Notes
-
-- Repository and MCP boundary warnings are medium risk because removing `{:error, _}` branches could hide real storage or service failures.
-- Dashboard/LiveView simplifications need focused tests or existing coverage because they are user-facing.
-- Planning redactor and tracker state warnings look mechanical if inspection confirms no behavior intent behind the impossible matches.
-
-### Implemented Resolution Notes
-
-- Repository warnings were not fixed by deleting defensive `{:error, _}` branches; repository specs now model SQLite busy/storage failures and storage calls normalize Exqlite exceptions into those typed errors.
-- `MCP.Auth` keeps the existing unexpected grant lookup defensive behavior for dynamic repository modules; the lookup is routed through a local function capture so Dialyzer does not erase that tested boundary path.
-- Covered MCP/Dashboard/LiveView branches were removed only where the local API shape makes the branch impossible, such as already-normalized required objects, binary-only parser outputs, and non-returned auth variants.
-- Tracker MapSet warnings came from exposing non-opaque map shapes in state-set helpers; call sites now build opaque MapSets from canonical state names before using MapSet APIs.
-- The final planning redactor warning was a true private-helper inference issue: `secret_text?/1` is only called with query string binaries, so the impossible non-binary check was removed by making the helper binary-guarded.
-- No broad `@dialyzer` suppression or ignore file was added.
-
-### T1 Follow-Up Findings
-
-- T1 round `phase_review-symphony-plus-plus-sympp-p8-004-dialyzer-8d4e36-20260507T143858Z-3c30f702` found one valid behavior risk: `claim_work_key` should continue classifying migration/storage setup failures as service errors, not unauthorized auth failures.
-- The fix preserves the `{:migration_failed, _}` classifier and routes `AccessGrantService.claim/3` through a small public-contract function-capture boundary, matching the `MCP.Auth` pattern used for dynamic repository lookups.
-- T1 also called out `glob_segments_within?/2` for an unconditional `tl/1`; the existing empty-list clauses already prevented a runtime crash, but the clause is now explicitly non-empty so the invariant is visible in code.
-
-### T2 Follow-Up Findings
-
-- T2 round `phase_gate-symphony-plus-plus-sympp-p8-004-dialyzer-8d4e36-20260507T145332Z-9976a4e9` had Alpha, Bravo, and Charlie clean; Delta found valid storage-error propagation gaps.
-- `PlanningService.require_valid_assignment/2` now preserves `:database_busy` and `{:storage_failed, _}` from the access-grant lookup used to classify stale assignment rows, rather than collapsing every lookup failure into `:assignment_mismatch`.
-- Phase-board authorization helpers in `SymppDashboardApiController` and `SymppBoardLive` now preserve `:database_busy` and `{:storage_failed, _}` from anchor work-package reads, while still mapping missing/scope-invalid anchors to `:forbidden`.
-- Second T2 round `phase_gate-symphony-plus-plus-sympp-p8-004-dialyzer-8d4e36-20260507T150914Z-ae8db12e` found valid follow-ups: a live non-expiring mismatched grant regressed to `CaseClauseError`, and MCP session parsing rejected explicit nil assignment fields that the now-nilable assignment type and `public_assignment/1` can emit.
-- The follow-up restores the `%AccessGrant{}` mismatch fallback after revoked/expiry classification, and `Session.from_map/1` now distinguishes explicit nil from missing keys for `work_package_id` and `capabilities`.
-- Fresh full-diff T2 round `phase_gate-symphony-plus-plus-sympp-p8-004-dialyzer-8d4e36-20260507T152916Z-3434b937` had Alpha clean and one valid Bravo auth finding.
-- Dashboard secret auth now normalizes `:not_found` to `:unauthorized`, matching invalid-secret and grant-id auth so bad work keys stay 401/login responses instead of 404/not-found responses.
-- Final T2 signoff round `phase_gate-symphony-plus-plus-sympp-p8-004-dialyzer-8d4e36-20260507T154529Z-bcb8f3f5` was clean, and GitHub review on PR #39 returned no major issues.
-- No remaining known risks or open findings for the Dialyzer release-gate cleanup.

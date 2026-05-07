@@ -1,7 +1,5 @@
 # Task Plan: SYMPP-P3-002 Worker MCP Tools and Resources
 
-> Active lane note, 2026-05-07: this worktree is currently assigned to SYMPP-P8-004 Dialyzer release-gate cleanup. Older SYMPP-P3-002 entries below are historical carry-forward and are not active tasks for this PR.
-
 ## Goal
 
 Implement only SYMPP-P3-002: worker-scoped MCP tools/resources for claim, current assignment, virtual planning files, plan/progress/finding writes, status/blocker/scope-expansion reporting, branch/PR attachment, and readiness checks.
@@ -204,10 +202,10 @@ Phase 3
 - [x] Fix fifty-second T2 nil/blank explicit state-key isolation finding locally.
 - [x] Validate fifty-second T2 fix locally.
 - [x] Commit and push fifty-second T2 fix.
-- Historical inactive carry-forward: commit and push fifty-sixth T2 fix.
-- Historical inactive carry-forward: run T2 follow-up/full T2 until green, then GitHub review.
-- Historical inactive carry-forward: reply to and resolve GitHub inline findings where applicable.
-- **Historical status:** inactive carry-forward from SYMPP-P3-002; not active for this SYMPP-P8-004 PR.
+- [ ] Commit and push fifty-sixth T2 fix.
+- [ ] Run T2 follow-up/full T2 until green, then GitHub review.
+- [ ] Reply to and resolve GitHub inline findings where applicable.
+- **Status:** active: fifty-sixth T2 fix is validated locally, docs/planning updated, pending commit/push plus fresh full-diff T2.
 
 ### High-Pressure Coherence Review
 
@@ -348,49 +346,3 @@ Phase 3
 - Do not create live Linear state.
 - Do not log or expose raw work keys, bearer tokens, API keys, or secrets.
 - Ask the overseeing architecture agent before making backward-compatibility-sensitive or broader-scope decisions.
-
-## SYMPP-P8-004 Dialyzer Release-Gate Follow-Up - 2026-05-07
-
-### Goal
-
-Make `make -C elixir dialyzer` meaningful and green for the release gate without broad suppressions or product-behavior drift.
-
-### Scope Boundaries
-
-- Own only the Dialyzer cleanup split from SYMPP-P8-004 after PR #38.
-- Preserve upstream Symphony and Linear behavior unless current tests/code prove a branch is impossible.
-- Prefer truthful specs, helper return types, and control-flow tightening over ignores.
-- Keep defensive runtime branches when the warning is caused by underspecified repository/API typing.
-
-### Warning Classification
-
-| Class | Examples | Likely fix | Risk |
-|---|---|---|---|
-| Underspecified return/specs | repository `{:error, _}` branches, phase/artifact lookups, MCP tool helpers | Broaden or correct specs/typespecs to include real error shapes | Medium: must not delete defensive handling for storage/service failures |
-| Over-narrow helper success typing | tool result helpers, dashboard/MCP guards, return-shape mismatches | Normalize helper specs and call sites to the actual tagged result shape | Medium: product-visible tool errors must stay stable |
-| Impossible/dead control flow | covered pattern matches, impossible guards, unused private helper | Remove redundant clause or simplify branch only where runtime shape is truly impossible | Low/medium: verify tests for touched user-facing paths |
-| Opaque MapSet misuse | tracker state sets and tracker adapter set ops | Use `MapSet.t(...)` specs and pass MapSets to MapSet APIs | Low: mechanical typing cleanup |
-| Macro/module attribute match artifact | planning redactor module-level pattern | Rewrite to a direct compile-time conditional or simple module body | Low: no product behavior intended |
-| CLI task exception typing | `mix sympp.create_work` error formatting | Use exception-message API that matches `rescue` typing | Low: preserve CLI output semantics |
-
-### Implementation Plan
-
-1. Confirm the current Dialyzer output in this worktree and capture any drift from the parent-observed list.
-2. Inspect each touched seam and group edits by truthful cause, keeping the diff reviewable.
-3. Apply minimal code/spec fixes and focused tests for behavior-sensitive seams.
-4. Run formatting, focused tests, `git diff --check`, `make -C elixir dialyzer`, and `make -C elixir all` if Dialyzer is green.
-5. Commit, push, create PR with the required title/template, then run T1, T2, and GitHub review-suite lanes.
-
-### Current Status
-
-- Completed: baseline Dialyzer output was confirmed at 53 warnings and classified by cause/risk before code edits.
-- Completed: warning cleanup is implemented as targeted spec, storage-error typing, opaque MapSet, and dead-control-flow fixes without broad Dialyzer suppression.
-- Completed: `make -C elixir dialyzer` is green with `Total errors: 0`.
-- Completed: T1 review produced two follow-up findings; the valid claim-error classification concern is fixed and focused MCP/access-grants validation is green.
-- Completed: T2 found storage-error propagation gaps in planning assignment validation and phase-board authorization; both now preserve database-busy/storage failures instead of collapsing them into auth denials.
-- Completed: second T2 found two valid follow-up regressions; the planning assignment mismatch fallback is restored and MCP session parsing accepts explicit nil assignment fields that `public_assignment/1` can emit.
-- Completed: fresh full-diff T2 found one dashboard auth normalization follow-up; the fix keeps unknown work keys on unauthorized/login responses.
-- Completed: dashboard auth follow-up focused tests, whitespace, Credo, and Dialyzer are green.
-- Completed: final release-gate validation is green on the finished code head: `make -C elixir dialyzer` reports `Total errors: 0` and `make -C elixir all` passes.
-- Completed: required review-suite lanes are clean for the finished code head: T2 signoff is clean and GitHub review found no major issues.
-- **Status:** complete; no implementation, validation, PR, or planning-file tasks remain open for SYMPP-P8-004 Dialyzer cleanup.
