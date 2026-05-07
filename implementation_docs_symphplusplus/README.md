@@ -25,6 +25,10 @@ This package is meant to be handed to an architecture agent that will supervise 
 5. Require each worker PR to pass the package-specific acceptance criteria and test plan before merge.
 6. Treat Phase 0 and Phase 1 as non-negotiable prerequisites before attempting MCP, dashboard, GitHub sync, or architect delegation.
 
+For operator training, start with `docs/12_OPERATOR_TRAINING.md`. It explains
+when to use a standalone package versus a phase-based flow, how to run a
+standalone hotfix, and which release and review gates matter before merge.
+
 ## Recommended merge policy
 
 - One work package = one PR unless the architecture agent explicitly splits it.
@@ -62,3 +66,11 @@ Review gates mark it ready for human merge.
 ```
 
 If this scenario works, Symphony++ has its core value.
+
+## Release and review references
+
+- Operator training: `docs/12_OPERATOR_TRAINING.md`
+- Hotfix package creation: `runbooks/HOTFIX_RUNBOOK.md`
+- Release validation checklist: `docs/11_RELEASE_VALIDATION.md`
+- WorkPackage readiness gates: `review/READINESS_GATES.md`
+- Reviewer checklist: `review/REVIEWER_CHECKLIST.md`

@@ -13,9 +13,9 @@
 
 Finalize documentation for operators, architects, workers, reviewers, setup, troubleshooting, and release gates.
 
-This narrowed slice only owns the release validation policy ratchet and focused
-release-readiness documentation. The broader operator-training rewrite remains
-outside this PR.
+PR #38 already set the realistic coverage ratchet and added focused release
+validation documentation. This remaining slice owns the operator-training and
+release-readiness documentation needed to close P8-004.
 
 ## Implementation tasks
 
@@ -29,11 +29,14 @@ outside this PR.
 
 ## Acceptance criteria
 
-- [ ] Docs cover standalone and phase-based flows.
-- [ ] A new operator can create a hotfix package from docs.
-- [ ] Reviewer checklist exists.
-- [ ] Known limitations are explicit.
-- [ ] Release gate checklist exists.
+- [x] Docs cover standalone and phase-based flows in
+  `docs/12_OPERATOR_TRAINING.md` and `docs/09_OPERATIONAL_RUNBOOK.md`.
+- [x] A new operator can create a hotfix package from
+  `runbooks/HOTFIX_RUNBOOK.md`, with handoff and readiness checks linked from
+  `docs/12_OPERATOR_TRAINING.md`.
+- [x] Reviewer checklist exists at `review/REVIEWER_CHECKLIST.md`.
+- [x] Known limitations are explicit in `docs/11_RELEASE_VALIDATION.md`.
+- [x] Release gate checklist exists in `docs/11_RELEASE_VALIDATION.md`.
 
 ## Test plan
 

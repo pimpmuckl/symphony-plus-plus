@@ -1,18 +1,23 @@
 # Operational Runbook
 
+For a role-oriented walkthrough, start with `12_OPERATOR_TRAINING.md`. This
+runbook is the shorter command-flow reference.
+
 ## Starting a standalone hotfix
 
-1. Create work package with kind `hotfix`.
-2. Set repo and base branch.
+1. Create work package with kind `hotfix`; see
+   `../runbooks/HOTFIX_RUNBOOK.md`.
+2. Set repo, base branch, owned paths, and target branch.
 3. Set acceptance criteria and review-suite requirement.
-4. Mint worker grant.
+4. Mint worker grant and send the one-time secret only out of band.
 5. Install or copy `.codex/skills/symphony-work-package/` into the worker repo.
 6. Configure the Symphony++ MCP stdio dependency; see
    `.codex/skills/symphony-work-package/references/mcp_wiring.md`.
 7. Hand worker the key and the verbatim `templates/worker_agent_prompt.md`.
 8. Watch dashboard/API for progress.
-9. Review PR and readiness evidence.
-10. Human merges after branch protection passes.
+9. Review PR and readiness evidence with `../review/REVIEWER_CHECKLIST.md`.
+10. Human merges only after branch protection, review-suite evidence, and
+    release gates required by the package pass.
 
 ## Starting a phase-based implementation
 
@@ -24,6 +29,17 @@
 6. Workers implement child packages.
 7. Architect merges accepted child PRs into phase branch.
 8. Human reviews phase summary and promotes phase branch.
+
+## Role boundaries
+
+- Operator: creates packages, controls secret handoff, approves release policy,
+  merges PRs, and archives final evidence.
+- Architect: sequences phase work, creates child packages, mints worker keys,
+  handles scope expansion, and keeps the phase branch explainable.
+- Worker: implements only the assigned package, records progress/findings,
+  attaches branch/PR/review evidence, and stops for missing scope or access.
+- Reviewer: checks package scope, acceptance, validation, security, and current
+  head evidence without expanding the PR into unrelated cleanup.
 
 ## Handling blocker
 
