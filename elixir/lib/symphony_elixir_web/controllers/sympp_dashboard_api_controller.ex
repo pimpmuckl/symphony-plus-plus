@@ -664,7 +664,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
        when is_binary(work_package_id) do
     case WorkPackageRepository.get(repo, work_package_id) do
       {:ok, work_package} -> Dashboard.require_phase_board_anchor_scope(work_package, grant, phase_id)
-      {:error, _reason} -> {:error, :forbidden}
+      {:error, reason} -> forbidden_or_storage_error(reason)
     end
   end
 
@@ -674,7 +674,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
        when is_binary(work_package_id) do
     case WorkPackageRepository.get(repo, work_package_id) do
       {:ok, work_package} -> Dashboard.require_phase_board_anchor_scope(work_package, grant, phase_id)
-      {:error, _reason} -> {:error, :forbidden}
+      {:error, reason} -> forbidden_or_storage_error(reason)
     end
   end
 
@@ -688,11 +688,15 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     case WorkPackageRepository.get(repo, work_package_id) do
       {:ok, %{phase_id: phase_id}} when is_binary(phase_id) and phase_id != "" -> {:ok, phase_id}
       {:ok, _work_package} -> {:error, :forbidden}
-      {:error, _reason} -> {:error, :forbidden}
+      {:error, reason} -> forbidden_or_storage_error(reason)
     end
   end
 
   defp phase_scope(_repo, %AccessGrant{}), do: {:error, :forbidden}
+
+  defp forbidden_or_storage_error(:database_busy), do: {:error, :database_busy}
+  defp forbidden_or_storage_error({:storage_failed, _reason} = reason), do: {:error, reason}
+  defp forbidden_or_storage_error(_reason), do: {:error, :forbidden}
 
   defp require_capability(capabilities, capability) when is_list(capabilities) do
     if capability in capabilities, do: :ok, else: {:error, :forbidden}

@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
   use ExUnit.Case, async: false
 
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Finding
   alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
@@ -426,6 +428,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
     assert {:error, :database_busy} = Repository.get_state(__MODULE__.BusyPlanningRepo, "SYMPP-P1-004")
   end
 
+  test "valid assignment checks preserve access-grant lookup storage errors" do
+    now = DateTime.utc_now(:microsecond)
+
+    assignment = %Assignment{
+      grant_id: "grant-storage-failure",
+      work_package_id: "SYMPP-P1-004",
+      display_key: "ABCD",
+      grant_role: "worker",
+      capabilities: ["worker:claim"],
+      claimed_at: now,
+      claimed_by: "agent"
+    }
+
+    assert {:error, :database_busy} =
+             Service.require_valid_assignment(__MODULE__.BusyAssignmentLookupRepo, assignment)
+
+    assert {:error, {:storage_failed, "disk I/O failed"}} =
+             Service.require_valid_assignment(__MODULE__.BrokenAssignmentLookupRepo, assignment)
+  end
+
   test "state read retry delay is independent from append retry attempts" do
     previous_append_attempts = Application.get_env(:symphony_elixir, :sympp_planning_append_retry_attempts)
     previous_read_attempts = Application.get_env(:symphony_elixir, :sympp_planning_state_read_retry_attempts)
@@ -747,6 +769,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
   defmodule StorageListFailureRepo do
     def all(_query), do: raise(%Exqlite.Error{message: "no such table: sympp_plan_nodes"})
+  end
+
+  defmodule BusyAssignmentLookupRepo do
+    def update_all(_query, _updates), do: {0, []}
+    def get(AccessGrant, _id), do: raise(%Exqlite.Error{message: "database is locked"})
+  end
+
+  defmodule BrokenAssignmentLookupRepo do
+    def update_all(_query, _updates), do: {0, []}
+    def get(AccessGrant, _id), do: raise(%Exqlite.Error{message: "disk I/O failed"})
   end
 
   defmodule StalePlanNodeRepo do

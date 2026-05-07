@@ -35,6 +35,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     def one(_query), do: raise(%Exqlite.Error{message: "database is locked"})
   end
 
+  defmodule LockedPhaseAnchorRepo do
+    @moduledoc false
+
+    @grant_key {__MODULE__, :grant}
+
+    def put_grant(%AccessGrant{} = grant), do: :persistent_term.put(@grant_key, grant)
+    def clear_grant, do: :persistent_term.erase(@grant_key)
+
+    def one(_query), do: :persistent_term.get(@grant_key)
+    def get(AccessGrant, _id), do: :persistent_term.get(@grant_key)
+    def get(WorkPackage, _id), do: raise(%Exqlite.Error{message: "database is locked"})
+  end
+
   defmodule MissingCustomRepo do
     @moduledoc false
 
@@ -2813,6 +2826,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     secret = WorkKey.generate().secret
 
     with_endpoint_repo(BusyRepo, fn ->
+      assert %{"error" => %{"code" => "database_busy"}} =
+               json_response(get(auth_conn(secret), "/api/v1/sympp/board"), 503)
+    end)
+  end
+
+  test "dashboard API preserves SQLite busy errors during phase anchor authorization" do
+    secret = WorkKey.generate().secret
+    now = DateTime.utc_now(:microsecond)
+
+    grant = %AccessGrant{
+      id: "grant-locked-phase-anchor",
+      work_package_id: "SYMPP-ANCHOR",
+      phase_id: @dashboard_phase_id,
+      display_key: "ABCD",
+      secret_hash: WorkKey.secret_hash(secret),
+      grant_role: "architect",
+      capabilities: ["read:phase"],
+      claimed_at: now,
+      claimed_by: "reviewer",
+      expires_at: DateTime.add(now, 3600, :second),
+      inserted_at: now,
+      updated_at: now
+    }
+
+    LockedPhaseAnchorRepo.put_grant(grant)
+    on_exit(fn -> LockedPhaseAnchorRepo.clear_grant() end)
+
+    with_endpoint_repo(LockedPhaseAnchorRepo, fn ->
+      assert {:error, :database_busy} = SymppDashboardApiController.authorize_board_grant_id(grant.id)
+
       assert %{"error" => %{"code" => "database_busy"}} =
                json_response(get(auth_conn(secret), "/api/v1/sympp/board"), 503)
     end)

@@ -1940,6 +1940,23 @@
 
 - Commit/push the T1 follow-up, then run T2 and GitHub review on the pushed head.
 
+### T2 Follow-Up - 2026-05-07
+
+- Ran T2 round `phase_gate-symphony-plus-plus-sympp-p8-004-dialyzer-8d4e36-20260507T145332Z-9976a4e9`; Alpha, Bravo, and Charlie were clean, Delta found valid storage-error propagation bugs, and the gate was closed as findings.
+- Fixed planning assignment validation so access-grant lookup storage failures remain service/storage errors.
+- Fixed phase-board anchor authorization in both API and LiveView paths so work-package storage failures return storage errors instead of forbidden authorization denials.
+- Added focused coverage to the existing planning and dashboard API suites.
+
+### T2 Follow-Up Validation
+
+| Command | Result | Notes |
+|---|---|---|
+| `mix test test/symphony_elixir/symphony_plus_plus/planning_test.exs test/symphony_elixir/symphony_plus_plus/dashboard_api_test.exs` | pass | 95 tests, 0 failures; Windows emitted known symlink and migration redefinition warnings. |
+
+### Next Steps
+
+- Run Dialyzer/lint/release-gate validation, commit/push this T2 fix, rerun T2, then run GitHub review if T2 is clean.
+
 ## SYMPP-P8-004 Dialyzer Release-Gate Follow-Up - 2026-05-07
 
 ### Session Log

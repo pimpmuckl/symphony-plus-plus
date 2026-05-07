@@ -250,3 +250,9 @@
 - T1 round `phase_review-symphony-plus-plus-sympp-p8-004-dialyzer-8d4e36-20260507T143858Z-3c30f702` found one valid behavior risk: `claim_work_key` should continue classifying migration/storage setup failures as service errors, not unauthorized auth failures.
 - The fix preserves the `{:migration_failed, _}` classifier and routes `AccessGrantService.claim/3` through a small public-contract function-capture boundary, matching the `MCP.Auth` pattern used for dynamic repository lookups.
 - T1 also called out `glob_segments_within?/2` for an unconditional `tl/1`; the existing empty-list clauses already prevented a runtime crash, but the clause is now explicitly non-empty so the invariant is visible in code.
+
+### T2 Follow-Up Findings
+
+- T2 round `phase_gate-symphony-plus-plus-sympp-p8-004-dialyzer-8d4e36-20260507T145332Z-9976a4e9` had Alpha, Bravo, and Charlie clean; Delta found valid storage-error propagation gaps.
+- `PlanningService.require_valid_assignment/2` now preserves `:database_busy` and `{:storage_failed, _}` from the access-grant lookup used to classify stale assignment rows, rather than collapsing every lookup failure into `:assignment_mismatch`.
+- Phase-board authorization helpers in `SymppDashboardApiController` and `SymppBoardLive` now preserve `:database_busy` and `{:storage_failed, _}` from anchor work-package reads, while still mapping missing/scope-invalid anchors to `:forbidden`.

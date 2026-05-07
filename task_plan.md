@@ -387,4 +387,5 @@ Make `make -C elixir dialyzer` meaningful and green for the release gate without
 - Completed: warning cleanup is implemented as targeted spec, storage-error typing, opaque MapSet, and dead-control-flow fixes without broad Dialyzer suppression.
 - Completed: `make -C elixir dialyzer` is green with `Total errors: 0`.
 - Completed: T1 review produced two follow-up findings; the valid claim-error classification concern is fixed and focused MCP/access-grants validation is green.
-- In progress: commit/push the T1 follow-up, then run required T2 and GitHub review-suite lanes on the pushed head.
+- Completed: T2 found storage-error propagation gaps in planning assignment validation and phase-board authorization; both now preserve database-busy/storage failures instead of collapsing them into auth denials.
+- In progress: run release-gate validation, commit/push the T2 fix, then rerun T2 and GitHub review-suite lanes on the pushed head.
