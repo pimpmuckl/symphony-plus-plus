@@ -2769,6 +2769,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(progress_only_response, ["error", "data", "reason"]) == "insufficient_capability"
   end
 
+  test "architect mutating tools require their specific grant capabilities", %{repo: repo} do
+    {package, session} = create_architect_session(repo, "SYMPP-ARCHITECT-MUTATION-CAPABILITY", ["read:phase"])
+
+    counts_before = {
+      repo.aggregate(WorkPackage, :count),
+      repo.aggregate(AccessGrant, :count),
+      repo.aggregate(ProgressEvent, :count),
+      repo.aggregate(Artifact, :count)
+    }
+
+    denied_calls = [
+      {"create_child_work_package", %{"package" => %{"id" => "SYMPP-ARCHITECT-DENIED-CHILD", "title" => "Denied", "acceptance_criteria" => ["Denied"]}}},
+      {"mint_child_worker_key", %{"work_package_id" => package.id, "template" => %{}}},
+      {"revoke_child_worker_key", %{"grant_id" => "grant-denied", "reason" => "Denied"}},
+      {"approve_scope_expansion", %{"work_package_id" => package.id, "allowed_file_globs" => ["docs/**"], "rationale" => "Denied"}},
+      {"request_child_replan", %{"work_package_id" => package.id, "rationale" => "Denied"}},
+      {"approve_child_ready_state", %{"work_package_id" => package.id, "rationale" => "Denied"}},
+      {"merge_child_into_phase", %{"work_package_id" => package.id, "merge_artifact" => %{"status" => "merged_into_phase", "uri" => "https://example.test/pr/1"}}},
+      {"split_work_package", %{"work_package_id" => package.id, "package" => %{}}},
+      {"publish_phase_update", %{"summary" => "Denied"}}
+    ]
+
+    Enum.each(denied_calls, fn {tool, arguments} ->
+      response = mcp_tool(repo, session, tool, arguments)
+
+      assert get_in(response, ["error", "code"]) == -32_001
+      assert get_in(response, ["error", "data", "reason"]) == "insufficient_capability"
+    end)
+
+    assert {
+             repo.aggregate(WorkPackage, :count),
+             repo.aggregate(AccessGrant, :count),
+             repo.aggregate(ProgressEvent, :count),
+             repo.aggregate(Artifact, :count)
+           } == counts_before
+  end
+
   test "architect read_child_status reads only its scoped work package", %{repo: repo} do
     assert {:ok, package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-READ-CHILD", kind: "mcp", status: "planning"))
@@ -4161,6 +4198,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(approval_response, ["result", "structuredContent", "work_package", "status"]) == "merging_into_phase"
     assert get_in(approval_response, ["result", "structuredContent", "approval", "payload", "type"]) == "child_ready_approval"
+    approval_event = repo.get!(ProgressEvent, get_in(approval_response, ["result", "structuredContent", "approval", "id"]))
+    assert approval_event.actor_id == architect_session.assignment.claimed_by
+    assert approval_event.actor_type == "architect"
+    assert approval_event.access_grant_id == architect_session.assignment.grant_id
+    assert approval_event.payload["source_tool"] == "approve_child_ready_state"
 
     approval_replay_response =
       mcp_tool(repo, architect_session, "approve_child_ready_state", %{
@@ -5232,6 +5274,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(redacted_progress_response, ["result", "structuredContent", "progress_event", "payload", "token"]) == "[REDACTED]"
+
+    leaked_secret = WorkKey.generate().secret
+
+    text_redacted_progress_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "progress-text-redacted",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "append_progress",
+            "arguments" => %{
+              "summary" => "Worker pasted #{leaked_secret}",
+              "idempotency_key" => "worker-progress-text-redacted",
+              "payload" => %{"note" => "Authorization: Bearer #{leaked_secret}"}
+            }
+          }
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(text_redacted_progress_response, ["result", "structuredContent", "progress_event", "summary"]) == "[REDACTED]"
+    assert get_in(text_redacted_progress_response, ["result", "structuredContent", "progress_event", "payload", "note"]) == "[REDACTED]"
+    refute Jason.encode!(get_in(text_redacted_progress_response, ["result", "structuredContent"])) =~ leaked_secret
 
     redacted_replay_response =
       MCPHarness.request(
@@ -7734,6 +7801,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(approval_response, ["result", "structuredContent", "allowed_file_globs"]) == ["elixir/lib/**", "docs/**"]
     assert get_in(approval_response, ["result", "structuredContent", "progress_event", "payload", "approved"]) == true
     approval_event_id = get_in(approval_response, ["result", "structuredContent", "progress_event", "id"])
+    approval_event = repo.get!(ProgressEvent, approval_event_id)
+    assert approval_event.actor_id == "architect-1"
+    assert approval_event.actor_type == "architect"
+    assert approval_event.access_grant_id == architect_assignment.grant_id
+    assert approval_event.payload["source_tool"] == "approve_scope_expansion"
+    assert approval_event.payload["request_id"] == request_id
+    refute inspect(approval_event.payload) =~ architect_work_key.secret
+    refute inspect(approval_response) =~ architect_work_key.secret
 
     retry_approval_response =
       attach_tool(repo, architect_session, "approve_scope_expansion", %{

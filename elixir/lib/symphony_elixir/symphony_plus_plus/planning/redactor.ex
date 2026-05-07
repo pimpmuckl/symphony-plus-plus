@@ -53,6 +53,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Redactor do
   def redact(value) when is_atom(value), do: Atom.to_string(value)
   def redact(value), do: inspect(value)
 
+  @spec redact_output(term()) :: term()
+  def redact_output(value) do
+    value
+    |> redact()
+    |> redact_text_values()
+  end
+
+  @spec redact_text(term()) :: term()
+  def redact_text(nil), do: nil
+
+  def redact_text(value) when is_binary(value) do
+    redacted = redact_signed_url_text(value)
+
+    cond do
+      redacted != value -> @redacted
+      sensitive_text?(value) -> @redacted
+      true -> value
+    end
+  end
+
+  def redact_text(value), do: value
+
   @spec json_safe(term()) :: term()
   def json_safe(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
   def json_safe(%Date{} = date), do: Date.to_iso8601(date)
@@ -119,6 +141,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Redactor do
       String.ends_with?(normalized, "_token") or String.ends_with?(normalized, "_password") or
       String.ends_with?(normalized, "_authorization") or String.ends_with?(normalized, "_api_key") or
       String.ends_with?(normalized, "_apikey")
+  end
+
+  defp redact_text_values(%{} = value), do: Map.new(value, fn {key, field_value} -> {key, redact_text_values(field_value)} end)
+  defp redact_text_values(values) when is_list(values), do: Enum.map(values, &redact_text_values/1)
+  defp redact_text_values(value) when is_binary(value), do: redact_text(value)
+  defp redact_text_values(value), do: value
+
+  defp sensitive_text?(value) do
+    String.match?(
+      value,
+      ~r/(bearer\s+\S+|wk_[A-Za-z0-9_-]{43,}|raw[_-]?secret[_-][A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})/i
+    )
+  end
+
+  defp redact_signed_url_text(value) do
+    Regex.replace(~r/https?:\/\/[^\s<>"']+\?[^\s<>"']*/i, value, @redacted)
   end
 
   defp redact_key_value(key, value) do

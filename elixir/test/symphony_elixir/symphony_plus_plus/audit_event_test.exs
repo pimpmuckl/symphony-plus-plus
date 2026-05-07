@@ -4,6 +4,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AuditEventTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Renderer
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
@@ -285,6 +286,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AuditEventTest do
     refute progress_markdown =~ "[REDACTED]"
     refute progress_markdown =~ "visible"
     refute progress_markdown =~ "raw-client-secret"
+  end
+
+  test "progress rendering redacts secret-shaped source text", %{repo: repo} do
+    assert {:ok, work_package} = create_work_package(repo)
+    secret = WorkKey.generate().secret
+
+    assert {:ok, _event} =
+             PlanningService.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               idempotency_key: "progress:secret-shaped-source",
+               summary: "Worker pasted #{secret}",
+               body: "Authorization: Bearer #{secret}",
+               status: "working"
+             })
+
+    assert {:ok, progress_markdown} = Renderer.render(repo, work_package.id, "progress.md")
+
+    assert progress_markdown =~ "[REDACTED]"
+    refute progress_markdown =~ secret
+    refute progress_markdown =~ "Authorization: Bearer"
   end
 
   test "direct progress append also bounds stored payloads", %{repo: repo} do
