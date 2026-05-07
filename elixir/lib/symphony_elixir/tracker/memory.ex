@@ -35,6 +35,10 @@ defmodule SymphonyElixir.Tracker.Memory do
      end)}
   end
 
+  @spec dispatch_filters_match?(Issue.t()) :: boolean()
+  def dispatch_filters_match?(%Issue{}), do: true
+  def dispatch_filters_match?(_issue), do: true
+
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(issue_id, body) do
     send_event({:memory_tracker_comment, issue_id, body})
@@ -46,6 +50,30 @@ defmodule SymphonyElixir.Tracker.Memory do
     send_event({:memory_tracker_state_update, issue_id, state_name})
     :ok
   end
+
+  @spec start_agent_run(Issue.t(), keyword()) :: {:ok, nil}
+  def start_agent_run(%Issue{}, _opts), do: {:ok, nil}
+
+  @spec list_active_agent_runs() :: {:ok, []}
+  def list_active_agent_runs, do: {:ok, []}
+
+  @spec heartbeat_agent_run(String.t(), map()) :: {:ok, nil}
+  def heartbeat_agent_run(_agent_run_id, _attrs), do: {:ok, nil}
+
+  @spec mark_agent_run_retrying(String.t(), String.t() | nil) :: {:ok, nil}
+  def mark_agent_run_retrying(_agent_run_id, _reason), do: {:ok, nil}
+
+  @spec mark_agent_run_running(String.t(), String.t() | nil) :: {:ok, nil}
+  def mark_agent_run_running(_agent_run_id, _reason), do: {:ok, nil}
+
+  @spec mark_agent_run_completed(String.t(), String.t() | nil) :: {:ok, nil}
+  def mark_agent_run_completed(_agent_run_id, _reason), do: {:ok, nil}
+
+  @spec mark_agent_run_failed(String.t(), String.t() | nil) :: {:ok, nil}
+  def mark_agent_run_failed(_agent_run_id, _reason), do: {:ok, nil}
+
+  @spec mark_agent_run_stopped(String.t(), String.t() | nil) :: {:ok, nil}
+  def mark_agent_run_stopped(_agent_run_id, _reason), do: {:ok, nil}
 
   defp configured_issues do
     Application.get_env(:symphony_elixir, :memory_tracker_issues, [])

@@ -1,0 +1,71 @@
+# Hotfix Runbook
+
+Use this runbook for standalone hotfix packages. Use
+`../docs/12_OPERATOR_TRAINING.md` first if you need the broader role and gate
+context.
+
+1. From the repository root, create `scratch/` if needed:
+   `mkdir scratch`
+2. Copy
+   `implementation_docs_symphplusplus/templates/create_work_package.hotfix.example.yaml`
+   to an edited request file outside the shared template, for example
+   `scratch/hotfix-request.yaml`.
+3. Create the hotfix work package from `elixir/` with the edited file path:
+   `cd elixir && mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../scratch/hotfix-request.yaml`
+4. Confirm the edited request sets the correct base branch.
+5. Confirm acceptance criteria are narrow and testable.
+6. Dispatch worker with the returned one-time `worker_grant.secret`; normal package reads and virtual file renders do not expose it again.
+7. Have the worker claim with `claim_work_key(secret, claimed_by)`.
+8. Watch progress timeline.
+9. Require PR and hotfix review-suite artifact.
+10. Review scope guard and changed files.
+11. Human merges after branch protection passes.
+12. Record release-validation evidence or blocked validation from
+    `../docs/11_RELEASE_VALIDATION.md`, then close package and archive evidence.
+
+## Hotfix package checklist
+
+- Copy `../templates/create_work_package.hotfix.example.yaml` before editing
+  incident-specific values.
+- Include the repository, base branch, owned paths, acceptance criteria, test
+  plan, and review-suite requirement in the package.
+- Keep the worker grant secret out of committed files, logs, PR bodies, and
+  durable review text.
+- Require the worker to attach the PR URL and current head SHA before readiness.
+- Confirm review evidence applies to the current PR head, not an older commit.
+- Record any skipped validation as blocked with the exact blocker and owner.
+- Use `../review/REVIEWER_CHECKLIST.md` and `../docs/11_RELEASE_VALIDATION.md`
+  before merge.
+
+## Worker handoff
+
+Send the worker only what they need:
+
+- WorkPackage id, base branch, target branch, and PR title convention.
+- The private one-time work key secret and stable `claimed_by` identity.
+- The package scope, owned files, acceptance criteria, and stop conditions.
+- The validation target and required review lanes.
+- A reminder that raw secrets must not be printed, committed, or placed in PR
+  and review text.
+
+## Quick-Fix Example
+
+Create a quick-fix package with:
+
+```bash
+cd elixir
+mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../implementation_docs_symphplusplus/templates/create_work_package.quick_fix.example.yaml
+```
+
+The command creates a parentless WorkPackage, applies the `quick_fix` policy, renders the initial virtual planning files, and returns the worker grant secret only in that creation response.
+
+## Investigation Example
+
+Create an investigation package with:
+
+```bash
+cd elixir
+mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../implementation_docs_symphplusplus/templates/create_work_package.investigation.example.yaml
+```
+
+The investigation policy does not require a PR. It requires findings plus the canonical `recommendation.md` artifact recorded through `request_scope_expansion`; stored legacy recommendation events do not satisfy readiness unless that canonical artifact already exists.

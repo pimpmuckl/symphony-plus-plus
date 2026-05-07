@@ -1,0 +1,139 @@
+{
+  "worker_tools": [
+    {
+      "name": "claim_work_key",
+      "purpose": "Claim a one-time work key/secret with required claimed_by owner identity and bind it to the current MCP session using the grant role.",
+      "required_arguments": ["secret", "claimed_by"],
+      "reconnect_policy": "Reconnects are accepted only when the same claimed_by owner presents the same secret proof. Existing worker and architect grants can be bound; claim_work_key does not mint grants. Explicit state_key values retain initialized handshake state only and do not restore claimed sessions."
+    },
+    {
+      "name": "get_current_assignment",
+      "purpose": "Return the scoped assignment for the bound grant."
+    },
+    {
+      "name": "read_context",
+      "purpose": "Read context.md for the current work package."
+    },
+    {
+      "name": "read_task_plan",
+      "purpose": "Read task_plan.md for the current work package."
+    },
+    {
+      "name": "update_task_plan",
+      "purpose": "Patch the plan with optimistic concurrency."
+    },
+    {
+      "name": "append_finding",
+      "purpose": "Append a finding to the current work package."
+    },
+    {
+      "name": "append_progress",
+      "purpose": "Append a progress event to the current work package.",
+      "readiness_policy": "For non-merge-gated policies, generic append_progress statuses tests_passed and <review_lane>_green satisfy focused-test and review-lane readiness; tool-owned metadata/blocker/status/scope events are ignored."
+    },
+    {
+      "name": "set_status",
+      "purpose": "Request a valid state transition."
+    },
+    {
+      "name": "report_blocker",
+      "purpose": "Record an active blocker."
+    },
+    {
+      "name": "resolve_blocker",
+      "purpose": "Record that an active blocker was cleared."
+    },
+    {
+      "name": "request_scope_expansion",
+      "purpose": "Request broader scope; does not approve it.",
+      "readiness_policy": "For investigation policies, this records the worker scope recommendation evidence."
+    },
+    {
+      "name": "attach_branch",
+      "purpose": "Attach branch metadata with the current branch head SHA.",
+      "head_policy": "The latest branch head is the worker-declared current code head; PR metadata must match it for merge readiness."
+    },
+    {
+      "name": "attach_pr",
+      "purpose": "Attach PR metadata by URL or by number when the package or request supplies unambiguous owner/repo context."
+    },
+    {
+      "name": "sync_pr",
+      "purpose": "Refresh metadata for the already attached PR.",
+      "required_arguments": ["metadata"],
+      "sync_policy": "sync_pr must target the latest attached PR and must carry the synced head SHA in head_sha, metadata.head_sha, or metadata.head.sha."
+    },
+    {
+      "name": "submit_review_package",
+      "purpose": "Attach summary/tests/artifacts for the current head review package.",
+      "head_policy": "head_sha is required on every submit_review_package call and must match the latest attached branch head.",
+      "readiness_policy": "The latest review package for the current head is authoritative; older same-head packages are superseded."
+    },
+    {
+      "name": "mark_ready",
+      "purpose": "Move to ready state only if gates pass.",
+      "post_ready_policy": "After mark_ready succeeds, new worker evidence writes are rejected as already_ready while idempotent replays remain available."
+    }
+  ],
+  "architect_tools": [
+    {
+      "name": "create_child_work_package",
+      "purpose": "Create a phase_child work package inside the architect grant's frozen phase/repo/base-branch anchor scope; child repo, phase, parent, and base branch are constrained to that anchor.",
+      "scope_policy": "Rejects mismatched phase_id, parent_id, repo, or base_branch, inherits the anchor base branch because there is no separate phase base-branch policy field, requires concrete nonempty child file globs, and revalidates anchor scope in the insert transaction. Empty anchor globs are allowed only when the child explicitly supplies nonempty, non-overbroad globs; nonempty anchor globs remain the upper bound."
+    },
+    {
+      "name": "mint_child_worker_key",
+      "purpose": "Mint a child-scoped worker grant for a same-phase phase_child package.",
+      "scope_policy": "Worker grants are single-package grants, capabilities are limited to worker:claim and worker:lifecycle.transition, unclaimed active child-delegated worker grants for the same child may be superseded transactionally, claimed active child-delegated worker grants for the child are rejected, unrelated normal worker grants are ignored, and expiry cannot exceed the transaction-current architect grant."
+    },
+    {
+      "name": "revoke_child_worker_key",
+      "purpose": "Phase 7 stub for revoking child worker keys; returns phase7_not_implemented after architect authorization."
+    },
+    {
+      "name": "read_child_status",
+      "purpose": "Read the architect grant's scoped anchor package status or a same-phase child work-package status.",
+      "required_capabilities": ["read:child_progress", "read:child_findings"],
+      "scope_policy": "Anchor reads remain package-scoped; child reads require the child package to be in the architect grant's current phase and match the phase anchor repo/base branch. Missing arbitrary child IDs fail closed with the same scoped-denial shape as out-of-scope children."
+    },
+    {
+      "name": "read_phase_board",
+      "purpose": "Read the architect grant's scoped phase board filtered to the frozen repo/base branch for explicit phase grants, including merged-child phase progress.",
+      "scope_policy": "Explicit phase architect grants require the frozen repo/base-branch snapshot; matching grants materialize only same-snapshot package cards, and missing snapshots fail closed without unsafe backfill. Phase progress summary totals are computed after backend authorization and frozen repo/base scope filters, then remain stable across client-side board filters. Abandoned children are excluded. Closed children still count in the merge-progress denominator but are not open work."
+    },
+    {
+      "name": "request_child_replan",
+      "purpose": "Phase 7 stub for child replan requests; returns phase7_not_implemented after architect authorization."
+    },
+    {
+      "name": "approve_child_ready_state",
+      "purpose": "Approve a same-phase phase_child in ready_for_architect_merge after readiness gates still pass; records a local audit event and moves the child to merging_into_phase. Optional request_id is the explicit retry identity.",
+      "scope_policy": "Revalidates the explicit phase grant, frozen repo/base-branch anchor scope, phase-child parent/file scope, and active phase state before approval. No override is part of this contract. Exact retries replay across renewed architect grants for the same actor only when the caller supplies the same request_id; rationale is audit text and is not idempotency key material. Same-request_id retries within the same ready-state cycle replay the original approval audit event; retry rationale edits do not mutate the recorded audit rationale. Re-approval after a real blocked/reworked/readied cycle records a new approval audit event even when the same request_id and rationale text are reused. After approval, the child worker may only move merging_into_phase back to blocked to represent a merge blocker before further worker follow-up."
+    },
+    {
+      "name": "merge_child_into_phase",
+      "purpose": "Record a local merge artifact for an approved phase child and move it to merged_into_phase; does not perform a live Git merge.",
+      "artifact_policy": "merge_artifact.status must be merged_into_phase and merge_artifact.uri must be nonempty. The tool records a phase_merge artifact on the child package and preserves the full accepted merge_artifact as artifact metadata. Exact retries replay across renewed scoped architect grants even when the renewed grant has a different claimed_by; after the child is already merged, a new valid merge artifact updates the local phase_merge record and appends an audit event without another lifecycle transition while the phase remains active. Exact older retries do not overwrite newer artifact data. Merge finalization and post-merge artifact updates are rejected after the phase closes."
+    },
+    {
+      "name": "split_work_package",
+      "purpose": "Phase 7 stub for child package splitting; returns phase7_not_implemented after architect authorization."
+    },
+    {
+      "name": "publish_phase_update",
+      "purpose": "Phase 7 stub for phase updates; returns phase7_not_implemented after architect authorization."
+    }
+  ],
+  "architect_authorization_policy": "Architect tools require a live architect grant session and the matching architect capability. Phase architect grants are revalidated against the frozen phase/repo/base-branch anchor scope before phase-dependent actions; scoped explicit phase-board reads and P7 child delegation/status operations fail closed if that snapshot is missing. Missing snapshots are not backfilled from mutable anchor state. Worker grants and architect grants without the required capability are denied. Worker grants cannot be minted with architect-only MCP capabilities.",
+  "architect_discovery_policy": "tools/list advertises architect tools only for already-bound architect sessions and filters them to the live grant capabilities. Stale sessions expose only health and claim_work_key for refresh. Anonymous and worker sessions receive the worker-facing tool surface. Architect sessions may call get_current_assignment and read sympp://assignment/current for scoped assignment introspection, but cannot use worker package read/write tools. Lifecycle capabilities such as architect:lifecycle.transition do not imply MCP architect tool capabilities; explicit MCP capability strings are required.",
+  "resources": [
+    "sympp://assignment/current",
+    "sympp://work-packages/{id}/context.md",
+    "sympp://work-packages/{id}/task_plan.md",
+    "sympp://work-packages/{id}/findings.md",
+    "sympp://work-packages/{id}/progress.md",
+    "sympp://work-packages/{id}/acceptance.md",
+    "sympp://work-packages/{id}/review_suite.md",
+    "sympp://work-packages/{id}/handoff.md"
+  ]
+}

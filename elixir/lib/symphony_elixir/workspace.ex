@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Workspace do
   """
 
   require Logger
-  alias SymphonyElixir.{Config, PathSafety, SSH}
+  alias SymphonyElixir.{Config, PathSafety, Shell, SSH}
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
 
@@ -298,7 +298,10 @@ defmodule SymphonyElixir.Workspace do
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        case local_hook_shell() do
+          nil -> {:error, :shell_not_found}
+          shell -> System.cmd(shell, ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        end
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -335,12 +338,22 @@ defmodule SymphonyElixir.Workspace do
     :ok
   end
 
+  defp handle_hook_command_result({:error, reason}, workspace, issue_context, hook_name) do
+    Logger.warning("Workspace hook failed hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} status=#{inspect(reason)} output=\"\"")
+
+    {:error, {:workspace_hook_failed, hook_name, reason, ""}}
+  end
+
   defp handle_hook_command_result({output, status}, workspace, issue_context, hook_name) do
     sanitized_output = sanitize_hook_output_for_log(output)
 
     Logger.warning("Workspace hook failed hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} status=#{status} output=#{inspect(sanitized_output)}")
 
     {:error, {:workspace_hook_failed, hook_name, status, output}}
+  end
+
+  defp local_hook_shell do
+    Shell.find_posix_shell(["sh", "bash"])
   end
 
   defp sanitize_hook_output_for_log(output, max_bytes \\ 2_048) do
@@ -416,7 +429,7 @@ defmodule SymphonyElixir.Workspace do
       Enum.find_value(lines, fn line ->
         case String.split(line, "\t", parts: 3) do
           [@remote_workspace_marker, created, path] when created in ["0", "1"] and path != "" ->
-            {created == "1", path}
+            {created == "1", String.trim(path)}
 
           _ ->
             nil

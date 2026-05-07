@@ -431,6 +431,508 @@ pre,
   color: var(--danger);
 }
 
+.sympp-board-shell {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.sympp-board-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.35rem 0 0.2rem;
+}
+
+.sympp-board-title {
+  margin: 0.2rem 0 0;
+  font-size: 1.85rem;
+  line-height: 1.05;
+  letter-spacing: 0;
+}
+
+.sympp-board-summary {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.38rem;
+  white-space: nowrap;
+}
+
+.sympp-board-count {
+  color: var(--ink);
+  font-size: 1.45rem;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.sympp-board-filters {
+  display: flex;
+  align-items: end;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+  padding: 0.8rem 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.sympp-board-filters label {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 10rem;
+}
+
+.sympp-board-filters label span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sympp-board-filters select {
+  width: 100%;
+  min-height: 2.25rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--ink);
+  padding: 0.35rem 0.6rem;
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+.sympp-clear-link {
+  min-height: 2.25rem;
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.sympp-board-columns {
+  display: grid;
+  grid-template-columns: repeat(var(--sympp-column-count), minmax(16rem, 1fr));
+  gap: 0.75rem;
+  overflow-x: auto;
+  padding-bottom: 0.45rem;
+}
+
+.sympp-board-column {
+  min-width: 16rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(243, 244, 246, 0.56);
+}
+
+.sympp-column-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  min-height: 2.65rem;
+  padding: 0.7rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  background: rgba(250, 250, 251, 0.96);
+  border-radius: 8px 8px 0 0;
+}
+
+.sympp-column-header h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.sympp-column-header span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.sympp-card-list {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.55rem;
+}
+
+.sympp-work-card {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.72rem;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+}
+
+.sympp-work-card-active {
+  border-left-color: var(--accent);
+}
+
+.sympp-work-card-warning {
+  border-left-color: #d09200;
+}
+
+.sympp-work-card-blocked {
+  border-left-color: var(--danger);
+}
+
+.sympp-card-header,
+.sympp-card-footer,
+.sympp-readiness-row,
+.sympp-alert-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.sympp-card-header {
+  justify-content: space-between;
+}
+
+.sympp-card-id {
+  color: var(--ink);
+  font-family: "Sohne Mono", "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.sympp-card-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.95rem;
+  line-height: 1.32;
+  letter-spacing: 0;
+}
+
+.sympp-card-meta {
+  display: grid;
+  gap: 0.42rem;
+  margin: 0;
+}
+
+.sympp-card-meta div {
+  display: grid;
+  grid-template-columns: 4.8rem minmax(0, 1fr);
+  gap: 0.45rem;
+  align-items: baseline;
+}
+
+.sympp-card-meta dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sympp-card-meta dd {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.84rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sympp-readiness {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.6rem;
+  padding: 0.24rem 0.5rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 0.76rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.sympp-readiness-ready {
+  border-color: rgba(16, 163, 127, 0.22);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.sympp-readiness-muted {
+  color: var(--muted);
+}
+
+.sympp-alert-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.45rem;
+  padding: 0.2rem 0.46rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.sympp-alert-warning {
+  background: #fff7e8;
+  border-color: #f1d8a6;
+  color: #8a5a00;
+}
+
+.sympp-alert-critical {
+  background: var(--danger-soft);
+  border-color: #f6d3cf;
+  color: var(--danger);
+}
+
+.sympp-card-footer {
+  min-height: 1.45rem;
+  justify-content: space-between;
+}
+
+.sympp-card-footer a {
+  color: var(--accent-ink);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.sympp-live-pill {
+  color: var(--accent-ink);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.sympp-empty-state {
+  margin: 0;
+  padding: 1.25rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.sympp-detail-shell {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.sympp-detail-header,
+.sympp-detail-overview {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.sympp-detail-title {
+  margin: 0.2rem 0 0;
+  font-size: 1.85rem;
+  line-height: 1.08;
+  letter-spacing: 0;
+}
+
+.sympp-back-link,
+.sympp-pr-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2rem;
+  color: var(--accent-ink);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.sympp-detail-overview,
+.sympp-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: var(--shadow-sm);
+}
+
+.sympp-detail-overview {
+  padding: 0.9rem;
+}
+
+.sympp-detail-main,
+.sympp-detail-side,
+.sympp-panel,
+.sympp-stack-list,
+.sympp-plan-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.sympp-detail-side {
+  justify-items: end;
+  min-width: min(100%, 16rem);
+}
+
+.sympp-copy-row {
+  display: grid;
+  gap: 0.25rem;
+  max-width: 26rem;
+}
+
+.sympp-copy-row label,
+.sympp-detail-meta dt,
+.sympp-detail-list dt,
+.sympp-count-grid dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sympp-copy-row input {
+  width: 100%;
+  min-height: 2.2rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  padding: 0.35rem 0.55rem;
+  font-size: 0.86rem;
+}
+
+.sympp-detail-meta,
+.sympp-detail-list,
+.sympp-count-grid {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0;
+}
+
+.sympp-detail-meta {
+  grid-template-columns: repeat(4, minmax(8rem, 1fr));
+}
+
+.sympp-detail-meta dd,
+.sympp-detail-list dd,
+.sympp-count-grid dd {
+  margin: 0.16rem 0 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sympp-branch {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  text-align: right;
+}
+
+.sympp-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(18rem, 0.65fr);
+  gap: 0.75rem;
+}
+
+.sympp-panel {
+  align-content: start;
+  padding: 0.9rem;
+}
+
+.sympp-panel-wide {
+  grid-column: span 2;
+}
+
+.sympp-panel h2 {
+  margin: 0;
+  font-size: 0.96rem;
+  line-height: 1.2;
+}
+
+.sympp-panel h3 {
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.3;
+}
+
+.sympp-panel p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.sympp-plain-list {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding-left: 1rem;
+}
+
+.sympp-plan-row,
+.sympp-stack-item,
+.sympp-mini-row {
+  border-top: 1px solid var(--line);
+  padding-top: 0.65rem;
+}
+
+.sympp-plan-row {
+  display: grid;
+  grid-template-columns: 6.5rem minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: start;
+}
+
+.sympp-stack-item {
+  display: grid;
+  gap: 0.32rem;
+}
+
+.sympp-mini-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+  min-width: 0;
+  font-size: 0.86rem;
+}
+
+.sympp-count-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.sympp-count-grid dd {
+  font-size: 1.08rem;
+  font-weight: 700;
+}
+
+.sympp-timeline {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sympp-timeline li {
+  display: grid;
+  grid-template-columns: 12.5rem minmax(0, 1fr);
+  gap: 0.75rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.75rem;
+}
+
+.sympp-timeline time {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.sympp-empty-inline {
+  margin: 0;
+  color: var(--muted);
+}
+
 @media (max-width: 860px) {
   .app-shell {
     padding: 1rem 0.85rem 2rem;
@@ -447,6 +949,33 @@ pre,
   .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .sympp-board-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .sympp-detail-overview,
+  .sympp-detail-header {
+    flex-direction: column;
+  }
+
+  .sympp-detail-side {
+    justify-items: start;
+  }
+
+  .sympp-branch {
+    text-align: left;
+  }
+
+  .sympp-detail-meta,
+  .sympp-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sympp-panel-wide {
+    grid-column: span 1;
+  }
 }
 
 @media (max-width: 560px) {
@@ -459,5 +988,34 @@ pre,
   .error-card {
     border-radius: 20px;
     padding: 1rem;
+  }
+
+  .sympp-board-filters {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .sympp-board-filters label {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .sympp-board-columns {
+    grid-template-columns: 1fr;
+    overflow-x: visible;
+  }
+
+  .sympp-board-column {
+    min-width: 0;
+  }
+
+  .sympp-plan-row,
+  .sympp-mini-row,
+  .sympp-timeline li {
+    grid-template-columns: 1fr;
+  }
+
+  .sympp-count-grid {
+    grid-template-columns: 1fr;
   }
 }

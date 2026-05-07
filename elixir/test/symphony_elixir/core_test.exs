@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Tracker.Memory
+
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -147,6 +149,36 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert Config.settings!().tracker.assignee == env_assignee
+  end
+
+  test "memory tracker filters issues and records no-op run lifecycle callbacks" do
+    open_issue = %Issue{id: "ISSUE-1", identifier: "ISSUE-1", title: "Open", state: " In Progress "}
+    closed_issue = %Issue{id: "ISSUE-2", identifier: "ISSUE-2", title: "Closed", state: "Done"}
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [open_issue, :not_an_issue, closed_issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    assert {:ok, [^open_issue, ^closed_issue]} = Memory.fetch_candidate_issues()
+    assert {:ok, [^open_issue]} = Memory.fetch_issues_by_states(["in progress"])
+    assert {:ok, [^closed_issue]} = Memory.fetch_issue_states_by_ids(["ISSUE-2"])
+
+    assert Memory.dispatch_filters_match?(open_issue)
+    assert Memory.dispatch_filters_match?(:anything)
+
+    assert :ok = Memory.create_comment("ISSUE-1", "hello")
+    assert_receive {:memory_tracker_comment, "ISSUE-1", "hello"}
+
+    assert :ok = Memory.update_issue_state("ISSUE-1", "Review")
+    assert_receive {:memory_tracker_state_update, "ISSUE-1", "Review"}
+
+    assert Memory.start_agent_run(open_issue, []) == {:ok, nil}
+    assert Memory.list_active_agent_runs() == {:ok, []}
+    assert Memory.heartbeat_agent_run("run-1", %{}) == {:ok, nil}
+    assert Memory.mark_agent_run_retrying("run-1", "retry") == {:ok, nil}
+    assert Memory.mark_agent_run_running("run-1", nil) == {:ok, nil}
+    assert Memory.mark_agent_run_completed("run-1", nil) == {:ok, nil}
+    assert Memory.mark_agent_run_failed("run-1", "failed") == {:ok, nil}
+    assert Memory.mark_agent_run_stopped("run-1", "stopped") == {:ok, nil}
   end
 
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do
@@ -1042,8 +1074,8 @@ defmodule SymphonyElixir.CoreTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
-        codex_command: "#{codex_binary} app-server"
+        hook_after_create: "cp #{shell_path(Path.join(template_repo, "README.md"))} README.md",
+        codex_command: "#{shell_script_command(codex_binary)} app-server"
       )
 
       issue = %Issue{
@@ -1127,8 +1159,8 @@ defmodule SymphonyElixir.CoreTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
-        codex_command: "#{codex_binary} app-server"
+        hook_after_create: "cp #{shell_path(Path.join(template_repo, "README.md"))} README.md",
+        codex_command: "#{shell_script_command(codex_binary)} app-server"
       )
 
       issue = %Issue{
@@ -1181,33 +1213,13 @@ defmodule SymphonyElixir.CoreTest do
 
     try do
       trace_file = Path.join(test_root, "ssh.trace")
-      fake_ssh = Path.join(test_root, "ssh")
+      fake_ssh = fake_ssh_path(test_root)
 
       File.mkdir_p!(test_root)
       System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
-      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+      System.put_env("PATH", path_with_prepended(test_root, previous_path))
 
-      File.write!(fake_ssh, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_SSH_TRACE:-/tmp/symphony-fake-ssh.trace}"
-      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
-
-      case "$*" in
-        *worker-a*"__SYMPHONY_WORKSPACE__"*)
-          printf '%s\\n' 'worker-a prepare failed' >&2
-          exit 75
-          ;;
-        *worker-b*"__SYMPHONY_WORKSPACE__"*)
-          printf '%s\\t%s\\t%s\\n' '__SYMPHONY_WORKSPACE__' '1' '/remote/home/.symphony-remote-workspaces/MT-SSH-FAILOVER'
-          exit 0
-          ;;
-        *)
-          exit 0
-          ;;
-      esac
-      """)
-
-      File.chmod!(fake_ssh, 0o755)
+      write_single_host_fake_ssh!(fake_ssh)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: "~/.symphony-remote-workspaces",
@@ -1227,10 +1239,50 @@ defmodule SymphonyElixir.CoreTest do
       end
 
       trace = File.read!(trace_file)
-      assert trace =~ "worker-a bash -lc"
-      refute trace =~ "worker-b bash -lc"
+      assert trace =~ "worker-a"
+      assert trace =~ "bash -lc"
+      refute trace =~ "worker-b"
     after
       File.rm_rf(test_root)
+    end
+  end
+
+  defp fake_ssh_path(root) do
+    if match?({:win32, _}, :os.type()), do: Path.join(root, "ssh.cmd"), else: Path.join(root, "ssh")
+  end
+
+  defp write_single_host_fake_ssh!(path) do
+    if match?({:win32, _}, :os.type()) do
+      File.write!(path, """
+      @echo off
+      setlocal EnableDelayedExpansion
+      set "ARGS=%*"
+      echo ARGV:!ARGS!>>"%SYMP_TEST_SSH_TRACE%"
+      echo worker-a prepare failed 1>&2
+      exit /b 75
+      """)
+    else
+      File.write!(path, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_SSH_TRACE:-/tmp/symphony-fake-ssh.trace}"
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+
+      case "$*" in
+        *worker-a*"__SYMPHONY_WORKSPACE__"*)
+          printf '%s\\n' 'worker-a prepare failed' >&2
+          exit 75
+          ;;
+        *worker-b*"__SYMPHONY_WORKSPACE__"*)
+          printf '%s\\t%s\\t%s\\n' '__SYMPHONY_WORKSPACE__' '1' '/remote/home/.symphony-remote-workspaces/MT-SSH-FAILOVER'
+          exit 0
+          ;;
+        *)
+          exit 0
+          ;;
+      esac
+      """)
+
+      File.chmod!(path, 0o755)
     end
   end
 
@@ -1293,8 +1345,8 @@ defmodule SymphonyElixir.CoreTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
-        codex_command: "#{codex_binary} app-server",
+        hook_after_create: "cp #{shell_path(Path.join(template_repo, "README.md"))} README.md",
+        codex_command: "#{shell_script_command(codex_binary)} app-server",
         max_turns: 3
       )
 
@@ -1423,8 +1475,8 @@ defmodule SymphonyElixir.CoreTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
-        codex_command: "#{codex_binary} app-server",
+        hook_after_create: "cp #{shell_path(Path.join(template_repo, "README.md"))} README.md",
+        codex_command: "#{shell_script_command(codex_binary)} app-server",
         max_turns: 2
       )
 
@@ -1522,7 +1574,7 @@ defmodule SymphonyElixir.CoreTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server"
+        codex_command: "#{shell_script_command(codex_binary)} app-server"
       )
 
       issue = %Issue{
@@ -1666,7 +1718,7 @@ defmodule SymphonyElixir.CoreTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        codex_command: "#{codex_binary} --config 'model=\"gpt-5.5\"' app-server"
+        codex_command: "#{shell_script_command(codex_binary)} --config 'model=\"gpt-5.5\"' app-server"
       )
 
       issue = %Issue{
@@ -1755,7 +1807,7 @@ defmodule SymphonyElixir.CoreTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        codex_command: "#{codex_binary} app-server",
+        codex_command: "#{shell_script_command(codex_binary)} app-server",
         codex_approval_policy: "on-request",
         codex_thread_sandbox: "workspace-write",
         codex_turn_sandbox_policy: %{

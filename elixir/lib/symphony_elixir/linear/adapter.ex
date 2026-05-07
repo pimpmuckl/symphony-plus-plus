@@ -46,6 +46,9 @@ defmodule SymphonyElixir.Linear.Adapter do
   @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [term()]} | {:error, term()}
   def fetch_issue_states_by_ids(issue_ids), do: client_module().fetch_issue_states_by_ids(issue_ids)
 
+  @spec dispatch_filters_match?(term()) :: boolean()
+  def dispatch_filters_match?(_issue), do: true
+
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(issue_id, body) when is_binary(issue_id) and is_binary(body) do
     with {:ok, response} <- client_module().graphql(@create_comment_mutation, %{issueId: issue_id, body: body}),
@@ -72,6 +75,30 @@ defmodule SymphonyElixir.Linear.Adapter do
       _ -> {:error, :issue_update_failed}
     end
   end
+
+  @spec start_agent_run(term(), keyword()) :: {:ok, nil}
+  def start_agent_run(_issue, _opts), do: {:ok, nil}
+
+  @spec list_active_agent_runs() :: {:ok, []}
+  def list_active_agent_runs, do: {:ok, []}
+
+  @spec heartbeat_agent_run(String.t(), map()) :: {:ok, nil}
+  def heartbeat_agent_run(_agent_run_id, _attrs), do: {:ok, nil}
+
+  @spec mark_agent_run_retrying(String.t(), String.t() | nil) :: {:ok, nil}
+  def mark_agent_run_retrying(_agent_run_id, _reason), do: {:ok, nil}
+
+  @spec mark_agent_run_running(String.t(), String.t() | nil) :: {:ok, nil}
+  def mark_agent_run_running(_agent_run_id, _reason), do: {:ok, nil}
+
+  @spec mark_agent_run_completed(String.t(), String.t() | nil) :: {:ok, nil}
+  def mark_agent_run_completed(_agent_run_id, _reason), do: {:ok, nil}
+
+  @spec mark_agent_run_failed(String.t(), String.t() | nil) :: {:ok, nil}
+  def mark_agent_run_failed(_agent_run_id, _reason), do: {:ok, nil}
+
+  @spec mark_agent_run_stopped(String.t(), String.t() | nil) :: {:ok, nil}
+  def mark_agent_run_stopped(_agent_run_id, _reason), do: {:ok, nil}
 
   defp client_module do
     Application.get_env(:symphony_elixir, :linear_client_module, Client)

@@ -22,7 +22,16 @@ defmodule SymphonyElixir.TestSupport do
       alias SymphonyElixir.Workspace
 
       import SymphonyElixir.TestSupport,
-        only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0]
+        only: [
+          write_workflow_file!: 1,
+          write_workflow_file!: 2,
+          restore_env: 2,
+          stop_default_http_server: 0,
+          path_with_prepended: 2,
+          shell_path: 1,
+          shell_script_command: 1,
+          symlink_supported?: 0
+        ]
 
       setup do
         workflow_root =
@@ -69,6 +78,46 @@ defmodule SymphonyElixir.TestSupport do
   def restore_env(key, nil), do: System.delete_env(key)
   def restore_env(key, value), do: System.put_env(key, value)
 
+  def symlink_supported? do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-symlink-capability-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      target = Path.join(test_root, "target")
+      link = Path.join(test_root, "link")
+
+      File.mkdir_p!(target)
+
+      case File.ln_s(target, link) do
+        :ok -> true
+        {:error, reason} when reason in [:eperm, :eacces, :enotsup] -> false
+        {:error, reason} -> raise File.LinkError, reason: reason, existing: target, new: link
+      end
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  def shell_path(path) when is_binary(path) do
+    path
+    |> Path.expand()
+    |> windows_bash_path()
+    |> shell_escape()
+  end
+
+  def shell_script_command(path) when is_binary(path) do
+    "sh #{shell_path(path)}"
+  end
+
+  def path_with_prepended(path, nil), do: path
+
+  def path_with_prepended(path, existing_path) when is_binary(existing_path) do
+    Enum.join([path, existing_path], path_separator())
+  end
+
   def stop_default_http_server do
     case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn
            {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
@@ -99,6 +148,9 @@ defmodule SymphonyElixir.TestSupport do
           tracker_assignee: nil,
           tracker_active_states: ["Todo", "In Progress"],
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
+          tracker_filter_repos: [],
+          tracker_filter_base_branches: [],
+          tracker_filter_work_kinds: [],
           poll_interval_ms: 30_000,
           workspace_root: Path.join(System.tmp_dir!(), "symphony_workspaces"),
           worker_ssh_hosts: [],
@@ -136,6 +188,9 @@ defmodule SymphonyElixir.TestSupport do
     tracker_assignee = Keyword.get(config, :tracker_assignee)
     tracker_active_states = Keyword.get(config, :tracker_active_states)
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
+    tracker_filter_repos = Keyword.get(config, :tracker_filter_repos)
+    tracker_filter_base_branches = Keyword.get(config, :tracker_filter_base_branches)
+    tracker_filter_work_kinds = Keyword.get(config, :tracker_filter_work_kinds)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
     workspace_root = Keyword.get(config, :workspace_root)
     worker_ssh_hosts = Keyword.get(config, :worker_ssh_hosts)
@@ -174,6 +229,10 @@ defmodule SymphonyElixir.TestSupport do
         "  assignee: #{yaml_value(tracker_assignee)}",
         "  active_states: #{yaml_value(tracker_active_states)}",
         "  terminal_states: #{yaml_value(tracker_terminal_states)}",
+        "  filters:",
+        "    repos: #{yaml_value(tracker_filter_repos)}",
+        "    base_branches: #{yaml_value(tracker_filter_base_branches)}",
+        "    work_kinds: #{yaml_value(tracker_filter_work_kinds)}",
         "polling:",
         "  interval_ms: #{yaml_value(poll_interval_ms)}",
         "workspace:",
@@ -203,8 +262,31 @@ defmodule SymphonyElixir.TestSupport do
     Enum.join(sections, "\n") <> "\n"
   end
 
+  defp windows_bash_path(<<drive::binary-size(1), ":", rest::binary>>) do
+    if match?({:win32, _}, :os.type()) do
+      "/#{String.downcase(drive)}#{String.replace(rest, "\\", "/")}"
+    else
+      <<drive::binary, ":", rest::binary>>
+    end
+  end
+
+  defp windows_bash_path(path), do: String.replace(path, "\\", "/")
+
+  defp shell_escape(value) do
+    "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
+  end
+
+  defp path_separator do
+    if match?({:win32, _}, :os.type()), do: ";", else: ":"
+  end
+
   defp yaml_value(value) when is_binary(value) do
-    "\"" <> String.replace(value, "\"", "\\\"") <> "\""
+    escaped =
+      value
+      |> String.replace("\\", "\\\\")
+      |> String.replace("\"", "\\\"")
+
+    "\"" <> escaped <> "\""
   end
 
   defp yaml_value(value) when is_integer(value), do: to_string(value)

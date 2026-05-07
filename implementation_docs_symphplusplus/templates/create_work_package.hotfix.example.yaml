@@ -1,0 +1,14 @@
+kind: hotfix
+repo: kraken
+base_branch: main
+title: Fix production Kraken balance regression
+product_description: Users should no longer see pending withdrawals double-counted in available balance.
+engineering_scope: Investigate and fix balance normalization for pending withdrawals.
+acceptance_criteria:
+  - Pending withdrawals are excluded from available balance.
+  - Regression coverage exists for the double-count case.
+  - Required hotfix review suite passes.
+policy_template: hotfix
+allowed_file_globs:
+  - src/kraken/**
+  - test/kraken/**
