@@ -2503,6 +2503,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert response(package_conn, 401) =~ "The work key could not access this package."
   end
 
+  test "Phoenix request logger filters dashboard session secret parameters" do
+    sentinel = "sympp-dashboard-log-secret-sentinel"
+
+    params = %{
+      "work_key" => sentinel,
+      "work_key_secret" => "#{sentinel}-work-key-secret",
+      "grant_secret" => "#{sentinel}-grant-secret",
+      "secret" => "#{sentinel}-generic-secret",
+      "work_package_id" => "SYMPP-P10-LOG-FILTER"
+    }
+
+    filtered = Phoenix.Logger.filter_values(params)
+    filtered_text = inspect(filtered)
+
+    refute filtered_text =~ sentinel
+    assert filtered["work_key"] == "[FILTERED]"
+    assert filtered["work_key_secret"] == "[FILTERED]"
+    assert filtered["grant_secret"] == "[FILTERED]"
+    assert filtered["secret"] == "[FILTERED]"
+    assert filtered["work_package_id"] == "SYMPP-P10-LOG-FILTER"
+  end
+
   test "dashboard API rejects missing bearer auth before dynamic repo bootstrap" do
     database_path = WorkPackageFactory.database_path()
     File.rm(database_path)
