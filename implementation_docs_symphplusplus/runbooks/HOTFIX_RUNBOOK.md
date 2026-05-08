@@ -51,7 +51,7 @@ review text, or durable logs.
 For a quick fix, use the quick-fix template instead:
 
 ```bash
-mkdir -p scratch
+mkdir -p ../scratch
 cp ../implementation_docs_symphplusplus/templates/create_work_package.quick_fix.example.yaml ../scratch/quick-fix-request.yaml
 # Edit ../scratch/quick-fix-request.yaml before running create-work.
 mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../scratch/quick-fix-request.yaml --claimed-by <stable-worker-id>
@@ -65,7 +65,7 @@ use their package policy instead of hotfix-specific gates.
 For an investigation, use the investigation template:
 
 ```bash
-mkdir -p scratch
+mkdir -p ../scratch
 cp ../implementation_docs_symphplusplus/templates/create_work_package.investigation.example.yaml ../scratch/investigation-request.yaml
 # Edit ../scratch/investigation-request.yaml before running create-work.
 mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../scratch/investigation-request.yaml --claimed-by <stable-worker-id>

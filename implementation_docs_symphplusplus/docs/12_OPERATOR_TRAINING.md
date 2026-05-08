@@ -38,10 +38,12 @@ cleanup, old-doc deletion, runtime redesign, or compatibility-policy changes.
    `claimed_by`, and stop conditions.
 7. Monitor claim, plan, findings, progress, blockers, branch/PR attachment,
    validation, and review evidence through Symphony++ state.
-8. Review the PR against `../review/REVIEWER_CHECKLIST.md` and confirm
+8. For PR-required packages, review the PR against
+   `../review/REVIEWER_CHECKLIST.md` and confirm
    `../review/READINESS_GATES.md` evidence is current for the final head.
-9. Merge only after branch protection, required review, package readiness, and
-   release-validation requirements pass.
+9. Close non-PR packages after their policy gates pass. Merge PR-required
+   packages only after branch protection, required review, package readiness,
+   and release-validation requirements pass.
 
 ## Architect-Led Flow
 

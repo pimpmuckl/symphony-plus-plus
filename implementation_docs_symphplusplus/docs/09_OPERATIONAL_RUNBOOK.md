@@ -10,8 +10,8 @@ the short command-flow reference for operators.
    criteria, and tests narrow.
 2. Copy the nearest request template from `../templates/` into scratch space and
    edit the copy. Do not edit shared templates for one incident.
-3. From `elixir/`, run `mix sympp.create_work` with the edited request,
-   database path, and stable `--claimed-by <worker-id>`.
+3. From `elixir/`, run `mise exec -- mix sympp.create_work` with the edited
+   request, database path, and stable `--claimed-by <worker-id>`.
 4. Confirm normal command output contains only non-secret handoff metadata. The
    worker grant secret must be stored in the private local handoff store, not
    printed into stdout, prompts, PR text, or logs.
@@ -26,9 +26,11 @@ the short command-flow reference for operators.
    `templates/worker_agent_prompt.md`.
 7. Watch the dashboard/API or MCP-visible package state for claim, plan,
    findings, progress, blockers, branch, PR, validation, and review evidence.
-8. Review the PR with `../review/REVIEWER_CHECKLIST.md`; confirm evidence is
-   current for the attached branch head.
-9. Merge only after readiness gates, branch protection, required review-suite
+8. For PR-required packages, review the PR with
+   `../review/REVIEWER_CHECKLIST.md` and confirm evidence is current for the
+   attached branch head.
+9. Close non-PR packages only after their policy gates pass. Merge PR-required
+   packages only after readiness gates, branch protection, required review-suite
    lanes, and any package-specific release-validation requirements pass.
 
 ## Architect-Led Package
