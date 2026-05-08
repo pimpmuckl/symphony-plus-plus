@@ -24,7 +24,7 @@ the short command-flow reference for operators.
 6. Dispatch the worker with the package id, base branch, target branch
    convention, owned paths, acceptance criteria, required validation/review
    lanes, handoff target, stable `claimed_by` identity, and the prompt in
-   `templates/worker_agent_prompt.md`.
+   `../templates/worker_agent_prompt.md`.
 7. Watch the dashboard/API or MCP-visible package state for claim, plan,
    findings, progress, blockers, branch, PR, validation, and review evidence.
 8. For PR-required packages, review the PR with

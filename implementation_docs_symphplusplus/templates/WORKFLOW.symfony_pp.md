@@ -19,7 +19,8 @@ tracker:
   filters:
     repos:
       - nextide/symphony-plus-plus
-    base_branches: []
+    base_branches:
+      - origin/<replace-with-package-base-branch>
     work_kinds:
       - adapter
 
@@ -40,6 +41,9 @@ Your assignment is a single permissioned WorkPackage. Use the Symphony++ MCP ser
 
 Required behavior:
 
+0. Before running this workflow, replace placeholder values in the front matter,
+   including `origin/<replace-with-package-base-branch>`, with the package's
+   explicit repo and base branch filters.
 1. Claim or load the current assignment.
 2. Read the virtual planning resources.
 3. Implement only the scoped package.
