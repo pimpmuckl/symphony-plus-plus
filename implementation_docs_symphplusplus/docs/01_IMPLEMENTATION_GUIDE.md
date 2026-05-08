@@ -1,98 +1,115 @@
-# Symphony++ Implementation Guide
+# Symphony++ Operator Guide
 
-## Product definition
+This guide describes the product as it exists now. It is not an implementation
+backlog. Use it to decide which Symphony++ flow to run, what evidence belongs
+in the ledger, and when a package is ready for human merge.
 
-Symphony++ is a Symphony fork where `issue` becomes a permissioned `WorkPackage`, the work package owns virtual planning files, and agents interact through scoped keys rather than broad tracker access.
+## What Symphony++ Is
 
-## Design principles
+Symphony++ is a permissioned work-package layer on top of the upstream Symphony
+Elixir runtime. Operators create bounded `WorkPackage` records, mint scoped
+worker or architect grants, and expose package state as MCP resources that look
+like planning files. Workers update those virtual resources through MCP tools,
+attach branch/PR/review evidence, and can mark a package ready only when
+server-side readiness gates pass.
 
-1. Preserve upstream Symphony behavior first.
-2. Add Symphony++ as a layer, not as an immediate rewrite.
-3. Treat the Symphony++ ledger as the source of truth for agent state.
-4. Treat GitHub as the source of truth for code, PR, CI, and review facts.
-5. Treat Linear as an optional mirror, not the core authority.
-6. Keep small work small: standalone quick-fix and hotfix packages must not require phase setup.
-7. Make permissions server-enforced, not prompt-enforced.
-8. Keep the agent-facing workflow simple: receive key, claim assignment, read virtual planning files, implement, attach PR, mark ready.
+The source-of-truth split is:
 
-## Build order
+- Symphony++ ledger: package state, permissions, virtual planning files,
+  blockers, findings, progress, readiness evidence, and audit events.
+- GitHub: code, branches, commits, pull requests, CI, and review status.
+- Linear: optional human/project mirror when configured.
+- Codex/Symphony: execution of isolated agent runs.
+
+## Choose The Work Shape
+
+Use a standalone package for one bounded quick fix, hotfix, investigation, or
+review-only task. Standalone packages do not need a phase branch or architect.
+
+Use an architect-led package when the work must be split across multiple child
+packages, dependency order matters, or one operator wants an architect agent to
+sequence worker dispatch. The architect grant can create narrower child
+packages and mint child worker grants inside its explicit phase scope.
+
+Do not create live Linear state or broaden runtime behavior unless the assigned
+package explicitly requires it.
+
+## Branch And PR Model
+
+Each worker owns one branch and one PR per WorkPackage unless the overseeing
+architect explicitly splits or combines scope. PR titles use:
 
 ```text
-0. Run upstream Symphony and document baseline.
-1. Add core Symphony++ ledger and permission objects.
-2. Render virtual planning files from ledger state.
-3. Add `tracker.kind: Symphony_pp` so the existing runner can dispatch Symphony++ packages.
-4. Add MCP tools/resources and the Codex skill.
-5. Add standalone quick-fix/hotfix creation and lifecycle.
-6. Add dashboard.
-7. Add GitHub PR/CI/review integration.
-8. Add phase and architect delegation.
-9. Harden, run E2E tests, and pilot with Kraken.
+[SYMPP-...] <package title>
 ```
 
-## Branching model
-
-Recommended branches:
-
-```text
-main
-  upstream-compatible fork baseline
-
-Symphony-plus-plus/beta
-  integration branch for all Symphony++ worker PRs
-
-worker branches
-  agent/SYMPP-P1-002-access-grants
-```
-
-For package PRs, prefer:
+Prefer worker branch names that include the package id and a short slug:
 
 ```text
 agent/<work_package_id>/<short-slug>
 ```
 
-## Merge model
+Target the base branch recorded on the package. Do not assume a historical beta
+branch. Human merge remains controlled by branch protection, required reviews,
+and package readiness evidence.
 
-- Worker PRs merge into the Symphony++ beta branch.
-- Architecture agent owns merge ordering.
-- Human owns final merge from beta to main until the system is trusted.
-- Phase 7 may add architect merge automation, but it must not bypass branch protection.
+## Worker Lifecycle
 
-## Testing pyramid
+1. Operator creates the package request with repo, base branch, owned paths,
+   acceptance criteria, test plan, and review-suite requirements.
+2. Operator runs the create-work command. Normal output stores the one-time
+   secret in the configured private local handoff store and returns only
+   non-secret handoff metadata.
+3. Worker starts with the `symphony-plus-plus` Codex plugin or repo-local skill
+   plus an MCP dependency configured through the private-store bootstrap.
+4. Worker claims or reconnects with the same stable `claimed_by` identity,
+   reads the current assignment, and reads all package virtual resources.
+5. Worker updates the package task plan before implementation and records
+   findings/progress through MCP as the work changes.
+6. Worker implements only the assigned package, requests scope expansion for
+   anything outside the grant, and reports blockers instead of silently
+   changing direction.
+7. Worker attaches branch, PR, validation, and review evidence for the current
+   head SHA.
+8. Worker calls `mark_ready()` only when acceptance criteria, validation,
+   review evidence, and readiness gates are satisfied.
 
-```text
-Unit tests
-  schema validation, state transitions, token hashing, renderer output
+## Architect Lifecycle
 
-Integration tests
-  tracker adapter, MCP tools, grant claim, permission denials, dashboard API
+An architect agent starts from `00_ARCHITECT_AGENT_HANDOFF.md`, the live
+WorkPackage ledger, and the operator-approved scope. It may create same-phase
+child packages, mint narrower child worker grants, inspect child progress, and
+approve ready children for phase integration when gates still pass.
 
-End-to-end tests
-  standalone hotfix lifecycle, dispatched worker run, PR attachment, readiness gates
+Architect tools record local Symphony++ state; `merge_child_into_phase` records
+a merge artifact and lifecycle transition but does not perform a live Git
+merge. The architect or operator still owns the actual Git integration and PR
+review discipline outside the MCP tool.
 
-Security tests
-  invalid/expired/revoked grants, sibling access denial, scope expansion enforcement
-```
+## Evidence Flow
 
-## Minimum useful product
+Keep these facts current in Symphony++ state:
 
-The MVP is complete when:
+- Task plan: active plan, completed/skipped steps, and blockers.
+- Findings: discoveries that affect scope, implementation, validation, or
+  follow-up decisions.
+- Progress: meaningful implementation, validation, review, branch, PR, and
+  blocker events.
+- Acceptance: proof for every criterion or a precise blocked-validation note.
+- Review package: review-suite lanes, artifacts, tests, PR URL, and current
+  head SHA.
 
-- A standalone hotfix can be created without a phase.
-- A worker receives a key and can claim exactly one assignment.
-- Virtual `task_plan.md`, `findings.md`, and `progress.md` are rendered from canonical state.
-- The worker can update plan/progress/findings through MCP tools.
-- The worker can attach a PR and mark ready only when required evidence exists.
-- A human can inspect the state in either a simple API response or early dashboard.
+Local planning files are useful for non-MCP operator lanes only when explicitly
+requested. In a normal Symphony++ worker run, the MCP-backed virtual planning
+files are the package source of truth.
 
-## What not to build first
+## Readiness And Merge
 
-Do not build these first:
+Readiness is server-gated. A worker cannot make a package ready while active
+blockers, missing acceptance evidence, stale required review artifacts,
+required CI failures, missing required PR evidence, base-branch mismatches, or
+scope violations remain.
 
-- A beautiful dashboard.
-- Linear mirroring.
-- Full Kraken phase migration.
-- Automated merge to protected branches.
-- Complex multi-agent phase delegation.
-
-Build the work-package/key/virtual-file core first.
+Readiness does not merge code. Human merge remains separate and must respect
+GitHub branch protection, current-head review evidence, and the package's
+release-validation requirements.

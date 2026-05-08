@@ -1,10 +1,9 @@
 # Architect Agent Handoff: Symphony++
 
 Use this when an operator assigns an architect to sequence a phase or coordinate
-multiple related Symphony++ WorkPackages. The original static implementation
-backlog is complete; current architecture work starts from the operator's
-package request, live WorkPackage records, and the product/operator docs in this
-directory.
+multiple related Symphony++ WorkPackages. Current architecture work starts from
+the operator's package request, live WorkPackage records, and the
+product/operator docs in this directory.
 
 ## Operating Model
 

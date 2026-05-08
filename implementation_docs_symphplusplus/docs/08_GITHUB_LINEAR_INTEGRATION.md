@@ -33,7 +33,9 @@ Never put the raw grant secret in the PR.
 
 ## GitHub sync events
 
-Eventually webhook-driven:
+Webhook-driven sync may be added by a package that owns that behavior. Current
+operator docs should treat fetched or recorded GitHub snapshots as the evidence
+available to Symphony++.
 
 ```text
 pull_request opened/synchronize/closed
@@ -43,7 +45,8 @@ check_suite/check_run completed
 push
 ```
 
-MVP can start with polling.
+Polling remains an acceptable synchronization mode when webhook delivery is not
+configured.
 
 ## Review suite integration
 

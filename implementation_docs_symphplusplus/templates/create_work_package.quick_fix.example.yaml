@@ -1,6 +1,6 @@
 kind: quick_fix
 repo: kraken
-base_branch: beta
+base_branch: "<package-base-branch>"
 title: Fix stale status label
 product_description: Operators should see the current worker status after a refresh.
 engineering_scope: Correct the status projection used by the worker detail view.

@@ -1,6 +1,6 @@
 kind: investigation
 repo: kraken
-base_branch: beta
+base_branch: "<package-base-branch>"
 title: Investigate queue stalls
 product_description: Operators need to know whether queue stalls come from current code or old rows.
 engineering_scope: Inspect queue state, summarize evidence, and recommend whether code work is needed.

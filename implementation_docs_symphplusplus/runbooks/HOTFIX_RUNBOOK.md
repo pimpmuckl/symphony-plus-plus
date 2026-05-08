@@ -1,77 +1,81 @@
 # Hotfix Runbook
 
-Use this runbook for standalone hotfix packages. Use
-`../docs/12_OPERATOR_TRAINING.md` first if you need the broader role and gate
-context.
+Use this for standalone hotfix packages that need a bounded PR and current
+review evidence. For role context, start with
+`../docs/12_OPERATOR_TRAINING.md`.
 
-1. From the repository root, create `scratch/` if needed:
-   `mkdir scratch`
-2. Copy
-   `implementation_docs_symphplusplus/templates/create_work_package.hotfix.example.yaml`
-   to an edited request file outside the shared template, for example
-   `scratch/hotfix-request.yaml`.
-3. Create the hotfix work package from `elixir/` with the edited file path and
-   stable worker identity:
-   `cd elixir && mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../scratch/hotfix-request.yaml --claimed-by <stable-worker-id>`
-4. Confirm the edited request sets the correct base branch.
-5. Confirm acceptance criteria are narrow and testable.
-6. Dispatch worker with the returned handoff target and stable `claimed_by`
-   identity; normal command output must not include `worker_grant.secret`.
-7. Configure worker MCP through the private-store bootstrap so the session is
-   bound before the worker calls `get_current_assignment()`.
-8. Watch progress timeline.
-9. Require PR and hotfix review-suite artifact.
-10. Review scope guard and changed files.
-11. Human merges after branch protection passes.
-12. Record release-validation evidence or blocked validation from
-    `../docs/11_RELEASE_VALIDATION.md`, then close package and archive evidence.
+## Create The Package
 
-## Hotfix package checklist
+1. From the repository root, create scratch space if needed:
+   `New-Item -ItemType Directory -Force scratch`.
+2. Copy `implementation_docs_symphplusplus/templates/create_work_package.hotfix.example.yaml` to an edited
+   request file such as `scratch/hotfix-request.yaml`.
+3. Edit repo, base branch, branch pattern, owned paths, acceptance criteria,
+   test plan, review-suite requirement, and stop conditions.
+4. From `elixir/`, create the package:
 
-- Copy `../templates/create_work_package.hotfix.example.yaml` before editing
-  incident-specific values.
-- Include the repository, base branch, owned paths, acceptance criteria, test
-  plan, and review-suite requirement in the package.
-- Keep the worker grant secret out of committed files, logs, PR bodies, and
-  durable review text.
-- Require the worker to attach the PR URL and current head SHA before readiness.
-- Confirm review evidence applies to the current PR head, not an older commit.
-- Record any skipped validation as blocked with the exact blocker and owner.
-- Use `../review/REVIEWER_CHECKLIST.md` and `../docs/11_RELEASE_VALIDATION.md`
-  before merge.
-
-## Worker handoff
-
-Send the worker only what they need:
-
-- WorkPackage id, base branch, target branch, and PR title convention.
-- The private handoff target and stable `claimed_by` identity.
-- The package scope, owned files, acceptance criteria, and stop conditions.
-- The validation target and required review lanes.
-- A reminder that raw secrets must not be printed, committed, or placed in PR
-  and review text.
-
-## Quick-Fix Example
-
-Create a quick-fix package with:
-
-```bash
-cd elixir
-mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../implementation_docs_symphplusplus/templates/create_work_package.quick_fix.example.yaml --claimed-by <stable-worker-id>
+```powershell
+Set-Location elixir
+mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../scratch/hotfix-request.yaml --claimed-by <stable-worker-id>
 ```
 
-The command creates a parentless WorkPackage, applies the `quick_fix` policy,
-renders the initial virtual planning files, stores the worker grant secret in
-the local private handoff store, and returns only non-secret handoff metadata in
-normal command output.
+5. Confirm command output returns only non-secret handoff metadata. It must not
+   print raw claim secrets, bearer tokens, or secret-bearing URLs.
 
-## Investigation Example
+## Dispatch The Worker
 
-Create an investigation package with:
+Send the worker:
 
-```bash
-cd elixir
-mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../implementation_docs_symphplusplus/templates/create_work_package.investigation.example.yaml --claimed-by <stable-worker-id>
+- WorkPackage id, base branch, target branch convention, and PR title format.
+- Private handoff target and stable `claimed_by` identity.
+- Package scope, owned files, acceptance criteria, and stop conditions.
+- Validation target and required review lanes.
+- Reminder to use the `symphony-plus-plus` plugin or repo-local skill with MCP
+  private-store bootstrap.
+
+Do not send the raw secret in chat, prompts, command lines, files, PR bodies,
+review text, or durable logs.
+
+## Review And Merge
+
+1. Watch claim, plan, findings, progress, blockers, branch, PR, tests, and
+   review evidence in Symphony++ state.
+2. Require the worker to attach PR URL and current head SHA before readiness.
+3. Confirm review evidence applies to the current PR head.
+4. Check changed files against the package scope.
+5. Use `../review/REVIEWER_CHECKLIST.md` and
+   `../docs/11_RELEASE_VALIDATION.md` before merge.
+6. Record skipped validation as blocked with exact blocker and owner.
+7. Human merge only after branch protection and hotfix gates pass.
+
+## Quick Fix
+
+For a quick fix, use the quick-fix template instead:
+
+```powershell
+New-Item -ItemType Directory -Force scratch
+Copy-Item implementation_docs_symphplusplus/templates/create_work_package.quick_fix.example.yaml scratch/quick-fix-request.yaml
+# Edit scratch/quick-fix-request.yaml before running create-work.
+Set-Location elixir
+mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../scratch/quick-fix-request.yaml --claimed-by <stable-worker-id>
 ```
 
-The investigation policy does not require a PR. It requires findings plus the canonical `recommendation.md` artifact recorded through `request_scope_expansion`; stored legacy recommendation events do not satisfy readiness unless that canonical artifact already exists.
+Quick-fix packages still need truthful acceptance and review evidence, but may
+use their package policy instead of hotfix-specific gates.
+
+## Investigation
+
+For an investigation, use the investigation template:
+
+```powershell
+New-Item -ItemType Directory -Force scratch
+Copy-Item implementation_docs_symphplusplus/templates/create_work_package.investigation.example.yaml scratch/investigation-request.yaml
+# Edit scratch/investigation-request.yaml before running create-work.
+Set-Location elixir
+mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../scratch/investigation-request.yaml --claimed-by <stable-worker-id>
+```
+
+The investigation policy does not require a PR unless the package says so. It
+requires findings plus the canonical `recommendation.md` artifact recorded
+through `request_scope_expansion`; stored legacy recommendation events do not
+satisfy readiness unless that canonical artifact already exists.
