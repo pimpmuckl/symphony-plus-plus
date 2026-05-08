@@ -333,7 +333,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   end
 
   defp write_temp_secret_file(file, secret) do
-    case IO.binwrite(file, secret) do
+    case :file.write(file, secret) do
       :ok -> :ok
       {:error, reason} -> {:error, {:write, reason}}
     end
