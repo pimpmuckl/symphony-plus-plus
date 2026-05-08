@@ -345,6 +345,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     end
   end
 
+  test "health and explicit state keys follow atom-valued dynamic repos" do
+    database_path = WorkPackageFactory.database_path()
+    original_repo = Repo.get_dynamic_repo()
+    repo_name = :"sympp_mcp_named_dynamic_#{System.unique_integer([:positive])}"
+
+    {:ok, pid} =
+      Repo.start_link(database: database_path, name: repo_name, pool_size: 1, log: false)
+
+    try do
+      Repo.put_dynamic_repo(repo_name)
+      assert :ok = WorkPackageRepository.migrate(Repo)
+
+      health_response =
+        MCPHarness.request(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "named-health",
+            "method" => "tools/call",
+            "params" => %{"name" => "sympp.health", "arguments" => %{}}
+          },
+          config: Config.default(repo: Repo)
+        )
+
+      {_initialize_response, _server} =
+        Server.handle_response_state(
+          %{"jsonrpc" => "2.0", "id" => "named-init", "method" => "initialize", "params" => initialize_params()},
+          Server.new(Config.default(repo: Repo), state_key: "named-dynamic-ledger-state")
+        )
+
+      {tools_response, _server} =
+        Server.handle_response_state(
+          %{"jsonrpc" => "2.0", "id" => "named-tools", "method" => "tools/list", "params" => %{}},
+          Server.new(Config.default(repo: Repo), state_key: "named-dynamic-ledger-state")
+        )
+
+      assert get_in(health_response, ["result", "structuredContent", "ledger"]) == %{"reachable" => true}
+      assert is_list(get_in(tools_response, ["result", "tools"]))
+    after
+      Repo.put_dynamic_repo(original_repo)
+      if Process.alive?(pid), do: GenServer.stop(pid)
+      File.rm(database_path)
+    end
+  end
+
   test "mix task database option reaches the requested ledger while the default repo is running" do
     database_path = WorkPackageFactory.database_path()
     original_repo = Repo.get_dynamic_repo()
@@ -494,6 +538,76 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       assert assignment["claimed_by"] == "worker-env-1"
       assert {:ok, claimed_grant} = AccessGrantRepository.get(Repo, minted.grant.id)
       assert claimed_grant.claimed_by == "worker-env-1"
+    after
+      System.delete_env(env_var)
+      Repo.put_dynamic_repo(original_repo)
+      GenServer.stop(pid)
+      File.rm(database_path)
+    end
+  end
+
+  test "mix task health uses the database-scoped work-key session ledger" do
+    database_path = WorkPackageFactory.database_path()
+    original_repo = Repo.get_dynamic_repo()
+    env_var = "SYMPP_MCP_TEST_SECRET_#{System.unique_integer([:positive])}"
+
+    {:ok, pid} =
+      Repo.start_link(database: database_path, name: Repo.process_name(database_path), pool_size: 1, log: false)
+
+    try do
+      Repo.put_dynamic_repo(pid)
+      assert :ok = WorkPackageRepository.migrate(Repo)
+      assert {:ok, package} = WorkPackageRepository.create(Repo, WorkPackageFactory.attrs(id: "SYMPP-P10-006-HEALTH"))
+      assert {:ok, minted} = AccessGrantService.mint_worker_grant(Repo, package.id)
+      System.put_env(env_var, minted.work_key.secret)
+
+      input =
+        [
+          Jason.encode!(%{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()}),
+          Jason.encode!(%{
+            "jsonrpc" => "2.0",
+            "id" => "health",
+            "method" => "tools/call",
+            "params" => %{"name" => "sympp.health", "arguments" => %{}}
+          }),
+          Jason.encode!(%{
+            "jsonrpc" => "2.0",
+            "id" => "assignment",
+            "method" => "resources/read",
+            "params" => %{"uri" => "sympp://assignment/current"}
+          }),
+          Jason.encode!(%{
+            "jsonrpc" => "2.0",
+            "id" => "progress",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "append_progress",
+              "arguments" => %{
+                "summary" => "Health reached the scoped ledger",
+                "idempotency_key" => "test-health-scoped-ledger"
+              }
+            }
+          })
+        ]
+        |> Enum.join("\n")
+        |> Kernel.<>("\n")
+
+      output =
+        capture_io(input, fn ->
+          McpTask.run(["--database", database_path, "--work-key-secret-env", env_var, "--claimed-by", "worker-health-1"])
+        end)
+
+      responses = decode_json_lines(output)
+      health_response = Enum.find(responses, &(Map.get(&1, "id") == "health"))
+      assignment_response = Enum.find(responses, &(Map.get(&1, "id") == "assignment"))
+      progress_response = Enum.find(responses, &(Map.get(&1, "id") == "progress"))
+      assignment = Jason.decode!(get_in(assignment_response, ["result", "contents", Access.at(0), "text"]))
+
+      assert get_in(health_response, ["result", "structuredContent", "status"]) == "ok"
+      assert get_in(health_response, ["result", "structuredContent", "ledger"]) == %{"reachable" => true}
+      assert assignment["work_package_id"] == package.id
+      assert get_in(progress_response, ["result", "structuredContent", "progress_event", "id"])
+      refute output =~ minted.work_key.secret
     after
       System.delete_env(env_var)
       Repo.put_dynamic_repo(original_repo)
@@ -1228,6 +1342,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert response["id"] == nil
     assert get_in(response, ["error", "code"]) == -32_600
     assert get_in(response, ["error", "data", "reason"]) == "empty_batch"
+  end
+
+  test "stdio read errors keep expected disconnects graceful" do
+    assert :ok = Stdio.handle_read_error(:terminated)
+    assert :ok = Stdio.handle_read_error(:closed)
+
+    assert_raise IO.StreamError, fn ->
+      Stdio.handle_read_error(:eperm)
+    end
   end
 
   test "stdio decoded payload helper retains response-only initialized state", %{repo: repo} do
