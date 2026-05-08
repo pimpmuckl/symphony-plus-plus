@@ -6,12 +6,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Stdio do
   @spec run(Config.t(), keyword()) :: :ok
   def run(%Config{} = config, opts \\ []) do
     server = Server.new(config, opts)
+    read_loop(server)
+  end
 
-    _server =
-      IO.stream(:stdio, :line)
-      |> Enum.reduce(server, &handle_line/2)
+  defp read_loop(%Server{} = server) do
+    case read_line() do
+      :eof ->
+        :ok
 
-    :ok
+      {:error, _reason} ->
+        :ok
+
+      line when is_binary(line) ->
+        line
+        |> handle_line(server)
+        |> read_loop()
+    end
+  end
+
+  defp read_line do
+    if string_io_group_leader?(), do: IO.read(:stdio, :line), else: IO.binread(:stdio, :line)
+  end
+
+  defp string_io_group_leader? do
+    case Process.info(:erlang.group_leader(), :dictionary) do
+      {:dictionary, dictionary} -> Keyword.get(dictionary, :"$initial_call") == {StringIO, :init, 1}
+      _info -> false
+    end
   end
 
   defp handle_line(line, %Server{} = server) do

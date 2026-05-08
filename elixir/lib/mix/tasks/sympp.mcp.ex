@@ -4,7 +4,6 @@ defmodule Mix.Tasks.Sympp.Mcp do
   use Mix.Task
 
   alias Ecto.Adapters.SQL
-
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
@@ -109,7 +108,7 @@ defmodule Mix.Tasks.Sympp.Mcp do
   end
 
   defp ensure_started_repo_uses_database(database, pid) do
-    case SQL.query(Repo, "PRAGMA database_list", [], log: false) do
+    case SQL.query(pid, "PRAGMA database_list", [], log: false) do
       {:ok, %{rows: rows}} ->
         if Enum.any?(rows, &main_database_row_matches?(&1, database)) do
           {:ok, {:existing, pid}}

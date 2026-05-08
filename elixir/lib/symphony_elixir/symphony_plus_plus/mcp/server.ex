@@ -324,19 +324,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp put_handle_state(%__MODULE__{} = server) do
+    key = handle_state_store_key(server)
     timestamp_ms = monotonic_ms()
     state_key_version = monotonic_state_key_version()
     stored_server = %{stored_handle_state_server(server) | state_key_version: state_key_version}
-    update_handle_state_store(&Map.put(&1, handle_state_store_key(server), {stored_server, timestamp_ms, server.state_key_explicit}))
+    update_handle_state_store(&Map.put(&1, key, {stored_server, timestamp_ms, server.state_key_explicit}))
     state_key_version
   end
 
   defp delete_handle_state(%__MODULE__{} = server) do
-    update_handle_state_store(&Map.delete(&1, handle_state_store_key(server)))
+    key = handle_state_store_key(server)
+    update_handle_state_store(&Map.delete(&1, key))
     :ok
   end
 
   defp invalidate_explicit_handle_state(%__MODULE__{} = server) do
+    key = handle_state_store_key(server)
     timestamp_ms = monotonic_ms()
     state_key_version = monotonic_state_key_version()
 
@@ -347,7 +350,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         state_key_version: state_key_version
     }
 
-    update_handle_state_store(&Map.put(&1, handle_state_store_key(server), {tombstone, timestamp_ms, true}))
+    update_handle_state_store(&Map.put(&1, key, {tombstone, timestamp_ms, true}))
     :ok
   end
 
@@ -422,7 +425,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp current_ledger_identity(repo, database) do
-    case SQL.query(repo, "PRAGMA database_list", [], log: false) do
+    case repo_query(repo, "PRAGMA database_list", [], log: false) do
       {:ok, %{rows: rows}} ->
         case Enum.find(rows, &main_database_row?/1) do
           [_seq, "main", path] -> {:ok, main_database_identity(repo, path, database)}
@@ -437,6 +440,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   catch
     _kind, _reason -> :error
   end
+
+  defp repo_query(repo, sql, params, opts) when is_atom(repo) do
+    case dynamic_repo_identity(repo) do
+      pid when is_pid(pid) -> SQL.query(pid, sql, params, opts)
+      _repo -> repo.query(sql, params, opts)
+    end
+  end
+
+  defp repo_query(repo, sql, params, opts), do: SQL.query(repo, sql, params, opts)
 
   defp main_database_row?([_seq, "main", _path]), do: true
   defp main_database_row?(_row), do: false
@@ -1238,7 +1250,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp ledger_health(repo) when is_atom(repo) do
-    case SQL.query(repo, "SELECT 1", [], log: false) do
+    case repo_query(repo, "SELECT 1", [], log: false) do
       {:ok, _result} -> %{"reachable" => true}
       {:error, _reason} -> %{"reachable" => false, "error" => "ledger_unavailable"}
     end

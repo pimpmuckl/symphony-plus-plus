@@ -502,6 +502,76 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     end
   end
 
+  test "mix task health uses the database-scoped work-key session ledger" do
+    database_path = WorkPackageFactory.database_path()
+    original_repo = Repo.get_dynamic_repo()
+    env_var = "SYMPP_MCP_TEST_SECRET_#{System.unique_integer([:positive])}"
+
+    {:ok, pid} =
+      Repo.start_link(database: database_path, name: Repo.process_name(database_path), pool_size: 1, log: false)
+
+    try do
+      Repo.put_dynamic_repo(pid)
+      assert :ok = WorkPackageRepository.migrate(Repo)
+      assert {:ok, package} = WorkPackageRepository.create(Repo, WorkPackageFactory.attrs(id: "SYMPP-P10-006-HEALTH"))
+      assert {:ok, minted} = AccessGrantService.mint_worker_grant(Repo, package.id)
+      System.put_env(env_var, minted.work_key.secret)
+
+      input =
+        [
+          Jason.encode!(%{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()}),
+          Jason.encode!(%{
+            "jsonrpc" => "2.0",
+            "id" => "health",
+            "method" => "tools/call",
+            "params" => %{"name" => "sympp.health", "arguments" => %{}}
+          }),
+          Jason.encode!(%{
+            "jsonrpc" => "2.0",
+            "id" => "assignment",
+            "method" => "resources/read",
+            "params" => %{"uri" => "sympp://assignment/current"}
+          }),
+          Jason.encode!(%{
+            "jsonrpc" => "2.0",
+            "id" => "progress",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "append_progress",
+              "arguments" => %{
+                "summary" => "Health reached the scoped ledger",
+                "idempotency_key" => "test-health-scoped-ledger"
+              }
+            }
+          })
+        ]
+        |> Enum.join("\n")
+        |> Kernel.<>("\n")
+
+      output =
+        capture_io(input, fn ->
+          McpTask.run(["--database", database_path, "--work-key-secret-env", env_var, "--claimed-by", "worker-health-1"])
+        end)
+
+      responses = decode_json_lines(output)
+      health_response = Enum.find(responses, &(Map.get(&1, "id") == "health"))
+      assignment_response = Enum.find(responses, &(Map.get(&1, "id") == "assignment"))
+      progress_response = Enum.find(responses, &(Map.get(&1, "id") == "progress"))
+      assignment = Jason.decode!(get_in(assignment_response, ["result", "contents", Access.at(0), "text"]))
+
+      assert get_in(health_response, ["result", "structuredContent", "status"]) == "ok"
+      assert get_in(health_response, ["result", "structuredContent", "ledger"]) == %{"reachable" => true}
+      assert assignment["work_package_id"] == package.id
+      assert get_in(progress_response, ["result", "structuredContent", "progress_event", "id"])
+      refute output =~ minted.work_key.secret
+    after
+      System.delete_env(env_var)
+      Repo.put_dynamic_repo(original_repo)
+      GenServer.stop(pid)
+      File.rm(database_path)
+    end
+  end
+
   test "mix task reuses an already-started repo for the exact SQLite URI" do
     database = "file:sympp_mcp_#{System.unique_integer([:positive])}?mode=memory&cache=shared"
     original_repo = Repo.get_dynamic_repo()
