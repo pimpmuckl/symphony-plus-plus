@@ -85,6 +85,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert html =~ "Stopped"
     assert html =~ ~s(href="https://github.com/example/symphony-plus-plus/pull/33")
     assert html =~ "Open PR"
+    assert html =~ "Review recorded"
   end
 
   test "renders empty states for missing detail collections" do

@@ -60,11 +60,17 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
         </div>
 
         <div class="sympp-board-summary">
-          <span class="sympp-board-count numeric"><%= @board.total_count %></span>
-          <span class="muted">packages</span>
-          <span :if={phase_progress(Map.get(@board, :phase_summary, %{}))} class="muted">
-            <%= phase_progress(Map.get(@board, :phase_summary, %{})) %> children merged
-          </span>
+          <div>
+            <span class="sympp-board-count numeric"><%= @board.total_count %></span>
+            <span class="muted">total</span>
+          </div>
+          <div>
+            <span class="sympp-board-count numeric"><%= @board.visible_count %></span>
+            <span class="muted">shown</span>
+          </div>
+          <div :if={phase_progress(Map.get(@board, :phase_summary, %{}))}>
+            <span class="sympp-board-count numeric"><%= phase_progress(Map.get(@board, :phase_summary, %{})) %> children merged</span>
+          </div>
         </div>
       </header>
 
@@ -74,40 +80,42 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
           <p class="error-copy"><%= @board.error %></p>
         </section>
       <% else %>
-        <form class="sympp-board-filters" method="get">
-          <label>
-            <span>Kind</span>
-            <select name="kind">
-              <option value={@empty_filter} selected={@filters.kind == @empty_filter}>All</option>
-              <option :for={kind <- @board.filter_options.kinds} value={kind} selected={@filters.kind == kind}>
-                <%= kind %>
-              </option>
-            </select>
-          </label>
+        <section class="sympp-board-toolbar" aria-label="Board filters">
+          <form class="sympp-board-filters" method="get">
+            <label>
+              <span>Kind</span>
+              <select name="kind">
+                <option value={@empty_filter} selected={@filters.kind == @empty_filter}>All</option>
+                <option :for={kind <- @board.filter_options.kinds} value={kind} selected={@filters.kind == kind}>
+                  <%= kind %>
+                </option>
+              </select>
+            </label>
 
-          <label>
-            <span>Repo</span>
-            <select name="repo">
-              <option value={@empty_filter} selected={@filters.repo == @empty_filter}>All</option>
-              <option :for={repo <- @board.filter_options.repos} value={repo} selected={@filters.repo == repo}>
-                <%= repo %>
-              </option>
-            </select>
-          </label>
+            <label>
+              <span>Repo</span>
+              <select name="repo">
+                <option value={@empty_filter} selected={@filters.repo == @empty_filter}>All</option>
+                <option :for={repo <- @board.filter_options.repos} value={repo} selected={@filters.repo == repo}>
+                  <%= repo %>
+                </option>
+              </select>
+            </label>
 
-          <label>
-            <span>Phase</span>
-            <select name="phase">
-              <option value={@empty_filter} selected={@filters.phase == @empty_filter}>All</option>
-              <option :for={phase <- @board.filter_options.phases} value={phase} selected={@filters.phase == phase}>
-                <%= phase %>
-              </option>
-            </select>
-          </label>
+            <label>
+              <span>Phase</span>
+              <select name="phase">
+                <option value={@empty_filter} selected={@filters.phase == @empty_filter}>All</option>
+                <option :for={phase <- @board.filter_options.phases} value={phase} selected={@filters.phase == phase}>
+                  <%= phase %>
+                </option>
+              </select>
+            </label>
 
-          <button class="subtle-button" type="submit">Apply</button>
-          <a class="sympp-clear-link" href="board">Clear</a>
-        </form>
+            <button class="subtle-button" type="submit">Apply</button>
+            <a class="sympp-clear-link" href="board">Clear</a>
+          </form>
+        </section>
 
         <%= if @board.visible_count == 0 do %>
           <p class="sympp-empty-state">No work packages match the current board filters.</p>
