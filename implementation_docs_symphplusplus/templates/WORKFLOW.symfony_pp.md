@@ -19,8 +19,7 @@ tracker:
   filters:
     repos:
       - nextide/symphony-plus-plus
-    base_branches:
-      - origin/<package-base-branch>
+    base_branches: []
     work_kinds:
       - adapter
 

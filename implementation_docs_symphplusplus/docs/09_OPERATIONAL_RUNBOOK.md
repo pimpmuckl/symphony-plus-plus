@@ -10,8 +10,9 @@ the short command-flow reference for operators.
    criteria, and tests narrow.
 2. Copy the nearest request template from `../templates/` into scratch space and
    edit the copy. Do not edit shared templates for one incident.
-3. From `elixir/`, run `mise exec -- mix sympp.create_work` with the edited
-   request, database path, and stable `--claimed-by <worker-id>`.
+3. From `elixir/`, run
+   `mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../scratch/<request>.yaml --claimed-by <worker-id>`
+   with the edited request path and stable worker identity.
 4. Confirm normal command output contains only non-secret handoff metadata. The
    worker grant secret must be stored in the private local handoff store, not
    printed into stdout, prompts, PR text, or logs.
