@@ -1,6 +1,8 @@
 # Quick Work Policy Templates
 
-These templates are the current Phase 4 quick-work policies. They describe implemented behavior, not future Phase 6 GitHub sync or Phase 7 delegation behavior.
+These templates describe the current quick-work policies. They are package
+policy references for implemented behavior, not a backlog or phase-history
+roadmap.
 
 | Template | Planning depth | Grant expiry seconds | Readiness status | Required gates | Required review lanes | PR required |
 |---|---|---:|---|---|---|---|

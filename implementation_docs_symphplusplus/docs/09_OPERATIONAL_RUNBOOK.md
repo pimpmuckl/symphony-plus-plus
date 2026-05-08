@@ -1,83 +1,85 @@
 # Operational Runbook
 
-For a role-oriented walkthrough, start with `12_OPERATOR_TRAINING.md`. This
-runbook is the shorter command-flow reference.
+For role boundaries and examples, read `12_OPERATOR_TRAINING.md`. This file is
+the short command-flow reference for operators.
 
-## Starting a standalone hotfix
+## Standalone Package
 
-1. Create work package with kind `hotfix`; see
-   `../runbooks/HOTFIX_RUNBOOK.md`.
-2. Set repo, base branch, owned paths, and target branch.
-3. Set acceptance criteria and review-suite requirement.
-4. Mint the worker grant with `mix sympp.create_work`. Normal command output
-   stores the one-time secret in the configured local private handoff store and
-   returns only non-secret handoff metadata.
-5. Install the `symphony-plus-plus` Codex plugin from
-   `plugins/symphony-plus-plus/` or copy
-   `.codex/skills/symphony-work-package/` into the worker repo.
-6. Configure the Symphony++ MCP stdio dependency through the private-store
-   bootstrap; see
+1. Choose `quick_fix`, `hotfix`, `investigation`, or another package policy
+   that matches the work. Keep repo, base branch, owned paths, acceptance
+   criteria, and tests narrow.
+2. Copy the nearest request template from `../templates/` into scratch space and
+   edit the copy. Do not edit shared templates for one incident.
+3. From `elixir/`, run `mix sympp.create_work` with the edited request,
+   database path, and stable `--claimed-by <worker-id>`.
+4. Confirm normal command output contains only non-secret handoff metadata. The
+   worker grant secret must be stored in the private local handoff store, not
+   printed into stdout, prompts, PR text, or logs.
+5. Make sure the worker has the `symphony-plus-plus` Codex plugin from
+   `plugins/symphony-plus-plus/` or the repo-local
+   `.codex/skills/symphony-work-package/` copy, plus the MCP stdio dependency
+   configured through the private-store bootstrap documented in
    `.codex/skills/symphony-work-package/references/mcp_wiring.md`.
-7. Hand worker the package id, handoff target, stable `claimed_by` identity, and
-   verbatim `templates/worker_agent_prompt.md`. Do not hand the raw secret in
-   prompts or chat.
-8. Watch dashboard/API for progress.
-9. Review PR and readiness evidence with `../review/REVIEWER_CHECKLIST.md`.
-10. Human merges only after branch protection, review-suite evidence, and
-    release gates required by the package pass.
+6. Dispatch the worker with the package id, base branch, target branch
+   convention, owned paths, acceptance criteria, required validation/review
+   lanes, handoff target, stable `claimed_by` identity, and the prompt in
+   `templates/worker_agent_prompt.md`.
+7. Watch the dashboard/API or MCP-visible package state for claim, plan,
+   findings, progress, blockers, branch, PR, validation, and review evidence.
+8. Review the PR with `../review/REVIEWER_CHECKLIST.md`; confirm evidence is
+   current for the attached branch head.
+9. Merge only after readiness gates, branch protection, required review-suite
+   lanes, and any package-specific release-validation requirements pass.
 
-## Starting a phase-based implementation
+## Architect-Led Package
 
-1. Create phase container.
-2. Mint architect grant.
-3. Give architect this package, `00_ARCHITECT_AGENT_HANDOFF.md`, and the
-   operator-approved phase scope.
-4. Architect creates child packages from the phase scope and records dependency
-   order in Symphony++ state.
-5. Architect mints worker keys.
-6. Workers implement child packages.
-7. Architect merges accepted child PRs into phase branch.
-8. Human reviews phase summary and promotes phase branch.
+1. Confirm the operator-approved package/phase scope, base branch, owned path
+   boundary, and dependency constraints.
+2. Give the architect `00_ARCHITECT_AGENT_HANDOFF.md`, the live assignment,
+   and any operator decisions needed to split child work.
+3. Architect creates child packages only inside the explicit phase anchor and
+   mints narrower child worker grants.
+4. Each child worker follows the standalone worker lifecycle for its package.
+5. Architect reviews child readiness, checks current-head PR evidence, and
+   approves only packages whose readiness gates still pass.
+6. Any actual Git integration remains a separate branch/PR operation governed
+   by branch protection and human review. `merge_child_into_phase` records a
+   local Symphony++ merge artifact; it does not run Git.
+7. Promote or merge the aggregate branch only after the architect can summarize
+   merged packages, validation, blockers, and residual risks.
 
-## Role boundaries
+## Blockers
 
-- Operator: creates packages, controls secret handoff, approves release policy,
-  merges PRs, and archives final evidence.
-- Architect: sequences phase work, creates child packages, mints worker keys,
-  handles scope expansion, and keeps the phase branch explainable.
-- Worker: implements only the assigned package, records progress/findings,
-  attaches branch/PR/review evidence, and stops for missing scope or access.
-- Reviewer: checks package scope, acceptance, validation, security, and current
-  head evidence without expanding the PR into unrelated cleanup.
+Classify the blocker before changing the package:
 
-## Handling blocker
+- Scope: approve or deny a scope-expansion request; do not let the worker
+  self-approve.
+- Dependency: expose a context slice, reorder work, or block the package until
+  the dependency lands.
+- Design: ask the architect/operator for a decision before implementation
+  drifts.
+- CI/validation: require failure evidence, current branch head, and a concrete
+  owner for the fix.
+- Access/secret: revoke or rotate first, then diagnose from preserved logs.
 
-1. Read blocker reason and affected package.
-2. Determine if blocker is scope, dependency, design, CI, or access.
-3. For scope: approve/deny expansion.
-4. For dependency: expose a context slice or adjust order.
-5. For CI: require worker to attach failure analysis.
-6. For design: request replan from architect.
-7. Record resolution in progress events.
+Record the resolution in package progress and leave blocked validation explicit
+when it cannot be completed safely.
 
-## Revoking a worker
+## Revoking A Worker
 
-1. Revoke grant.
-2. Stop or pause active run if orchestrator supports it.
-3. Mark AgentRun stopped/revoked.
-4. Preserve workspace/logs.
-5. Reassign package with a new grant if needed.
+1. Revoke the affected grant.
+2. Stop or pause the active run if the runner supports it.
+3. Preserve workspace and logs for audit.
+4. Record the revocation and reason in package progress.
+5. Reassign only with a new grant and a new private handoff if the package
+   should continue.
 
-## Pilot migration with Kraken
+## Hotfixes And Incidents
 
-Use the detailed operator playbook in
-`../runbooks/KRAKEN_PILOT_MIGRATION_PLAYBOOK.md`.
+- Hotfix procedure: `../runbooks/HOTFIX_RUNBOOK.md`
+- Permission or secret leak: `../runbooks/INCIDENT_PERMISSION_OR_SECRET_LEAK.md`
+- Release evidence: `11_RELEASE_VALIDATION.md`
 
-Do not migrate the whole Kraken rewrite first.
-
-Pilot sequence:
-
-1. One standalone low-risk quick fix.
-2. One hotfix-style package against `main`.
-3. One mini-phase with two child packages and an architect agent.
-4. Only then migrate the active Kraken rewrite phase.
+Historical pilot runbooks remain available under `../runbooks/` but are not the
+default starting point for new work unless an operator explicitly assigns that
+pilot.

@@ -1,83 +1,81 @@
 # Operator Training
 
-Use this guide when starting a Symphony++ lane from scratch. It links the
-existing contracts and runbooks without replacing them.
+Use this guide when starting a Symphony++ lane from scratch. It explains the
+roles and the normal evidence flow without relying on old implementation phase
+history.
 
-## Choose the flow
+## Roles
 
-Use a standalone package when the work is one bounded fix, investigation, or
-hotfix that does not need an architect-owned phase branch. Standalone work is
-the right first proof because one human can create the package, hand one worker
-a grant, review one PR, and land it after readiness gates pass.
+The operator creates packages, controls private secret handoff, sets release
+policy, makes merge decisions, and archives final evidence.
 
-Use a phase-based flow when the work needs sequencing across multiple packages,
-shared dependency decisions, or an architect who can mint child worker grants.
-The architect owns package order and phase summaries; workers still own only
-their assigned packages.
+The architect sequences multi-package work, creates child packages inside the
+operator-approved scope, mints narrower child worker grants, handles approved
+scope decisions, and reports aggregate readiness.
 
-## Standalone hotfix flow
+The worker owns exactly one assigned package: claim the grant, read MCP-backed
+planning resources, keep progress/findings/current plan updated, implement the
+bounded diff, attach branch/PR/review evidence, and stop for scope expansion.
 
-1. Read `../runbooks/HOTFIX_RUNBOOK.md`.
-2. Pick the correct base branch and keep the acceptance criteria narrow.
-3. Create the package from an edited copy of
-   `../templates/create_work_package.hotfix.example.yaml` with the
-   incident-specific title, scope, tests, and base.
-4. Run the create-work command from the runbook. Normal command output must not
-   contain the raw secret; it should contain only the local private-store
-   handoff target and MCP bootstrap command shape.
-5. Install the `symphony-plus-plus` Codex plugin or copy
-   `.codex/skills/symphony-work-package/` into the worker repo, then configure
-   the Symphony++ MCP stdio dependency through the private-store bootstrap.
-6. Hand the worker the package id, base branch, target branch naming, worker
-   prompt, handoff target, and stable `claimed_by` identity. Do not put the raw
-   secret in files, logs, PR bodies, or chat transcripts.
-7. Watch the dashboard/API timeline for claim, plan, findings, progress,
-   branch/PR attachment, validation, and review evidence.
-8. Review the PR against `../review/REVIEWER_CHECKLIST.md`.
-9. Confirm `../review/READINESS_GATES.md` and
-   `11_RELEASE_VALIDATION.md` evidence are current for the PR head.
-10. Merge only after branch protection and human review pass, then archive the
-   package evidence and close the incident notes.
+The reviewer checks correctness, acceptance, validation, security, and scope on
+the current PR head. Reviewers should not turn a focused package into broad doc
+cleanup, old-doc deletion, runtime redesign, or compatibility-policy changes.
 
-## Phase-based flow
+## Standalone Flow
+
+1. Read `01_IMPLEMENTATION_GUIDE.md`, then choose the package policy.
+2. Copy a `../templates/create_work_package.*.example.yaml` request into
+   scratch space and edit the package-specific fields.
+3. Run the create-work command from `elixir/` with the edited file, ledger
+   database, and stable `--claimed-by <worker-id>`.
+4. Confirm the returned handoff data is non-secret. Normal output should show
+   the private-store handoff target and MCP bootstrap shape, not the raw worker
+   secret.
+5. Ensure the worker has the local plugin or skill and MCP stdio dependency
+   configured through the private-store bootstrap.
+6. Dispatch the worker with package id, base/target branch guidance, owned
+   paths, acceptance criteria, test plan, review lanes, handoff target, stable
+   `claimed_by`, and stop conditions.
+7. Monitor claim, plan, findings, progress, blockers, branch/PR attachment,
+   validation, and review evidence through Symphony++ state.
+8. Review the PR against `../review/REVIEWER_CHECKLIST.md` and confirm
+   `../review/READINESS_GATES.md` evidence is current for the final head.
+9. Merge only after branch protection, required review, package readiness, and
+   release-validation requirements pass.
+
+## Architect-Led Flow
 
 1. Read `00_ARCHITECT_AGENT_HANDOFF.md`.
-2. Create or select the phase branch and confirm dependency packages are merged.
-3. Mint an architect grant for the phase, not a broad worker grant.
-4. Give the architect the phase objective, package constraints, owned paths,
-   acceptance criteria, and any dependency summaries needed to split child
-   packages.
-5. Require one worker PR per package unless the architect explicitly splits or
-   combines scope with rationale.
-6. Require each worker to prove package acceptance and review gates on its own
-   PR head before the architect merges it into the phase branch.
-7. Promote the phase branch only after the architect can summarize merged
-   packages, residual risks, validation, and any deferred limitations.
+2. Confirm the operator-approved scope, base branch, child package boundary,
+   dependency order, and review policy.
+3. Mint an architect grant for that explicit scope, not a broad worker grant.
+4. Architect creates child packages and worker grants only inside that scope.
+5. Each worker PR proves its own acceptance and review gates before architect
+   approval.
+6. Architect records phase or aggregate evidence after each accepted child.
+7. Human merge remains separate from Symphony++ readiness and must respect
+   GitHub branch protection.
 
-## Responsibility boundaries
+## Handoff Hygiene
 
-The operator owns package creation, private secret handoff, release policy,
-merge decisions, and final evidence archival.
+Worker handoffs may include:
 
-The architect owns phase sequencing, child package creation, worker-key minting,
-scope expansion decisions inside the phase, and phase-branch readiness.
+- WorkPackage id, branch guidance, owned files, acceptance criteria, and tests.
+- Handoff target and stable `claimed_by` identity.
+- Required review lanes and stop conditions.
+- Links to non-secret docs, templates, and MCP wiring instructions.
 
-The worker owns exactly one assigned package: claim the key, read scoped virtual
-planning resources, keep progress/findings current, implement the bounded diff,
-attach branch/PR evidence, run validation, submit review evidence, and stop for
-scope expansion.
+Worker handoffs must not include raw grant secrets, bearer tokens, GitHub
+tokens, Linear tokens, MCP auth tokens, full secret-bearing claim URLs, private
+keys, or signed URLs.
 
-The reviewer owns correctness, acceptance, test evidence, security, and scope
-checks. Reviewers should not turn a focused package into broad documentation
-cleanup, old-doc deletion, or unrelated runtime redesign.
+## Closeout Record
 
-## Closeout record
-
-Before declaring a package ready, record:
+Before declaring a package ready or closing an operator lane, record:
 
 - Package id, PR URL, final head SHA, and base branch.
-- Changed files and confirmation they match the package scope.
+- Changed files and confirmation they match package scope.
 - Validation commands and results.
 - Review-suite evidence for required lanes.
 - Known limitations or explicit none.
-- Any blocked validation with the exact blocker and owner.
+- Any blocked validation with exact blocker and owner.

@@ -63,9 +63,8 @@ A release candidate is honest only when the PR records:
 ## Release gate checklist
 
 - `make -C elixir all` is green for the release candidate, or the PR records
-  the exact environment blocker. PR #39 restored this gate on the beta line;
-  later PRs should refresh it when they touch runtime code, tests, build files,
-  or release-critical policy.
+  the exact environment blocker. Refresh this gate when a package touches
+  runtime code, tests, build files, or release-critical policy.
 - Coverage passes the ratchet in `elixir/mix.exs`. The ratchet is near current
   measured coverage; do not describe it as a full-coverage requirement.
 - Required review-suite lanes from the package policy or PR assignment are
@@ -85,7 +84,7 @@ A release candidate is honest only when the PR records:
   credentials are unavailable.
 - Historical P0-P8 implementation backlog artifacts are not release inputs.
   Use current operator docs, live WorkPackage state, and PR evidence instead.
-- The Kraken pilot playbook remains a pilot migration guide, not proof that all
-  future migrations are production-ready.
+- The Kraken pilot playbook remains a historical/conditional pilot migration
+  guide, not proof that all later migrations are production-ready.
 - `100%` coverage is a future strict-coverage campaign, not a current release
   blocker.

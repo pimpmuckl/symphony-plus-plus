@@ -20,7 +20,7 @@ tracker:
     repos:
       - nextide/symphony-plus-plus
     base_branches:
-      - origin/symphony-plus-plus/beta
+      - origin/main
     work_kinds:
       - adapter
 

@@ -1,5 +1,9 @@
 # Kraken Pilot Migration Playbook
 
+This is a historical/conditional pilot playbook. Use it only when an operator
+explicitly assigns the Kraken pilot. It is not the default Symphony++ operator
+runbook and does not define current package scope for unrelated work.
+
 ## Goal
 
 Run a low-risk Symphony++ pilot for Kraken without moving the active Kraken rewrite/rework program into Symphony++ first.

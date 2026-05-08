@@ -1,4 +1,4 @@
-# AGENTS.md — Symphony++ Implementation Conventions
+# AGENTS.md - Symphony++ WorkPackage Conventions
 
 ## PR conventions
 
@@ -17,12 +17,13 @@
 
 ## Testing conventions
 
-- Every implementation package must add or update tests matching the package's test plan.
+- Every code-changing package must add or update tests matching the package's
+  test plan unless the package explicitly documents why validation is blocked.
 - Existing tests must continue to pass.
 - If a test cannot be run locally, document the exact reason in the PR summary.
 
 ## Documentation conventions
 
-- Update implementation notes when discovering constraints.
+- Update package notes when discovering constraints.
 - Keep live WorkPackage state, findings, progress, acceptance evidence, and
   review evidence current when packages are split or merged.

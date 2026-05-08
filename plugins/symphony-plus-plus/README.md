@@ -42,6 +42,19 @@ repository root:
 
 Restart or reload Codex so the refreshed skill list is loaded.
 
+## Worker Use
+
+Workers use the plugin together with the Symphony++ MCP stdio server. The
+operator creates a WorkPackage, the create-work command stores the one-time
+secret in a private local handoff store, and the worker receives only
+non-secret handoff metadata plus a stable `claimed_by` identity.
+
+The skill then instructs the worker to load the current assignment, read the
+MCP-backed planning resources, update plan/findings/progress through MCP,
+attach branch/PR/review evidence, and mark ready only after package gates pass.
+Do not paste raw worker secrets into prompts, command lines, PR bodies, review
+text, or durable logs.
+
 Worker-secret bootstrap metadata is emitted by `mix sympp.create_work` after it
 stores the one-time secret in a private local store. On Windows, generated
 commands use `scripts/sympp-worker-secret.ps1` for Windows Credential Manager.
