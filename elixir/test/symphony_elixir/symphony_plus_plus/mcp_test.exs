@@ -1344,6 +1344,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(response, ["error", "data", "reason"]) == "empty_batch"
   end
 
+  test "stdio read errors keep expected disconnects graceful" do
+    assert :ok = Stdio.handle_read_error(:terminated)
+    assert :ok = Stdio.handle_read_error(:closed)
+
+    assert_raise IO.StreamError, fn ->
+      Stdio.handle_read_error(:eperm)
+    end
+  end
+
   test "stdio decoded payload helper retains response-only initialized state", %{repo: repo} do
     server = Server.new(Config.default(repo: repo))
 

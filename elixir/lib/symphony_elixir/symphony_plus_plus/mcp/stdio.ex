@@ -3,6 +3,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Stdio do
 
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Server}
 
+  @stdio_disconnect_reasons [:closed, :terminated]
+
   @spec run(Config.t(), keyword()) :: :ok
   def run(%Config{} = config, opts \\ []) do
     server = Server.new(config, opts)
@@ -15,7 +17,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Stdio do
         :ok
 
       {:error, reason} ->
-        raise IO.StreamError, reason: reason
+        handle_read_error(reason)
 
       line when is_binary(line) ->
         line
@@ -34,6 +36,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Stdio do
       _info -> false
     end
   end
+
+  @doc false
+  @spec handle_read_error(term()) :: :ok | no_return()
+  def handle_read_error(reason) when reason in @stdio_disconnect_reasons, do: :ok
+  def handle_read_error(reason), do: raise(IO.StreamError, reason: reason)
 
   defp handle_line(line, %Server{} = server) do
     {response, server} = line_response_state(line, server)
