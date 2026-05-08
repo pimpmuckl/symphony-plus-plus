@@ -345,6 +345,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     end
   end
 
+  test "health and explicit state keys follow atom-valued dynamic repos" do
+    database_path = WorkPackageFactory.database_path()
+    original_repo = Repo.get_dynamic_repo()
+    repo_name = :"sympp_mcp_named_dynamic_#{System.unique_integer([:positive])}"
+
+    {:ok, pid} =
+      Repo.start_link(database: database_path, name: repo_name, pool_size: 1, log: false)
+
+    try do
+      Repo.put_dynamic_repo(repo_name)
+      assert :ok = WorkPackageRepository.migrate(Repo)
+
+      health_response =
+        MCPHarness.request(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "named-health",
+            "method" => "tools/call",
+            "params" => %{"name" => "sympp.health", "arguments" => %{}}
+          },
+          config: Config.default(repo: Repo)
+        )
+
+      {_initialize_response, _server} =
+        Server.handle_response_state(
+          %{"jsonrpc" => "2.0", "id" => "named-init", "method" => "initialize", "params" => initialize_params()},
+          Server.new(Config.default(repo: Repo), state_key: "named-dynamic-ledger-state")
+        )
+
+      {tools_response, _server} =
+        Server.handle_response_state(
+          %{"jsonrpc" => "2.0", "id" => "named-tools", "method" => "tools/list", "params" => %{}},
+          Server.new(Config.default(repo: Repo), state_key: "named-dynamic-ledger-state")
+        )
+
+      assert get_in(health_response, ["result", "structuredContent", "ledger"]) == %{"reachable" => true}
+      assert is_list(get_in(tools_response, ["result", "tools"]))
+    after
+      Repo.put_dynamic_repo(original_repo)
+      if Process.alive?(pid), do: GenServer.stop(pid)
+      File.rm(database_path)
+    end
+  end
+
   test "mix task database option reaches the requested ledger while the default repo is running" do
     database_path = WorkPackageFactory.database_path()
     original_repo = Repo.get_dynamic_repo()

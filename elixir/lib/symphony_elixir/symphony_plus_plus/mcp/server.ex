@@ -444,7 +444,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp repo_query(repo, sql, params, opts) when is_atom(repo) do
     case dynamic_repo_identity(repo) do
       pid when is_pid(pid) -> SQL.query(pid, sql, params, opts)
-      _repo -> repo.query(sql, params, opts)
+      dynamic_repo when is_atom(dynamic_repo) and dynamic_repo != repo -> SQL.query(dynamic_repo, sql, params, opts)
+      _repo -> SQL.query(repo, sql, params, opts)
     end
   end
 

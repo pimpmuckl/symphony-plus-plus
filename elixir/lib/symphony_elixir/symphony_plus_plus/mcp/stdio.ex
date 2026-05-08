@@ -14,8 +14,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Stdio do
       :eof ->
         :ok
 
-      {:error, _reason} ->
-        :ok
+      {:error, reason} ->
+        raise IO.StreamError, reason: reason
 
       line when is_binary(line) ->
         line
