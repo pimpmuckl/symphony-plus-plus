@@ -51,6 +51,7 @@ review text, or durable logs.
 For a quick fix, use the quick-fix template instead:
 
 ```bash
+cd elixir
 mkdir -p ../scratch
 cp ../implementation_docs_symphplusplus/templates/create_work_package.quick_fix.example.yaml ../scratch/quick-fix-request.yaml
 # Edit ../scratch/quick-fix-request.yaml before running create-work.
@@ -65,6 +66,7 @@ use their package policy instead of hotfix-specific gates.
 For an investigation, use the investigation template:
 
 ```bash
+cd elixir
 mkdir -p ../scratch
 cp ../implementation_docs_symphplusplus/templates/create_work_package.investigation.example.yaml ../scratch/investigation-request.yaml
 # Edit ../scratch/investigation-request.yaml before running create-work.

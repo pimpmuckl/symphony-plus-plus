@@ -106,9 +106,9 @@ files are the package source of truth.
 ## Readiness And Merge
 
 Readiness is server-gated. A worker cannot make a package ready while active
-blockers, missing acceptance evidence, stale review artifacts, required CI
-failures, missing PR evidence, base-branch mismatches, or scope violations
-remain.
+blockers, missing acceptance evidence, stale required review artifacts,
+required CI failures, missing required PR evidence, base-branch mismatches, or
+scope violations remain.
 
 Readiness does not merge code. Human merge remains separate and must respect
 GitHub branch protection, current-head review evidence, and the package's
