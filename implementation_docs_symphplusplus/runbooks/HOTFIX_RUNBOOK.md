@@ -6,14 +6,16 @@ review evidence. For role context, start with
 
 ## Create The Package
 
-1. Create scratch space if needed: `mkdir scratch`.
-2. Copy `../templates/create_work_package.hotfix.example.yaml` to an edited
+1. From the repository root, create scratch space if needed:
+   `New-Item -ItemType Directory -Force scratch`.
+2. Copy `implementation_docs_symphplusplus/templates/create_work_package.hotfix.example.yaml` to an edited
    request file such as `scratch/hotfix-request.yaml`.
 3. Edit repo, base branch, branch pattern, owned paths, acceptance criteria,
    test plan, review-suite requirement, and stop conditions.
 4. From `elixir/`, create the package:
 
-```bash
+```powershell
+Set-Location elixir
 mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../scratch/hotfix-request.yaml --claimed-by <stable-worker-id>
 ```
 
@@ -50,11 +52,11 @@ review text, or durable logs.
 
 For a quick fix, use the quick-fix template instead:
 
-```bash
-cd elixir
-mkdir -p ../scratch
-cp ../implementation_docs_symphplusplus/templates/create_work_package.quick_fix.example.yaml ../scratch/quick-fix-request.yaml
-# Edit ../scratch/quick-fix-request.yaml before running create-work.
+```powershell
+New-Item -ItemType Directory -Force scratch
+Copy-Item implementation_docs_symphplusplus/templates/create_work_package.quick_fix.example.yaml scratch/quick-fix-request.yaml
+# Edit scratch/quick-fix-request.yaml before running create-work.
+Set-Location elixir
 mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../scratch/quick-fix-request.yaml --claimed-by <stable-worker-id>
 ```
 
@@ -65,11 +67,11 @@ use their package policy instead of hotfix-specific gates.
 
 For an investigation, use the investigation template:
 
-```bash
-cd elixir
-mkdir -p ../scratch
-cp ../implementation_docs_symphplusplus/templates/create_work_package.investigation.example.yaml ../scratch/investigation-request.yaml
-# Edit ../scratch/investigation-request.yaml before running create-work.
+```powershell
+New-Item -ItemType Directory -Force scratch
+Copy-Item implementation_docs_symphplusplus/templates/create_work_package.investigation.example.yaml scratch/investigation-request.yaml
+# Edit scratch/investigation-request.yaml before running create-work.
+Set-Location elixir
 mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../scratch/investigation-request.yaml --claimed-by <stable-worker-id>
 ```
 
