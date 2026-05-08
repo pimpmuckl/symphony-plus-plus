@@ -95,11 +95,20 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
               <input id="sympp-package-id" class="mono" readonly value={@detail.work_package.id || @work_package_id} />
             </div>
 
+            <div class="sympp-detail-signal-row">
+              <span class="state-badge"><%= status_label(@detail.work_package.status) %></span>
+              <span class={detail_plan_signal_class(@detail.summary.plan)}>
+                Plan <%= plan_progress(@detail.summary.plan) %>
+              </span>
+              <span class={if @detail.summary.active_blocker_count > 0, do: "state-badge state-badge-danger", else: "state-badge state-badge-active"}>
+                <%= @detail.summary.active_blocker_count %> blockers
+              </span>
+              <span class={if review_evidence_present?(@detail.metadata), do: "state-badge state-badge-active", else: "state-badge"}>
+                Review <%= if review_evidence_present?(@detail.metadata), do: "recorded", else: "pending" %>
+              </span>
+            </div>
+
             <dl class="sympp-detail-meta">
-              <div>
-                <dt>Status</dt>
-                <dd><span class="state-badge"><%= status_label(@detail.work_package.status) %></span></dd>
-              </div>
               <div>
                 <dt>Kind</dt>
                 <dd><%= present(@detail.work_package.kind) %></dd>
@@ -107,6 +116,10 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
               <div>
                 <dt>Repo</dt>
                 <dd><%= repo_base(@detail.work_package) %></dd>
+              </div>
+              <div>
+                <dt>Base branch</dt>
+                <dd><%= @detail.work_package |> Map.get(:base_branch) |> present() %></dd>
               </div>
               <div>
                 <dt>Updated</dt>
@@ -440,6 +453,12 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
 
   defp plan_progress(_plan), do: "n/a"
 
+  defp detail_plan_signal_class(%{total_count: total, open_count: 0}) when is_integer(total) and total > 0 do
+    "state-badge state-badge-active"
+  end
+
+  defp detail_plan_signal_class(_plan), do: "state-badge"
+
   defp plan_status_class(status) when status in ["done", "completed", "skipped"], do: "state-badge state-badge-active"
   defp plan_status_class(_status), do: "state-badge"
 
@@ -490,6 +509,10 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
       true ->
         nil
     end
+  end
+
+  defp review_evidence_present?(metadata) do
+    not is_nil(review_suite_label(metadata)) or not is_nil(map_value(metadata, :review_package))
   end
 
   defp pr_summary_items(metadata) do
