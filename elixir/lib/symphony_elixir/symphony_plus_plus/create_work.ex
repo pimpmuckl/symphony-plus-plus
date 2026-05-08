@@ -243,8 +243,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     work_package_id = work_package.id
 
     case cleanup_created_work_package(repo, work_package_id) do
-      :ok -> {:error, reason}
-      {:error, cleanup_reason} -> {:error, {:handoff_cleanup_failed, reason, cleanup_reason, recovery_metadata(creation)}}
+      :ok ->
+        {:error, reason}
+
+      {:error, cleanup_reason} ->
+        {:error, {:handoff_cleanup_failed, reason, cleanup_reason, recovery_metadata(creation)}}
     end
   end
 

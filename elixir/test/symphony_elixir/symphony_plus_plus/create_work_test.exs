@@ -522,8 +522,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
       assert recovery.worker_grant_id
       assert recovery.worker_grant_display_key
 
-      message =
-        CreateWork.error_message({:handoff_cleanup_failed, {:local_private_file_failed, :eacces}, :cleanup_failed, recovery})
+      error = {:handoff_cleanup_failed, {:local_private_file_failed, :eacces}, :cleanup_failed, recovery}
+      message = CreateWork.error_message(error)
 
       assert message =~ recovery.work_package_id
       assert message =~ recovery.worker_grant_id

@@ -319,9 +319,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     case File.open(path, [:write, :exclusive, :binary]) do
       {:ok, file} ->
         try do
-          with :ok <- chmod_private_file(path, opts),
-               :ok <- write_temp_secret_file(file, secret) do
-            :ok
+          case chmod_private_file(path, opts) do
+            :ok -> write_temp_secret_file(file, secret)
+            {:error, _reason} = error -> error
           end
         after
           File.close(file)
