@@ -20,7 +20,7 @@ Configure Codex to start the MCP server as a stdio MCP dependency for the worker
 session. The command should run from the repository's `elixir/` directory and
 should not embed raw work-key secrets or bearer tokens.
 
-Example shape:
+Example shape for an already-bound or non-secret local smoke test:
 
 ```toml
 [mcp_servers.symphony_plus_plus]
@@ -29,12 +29,38 @@ args = ["exec", "--", "mix", "sympp.mcp", "--mode", "stdio", "--database", "<led
 cwd = "<repo>/elixir"
 ```
 
-If the operator uses an environment-backed secret handoff, pass only the
-environment variable name through MCP server configuration and keep the raw
-secret out of files, logs, PR bodies, and prompts.
+## Private Store Bootstrap
+
+For first-use worker dispatch, prefer a private-store wrapper that reads the
+one-time secret from the local OS/user store, injects it only into the MCP child
+process environment, and starts `sympp.mcp` with both the environment variable
+name and the stable worker identity.
+
+Windows Credential Manager example:
+
+```toml
+[mcp_servers.symphony_plus_plus]
+command = "powershell"
+args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "<repo>/scripts/sympp-worker-secret.ps1", "run-mcp", "-Target", "<handoff-target>", "-Database", "<ledger-path>", "-ClaimedBy", "<stable-worker-id>"]
+cwd = "<repo>"
+```
+
+Non-Windows `local-private-file` fallback example:
+
+```toml
+[mcp_servers.symphony_plus_plus]
+command = "sh"
+args = ["<repo>/scripts/sympp-worker-secret.sh", "run-mcp-local-file", "--path", "<secret-file>", "--database", "<ledger-path>", "--claimed-by", "<stable-worker-id>"]
+cwd = "<repo>"
+```
+
+The wrapper does not print the secret. It sets `SYMPP_WORK_KEY_SECRET` only for
+the MCP child process, and `sympp.mcp` claims or reconnects the grant with
+`--work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by <stable-worker-id>`.
 
 ## Worker Claim
 
-Workers still need to call `claim_work_key(secret, claimed_by)` after MCP
-initialize. A configured `state_key` only preserves initialized handshake
+Workers should start from `get_current_assignment()` after MCP initialize. If
+the session is not bound, stop and ask the operator to repair the private-store
+handoff. A configured `state_key` only preserves initialized handshake
 continuity for stateless transports; it does not restore worker authorization.

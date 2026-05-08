@@ -127,9 +127,11 @@ only when the same owner identity presents the same secret proof.
 
 Explicit `state_key` values retain initialized handshake continuity for
 stateless transports, but they do not restore claimed worker sessions. A
-reconnecting worker must call `claim_work_key(secret, claimed_by)` again. The
-continuity namespace is the active ledger, so a reconnect to the same SQLite
-ledger can restore handshake state even when the dynamic repo process changes.
+reconnecting worker must present the same secret proof and `claimed_by` identity
+again, preferably through the private-store MCP bootstrap rather than a raw
+secret tool call. The continuity namespace is the active ledger, so a reconnect
+to the same SQLite ledger can restore handshake state even when the dynamic repo
+process changes.
 Explicit state-key handshakes use a bounded retention window longer than the
 current worker grant defaults and are not evicted by the shorter implicit
 default response-state TTL. They remain continuity metadata until overwritten,

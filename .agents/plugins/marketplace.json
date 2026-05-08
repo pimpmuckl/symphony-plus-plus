@@ -1,0 +1,20 @@
+{
+  "name": "jonat-local",
+  "interface": {
+    "displayName": "JJ Local Plugins"
+  },
+  "plugins": [
+    {
+      "name": "symphony-plus-plus",
+      "source": {
+        "source": "local",
+        "path": "./plugins/symphony-plus-plus"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Coding"
+    }
+  ]
+}

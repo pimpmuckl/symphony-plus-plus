@@ -22,13 +22,15 @@ their assigned packages.
 3. Create the package from an edited copy of
    `../templates/create_work_package.hotfix.example.yaml` with the
    incident-specific title, scope, tests, and base.
-4. Run the create-work command from the runbook and capture the returned worker
-   grant secret only in the private handoff channel.
-5. Install or copy `.codex/skills/symphony-work-package/` into the worker repo
-   and configure the Symphony++ MCP stdio dependency before dispatch.
+4. Run the create-work command from the runbook. Normal command output must not
+   contain the raw secret; it should contain only the local private-store
+   handoff target and MCP bootstrap command shape.
+5. Install the `symphony-plus-plus` Codex plugin or copy
+   `.codex/skills/symphony-work-package/` into the worker repo, then configure
+   the Symphony++ MCP stdio dependency through the private-store bootstrap.
 6. Hand the worker the package id, base branch, target branch naming, worker
-   prompt, and secret. Do not put the secret in files, logs, PR bodies, or chat
-   transcripts that will be committed or archived broadly.
+   prompt, handoff target, and stable `claimed_by` identity. Do not put the raw
+   secret in files, logs, PR bodies, or chat transcripts.
 7. Watch the dashboard/API timeline for claim, plan, findings, progress,
    branch/PR attachment, validation, and review evidence.
 8. Review the PR against `../review/REVIEWER_CHECKLIST.md`.

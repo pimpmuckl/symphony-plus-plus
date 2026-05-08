@@ -10,12 +10,15 @@ Assignment:
 - WorkPackage: <WORK_PACKAGE_ID>
 - Base branch: <BASE_BRANCH>
 - Worker branch: agent/<WORK_PACKAGE_ID>/<short-slug>
-- Work key secret: provided out of band; never print or commit it
+- Work key handoff: configured in the local MCP private-store bootstrap; never
+  ask for, print, paste, or commit the raw secret
+- Handoff target: <HANDOFF_TARGET>
 - claimed_by: <stable-worker-identity>
 
 Before coding:
-1. Call `claim_work_key(secret, claimed_by)`.
-2. Call `get_current_assignment()` and treat that assignment as the scope.
+1. Call `get_current_assignment()` and treat that assignment as the scope.
+2. If the MCP session is not bound, stop and ask the operator to repair the
+   private-store bootstrap. Do not request the raw secret in chat or tool calls.
 3. Read `read_context()`, `read_task_plan()`, findings, progress,
    acceptance, review-suite, and handoff virtual resources.
 4. Update the virtual task plan with `update_task_plan(patch, expected_version)`.

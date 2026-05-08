@@ -5,11 +5,30 @@ defmodule Mix.Tasks.Sympp.CreateWork do
 
   alias SymphonyElixir.SymphonyPlusPlus.CreateWork
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.Workflow
 
   @shortdoc "Creates one standalone Symphony++ WorkPackage and worker grant"
-  @switches [file: :string, database: :string, help: :boolean]
+  @handoff_error_reasons [
+    :missing_secret,
+    :missing_claimed_by,
+    :missing_repo_root,
+    :missing_worker_grant,
+    :missing_work_package,
+    :unsupported_secret_handoff_mode,
+    :local_private_file_unavailable_on_windows,
+    :windows_credential_manager_unavailable
+  ]
+
+  @switches [
+    file: :string,
+    database: :string,
+    secret_handoff: :string,
+    secret_store_dir: :string,
+    claimed_by: :string,
+    help: :boolean
+  ]
 
   @impl Mix.Task
   def run(args) do
@@ -27,21 +46,31 @@ defmodule Mix.Tasks.Sympp.CreateWork do
 
   @spec usage() :: String.t()
   def usage do
-    "Usage: mix sympp.create_work --file <request.json|request.yaml> [--database <sqlite-path>]"
+    [
+      "Usage: mix sympp.create_work --file <request.json|request.yaml> --claimed-by <worker-id>",
+      "[--database <sqlite-path>]",
+      "[--secret-handoff auto|windows-credential-manager|local-private-file]"
+    ]
+    |> Enum.join(" ")
   end
 
   defp parse_args(args) do
     case OptionParser.parse(args, strict: @switches) do
       {opts, [], []} ->
-        cond do
-          Keyword.get(opts, :help, false) -> :help
-          blank?(Keyword.get(opts, :file)) -> {:error, usage()}
-          Keyword.has_key?(opts, :database) and blank?(Keyword.get(opts, :database)) -> {:error, usage()}
-          true -> {:ok, opts}
-        end
+        validate_opts(opts)
 
       {_opts, _argv, _invalid} ->
         {:error, usage()}
+    end
+  end
+
+  defp validate_opts(opts) do
+    cond do
+      Keyword.get(opts, :help, false) -> :help
+      blank?(Keyword.get(opts, :file)) -> {:error, usage()}
+      blank?(Keyword.get(opts, :claimed_by)) -> {:error, usage()}
+      has_blank_option?(opts, [:database, :secret_handoff, :secret_store_dir, :claimed_by]) -> {:error, usage()}
+      true -> {:ok, opts}
     end
   end
 
@@ -54,13 +83,14 @@ defmodule Mix.Tasks.Sympp.CreateWork do
           {:ok, repo_pid} ->
             try do
               with :ok <- WorkPackageRepository.migrate(Repo),
-                   {:ok, creation} <- CreateWork.create(Repo, request) do
+                   {:ok, {creation, worker_secret_handoff}} <-
+                     CreateWork.create_with_worker_secret_handoff(Repo, request, secret_handoff_opts(opts)) do
                 creation
-                |> CreateWork.response_payload()
+                |> CreateWork.response_payload(worker_secret_handoff: worker_secret_handoff)
                 |> Jason.encode!(pretty: true)
                 |> Mix.shell().info()
               else
-                {:error, reason} -> Mix.raise(CreateWork.error_message(reason))
+                {:error, reason} -> raise_create_work_error(reason)
               end
             after
               stop_repo(repo_pid)
@@ -98,6 +128,46 @@ defmodule Mix.Tasks.Sympp.CreateWork do
 
   defp stop_repo(pid) when is_pid(pid), do: GenServer.stop(pid)
   defp stop_repo(_pid), do: :ok
+
+  @spec raise_create_work_error(term()) :: no_return()
+  defp raise_create_work_error({:handoff_cleanup_failed, _handoff_reason, _cleanup_reason} = reason) do
+    Mix.raise(CreateWork.error_message(reason))
+  end
+
+  defp raise_create_work_error({:handoff_cleanup_failed, _handoff_reason, _cleanup_reason, _recovery} = reason) do
+    Mix.raise(CreateWork.error_message(reason))
+  end
+
+  defp raise_create_work_error(reason) do
+    if handoff_error?(reason) do
+      Mix.raise("Failed to store worker secret handoff: #{SecretHandoff.error_message(reason)}")
+    else
+      Mix.raise(CreateWork.error_message(reason))
+    end
+  end
+
+  defp handoff_error?(reason) when reason in @handoff_error_reasons, do: true
+  defp handoff_error?({:local_private_file_failed, _reason}), do: true
+  defp handoff_error?({:windows_credential_manager_failed, _status}), do: true
+  defp handoff_error?(_reason), do: false
+
+  defp secret_handoff_opts(opts) do
+    [
+      mode: Keyword.get(opts, :secret_handoff, "auto"),
+      store_dir: Keyword.get(opts, :secret_store_dir),
+      claimed_by: Keyword.get(opts, :claimed_by),
+      database: resolved_database(Keyword.get(opts, :database)),
+      repo_root: repo_root()
+    ]
+  end
+
+  defp repo_root do
+    Mix.Project.project_file()
+    |> Path.dirname()
+    |> Path.expand()
+    |> Path.join("..")
+    |> Path.expand()
+  end
 
   defp ensure_repo_dependencies_started do
     case Application.ensure_all_started(:ecto_sql) do
@@ -195,6 +265,10 @@ defmodule Mix.Tasks.Sympp.CreateWork do
 
   defp existing_file(path) do
     if File.exists?(path), do: path
+  end
+
+  defp has_blank_option?(opts, keys) do
+    Enum.any?(keys, &(Keyword.has_key?(opts, &1) and blank?(Keyword.get(opts, &1))))
   end
 
   defp blank?(value) when is_binary(value), do: String.trim(value) == ""

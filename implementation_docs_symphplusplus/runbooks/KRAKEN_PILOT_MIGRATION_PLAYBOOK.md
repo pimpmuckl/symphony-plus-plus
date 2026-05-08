@@ -212,47 +212,22 @@ Then run:
 
 ```powershell
 cd elixir
-$env:SYMPP_PILOT_SECRET_HANDOFF_CMD = "<approved-secret-handoff-executable>"
 $env:SYMPP_PILOT_LEDGER = "<pilot-ledger.sqlite3>"
-$createOutput = mise exec -- mix sympp.create_work --database <pilot-ledger.sqlite3> --file <edited-quick-fix-request.yaml>
+$createOutput = mise exec -- mix sympp.create_work --database <pilot-ledger.sqlite3> --file <edited-quick-fix-request.yaml> --claimed-by <stable-worker-id>
 if ($LASTEXITCODE -ne 0) { throw "KRAKEN-PILOT-QF-001 create_work failed" }
-$createOutput | & $env:SYMPP_PILOT_SECRET_HANDOFF_CMD "KRAKEN-PILOT-QF-001"
-if ($LASTEXITCODE -ne 0) {
-  $created = $createOutput | ConvertFrom-Json
-  $env:SYMPP_REVOKE_GRANT_ID = $created.worker_grant.id
-  $env:SYMPP_CLEANUP_WORK_PACKAGE_ID = $created.work_package.id
-  @'
-alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
-alias SymphonyElixir.SymphonyPlusPlus.Repo
-{:ok, _started} = Application.ensure_all_started(:ecto_sql)
-database = System.fetch_env!("SYMPP_PILOT_LEDGER") |> Path.expand()
-repo_pid =
-  case Repo.start_link(database: database, name: Repo.process_name(database), pool_size: 1, log: false) do
-    {:ok, pid} -> pid
-    {:error, {:already_started, pid}} -> pid
-  end
-Repo.put_dynamic_repo(repo_pid)
-grant_id = System.fetch_env!("SYMPP_REVOKE_GRANT_ID")
-work_package_id = System.fetch_env!("SYMPP_CLEANUP_WORK_PACKAGE_ID")
-{:ok, _revoked} = AccessGrantService.revoke(Repo, grant_id)
-Ecto.Adapters.SQL.query!(Repo, "DELETE FROM sympp_work_packages WHERE id = ?", [work_package_id])
-'@ | Set-Content -Path .\tmp_revoke_standalone_grant.exs -Encoding utf8
-  mise exec -- mix run .\tmp_revoke_standalone_grant.exs
-  $revokeExit = $LASTEXITCODE
-  Remove-Item .\tmp_revoke_standalone_grant.exs
-  Remove-Item Env:\SYMPP_REVOKE_GRANT_ID
-  Remove-Item Env:\SYMPP_CLEANUP_WORK_PACKAGE_ID
-  Remove-Item Env:\SYMPP_PILOT_LEDGER
-  if ($revokeExit -ne 0) { throw "KRAKEN-PILOT-QF-001 secret handoff failed and cleanup failed; record residual access/package-ID risk before continuing" }
-  throw "KRAKEN-PILOT-QF-001 secret handoff failed; worker grant revoked and orphaned package removed; do not dispatch worker"
+$created = $createOutput | ConvertFrom-Json
+$handoff = $created.worker_secret_handoff
+if (-not $handoff -or $handoff.secret_in_stdout -ne $false -or [string]::IsNullOrWhiteSpace($handoff.run_mcp_command)) {
+  throw "KRAKEN-PILOT-QF-001 create_work did not return usable private-store MCP handoff metadata"
 }
+$handoff.run_mcp_command
 Remove-Item Env:\SYMPP_PILOT_LEDGER
 ```
 
-The approved handoff wrapper must read the full create-work JSON from stdin,
-store `worker_grant.secret` in the approved secret manager, and print only
-redacted package and grant metadata. Do not run standalone `sympp.create_work`
-in a mode that prints the raw worker secret to shell logs or transcripts.
+`sympp.create_work` stores the worker secret before returning JSON. Do not pipe
+create-work output into an external secret-handoff wrapper; stdout must contain
+only redacted package, grant, and `worker_secret_handoff` metadata. Dispatch the
+worker with the returned `run_mcp_command` for this package.
 
 Hotfix request:
 
@@ -287,106 +262,29 @@ Then run:
 
 ```powershell
 cd elixir
-$env:SYMPP_PILOT_SECRET_HANDOFF_CMD = "<approved-secret-handoff-executable>"
 $env:SYMPP_PILOT_LEDGER = "<pilot-ledger.sqlite3>"
-$createOutput = mise exec -- mix sympp.create_work --database <pilot-ledger.sqlite3> --file <edited-hotfix-request.yaml>
+$createOutput = mise exec -- mix sympp.create_work --database <pilot-ledger.sqlite3> --file <edited-hotfix-request.yaml> --claimed-by <stable-worker-id>
 if ($LASTEXITCODE -ne 0) { throw "KRAKEN-PILOT-HF-001 create_work failed" }
-$createOutput | & $env:SYMPP_PILOT_SECRET_HANDOFF_CMD "KRAKEN-PILOT-HF-001"
-if ($LASTEXITCODE -ne 0) {
-  $created = $createOutput | ConvertFrom-Json
-  $env:SYMPP_REVOKE_GRANT_ID = $created.worker_grant.id
-  $env:SYMPP_CLEANUP_WORK_PACKAGE_ID = $created.work_package.id
-  @'
-alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
-alias SymphonyElixir.SymphonyPlusPlus.Repo
-{:ok, _started} = Application.ensure_all_started(:ecto_sql)
-database = System.fetch_env!("SYMPP_PILOT_LEDGER") |> Path.expand()
-repo_pid =
-  case Repo.start_link(database: database, name: Repo.process_name(database), pool_size: 1, log: false) do
-    {:ok, pid} -> pid
-    {:error, {:already_started, pid}} -> pid
-  end
-Repo.put_dynamic_repo(repo_pid)
-grant_id = System.fetch_env!("SYMPP_REVOKE_GRANT_ID")
-work_package_id = System.fetch_env!("SYMPP_CLEANUP_WORK_PACKAGE_ID")
-{:ok, _revoked} = AccessGrantService.revoke(Repo, grant_id)
-Ecto.Adapters.SQL.query!(Repo, "DELETE FROM sympp_work_packages WHERE id = ?", [work_package_id])
-'@ | Set-Content -Path .\tmp_revoke_standalone_grant.exs -Encoding utf8
-  mise exec -- mix run .\tmp_revoke_standalone_grant.exs
-  $revokeExit = $LASTEXITCODE
-  Remove-Item .\tmp_revoke_standalone_grant.exs
-  Remove-Item Env:\SYMPP_REVOKE_GRANT_ID
-  Remove-Item Env:\SYMPP_CLEANUP_WORK_PACKAGE_ID
-  Remove-Item Env:\SYMPP_PILOT_LEDGER
-  if ($revokeExit -ne 0) { throw "KRAKEN-PILOT-HF-001 secret handoff failed and cleanup failed; record residual access/package-ID risk before continuing" }
-  throw "KRAKEN-PILOT-HF-001 secret handoff failed; worker grant revoked and orphaned package removed; do not dispatch worker"
+$created = $createOutput | ConvertFrom-Json
+$handoff = $created.worker_secret_handoff
+if (-not $handoff -or $handoff.secret_in_stdout -ne $false -or [string]::IsNullOrWhiteSpace($handoff.run_mcp_command)) {
+  throw "KRAKEN-PILOT-HF-001 create_work did not return usable private-store MCP handoff metadata"
 }
+$handoff.run_mcp_command
 Remove-Item Env:\SYMPP_PILOT_LEDGER
 ```
 
-Use the same approved handoff contract as the quick-fix package: the wrapper
-stores `worker_grant.secret` and emits only redacted metadata.
+Use the same private-store handoff contract as the quick-fix package: the
+create-work output is redacted, and the returned `run_mcp_command` is the
+worker bootstrap mechanism.
 
-Before dispatching a standalone worker, retrieve only that worker's stored work
-key through the same approved non-logging handoff path. The handoff wrapper
-must write the secret to a fresh worker-session-specific environment file or
-secret input channel outside the repository, not to stdout, planning files, PR
-bodies, or review logs. Do not retrieve the quick-fix and hotfix secrets in one
-batch. Retrieve each secret immediately before dispatching that worker, then
-delete the session directory after `claim_work_key(...)` succeeds or on any
-failure:
-
-```powershell
-$env:SYMPP_PILOT_SECRET_HANDOFF_CMD = "<approved-secret-handoff-executable>"
-
-$qfSecretDir = Join-Path $env:TEMP ("kraken-pilot-qf-" + [guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Path $qfSecretDir | Out-Null
-$qfSecretEnv = Join-Path $qfSecretDir "worker-secret.env"
-try {
-  & $env:SYMPP_PILOT_SECRET_HANDOFF_CMD "--write-env-file" "KRAKEN-PILOT-QF-001" $qfSecretEnv
-  if ($LASTEXITCODE -ne 0) { throw "KRAKEN-PILOT-QF-001 worker secret retrieval failed" }
-
-  Write-Host "Pass $qfSecretEnv to only the KRAKEN-PILOT-QF-001 worker session."
-  $qfClaimed = Read-Host "After the quick-fix worker confirms claim_work_key succeeded, type CLAIMED to delete the secret file"
-  if ($qfClaimed -ne "CLAIMED") { throw "KRAKEN-PILOT-QF-001 worker claim was not confirmed" }
-} catch {
-  throw "KRAKEN-PILOT-QF-001 worker secret retrieval failed; do not dispatch worker"
-} finally {
-  if (Test-Path -LiteralPath $qfSecretDir) {
-    Remove-Item -LiteralPath $qfSecretDir -Recurse -Force
-  }
-}
-```
-
-Use this separate hotfix block only immediately before dispatching
-`KRAKEN-PILOT-HF-001`:
-
-```powershell
-$env:SYMPP_PILOT_SECRET_HANDOFF_CMD = "<approved-secret-handoff-executable>"
-$hfSecretDir = Join-Path $env:TEMP ("kraken-pilot-hf-" + [guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Path $hfSecretDir | Out-Null
-$hfSecretEnv = Join-Path $hfSecretDir "worker-secret.env"
-try {
-  & $env:SYMPP_PILOT_SECRET_HANDOFF_CMD "--write-env-file" "KRAKEN-PILOT-HF-001" $hfSecretEnv
-  if ($LASTEXITCODE -ne 0) { throw "KRAKEN-PILOT-HF-001 worker secret retrieval failed" }
-
-  Write-Host "Pass $hfSecretEnv to only the KRAKEN-PILOT-HF-001 worker session."
-  $hfClaimed = Read-Host "After the hotfix worker confirms claim_work_key succeeded, type CLAIMED to delete the secret file"
-  if ($hfClaimed -ne "CLAIMED") { throw "KRAKEN-PILOT-HF-001 worker claim was not confirmed" }
-} catch {
-  throw "KRAKEN-PILOT-HF-001 worker secret retrieval failed; do not dispatch worker"
-} finally {
-  if (Test-Path -LiteralPath $hfSecretDir) {
-    Remove-Item -LiteralPath $hfSecretDir -Recurse -Force
-  }
-}
-```
-
-Each environment file must be consumed only by the matching worker session and
-must contain only the worker-key secret needed for that package. If dispatch is
-not immediate, delete the directory and retrieve a new one later. If the
-approved handoff path cannot retrieve the secret without printing it, record a
-blocked pilot handoff finding instead of dispatching the standalone worker.
+Before dispatching a standalone worker, use only that package's returned
+`worker_secret_handoff.run_mcp_command`. Do not retrieve the stored secret to
+stdout, prompts, planning files, PR bodies, or review logs. Do not reuse the
+quick-fix command for the hotfix worker or the hotfix command for the quick-fix
+worker. If the returned command is missing or cannot start MCP without printing
+the secret, record a blocked pilot handoff finding instead of dispatching the
+standalone worker.
 
 For standalone `quick_fix` and `hotfix` packages, `allowed_file_globs` is the
 pilot's documented file-scope contract. Before either standalone package calls
