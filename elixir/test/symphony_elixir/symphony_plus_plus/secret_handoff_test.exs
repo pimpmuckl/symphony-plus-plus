@@ -437,6 +437,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
+  test "continues to a valid metadata mirror after an unreadable earlier mirror" do
+    package = work_package()
+    grant = %{id: "ag-secret-custom-mirror-fallback-D321", display_key: "D321"}
+    store_dir = Path.join(System.tmp_dir!(), "sympp-secret-custom-mirror-fallback-#{System.unique_integer([:positive])}")
+    secret_path = Path.join(System.tmp_dir!(), "sympp-secret-custom-mirror-fallback-source-#{System.unique_integer([:positive])}.secret")
+
+    opts = [
+      mode: "windows-credential-manager",
+      store_dir: store_dir,
+      claimed_by: "worker-local-1",
+      repo_root: @repo_root
+    ]
+
+    try do
+      File.write!(secret_path, "synthetic-custom-mirror-fallback-secret")
+
+      assert :ok =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "local-private-file", "path" => secret_path},
+                 opts
+               )
+
+      custom_metadata_file = stable_handoff_metadata_file(package, grant, Path.join(store_dir, "metadata"))
+      default_metadata_file = stable_handoff_metadata_file(package, grant, default_handoff_metadata_dir())
+
+      File.write!(custom_metadata_file, "{")
+
+      assert :ok = SecretHandoff.delete_worker_secret_for_grant(package, grant, opts)
+      refute File.exists?(secret_path)
+      refute File.exists?(custom_metadata_file)
+      refute File.exists?(default_metadata_file)
+    after
+      File.rm(secret_path)
+      File.rm_rf!(store_dir)
+      File.rm(stable_handoff_metadata_file(package, grant, default_handoff_metadata_dir()))
+    end
+  end
+
   test "reports default metadata mirror write failures for custom handoff stores" do
     package = work_package()
     grant = %{id: "ag-secret-required-metadata-D321", display_key: "D321"}

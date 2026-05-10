@@ -3933,6 +3933,49 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert second_grant.provenance == @child_worker_grant_provenance
   end
 
+  test "child worker key rejects malformed handoff option values before minting", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-MINT-MALFORMED-HANDOFF-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-MALFORMED-HANDOFF-CHILD")
+    grants_before_invalid_handoffs = repo.aggregate(AccessGrant, :count)
+
+    invalid_handoffs = [
+      {%{"mode" => 123}, "invalid_secret_handoff_mode"},
+      {%{"mode" => " "}, "invalid_secret_handoff_mode"},
+      {%{"store_dir" => ["tmp/worker-secrets"]}, "invalid_secret_handoff_store_dir"},
+      {%{"store_dir" => ""}, "invalid_secret_handoff_store_dir"},
+      {%{"claimed_by" => false}, "invalid_secret_handoff_claimed_by"},
+      {%{"claimed_by" => "\t"}, "invalid_secret_handoff_claimed_by"}
+    ]
+
+    for {handoff, reason} <- invalid_handoffs do
+      response =
+        mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+          "work_package_id" => child_id,
+          "template" => %{"secret_handoff" => handoff}
+        })
+
+      assert get_in(response, ["error", "code"]) == -32_602
+      assert get_in(response, ["error", "message"]) == "Invalid params"
+      assert get_in(response, ["error", "data", "tool"]) == "mint_child_worker_key"
+      assert get_in(response, ["error", "data", "reason"]) == reason
+      assert repo.aggregate(AccessGrant, :count) == grants_before_invalid_handoffs
+    end
+
+    nil_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => %{"secret_handoff" => %{"mode" => nil, "store_dir" => nil, "claimed_by" => nil}}
+      })
+
+    assert_child_worker_secret_handoff_only!(nil_response)
+  end
+
   test "child worker key remint treats missing superseded handoff metadata as nonfatal", %{repo: repo} do
     {_anchor, architect_session} =
       create_architect_session(repo, "SYMPP-P7-002-MINT-NO-METADATA-ANCHOR", [

@@ -3012,10 +3012,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
       handoff when is_map(handoff) ->
         unexpected = handoff |> Map.keys() |> Enum.reject(&(&1 in @child_worker_handoff_keys))
-        if unexpected == [], do: :ok, else: {:tool_error, "unexpected_secret_handoff_field"}
+
+        case reject_unexpected_child_worker_handoff_fields(unexpected) do
+          :ok -> validate_child_worker_handoff_values(handoff)
+          {:tool_error, _reason} = error -> error
+        end
 
       _handoff ->
         {:tool_error, "invalid_secret_handoff"}
+    end
+  end
+
+  defp reject_unexpected_child_worker_handoff_fields([]), do: :ok
+  defp reject_unexpected_child_worker_handoff_fields(_unexpected), do: {:tool_error, "unexpected_secret_handoff_field"}
+
+  defp validate_child_worker_handoff_values(handoff) do
+    ["mode", "store_dir", "claimed_by"]
+    |> Enum.reduce_while(:ok, fn key, :ok ->
+      case validate_child_worker_handoff_optional_string(handoff, key) do
+        :ok -> {:cont, :ok}
+        {:tool_error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_child_worker_handoff_optional_string(handoff, key) do
+    case Map.fetch(handoff, key) do
+      :error ->
+        :ok
+
+      {:ok, nil} ->
+        :ok
+
+      {:ok, value} when is_binary(value) ->
+        if String.trim(value) == "" do
+          {:tool_error, "invalid_secret_handoff_#{key}"}
+        else
+          :ok
+        end
+
+      {:ok, _value} ->
+        {:tool_error, "invalid_secret_handoff_#{key}"}
     end
   end
 
@@ -6409,15 +6446,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp optional_handoff_value(handoff, key, default) do
-    case Map.get(handoff, key) do
-      value when is_binary(value) ->
-        case String.trim(value) do
-          "" -> default
-          trimmed -> trimmed
-        end
-
-      _value ->
+    case Map.fetch(handoff, key) do
+      :error ->
         default
+
+      {:ok, nil} ->
+        default
+
+      {:ok, value} when is_binary(value) ->
+        String.trim(value)
     end
   end
 

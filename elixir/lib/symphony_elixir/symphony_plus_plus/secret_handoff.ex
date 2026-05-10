@@ -446,14 +446,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   defp read_handoff_metadata(work_package, worker_grant, opts) do
     work_package
     |> handoff_metadata_paths(worker_grant, opts)
-    |> Enum.reduce_while(:missing, fn path, :missing ->
+    |> Enum.reduce_while(:missing, fn path, fallback ->
       case read_handoff_metadata_path(path) do
         {:ok, handoff} -> {:halt, {:ok, handoff, path}}
-        :missing -> {:cont, :missing}
-        {:error, _reason} = error -> {:halt, error}
+        :missing -> {:cont, fallback}
+        {:error, _reason} = error -> {:cont, metadata_read_fallback(fallback, error)}
       end
     end)
   end
+
+  defp metadata_read_fallback(:missing, {:error, _reason} = error), do: error
+  defp metadata_read_fallback({:error, _reason} = error, {:error, _next_reason}), do: error
 
   defp read_handoff_metadata_path(path) do
     with {:ok, content} <- File.read(path),
