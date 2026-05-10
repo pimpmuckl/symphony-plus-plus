@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   import ExUnit.CaptureLog
   import ExUnit.CaptureIO
+  import Ecto.Query, only: [from: 2]
 
   alias Ecto.Adapters.SQL
   alias Mix.Tasks.Sympp.Mcp, as: McpTask
@@ -22,10 +23,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
 
+  @repo_root Path.expand("../../../../", __DIR__)
   @architect_phase_id "phase-mcp-architect-test"
   @child_worker_grant_provenance "child_worker_delegation"
 
@@ -3701,11 +3704,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              "worker:lifecycle.transition"
            ]
 
-    worker_secret = get_in(mint_response, ["result", "structuredContent", "worker_grant", "secret"])
-    assert is_binary(worker_secret)
+    assert_child_worker_secret_handoff_only!(mint_response)
 
-    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, worker_secret, claimed_by: "worker-1")
-    worker_session = MCPHarness.session(worker_assignment, proof_hash: WorkKey.secret_hash(worker_secret))
+    worker_session = claim_child_worker_from_private_handoff(repo, mint_response, "worker-1")
 
     assignment_response = mcp_tool(repo, worker_session, "get_current_assignment", %{})
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == child_id
@@ -3821,9 +3822,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       })
 
     first_grant_id = get_in(first_response, ["result", "structuredContent", "worker_grant", "id"])
-    first_secret = get_in(first_response, ["result", "structuredContent", "worker_grant", "secret"])
     assert is_binary(first_grant_id)
-    assert is_binary(first_secret)
+    assert_child_worker_secret_handoff_only!(first_response)
+    first_handoff = get_in(first_response, ["result", "structuredContent", "worker_grant", "secret_handoff"])
+    assert first_handoff["claimed_by"] == "sympp-child-worker-#{child_id}"
+
+    failing_store_path = Path.join(System.tmp_dir!(), "sympp-child-handoff-fail-#{System.unique_integer([:positive])}")
+    File.write!(failing_store_path, "not a directory")
+
+    try do
+      grants_before_failed_handoff = repo.aggregate(AccessGrant, :count)
+
+      failed_handoff_response =
+        mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+          "work_package_id" => child_id,
+          "template" => %{
+            "secret_handoff" => %{
+              "mode" => "local-private-file",
+              "store_dir" => failing_store_path
+            }
+          }
+        })
+
+      assert get_in(failed_handoff_response, ["error", "code"]) == -32_602
+      assert get_in(failed_handoff_response, ["error", "data", "tool"]) == "mint_child_worker_key"
+      assert get_in(failed_handoff_response, ["error", "data", "reason"]) =~ "child_worker_secret_handoff_failed"
+      assert repo.aggregate(AccessGrant, :count) == grants_before_failed_handoff
+
+      assert {:ok, grant_after_failed_handoff} = AccessGrantRepository.get(repo, first_grant_id)
+      assert grant_after_failed_handoff.revoked_at == nil
+      assert grant_after_failed_handoff.provenance == @child_worker_grant_provenance
+    after
+      File.rm(failing_store_path)
+    end
 
     second_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
@@ -3832,16 +3863,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       })
 
     second_grant_id = get_in(second_response, ["result", "structuredContent", "worker_grant", "id"])
-    second_secret = get_in(second_response, ["result", "structuredContent", "worker_grant", "secret"])
     assert is_binary(second_grant_id)
-    assert is_binary(second_secret)
+    assert_child_worker_secret_handoff_only!(second_response)
     refute second_grant_id == first_grant_id
-    refute second_secret == first_secret
+    second_handoff = get_in(second_response, ["result", "structuredContent", "worker_grant", "secret_handoff"])
+    assert second_handoff["claimed_by"] == first_handoff["claimed_by"]
 
     assert {:ok, first_grant} = AccessGrantRepository.get(repo, first_grant_id)
     assert first_grant.provenance == @child_worker_grant_provenance
     assert %DateTime{} = first_grant.revoked_at
-    assert {:error, :revoked} = AccessGrantService.claim(repo, first_secret, claimed_by: "worker-late")
 
     assert {:ok, grants_after_remint} = AccessGrantRepository.list_for_work_package(repo, child_id)
 
@@ -3851,7 +3881,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       |> Enum.map(& &1.id)
 
     assert active_worker_grant_ids == [second_grant_id]
-    assert {:ok, _assignment} = AccessGrantService.claim(repo, second_secret, claimed_by: "worker-1")
+    claim_child_worker_for_test(repo, second_response, "worker-1")
     grants_before_claimed_remint = repo.aggregate(AccessGrant, :count)
 
     claimed_remint_response =
@@ -3867,6 +3897,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, second_grant} = AccessGrantRepository.get(repo, second_grant_id)
     assert second_grant.revoked_at == nil
     assert second_grant.provenance == @child_worker_grant_provenance
+  end
+
+  test "child worker key minting uses stable repo-root script paths outside repo cwd", %{repo: repo} do
+    temp_cwd = Path.join(System.tmp_dir!(), "sympp-child-handoff-cwd-#{System.unique_integer([:positive])}")
+    original_cwd = File.cwd!()
+
+    try do
+      File.mkdir_p!(temp_cwd)
+      File.cd!(temp_cwd)
+
+      {_anchor, architect_session} =
+        create_architect_session(repo, "SYMPP-P7-002-MINT-CWD-ANCHOR", [
+          "create:child_work_package",
+          "mint:child_worker_key",
+          "read:phase"
+        ])
+
+      child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-CWD-CHILD")
+
+      response =
+        mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+          "work_package_id" => child_id,
+          "template" => %{}
+        })
+
+      assert_child_worker_secret_handoff_only!(response)
+
+      handoff = get_in(response, ["result", "structuredContent", "worker_grant", "secret_handoff"])
+      script_name = if match?({:win32, _}, :os.type()), do: "sympp-worker-secret.ps1", else: "sympp-worker-secret.sh"
+      assert handoff["run_mcp_command"] =~ Path.join([@repo_root, "scripts", script_name])
+      refute handoff["run_mcp_command"] =~ temp_cwd
+    after
+      File.cd!(original_cwd)
+      File.rm_rf!(temp_cwd)
+    end
   end
 
   test "child worker key minting rejects broader grants and worker callers", %{repo: repo} do
@@ -10104,16 +10169,198 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   end
 
   defp mcp_tool(repo, session, name, arguments) do
-    MCPHarness.request(
-      %{
-        "jsonrpc" => "2.0",
-        "id" => name,
-        "method" => "tools/call",
-        "params" => %{"name" => name, "arguments" => arguments}
-      },
-      repo: repo,
-      session: session
-    )
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => name,
+          "method" => "tools/call",
+          "params" => %{"name" => name, "arguments" => arguments}
+        },
+        repo: repo,
+        session: session
+      )
+
+    register_child_handoff_cleanup(response)
+    response
+  end
+
+  defp register_child_handoff_cleanup(response) do
+    case get_in(response, ["result", "structuredContent", "worker_grant", "secret_handoff"]) do
+      handoff when is_map(handoff) ->
+        ExUnit.Callbacks.on_exit(fn ->
+          _result =
+            SecretHandoff.delete_worker_secret_for_grant(
+              %WorkPackage{id: handoff["work_package_id"]},
+              %{display_key: handoff["display_key"]},
+              mode: Map.get(handoff, "mode", "auto"),
+              claimed_by: Map.get(handoff, "claimed_by", "test-cleanup"),
+              repo_root: @repo_root
+            )
+        end)
+
+      _handoff ->
+        :ok
+    end
+  end
+
+  defp assert_child_worker_secret_handoff_only!(response) do
+    worker_grant = get_in(response, ["result", "structuredContent", "worker_grant"])
+    assert is_map(worker_grant)
+    refute Map.has_key?(worker_grant, "secret")
+    refute Map.has_key?(worker_grant, "secret_returned_once")
+    assert worker_grant["secret_in_response"] == false
+
+    handoff = worker_grant["secret_handoff"]
+    assert is_map(handoff)
+    assert handoff["status"] == "stored"
+    assert handoff["work_package_id"] == worker_grant["work_package_id"]
+    assert handoff["display_key"] == worker_grant["display_key"]
+    assert handoff["claimed_by_required"] == true
+    assert handoff["secret_in_stdout"] == false
+
+    serialized_result = Jason.encode!(response["result"])
+    text_result = get_in(response, ["result", "content", Access.at(0), "text"]) || ""
+
+    for output <- [serialized_result, text_result] do
+      refute output =~ ~r/"secret"\s*:/
+      refute output =~ ~r/wk_[A-Za-z0-9_-]{43,}/
+      refute output =~ "claim_work_key"
+      refute output =~ "secret_returned_once"
+    end
+  end
+
+  defp claim_child_worker_for_test(repo, response, claimed_by) do
+    worker_grant = get_in(response, ["result", "structuredContent", "worker_grant"])
+    grant_id = worker_grant["id"]
+    now = DateTime.utc_now(:microsecond)
+
+    assert {1, _rows} =
+             repo.update_all(
+               from(grant in AccessGrant, where: grant.id == ^grant_id),
+               set: [claimed_at: now, claimed_by: claimed_by]
+             )
+
+    assert {:ok, grant} = AccessGrantRepository.get(repo, grant_id)
+    assert {:ok, session} = Session.from_grant(grant, DateTime.add(now, 1, :second), proof_hash: grant.secret_hash)
+    session
+  end
+
+  defp claim_child_worker_from_private_handoff(repo, response, claimed_by) do
+    worker_grant = get_in(response, ["result", "structuredContent", "worker_grant"])
+    handoff = worker_grant["secret_handoff"]
+    assert is_map(handoff)
+
+    output = run_worker_mcp_from_private_handoff!(handoff, repo_database_path!(repo), claimed_by)
+    refute output =~ ~r/wk_[A-Za-z0-9_-]{43,}/
+
+    responses =
+      output
+      |> String.split("\n", trim: true)
+      |> Enum.filter(&(String.trim_leading(&1) |> String.starts_with?("{")))
+      |> Enum.map(&Jason.decode!/1)
+
+    assignment_response = Enum.find(responses, &(Map.get(&1, "id") == "assignment"))
+    assignment = Jason.decode!(get_in(assignment_response, ["result", "contents", Access.at(0), "text"]))
+
+    assert assignment["work_package_id"] == worker_grant["work_package_id"]
+    assert assignment["claimed_by"] == claimed_by
+
+    assert {:ok, grant} = AccessGrantRepository.get(repo, worker_grant["id"])
+    assert grant.claimed_by == claimed_by
+    assert {:ok, session} = Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: grant.secret_hash)
+    session
+  end
+
+  defp run_worker_mcp_from_private_handoff!(handoff, database, claimed_by) do
+    input_path = Path.join(System.tmp_dir!(), "sympp-handoff-mcp-input-#{System.unique_integer([:positive])}.jsonl")
+
+    input =
+      [
+        Jason.encode!(%{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()}),
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "id" => "assignment",
+          "method" => "resources/read",
+          "params" => %{"uri" => "sympp://assignment/current"}
+        })
+      ]
+      |> Enum.join("\n")
+      |> Kernel.<>("\n")
+
+    File.write!(input_path, input)
+
+    try do
+      case handoff["mode"] do
+        "windows-credential-manager" -> run_windows_handoff_mcp!(handoff, database, claimed_by, input_path)
+        "local-private-file" -> run_local_file_handoff_mcp!(handoff, database, claimed_by, input_path)
+      end
+    after
+      File.rm(input_path)
+    end
+  end
+
+  defp run_windows_handoff_mcp!(handoff, database, claimed_by, input_path) do
+    powershell =
+      System.find_executable("powershell.exe") ||
+        System.find_executable("pwsh") ||
+        System.find_executable("powershell")
+
+    assert is_binary(powershell)
+
+    {output, status} =
+      System.cmd(
+        powershell,
+        [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          Path.join(@repo_root, "scripts/sympp-worker-secret.ps1"),
+          "run-mcp",
+          "-Target",
+          handoff["target"],
+          "-Database",
+          database,
+          "-ClaimedBy",
+          claimed_by,
+          "-InputFile",
+          input_path
+        ],
+        stderr_to_stdout: true
+      )
+
+    assert status == 0
+    output
+  end
+
+  defp run_local_file_handoff_mcp!(handoff, database, claimed_by, input_path) do
+    {output, status} =
+      System.cmd(
+        "sh",
+        [
+          Path.join(@repo_root, "scripts/sympp-worker-secret.sh"),
+          "run-mcp-local-file",
+          "--path",
+          handoff["path"],
+          "--database",
+          database,
+          "--claimed-by",
+          claimed_by,
+          "--input-file",
+          input_path
+        ],
+        stderr_to_stdout: true
+      )
+
+    assert status == 0
+    output
+  end
+
+  defp repo_database_path!(repo) do
+    assert {:ok, %{rows: rows}} = SQL.query(repo, "PRAGMA database_list", [], log: false)
+    assert [_seq, "main", path] = Enum.find(rows, &main_database_row?/1)
+    path
   end
 
   defp claim_phase_child_worker(repo, architect_session, child_id) do
@@ -10123,10 +10370,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "template" => %{}
       })
 
-    worker_secret = get_in(mint_response, ["result", "structuredContent", "worker_grant", "secret"])
-    assert is_binary(worker_secret)
-    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, worker_secret, claimed_by: "worker-1")
-    MCPHarness.session(worker_assignment, proof_hash: WorkKey.secret_hash(worker_secret))
+    assert_child_worker_secret_handoff_only!(mint_response)
+    claim_child_worker_for_test(repo, mint_response, "worker-1")
   end
 
   defp renew_phase_architect_session(repo, anchor, capabilities, claimed_by \\ "architect-1") do

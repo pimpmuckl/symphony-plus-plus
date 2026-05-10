@@ -3,20 +3,25 @@ Code.require_file("../../support/mcp_harness.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
   use ExUnit.Case, async: false
 
+  import Ecto.Query, only: [from: 2]
+
   alias SymphonyElixir.MCPHarness
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.CreateWork
-  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Server}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Server, Session}
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
 
+  @repo_root Path.expand("../../../../", __DIR__)
   @phase_id "phase-p8-001-integration"
   @architect_capabilities [
     "create:child_work_package",
@@ -255,8 +260,49 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
 
   defp claim_phase_child_worker(repo, architect_session, child_id, claimed_by) do
     response = mcp_tool(repo, architect_session, "mint_child_worker_key", %{"work_package_id" => child_id, "template" => %{}})
-    secret = get_in(response, ["result", "structuredContent", "worker_grant", "secret"])
-    claim_worker(repo, secret, claimed_by)
+    assert_child_worker_secret_handoff_only!(response)
+    claim_child_worker_for_test(repo, response, claimed_by)
+  end
+
+  defp assert_child_worker_secret_handoff_only!(response) do
+    worker_grant = get_in(response, ["result", "structuredContent", "worker_grant"])
+    assert is_map(worker_grant)
+    refute Map.has_key?(worker_grant, "secret")
+    refute Map.has_key?(worker_grant, "secret_returned_once")
+    assert worker_grant["secret_in_response"] == false
+
+    handoff = worker_grant["secret_handoff"]
+    assert is_map(handoff)
+    assert handoff["status"] == "stored"
+    assert handoff["work_package_id"] == worker_grant["work_package_id"]
+    assert handoff["display_key"] == worker_grant["display_key"]
+    assert handoff["claimed_by_required"] == true
+    assert handoff["secret_in_stdout"] == false
+
+    serialized_result = Jason.encode!(response["result"])
+    text_result = get_in(response, ["result", "content", Access.at(0), "text"]) || ""
+
+    for output <- [serialized_result, text_result] do
+      refute output =~ ~r/"secret"\s*:/
+      refute output =~ ~r/wk_[A-Za-z0-9_-]{43,}/
+      refute output =~ "claim_work_key"
+      refute output =~ "secret_returned_once"
+    end
+  end
+
+  defp claim_child_worker_for_test(repo, response, claimed_by) do
+    grant_id = get_in(response, ["result", "structuredContent", "worker_grant", "id"])
+    now = DateTime.utc_now(:microsecond)
+
+    assert {1, _rows} =
+             repo.update_all(
+               from(grant in AccessGrant, where: grant.id == ^grant_id),
+               set: [claimed_at: now, claimed_by: claimed_by]
+             )
+
+    assert {:ok, grant} = AccessGrantRepository.get(repo, grant_id)
+    assert {:ok, session} = Session.from_grant(grant, DateTime.add(now, 1, :second), proof_hash: grant.secret_hash)
+    session
   end
 
   defp minted_worker_session(repo, work_package_id, claimed_by) do
@@ -415,15 +461,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
   end
 
   defp mcp_tool(repo, session, name, arguments) do
-    MCPHarness.request(
-      %{
-        "jsonrpc" => "2.0",
-        "id" => name,
-        "method" => "tools/call",
-        "params" => %{"name" => name, "arguments" => arguments}
-      },
-      repo: repo,
-      session: session
-    )
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => name,
+          "method" => "tools/call",
+          "params" => %{"name" => name, "arguments" => arguments}
+        },
+        repo: repo,
+        session: session
+      )
+
+    register_child_handoff_cleanup(response)
+    response
+  end
+
+  defp register_child_handoff_cleanup(response) do
+    case get_in(response, ["result", "structuredContent", "worker_grant", "secret_handoff"]) do
+      handoff when is_map(handoff) ->
+        ExUnit.Callbacks.on_exit(fn ->
+          SecretHandoff.delete_worker_secret(handoff, repo_root: @repo_root)
+        end)
+
+      _handoff ->
+        :ok
+    end
   end
 end

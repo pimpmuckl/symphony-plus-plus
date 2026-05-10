@@ -15,6 +15,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
           | :unsupported_secret_handoff_mode
           | :local_private_file_unavailable_on_windows
           | :windows_credential_manager_unavailable
+          | {:handoff_metadata_delete_failed, term()}
+          | {:handoff_metadata_failed, term()}
           | {:local_private_file_failed, term()}
           | {:local_private_file_delete_failed, term()}
           | {:windows_credential_manager_delete_failed, term()}
@@ -36,6 +38,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   def store_worker_secret(%{work_package: %WorkPackage{}}, _opts), do: {:error, :missing_worker_grant}
   def store_worker_secret(%{}, _opts), do: {:error, :missing_work_package}
 
+  @spec store_worker_secret_metadata(WorkPackage.t(), map(), map(), keyword()) :: :ok | {:error, error()}
+  def store_worker_secret_metadata(%WorkPackage{} = work_package, worker_grant, handoff, opts)
+      when is_map(worker_grant) and is_map(handoff) and is_list(opts) do
+    with {:ok, opts} <- require_handoff_opts(opts),
+         {:ok, metadata} <- encode_handoff_metadata(handoff) do
+      store_handoff_metadata(work_package, worker_grant, metadata, opts)
+    end
+  end
+
+  def store_worker_secret_metadata(%WorkPackage{}, _worker_grant, _handoff, _opts),
+    do: {:error, :missing_worker_grant}
+
+  def store_worker_secret_metadata(%{}, _worker_grant, _handoff, _opts), do: {:error, :missing_work_package}
+
   @spec redacted_worker_grant(map(), map()) :: map()
   def redacted_worker_grant(worker_grant, handoff) when is_map(worker_grant) and is_map(handoff) do
     worker_grant
@@ -50,6 +66,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
       "local-private-file" -> delete_local_private_file(handoff)
       "windows-credential-manager" -> delete_windows_credential(handoff, opts)
       _mode -> :ok
+    end
+  end
+
+  @spec delete_worker_secret_for_grant(WorkPackage.t(), map(), keyword()) :: :ok | {:error, term()}
+  def delete_worker_secret_for_grant(%WorkPackage{} = work_package, worker_grant, opts)
+      when is_map(worker_grant) and is_list(opts) do
+    with {:ok, mode} <- normalize_mode(Keyword.get(opts, :mode, "auto")),
+         {:ok, opts} <- require_handoff_opts(opts),
+         {:ok, handoff, metadata_path} <- handoff_for_delete(mode, work_package, worker_grant, opts) do
+      metadata_paths = handoff_metadata_paths(work_package, worker_grant, opts, metadata_path)
+
+      case delete_worker_secret(handoff, opts) do
+        :ok -> delete_handoff_metadata(metadata_paths)
+        {:error, _reason} = error -> error
+      end
     end
   end
 
@@ -78,6 +109,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
   def error_message({:windows_credential_manager_failed, status}),
     do: "Windows Credential Manager handoff command failed with exit status #{status}"
+
+  def error_message({:handoff_metadata_failed, reason}),
+    do: "secret handoff metadata write failed: #{inspect(reason)}"
+
+  def error_message({:handoff_metadata_delete_failed, reason}),
+    do: "secret handoff metadata cleanup failed: #{inspect(reason)}"
 
   defp fetch_secret(%{secret: secret}) when is_binary(secret) and secret != "", do: {:ok, secret}
   defp fetch_secret(%{"secret" => secret}) when is_binary(secret) and secret != "", do: {:ok, secret}
@@ -239,6 +276,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   defp mode_name(:windows_credential_manager), do: "windows-credential-manager"
   defp mode_name(:local_private_file), do: "local-private-file"
 
+  defp handoff_for_delete(mode, work_package, worker_grant, opts) do
+    case read_handoff_metadata(work_package, worker_grant, opts) do
+      {:ok, handoff, metadata_path} ->
+        {:ok, handoff, metadata_path}
+
+      :missing ->
+        fallback_handoff_for_delete(mode, work_package, worker_grant, opts)
+
+      {:error, reason} ->
+        if Keyword.get(opts, :require_metadata, false) do
+          {:error, reason}
+        else
+          fallback_handoff_for_delete(mode, work_package, worker_grant, opts)
+        end
+    end
+  end
+
+  defp fallback_handoff_for_delete(:windows_credential_manager, work_package, worker_grant, opts) do
+    if Keyword.get(opts, :require_metadata, false) do
+      {:error, {:handoff_metadata_failed, :missing_metadata}}
+    else
+      {:ok, %{mode: "windows-credential-manager", target: credential_target(work_package, worker_grant)}, nil}
+    end
+  end
+
+  defp fallback_handoff_for_delete(:local_private_file, work_package, worker_grant, opts) do
+    if Keyword.get(opts, :require_metadata, false) do
+      {:error, {:handoff_metadata_failed, :missing_metadata}}
+    else
+      {:ok, %{mode: "local-private-file", path: local_private_file_path(work_package, worker_grant, opts)}, nil}
+    end
+  end
+
   defp credential_target(%WorkPackage{id: work_package_id}, %{display_key: display_key}) do
     "SymphonyPlusPlus:worker:#{work_package_id}:#{display_key}"
   end
@@ -312,6 +382,111 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
       end
     after
       File.rm(temp_path)
+    end
+  end
+
+  defp encode_handoff_metadata(handoff) do
+    metadata =
+      [:mode, :path, :target]
+      |> Enum.reduce(%{}, fn key, acc ->
+        case handoff_value(handoff, key) do
+          value when is_binary(value) -> Map.put(acc, Atom.to_string(key), value)
+          _value -> acc
+        end
+      end)
+
+    case Jason.encode(metadata) do
+      {:ok, encoded} -> {:ok, encoded}
+      {:error, reason} -> {:error, {:handoff_metadata_failed, {:encode, reason}}}
+    end
+  end
+
+  defp store_handoff_metadata(work_package, worker_grant, metadata, opts) do
+    [required_path | optional_paths] = handoff_metadata_write_paths(work_package, worker_grant, opts)
+
+    with :ok <- write_handoff_metadata(required_path, metadata, opts) do
+      Enum.each(optional_paths, fn path ->
+        _result = write_handoff_metadata(path, metadata, opts)
+      end)
+
+      :ok
+    end
+  end
+
+  defp write_handoff_metadata(path, metadata, opts) do
+    directory = Path.dirname(path)
+
+    try do
+      File.mkdir_p!(directory)
+
+      with :ok <- prepare_private_store_dir(directory, opts),
+           :ok <- write_private_file(path, metadata, opts) do
+        :ok
+      else
+        {:error, reason} -> {:error, {:handoff_metadata_failed, reason}}
+      end
+    rescue
+      error -> {:error, {:handoff_metadata_failed, error.__struct__}}
+    end
+  end
+
+  defp read_handoff_metadata(work_package, worker_grant, opts) do
+    work_package
+    |> handoff_metadata_paths(worker_grant, opts)
+    |> Enum.reduce_while(:missing, fn path, :missing ->
+      case read_handoff_metadata_path(path) do
+        {:ok, handoff} -> {:halt, {:ok, handoff, path}}
+        :missing -> {:cont, :missing}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp read_handoff_metadata_path(path) do
+    with {:ok, content} <- File.read(path),
+         {:ok, handoff} <- Jason.decode(content) do
+      if is_map(handoff) do
+        {:ok, handoff}
+      else
+        {:error, {:handoff_metadata_failed, :invalid_metadata}}
+      end
+    else
+      {:error, :enoent} -> :missing
+      {:error, %Jason.DecodeError{} = reason} -> {:error, {:handoff_metadata_failed, {:decode, reason}}}
+      {:error, reason} -> {:error, {:handoff_metadata_failed, {:read, reason}}}
+    end
+  end
+
+  defp delete_handoff_metadata(paths) do
+    paths
+    |> Enum.reduce_while(:ok, fn path, :ok ->
+      case File.rm(path) do
+        :ok -> {:cont, :ok}
+        {:error, :enoent} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, {:handoff_metadata_delete_failed, reason}}}
+      end
+    end)
+  end
+
+  defp handoff_metadata_paths(work_package, worker_grant, opts, extra_path \\ nil) do
+    ([extra_path] ++ handoff_metadata_read_paths(work_package, worker_grant, opts))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp handoff_metadata_read_paths(work_package, worker_grant, opts) do
+    cond do
+      Keyword.get(opts, :metadata_dir) ->
+        [handoff_metadata_path(work_package, worker_grant, Keyword.fetch!(opts, :metadata_dir), opts)]
+
+      Keyword.get(opts, :store_dir) ->
+        [
+          handoff_metadata_path(work_package, worker_grant, store_handoff_metadata_dir(opts), opts),
+          handoff_metadata_path(work_package, worker_grant, default_handoff_metadata_dir(), opts)
+        ]
+
+      true ->
+        [handoff_metadata_path(work_package, worker_grant, default_handoff_metadata_dir(), opts)]
     end
   end
 
@@ -406,6 +581,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     display_key = Map.fetch!(worker_grant, :display_key)
     filename = "#{safe_filename(work_package.id)}-#{safe_filename(display_key)}-#{handoff_filename_hash(work_package, display_key, opts)}.secret"
     Path.join(Path.expand(store_dir), filename)
+  end
+
+  defp handoff_metadata_write_paths(work_package, worker_grant, opts) do
+    cond do
+      Keyword.get(opts, :metadata_dir) ->
+        [handoff_metadata_path(work_package, worker_grant, Keyword.fetch!(opts, :metadata_dir), opts)]
+
+      Keyword.get(opts, :store_dir) ->
+        [
+          handoff_metadata_path(work_package, worker_grant, store_handoff_metadata_dir(opts), opts),
+          handoff_metadata_path(work_package, worker_grant, default_handoff_metadata_dir(), opts)
+        ]
+
+      true ->
+        [handoff_metadata_path(work_package, worker_grant, default_handoff_metadata_dir(), opts)]
+    end
+    |> Enum.uniq()
+  end
+
+  defp handoff_metadata_path(%WorkPackage{} = work_package, worker_grant, metadata_dir, opts) do
+    display_key = Map.fetch!(worker_grant, :display_key)
+    filename = "#{safe_filename(work_package.id)}-#{safe_filename(display_key)}-#{handoff_filename_hash(work_package, display_key, opts)}.json"
+    Path.join(Path.expand(metadata_dir), filename)
+  end
+
+  defp default_handoff_metadata_dir do
+    Path.join(default_local_private_store_dir(), "metadata")
+  end
+
+  defp store_handoff_metadata_dir(opts) do
+    Path.join(Keyword.fetch!(opts, :store_dir), "metadata")
   end
 
   defp handoff_filename_hash(%WorkPackage{} = work_package, display_key, opts) do

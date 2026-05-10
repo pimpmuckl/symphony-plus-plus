@@ -2,7 +2,7 @@
 set -eu
 
 usage() {
-  printf '%s\n' 'Usage: sympp-worker-secret.sh run-mcp-local-file --path <secret-file> --claimed-by <worker-id> [--database <sqlite-path>] [--elixir-dir <dir>]' >&2
+  printf '%s\n' 'Usage: sympp-worker-secret.sh run-mcp-local-file --path <secret-file> --claimed-by <worker-id> [--database <sqlite-path>] [--elixir-dir <dir>] [--input-file <jsonl-file>]' >&2
 }
 
 if [ "$#" -lt 1 ]; then
@@ -18,6 +18,7 @@ ELIXIR_DIR=$(CDPATH= cd "$SCRIPT_DIR/../elixir" && pwd)
 SECRET_PATH=
 DATABASE=
 CLAIMED_BY=
+INPUT_FILE=
 
 case "$ACTION" in
   run-mcp-local-file)
@@ -41,6 +42,11 @@ case "$ACTION" in
         --elixir-dir)
           [ "$#" -ge 2 ] || { usage; exit 2; }
           ELIXIR_DIR=$2
+          shift 2
+          ;;
+        --input-file)
+          [ "$#" -ge 2 ] || { usage; exit 2; }
+          INPUT_FILE=$2
           shift 2
           ;;
         *)
@@ -77,7 +83,15 @@ cd "$ELIXIR_DIR"
 export SYMPP_WORK_KEY_SECRET="$SECRET"
 
 if [ -n "$DATABASE" ]; then
+  if [ -n "$INPUT_FILE" ]; then
+    exec mise exec -- mix sympp.mcp --mode stdio --database "$DATABASE" --work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by "$CLAIMED_BY" < "$INPUT_FILE"
+  fi
+
   exec mise exec -- mix sympp.mcp --mode stdio --database "$DATABASE" --work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by "$CLAIMED_BY"
+fi
+
+if [ -n "$INPUT_FILE" ]; then
+  exec mise exec -- mix sympp.mcp --mode stdio --work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by "$CLAIMED_BY" < "$INPUT_FILE"
 fi
 
 exec mise exec -- mix sympp.mcp --mode stdio --work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by "$CLAIMED_BY"

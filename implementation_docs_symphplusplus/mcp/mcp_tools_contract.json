@@ -84,7 +84,8 @@
     {
       "name": "mint_child_worker_key",
       "purpose": "Mint a child-scoped worker grant for a same-phase phase_child package.",
-      "scope_policy": "Worker grants are single-package grants, capabilities are limited to worker:claim and worker:lifecycle.transition, unclaimed active child-delegated worker grants for the same child may be superseded transactionally, claimed active child-delegated worker grants for the child are rejected, unrelated normal worker grants are ignored, and expiry cannot exceed the transaction-current architect grant."
+      "scope_policy": "Worker grants are single-package grants, capabilities are limited to worker:claim and worker:lifecycle.transition, unclaimed active child-delegated worker grants for the same child may be superseded transactionally, claimed active child-delegated worker grants for the child are rejected, unrelated normal worker grants are ignored, and expiry cannot exceed the transaction-current architect grant.",
+      "handoff_policy": "The raw child worker secret is stored through the private handoff path. MCP structuredContent and text output return only child grant metadata plus secret_handoff metadata, including stable claimed_by, and must not include raw child worker secrets, full work keys, bearer-like tokens, or secret-bearing claim URLs."
     },
     {
       "name": "revoke_child_worker_key",

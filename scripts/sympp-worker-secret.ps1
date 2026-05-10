@@ -10,7 +10,8 @@ param(
   [string]$Database,
   [string]$ClaimedBy,
   [string]$EnvVar = "SYMPP_WORK_KEY_SECRET",
-  [string]$ElixirDir
+  [string]$ElixirDir,
+  [string]$InputFile
 )
 
 $ErrorActionPreference = "Stop"
@@ -159,7 +160,13 @@ function Invoke-McpWithSecret([string]$Secret) {
       $mcpArgs += @("--database", $Database)
     }
 
-    & mise @mcpArgs
+    if ([string]::IsNullOrWhiteSpace($InputFile)) {
+      & mise @mcpArgs
+    }
+    else {
+      Get-Content -LiteralPath $InputFile -Raw | & mise @mcpArgs
+    }
+
     exit $LASTEXITCODE
   }
   finally {

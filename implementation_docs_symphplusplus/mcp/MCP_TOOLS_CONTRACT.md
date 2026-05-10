@@ -75,7 +75,11 @@ grant cannot include architect capabilities, cannot include capabilities outside
 the child worker capability set, transactionally supersedes unclaimed active
 child-delegated worker grants for the same child, rejects claimed active
 child-delegated worker grants for that child, ignores unrelated normal worker
-grants, and cannot outlive the transaction-current architect grant.
+grants, and cannot outlive the transaction-current architect grant. Its MCP
+response returns only child grant metadata plus private-store `secret_handoff`
+metadata with a stable `claimed_by` identity; it must not serialize raw child
+worker secrets, full work keys, bearer-like tokens, or secret-bearing claim URLs
+in structured or text output.
 `read_child_status` requires both `read:child_progress` and
 `read:child_findings` because its summary includes progress, findings, and
 artifact counts. `approve_child_ready_state` revalidates the ready child against

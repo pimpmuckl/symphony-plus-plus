@@ -61,3 +61,8 @@ commands use `scripts/sympp-worker-secret.ps1` for Windows Credential Manager.
 `local-private-file` is a non-Windows fallback and uses
 `scripts/sympp-worker-secret.sh` to read the private file and start the MCP child
 process without printing the secret.
+
+Architect child dispatch follows the same boundary: `mint_child_worker_key`
+returns child grant metadata plus `secret_handoff` metadata only. Operators and
+workers must not paste child worker secrets or claim URLs into prompts; give the
+child worker the private-store handoff metadata and stable `claimed_by` value.

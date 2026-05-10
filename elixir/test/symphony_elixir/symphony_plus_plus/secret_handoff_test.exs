@@ -211,6 +211,117 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
 
   if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
 
+  test "can delete a local handoff using work package and grant metadata" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-secret-delete-grant-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = %{display_key: "D321"}
+
+    opts = [
+      mode: "local-private-file",
+      store_dir: store_dir,
+      claimed_by: "worker-local-1",
+      repo_root: @repo_root
+    ]
+
+    try do
+      assert {:ok, handoff} = SecretHandoff.store_worker_secret(creation("old-secret", package), opts)
+      assert File.exists?(handoff.path)
+
+      assert :ok = SecretHandoff.delete_worker_secret_for_grant(package, grant, opts)
+      refute File.exists?(handoff.path)
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  test "deletes a handoff from stored metadata instead of current reconstruction opts" do
+    package = work_package()
+    grant = %{display_key: "D321"}
+    metadata_dir = Path.join(System.tmp_dir!(), "sympp-secret-metadata-#{System.unique_integer([:positive])}")
+    stale_secret_path = Path.join(System.tmp_dir!(), "sympp-secret-stale-#{System.unique_integer([:positive])}.secret")
+
+    metadata_opts = [
+      mode: "windows-credential-manager",
+      metadata_dir: metadata_dir,
+      claimed_by: "worker-local-1",
+      repo_root: @repo_root
+    ]
+
+    try do
+      File.write!(stale_secret_path, "synthetic-stale-secret")
+
+      assert :ok =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "local-private-file", "path" => stale_secret_path},
+                 metadata_opts
+               )
+
+      assert :ok =
+               SecretHandoff.delete_worker_secret_for_grant(
+                 package,
+                 grant,
+                 Keyword.put(metadata_opts, :store_dir, Path.join(System.tmp_dir!(), "unused-current-store"))
+               )
+
+      refute File.exists?(stale_secret_path)
+      assert Path.wildcard(Path.join(metadata_dir, "*.json")) == []
+    after
+      File.rm(stale_secret_path)
+      File.rm_rf!(metadata_dir)
+    end
+  end
+
+  test "stores handoff metadata under a custom handoff store" do
+    package = work_package()
+    grant = %{display_key: "D321"}
+    store_dir = Path.join(System.tmp_dir!(), "sympp-secret-custom-metadata-#{System.unique_integer([:positive])}")
+    custom_secret_path = Path.join(System.tmp_dir!(), "sympp-secret-custom-source-#{System.unique_integer([:positive])}.secret")
+    stale_mirror_secret_path = Path.join(System.tmp_dir!(), "sympp-secret-custom-stale-#{System.unique_integer([:positive])}.secret")
+
+    opts = [
+      mode: "windows-credential-manager",
+      store_dir: store_dir,
+      claimed_by: "worker-local-1",
+      repo_root: @repo_root
+    ]
+
+    try do
+      metadata_dir = Path.join(store_dir, "metadata")
+      File.write!(custom_secret_path, "synthetic-custom-secret")
+      File.write!(stale_mirror_secret_path, "synthetic-stale-mirror-secret")
+
+      assert :ok =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "local-private-file", "path" => custom_secret_path},
+                 opts
+               )
+
+      assert [metadata_filename] = File.ls!(metadata_dir)
+      default_metadata_file = Path.join(default_handoff_metadata_dir(), metadata_filename)
+
+      File.write!(
+        default_metadata_file,
+        Jason.encode!(%{"mode" => "local-private-file", "path" => stale_mirror_secret_path})
+      )
+
+      assert :ok = SecretHandoff.delete_worker_secret_for_grant(package, grant, opts)
+      refute File.exists?(custom_secret_path)
+      assert File.exists?(stale_mirror_secret_path)
+      assert File.ls!(metadata_dir) == []
+      refute File.exists?(default_metadata_file)
+    after
+      File.rm(custom_secret_path)
+      File.rm(stale_mirror_secret_path)
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
+
   test "preserves an existing local handoff file when replacement publish fails" do
     store_dir = Path.join(System.tmp_dir!(), "sympp-secret-publish-fail-#{System.unique_integer([:positive])}")
 
@@ -405,6 +516,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     System.find_executable("powershell.exe") ||
       System.find_executable("pwsh") ||
       System.find_executable("powershell")
+  end
+
+  defp default_handoff_metadata_dir do
+    Path.join(default_local_private_store_dir(), "metadata")
+  end
+
+  defp default_local_private_store_dir do
+    if windows?() do
+      local_app_data = System.get_env("LOCALAPPDATA") || Path.join(System.user_home!(), "AppData/Local")
+      Path.join([local_app_data, "SymphonyPlusPlus", "worker-secrets"])
+    else
+      Path.join([System.user_home!(), ".local", "share", "symphony-plus-plus", "worker-secrets"])
+    end
   end
 
   defp windows?, do: match?({:win32, _}, :os.type())

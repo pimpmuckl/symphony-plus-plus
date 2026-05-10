@@ -175,7 +175,12 @@ children, revalidates the live architect grant in the mint transaction, rejects
 claimed active child-delegated worker grants for the same child,
 transactionally supersedes unclaimed active child-delegated worker grants,
 ignores unrelated normal worker grants, and caps child capabilities and expiry
-to that current grant.
+to that current grant. The tool stores the child worker secret through the
+private handoff path and returns only non-secret `secret_handoff` metadata,
+including the stable `claimed_by` value. Architect prompts, child worker
+prompts, MCP responses, PR text, and review artifacts must not include raw child
+worker secrets, full work keys, bearer-like tokens, or secret-bearing claim
+URLs.
 `read_child_status(work_package_id)` requires both `read:child_progress` and
 `read:child_findings`; it can read the architect anchor package or a same-phase
 child package. `approve_child_ready_state(work_package_id, rationale, request_id?)` can
