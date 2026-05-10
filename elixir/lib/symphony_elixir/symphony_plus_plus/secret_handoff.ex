@@ -512,7 +512,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
     Path.type(path) == :absolute and
       Path.basename(expanded) == filename and
-      Path.basename(Path.dirname(expanded)) == "metadata" and
       Path.extname(expanded) == ".json"
   end
 
@@ -535,7 +534,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
   defp handoff_metadata_dirs(opts) do
     cond do
-      Keyword.get(opts, :metadata_dir) -> [Keyword.fetch!(opts, :metadata_dir)]
+      Keyword.get(opts, :metadata_dir) -> [Keyword.fetch!(opts, :metadata_dir), default_handoff_metadata_dir()]
       Keyword.get(opts, :store_dir) -> [store_handoff_metadata_dir(opts), default_handoff_metadata_dir()]
       true -> [default_handoff_metadata_dir()]
     end

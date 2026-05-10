@@ -3947,6 +3947,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     invalid_handoffs = [
       {%{"mode" => 123}, "invalid_secret_handoff_mode"},
       {%{"mode" => " "}, "invalid_secret_handoff_mode"},
+      {%{"mode" => "bogus"}, "invalid_secret_handoff_mode"},
+      {%{"mode" => "LOCAL-PRIVATE-FILE"}, "invalid_secret_handoff_mode"},
+      {%{"mode" => " local-private-file "}, "invalid_secret_handoff_mode"},
       {%{"store_dir" => ["tmp/worker-secrets"]}, "invalid_secret_handoff_store_dir"},
       {%{"store_dir" => ""}, "invalid_secret_handoff_store_dir"},
       {%{"claimed_by" => false}, "invalid_secret_handoff_claimed_by"},
@@ -4239,11 +4242,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       ])
 
     child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-NO-ROOT-CHILD")
-    invalid_root = Path.join(System.tmp_dir!(), "sympp-secret-handoff-invalid-root-#{System.unique_integer([:positive])}")
+    invalid_root = temp_secret_handoff_repo_root!(:opposite)
     original_candidates = Application.get_env(:symphony_elixir, :secret_handoff_repo_root_candidates)
 
     try do
-      File.mkdir_p!(invalid_root)
       Application.put_env(:symphony_elixir, :secret_handoff_repo_root_candidates, [invalid_root])
       grants_before = repo.aggregate(AccessGrant, :count)
 
@@ -4260,6 +4262,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     after
       restore_application_env(:secret_handoff_repo_root_candidates, original_candidates)
       File.rm_rf!(invalid_root)
+    end
+  end
+
+  test "child worker key minting accepts repo root with current platform helper", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-MINT-CURRENT-HELPER-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-CURRENT-HELPER-CHILD")
+    helper_root = temp_secret_handoff_repo_root!(:current)
+    original_candidates = Application.get_env(:symphony_elixir, :secret_handoff_repo_root_candidates)
+
+    try do
+      Application.put_env(:symphony_elixir, :secret_handoff_repo_root_candidates, [helper_root])
+
+      response =
+        mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+          "work_package_id" => child_id,
+          "template" => %{}
+        })
+
+      assert_child_worker_secret_handoff_only!(response)
+      handoff = get_in(response, ["result", "structuredContent", "worker_grant", "secret_handoff"])
+
+      helper_path =
+        [helper_root, "scripts", current_secret_handoff_helper_script_name()]
+        |> Path.join()
+        |> Path.expand()
+        |> String.replace("\\", "/")
+        |> String.downcase()
+
+      assert String.downcase(handoff["run_mcp_command"]) =~ helper_path
+    after
+      restore_application_env(:secret_handoff_repo_root_candidates, original_candidates)
+      File.rm_rf!(helper_root)
     end
   end
 
@@ -10539,13 +10579,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     Path.join(default_handoff_metadata_dir(), filename)
   end
 
-  defp temp_secret_handoff_repo_root! do
+  defp temp_secret_handoff_repo_root!(helpers \\ :both) do
     root = Path.join(System.tmp_dir!(), "sympp-secret-handoff-root-#{System.unique_integer([:positive])}")
     scripts_dir = Path.join(root, "scripts")
     File.mkdir_p!(scripts_dir)
-    File.write!(Path.join(scripts_dir, "sympp-worker-secret.ps1"), "")
-    File.write!(Path.join(scripts_dir, "sympp-worker-secret.sh"), "#!/bin/sh\nexit 0\n")
+
+    helpers
+    |> secret_handoff_helper_scripts()
+    |> Enum.each(fn
+      "sympp-worker-secret.ps1" -> File.write!(Path.join(scripts_dir, "sympp-worker-secret.ps1"), "")
+      "sympp-worker-secret.sh" -> File.write!(Path.join(scripts_dir, "sympp-worker-secret.sh"), "#!/bin/sh\nexit 0\n")
+    end)
+
     root
+  end
+
+  defp secret_handoff_helper_scripts(:both), do: ["sympp-worker-secret.ps1", "sympp-worker-secret.sh"]
+  defp secret_handoff_helper_scripts(:current), do: [current_secret_handoff_helper_script_name()]
+
+  defp secret_handoff_helper_scripts(:opposite) do
+    ["sympp-worker-secret.ps1", "sympp-worker-secret.sh"] -- [current_secret_handoff_helper_script_name()]
+  end
+
+  defp current_secret_handoff_helper_script_name do
+    if windows?(), do: "sympp-worker-secret.ps1", else: "sympp-worker-secret.sh"
   end
 
   defp restore_application_env(key, nil), do: Application.delete_env(:symphony_elixir, key)

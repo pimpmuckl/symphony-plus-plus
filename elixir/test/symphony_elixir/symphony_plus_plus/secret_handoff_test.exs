@@ -311,6 +311,56 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
+  test "deletes explicit metadata_dir handoffs after cleanup loses metadata_dir opts" do
+    package = work_package()
+    grant = %{id: "ag-secret-metadata-dir-mirror-D321", display_key: "D321"}
+    metadata_dir = Path.join(System.tmp_dir!(), "sympp-secret-metadata-dir-mirror-#{System.unique_integer([:positive])}")
+    secret_path = Path.join(System.tmp_dir!(), "sympp-secret-metadata-dir-mirror-#{System.unique_integer([:positive])}.secret")
+
+    store_opts = [
+      mode: "windows-credential-manager",
+      metadata_dir: metadata_dir,
+      claimed_by: "worker-local-1",
+      repo_root: @repo_root
+    ]
+
+    cleanup_opts = [
+      mode: "windows-credential-manager",
+      claimed_by: "worker-local-1",
+      repo_root: @repo_root
+    ]
+
+    try do
+      File.write!(secret_path, "synthetic-metadata-dir-mirror-secret")
+
+      assert :ok =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "local-private-file", "path" => secret_path},
+                 store_opts
+               )
+
+      explicit_metadata_file = stable_handoff_metadata_file(package, grant, metadata_dir)
+      default_metadata_file = stable_handoff_metadata_file(package, grant, default_handoff_metadata_dir())
+
+      assert File.exists?(explicit_metadata_file)
+      assert File.exists?(default_metadata_file)
+
+      metadata = default_metadata_file |> File.read!() |> Jason.decode!()
+      assert Enum.sort(metadata["metadata_mirrors"]) == Enum.sort([explicit_metadata_file, default_metadata_file])
+
+      assert :ok = SecretHandoff.delete_worker_secret_for_grant(package, grant, cleanup_opts)
+      refute File.exists?(secret_path)
+      refute File.exists?(explicit_metadata_file)
+      refute File.exists?(default_metadata_file)
+    after
+      File.rm(secret_path)
+      File.rm_rf!(metadata_dir)
+      File.rm(stable_handoff_metadata_file(package, grant, default_handoff_metadata_dir()))
+    end
+  end
+
   test "deletes metadata written with the previous repo-scoped filename shape" do
     package = work_package()
     grant = %{id: "ag-secret-legacy-metadata-D321", display_key: "D321"}

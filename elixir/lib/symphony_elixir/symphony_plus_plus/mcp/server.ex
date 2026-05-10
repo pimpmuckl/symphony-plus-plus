@@ -3027,13 +3027,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp reject_unexpected_child_worker_handoff_fields(_unexpected), do: {:tool_error, "unexpected_secret_handoff_field"}
 
   defp validate_child_worker_handoff_values(handoff) do
-    ["mode", "store_dir", "claimed_by"]
+    ["store_dir", "claimed_by"]
     |> Enum.reduce_while(:ok, fn key, :ok ->
       case validate_child_worker_handoff_optional_string(handoff, key) do
         :ok -> {:cont, :ok}
         {:tool_error, _reason} = error -> {:halt, error}
       end
     end)
+    |> case do
+      :ok -> validate_child_worker_handoff_mode(handoff)
+      {:tool_error, _reason} = error -> error
+    end
+  end
+
+  defp validate_child_worker_handoff_mode(handoff) do
+    case Map.fetch(handoff, "mode") do
+      :error ->
+        :ok
+
+      {:ok, nil} ->
+        :ok
+
+      {:ok, value} when is_binary(value) ->
+        mode = String.trim(value)
+
+        if value == mode and mode in SecretHandoff.valid_modes() do
+          :ok
+        else
+          {:tool_error, "invalid_secret_handoff_mode"}
+        end
+
+      {:ok, _value} ->
+        {:tool_error, "invalid_secret_handoff_mode"}
+    end
   end
 
   defp validate_child_worker_handoff_optional_string(handoff, key) do
@@ -6492,8 +6518,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp secret_handoff_repo_root?(candidate) do
-    File.exists?(Path.join(candidate, "scripts/sympp-worker-secret.ps1")) and
-      File.exists?(Path.join(candidate, "scripts/sympp-worker-secret.sh"))
+    File.exists?(Path.join([candidate, "scripts", secret_handoff_helper_script_name()]))
+  end
+
+  defp secret_handoff_helper_script_name do
+    if match?({:win32, _}, :os.type()), do: "sympp-worker-secret.ps1", else: "sympp-worker-secret.sh"
   end
 
   defp child_worker_grant_for_handoff(%{grant: grant, work_key: work_key}) do
