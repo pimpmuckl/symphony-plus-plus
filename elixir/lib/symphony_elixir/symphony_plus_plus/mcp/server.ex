@@ -1564,13 +1564,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
          {:ok, template} <- required_object(arguments, "template"),
          :ok <- validate_child_worker_handoff_template(template),
-         {:ok, {child, minted, handoff}} <-
+         {:ok, {child, minted, handoff, cleanup_status}} <-
            mint_child_worker_key_transaction(config, session, work_package_id, template) do
       {:ok,
-       tool_result(%{
+       %{
          "work_package" => child_work_package_payload(child),
          "worker_grant" => child_worker_grant_payload(minted, handoff)
-       })}
+       }
+       |> maybe_put_superseded_handoff_cleanup(cleanup_status)
+       |> tool_result()}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "mint_child_worker_key", "reason" => reason}}
       {:error, reason} -> architect_error(reason, "mint_child_worker_key")
@@ -1800,11 +1802,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            end) do
         {:ok, {child, minted, handoff, superseded_grants}} ->
           Process.delete(cleanup_key)
-
-          case cleanup_superseded_child_worker_handoffs(config, child, superseded_grants, template) do
-            :ok -> {:ok, {child, minted, handoff}}
-            {:error, reason} -> {:error, reason}
-          end
+          cleanup_status = cleanup_superseded_child_worker_handoffs(config, child, superseded_grants)
+          {:ok, {child, minted, handoff, cleanup_status}}
 
         {:error, {:tool_error, reason}} ->
           with_child_handoff_rollback_cleanup(cleanup_key, {:tool_error, reason})
@@ -1882,29 +1881,51 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp cleanup_superseded_child_worker_handoffs(%Config{} = config, %WorkPackage{} = child, superseded_grants, template) do
-    cleanup_errors =
-      Enum.reduce(superseded_grants, [], fn grant, errors ->
-        worker_grant = %{display_key: grant.display_key}
+  defp cleanup_superseded_child_worker_handoffs(%Config{} = config, %WorkPackage{} = child, superseded_grants) do
+    results = Enum.map(superseded_grants, &cleanup_superseded_child_worker_handoff(config, child, &1))
 
-        opts =
-          config
-          |> child_worker_handoff_opts(child, grant, template)
-          |> Keyword.put(:require_metadata, true)
+    %{
+      "status" => superseded_child_worker_handoff_cleanup_status(results),
+      "results" => results
+    }
+  end
 
-        case SecretHandoff.delete_worker_secret_for_grant(child, worker_grant, opts) do
-          :ok ->
-            errors
+  defp cleanup_superseded_child_worker_handoff(%Config{} = config, %WorkPackage{} = child, %AccessGrant{} = grant) do
+    worker_grant = %{display_key: grant.display_key}
+    opts = superseded_child_worker_handoff_cleanup_opts(config)
 
-          {:error, reason} ->
-            [%{grant_id: grant.id, display_key: grant.display_key, reason: reason} | errors]
-        end
-      end)
+    case SecretHandoff.delete_worker_secret_for_grant(child, worker_grant, opts) do
+      :ok ->
+        superseded_child_worker_handoff_cleanup_result(grant, "deleted")
 
-    case cleanup_errors do
-      [] -> :ok
-      errors -> {:error, {:superseded_child_worker_secret_handoff_cleanup_failed, Enum.reverse(errors)}}
+      {:error, {:handoff_metadata_failed, :missing_metadata}} ->
+        superseded_child_worker_handoff_cleanup_result(grant, "no_metadata")
+
+      {:error, reason} ->
+        grant
+        |> superseded_child_worker_handoff_cleanup_result("failed")
+        |> Map.put("reason", reason_text(reason))
     end
+  end
+
+  defp superseded_child_worker_handoff_cleanup_opts(%Config{} = config) do
+    [
+      mode: "auto",
+      claimed_by: "superseded-child-worker-cleanup",
+      database: config.database,
+      repo_root: default_secret_handoff_repo_root(),
+      require_metadata: true
+    ]
+  end
+
+  defp superseded_child_worker_handoff_cleanup_result(%AccessGrant{} = grant, status) do
+    %{"grant_id" => grant.id, "display_key" => grant.display_key, "status" => status}
+  end
+
+  defp superseded_child_worker_handoff_cleanup_status([]), do: "not_applicable"
+
+  defp superseded_child_worker_handoff_cleanup_status(results) do
+    if Enum.all?(results, &(Map.get(&1, "status") == "deleted")), do: "ok", else: "warning"
   end
 
   defp approve_child_ready_state_transaction(repo, %Session{} = session, work_package_id, rationale, request_id) do
@@ -6418,6 +6439,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "secret_handoff" => json_safe_payload(handoff),
       "secret_in_response" => false
     }
+  end
+
+  defp maybe_put_superseded_handoff_cleanup(payload, %{"results" => []}), do: payload
+
+  defp maybe_put_superseded_handoff_cleanup(payload, cleanup_status) when is_map(cleanup_status) do
+    Map.put(payload, "superseded_worker_handoff_cleanup", cleanup_status)
   end
 
   defp json_resource(uri, payload) do

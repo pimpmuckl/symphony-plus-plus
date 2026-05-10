@@ -320,6 +320,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
+  test "reports default metadata mirror write failures for custom handoff stores" do
+    package = work_package()
+    grant = %{display_key: "D321"}
+    store_dir = Path.join(System.tmp_dir!(), "sympp-secret-required-metadata-#{System.unique_integer([:positive])}")
+    secret_path = Path.join(System.tmp_dir!(), "sympp-secret-required-metadata-source-#{System.unique_integer([:positive])}.secret")
+
+    opts = [
+      mode: "windows-credential-manager",
+      store_dir: store_dir,
+      claimed_by: "worker-local-1",
+      repo_root: @repo_root,
+      private_file_rename_fun: fn temp_path, path ->
+        if String.starts_with?(Path.expand(path), Path.expand(default_handoff_metadata_dir())) do
+          File.rm(temp_path)
+          {:error, :simulated_default_metadata_failure}
+        else
+          File.rename(temp_path, path)
+        end
+      end
+    ]
+
+    try do
+      assert {:error, {:handoff_metadata_failed, {:rename, :simulated_default_metadata_failure}}} =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "local-private-file", "path" => secret_path},
+                 opts
+               )
+    after
+      File.rm(secret_path)
+      File.rm_rf!(store_dir)
+    end
+  end
+
   if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
 
   test "preserves an existing local handoff file when replacement publish fails" do

@@ -3899,6 +3899,107 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert second_grant.provenance == @child_worker_grant_provenance
   end
 
+  test "child worker key remint treats missing superseded handoff metadata as nonfatal", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-MINT-NO-METADATA-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-NO-METADATA-CHILD")
+
+    first_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => %{}
+      })
+
+    assert_child_worker_secret_handoff_only!(first_response)
+    first_grant_id = get_in(first_response, ["result", "structuredContent", "worker_grant", "id"])
+    first_display_key = get_in(first_response, ["result", "structuredContent", "worker_grant", "display_key"])
+
+    assert {:ok, child} = WorkPackageRepository.get(repo, child_id)
+
+    assert :ok =
+             SecretHandoff.delete_worker_secret_for_grant(child, %{display_key: first_display_key},
+               mode: "auto",
+               claimed_by: "test-cleanup",
+               repo_root: @repo_root
+             )
+
+    second_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => %{}
+      })
+
+    assert_child_worker_secret_handoff_only!(second_response)
+    second_grant_id = get_in(second_response, ["result", "structuredContent", "worker_grant", "id"])
+    assert is_binary(second_grant_id)
+    refute second_grant_id == first_grant_id
+
+    cleanup = get_in(second_response, ["result", "structuredContent", "superseded_worker_handoff_cleanup"])
+    assert cleanup["status"] == "warning"
+
+    assert [
+             %{"grant_id" => ^first_grant_id, "display_key" => ^first_display_key, "status" => "no_metadata"}
+           ] = cleanup["results"]
+
+    assert {:ok, first_grant} = AccessGrantRepository.get(repo, first_grant_id)
+    assert %DateTime{} = first_grant.revoked_at
+  end
+
+  test "child worker key remint reports superseded cleanup failures without failing the new mint", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-MINT-CLEANUP-WARN-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-CLEANUP-WARN-CHILD")
+
+    first_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => %{}
+      })
+
+    assert_child_worker_secret_handoff_only!(first_response)
+    first_grant_id = get_in(first_response, ["result", "structuredContent", "worker_grant", "id"])
+    first_display_key = get_in(first_response, ["result", "structuredContent", "worker_grant", "display_key"])
+    first_handoff = get_in(first_response, ["result", "structuredContent", "worker_grant", "secret_handoff"])
+    first_metadata_file = default_handoff_metadata_file(child_id, first_display_key)
+
+    try do
+      File.mkdir_p!(Path.dirname(first_metadata_file))
+      File.write!(first_metadata_file, "{")
+
+      second_response =
+        mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+          "work_package_id" => child_id,
+          "template" => %{}
+        })
+
+      assert_child_worker_secret_handoff_only!(second_response)
+      second_grant_id = get_in(second_response, ["result", "structuredContent", "worker_grant", "id"])
+      assert is_binary(second_grant_id)
+      refute second_grant_id == first_grant_id
+
+      cleanup = get_in(second_response, ["result", "structuredContent", "superseded_worker_handoff_cleanup"])
+      assert cleanup["status"] == "warning"
+      assert [%{"grant_id" => ^first_grant_id, "status" => "failed"} = failure] = cleanup["results"]
+      assert failure["reason"] =~ "handoff_metadata_failed"
+
+      assert {:ok, first_grant} = AccessGrantRepository.get(repo, first_grant_id)
+      assert %DateTime{} = first_grant.revoked_at
+    after
+      _ = SecretHandoff.delete_worker_secret(first_handoff, repo_root: @repo_root)
+      File.rm(first_metadata_file)
+    end
+  end
+
   test "child worker key minting uses stable repo-root script paths outside repo cwd", %{repo: repo} do
     temp_cwd = Path.join(System.tmp_dir!(), "sympp-child-handoff-cwd-#{System.unique_integer([:positive])}")
     original_cwd = File.cwd!()
@@ -10203,6 +10304,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         :ok
     end
   end
+
+  defp default_handoff_metadata_file(work_package_id, display_key) do
+    filename =
+      "#{safe_handoff_filename(work_package_id)}-#{safe_handoff_filename(display_key)}-#{handoff_filename_hash(work_package_id, display_key)}.json"
+
+    Path.join(default_handoff_metadata_dir(), filename)
+  end
+
+  defp handoff_filename_hash(work_package_id, display_key) do
+    hash_source = [@repo_root, 0, "", 0, work_package_id, 0, display_key]
+
+    :sha256
+    |> :crypto.hash(hash_source)
+    |> Base.url_encode64(padding: false)
+    |> binary_part(0, 16)
+  end
+
+  defp safe_handoff_filename(value) when is_binary(value) do
+    Regex.replace(~r/[^A-Za-z0-9._-]+/, value, "_")
+  end
+
+  defp default_handoff_metadata_dir do
+    Path.join(default_local_private_store_dir(), "metadata")
+  end
+
+  defp default_local_private_store_dir do
+    if windows?() do
+      local_app_data = System.get_env("LOCALAPPDATA") || Path.join(System.user_home!(), "AppData/Local")
+      Path.join([local_app_data, "SymphonyPlusPlus", "worker-secrets"])
+    else
+      Path.join([System.user_home!(), ".local", "share", "symphony-plus-plus", "worker-secrets"])
+    end
+  end
+
+  defp windows?, do: match?({:win32, _}, :os.type())
 
   defp assert_child_worker_secret_handoff_only!(response) do
     worker_grant = get_in(response, ["result", "structuredContent", "worker_grant"])

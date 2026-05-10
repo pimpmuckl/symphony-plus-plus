@@ -402,15 +402,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   end
 
   defp store_handoff_metadata(work_package, worker_grant, metadata, opts) do
-    [required_path | optional_paths] = handoff_metadata_write_paths(work_package, worker_grant, opts)
-
-    with :ok <- write_handoff_metadata(required_path, metadata, opts) do
-      Enum.each(optional_paths, fn path ->
-        _result = write_handoff_metadata(path, metadata, opts)
-      end)
-
-      :ok
-    end
+    work_package
+    |> handoff_metadata_write_paths(worker_grant, opts)
+    |> Enum.reduce_while(:ok, fn path, :ok ->
+      case write_handoff_metadata(path, metadata, opts) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
   end
 
   defp write_handoff_metadata(path, metadata, opts) do
