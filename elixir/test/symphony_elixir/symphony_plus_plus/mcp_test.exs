@@ -218,6 +218,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     def rollback(value), do: Repo.rollback(value)
   end
 
+  defmodule ForceChildWorkerDisplayKeyRepo do
+    alias Ecto.Changeset
+    alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    @force_key :sympp_force_child_worker_display_key
+
+    def arm(display_key), do: Process.put(@force_key, display_key)
+    def disarm, do: Process.delete(@force_key)
+
+    def transaction(fun), do: Repo.transaction(fun)
+    def get(schema, id), do: Repo.get(schema, id)
+    def all(query), do: Repo.all(query)
+    def one(query), do: Repo.one(query)
+    def update_all(query, updates), do: Repo.update_all(query, updates)
+    def rollback(value), do: Repo.rollback(value)
+
+    def insert(%Changeset{data: %AccessGrant{}} = changeset) do
+      case Process.get(@force_key) do
+        display_key when is_binary(display_key) ->
+          Process.delete(@force_key)
+
+          changeset
+          |> Changeset.put_change(:display_key, display_key)
+          |> Repo.insert()
+
+        _display_key ->
+          Repo.insert(changeset)
+      end
+    end
+
+    def insert(changeset), do: Repo.insert(changeset)
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
 
@@ -4053,6 +4087,69 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       File.rm_rf!(first_repo_root)
       File.rm_rf!(second_repo_root)
     end
+  end
+
+  test "child worker key remint keeps new handoff when display key collides", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-MINT-COLLIDING-DISPLAY-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-COLLIDING-DISPLAY-CHILD")
+
+    first_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => %{}
+      })
+
+    assert_child_worker_secret_handoff_only!(first_response)
+    first_grant_id = get_in(first_response, ["result", "structuredContent", "worker_grant", "id"])
+    first_display_key = get_in(first_response, ["result", "structuredContent", "worker_grant", "display_key"])
+
+    ForceChildWorkerDisplayKeyRepo.arm(first_display_key)
+
+    second_response =
+      try do
+        mcp_tool(
+          repo,
+          architect_session,
+          "mint_child_worker_key",
+          %{"work_package_id" => child_id, "template" => %{}},
+          config: Config.default(repo: ForceChildWorkerDisplayKeyRepo)
+        )
+      after
+        ForceChildWorkerDisplayKeyRepo.disarm()
+      end
+
+    assert_child_worker_secret_handoff_only!(second_response)
+    second_grant_id = get_in(second_response, ["result", "structuredContent", "worker_grant", "id"])
+    second_display_key = get_in(second_response, ["result", "structuredContent", "worker_grant", "display_key"])
+    second_handoff = get_in(second_response, ["result", "structuredContent", "worker_grant", "secret_handoff"])
+
+    assert is_binary(second_grant_id)
+    refute second_grant_id == first_grant_id
+    assert second_display_key == first_display_key
+    assert second_handoff["target"] =~ second_grant_id
+    refute second_handoff["target"] =~ first_grant_id
+
+    cleanup = get_in(second_response, ["result", "structuredContent", "superseded_worker_handoff_cleanup"])
+    assert cleanup["status"] == "ok"
+    assert [%{"grant_id" => ^first_grant_id, "display_key" => ^first_display_key, "status" => "deleted"}] = cleanup["results"]
+
+    assert {:ok, first_grant} = AccessGrantRepository.get(repo, first_grant_id)
+    assert %DateTime{} = first_grant.revoked_at
+
+    assert {:ok, second_grant_before_claim} = AccessGrantRepository.get(repo, second_grant_id)
+    assert second_grant_before_claim.revoked_at == nil
+
+    claim_child_worker_from_private_handoff(repo, second_response, "worker-colliding-display")
+
+    assert {:ok, second_grant_after_claim} = AccessGrantRepository.get(repo, second_grant_id)
+    assert second_grant_after_claim.claimed_by == "worker-colliding-display"
+    assert second_grant_after_claim.revoked_at == nil
   end
 
   test "child worker key minting uses stable repo-root script paths outside repo cwd", %{repo: repo} do

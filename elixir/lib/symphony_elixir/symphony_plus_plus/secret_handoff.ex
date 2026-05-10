@@ -312,8 +312,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     end
   end
 
-  defp credential_target(%WorkPackage{id: work_package_id}, %{display_key: display_key}) do
-    "SymphonyPlusPlus:worker:#{work_package_id}:#{display_key}"
+  defp credential_target(%WorkPackage{id: work_package_id}, worker_grant) do
+    display_key = Map.fetch!(worker_grant, :display_key)
+    identity = handoff_metadata_identity(worker_grant)
+    "SymphonyPlusPlus:worker:#{work_package_id}:#{display_key}:#{identity}"
   end
 
   defp worker_grant_user(%{display_key: display_key}), do: "sympp-worker-#{display_key}"
@@ -626,7 +628,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   defp local_private_file_path(%WorkPackage{} = work_package, worker_grant, opts) do
     store_dir = Keyword.get(opts, :store_dir) || default_local_private_store_dir()
     display_key = Map.fetch!(worker_grant, :display_key)
-    filename = "#{safe_filename(work_package.id)}-#{safe_filename(display_key)}-#{handoff_filename_hash(work_package, display_key, opts)}.secret"
+    identity = handoff_metadata_identity(worker_grant)
+    filename = "#{safe_filename(work_package.id)}-#{safe_filename(display_key)}-#{safe_filename(identity)}.secret"
     Path.join(Path.expand(store_dir), filename)
   end
 

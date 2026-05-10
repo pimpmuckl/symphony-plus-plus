@@ -29,7 +29,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
       assert handoff.claimed_by_required == true
       assert handoff.secret_in_stdout == false
       assert Path.dirname(handoff.path) == Path.expand(store_dir)
-      assert Path.basename(handoff.path) =~ ~r/^wp-secret-handoff-D321-[A-Za-z0-9_-]{16}\.secret$/
+      assert Path.basename(handoff.path) == "wp-secret-handoff-D321-ag-secret-handoff-D321.secret"
+      assert handoff.target =~ "ag-secret-handoff-D321"
       assert local_file_run_mcp_command_uses_platform_wrapper?(handoff.run_mcp_command)
       assert local_file_run_mcp_command_claims_worker?(handoff.run_mcp_command, "worker-local-1")
       refute handoff.run_mcp_command =~ "<claimed-by>"
@@ -58,7 +59,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
 
       assert Path.type(handoff.path) == :absolute
       assert Path.dirname(handoff.path) == absolute_store_dir
-      assert Path.basename(handoff.path) =~ ~r/^wp-secret-handoff-D321-[A-Za-z0-9_-]{16}\.secret$/
+      assert Path.basename(handoff.path) == "wp-secret-handoff-D321-ag-secret-handoff-D321.secret"
       assert handoff.run_mcp_command =~ handoff.path
       assert File.read!(handoff.path) == secret
 
@@ -103,42 +104,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
 
   if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
 
-  test "namespaces local handoff filenames beyond sanitized ids" do
+  test "keys local handoff filenames by grant id, not display key" do
     store_dir = Path.join(System.tmp_dir!(), "sympp-secret-collision-#{System.unique_integer([:positive])}")
+    package = work_package()
+    first_grant = worker_grant("first-secret", "ag-secret-handoff-first", "D321")
+    second_grant = worker_grant("second-secret", "ag-secret-handoff-second", "D321")
+
+    opts = [
+      mode: "local-private-file",
+      store_dir: store_dir,
+      database: "ledger-a.sqlite3",
+      claimed_by: "worker-local-1",
+      repo_root: @repo_root
+    ]
 
     try do
       assert {:ok, first_handoff} =
-               SecretHandoff.store_worker_secret(creation("first-secret", work_package("a/b")),
-                 mode: "local-private-file",
-                 store_dir: store_dir,
-                 database: "ledger-a.sqlite3",
-                 claimed_by: "worker-local-1",
-                 repo_root: @repo_root
-               )
+               SecretHandoff.store_worker_secret(creation("first-secret", package, first_grant), opts)
 
       assert {:ok, second_handoff} =
-               SecretHandoff.store_worker_secret(creation("second-secret", work_package("a?b")),
-                 mode: "local-private-file",
-                 store_dir: store_dir,
-                 database: "ledger-a.sqlite3",
-                 claimed_by: "worker-local-1",
-                 repo_root: @repo_root
-               )
-
-      assert {:ok, third_handoff} =
-               SecretHandoff.store_worker_secret(creation("third-secret", work_package("a/b")),
-                 mode: "local-private-file",
-                 store_dir: store_dir,
-                 database: "ledger-b.sqlite3",
-                 claimed_by: "worker-local-1",
-                 repo_root: @repo_root
-               )
+               SecretHandoff.store_worker_secret(creation("second-secret", package, second_grant), opts)
 
       assert first_handoff.path != second_handoff.path
-      assert first_handoff.path != third_handoff.path
+      assert Path.basename(first_handoff.path) =~ "ag-secret-handoff-first"
+      assert Path.basename(second_handoff.path) =~ "ag-secret-handoff-second"
       assert File.read!(first_handoff.path) == "first-secret"
       assert File.read!(second_handoff.path) == "second-secret"
-      assert File.read!(third_handoff.path) == "third-secret"
+
+      assert :ok = SecretHandoff.delete_worker_secret_for_grant(package, Map.take(first_grant, [:id, :display_key]), opts)
+      refute File.exists?(first_handoff.path)
+      assert File.read!(second_handoff.path) == "second-secret"
     after
       File.rm_rf!(store_dir)
     end
@@ -214,7 +209,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
   test "can delete a local handoff using work package and grant metadata" do
     store_dir = Path.join(System.tmp_dir!(), "sympp-secret-delete-grant-#{System.unique_integer([:positive])}")
     package = work_package()
-    grant = %{id: "ag-secret-delete-grant-D321", display_key: "D321"}
+    grant = %{id: "ag-secret-delete-grant-D321", display_key: "D321", secret: "old-secret"}
 
     opts = [
       mode: "local-private-file",
@@ -224,7 +219,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     ]
 
     try do
-      assert {:ok, handoff} = SecretHandoff.store_worker_secret(creation("old-secret", package), opts)
+      assert {:ok, handoff} = SecretHandoff.store_worker_secret(creation("old-secret", package, grant), opts)
       assert File.exists?(handoff.path)
 
       assert :ok = SecretHandoff.delete_worker_secret_for_grant(package, grant, opts)
@@ -531,7 +526,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
   end
 
   test "redacts worker grant secrets and reports handoff input errors" do
-    handoff = %{target: "SymphonyPlusPlus:worker:wp-secret-handoff:D321"}
+    handoff = %{target: "SymphonyPlusPlus:worker:wp-secret-handoff:D321:ag-secret-handoff-D321"}
 
     redacted =
       %{"secret" => "string-secret", display_key: "D321", secret: "atom-secret"}
@@ -631,7 +626,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
         assert handoff.mode == "windows-credential-manager"
         assert handoff.status == "stored"
         assert handoff.store == "Windows Credential Manager"
+        assert handoff.target == "SymphonyPlusPlus:worker:wp-secret-handoff:D321:ag-secret-handoff-D321"
         assert handoff.run_mcp_command =~ ~s(& #{powershell_literal(powershell)})
+        assert handoff.run_mcp_command =~ ~s(-Target #{powershell_literal(handoff.target)})
         assert handoff.run_mcp_command =~ "sympp-worker-secret.ps1"
         assert handoff.run_mcp_command =~ ~s(-ClaimedBy #{powershell_literal("worker-windows-1")})
         assert handoff.secret_in_stdout == false
@@ -644,10 +641,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
-  defp creation(secret, work_package \\ work_package()) do
+  defp creation(secret, work_package \\ work_package(), grant \\ nil) do
     %{
       work_package: work_package,
-      worker_grant: worker_grant(secret)
+      worker_grant: grant || worker_grant(secret)
     }
   end
 
@@ -655,8 +652,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     %WorkPackage{id: id}
   end
 
-  defp worker_grant(secret \\ "synthetic-secret") do
-    %{id: "ag-secret-handoff-D321", display_key: "D321", secret: secret}
+  defp worker_grant(secret \\ "synthetic-secret", id \\ "ag-secret-handoff-D321", display_key \\ "D321") do
+    %{id: id, display_key: display_key, secret: secret}
   end
 
   defp legacy_handoff_metadata_file(%WorkPackage{} = work_package, grant, metadata_dir, opts) do
