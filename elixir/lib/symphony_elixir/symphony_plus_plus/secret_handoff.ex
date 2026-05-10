@@ -41,9 +41,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   @spec store_worker_secret_metadata(WorkPackage.t(), map(), map(), keyword()) :: :ok | {:error, error()}
   def store_worker_secret_metadata(%WorkPackage{} = work_package, worker_grant, handoff, opts)
       when is_map(worker_grant) and is_map(handoff) and is_list(opts) do
-    with {:ok, opts} <- require_handoff_opts(opts),
-         {:ok, metadata} <- encode_handoff_metadata(handoff) do
-      store_handoff_metadata(work_package, worker_grant, metadata, opts)
+    with {:ok, opts} <- require_handoff_opts(opts) do
+      metadata_paths = handoff_metadata_write_paths(work_package, worker_grant, opts)
+
+      with {:ok, metadata} <- encode_handoff_metadata(handoff, metadata_paths) do
+        store_handoff_metadata(metadata_paths, metadata, opts)
+      end
     end
   end
 
@@ -75,7 +78,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     with {:ok, mode} <- normalize_mode(Keyword.get(opts, :mode, "auto")),
          {:ok, opts} <- require_handoff_opts(opts),
          {:ok, handoff, metadata_path} <- handoff_for_delete(mode, work_package, worker_grant, opts) do
-      metadata_paths = handoff_metadata_paths(work_package, worker_grant, opts, metadata_path)
+      metadata_paths = handoff_metadata_paths(work_package, worker_grant, opts, metadata_path, handoff)
 
       case delete_worker_secret(handoff, opts) do
         :ok -> delete_handoff_metadata(metadata_paths)
@@ -385,7 +388,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     end
   end
 
-  defp encode_handoff_metadata(handoff) do
+  defp encode_handoff_metadata(handoff, metadata_paths) do
     metadata =
       [:mode, :path, :target]
       |> Enum.reduce(%{}, fn key, acc ->
@@ -394,6 +397,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
           _value -> acc
         end
       end)
+      |> put_metadata_mirrors(metadata_paths)
 
     case Jason.encode(metadata) do
       {:ok, encoded} -> {:ok, encoded}
@@ -401,9 +405,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     end
   end
 
-  defp store_handoff_metadata(work_package, worker_grant, metadata, opts) do
-    work_package
-    |> handoff_metadata_write_paths(worker_grant, opts)
+  defp put_metadata_mirrors(metadata, paths) do
+    mirrors =
+      paths
+      |> Enum.map(&Path.expand/1)
+      |> Enum.uniq()
+
+    Map.put(metadata, "metadata_mirrors", mirrors)
+  end
+
+  defp store_handoff_metadata(paths, metadata, opts) do
+    paths
     |> Enum.reduce_while(:ok, fn path, :ok ->
       case write_handoff_metadata(path, metadata, opts) do
         :ok -> {:cont, :ok}
@@ -467,11 +479,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     end)
   end
 
-  defp handoff_metadata_paths(work_package, worker_grant, opts, extra_path \\ nil) do
-    ([extra_path] ++ handoff_metadata_read_paths(work_package, worker_grant, opts))
+  defp handoff_metadata_paths(work_package, worker_grant, opts, extra_path \\ nil, handoff \\ nil) do
+    ([extra_path] ++
+       handoff_metadata_read_paths(work_package, worker_grant, opts) ++
+       recorded_handoff_metadata_paths(handoff, work_package, worker_grant))
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
   end
+
+  defp recorded_handoff_metadata_paths(handoff, work_package, worker_grant) when is_map(handoff) do
+    filename = handoff_metadata_filename(work_package, worker_grant)
+
+    handoff
+    |> handoff_value(:metadata_mirrors)
+    |> case do
+      paths when is_list(paths) -> paths
+      _paths -> []
+    end
+    |> Enum.filter(&safe_recorded_handoff_metadata_path?(&1, filename))
+    |> Enum.map(&Path.expand/1)
+  end
+
+  defp recorded_handoff_metadata_paths(_handoff, _work_package, _worker_grant), do: []
+
+  defp safe_recorded_handoff_metadata_path?(path, filename) when is_binary(path) do
+    expanded = Path.expand(path)
+
+    Path.type(path) == :absolute and
+      Path.basename(expanded) == filename and
+      Path.basename(Path.dirname(expanded)) == "metadata" and
+      Path.extname(expanded) == ".json"
+  end
+
+  defp safe_recorded_handoff_metadata_path?(_path, _filename), do: false
 
   defp handoff_metadata_read_paths(work_package, worker_grant, opts) do
     stable_handoff_metadata_paths(work_package, worker_grant, opts) ++
@@ -595,10 +635,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   end
 
   defp handoff_metadata_path(%WorkPackage{} = work_package, worker_grant, metadata_dir) do
+    filename = handoff_metadata_filename(work_package, worker_grant)
+    Path.join(Path.expand(metadata_dir), filename)
+  end
+
+  defp handoff_metadata_filename(%WorkPackage{} = work_package, worker_grant) do
     display_key = Map.fetch!(worker_grant, :display_key)
     identity = handoff_metadata_identity(worker_grant)
-    filename = "#{safe_filename(work_package.id)}-#{safe_filename(display_key)}-#{safe_filename(identity)}.json"
-    Path.join(Path.expand(metadata_dir), filename)
+    "#{safe_filename(work_package.id)}-#{safe_filename(display_key)}-#{safe_filename(identity)}.json"
   end
 
   defp legacy_handoff_metadata_path(%WorkPackage{} = work_package, worker_grant, metadata_dir, opts) do

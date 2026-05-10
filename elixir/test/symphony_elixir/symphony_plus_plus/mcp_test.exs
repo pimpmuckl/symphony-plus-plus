@@ -4090,6 +4090,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     end
   end
 
+  test "child worker key minting fails before publication when no repo root is verified", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-MINT-NO-ROOT-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-NO-ROOT-CHILD")
+    invalid_root = Path.join(System.tmp_dir!(), "sympp-secret-handoff-invalid-root-#{System.unique_integer([:positive])}")
+    original_candidates = Application.get_env(:symphony_elixir, :secret_handoff_repo_root_candidates)
+
+    try do
+      File.mkdir_p!(invalid_root)
+      Application.put_env(:symphony_elixir, :secret_handoff_repo_root_candidates, [invalid_root])
+      grants_before = repo.aggregate(AccessGrant, :count)
+
+      response =
+        mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+          "work_package_id" => child_id,
+          "template" => %{}
+        })
+
+      assert get_in(response, ["error", "code"]) == -32_602
+      assert get_in(response, ["error", "data", "tool"]) == "mint_child_worker_key"
+      assert get_in(response, ["error", "data", "reason"]) =~ "secret_handoff_repo_root_unavailable"
+      assert repo.aggregate(AccessGrant, :count) == grants_before
+    after
+      restore_application_env(:secret_handoff_repo_root_candidates, original_candidates)
+      File.rm_rf!(invalid_root)
+    end
+  end
+
   test "child worker key minting rejects broader grants and worker callers", %{repo: repo} do
     {_anchor, architect_session} =
       create_architect_session(repo, "SYMPP-P7-002-BROADER-ANCHOR", [

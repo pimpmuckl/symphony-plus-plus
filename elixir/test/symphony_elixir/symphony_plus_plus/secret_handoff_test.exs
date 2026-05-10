@@ -392,6 +392,56 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
+  test "deletes custom metadata mirrors when cleanup no longer has custom store opts" do
+    package = work_package()
+    grant = %{id: "ag-secret-custom-mirror-D321", display_key: "D321"}
+    store_dir = Path.join(System.tmp_dir!(), "sympp-secret-custom-mirror-#{System.unique_integer([:positive])}")
+    secret_path = Path.join(System.tmp_dir!(), "sympp-secret-custom-mirror-source-#{System.unique_integer([:positive])}.secret")
+
+    store_opts = [
+      mode: "windows-credential-manager",
+      store_dir: store_dir,
+      claimed_by: "worker-local-1",
+      repo_root: @repo_root
+    ]
+
+    cleanup_opts = [
+      mode: "windows-credential-manager",
+      claimed_by: "worker-local-1",
+      repo_root: @repo_root
+    ]
+
+    try do
+      File.write!(secret_path, "synthetic-custom-mirror-secret")
+
+      assert :ok =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "local-private-file", "path" => secret_path},
+                 store_opts
+               )
+
+      custom_metadata_file = stable_handoff_metadata_file(package, grant, Path.join(store_dir, "metadata"))
+      default_metadata_file = stable_handoff_metadata_file(package, grant, default_handoff_metadata_dir())
+
+      assert File.exists?(custom_metadata_file)
+      assert File.exists?(default_metadata_file)
+
+      metadata = default_metadata_file |> File.read!() |> Jason.decode!()
+      assert Enum.sort(metadata["metadata_mirrors"]) == Enum.sort([custom_metadata_file, default_metadata_file])
+
+      assert :ok = SecretHandoff.delete_worker_secret_for_grant(package, grant, cleanup_opts)
+      refute File.exists?(secret_path)
+      refute File.exists?(custom_metadata_file)
+      refute File.exists?(default_metadata_file)
+    after
+      File.rm(secret_path)
+      File.rm_rf!(store_dir)
+      File.rm(stable_handoff_metadata_file(package, grant, default_handoff_metadata_dir()))
+    end
+  end
+
   test "reports default metadata mirror write failures for custom handoff stores" do
     package = work_package()
     grant = %{id: "ag-secret-required-metadata-D321", display_key: "D321"}
@@ -612,6 +662,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
   defp legacy_handoff_metadata_file(%WorkPackage{} = work_package, grant, metadata_dir, opts) do
     display_key = Map.fetch!(grant, :display_key)
     filename = "#{safe_filename(work_package.id)}-#{safe_filename(display_key)}-#{legacy_handoff_filename_hash(work_package.id, display_key, opts)}.json"
+    Path.join(Path.expand(metadata_dir), filename)
+  end
+
+  defp stable_handoff_metadata_file(%WorkPackage{} = work_package, grant, metadata_dir) do
+    display_key = Map.fetch!(grant, :display_key)
+    grant_id = Map.fetch!(grant, :id)
+    filename = "#{safe_filename(work_package.id)}-#{safe_filename(display_key)}-#{safe_filename(grant_id)}.json"
     Path.join(Path.expand(metadata_dir), filename)
   end
 

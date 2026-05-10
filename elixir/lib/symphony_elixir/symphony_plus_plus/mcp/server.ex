@@ -1874,7 +1874,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         SecretHandoff.delete_worker_secret_for_grant(work_package, worker_grant, opts)
 
       handoff when is_map(handoff) ->
-        SecretHandoff.delete_worker_secret(handoff, repo_root: default_secret_handoff_repo_root())
+        with {:ok, repo_root} <- default_secret_handoff_repo_root() do
+          SecretHandoff.delete_worker_secret(handoff, repo_root: repo_root)
+        end
 
       _handoff ->
         :ok
@@ -1892,14 +1894,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp cleanup_superseded_child_worker_handoff(%Config{} = config, %WorkPackage{} = child, %AccessGrant{} = grant) do
     worker_grant = child_worker_grant_for_cleanup(grant)
-    opts = superseded_child_worker_handoff_cleanup_opts(config)
 
-    case SecretHandoff.delete_worker_secret_for_grant(child, worker_grant, opts) do
-      :ok ->
-        superseded_child_worker_handoff_cleanup_result(grant, "deleted")
+    case superseded_child_worker_handoff_cleanup_opts(config) do
+      {:ok, opts} ->
+        case SecretHandoff.delete_worker_secret_for_grant(child, worker_grant, opts) do
+          :ok ->
+            superseded_child_worker_handoff_cleanup_result(grant, "deleted")
 
-      {:error, {:handoff_metadata_failed, :missing_metadata}} ->
-        superseded_child_worker_handoff_cleanup_result(grant, "no_metadata")
+          {:error, {:handoff_metadata_failed, :missing_metadata}} ->
+            superseded_child_worker_handoff_cleanup_result(grant, "no_metadata")
+
+          {:error, reason} ->
+            grant
+            |> superseded_child_worker_handoff_cleanup_result("failed")
+            |> Map.put("reason", reason_text(reason))
+        end
 
       {:error, reason} ->
         grant
@@ -1909,13 +1918,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp superseded_child_worker_handoff_cleanup_opts(%Config{} = config) do
-    [
-      mode: "auto",
-      claimed_by: "superseded-child-worker-cleanup",
-      database: config.database,
-      repo_root: default_secret_handoff_repo_root(),
-      require_metadata: true
-    ]
+    case default_secret_handoff_repo_root() do
+      {:ok, repo_root} ->
+        {:ok,
+         [
+           mode: "auto",
+           claimed_by: "superseded-child-worker-cleanup",
+           database: config.database,
+           repo_root: repo_root,
+           require_metadata: true
+         ]}
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   defp superseded_child_worker_handoff_cleanup_result(%AccessGrant{} = grant, status) do
@@ -6341,16 +6357,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp store_child_worker_secret(%Config{} = config, %WorkPackage{} = child, %{grant: grant} = minted, template) do
     worker_grant = child_worker_grant_for_handoff(minted)
-    opts = child_worker_handoff_opts(config, child, grant, template)
     creation = %{work_package: child, worker_grant: worker_grant}
 
-    with {:ok, handoff} <- SecretHandoff.store_worker_secret(creation, opts),
+    with {:ok, opts} <- child_worker_handoff_opts(config, child, grant, template),
+         {:ok, handoff} <- SecretHandoff.store_worker_secret(creation, opts),
          :ok <- SecretHandoff.store_worker_secret_metadata(child, worker_grant, handoff, opts) do
       {:ok, handoff}
     else
       {:error, reason} ->
         cleanup_reason =
-          SecretHandoff.delete_worker_secret_for_grant(child, child_worker_grant_for_cleanup(grant), opts)
+          case child_worker_handoff_opts(config, child, grant, template) do
+            {:ok, opts} ->
+              SecretHandoff.delete_worker_secret_for_grant(child, child_worker_grant_for_cleanup(grant), opts)
+
+            {:error, _opts_reason} ->
+              :ok
+          end
 
         _ = AccessGrantService.revoke(config.repo, grant.id)
 
@@ -6362,23 +6384,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp child_worker_handoff_cleanup(%Config{} = config, %WorkPackage{} = child, %{grant: %AccessGrant{} = grant}, template) do
+    {:ok, opts} = child_worker_handoff_opts(config, child, grant, template)
+
     %{
       work_package: child,
       worker_grant: child_worker_grant_for_cleanup(grant),
-      opts: child_worker_handoff_opts(config, child, grant, template)
+      opts: opts
     }
   end
 
   defp child_worker_handoff_opts(%Config{} = config, %WorkPackage{} = child, %AccessGrant{} = _grant, template) do
     handoff = Map.get(template, "secret_handoff") || %{}
 
-    [
-      mode: optional_handoff_value(handoff, "mode", "auto"),
-      store_dir: optional_handoff_value(handoff, "store_dir", nil),
-      claimed_by: optional_handoff_value(handoff, "claimed_by", default_child_claimed_by(child)),
-      database: config.database,
-      repo_root: default_secret_handoff_repo_root()
-    ]
+    with {:ok, repo_root} <- default_secret_handoff_repo_root() do
+      {:ok,
+       [
+         mode: optional_handoff_value(handoff, "mode", "auto"),
+         store_dir: optional_handoff_value(handoff, "store_dir", nil),
+         claimed_by: optional_handoff_value(handoff, "claimed_by", default_child_claimed_by(child)),
+         database: config.database,
+         repo_root: repo_root
+       ]}
+    end
   end
 
   defp optional_handoff_value(handoff, key, default) do
@@ -6401,19 +6428,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp default_secret_handoff_repo_root do
     cwd = File.cwd!()
 
-    [
-      Application.get_env(:symphony_elixir, :repo_root),
-      @source_repo_root,
-      cwd,
-      Path.expand("..", cwd),
-      Path.expand("../..", cwd)
-    ]
+    default_secret_handoff_repo_root_candidates(cwd)
     |> Enum.reject(&is_nil/1)
     |> Enum.map(&Path.expand/1)
     |> Enum.find(&secret_handoff_repo_root?/1)
     |> case do
-      nil -> @source_repo_root
-      repo_root -> repo_root
+      nil -> {:error, :secret_handoff_repo_root_unavailable}
+      repo_root -> {:ok, repo_root}
+    end
+  end
+
+  defp default_secret_handoff_repo_root_candidates(cwd) do
+    case Application.get_env(:symphony_elixir, :secret_handoff_repo_root_candidates) do
+      candidates when is_list(candidates) ->
+        candidates
+
+      _candidates ->
+        [
+          Application.get_env(:symphony_elixir, :repo_root),
+          @source_repo_root,
+          cwd,
+          Path.expand("..", cwd),
+          Path.expand("../..", cwd)
+        ]
     end
   end
 
