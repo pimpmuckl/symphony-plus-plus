@@ -474,19 +474,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   end
 
   defp handoff_metadata_read_paths(work_package, worker_grant, opts) do
+    stable_handoff_metadata_paths(work_package, worker_grant, opts) ++
+      legacy_handoff_metadata_paths(work_package, worker_grant, opts)
+  end
+
+  defp stable_handoff_metadata_paths(work_package, worker_grant, opts) do
+    handoff_metadata_dirs(opts)
+    |> Enum.map(&handoff_metadata_path(work_package, worker_grant, &1))
+  end
+
+  defp legacy_handoff_metadata_paths(work_package, worker_grant, opts) do
+    handoff_metadata_dirs(opts)
+    |> Enum.map(&legacy_handoff_metadata_path(work_package, worker_grant, &1, opts))
+  end
+
+  defp handoff_metadata_dirs(opts) do
     cond do
-      Keyword.get(opts, :metadata_dir) ->
-        [handoff_metadata_path(work_package, worker_grant, Keyword.fetch!(opts, :metadata_dir), opts)]
-
-      Keyword.get(opts, :store_dir) ->
-        [
-          handoff_metadata_path(work_package, worker_grant, store_handoff_metadata_dir(opts), opts),
-          handoff_metadata_path(work_package, worker_grant, default_handoff_metadata_dir(), opts)
-        ]
-
-      true ->
-        [handoff_metadata_path(work_package, worker_grant, default_handoff_metadata_dir(), opts)]
+      Keyword.get(opts, :metadata_dir) -> [Keyword.fetch!(opts, :metadata_dir)]
+      Keyword.get(opts, :store_dir) -> [store_handoff_metadata_dir(opts), default_handoff_metadata_dir()]
+      true -> [default_handoff_metadata_dir()]
     end
+    |> Enum.uniq()
   end
 
   defp write_private_temp_secret_file(path, secret, opts) do
@@ -583,26 +591,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   end
 
   defp handoff_metadata_write_paths(work_package, worker_grant, opts) do
-    cond do
-      Keyword.get(opts, :metadata_dir) ->
-        [handoff_metadata_path(work_package, worker_grant, Keyword.fetch!(opts, :metadata_dir), opts)]
-
-      Keyword.get(opts, :store_dir) ->
-        [
-          handoff_metadata_path(work_package, worker_grant, store_handoff_metadata_dir(opts), opts),
-          handoff_metadata_path(work_package, worker_grant, default_handoff_metadata_dir(), opts)
-        ]
-
-      true ->
-        [handoff_metadata_path(work_package, worker_grant, default_handoff_metadata_dir(), opts)]
-    end
-    |> Enum.uniq()
+    stable_handoff_metadata_paths(work_package, worker_grant, opts)
   end
 
-  defp handoff_metadata_path(%WorkPackage{} = work_package, worker_grant, metadata_dir, opts) do
+  defp handoff_metadata_path(%WorkPackage{} = work_package, worker_grant, metadata_dir) do
+    display_key = Map.fetch!(worker_grant, :display_key)
+    identity = handoff_metadata_identity(worker_grant)
+    filename = "#{safe_filename(work_package.id)}-#{safe_filename(display_key)}-#{safe_filename(identity)}.json"
+    Path.join(Path.expand(metadata_dir), filename)
+  end
+
+  defp legacy_handoff_metadata_path(%WorkPackage{} = work_package, worker_grant, metadata_dir, opts) do
     display_key = Map.fetch!(worker_grant, :display_key)
     filename = "#{safe_filename(work_package.id)}-#{safe_filename(display_key)}-#{handoff_filename_hash(work_package, display_key, opts)}.json"
     Path.join(Path.expand(metadata_dir), filename)
+  end
+
+  defp handoff_metadata_identity(worker_grant) do
+    case handoff_value(worker_grant, :id) do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> Map.fetch!(worker_grant, :display_key)
+          trimmed -> trimmed
+        end
+
+      _value ->
+        Map.fetch!(worker_grant, :display_key)
+    end
   end
 
   defp default_handoff_metadata_dir do

@@ -214,7 +214,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
   test "can delete a local handoff using work package and grant metadata" do
     store_dir = Path.join(System.tmp_dir!(), "sympp-secret-delete-grant-#{System.unique_integer([:positive])}")
     package = work_package()
-    grant = %{display_key: "D321"}
+    grant = %{id: "ag-secret-delete-grant-D321", display_key: "D321"}
 
     opts = [
       mode: "local-private-file",
@@ -236,7 +236,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
 
   test "deletes a handoff from stored metadata instead of current reconstruction opts" do
     package = work_package()
-    grant = %{display_key: "D321"}
+    grant = %{id: "ag-secret-metadata-D321", display_key: "D321"}
     metadata_dir = Path.join(System.tmp_dir!(), "sympp-secret-metadata-#{System.unique_integer([:positive])}")
     stale_secret_path = Path.join(System.tmp_dir!(), "sympp-secret-stale-#{System.unique_integer([:positive])}.secret")
 
@@ -273,9 +273,81 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
+  test "deletes stored metadata after repo root and database options change" do
+    package = work_package()
+    grant = %{id: "ag-secret-stable-metadata-D321", display_key: "D321"}
+    metadata_dir = Path.join(System.tmp_dir!(), "sympp-secret-stable-metadata-#{System.unique_integer([:positive])}")
+    secret_path = Path.join(System.tmp_dir!(), "sympp-secret-stable-metadata-#{System.unique_integer([:positive])}.secret")
+
+    store_opts = [
+      mode: "windows-credential-manager",
+      metadata_dir: metadata_dir,
+      database: "tmp/original-ledger.sqlite3",
+      claimed_by: "worker-local-1",
+      repo_root: @repo_root
+    ]
+
+    delete_opts =
+      store_opts
+      |> Keyword.put(:database, "tmp/renamed-ledger.sqlite3")
+      |> Keyword.put(:repo_root, Path.expand("..", @repo_root))
+
+    try do
+      File.write!(secret_path, "synthetic-stable-metadata-secret")
+
+      assert :ok =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "local-private-file", "path" => secret_path},
+                 store_opts
+               )
+
+      assert [metadata_filename] = File.ls!(metadata_dir)
+      metadata_file = Path.join(metadata_dir, metadata_filename)
+      assert Path.basename(metadata_file) =~ "ag-secret-stable-metadata-D321"
+
+      assert :ok = SecretHandoff.delete_worker_secret_for_grant(package, grant, delete_opts)
+      refute File.exists?(secret_path)
+      assert File.ls!(metadata_dir) == []
+    after
+      File.rm(secret_path)
+      File.rm_rf!(metadata_dir)
+    end
+  end
+
+  test "deletes metadata written with the previous repo-scoped filename shape" do
+    package = work_package()
+    grant = %{id: "ag-secret-legacy-metadata-D321", display_key: "D321"}
+    metadata_dir = Path.join(System.tmp_dir!(), "sympp-secret-legacy-metadata-#{System.unique_integer([:positive])}")
+    secret_path = Path.join(System.tmp_dir!(), "sympp-secret-legacy-metadata-#{System.unique_integer([:positive])}.secret")
+
+    opts = [
+      mode: "windows-credential-manager",
+      metadata_dir: metadata_dir,
+      database: "tmp/legacy-ledger.sqlite3",
+      claimed_by: "worker-local-1",
+      repo_root: @repo_root
+    ]
+
+    try do
+      File.write!(secret_path, "synthetic-legacy-metadata-secret")
+      legacy_metadata_file = legacy_handoff_metadata_file(package, grant, metadata_dir, opts)
+      File.mkdir_p!(Path.dirname(legacy_metadata_file))
+      File.write!(legacy_metadata_file, Jason.encode!(%{"mode" => "local-private-file", "path" => secret_path}))
+
+      assert :ok = SecretHandoff.delete_worker_secret_for_grant(package, grant, opts)
+      refute File.exists?(secret_path)
+      refute File.exists?(legacy_metadata_file)
+    after
+      File.rm(secret_path)
+      File.rm_rf!(metadata_dir)
+    end
+  end
+
   test "stores handoff metadata under a custom handoff store" do
     package = work_package()
-    grant = %{display_key: "D321"}
+    grant = %{id: "ag-secret-custom-metadata-D321", display_key: "D321"}
     store_dir = Path.join(System.tmp_dir!(), "sympp-secret-custom-metadata-#{System.unique_integer([:positive])}")
     custom_secret_path = Path.join(System.tmp_dir!(), "sympp-secret-custom-source-#{System.unique_integer([:positive])}.secret")
     stale_mirror_secret_path = Path.join(System.tmp_dir!(), "sympp-secret-custom-stale-#{System.unique_integer([:positive])}.secret")
@@ -322,7 +394,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
 
   test "reports default metadata mirror write failures for custom handoff stores" do
     package = work_package()
-    grant = %{display_key: "D321"}
+    grant = %{id: "ag-secret-required-metadata-D321", display_key: "D321"}
     store_dir = Path.join(System.tmp_dir!(), "sympp-secret-required-metadata-#{System.unique_integer([:positive])}")
     secret_path = Path.join(System.tmp_dir!(), "sympp-secret-required-metadata-source-#{System.unique_integer([:positive])}.secret")
 
@@ -534,7 +606,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
   end
 
   defp worker_grant(secret \\ "synthetic-secret") do
-    %{display_key: "D321", secret: secret}
+    %{id: "ag-secret-handoff-D321", display_key: "D321", secret: secret}
+  end
+
+  defp legacy_handoff_metadata_file(%WorkPackage{} = work_package, grant, metadata_dir, opts) do
+    display_key = Map.fetch!(grant, :display_key)
+    filename = "#{safe_filename(work_package.id)}-#{safe_filename(display_key)}-#{legacy_handoff_filename_hash(work_package.id, display_key, opts)}.json"
+    Path.join(Path.expand(metadata_dir), filename)
+  end
+
+  defp legacy_handoff_filename_hash(work_package_id, display_key, opts) do
+    hash_source = [
+      to_string(Keyword.get(opts, :repo_root, "")),
+      0,
+      to_string(Keyword.get(opts, :database, "")),
+      0,
+      work_package_id,
+      0,
+      display_key
+    ]
+
+    :sha256
+    |> :crypto.hash(hash_source)
+    |> Base.url_encode64(padding: false)
+    |> binary_part(0, 16)
+  end
+
+  defp safe_filename(value) when is_binary(value) do
+    Regex.replace(~r/[^A-Za-z0-9._-]+/, value, "_")
   end
 
   defp remove_windows_credential!(powershell, target) do

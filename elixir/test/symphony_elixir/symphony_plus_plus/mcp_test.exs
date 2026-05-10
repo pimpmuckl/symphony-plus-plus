@@ -3922,7 +3922,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, child} = WorkPackageRepository.get(repo, child_id)
 
     assert :ok =
-             SecretHandoff.delete_worker_secret_for_grant(child, %{display_key: first_display_key},
+             SecretHandoff.delete_worker_secret_for_grant(child, %{id: first_grant_id, display_key: first_display_key},
                mode: "auto",
                claimed_by: "test-cleanup",
                repo_root: @repo_root
@@ -3970,7 +3970,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     first_grant_id = get_in(first_response, ["result", "structuredContent", "worker_grant", "id"])
     first_display_key = get_in(first_response, ["result", "structuredContent", "worker_grant", "display_key"])
     first_handoff = get_in(first_response, ["result", "structuredContent", "worker_grant", "secret_handoff"])
-    first_metadata_file = default_handoff_metadata_file(child_id, first_display_key)
+    first_metadata_file = default_handoff_metadata_file(child_id, first_grant_id, first_display_key)
 
     try do
       File.mkdir_p!(Path.dirname(first_metadata_file))
@@ -3997,6 +3997,61 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     after
       _ = SecretHandoff.delete_worker_secret(first_handoff, repo_root: @repo_root)
       File.rm(first_metadata_file)
+    end
+  end
+
+  test "child worker key remint cleans superseded handoff after repo root and database options change", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-MINT-STABLE-METADATA-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-STABLE-METADATA-CHILD")
+    first_repo_root = temp_secret_handoff_repo_root!()
+    second_repo_root = temp_secret_handoff_repo_root!()
+    original_repo_root = Application.get_env(:symphony_elixir, :repo_root)
+
+    try do
+      Application.put_env(:symphony_elixir, :repo_root, first_repo_root)
+
+      first_response =
+        mcp_tool(
+          repo,
+          architect_session,
+          "mint_child_worker_key",
+          %{"work_package_id" => child_id, "template" => %{}},
+          config: Config.default(repo: repo, database: "tmp/original-ledger.sqlite3")
+        )
+
+      assert_child_worker_secret_handoff_only!(first_response)
+      first_grant_id = get_in(first_response, ["result", "structuredContent", "worker_grant", "id"])
+      first_display_key = get_in(first_response, ["result", "structuredContent", "worker_grant", "display_key"])
+      first_metadata_file = default_handoff_metadata_file(child_id, first_grant_id, first_display_key)
+      assert File.exists?(first_metadata_file)
+
+      Application.put_env(:symphony_elixir, :repo_root, second_repo_root)
+
+      second_response =
+        mcp_tool(
+          repo,
+          architect_session,
+          "mint_child_worker_key",
+          %{"work_package_id" => child_id, "template" => %{}},
+          config: Config.default(repo: repo, database: "tmp/renamed-ledger.sqlite3")
+        )
+
+      assert_child_worker_secret_handoff_only!(second_response)
+      cleanup = get_in(second_response, ["result", "structuredContent", "superseded_worker_handoff_cleanup"])
+
+      assert cleanup["status"] == "ok"
+      assert [%{"grant_id" => ^first_grant_id, "display_key" => ^first_display_key, "status" => "deleted"}] = cleanup["results"]
+      refute File.exists?(first_metadata_file)
+    after
+      restore_application_env(:repo_root, original_repo_root)
+      File.rm_rf!(first_repo_root)
+      File.rm_rf!(second_repo_root)
     end
   end
 
@@ -10269,7 +10324,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     end)
   end
 
-  defp mcp_tool(repo, session, name, arguments) do
+  defp mcp_tool(repo, session, name, arguments, opts \\ []) do
     response =
       MCPHarness.request(
         %{
@@ -10278,8 +10333,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "method" => "tools/call",
           "params" => %{"name" => name, "arguments" => arguments}
         },
-        repo: repo,
-        session: session
+        Keyword.merge([repo: repo, session: session], opts)
       )
 
     register_child_handoff_cleanup(response)
@@ -10287,13 +10341,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   end
 
   defp register_child_handoff_cleanup(response) do
-    case get_in(response, ["result", "structuredContent", "worker_grant", "secret_handoff"]) do
+    worker_grant = get_in(response, ["result", "structuredContent", "worker_grant"]) || %{}
+
+    case Map.get(worker_grant, "secret_handoff") do
       handoff when is_map(handoff) ->
         ExUnit.Callbacks.on_exit(fn ->
           _result =
             SecretHandoff.delete_worker_secret_for_grant(
               %WorkPackage{id: handoff["work_package_id"]},
-              %{display_key: handoff["display_key"]},
+              %{id: worker_grant["id"], display_key: handoff["display_key"] || worker_grant["display_key"]},
               mode: Map.get(handoff, "mode", "auto"),
               claimed_by: Map.get(handoff, "claimed_by", "test-cleanup"),
               repo_root: @repo_root
@@ -10305,20 +10361,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     end
   end
 
-  defp default_handoff_metadata_file(work_package_id, display_key) do
-    filename =
-      "#{safe_handoff_filename(work_package_id)}-#{safe_handoff_filename(display_key)}-#{handoff_filename_hash(work_package_id, display_key)}.json"
-
+  defp default_handoff_metadata_file(work_package_id, grant_id, display_key) do
+    filename = "#{safe_handoff_filename(work_package_id)}-#{safe_handoff_filename(display_key)}-#{safe_handoff_filename(grant_id)}.json"
     Path.join(default_handoff_metadata_dir(), filename)
   end
 
-  defp handoff_filename_hash(work_package_id, display_key) do
-    hash_source = [@repo_root, 0, "", 0, work_package_id, 0, display_key]
+  defp temp_secret_handoff_repo_root! do
+    root = Path.join(System.tmp_dir!(), "sympp-secret-handoff-root-#{System.unique_integer([:positive])}")
+    scripts_dir = Path.join(root, "scripts")
+    File.mkdir_p!(scripts_dir)
+    File.write!(Path.join(scripts_dir, "sympp-worker-secret.ps1"), "")
+    File.write!(Path.join(scripts_dir, "sympp-worker-secret.sh"), "#!/bin/sh\nexit 0\n")
+    root
+  end
 
-    :sha256
-    |> :crypto.hash(hash_source)
-    |> Base.url_encode64(padding: false)
-    |> binary_part(0, 16)
+  defp restore_application_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
+
+  defp restore_application_env(key, value) do
+    Application.put_env(:symphony_elixir, key, value)
   end
 
   defp safe_handoff_filename(value) when is_binary(value) do

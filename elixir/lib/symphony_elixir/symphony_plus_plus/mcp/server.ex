@@ -1891,7 +1891,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp cleanup_superseded_child_worker_handoff(%Config{} = config, %WorkPackage{} = child, %AccessGrant{} = grant) do
-    worker_grant = %{display_key: grant.display_key}
+    worker_grant = child_worker_grant_for_cleanup(grant)
     opts = superseded_child_worker_handoff_cleanup_opts(config)
 
     case SecretHandoff.delete_worker_secret_for_grant(child, worker_grant, opts) do
@@ -1920,6 +1920,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp superseded_child_worker_handoff_cleanup_result(%AccessGrant{} = grant, status) do
     %{"grant_id" => grant.id, "display_key" => grant.display_key, "status" => status}
+  end
+
+  defp child_worker_grant_for_cleanup(%AccessGrant{} = grant) do
+    %{id: grant.id, display_key: grant.display_key}
   end
 
   defp superseded_child_worker_handoff_cleanup_status([]), do: "not_applicable"
@@ -6345,7 +6349,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, handoff}
     else
       {:error, reason} ->
-        cleanup_reason = SecretHandoff.delete_worker_secret_for_grant(child, %{display_key: grant.display_key}, opts)
+        cleanup_reason =
+          SecretHandoff.delete_worker_secret_for_grant(child, child_worker_grant_for_cleanup(grant), opts)
+
         _ = AccessGrantService.revoke(config.repo, grant.id)
 
         case cleanup_reason do
@@ -6358,7 +6364,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp child_worker_handoff_cleanup(%Config{} = config, %WorkPackage{} = child, %{grant: %AccessGrant{} = grant}, template) do
     %{
       work_package: child,
-      worker_grant: %{display_key: grant.display_key},
+      worker_grant: child_worker_grant_for_cleanup(grant),
       opts: child_worker_handoff_opts(config, child, grant, template)
     }
   end
