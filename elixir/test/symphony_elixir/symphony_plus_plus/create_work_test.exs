@@ -417,6 +417,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
 
   if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
 
+  test "create-work private handoff storage names use the persisted grant id and redact the raw secret", %{repo: repo} do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-create-work-grant-handoff-#{System.unique_integer([:positive])}")
+
+    try do
+      assert {:ok, {creation, handoff}} =
+               CreateWork.create_with_worker_secret_handoff(
+                 repo,
+                 %{
+                   repo: "kraken",
+                   base_branch: "main",
+                   title: "Create private grant handoff",
+                   acceptance_criteria: ["Worker secret handoff is private."]
+                 },
+                 mode: "local-private-file",
+                 store_dir: store_dir,
+                 claimed_by: "worker-create-work-grant-id",
+                 repo_root: @repo_root
+               )
+
+      grant_id = creation.worker_grant.id
+      secret = creation.worker_grant.secret
+      payload = CreateWork.response_payload(creation, worker_secret_handoff: handoff)
+      json = Jason.encode!(payload)
+
+      assert creation.work_package.status == "ready_for_worker"
+      assert handoff.path =~ grant_id
+      assert handoff.target =~ grant_id
+      assert File.read!(handoff.path) == secret
+      refute Map.has_key?(payload.worker_grant, :secret)
+      assert payload.worker_grant.secret_handoff.target == handoff.target
+      refute json =~ secret
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
+
   test "removes stored worker secret when ready promotion fails after handoff", %{repo: repo} do
     store_dir = Path.join(System.tmp_dir!(), "sympp-ready-failure-handoff-#{System.unique_integer([:positive])}")
 
