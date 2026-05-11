@@ -405,6 +405,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
       assert File.exists?(first_metadata_path)
       assert File.exists?(second_metadata_path)
       assert File.exists?(third_metadata_path)
+
+      credential_opts = [
+        mode: "windows-credential-manager",
+        store_dir: first_store_dir,
+        repo_root: @repo_root,
+        claimed_by: "worker-windows-1"
+      ]
+
+      equivalent_credential_opts = Keyword.put(credential_opts, :repo_root, Path.join(@repo_root, "."))
+      credential_metadata_path = managed_metadata_file(package, grant, credential_opts)
+      target = credential_target(package, grant)
+
+      assert managed_metadata_file(package, grant, equivalent_credential_opts) == credential_metadata_path
+
+      assert :ok =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "windows-credential-manager", "target" => target},
+                 credential_opts
+               )
+
+      assert :ok =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "windows-credential-manager", "target" => target},
+                 equivalent_credential_opts
+               )
     after
       File.rm_rf!(first_store_dir)
       File.rm_rf!(second_store_dir)

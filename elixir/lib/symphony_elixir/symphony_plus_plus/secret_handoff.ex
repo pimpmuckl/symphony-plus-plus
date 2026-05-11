@@ -540,7 +540,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     hash_source = [
       "v1",
       0,
-      to_string(Keyword.get(opts, :repo_root, "")),
+      opts |> Keyword.fetch!(:repo_root) |> Path.expand(),
       0,
       to_string(Keyword.get(opts, :database, "")),
       0,
@@ -632,7 +632,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
     with :ok <- File.mkdir_p(directory),
          :ok <- prepare_private_store_dir(directory, opts),
-         :ok <- write_handoff_metadata_file(path, encoded, opts) do
+         :ok <- with_handoff_metadata_lock(path, opts, fn -> write_handoff_metadata_file(path, encoded, opts) end) do
       :ok
     else
       {:error, :handoff_metadata_conflict} -> {:error, :handoff_metadata_conflict}
@@ -643,7 +643,51 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     error -> {:error, {:handoff_metadata_write_failed, error.__struct__}}
   end
 
+  defp with_handoff_metadata_lock(path, opts, fun) do
+    lock_path = "#{path}.lock"
+
+    with {:ok, lock_file} <- acquire_handoff_metadata_lock(lock_path, opts) do
+      try do
+        fun.()
+      after
+        File.close(lock_file)
+        File.rm(lock_path)
+      end
+    end
+  end
+
+  defp acquire_handoff_metadata_lock(path, opts) do
+    attempts = Keyword.get(opts, :metadata_lock_attempts, 100)
+    sleep_ms = Keyword.get(opts, :metadata_lock_sleep_ms, 5)
+
+    do_acquire_handoff_metadata_lock(path, attempts, sleep_ms)
+  end
+
+  defp do_acquire_handoff_metadata_lock(_path, 0, _sleep_ms), do: {:error, {:handoff_metadata_write_failed, {:lock, :timeout}}}
+
+  defp do_acquire_handoff_metadata_lock(path, attempts, sleep_ms) do
+    case File.open(path, [:write, :exclusive, :binary]) do
+      {:ok, file} ->
+        {:ok, file}
+
+      {:error, :eexist} ->
+        Process.sleep(sleep_ms)
+        do_acquire_handoff_metadata_lock(path, attempts - 1, sleep_ms)
+
+      {:error, reason} ->
+        {:error, {:handoff_metadata_write_failed, {:lock, reason}}}
+    end
+  end
+
   defp write_handoff_metadata_file(path, encoded, opts) do
+    case existing_handoff_metadata(path, encoded) do
+      :missing -> write_new_handoff_metadata_file(path, encoded, opts)
+      :ok -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp write_new_handoff_metadata_file(path, encoded, opts) do
     temp_path = "#{path}.tmp-#{System.unique_integer([:positive])}"
 
     try do
@@ -676,18 +720,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   end
 
   defp publish_handoff_metadata_file(temp_path, path, encoded, opts) do
-    link_fun = Keyword.get(opts, :metadata_link_fun, &File.ln/2)
+    rename_fun = Keyword.get(opts, :metadata_rename_fun, &File.rename/2)
 
-    case link_fun.(temp_path, path) do
+    case rename_fun.(temp_path, path) do
       :ok -> :ok
-      {:error, :eexist} -> allow_equivalent_handoff_metadata_write(path, encoded)
-      {:error, reason} -> {:error, {:handoff_metadata_write_failed, {:link, reason}}}
+      {:error, :eexist} -> existing_handoff_metadata(path, encoded)
+      {:error, reason} -> {:error, {:handoff_metadata_write_failed, {:rename, reason}}}
     end
   end
 
-  defp allow_equivalent_handoff_metadata_write(path, encoded) do
-    with {:ok, existing} <- File.read(path),
-         {:ok, existing_metadata} <- decode_handoff_metadata(existing),
+  defp existing_handoff_metadata(path, encoded) do
+    case File.read(path) do
+      {:ok, existing} ->
+        compare_handoff_metadata(existing, encoded)
+
+      {:error, reason} ->
+        if reason == :enoent,
+          do: :missing,
+          else: {:error, {:handoff_metadata_write_failed, {:existing_metadata_unreadable, reason}}}
+    end
+  end
+
+  defp compare_handoff_metadata(existing, encoded) do
+    with {:ok, existing_metadata} <- decode_handoff_metadata(existing),
          {:ok, new_metadata} <- decode_handoff_metadata(encoded) do
       if existing_metadata == new_metadata, do: :ok, else: {:error, :handoff_metadata_conflict}
     else
