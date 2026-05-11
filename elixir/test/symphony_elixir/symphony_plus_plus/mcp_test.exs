@@ -3989,6 +3989,55 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert active_worker_grants(grants) == []
   end
 
+  test "child worker key minting preserves old unclaimed grant when replacement handoff storage fails", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-HANDOFF-FAIL-OLD-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-HANDOFF-FAIL-OLD-CHILD")
+
+    first_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => child_worker_template()
+      })
+
+    first_grant = get_in(first_response, ["result", "structuredContent", "worker_grant"])
+    first_grant_id = Map.fetch!(first_grant, "id")
+    first_handoff = Map.fetch!(first_grant, "secret_handoff")
+
+    bad_store_dir = Path.join(test_handoff_store_dir(), "replacement-not-a-directory")
+    File.mkdir_p!(Path.dirname(bad_store_dir))
+    File.write!(bad_store_dir, "blocks replacement handoff directory creation")
+
+    failed_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => child_worker_template(%{"store_dir" => bad_store_dir})
+      })
+
+    assert get_in(failed_response, ["error", "code"]) == -32_602
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(repo, child_id)
+    child_delegated_grants = Enum.filter(grants, &(&1.provenance == @child_worker_grant_provenance))
+    assert length(child_delegated_grants) == 2
+
+    assert [%AccessGrant{id: ^first_grant_id, revoked_at: nil} = active_grant] = active_worker_grants(grants)
+    assert Enum.any?(child_delegated_grants, &(&1.id != first_grant_id and match?(%DateTime{}, &1.revoked_at)))
+
+    assert :ok =
+             SecretHandoff.delete_worker_secret_by_grant(
+               repo.get!(WorkPackage, child_id),
+               active_grant,
+               test_handoff_opts()
+             )
+
+    assert :ok = SecretHandoff.delete_worker_secret(first_handoff, test_handoff_opts())
+  end
+
   test "child worker key minting warns without failing when old handoff cleanup fails", %{repo: repo} do
     {_anchor, architect_session} =
       create_architect_session(repo, "SYMPP-P7-002-HANDOFF-CLEANUP-WARN-ANCHOR", [

@@ -1783,8 +1783,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp mint_child_worker_key(%Config{} = config, %Session{} = session, work_package_id, template) do
     with {:ok, handoff_template} <- child_worker_secret_handoff_template(template),
          {:ok, handoff_opts} <- child_worker_secret_handoff_opts(config, work_package_id, handoff_template),
-         {:ok, {child, minted, superseded_grants}} <- mint_child_worker_key_transaction(config.repo, session, work_package_id, template),
-         {:ok, handoff} <- store_child_worker_secret_handoff(config.repo, child, minted, handoff_opts) do
+         {:ok, {child, minted}} <- mint_child_worker_key_transaction(config.repo, session, work_package_id, template),
+         {:ok, handoff} <- store_child_worker_secret_handoff(config.repo, child, minted, handoff_opts),
+         {:ok, superseded_grants} <- supersede_child_worker_grants_after_handoff(config.repo, child, minted, handoff, handoff_opts) do
       cleanup = cleanup_superseded_child_worker_handoffs(child, superseded_grants, handoff_opts)
 
       {:ok,
@@ -1824,9 +1825,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, _prechecked_child} <- require_transaction_current_child_scope(repo, work_package_id, anchor, phase_id),
          :ok <- reject_claimed_active_child_worker_grant(repo, work_package_id),
          {:ok, child} <- require_child_ready_for_mint(repo, work_package_id, anchor, phase_id),
-         {:ok, superseded_grants} <- supersede_unclaimed_child_worker_grants(repo, work_package_id),
          {:ok, minted} <- AccessGrantService.mint_worker_grant(repo, child.id, grant_opts) do
-      {:ok, {child, minted, superseded_grants}}
+      {:ok, {child, minted}}
     end
   end
 
@@ -1867,6 +1867,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp supersede_child_worker_grants_after_handoff(repo, %WorkPackage{} = child, minted, _handoff, handoff_opts) do
+    case supersede_unclaimed_child_worker_grants(repo, child.id, exclude_grant_id: minted.grant.id) do
+      {:ok, superseded_grants} ->
+        {:ok, superseded_grants}
+
+      {:tool_error, reason} ->
+        worker_grant = child_worker_grant_secret_payload(minted)
+        cleanup_result = SecretHandoff.delete_worker_secret_by_grant(child, worker_grant, handoff_opts)
+        revoke_result = revoke_child_worker_grant_after_handoff_failure(repo, worker_grant)
+
+        {:tool_error,
+         child_worker_supersede_tool_error(reason,
+           new_handoff_cleanup: cleanup_status(cleanup_result),
+           new_grant_revoke: cleanup_status(revoke_result)
+         )}
+    end
+  end
+
   defp cleanup_superseded_child_worker_handoffs(%WorkPackage{} = child, superseded_grants, handoff_opts) do
     results =
       Enum.map(superseded_grants, fn grant ->
@@ -1896,6 +1914,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp cleanup_status(:ok), do: "ok"
   defp cleanup_status({:error, reason}), do: "failed: #{reason_text(reason)}"
+
+  defp child_worker_supersede_tool_error(reason, metadata) do
+    reason
+    |> reason_text()
+    |> maybe_append_secret_handoff_metadata(metadata)
+  end
 
   defp secret_handoff_tool_error(reason, metadata) do
     reason
@@ -2540,7 +2564,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp supersede_unclaimed_child_worker_grants(repo, work_package_id) do
+  defp supersede_unclaimed_child_worker_grants(repo, work_package_id, opts) do
     now = DateTime.utc_now(:microsecond)
 
     active_query =
@@ -2549,19 +2573,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
           grant.work_package_id == ^work_package_id and grant.grant_role == "worker" and is_nil(grant.revoked_at) and
             grant.provenance == ^@child_worker_grant_provenance and grant.expires_at > ^now
       )
+      |> maybe_exclude_access_grant(Keyword.get(opts, :exclude_grant_id))
 
     active_grants = repo.all(active_query)
 
     if Enum.any?(active_grants, &match?(%DateTime{}, &1.claimed_at)) do
       {:tool_error, "active_child_worker_grant_exists"}
     else
-      supersede_unclaimed_child_worker_grants(repo, active_grants, now)
+      revoke_unclaimed_child_worker_grants(repo, active_grants, now)
     end
   end
 
-  defp supersede_unclaimed_child_worker_grants(_repo, [], _now), do: {:ok, []}
+  defp revoke_unclaimed_child_worker_grants(_repo, [], _now), do: {:ok, []}
 
-  defp supersede_unclaimed_child_worker_grants(repo, active_grants, now) do
+  defp revoke_unclaimed_child_worker_grants(repo, active_grants, now) do
     grant_ids = Enum.map(active_grants, & &1.id)
 
     revoke_query =
@@ -2574,6 +2599,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       _stale_or_claimed -> {:tool_error, "active_child_worker_grant_exists"}
     end
   end
+
+  defp maybe_exclude_access_grant(query, grant_id) when is_binary(grant_id) do
+    from(grant in query, where: grant.id != ^grant_id)
+  end
+
+  defp maybe_exclude_access_grant(query, _grant_id), do: query
 
   defp architect_anchor_work_package(repo, %Session{} = session) do
     case Session.work_package_id(session) do
