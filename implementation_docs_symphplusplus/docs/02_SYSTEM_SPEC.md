@@ -2,6 +2,16 @@
 
 ## Core concepts
 
+### WorkRequest
+
+A v2 pre-WorkPackage intake object. A WorkRequest captures the human's intended
+project or repo, base branch, work type, description, constraints, and desired
+dispatch shape before an architect slices the work into WorkPackages.
+
+WorkRequests are product-contract documentation in this repo today. They do not
+imply that runtime WorkRequest storage, dashboard intake, MCP intake tools, or
+automatic slicing already exist.
+
 ### WorkPackage
 
 The atomic unit of agent work. It can represent a phase PR, hotfix PR, quick issue, investigation, review-only task, or architect-created child package.
@@ -187,3 +197,15 @@ Linear
 Codex/Symphony
   execution of isolated agent runs
 ```
+
+## v2 intake boundary
+
+A clarified WorkRequest can become one architect-owned plan plus one or more
+WorkPackages. Existing WorkPackage status, grants, virtual planning resources,
+readiness gates, review evidence, and human merge rules remain authoritative
+after packages are created.
+
+If a worker hits ambiguity after dispatch, it asks the architect first. The
+architect may consult ask-pro for hard architecture or product calls. If the
+architect still cannot make a defensible decision from durable request context,
+the package records `human_info_needed` instead of inventing product behavior.

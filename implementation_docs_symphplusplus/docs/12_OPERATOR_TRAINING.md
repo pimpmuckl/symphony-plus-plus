@@ -21,6 +21,37 @@ The reviewer checks correctness, acceptance, validation, security, and scope on
 the current PR head. Reviewers should not turn a focused package into broad doc
 cleanup, old-doc deletion, runtime redesign, or compatibility-policy changes.
 
+A v2 WorkRequest is the pre-WorkPackage product intake object. It lets the
+human provide the repo/project, base branch, work type, description,
+constraints, and desired dispatch shape before an architect asks clarification
+questions and slices the work.
+
+## WorkRequest Flow
+
+1. Human records a WorkRequest and marks it ready for clarification.
+2. Architect asks product questions, records human answers, and writes durable
+   decisions or assumptions before slicing.
+3. Architect produces an architect plan and a slice plan. Feature work defaults
+   to one feature branch with smaller PRs against it. Narrow fixes may target
+   `main` directly when the plan records that choice.
+4. Architect dispatches approved slices as normal WorkPackages.
+5. After dispatch, workers ask the architect first when product or architecture
+   ambiguity appears. The architect may use ask-pro for hard calls. Unresolved
+   product ambiguity becomes `human_info_needed`.
+6. Implementing workers run review-suite T1, T2, and GitHub review by default
+   unless the package policy says otherwise. A dedicated reviewer package is
+   optional for high-risk business logic or live smoke-test ownership.
+
+This flow preserves existing WorkPackage grants, virtual planning resources,
+readiness gates, review evidence, PR evidence, and human merge controls. It is
+not a claim that runtime WorkRequest, dashboard intake, or MCP intake tooling
+already exists.
+
+Until runtime intake exists, keep the WorkRequest in one operator-approved
+Markdown artifact with status, questions, answers, decisions, assumptions, and
+slice-plan sections. Give the architect package a durable reference to that
+artifact plus a bounded handoff summary before dispatch.
+
 ## Standalone Flow
 
 1. Read `01_IMPLEMENTATION_GUIDE.md`, then choose the package policy.

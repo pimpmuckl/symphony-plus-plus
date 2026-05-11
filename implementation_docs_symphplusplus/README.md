@@ -26,6 +26,7 @@ resources, and the docs below.
 ## Start Here
 
 - Product/operator guide: `docs/01_IMPLEMENTATION_GUIDE.md`
+- v2 intake product contract: `docs/13_WORKREQUEST_CONTRACT.md`
 - Role-oriented walkthrough: `docs/12_OPERATOR_TRAINING.md`
 - Short command-flow runbook: `docs/09_OPERATIONAL_RUNBOOK.md`
 - Release gate: `docs/11_RELEASE_VALIDATION.md`

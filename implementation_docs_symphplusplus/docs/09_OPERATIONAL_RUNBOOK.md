@@ -3,6 +3,32 @@
 For role boundaries and examples, read `12_OPERATOR_TRAINING.md`. This file is
 the short command-flow reference for operators.
 
+## v2 WorkRequest Intake
+
+Use this flow before WorkPackages exist when the human request still needs
+product clarification or slicing:
+
+1. Record the WorkRequest with project/repo, base branch, work type, human
+   description, constraints, and desired dispatch shape in one
+   operator-approved Markdown artifact. Do not split canonical request state
+   across chat, generated ask-pro output, or local scratch notes.
+2. Human marks the request ready for clarification.
+3. Architect asks product questions and records human answers.
+4. Architect records durable decisions and explicit assumptions before slicing.
+5. Architect writes an architect plan and slice plan. Feature work defaults to
+   a feature branch with smaller PRs against that branch; narrow fixes may use
+   direct `main` PRs when the plan explains why that is appropriate.
+6. Approved slices become normal WorkPackages with existing grant, readiness,
+   review-suite, PR, and human merge machinery.
+
+When an architect package is created, record the current WorkRequest artifact's
+durable reference, optionally attach the artifact, and include a bounded summary
+of the current status, decisions, assumptions, open questions, and intended
+slices. Do not paste a long clarification history into package prompts.
+
+This is the product contract for future intake. Do not invent dashboard, MCP, or
+runtime WorkRequest tooling until a package explicitly implements it.
+
 ## Standalone Package
 
 1. Choose `quick_fix`, `hotfix`, `investigation`, or another package policy
@@ -20,7 +46,7 @@ the short command-flow reference for operators.
    `plugins/symphony-plus-plus/` or the repo-local
    `.codex/skills/symphony-work-package/` copy, plus the MCP stdio dependency
    configured through the private-store bootstrap documented in
-   `.codex/skills/symphony-work-package/references/mcp_wiring.md`.
+   `../../.codex/skills/symphony-work-package/references/mcp_wiring.md`.
 6. Dispatch the worker with the package id, base branch, target branch
    convention, owned paths, acceptance criteria, required validation/review
    lanes, handoff target, stable `claimed_by` identity, and the prompt in
@@ -64,6 +90,11 @@ Classify the blocker before changing the package:
 - CI/validation: require failure evidence, current branch head, and a concrete
   owner for the fix.
 - Access/secret: revoke or rotate first, then diagnose from preserved logs.
+
+For v2 dispatched work, workers route product or architecture ambiguity to the
+architect first. The architect may consult ask-pro for hard calls. If the
+decision still depends on unavailable human intent, record `human_info_needed`
+rather than filling the gap silently.
 
 Record the resolution in package progress and leave blocked validation explicit
 when it cannot be completed safely.
