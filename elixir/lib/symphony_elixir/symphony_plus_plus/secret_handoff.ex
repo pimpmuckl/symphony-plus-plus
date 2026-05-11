@@ -841,9 +841,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   end
 
   defp local_private_store_dir(opts) do
-    opts
-    |> Keyword.get(:store_dir, default_local_private_store_dir())
-    |> Path.expand()
+    store_dir = Keyword.get(opts, :store_dir) || default_local_private_store_dir()
+    Path.expand(store_dir)
   end
 
   defp safe_filename(value) when is_binary(value) do

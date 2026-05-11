@@ -440,6 +440,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
+  test "metadata persistence treats nil store dir as the default store" do
+    package = work_package()
+    grant = worker_grant()
+
+    nil_store_opts = [
+      mode: "local-private-file",
+      store_dir: nil,
+      repo_root: @repo_root,
+      claimed_by: "worker-local-1"
+    ]
+
+    default_store_opts = Keyword.delete(nil_store_opts, :store_dir)
+    handoff_path = local_private_file_path(package, grant, default_store_opts)
+
+    assert managed_metadata_file(package, grant, nil_store_opts) ==
+             managed_metadata_file(package, grant, default_store_opts)
+
+    assert {:error, {:handoff_metadata_invalid, :missing_local_file}} =
+             SecretHandoff.store_worker_secret_metadata(
+               package,
+               grant,
+               %{"mode" => "local-private-file", "path" => handoff_path},
+               nil_store_opts
+             )
+  end
+
   test "rejects arbitrary existing local files instead of accepting path ownership lookalikes" do
     store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-local-reject-#{System.unique_integer([:positive])}")
     package = work_package("a/b")
@@ -904,8 +930,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
 
   defp managed_metadata_file(%WorkPackage{} = work_package, worker_grant, opts) do
     opts
-    |> Keyword.get(:store_dir, default_local_private_store_dir())
-    |> Path.expand()
+    |> metadata_store_dir()
     |> Path.join("metadata")
     |> Path.join("handoff-#{metadata_hash(work_package.id, worker_grant.display_key, worker_grant.id, opts)}.json")
   end
@@ -918,7 +943,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
       0,
       to_string(Keyword.get(opts, :database, "")),
       0,
-      opts |> Keyword.get(:store_dir, default_local_private_store_dir()) |> Path.expand(),
+      metadata_store_dir(opts),
       0,
       work_package_id,
       0,
@@ -931,6 +956,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     |> :crypto.hash(hash_source)
     |> Base.url_encode64(padding: false)
     |> binary_part(0, 32)
+  end
+
+  defp metadata_store_dir(opts) do
+    store_dir = Keyword.get(opts, :store_dir) || default_local_private_store_dir()
+    Path.expand(store_dir)
   end
 
   defp local_private_file_path(%WorkPackage{} = work_package, worker_grant, opts) do
