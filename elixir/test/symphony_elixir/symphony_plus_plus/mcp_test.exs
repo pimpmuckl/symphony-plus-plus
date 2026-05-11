@@ -106,6 +106,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     def insert(changeset), do: Repo.insert(changeset)
     def all(query), do: Repo.all(query)
     def one(query), do: Repo.one(query)
+    def update(changeset), do: Repo.update(changeset)
     def update_all(query, updates), do: Repo.update_all(query, updates)
     def rollback(value), do: Repo.rollback(value)
   end
@@ -145,6 +146,68 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     end
 
     def rollback(value), do: Repo.rollback(value)
+  end
+
+  defmodule MintChildSupersedeRaceRepo do
+    import Ecto.Query, only: [from: 2]
+
+    alias Ecto.Changeset
+    alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    @race_key :sympp_mint_child_supersede_race
+
+    def arm(grant_id, claimed_by), do: Process.put(@race_key, {grant_id, claimed_by, :armed})
+    def disarm, do: Process.delete(@race_key)
+
+    def transaction(fun), do: Repo.transaction(fun)
+    def get(schema, id), do: Repo.get(schema, id)
+
+    def insert(%Changeset{data: %AccessGrant{}} = changeset) do
+      case Repo.insert(changeset) do
+        {:ok, _grant} = result ->
+          mark_minted()
+          result
+
+        other ->
+          other
+      end
+    end
+
+    def insert(changeset), do: Repo.insert(changeset)
+
+    def all(query) do
+      maybe_claim_old_grant()
+      Repo.all(query)
+    end
+
+    def one(query), do: Repo.one(query)
+    def update(changeset), do: Repo.update(changeset)
+    def update_all(query, updates), do: Repo.update_all(query, updates)
+    def rollback(value), do: Repo.rollback(value)
+
+    defp mark_minted do
+      case Process.get(@race_key) do
+        {grant_id, claimed_by, :armed} -> Process.put(@race_key, {grant_id, claimed_by, :minted})
+        _race -> :ok
+      end
+    end
+
+    defp maybe_claim_old_grant do
+      case Process.get(@race_key) do
+        {grant_id, claimed_by, :minted} ->
+          Process.put(@race_key, {grant_id, claimed_by, :claimed})
+          now = DateTime.utc_now(:microsecond)
+
+          Repo.update_all(
+            from(grant in AccessGrant, where: grant.id == ^grant_id),
+            set: [claimed_at: now, claimed_by: claimed_by, updated_at: now]
+          )
+
+        _race ->
+          :ok
+      end
+    end
   end
 
   defmodule CreateChildAnchorRaceRepo do
@@ -4034,6 +4097,56 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                active_grant,
                test_handoff_opts()
              )
+
+    assert :ok = SecretHandoff.delete_worker_secret(first_handoff, test_handoff_opts())
+  end
+
+  test "child worker key minting revokes the new grant when an old grant is claimed before supersede", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-HANDOFF-SUPERSEDE-RACE-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-HANDOFF-SUPERSEDE-RACE-CHILD")
+
+    first_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => child_worker_template()
+      })
+
+    first_grant = get_in(first_response, ["result", "structuredContent", "worker_grant"])
+    first_grant_id = Map.fetch!(first_grant, "id")
+    first_handoff = Map.fetch!(first_grant, "secret_handoff")
+
+    failed_response =
+      try do
+        MintChildSupersedeRaceRepo.arm(first_grant_id, "racing-worker")
+
+        mcp_tool(MintChildSupersedeRaceRepo, architect_session, "mint_child_worker_key", %{
+          "work_package_id" => child_id,
+          "template" => child_worker_template()
+        })
+      after
+        MintChildSupersedeRaceRepo.disarm()
+      end
+
+    assert get_in(failed_response, ["error", "code"]) == -32_602
+    assert get_in(failed_response, ["error", "data", "reason"]) =~ "active_child_worker_grant_exists"
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(repo, child_id)
+    child_delegated_grants = Enum.filter(grants, &(&1.provenance == @child_worker_grant_provenance))
+    assert length(child_delegated_grants) == 2
+
+    assert %AccessGrant{id: ^first_grant_id, claimed_at: %DateTime{}, revoked_at: nil, claimed_by: "racing-worker"} =
+             Enum.find(child_delegated_grants, &(&1.id == first_grant_id))
+
+    assert Enum.any?(
+             child_delegated_grants,
+             &(&1.id != first_grant_id and is_nil(&1.claimed_at) and match?(%DateTime{}, &1.revoked_at))
+           )
 
     assert :ok = SecretHandoff.delete_worker_secret(first_handoff, test_handoff_opts())
   end

@@ -1783,9 +1783,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp mint_child_worker_key(%Config{} = config, %Session{} = session, work_package_id, template) do
     with {:ok, handoff_template} <- child_worker_secret_handoff_template(template),
          {:ok, handoff_opts} <- child_worker_secret_handoff_opts(config, work_package_id, handoff_template),
-         {:ok, {child, minted}} <- mint_child_worker_key_transaction(config.repo, session, work_package_id, template),
-         {:ok, handoff} <- store_child_worker_secret_handoff(config.repo, child, minted, handoff_opts),
-         {:ok, superseded_grants} <- supersede_child_worker_grants_after_handoff(config.repo, child, minted, handoff, handoff_opts) do
+         {:ok, {child, minted, handoff, superseded_grants}} <-
+           mint_child_worker_key_transaction(config.repo, session, work_package_id, template, handoff_opts) do
       cleanup = cleanup_superseded_child_worker_handoffs(child, superseded_grants, handoff_opts)
 
       {:ok,
@@ -1797,26 +1796,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp mint_child_worker_key_transaction(repo, %Session{} = session, work_package_id, template) do
+  defp mint_child_worker_key_transaction(repo, %Session{} = session, work_package_id, template, handoff_opts) do
     case repo.transaction(fn ->
-           mint_child_worker_key_or_rollback(repo, session, work_package_id, template)
+           mint_child_worker_key_in_transaction(repo, session, work_package_id, template, handoff_opts)
          end) do
-      {:ok, result} -> {:ok, result}
+      {:ok, {:ok, result}} -> {:ok, result}
+      {:ok, {:commit_tool_error, reason}} -> {:tool_error, reason}
+      {:ok, {:error, reason}} -> {:error, reason}
       {:error, {:tool_error, reason}} -> {:tool_error, reason}
       {:error, {:error, reason}} -> {:error, reason}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp mint_child_worker_key_or_rollback(repo, %Session{} = session, work_package_id, template) do
-    case mint_child_worker_key_in_transaction(repo, session, work_package_id, template) do
-      {:ok, result} -> result
-      {:tool_error, reason} -> repo.rollback({:tool_error, reason})
-      {:error, reason} -> repo.rollback({:error, reason})
-    end
-  end
-
-  defp mint_child_worker_key_in_transaction(repo, %Session{} = session, work_package_id, template) do
+  defp mint_child_worker_key_in_transaction(repo, %Session{} = session, work_package_id, template, handoff_opts) do
     with :ok <- lock_access_grant(repo, session.assignment.grant_id),
          {:ok, architect_grant} <- require_live_architect_grant(repo, session),
          :ok <- lock_work_package(repo, Session.work_package_id(session)),
@@ -1826,7 +1819,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          :ok <- reject_claimed_active_child_worker_grant(repo, work_package_id),
          {:ok, child} <- require_child_ready_for_mint(repo, work_package_id, anchor, phase_id),
          {:ok, minted} <- AccessGrantService.mint_worker_grant(repo, child.id, grant_opts) do
-      {:ok, {child, minted}}
+      case mint_child_worker_key_handoff_and_supersede(repo, child, minted, handoff_opts) do
+        {:ok, result} -> {:ok, result}
+        {:tool_error, reason} -> {:commit_tool_error, reason}
+      end
+    else
+      {:tool_error, reason} -> repo.rollback({:tool_error, reason})
+      {:error, reason} -> repo.rollback({:error, reason})
+    end
+  end
+
+  defp mint_child_worker_key_handoff_and_supersede(
+         repo,
+         %WorkPackage{} = child,
+         minted,
+         handoff_opts
+       ) do
+    with {:ok, handoff} <- store_child_worker_secret_handoff(repo, child, minted, handoff_opts),
+         {:ok, superseded_grants} <-
+           supersede_child_worker_grants_after_handoff(repo, child, minted, handoff, handoff_opts) do
+      {:ok, {child, minted, handoff, superseded_grants}}
     end
   end
 
