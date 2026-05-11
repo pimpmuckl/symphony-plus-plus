@@ -3,16 +3,20 @@ Code.require_file("../../support/mcp_harness.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
   use ExUnit.Case, async: false
 
+  import Ecto.Query, only: [from: 2]
+
   alias SymphonyElixir.MCPHarness
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.CreateWork
-  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Server}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Server, Session}
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
@@ -40,10 +44,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
   end
 
   setup %{repo: repo} do
+    File.rm_rf(test_handoff_store_dir())
     repo.delete_all(Artifact)
     repo.delete_all(AccessGrant)
     repo.delete_all(WorkPackage)
     repo.delete_all(Phase)
+
+    on_exit(fn ->
+      cleanup_test_child_worker_handoffs(repo)
+      File.rm_rf(test_handoff_store_dir())
+    end)
+
     :ok
   end
 
@@ -254,9 +265,97 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
   end
 
   defp claim_phase_child_worker(repo, architect_session, child_id, claimed_by) do
-    response = mcp_tool(repo, architect_session, "mint_child_worker_key", %{"work_package_id" => child_id, "template" => %{}})
-    secret = get_in(response, ["result", "structuredContent", "worker_grant", "secret"])
-    claim_worker(repo, secret, claimed_by)
+    response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => child_worker_template(%{"claimed_by" => claimed_by})
+      })
+
+    claim_child_worker_from_mint_response(repo, response, claimed_by)
+  end
+
+  defp child_worker_template(secret_handoff_overrides) do
+    %{
+      "secret_handoff" =>
+        Map.merge(
+          %{
+            "mode" => test_secret_handoff_mode(),
+            "store_dir" => test_handoff_store_dir()
+          },
+          secret_handoff_overrides
+        )
+    }
+  end
+
+  defp test_secret_handoff_mode do
+    case :os.type() do
+      {:win32, _name} -> "windows-credential-manager"
+      _type -> "local-private-file"
+    end
+  end
+
+  defp test_handoff_store_dir do
+    System.tmp_dir!()
+    |> Path.join("sympp-integration-test-worker-secrets")
+    |> Path.expand()
+  end
+
+  defp test_repo_root do
+    Path.expand("../../../..", __DIR__)
+  end
+
+  defp claim_child_worker_from_mint_response(repo, mint_response, claimed_by) do
+    worker_grant = get_in(mint_response, ["result", "structuredContent", "worker_grant"])
+    handoff = Map.fetch!(worker_grant, "secret_handoff")
+
+    session =
+      case Map.fetch!(handoff, "mode") do
+        "local-private-file" ->
+          secret = File.read!(Map.fetch!(handoff, "path"))
+          claim_worker(repo, secret, claimed_by)
+
+        "windows-credential-manager" ->
+          claim_child_worker_without_secret(repo, Map.fetch!(worker_grant, "id"), claimed_by)
+      end
+
+    :ok = SecretHandoff.delete_worker_secret(handoff, repo_root: test_repo_root())
+    session
+  end
+
+  defp claim_child_worker_without_secret(repo, grant_id, claimed_by) do
+    now = DateTime.utc_now(:microsecond)
+
+    assert {1, _rows} =
+             repo.update_all(
+               from(grant in AccessGrant, where: grant.id == ^grant_id),
+               set: [claimed_at: now, claimed_by: claimed_by, updated_at: now]
+             )
+
+    assert {:ok, grant} = AccessGrantRepository.get(repo, grant_id)
+    assert {:ok, session} = Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: grant.secret_hash)
+    session
+  end
+
+  defp cleanup_test_child_worker_handoffs(repo) do
+    grants =
+      repo.all(
+        from(grant in AccessGrant,
+          where: grant.provenance == "child_worker_delegation"
+        )
+      )
+
+    Enum.each(grants, fn grant ->
+      with {:ok, work_package} <- WorkPackageRepository.get(repo, grant.work_package_id) do
+        SecretHandoff.delete_worker_secret_by_grant(
+          work_package,
+          grant,
+          repo_root: test_repo_root(),
+          claimed_by: "integration-cleanup",
+          mode: test_secret_handoff_mode(),
+          store_dir: test_handoff_store_dir()
+        )
+      end
+    end)
   end
 
   defp minted_worker_session(repo, work_package_id, claimed_by) do
@@ -422,7 +521,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
         "method" => "tools/call",
         "params" => %{"name" => name, "arguments" => arguments}
       },
-      repo: repo,
+      config: Config.default(repo: repo, repo_root: test_repo_root()),
       session: session
     )
   end

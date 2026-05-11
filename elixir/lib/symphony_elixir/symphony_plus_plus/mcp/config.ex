@@ -4,18 +4,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Config do
   alias SymphonyElixir.SymphonyPlusPlus.Repo
 
   @enforce_keys [:mode, :repo, :version]
-  defstruct [:mode, :repo, :version, :database, :work_key_secret_env, :claimed_by]
+  defstruct [:mode, :repo, :version, :database, :repo_root, :work_key_secret_env, :claimed_by]
 
   @type t :: %__MODULE__{
           mode: :stdio,
           repo: module(),
           version: String.t(),
           database: String.t() | nil,
+          repo_root: String.t() | nil,
           work_key_secret_env: String.t() | nil,
           claimed_by: String.t() | nil
         }
 
-  @switches [database: :string, mode: :string, work_key_secret_env: :string, claimed_by: :string, help: :boolean]
+  @switches [
+    database: :string,
+    mode: :string,
+    repo_root: :string,
+    work_key_secret_env: :string,
+    claimed_by: :string,
+    help: :boolean
+  ]
 
   @spec default(keyword()) :: t()
   def default(opts \\ []) do
@@ -24,6 +32,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Config do
       repo: Keyword.get(opts, :repo, Repo),
       version: Keyword.get(opts, :version, application_version()),
       database: Keyword.get(opts, :database),
+      repo_root: Keyword.get(opts, :repo_root),
       work_key_secret_env: Keyword.get(opts, :work_key_secret_env),
       claimed_by: Keyword.get(opts, :claimed_by)
     }
@@ -46,11 +55,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Config do
 
   @spec usage() :: String.t()
   def usage do
-    "Usage: mix sympp.mcp [--mode stdio] [--database <sqlite-path>] [--work-key-secret-env <env-var>] [--claimed-by <worker-id>]"
+    "Usage: mix sympp.mcp [--mode stdio] [--database <sqlite-path>] [--repo-root <path>] [--work-key-secret-env <env-var>] [--claimed-by <worker-id>]"
   end
 
   defp parse_options(opts) do
     with {:ok, mode} <- parse_mode(Keyword.get(opts, :mode, "stdio")),
+         {:ok, repo_root} <- optional_nonblank(opts, :repo_root),
          {:ok, work_key_secret_env} <- optional_nonblank(opts, :work_key_secret_env),
          {:ok, claimed_by} <- optional_nonblank(opts, :claimed_by),
          :ok <- require_claimed_by_for_secret_env(work_key_secret_env, claimed_by) do
@@ -58,6 +68,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Config do
        default(
          mode: mode,
          database: Keyword.get(opts, :database),
+         repo_root: expand_optional_path(repo_root),
          work_key_secret_env: work_key_secret_env,
          claimed_by: claimed_by
        )}
@@ -84,6 +95,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Config do
   defp require_claimed_by_for_secret_env(nil, _claimed_by), do: :ok
   defp require_claimed_by_for_secret_env(_env, claimed_by) when is_binary(claimed_by), do: :ok
   defp require_claimed_by_for_secret_env(_env, nil), do: {:error, usage()}
+
+  defp expand_optional_path(nil), do: nil
+  defp expand_optional_path(path), do: Path.expand(path)
 
   defp application_version do
     case Application.spec(:symphony_elixir, :vsn) do
