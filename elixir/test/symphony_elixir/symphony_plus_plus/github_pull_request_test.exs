@@ -116,6 +116,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
 
     metadata = %{
       "head" => %{"sha" => "abc123", "ref" => "agent/SYMPP-P6-001/github-pr-attachment-sync"},
+      "base" => %{"ref" => "main", "sha" => "base123"},
       "changed_files" => [],
       "state" => "open",
       "mergeable" => true,
@@ -127,6 +128,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubPullRequestTest do
 
     assert payload["head_sha"] == "abc123"
     assert payload["branch"] == "agent/SYMPP-P6-001/github-pr-attachment-sync"
+    assert payload["base_branch"] == "main"
+    assert payload["base_sha"] == "base123"
     assert payload["merge_state"] == %{"mergeable" => true, "mergeable_state" => "clean", "state" => "open"}
     assert payload["review_state"] == %{"draft" => false}
 

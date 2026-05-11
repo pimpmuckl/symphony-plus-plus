@@ -67,6 +67,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
          {:ok, head_sha} <- metadata_head_sha(metadata, fallback_head_sha),
          {:ok, branch} <- metadata_branch(metadata),
          {:ok, base_branch} <- metadata_base_branch(metadata),
+         {:ok, base_sha} <- metadata_base_sha(metadata),
          {:ok, changed_file_metadata} <- metadata_changed_files(metadata),
          {:ok, check_summary} <- metadata_map(metadata, "check_summary", %{}),
          {:ok, review_state} <- metadata_map(metadata, "review_state", github_review_state(metadata)),
@@ -82,6 +83,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
          "number" => ref.number,
          "branch" => branch,
          "base_branch" => base_branch,
+         "base_sha" => base_sha,
          "head_sha" => head_sha,
          "changed_files" => changed_file_metadata.files,
          "changed_files_count" => changed_file_metadata.count,
@@ -298,6 +300,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
       value when is_binary(value) ->
         value = String.trim(value)
         if value == "", do: {:ok, nil}, else: {:ok, value}
+
+      _value ->
+        {:ok, nil}
+    end
+  end
+
+  defp metadata_base_sha(metadata) do
+    case Map.get(metadata, "base_sha") || Map.get(metadata, "baseRefOid") || get_in(metadata, ["base", "sha"]) do
+      value when is_binary(value) ->
+        value = String.trim(value)
+        {:ok, if(value == "", do: nil, else: value)}
 
       _value ->
         {:ok, nil}

@@ -155,6 +155,86 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
     assert reasons["changed_files_unavailable"]["changed_files_count"] == 2
   end
 
+  test "count-only sync does not reuse changed-file paths from a different base snapshot" do
+    package = %{package(["elixir/lib/**"]) | base_branch: "main"}
+
+    events = [
+      event(1, %{"type" => "branch", "source_tool" => "attach_branch", "branch" => "agent/SYMPP-SCOPE-UNIT", "head_sha" => "head-a"}),
+      event(2, %{"type" => "pr", "source_tool" => "attach_pr", "url" => "https://github.com/nextide/symphony-plus-plus/pull/7", "head_sha" => "head-a"}),
+      event(3, %{
+        "type" => "pr",
+        "source_tool" => "sync_pr",
+        "url" => "https://github.com/nextide/symphony-plus-plus/pull/7",
+        "head_sha" => "head-a",
+        "base_branch" => "main",
+        "base_sha" => "base-a",
+        "changed_files" => [%{"path" => "elixir/lib/example.ex"}],
+        "changed_files_count" => 1,
+        "changed_files_available" => true,
+        "changed_files_count_available" => true
+      }),
+      event(4, %{
+        "type" => "pr",
+        "source_tool" => "sync_pr",
+        "url" => "https://github.com/nextide/symphony-plus-plus/pull/7",
+        "head_sha" => "head-a",
+        "base_branch" => "main",
+        "base_sha" => "base-b",
+        "changed_files" => [],
+        "changed_files_count" => 1,
+        "changed_files_available" => false,
+        "changed_files_count_available" => true
+      })
+    ]
+
+    reasons =
+      package
+      |> ScopeGuard.failure_reasons(events)
+      |> Map.new(&{&1["code"], &1})
+
+    assert reasons["changed_files_unavailable"]["changed_files_count"] == 1
+  end
+
+  test "count-only sync does not reuse changed-file paths from a different head snapshot" do
+    package = %{package(["elixir/lib/**"]) | base_branch: "main"}
+
+    events = [
+      event(1, %{"type" => "branch", "source_tool" => "attach_branch", "branch" => "agent/SYMPP-SCOPE-UNIT", "head_sha" => "abcdef1"}),
+      event(2, %{"type" => "pr", "source_tool" => "attach_pr", "url" => "https://github.com/nextide/symphony-plus-plus/pull/7", "head_sha" => "abcdef1"}),
+      event(3, %{
+        "type" => "pr",
+        "source_tool" => "sync_pr",
+        "url" => "https://github.com/nextide/symphony-plus-plus/pull/7",
+        "head_sha" => "abcdef1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_branch" => "main",
+        "base_sha" => "base-a",
+        "changed_files" => [%{"path" => "elixir/lib/example.ex"}],
+        "changed_files_count" => 1,
+        "changed_files_available" => true,
+        "changed_files_count_available" => true
+      }),
+      event(4, %{
+        "type" => "pr",
+        "source_tool" => "sync_pr",
+        "url" => "https://github.com/nextide/symphony-plus-plus/pull/7",
+        "head_sha" => "abcdef1bbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "base_branch" => "main",
+        "base_sha" => "base-a",
+        "changed_files" => [],
+        "changed_files_count" => 1,
+        "changed_files_available" => false,
+        "changed_files_count_available" => true
+      })
+    ]
+
+    reasons =
+      package
+      |> ScopeGuard.failure_reasons(events)
+      |> Map.new(&{&1["code"], &1})
+
+    assert reasons["changed_files_unavailable"]["changed_files_count"] == 1
+  end
+
   test "missing changed-file path and count evidence fails scope guard" do
     package = package(["elixir/lib/**"])
     opts = [changed_files: [], changed_files_available: false, changed_files_count_available: false]
