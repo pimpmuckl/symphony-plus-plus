@@ -3003,7 +3003,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp put_optional_handoff_template_value(template, key, value), do: Map.put(template, key, value)
 
   defp child_worker_secret_handoff_opts(%Config{} = config, work_package_id, handoff_template) do
-    with {:ok, repo_root} <- config_repo_root(config) do
+    with {:ok, repo_root} <- config_repo_root(config),
+         :ok <- validate_child_secret_handoff_repo_root(repo_root, Map.get(handoff_template, :mode)) do
       opts = [
         repo_root: repo_root,
         claimed_by: Map.get(handoff_template, :claimed_by) || default_child_worker_claimed_by(work_package_id)
@@ -3025,6 +3026,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp config_repo_root(%Config{}), do: {:tool_error, "missing_repo_root"}
+
+  defp validate_child_secret_handoff_repo_root(repo_root, mode) do
+    script_path = Path.join([repo_root, "scripts", child_secret_handoff_script_name(mode)])
+
+    if File.regular?(script_path), do: :ok, else: {:tool_error, "invalid_repo_root"}
+  end
+
+  defp child_secret_handoff_script_name("windows-credential-manager"), do: "sympp-worker-secret.ps1"
+  defp child_secret_handoff_script_name("local-private-file"), do: "sympp-worker-secret.sh"
+  defp child_secret_handoff_script_name(_auto_or_nil), do: child_secret_handoff_script_name(default_child_secret_handoff_mode())
+
+  defp default_child_secret_handoff_mode do
+    case :os.type() do
+      {:win32, _name} -> "windows-credential-manager"
+      _type -> "local-private-file"
+    end
+  end
 
   defp default_child_worker_claimed_by(work_package_id), do: "sympp-child-worker:#{work_package_id}"
 

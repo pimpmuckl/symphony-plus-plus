@@ -4083,6 +4083,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert active_worker_grants(grants) == []
   end
 
+  test "child worker key minting validates repo_root contains handoff script before minting", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-MINT-BAD-ROOT-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-BAD-ROOT-CHILD")
+    bad_repo_root = Path.join(System.tmp_dir!(), "sympp-missing-handoff-script-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(bad_repo_root)
+
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "mint_child_worker_key",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "mint_child_worker_key",
+            "arguments" => %{"work_package_id" => child_id, "template" => child_worker_template()}
+          }
+        },
+        config: Config.default(repo: repo, repo_root: bad_repo_root),
+        session: architect_session
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "reason"]) == "invalid_repo_root"
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(repo, child_id)
+    assert Enum.filter(grants, &(&1.provenance == @child_worker_grant_provenance)) == []
+    assert active_worker_grants(grants) == []
+  end
+
   test "child worker key minting rolls back the new grant when private handoff storage or metadata fails", %{repo: repo} do
     {_anchor, architect_session} =
       create_architect_session(repo, "SYMPP-P7-002-HANDOFF-FAIL-ANCHOR", [
