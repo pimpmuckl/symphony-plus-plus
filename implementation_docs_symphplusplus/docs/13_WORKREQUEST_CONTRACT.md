@@ -5,8 +5,9 @@ product documentation only. It preserves the existing WorkPackage ledger,
 AccessGrant permissions, virtual planning resources, readiness gates,
 review-suite evidence, PR evidence, and human merge controls.
 
-This document does not claim that runtime WorkRequest storage, dashboard intake,
-MCP intake tools, automatic slicing, or plugin packaging already exists.
+This document does not claim that WorkRequest storage beyond the planned-slice
+rows below, dashboard intake, MCP intake tools, automatic slicing, or plugin
+packaging already exists.
 
 ## Purpose
 
@@ -112,6 +113,13 @@ The slice plan records:
 - The intended PR target for each slice.
 - Any package that should be investigation-only or reviewer-only.
 
+Runtime planned-slice records belong to the WorkRequest until dispatch. Their
+canonical statuses are `planned`, `approved`, `dispatched`, and `skipped`.
+Planned-slice persistence does not itself create WorkPackages or link dispatch
+state; this storage-only create path starts rows as `planned`. Approved or
+dispatched slices become WorkPackages only through an explicit later dispatch
+flow.
+
 Feature work defaults to one feature branch with smaller PRs targeting that
 feature branch. Use direct `main` PRs for narrow direct-main changes when the
 architect plan records why a feature branch would add overhead without reducing
@@ -162,7 +170,7 @@ replace the implementing worker's normal review-suite responsibility.
 
 This contract does not implement or require:
 
-- Runtime WorkRequest schemas, migrations, or persistence.
+- Runtime WorkRequest persistence beyond the planned-slice rows described above.
 - Dashboard WorkRequest intake screens.
 - MCP WorkRequest intake tools or architect-planner tools.
 - Plugin packaging changes.
