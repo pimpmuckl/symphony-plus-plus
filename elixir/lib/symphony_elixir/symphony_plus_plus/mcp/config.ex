@@ -32,7 +32,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Config do
       repo: Keyword.get(opts, :repo, Repo),
       version: Keyword.get(opts, :version, application_version()),
       database: Keyword.get(opts, :database),
-      repo_root: Keyword.get(opts, :repo_root, default_repo_root()),
+      repo_root: Keyword.get(opts, :repo_root),
       work_key_secret_env: Keyword.get(opts, :work_key_secret_env),
       claimed_by: Keyword.get(opts, :claimed_by)
     }
@@ -68,7 +68,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Config do
        default(
          mode: mode,
          database: Keyword.get(opts, :database),
-         repo_root: expand_optional_path(repo_root) || default_repo_root(),
+         repo_root: expand_optional_path(repo_root),
          work_key_secret_env: work_key_secret_env,
          claimed_by: claimed_by
        )}
@@ -105,9 +105,5 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Config do
       version when is_binary(version) -> version
       _missing -> "0.1.0"
     end
-  end
-
-  defp default_repo_root do
-    Path.expand("../../../../../", __DIR__)
   end
 end

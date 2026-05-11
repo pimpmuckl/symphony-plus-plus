@@ -180,8 +180,10 @@ secret is stored through the private SecretHandoff path and is not returned in
 tool content; the response uses `worker_grant.secret_handoff` plus
 `worker_grant.secret_in_response` set to `false`, and omits `secret` and
 `secret_returned_once`. Returned handoff metadata is redacted and omits run
-commands and the resolved claimed owner identity. `template.secret_handoff` is
-optional and narrow: only `mode`, `store_dir`, and `claimed_by` are accepted,
+commands and the resolved claimed owner identity. The MCP server must be
+configured with `repo_root`/`--repo-root` before child minting so handoff
+scripts are resolved from an operator-chosen repository root. `template.secret_handoff`
+is optional and narrow: only `mode`, `store_dir`, and `claimed_by` are accepted,
 blank values are rejected, and grant capabilities cannot be broadened through
 handoff settings.
 `read_child_status(work_package_id)` requires both `read:child_progress` and

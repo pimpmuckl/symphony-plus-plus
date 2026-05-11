@@ -321,7 +321,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   test "config parser defaults to stdio and rejects unsupported modes" do
     assert {:ok, %Config{mode: :stdio, database: nil}} = Config.parse([])
-    assert %Config{mode: :stdio, repo: Repo, version: version} = Config.default()
+    assert %Config{mode: :stdio, repo: Repo, version: version, repo_root: nil} = Config.default()
     assert is_binary(version)
     assert {:ok, %Config{mode: :stdio, database: "tmp/sympp.sqlite3"}} = Config.parse(["--database", "tmp/sympp.sqlite3"])
     assert {:ok, %Config{repo_root: repo_root}} = Config.parse(["--repo-root", " . "])
@@ -3953,6 +3953,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert active_worker_grants(grants) == []
   end
 
+  test "child worker key minting requires configured repo_root for private handoff", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-MINT-MISSING-ROOT-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-MISSING-ROOT-CHILD")
+
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "mint_child_worker_key",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "mint_child_worker_key",
+            "arguments" => %{"work_package_id" => child_id, "template" => child_worker_template()}
+          }
+        },
+        config: Config.default(repo: repo),
+        session: architect_session
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "reason"]) == "missing_repo_root"
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(repo, child_id)
+    assert Enum.filter(grants, &(&1.provenance == @child_worker_grant_provenance)) == []
+    assert active_worker_grants(grants) == []
+  end
+
   test "child worker key minting rolls back the new grant when private handoff storage or metadata fails", %{repo: repo} do
     {_anchor, architect_session} =
       create_architect_session(repo, "SYMPP-P7-002-HANDOFF-FAIL-ANCHOR", [
@@ -4056,7 +4089,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "arguments" => %{"work_package_id" => child_id, "template" => child_worker_template()}
             }
           },
-          config: Config.default(repo: MintReadyRaceRepo),
+          config: test_mcp_config(MintReadyRaceRepo),
           session: architect_session
         )
       after
@@ -4109,7 +4142,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "arguments" => %{"work_package_id" => child_id, "template" => child_worker_template()}
             }
           },
-          config: Config.default(repo: MintChildScopeRaceRepo),
+          config: test_mcp_config(MintChildScopeRaceRepo),
           session: architect_session
         )
       after
@@ -4152,7 +4185,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                 "arguments" => %{"work_package_id" => child_id, "template" => child_worker_template()}
               }
             },
-            config: Config.default(repo: MintParentGrantRaceRepo),
+            config: test_mcp_config(MintParentGrantRaceRepo),
             session: architect_session
           )
         after
@@ -4189,7 +4222,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "arguments" => %{"work_package_id" => child_id, "template" => child_worker_template()}
             }
           },
-          config: Config.default(repo: MintParentGrantRaceRepo),
+          config: test_mcp_config(MintParentGrantRaceRepo),
           session: architect_session
         )
       after
@@ -4228,7 +4261,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               }
             }
           },
-          config: Config.default(repo: MintParentGrantRaceRepo),
+          config: test_mcp_config(MintParentGrantRaceRepo),
           session: broader_session
         )
       after
@@ -5152,7 +5185,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
             "arguments" => %{"grant_id" => "grant-placeholder", "reason" => "drift check"}
           }
         },
-        repo: repo,
+        config: test_mcp_config(repo),
         session: session
       )
 
@@ -5186,7 +5219,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "method" => "tools/call",
           "params" => %{"name" => "mint_child_worker_key", "arguments" => %{"work_package_id" => package.id, "template" => child_worker_template()}}
         },
-        repo: repo,
+        config: test_mcp_config(repo),
         session: session
       )
 

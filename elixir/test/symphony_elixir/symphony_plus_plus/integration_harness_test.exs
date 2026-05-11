@@ -521,7 +521,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
         "method" => "tools/call",
         "params" => %{"name" => name, "arguments" => arguments}
       },
-      repo: repo,
+      config: Config.default(repo: repo, repo_root: test_repo_root()),
       session: session
     )
   end
