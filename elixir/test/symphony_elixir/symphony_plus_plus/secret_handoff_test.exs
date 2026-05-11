@@ -527,7 +527,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
 
       assert File.exists?(lock_path)
 
-      stale_lock_opts = Keyword.merge(opts, metadata_lock_attempts: 2, metadata_lock_sleep_ms: 0, metadata_lock_stale_seconds: 0)
+      File.touch!(lock_path, System.os_time(:second) - 3_600)
+
+      stale_lock_opts = Keyword.merge(opts, metadata_lock_attempts: 2, metadata_lock_sleep_ms: 0, metadata_lock_stale_seconds: 60)
 
       assert :ok = SecretHandoff.store_worker_secret_metadata(package, grant, handoff, stale_lock_opts)
 
