@@ -174,6 +174,28 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end)
   end
 
+  @spec work_requests(Conn.t(), map()) :: Conn.t()
+  def work_requests(conn, _params) do
+    send_repo_response(conn, fn repo, secret ->
+      with {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- auth_context(conn, repo, secret),
+           :ok <- require_work_request_board(repo, auth_context),
+           {:ok, payload} <- Dashboard.work_requests_for_grant(repo, grant) do
+        json(conn, payload)
+      end
+    end)
+  end
+
+  @spec work_request_detail(Conn.t(), map()) :: Conn.t()
+  def work_request_detail(conn, %{"work_request_id" => work_request_id}) do
+    send_repo_response(conn, fn repo, secret ->
+      with {:ok, {:grant, %AccessGrant{} = grant} = auth_context} <- auth_context(conn, repo, secret),
+           :ok <- require_work_request_board(repo, auth_context),
+           {:ok, payload} <- Dashboard.work_request_detail_for_grant(repo, work_request_id, grant) do
+        json(conn, payload)
+      end
+    end)
+  end
+
   @spec detail(Conn.t(), map()) :: Conn.t()
   def detail(conn, %{"work_package_id" => work_package_id}) do
     send_package_response(conn, normalize_package_route_id(work_package_id), &Dashboard.detail/2)
@@ -593,6 +615,13 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
          {:ok, phase_id} <- phase_scope(repo, grant),
          :ok <- require_phase_board_anchor(repo, grant, phase_id),
          {:ok, _filters} <- Dashboard.phase_board_filters_for_grant(grant) do
+      :ok
+    end
+  end
+
+  defp require_work_request_board(repo, {:grant, %AccessGrant{} = grant} = auth_context) do
+    with :ok <- require_phase_board(repo, auth_context),
+         {:ok, _filters} <- Dashboard.work_request_filters_for_grant(repo, grant) do
       :ok
     end
   end

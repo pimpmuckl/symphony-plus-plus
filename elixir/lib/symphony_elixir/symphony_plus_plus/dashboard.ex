@@ -18,6 +18,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
+
+  import Ecto.Query, only: [from: 2]
 
   @stale_heartbeat_after_seconds 300
   @ready_statuses ["ready_for_human_merge", "ready_for_architect_merge"]
@@ -27,6 +34,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   @scope_guard_gate "scope_guard"
   @dropped_child_statuses ["abandoned"]
   @non_open_child_statuses ["merged_into_phase", "closed", "abandoned"]
+  @work_request_count_chunk_size 500
 
   @type repo :: module()
   @type dashboard_error :: :not_found | :forbidden | :database_busy | {:storage_failed, String.t()} | term()
@@ -50,6 +58,54 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   def phase_board_for_grant(repo, phase_id, %AccessGrant{} = grant) when is_atom(repo) and is_binary(phase_id) do
     with {:ok, filters} <- phase_board_filters_for_grant(grant) do
       phase_board(repo, phase_id, filters)
+    end
+  end
+
+  @spec work_requests_for_grant(repo(), AccessGrant.t()) :: {:ok, map()} | {:error, dashboard_error()}
+  def work_requests_for_grant(repo, %AccessGrant{} = grant) when is_atom(repo) do
+    safe_read(fn ->
+      with {:ok, filters} <- work_request_filters_for_grant(repo, grant),
+           {:ok, work_requests} <- WorkRequestRepository.list(repo, Map.new(filters)),
+           {:ok, cards} <- work_request_cards(repo, ordered_work_requests(work_requests)) do
+        {:ok,
+         %{
+           work_requests: cards,
+           total_count: length(cards)
+         }}
+      end
+    end)
+  end
+
+  @spec work_request_detail_for_grant(repo(), String.t(), AccessGrant.t()) :: {:ok, map()} | {:error, dashboard_error()}
+  def work_request_detail_for_grant(repo, work_request_id, %AccessGrant{} = grant)
+      when is_atom(repo) and is_binary(work_request_id) do
+    safe_read(fn ->
+      with {:ok, work_request} <- WorkRequestRepository.get(repo, work_request_id),
+           :ok <- require_visible_work_request_scope(repo, work_request, grant),
+           {:ok, questions} <- WorkRequestRepository.list_questions(repo, work_request_id),
+           {:ok, decisions} <- WorkRequestRepository.list_decisions(repo, work_request_id),
+           {:ok, planned_slices} <- WorkRequestRepository.list_planned_slices(repo, work_request_id) do
+        questions = ordered_sequence_records(questions)
+        decisions = ordered_sequence_records(decisions)
+        planned_slices = ordered_sequence_records(planned_slices)
+
+        {:ok,
+         %{
+           work_request: work_request_detail(work_request),
+           clarification_questions: Enum.map(questions, &clarification_question/1),
+           decision_logs: Enum.map(decisions, &decision_log_entry/1),
+           planned_slices: Enum.map(planned_slices, &planned_slice/1),
+           summary: work_request_summary(questions, decisions, planned_slices)
+         }}
+      end
+    end)
+  end
+
+  @spec work_request_filters_for_grant(repo(), AccessGrant.t()) :: {:ok, keyword()} | {:error, dashboard_error()}
+  def work_request_filters_for_grant(repo, %AccessGrant{} = grant) when is_atom(repo) do
+    case phase_board_filters_for_grant(grant) do
+      {:ok, []} -> legacy_work_request_filters_for_grant(repo, grant)
+      result -> result
     end
   end
 
@@ -347,11 +403,59 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end)
   end
 
+  defp require_work_request_scope(repo, %WorkRequest{} = work_request, %AccessGrant{} = grant) do
+    with {:ok, filters} <- work_request_filters_for_grant(repo, grant) do
+      if work_request_matches_filters?(work_request, filters) do
+        :ok
+      else
+        {:error, :forbidden}
+      end
+    end
+  end
+
+  defp require_visible_work_request_scope(repo, %WorkRequest{} = work_request, %AccessGrant{} = grant) do
+    case require_work_request_scope(repo, work_request, grant) do
+      :ok -> :ok
+      {:error, :forbidden} -> {:error, :not_found}
+      error -> error
+    end
+  end
+
+  defp work_request_matches_filters?(%WorkRequest{} = work_request, filters) do
+    Enum.all?(filters, fn
+      {:repo, repo} when is_binary(repo) -> work_request.repo == repo
+      {:base_branch, base_branch} when is_binary(base_branch) -> work_request.base_branch == base_branch
+      _filter -> true
+    end)
+  end
+
   defp explicit_phase_architect_grant?(%AccessGrant{grant_role: "architect", phase_id: phase_id}) when is_binary(phase_id) do
     String.trim(phase_id) != ""
   end
 
   defp explicit_phase_architect_grant?(%AccessGrant{}), do: false
+
+  defp legacy_work_request_filters_for_grant(repo, %AccessGrant{
+         grant_role: "architect",
+         work_package_id: work_package_id,
+         phase_id: nil
+       })
+       when is_binary(work_package_id) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, %WorkPackage{} = anchor} -> repo_base_filters(anchor.repo, anchor.base_branch)
+      {:error, :not_found} -> {:error, :forbidden}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp legacy_work_request_filters_for_grant(_repo, %AccessGrant{}), do: {:error, :forbidden}
+
+  defp repo_base_filters(repo, base_branch) do
+    with {:ok, repo} <- frozen_scope_value(repo),
+         {:ok, base_branch} <- frozen_scope_value(base_branch) do
+      {:ok, repo: repo, base_branch: base_branch}
+    end
+  end
 
   defp frozen_scope_value(value) when is_binary(value) do
     case String.trim(value) do
@@ -375,6 +479,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     |> Enum.map(&card(repo, &1))
     |> collect_or_error()
   end
+
+  defp work_request_cards(repo, work_requests) do
+    with {:ok, summaries} <- work_request_card_summaries(repo, work_requests) do
+      {:ok, Enum.map(work_requests, &work_request_card(&1, summaries))}
+    end
+  end
+
+  defp ordered_work_requests(work_requests) do
+    Enum.sort_by(work_requests, fn %WorkRequest{} = work_request ->
+      {sortable_timestamp(work_request.inserted_at), work_request.id || ""}
+    end)
+  end
+
+  defp ordered_sequence_records(records) do
+    Enum.sort_by(records, fn record ->
+      {Map.get(record, :sequence) || 0, Map.get(record, :id) || ""}
+    end)
+  end
+
+  defp sortable_timestamp(%DateTime{} = timestamp), do: DateTime.to_iso8601(timestamp)
+  defp sortable_timestamp(_timestamp), do: ""
 
   defp planning_state(repo, work_package_id) do
     case PlanningRepository.get_state(repo, work_package_id) do
@@ -438,6 +563,196 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       runtime: runtime,
       latest_progress_at: latest_progress_at(state.progress_events),
       plan: plan_summary(state.plan_nodes)
+    }
+  end
+
+  defp work_request_card_summaries(_repo, []), do: {:ok, %{}}
+
+  defp work_request_card_summaries(repo, work_requests) do
+    work_request_ids = Enum.map(work_requests, & &1.id)
+
+    with {:ok, question_counts} <- work_request_question_counts(repo, work_request_ids),
+         {:ok, decision_counts} <- work_request_decision_counts(repo, work_request_ids),
+         {:ok, planned_slice_counts} <- work_request_planned_slice_counts(repo, work_request_ids) do
+      summaries =
+        Map.new(work_request_ids, fn work_request_id ->
+          {work_request_id,
+           %{
+             open_question_count: status_count(question_counts, work_request_id, "open"),
+             answered_question_count: status_count(question_counts, work_request_id, "answered"),
+             closed_question_count: status_count(question_counts, work_request_id, "closed"),
+             decision_count: Map.get(decision_counts, work_request_id, 0),
+             planned_slice_count: status_count(planned_slice_counts, work_request_id, "planned"),
+             approved_slice_count: status_count(planned_slice_counts, work_request_id, "approved"),
+             dispatched_slice_count: status_count(planned_slice_counts, work_request_id, "dispatched"),
+             skipped_slice_count: status_count(planned_slice_counts, work_request_id, "skipped")
+           }}
+        end)
+
+      {:ok, summaries}
+    end
+  end
+
+  defp work_request_question_counts(repo, work_request_ids) do
+    rows =
+      chunked_work_request_rows(work_request_ids, fn chunk ->
+        from(question in ClarificationQuestion,
+          where: question.work_request_id in ^chunk,
+          select: {question.work_request_id, question.status}
+        )
+        |> repo.all()
+      end)
+
+    {:ok, status_counts(rows)}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp work_request_decision_counts(repo, work_request_ids) do
+    rows =
+      chunked_work_request_rows(work_request_ids, fn chunk ->
+        from(decision in DecisionLogEntry,
+          where: decision.work_request_id in ^chunk,
+          select: decision.work_request_id
+        )
+        |> repo.all()
+      end)
+
+    {:ok, Enum.frequencies(rows)}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp work_request_planned_slice_counts(repo, work_request_ids) do
+    rows =
+      chunked_work_request_rows(work_request_ids, fn chunk ->
+        from(planned_slice in PlannedSlice,
+          where: planned_slice.work_request_id in ^chunk,
+          select: {planned_slice.work_request_id, planned_slice.status}
+        )
+        |> repo.all()
+      end)
+
+    {:ok, status_counts(rows)}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp chunked_work_request_rows(work_request_ids, fetch_chunk) do
+    work_request_ids
+    |> Enum.chunk_every(@work_request_count_chunk_size)
+    |> Enum.flat_map(fetch_chunk)
+  end
+
+  defp status_counts(rows) do
+    Enum.reduce(rows, %{}, fn {work_request_id, status}, counts ->
+      Map.update(counts, work_request_id, %{status => 1}, &Map.update(&1, status, 1, fn count -> count + 1 end))
+    end)
+  end
+
+  defp status_count(counts, work_request_id, status) do
+    counts
+    |> Map.get(work_request_id, %{})
+    |> Map.get(status, 0)
+  end
+
+  defp work_request_card(%WorkRequest{} = work_request, summaries) do
+    Map.merge(Map.fetch!(summaries, work_request.id), %{
+      id: work_request.id,
+      title: redacted_text(work_request.title),
+      repo: work_request.repo,
+      base_branch: work_request.base_branch,
+      work_type: work_request.work_type,
+      desired_dispatch_shape: work_request.desired_dispatch_shape,
+      status: work_request.status,
+      inserted_at: timestamp(work_request.inserted_at),
+      updated_at: timestamp(work_request.updated_at)
+    })
+  end
+
+  defp work_request_detail(%WorkRequest{} = work_request) do
+    %{
+      id: work_request.id,
+      title: redacted_text(work_request.title),
+      repo: work_request.repo,
+      base_branch: work_request.base_branch,
+      work_type: work_request.work_type,
+      human_description: redacted_text(work_request.human_description),
+      constraints: redacted_json(work_request.constraints || %{}),
+      desired_dispatch_shape: work_request.desired_dispatch_shape,
+      status: work_request.status,
+      inserted_at: timestamp(work_request.inserted_at),
+      updated_at: timestamp(work_request.updated_at)
+    }
+  end
+
+  defp clarification_question(%ClarificationQuestion{} = question) do
+    %{
+      id: question.id,
+      work_request_id: question.work_request_id,
+      sequence: question.sequence,
+      category: redacted_text(question.category),
+      question: redacted_text(question.question),
+      why_needed: redacted_text(question.why_needed),
+      status: question.status,
+      asked_by_agent_run_id: question.asked_by_agent_run_id,
+      answer: redacted_text(question.answer),
+      answered_by: redacted_text(question.answered_by),
+      answered_at: timestamp(question.answered_at),
+      inserted_at: timestamp(question.inserted_at),
+      updated_at: timestamp(question.updated_at)
+    }
+  end
+
+  defp decision_log_entry(%DecisionLogEntry{} = decision) do
+    %{
+      id: decision.id,
+      work_request_id: decision.work_request_id,
+      sequence: decision.sequence,
+      source_type: decision.source_type,
+      source_id: redacted_text(decision.source_id),
+      decision: redacted_text(decision.decision),
+      rationale: redacted_text(decision.rationale),
+      scope_impact: redacted_text(decision.scope_impact),
+      created_by: redacted_text(decision.created_by),
+      created_at: timestamp(decision.created_at),
+      inserted_at: timestamp(decision.inserted_at),
+      updated_at: timestamp(decision.updated_at)
+    }
+  end
+
+  defp planned_slice(%PlannedSlice{} = planned_slice) do
+    %{
+      id: planned_slice.id,
+      work_request_id: planned_slice.work_request_id,
+      sequence: planned_slice.sequence,
+      title: redacted_text(planned_slice.title),
+      goal: redacted_text(planned_slice.goal),
+      work_package_kind: planned_slice.work_package_kind,
+      target_base_branch: planned_slice.target_base_branch,
+      branch_pattern: redacted_text(planned_slice.branch_pattern),
+      owned_file_globs: Enum.map(planned_slice.owned_file_globs || [], &redacted_text/1),
+      forbidden_file_globs: Enum.map(planned_slice.forbidden_file_globs || [], &redacted_text/1),
+      acceptance_criteria: Enum.map(planned_slice.acceptance_criteria || [], &redacted_text/1),
+      validation_steps: Enum.map(planned_slice.validation_steps || [], &redacted_text/1),
+      review_lanes: planned_slice.review_lanes || [],
+      stop_conditions: Enum.map(planned_slice.stop_conditions || [], &redacted_text/1),
+      status: planned_slice.status,
+      inserted_at: timestamp(planned_slice.inserted_at),
+      updated_at: timestamp(planned_slice.updated_at)
+    }
+  end
+
+  defp work_request_summary(questions, decisions, planned_slices) do
+    %{
+      open_question_count: Enum.count(questions, &(&1.status == "open")),
+      answered_question_count: Enum.count(questions, &(&1.status == "answered")),
+      closed_question_count: Enum.count(questions, &(&1.status == "closed")),
+      decision_count: length(decisions),
+      planned_slice_count: Enum.count(planned_slices, &(&1.status == "planned")),
+      approved_slice_count: Enum.count(planned_slices, &(&1.status == "approved")),
+      dispatched_slice_count: Enum.count(planned_slices, &(&1.status == "dispatched")),
+      skipped_slice_count: Enum.count(planned_slices, &(&1.status == "skipped"))
     }
   end
 
