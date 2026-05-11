@@ -73,8 +73,18 @@ Managed handoff metadata records are non-secret deletion-coordinate metadata.
 They identify the work package, worker grant, mode, and managed private-store
 path or credential target needed for later cleanup; they are not worker secrets
 and must not contain work keys, bearer material, run commands, or claimed owner
-identity. The same managed metadata may be used to clean superseded handoffs by
-work package and grant identity without exposing the stored secret.
+identity. In the current pre-production v1 child minting contract,
+`mint_child_worker_key` allows only one active child-worker grant/handoff per
+child package and rejects remint attempts while one exists; it does not perform
+implicit replacement or old-handoff cleanup.
+
+Architect child worker minting follows the same private-handoff rule. The
+`mint_child_worker_key` MCP response returns `worker_grant.secret_handoff` and
+`worker_grant.secret_in_response: false`, never the child worker secret or a
+`secret_returned_once` marker. Returned handoff metadata is redacted and omits
+run commands and the resolved claimed owner identity. Optional handoff settings
+are limited to `template.secret_handoff.mode`, `store_dir`, and `claimed_by`;
+they do not change the child grant capability or expiry boundaries.
 
 ## Worker capabilities
 

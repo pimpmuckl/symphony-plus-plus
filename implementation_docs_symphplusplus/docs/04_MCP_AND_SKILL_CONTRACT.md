@@ -172,10 +172,18 @@ upper bound. Child creation revalidates that anchor scope in the insert
 transaction. Context-slice input is not part of the current contract.
 `mint_child_worker_key` mints only single-package worker grants for same-phase
 children, revalidates the live architect grant in the mint transaction, rejects
-claimed active child-delegated worker grants for the same child,
-transactionally supersedes unclaimed active child-delegated worker grants,
-ignores unrelated normal worker grants, and caps child capabilities and expiry
-to that current grant.
+new mints while any active child-delegated worker grant already exists for the
+same child, ignores unrelated normal worker grants, and caps child capabilities
+and expiry to that current grant. This is the pre-production v1 contract and is
+not a backwards-compatible replacement/remint promise. The raw child worker
+secret is stored through the private SecretHandoff path and is not returned in
+tool content; the response uses `worker_grant.secret_handoff` plus
+`worker_grant.secret_in_response` set to `false`, and omits `secret` and
+`secret_returned_once`. Returned handoff metadata is redacted and omits run
+commands and the resolved claimed owner identity. `template.secret_handoff` is
+optional and narrow: only `mode`, `store_dir`, and `claimed_by` are accepted,
+blank values are rejected, and grant capabilities cannot be broadened through
+handoff settings.
 `read_child_status(work_package_id)` requires both `read:child_progress` and
 `read:child_findings`; it can read the architect anchor package or a same-phase
 child package. `approve_child_ready_state(work_package_id, rationale, request_id?)` can

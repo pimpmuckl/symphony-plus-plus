@@ -22,6 +22,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
   alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
+  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
@@ -82,7 +83,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "status",
     "title"
   ]
-  @child_worker_template_keys ["capabilities", "expires_at"]
+  @child_worker_template_keys ["capabilities", "expires_at", "secret_handoff"]
+  @child_worker_secret_handoff_keys ["claimed_by", "mode", "store_dir"]
+  @child_worker_secret_handoff_payload_keys [
+    :claimed_by_required,
+    :display_key,
+    :env_var,
+    :mode,
+    :path,
+    :secret_in_stdout,
+    :status,
+    :store,
+    :target,
+    :work_package_id
+  ]
   @child_worker_capabilities ["worker:claim", "worker:lifecycle.transition"]
   @child_worker_grant_provenance "child_worker_delegation"
   @version_resource "sympp://health/version"
@@ -1557,12 +1571,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- architect_session(config.repo, session, "mint:child_worker_key"),
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
          {:ok, template} <- required_object(arguments, "template"),
-         {:ok, {child, minted}} <- mint_child_worker_key_transaction(config.repo, session, work_package_id, template) do
-      {:ok,
-       tool_result(%{
-         "work_package" => child_work_package_payload(child),
-         "worker_grant" => child_worker_grant_payload(minted)
-       })}
+         {:ok, payload} <- mint_child_worker_key(config, session, work_package_id, template) do
+      {:ok, tool_result(payload)}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "mint_child_worker_key", "reason" => reason}}
       {:error, reason} -> architect_error(reason, "mint_child_worker_key")
@@ -1782,38 +1792,130 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp mint_child_worker_key_transaction(repo, %Session{} = session, work_package_id, template) do
-    case repo.transaction(fn ->
-           mint_child_worker_key_or_rollback(repo, session, work_package_id, template)
-         end) do
-      {:ok, result} -> {:ok, result}
-      {:error, {:tool_error, reason}} -> {:tool_error, reason}
-      {:error, {:error, reason}} -> {:error, reason}
-      {:error, reason} -> {:error, reason}
+  defp mint_child_worker_key(%Config{} = config, %Session{} = session, work_package_id, template) do
+    with {:ok, handoff_template} <- child_worker_secret_handoff_template(template),
+         {:ok, handoff_opts} <- child_worker_secret_handoff_opts(config, work_package_id, handoff_template),
+         {:ok, {child, minted, handoff}} <-
+           mint_child_worker_key_transaction(config.repo, session, work_package_id, template, handoff_opts) do
+      {:ok,
+       %{
+         "work_package" => child_work_package_payload(child),
+         "worker_grant" => child_worker_grant_payload(minted, handoff)
+       }}
     end
   end
 
-  defp mint_child_worker_key_or_rollback(repo, %Session{} = session, work_package_id, template) do
-    case mint_child_worker_key_in_transaction(repo, session, work_package_id, template) do
+  defp mint_child_worker_key_transaction(repo, %Session{} = session, work_package_id, template, handoff_opts) do
+    case repo.transaction(fn ->
+           mint_child_worker_key_or_rollback(repo, session, work_package_id, template, handoff_opts)
+         end) do
+      {:ok, result} ->
+        {:ok, result}
+
+      {:error, {:tool_error, reason, cleanup_context}} ->
+        {:tool_error, cleanup_child_worker_failed_mint(reason, cleanup_context, handoff_opts)}
+
+      {:error, {:tool_error, reason}} ->
+        {:tool_error, reason}
+
+      {:error, {:error, reason}} ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp mint_child_worker_key_or_rollback(repo, %Session{} = session, work_package_id, template, handoff_opts) do
+    case mint_child_worker_key_in_transaction(repo, session, work_package_id, template, handoff_opts) do
       {:ok, result} -> result
+      {:tool_error, reason, cleanup_context} -> repo.rollback({:tool_error, reason, cleanup_context})
       {:tool_error, reason} -> repo.rollback({:tool_error, reason})
       {:error, reason} -> repo.rollback({:error, reason})
     end
   end
 
-  defp mint_child_worker_key_in_transaction(repo, %Session{} = session, work_package_id, template) do
+  defp mint_child_worker_key_in_transaction(repo, %Session{} = session, work_package_id, template, handoff_opts) do
     with :ok <- lock_access_grant(repo, session.assignment.grant_id),
          {:ok, architect_grant} <- require_live_architect_grant(repo, session),
          :ok <- lock_work_package(repo, Session.work_package_id(session)),
          {:ok, phase_id, anchor} <- architect_child_phase_anchor(repo, session, architect_grant),
          {:ok, grant_opts} <- child_worker_grant_opts(template, architect_grant),
          {:ok, _prechecked_child} <- require_transaction_current_child_scope(repo, work_package_id, anchor, phase_id),
-         :ok <- reject_claimed_active_child_worker_grant(repo, work_package_id),
+         :ok <- lock_work_package(repo, work_package_id),
+         :ok <- reject_active_child_worker_grant(repo, work_package_id),
          {:ok, child} <- require_child_ready_for_mint(repo, work_package_id, anchor, phase_id),
-         :ok <- supersede_unclaimed_child_worker_grants(repo, work_package_id),
          {:ok, minted} <- AccessGrantService.mint_worker_grant(repo, child.id, grant_opts) do
-      {:ok, {child, minted}}
+      store_child_worker_key_handoff(child, minted, handoff_opts)
     end
+  end
+
+  defp store_child_worker_key_handoff(%WorkPackage{} = child, minted, handoff_opts) do
+    with {:ok, handoff, _worker_grant} <- store_child_worker_secret_handoff(child, minted, handoff_opts) do
+      {:ok, {child, minted, handoff}}
+    end
+  end
+
+  defp store_child_worker_secret_handoff(%WorkPackage{} = child, minted, handoff_opts) do
+    worker_grant = child_worker_grant_secret_payload(minted)
+
+    case SecretHandoff.store_worker_secret(%{work_package: child, worker_grant: worker_grant}, handoff_opts) do
+      {:ok, handoff} ->
+        store_child_worker_secret_handoff_metadata(child, worker_grant, handoff, handoff_opts)
+
+      {:error, reason} ->
+        {:tool_error, secret_handoff_reason(reason)}
+    end
+  end
+
+  defp store_child_worker_secret_handoff_metadata(%WorkPackage{} = child, worker_grant, handoff, handoff_opts) do
+    case SecretHandoff.store_worker_secret_metadata(child, worker_grant, handoff, handoff_opts) do
+      :ok ->
+        {:ok, child_worker_secret_handoff_payload(handoff), redacted_child_worker_grant(worker_grant)}
+
+      {:error, reason} ->
+        cleanup = new_child_worker_handoff_cleanup(child, worker_grant, handoff, metadata_stored: false)
+        {:tool_error, secret_handoff_reason(reason), cleanup}
+    end
+  end
+
+  defp new_child_worker_handoff_cleanup(%WorkPackage{} = child, worker_grant, handoff, opts) do
+    %{
+      child: child,
+      worker_grant: redacted_child_worker_grant(worker_grant),
+      handoff: handoff,
+      metadata_stored: Keyword.fetch!(opts, :metadata_stored)
+    }
+  end
+
+  defp cleanup_child_worker_failed_mint(reason, cleanup_context, handoff_opts) do
+    cleanup_result =
+      cleanup_context
+      |> cleanup_new_child_worker_handoff(handoff_opts)
+      |> Enum.map(fn {key, value} -> {key, cleanup_status(value)} end)
+
+    child_worker_handoff_tool_error(reason, cleanup_result)
+  end
+
+  defp cleanup_new_child_worker_handoff(%{metadata_stored: false, handoff: handoff}, handoff_opts) do
+    %{new_handoff_cleanup: SecretHandoff.delete_worker_secret(handoff, handoff_opts)}
+  end
+
+  defp cleanup_status(:ok), do: "ok"
+  defp cleanup_status({:error, reason}), do: "failed: #{reason_text(reason)}"
+
+  defp child_worker_handoff_tool_error(reason, metadata) do
+    reason
+    |> reason_text()
+    |> maybe_append_secret_handoff_metadata(metadata)
+  end
+
+  defp secret_handoff_reason(reason), do: SecretHandoff.error_message(reason)
+
+  defp maybe_append_secret_handoff_metadata(reason, metadata) do
+    details = Enum.map_join(metadata, ", ", fn {key, value} -> "#{key}=#{value}" end)
+
+    "#{reason}; #{details}"
   end
 
   defp approve_child_ready_state_transaction(repo, %Session{} = session, work_package_id, rationale, request_id) do
@@ -2426,15 +2528,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp reject_claimed_active_child_worker_grant(repo, work_package_id) do
+  defp reject_active_child_worker_grant(repo, work_package_id) do
     now = DateTime.utc_now(:microsecond)
 
     query =
       from(grant in AccessGrant,
         where:
           grant.work_package_id == ^work_package_id and grant.grant_role == "worker" and is_nil(grant.revoked_at) and
-            grant.provenance == ^@child_worker_grant_provenance and not is_nil(grant.claimed_at) and
-            grant.expires_at > ^now,
+            grant.provenance == ^@child_worker_grant_provenance and grant.expires_at > ^now,
         select: count(grant.id)
       )
 
@@ -2442,41 +2543,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       0 -> :ok
       nil -> :ok
       _active_count -> {:tool_error, "active_child_worker_grant_exists"}
-    end
-  end
-
-  defp supersede_unclaimed_child_worker_grants(repo, work_package_id) do
-    now = DateTime.utc_now(:microsecond)
-
-    active_query =
-      from(grant in AccessGrant,
-        where:
-          grant.work_package_id == ^work_package_id and grant.grant_role == "worker" and is_nil(grant.revoked_at) and
-            grant.provenance == ^@child_worker_grant_provenance and grant.expires_at > ^now
-      )
-
-    active_grants = repo.all(active_query)
-
-    if Enum.any?(active_grants, &match?(%DateTime{}, &1.claimed_at)) do
-      {:tool_error, "active_child_worker_grant_exists"}
-    else
-      supersede_unclaimed_child_worker_grants(repo, active_grants, now)
-    end
-  end
-
-  defp supersede_unclaimed_child_worker_grants(_repo, [], _now), do: :ok
-
-  defp supersede_unclaimed_child_worker_grants(repo, active_grants, now) do
-    grant_ids = Enum.map(active_grants, & &1.id)
-
-    revoke_query =
-      from(grant in AccessGrant,
-        where: grant.id in ^grant_ids and is_nil(grant.claimed_at) and is_nil(grant.revoked_at) and grant.expires_at > ^now
-      )
-
-    case repo.update_all(revoke_query, set: [revoked_at: now, updated_at: now]) do
-      {count, _rows} when count == length(grant_ids) -> :ok
-      _stale_or_claimed -> {:tool_error, "active_child_worker_grant_exists"}
     end
   end
 
@@ -2872,6 +2938,96 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     unexpected = template |> Map.keys() |> Enum.reject(&(&1 in @child_worker_template_keys))
     if unexpected == [], do: :ok, else: {:tool_error, "unexpected_template_field"}
   end
+
+  defp child_worker_secret_handoff_template(template) do
+    with :ok <- validate_child_worker_template_keys(template) do
+      case Map.fetch(template, "secret_handoff") do
+        :error -> {:ok, %{}}
+        {:ok, nil} -> {:ok, %{}}
+        {:ok, handoff} when is_map(handoff) -> normalize_child_worker_secret_handoff_template(handoff)
+        {:ok, _handoff} -> {:tool_error, "invalid_secret_handoff"}
+      end
+    end
+  end
+
+  defp normalize_child_worker_secret_handoff_template(handoff) do
+    unexpected = handoff |> Map.keys() |> Enum.reject(&(&1 in @child_worker_secret_handoff_keys))
+
+    with true <- unexpected == [] || {:tool_error, "unexpected_secret_handoff_field"},
+         {:ok, mode} <- optional_child_secret_handoff_string(handoff, "mode"),
+         :ok <- validate_child_secret_handoff_mode(mode),
+         {:ok, store_dir} <- optional_child_secret_handoff_string(handoff, "store_dir"),
+         {:ok, claimed_by} <- optional_child_secret_handoff_string(handoff, "claimed_by") do
+      {:ok,
+       %{}
+       |> put_optional_handoff_template_value(:mode, normalize_child_secret_handoff_mode(mode))
+       |> put_optional_handoff_template_value(:store_dir, store_dir)
+       |> put_optional_handoff_template_value(:claimed_by, claimed_by)}
+    end
+  end
+
+  defp optional_child_secret_handoff_string(handoff, key) do
+    case Map.fetch(handoff, key) do
+      :error ->
+        {:ok, nil}
+
+      {:ok, nil} ->
+        {:ok, nil}
+
+      {:ok, value} when is_binary(value) ->
+        case String.trim(value) do
+          "" -> {:tool_error, "invalid_secret_handoff"}
+          trimmed -> {:ok, trimmed}
+        end
+
+      {:ok, _value} ->
+        {:tool_error, "invalid_secret_handoff"}
+    end
+  end
+
+  defp validate_child_secret_handoff_mode(nil), do: :ok
+
+  defp validate_child_secret_handoff_mode(mode) when is_binary(mode) do
+    if normalize_child_secret_handoff_mode(mode) in SecretHandoff.valid_modes(),
+      do: :ok,
+      else: {:tool_error, "invalid_secret_handoff"}
+  end
+
+  defp normalize_child_secret_handoff_mode(nil), do: nil
+  defp normalize_child_secret_handoff_mode(mode) when is_binary(mode), do: String.downcase(mode)
+
+  defp put_optional_handoff_template_value(template, _key, nil), do: template
+  defp put_optional_handoff_template_value(template, key, value), do: Map.put(template, key, value)
+
+  defp child_worker_secret_handoff_opts(%Config{} = config, work_package_id, handoff_template) do
+    with {:ok, repo_root} <- config_repo_root(config) do
+      opts = [
+        repo_root: repo_root,
+        claimed_by: Map.get(handoff_template, :claimed_by) || default_child_worker_claimed_by(work_package_id)
+      ]
+
+      {:ok,
+       opts
+       |> put_optional_handoff_opt(:database, config.database)
+       |> put_optional_handoff_opt(:mode, Map.get(handoff_template, :mode))
+       |> put_optional_handoff_opt(:store_dir, Map.get(handoff_template, :store_dir))}
+    end
+  end
+
+  defp config_repo_root(%Config{repo_root: repo_root}) when is_binary(repo_root) do
+    case String.trim(repo_root) do
+      "" -> {:tool_error, "missing_repo_root"}
+      trimmed -> {:ok, Path.expand(trimmed)}
+    end
+  end
+
+  defp config_repo_root(%Config{}), do: {:tool_error, "missing_repo_root"}
+
+  defp default_child_worker_claimed_by(work_package_id), do: "sympp-child-worker:#{work_package_id}"
+
+  defp put_optional_handoff_opt(opts, _key, nil), do: opts
+  defp put_optional_handoff_opt(opts, _key, value) when is_binary(value) and value == "", do: opts
+  defp put_optional_handoff_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp child_worker_capabilities(template) do
     case Map.fetch(template, "capabilities") do
@@ -6209,7 +6365,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     })
   end
 
-  defp child_worker_grant_payload(%{grant: grant, work_key: work_key}) do
+  defp child_worker_grant_payload(%{grant: grant}, secret_handoff) do
     %{
       "id" => grant.id,
       "work_package_id" => grant.work_package_id,
@@ -6217,9 +6373,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "grant_role" => grant.grant_role,
       "capabilities" => grant.capabilities || [],
       "expires_at" => DateTime.to_iso8601(grant.expires_at),
-      "secret" => work_key.secret,
-      "secret_returned_once" => true
+      "secret_in_response" => false,
+      "secret_handoff" => secret_handoff
     }
+  end
+
+  defp child_worker_grant_secret_payload(%{grant: grant, work_key: work_key}) do
+    %{
+      "id" => grant.id,
+      "work_package_id" => grant.work_package_id,
+      "display_key" => grant.display_key,
+      "grant_role" => grant.grant_role,
+      "capabilities" => grant.capabilities || [],
+      "expires_at" => DateTime.to_iso8601(grant.expires_at),
+      "secret" => work_key.secret
+    }
+  end
+
+  defp redacted_child_worker_grant(worker_grant) when is_map(worker_grant) do
+    Map.delete(worker_grant, "secret")
+  end
+
+  defp child_worker_secret_handoff_payload(handoff) when is_map(handoff) do
+    handoff
+    |> Map.take(@child_worker_secret_handoff_payload_keys)
+    |> json_safe_payload()
   end
 
   defp json_resource(uri, payload) do
