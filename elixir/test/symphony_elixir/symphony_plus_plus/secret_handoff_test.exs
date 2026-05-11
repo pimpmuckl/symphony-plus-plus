@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
   @repo_root Path.expand("../../../../", __DIR__)
+  @default_worker_grant_id "ag_secret_handoff_D321"
   @windows match?({:win32, _}, :os.type())
 
   if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
@@ -29,7 +30,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
       assert handoff.claimed_by_required == true
       assert handoff.secret_in_stdout == false
       assert Path.dirname(handoff.path) == Path.expand(store_dir)
-      assert Path.basename(handoff.path) =~ ~r/^wp-secret-handoff-D321-[A-Za-z0-9_-]{16}\.secret$/
+
+      assert Path.basename(handoff.path) =~
+               ~r/^wp-secret-handoff-D321-ag_secret_handoff_D321-[A-Za-z0-9_-]{16}\.secret$/
+
+      assert handoff.target == "SymphonyPlusPlus:worker:wp-secret-handoff:D321:#{@default_worker_grant_id}"
       assert local_file_run_mcp_command_uses_platform_wrapper?(handoff.run_mcp_command)
       assert local_file_run_mcp_command_claims_worker?(handoff.run_mcp_command, "worker-local-1")
       refute handoff.run_mcp_command =~ "<claimed-by>"
@@ -58,7 +63,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
 
       assert Path.type(handoff.path) == :absolute
       assert Path.dirname(handoff.path) == absolute_store_dir
-      assert Path.basename(handoff.path) =~ ~r/^wp-secret-handoff-D321-[A-Za-z0-9_-]{16}\.secret$/
+
+      assert Path.basename(handoff.path) =~
+               ~r/^wp-secret-handoff-D321-ag_secret_handoff_D321-[A-Za-z0-9_-]{16}\.secret$/
+
       assert handoff.run_mcp_command =~ handoff.path
       assert File.read!(handoff.path) == secret
 
@@ -139,6 +147,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
       assert File.read!(first_handoff.path) == "first-secret"
       assert File.read!(second_handoff.path) == "second-secret"
       assert File.read!(third_handoff.path) == "third-secret"
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
+
+  test "uses grant identity to namespace local paths and credential targets when display keys collide" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-secret-grant-collision-#{System.unique_integer([:positive])}")
+
+    try do
+      assert {:ok, first_handoff} =
+               SecretHandoff.store_worker_secret(
+                 %{work_package: work_package(), worker_grant: worker_grant("first-secret", id: "ag_collision_one")},
+                 mode: "local-private-file",
+                 store_dir: store_dir,
+                 claimed_by: "worker-local-1",
+                 repo_root: @repo_root
+               )
+
+      assert {:ok, second_handoff} =
+               SecretHandoff.store_worker_secret(
+                 %{work_package: work_package(), worker_grant: worker_grant("second-secret", id: "ag_collision_two")},
+                 mode: "local-private-file",
+                 store_dir: store_dir,
+                 claimed_by: "worker-local-1",
+                 repo_root: @repo_root
+               )
+
+      assert first_handoff.path != second_handoff.path
+      assert first_handoff.target != second_handoff.target
+      assert Path.basename(first_handoff.path) =~ "ag_collision_one"
+      assert Path.basename(second_handoff.path) =~ "ag_collision_two"
+      assert first_handoff.target == "SymphonyPlusPlus:worker:wp-secret-handoff:D321:ag_collision_one"
+      assert second_handoff.target == "SymphonyPlusPlus:worker:wp-secret-handoff:D321:ag_collision_two"
+      assert File.read!(first_handoff.path) == "first-secret"
+      assert File.read!(second_handoff.path) == "second-secret"
     after
       File.rm_rf!(store_dir)
     end
@@ -293,9 +338,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
                claimed_by: "worker-local-1"
              )
 
+    assert {:error, :missing_worker_grant_identity} =
+             SecretHandoff.store_worker_secret(
+               %{
+                 work_package: work_package(),
+                 worker_grant: Map.delete(worker_grant("synthetic-secret"), :id)
+               },
+               mode: "local-private-file",
+               claimed_by: "worker-local-1",
+               repo_root: @repo_root
+             )
+
     assert SecretHandoff.error_message(:missing_secret) =~ "one-time secret"
     assert SecretHandoff.error_message(:missing_claimed_by) =~ "claimed_by"
     assert SecretHandoff.error_message(:missing_repo_root) =~ "repository root"
+    assert SecretHandoff.error_message(:missing_worker_grant_identity) =~ "stable non-secret id"
     assert SecretHandoff.error_message(:missing_worker_grant) =~ "worker grant"
     assert SecretHandoff.error_message(:missing_work_package) =~ "work package"
     assert SecretHandoff.error_message(:unsupported_secret_handoff_mode) =~ "local-private-file"
@@ -363,6 +420,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
         assert handoff.mode == "windows-credential-manager"
         assert handoff.status == "stored"
         assert handoff.store == "Windows Credential Manager"
+        assert handoff.target == "SymphonyPlusPlus:worker:wp-secret-handoff:D321:#{@default_worker_grant_id}"
         assert handoff.run_mcp_command =~ ~s(& #{powershell_literal(powershell)})
         assert handoff.run_mcp_command =~ "sympp-worker-secret.ps1"
         assert handoff.run_mcp_command =~ ~s(-ClaimedBy #{powershell_literal("worker-windows-1")})
@@ -372,6 +430,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
         if is_binary(handoff.target) do
           remove_windows_credential!(powershell, handoff.target)
         end
+      end
+    end
+  end
+
+  test "uses grant identity to namespace Windows Credential Manager targets when display keys collide" do
+    powershell = powershell_executable()
+
+    if windows?() and powershell do
+      assert {:ok, first_handoff} =
+               SecretHandoff.store_worker_secret(
+                 %{work_package: work_package(), worker_grant: worker_grant("first-secret", id: "ag_collision_one")},
+                 mode: "windows-credential-manager",
+                 repo_root: @repo_root,
+                 database: "test-ledger.sqlite3",
+                 claimed_by: "worker-windows-1"
+               )
+
+      assert {:ok, second_handoff} =
+               SecretHandoff.store_worker_secret(
+                 %{work_package: work_package(), worker_grant: worker_grant("second-secret", id: "ag_collision_two")},
+                 mode: "windows-credential-manager",
+                 repo_root: @repo_root,
+                 database: "test-ledger.sqlite3",
+                 claimed_by: "worker-windows-1"
+               )
+
+      try do
+        assert first_handoff.target != second_handoff.target
+        assert first_handoff.target == "SymphonyPlusPlus:worker:wp-secret-handoff:D321:ag_collision_one"
+        assert second_handoff.target == "SymphonyPlusPlus:worker:wp-secret-handoff:D321:ag_collision_two"
+      after
+        remove_windows_credential!(powershell, first_handoff.target)
+        remove_windows_credential!(powershell, second_handoff.target)
       end
     end
   end
@@ -387,8 +478,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     %WorkPackage{id: id}
   end
 
-  defp worker_grant(secret \\ "synthetic-secret") do
-    %{display_key: "D321", secret: secret}
+  defp worker_grant(secret \\ "synthetic-secret", attrs \\ []) do
+    Map.merge(%{id: @default_worker_grant_id, display_key: "D321", secret: secret}, Map.new(attrs))
   end
 
   defp remove_windows_credential!(powershell, target) do
