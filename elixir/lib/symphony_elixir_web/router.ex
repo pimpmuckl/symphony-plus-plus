@@ -52,6 +52,8 @@ defmodule SymphonyElixirWeb.Router do
   scope "/", SymphonyElixirWeb do
     get("/api/v1/state", ObservabilityApiController, :state)
     get("/api/v1/sympp/board", SymppDashboardApiController, :board)
+    get("/api/v1/sympp/work-requests", SymppDashboardApiController, :work_requests)
+    get("/api/v1/sympp/work-requests/:work_request_id", SymppDashboardApiController, :work_request_detail)
     get("/api/v1/sympp/work-packages/:work_package_id", SymppDashboardApiController, :detail)
     get("/api/v1/sympp/work-packages/:work_package_id/timeline", SymppDashboardApiController, :timeline)
     get("/api/v1/sympp/work-packages/:work_package_id/artifacts", SymppDashboardApiController, :artifacts)
@@ -62,6 +64,8 @@ defmodule SymphonyElixirWeb.Router do
     match(:*, "/", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/state", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/sympp/board", ObservabilityApiController, :method_not_allowed)
+    match(:*, "/api/v1/sympp/work-requests", ObservabilityApiController, :method_not_allowed)
+    match(:*, "/api/v1/sympp/work-requests/:work_request_id", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/sympp/work-packages/:work_package_id", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/sympp/work-packages/:work_package_id/timeline", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/sympp/work-packages/:work_package_id/artifacts", ObservabilityApiController, :method_not_allowed)

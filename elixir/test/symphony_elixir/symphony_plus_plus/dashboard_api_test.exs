@@ -22,6 +22,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
   alias SymphonyElixir.WorkPackageFactory
   alias SymphonyElixirWeb.SymppDashboardApiController
 
@@ -81,6 +86,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end
 
     defp count_artifact_list_query(_query), do: :ok
+  end
+
+  defmodule WorkRequestCardCountingRepo do
+    @moduledoc false
+
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    @counted_tables [
+      "sympp_work_requests",
+      "sympp_work_request_clarification_questions",
+      "sympp_work_request_decision_logs",
+      "sympp_work_request_planned_slices"
+    ]
+
+    def all(query) do
+      count_query(query)
+      Repo.all(query)
+    end
+
+    def one(query), do: Repo.one(query)
+    def get(queryable, id), do: Repo.get(queryable, id)
+    def transaction(fun), do: Repo.transaction(fun)
+
+    def counter(counter), do: :persistent_term.put({__MODULE__, :counter}, counter)
+    def clear_counter, do: :persistent_term.erase({__MODULE__, :counter})
+
+    defp count_query(%Ecto.Query{from: %{source: {table, _schema}}}) when table in @counted_tables do
+      case :persistent_term.get({__MODULE__, :counter}, nil) do
+        nil -> :ok
+        counter -> Agent.update(counter, &Map.update(&1, table, 1, fn count -> count + 1 end))
+      end
+    end
+
+    defp count_query(_query), do: :ok
   end
 
   defmodule PhaseBoardMaterializationRepo do
@@ -146,6 +185,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     repo.delete_all(AccessGrant)
     repo.delete_all(WorkPackage)
     repo.delete_all(Phase)
+    repo.delete_all(PlannedSlice)
+    repo.delete_all(DecisionLogEntry)
+    repo.delete_all(ClarificationQuestion)
+    repo.delete_all(WorkRequest)
     :ok
   end
 
@@ -609,6 +652,307 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     assert %{"error" => %{"code" => "forbidden"}} =
              json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{other_base.id}"), 403)
+  end
+
+  test "dashboard API lists scoped WorkRequest cards with counts", %{repo: repo} do
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-WR-ANCHOR",
+                 kind: "phase_child",
+                 status: "planning",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta"
+               )
+             )
+
+    in_scope =
+      create_work_request!(
+        repo,
+        id: "WR-DASH-IN-SCOPE",
+        title: "Read WorkRequests",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    _out_of_scope =
+      create_work_request!(
+        repo,
+        id: "WR-DASH-OUT-OF-SCOPE",
+        repo: "nextide/other",
+        base_branch: anchor.base_branch
+      )
+
+    assert {:ok, _open_question} = WorkRequestRepository.ask_question(repo, in_scope.id, question_attrs(id: "WRQ-DASH-OPEN"))
+
+    assert {:ok, answered_question} =
+             WorkRequestRepository.ask_question(repo, in_scope.id, question_attrs(id: "WRQ-DASH-ANSWERED"))
+
+    assert {:ok, _answered} =
+             WorkRequestRepository.answer_question(repo, answered_question.id, "open", %{
+               answer: "Use the backend API only.",
+               answered_by: "operator-1"
+             })
+
+    assert {:ok, closed_question} = WorkRequestRepository.ask_question(repo, in_scope.id, question_attrs(id: "WRQ-DASH-CLOSED"))
+    assert {:ok, _closed} = WorkRequestRepository.close_question(repo, closed_question.id, "open")
+
+    assert {:ok, _decision} = WorkRequestRepository.record_decision(repo, in_scope.id, decision_attrs(id: "WRD-DASH-1"))
+    assert {:ok, planned} = WorkRequestRepository.add_planned_slice(repo, in_scope.id, planned_slice_attrs(id: "WRS-DASH-PLANNED"))
+    assert {:ok, approved} = WorkRequestRepository.add_planned_slice(repo, in_scope.id, planned_slice_attrs(id: "WRS-DASH-APPROVED"))
+    assert {:ok, dispatched} = WorkRequestRepository.add_planned_slice(repo, in_scope.id, planned_slice_attrs(id: "WRS-DASH-DISPATCHED"))
+    assert {:ok, skipped} = WorkRequestRepository.add_planned_slice(repo, in_scope.id, planned_slice_attrs(id: "WRS-DASH-SKIPPED"))
+
+    assert planned.status == "planned"
+    repo.update!(Ecto.Changeset.change(approved, status: "approved"))
+    repo.update!(Ecto.Changeset.change(dispatched, status: "dispatched"))
+    repo.update!(Ecto.Changeset.change(skipped, status: "skipped"))
+
+    secret = create_architect_grant_secret(repo, anchor.id)
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-requests"), 200)
+
+    assert payload["total_count"] == 1
+
+    assert [
+             %{
+               "id" => "WR-DASH-IN-SCOPE",
+               "title" => "Read WorkRequests",
+               "repo" => "nextide/symphony-plus-plus",
+               "base_branch" => "symphony-plus-plus/beta",
+               "work_type" => "feature",
+               "desired_dispatch_shape" => "single_package",
+               "status" => "ready_for_slicing",
+               "open_question_count" => 1,
+               "answered_question_count" => 1,
+               "closed_question_count" => 1,
+               "decision_count" => 1,
+               "planned_slice_count" => 1,
+               "approved_slice_count" => 1,
+               "dispatched_slice_count" => 1,
+               "skipped_slice_count" => 1
+             }
+           ] = payload["work_requests"]
+  end
+
+  test "dashboard WorkRequest list batches related card count reads", %{repo: repo} do
+    first = create_work_request!(repo, id: "WR-DASH-BATCH-1")
+    second = create_work_request!(repo, id: "WR-DASH-BATCH-2")
+
+    assert {:ok, _question} = WorkRequestRepository.ask_question(repo, first.id, question_attrs(id: "WRQ-DASH-BATCH-1"))
+    assert {:ok, _decision} = WorkRequestRepository.record_decision(repo, second.id, decision_attrs(id: "WRD-DASH-BATCH-1"))
+    assert {:ok, _slice} = WorkRequestRepository.add_planned_slice(repo, second.id, planned_slice_attrs(id: "WRS-DASH-BATCH-1"))
+
+    {:ok, counter} = Agent.start_link(fn -> %{} end)
+    WorkRequestCardCountingRepo.counter(counter)
+
+    try do
+      grant = %AccessGrant{
+        grant_role: "architect",
+        capabilities: ["read:phase"],
+        phase_id: "phase-batch",
+        scope_repo: "nextide/symphony-plus-plus",
+        scope_base_branch: "main"
+      }
+
+      assert {:ok, payload} = Dashboard.work_requests_for_grant(WorkRequestCardCountingRepo, grant)
+      assert payload.total_count == 2
+      assert Enum.map(payload.work_requests, & &1.id) == [first.id, second.id]
+
+      assert Agent.get(counter, & &1) == %{
+               "sympp_work_requests" => 1,
+               "sympp_work_request_clarification_questions" => 1,
+               "sympp_work_request_decision_logs" => 1,
+               "sympp_work_request_planned_slices" => 1
+             }
+    after
+      WorkRequestCardCountingRepo.clear_counter()
+      Agent.stop(counter)
+    end
+  end
+
+  test "dashboard WorkRequest list has deterministic card order", %{repo: repo} do
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-WR-ORDER-ANCHOR",
+                 kind: "phase_child",
+                 status: "planning",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta"
+               )
+             )
+
+    newer = create_work_request!(repo, id: "WR-DASH-ORDER-B", repo: anchor.repo, base_branch: anchor.base_branch)
+    older = create_work_request!(repo, id: "WR-DASH-ORDER-A", repo: anchor.repo, base_branch: anchor.base_branch)
+
+    older_inserted_at = DateTime.add(newer.inserted_at, -60, :second)
+    repo.update!(Ecto.Changeset.change(older, inserted_at: older_inserted_at))
+
+    secret = create_architect_grant_secret(repo, anchor.id)
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-requests"), 200)
+
+    assert Enum.map(payload["work_requests"], & &1["id"]) == [older.id, newer.id]
+  end
+
+  test "dashboard API returns redacted deterministic WorkRequest detail", %{repo: repo} do
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-WR-DETAIL-ANCHOR",
+                 kind: "phase_child",
+                 status: "planning",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta"
+               )
+             )
+
+    work_request =
+      create_work_request!(
+        repo,
+        id: "WR-DASH-DETAIL",
+        title: "Detail WorkRequest",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        human_description: "Use Bearer raw-secret-value for validation",
+        constraints: %{"token" => "raw-secret-value", "safe" => "visible"}
+      )
+
+    assert {:ok, second_question} =
+             WorkRequestRepository.ask_question(repo, work_request.id, question_attrs(id: "WRQ-DETAIL-B", question: "Second?"))
+
+    assert {:ok, first_question} =
+             WorkRequestRepository.ask_question(repo, work_request.id, question_attrs(id: "WRQ-DETAIL-A", question: "First sk-secret123?"))
+
+    assert {:ok, _answered} =
+             WorkRequestRepository.answer_question(repo, first_question.id, "open", %{
+               answer: "Bearer raw-secret-value",
+               answered_by: "operator-1"
+             })
+
+    assert {:ok, second_decision} =
+             WorkRequestRepository.record_decision(
+               repo,
+               work_request.id,
+               decision_attrs(id: "WRD-DETAIL-B", decision: "Second decision")
+             )
+
+    assert {:ok, first_decision} =
+             WorkRequestRepository.record_decision(
+               repo,
+               work_request.id,
+               decision_attrs(id: "WRD-DETAIL-A", decision: "Use https://example.test/path?sig=raw-secret-value")
+             )
+
+    assert {:ok, second_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-DETAIL-B", title: "Second slice")
+             )
+
+    assert {:ok, first_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-DETAIL-A", title: "Slice with ghp_secret123")
+             )
+
+    secret = create_architect_grant_secret(repo, anchor.id)
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-requests/#{work_request.id}"), 200)
+
+    assert payload["work_request"]["title"] == "Detail WorkRequest"
+    assert payload["work_request"]["human_description"] == "[REDACTED]"
+    assert payload["work_request"]["constraints"]["token"] == "[REDACTED]"
+    assert payload["work_request"]["constraints"]["safe"] == "visible"
+    assert Enum.map(payload["clarification_questions"], & &1["id"]) == [second_question.id, first_question.id]
+    assert Enum.at(payload["clarification_questions"], 1)["question"] == "[REDACTED]"
+    assert Enum.at(payload["clarification_questions"], 1)["answer"] == "[REDACTED]"
+    assert Enum.map(payload["decision_logs"], & &1["id"]) == [second_decision.id, first_decision.id]
+    assert Enum.at(payload["decision_logs"], 1)["decision"] == "[REDACTED]"
+    assert Enum.map(payload["planned_slices"], & &1["id"]) == [second_slice.id, first_slice.id]
+    assert Enum.at(payload["planned_slices"], 1)["title"] == "[REDACTED]"
+
+    assert payload["summary"] == %{
+             "open_question_count" => 1,
+             "answered_question_count" => 1,
+             "closed_question_count" => 0,
+             "decision_count" => 2,
+             "planned_slice_count" => 2,
+             "approved_slice_count" => 0,
+             "dispatched_slice_count" => 0,
+             "skipped_slice_count" => 0
+           }
+  end
+
+  test "dashboard API WorkRequest endpoints enforce board reader authorization and scope", %{repo: repo} do
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-WR-AUTH-ANCHOR",
+                 kind: "phase_child",
+                 status: "planning",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta"
+               )
+             )
+
+    in_scope = create_work_request!(repo, id: "WR-DASH-AUTH-IN", repo: anchor.repo, base_branch: anchor.base_branch)
+    other_repo = create_work_request!(repo, id: "WR-DASH-AUTH-OTHER", repo: "nextide/other", base_branch: anchor.base_branch)
+    other_branch = create_work_request!(repo, id: "WR-DASH-AUTH-BRANCH", repo: anchor.repo, base_branch: "main")
+    secret = create_architect_grant_secret(repo, anchor.id)
+    legacy_secret = create_legacy_phase_grant_secret(repo, anchor.id, "grant-dashboard-wr-legacy")
+
+    assert %{"work_requests" => [%{"id" => "WR-DASH-AUTH-IN"}]} =
+             json_response(get(auth_conn(legacy_secret), "/api/v1/sympp/work-requests"), 200)
+
+    assert %{"work_request" => %{"id" => "WR-DASH-AUTH-IN"}} =
+             json_response(get(auth_conn(secret), "/api/v1/sympp/work-requests/#{in_scope.id}"), 200)
+
+    assert %{"error" => %{"code" => "not_found"}} =
+             json_response(get(auth_conn(secret), "/api/v1/sympp/work-requests/#{other_repo.id}"), 404)
+
+    assert %{"error" => %{"code" => "not_found"}} =
+             json_response(get(auth_conn(secret), "/api/v1/sympp/work-requests/#{other_branch.id}"), 404)
+
+    assert %{"work_request" => %{"id" => "WR-DASH-AUTH-IN"}} =
+             json_response(get(auth_conn(legacy_secret), "/api/v1/sympp/work-requests/#{in_scope.id}"), 200)
+
+    assert %{"error" => %{"code" => "not_found"}} =
+             json_response(get(auth_conn(legacy_secret), "/api/v1/sympp/work-requests/#{other_repo.id}"), 404)
+
+    assert %{"error" => %{"code" => "not_found"}} =
+             json_response(get(auth_conn(legacy_secret), "/api/v1/sympp/work-requests/#{other_branch.id}"), 404)
+
+    assert {:error, :forbidden} =
+             Dashboard.work_requests_for_grant(repo, %AccessGrant{grant_role: "operator", capabilities: ["read:phase"]})
+
+    assert %{"error" => %{"code" => "not_found"}} =
+             json_response(get(auth_conn(secret), "/api/v1/sympp/work-requests/WR-DASH-MISSING"), 404)
+
+    assert %{"error" => %{"code" => "unauthorized"}} =
+             json_response(get(build_conn(), "/api/v1/sympp/work-requests"), 401)
+
+    %{work_key_secret: package_secret} = create_dashboard_fixture(repo, id: "SYMPP-DASH-WR-PACKAGE-ONLY")
+
+    assert %{"error" => %{"code" => "forbidden"}} =
+             json_response(get(auth_conn(package_secret), "/api/v1/sympp/work-requests"), 403)
+  end
+
+  test "dashboard WorkRequest reads normalize database busy errors" do
+    grant = %AccessGrant{
+      grant_role: "architect",
+      capabilities: ["read:phase"],
+      phase_id: "phase-busy",
+      scope_repo: "nextide/symphony-plus-plus",
+      scope_base_branch: "main"
+    }
+
+    assert {:error, :database_busy} = Dashboard.work_requests_for_grant(BusyRepo, grant)
   end
 
   test "board artifact reads are limited to packages that need artifact-backed readiness", %{repo: repo} do
@@ -2933,6 +3277,67 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       assert %{"error" => %{"code" => "unauthorized"}} =
                json_response(get(unknown_work_key_conn, "/api/v1/sympp/board"), 401)
     end)
+  end
+
+  defp create_work_request!(repo, overrides) do
+    assert {:ok, work_request} = WorkRequestRepository.create(repo, work_request_attrs(overrides))
+    work_request
+  end
+
+  defp work_request_attrs(overrides) do
+    defaults = %{
+      id: "WR-DASH-#{System.unique_integer([:positive])}",
+      title: "Improve intake flow",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "main",
+      work_type: "feature",
+      human_description: "Record the human's desired outcome before slicing.",
+      constraints: %{"allowed_paths" => ["elixir/lib"], "requires_secret" => false},
+      desired_dispatch_shape: "single_package",
+      status: "draft"
+    }
+
+    Enum.into(overrides, defaults)
+  end
+
+  defp question_attrs(overrides) do
+    defaults = %{
+      category: "scope",
+      question: "Which branch should this target?",
+      why_needed: "The architect needs the target before slicing."
+    }
+
+    Enum.into(overrides, defaults)
+  end
+
+  defp decision_attrs(overrides) do
+    defaults = %{
+      source_type: "architect",
+      decision: "Keep this WorkRequest narrow.",
+      rationale: "The next slice owns broader orchestration.",
+      scope_impact: "No new runtime tools.",
+      created_by: "architect-1"
+    }
+
+    Enum.into(overrides, defaults)
+  end
+
+  defp planned_slice_attrs(overrides) do
+    defaults = %{
+      title: "Add WorkRequest dashboard API",
+      goal: "Expose read-only dashboard view models.",
+      work_package_kind: "mcp",
+      target_base_branch: "main",
+      branch_pattern: "agent/SYMPP-V2-WR-004/workrequest-read-api",
+      owned_file_globs: ["elixir/lib/symphony_elixir/symphony_plus_plus/dashboard.ex"],
+      forbidden_file_globs: ["elixir/lib/symphony_elixir_web/live/**"],
+      acceptance_criteria: ["WorkRequest dashboard API reads are scoped and redacted."],
+      validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/dashboard_api_test.exs"],
+      review_lanes: ["review_t1", "review_t2"],
+      stop_conditions: ["Stop before UI or dispatch wiring."]
+    }
+
+    Enum.into(overrides, defaults)
   end
 
   defp create_dashboard_fixture(repo, opts \\ []) do
