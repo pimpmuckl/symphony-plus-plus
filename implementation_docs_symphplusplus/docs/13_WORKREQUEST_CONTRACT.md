@@ -17,7 +17,7 @@ WorkPackages.
 
 Use a WorkRequest when the human knows the product goal but has not yet locked
 the implementation slices, target branch model, assumptions, or review shape.
-Skip it for already-bounded quick fixes, hotfixes, investigations, or
+Skip it for already-bounded bugfixes, hotfixes, investigations, or
 review-only tasks that can be expressed directly as one WorkPackage.
 
 ## Required Intake Fields
@@ -26,12 +26,14 @@ Every WorkRequest records:
 
 - Project or repo.
 - Base branch or branch constraint.
-- Work type, such as feature, fix, refactor, investigation, docs, or review.
+- Work type, one of `feature`, `bugfix`, `hotfix`, `refactor`,
+  `investigation`, `docs`, or `review`.
 - Human description of the desired outcome.
 - Constraints, including allowed paths, forbidden paths, compatibility stance,
   rollout limits, dependencies, secrets, validation limits, and stop conditions.
-- Desired dispatch shape, such as single package, architect-led multi-package
-  feature branch, narrow direct-main fix, investigation first, or review-only.
+- Desired dispatch shape, one of `single_package`,
+  `architect_led_feature_branch`, `direct_main_fix`, `investigation_first`, or
+  `review_only`.
 
 The request may include preferred branch names, known risks, relevant docs,
 expected tests, desired reviewers, and links to existing issues or PRs.
@@ -111,8 +113,9 @@ The slice plan records:
 - Any package that should be investigation-only or reviewer-only.
 
 Feature work defaults to one feature branch with smaller PRs targeting that
-feature branch. Use direct `main` PRs for narrow fixes when the architect plan
-records why a feature branch would add overhead without reducing risk.
+feature branch. Use direct `main` PRs for narrow direct-main changes when the
+architect plan records why a feature branch would add overhead without reducing
+risk.
 
 ## Dispatch Into WorkPackages
 
