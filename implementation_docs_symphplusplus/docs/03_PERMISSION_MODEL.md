@@ -61,6 +61,14 @@ non-Windows systems, the fallback is a user-local private file store whose ACL
 strength depends on the local profile and should be treated as a smaller
 development fallback.
 
+Private handoff metadata has its own naming contract. Local private-file paths
+and Windows Credential Manager targets use the stable, non-secret
+`worker_grant.id` as the uniqueness boundary. The four-character `display_key`
+may appear as a readable operator label, but it is not the unique storage
+identity. Normal command output must keep showing only non-secret handoff
+metadata and bootstrap shape; raw worker secrets stay in the private store and
+must remain redacted from stdout, prompts, PR text, review text, and logs.
+
 ## Worker capabilities
 
 ```text
