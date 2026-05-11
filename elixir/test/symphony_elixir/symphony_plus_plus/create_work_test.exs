@@ -445,6 +445,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
       assert handoff.path =~ grant_id
       assert handoff.target =~ grant_id
       assert File.read!(handoff.path) == secret
+      refute File.exists?(Path.join(store_dir, "metadata"))
       refute Map.has_key?(payload.worker_grant, :secret)
       assert payload.worker_grant.secret_handoff.target == handoff.target
       refute json =~ secret

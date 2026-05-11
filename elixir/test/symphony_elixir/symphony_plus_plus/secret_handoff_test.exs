@@ -284,6 +284,249 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
+  test "explicitly stores only non-secret metadata in the managed private-store metadata directory" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-metadata-#{System.unique_integer([:positive])}")
+    payload = "synthetic-sensitive-payload-#{System.unique_integer([:positive])}"
+    package = work_package()
+    grant = worker_grant(payload)
+    secret_path = metadata_local_secret_path(package, grant, store_dir)
+    metadata_path = managed_metadata_file(package, grant, store_dir)
+
+    handoff = %{
+      mode: "local-private-file",
+      path: secret_path,
+      target: "not-used-for-local-cleanup",
+      run_mcp_command: "run command containing #{payload}",
+      claimed_by: "worker-local-1",
+      env_var: "SYMPP_WORK_KEY_SECRET"
+    }
+
+    try do
+      assert :ok = SecretHandoff.store_worker_secret_metadata(package, grant, handoff, store_dir: store_dir)
+
+      assert File.exists?(metadata_path)
+      assert Path.dirname(metadata_path) == Path.join(Path.expand(store_dir), "metadata")
+
+      metadata_json = File.read!(metadata_path)
+      metadata = Jason.decode!(metadata_json)
+
+      assert metadata == %{
+               "version" => 1,
+               "work_package_id" => package.id,
+               "worker_grant_display_key" => grant.display_key,
+               "worker_grant_id" => grant.id,
+               "mode" => "local-private-file",
+               "path" => Path.expand(secret_path)
+             }
+
+      refute metadata_json =~ payload
+      refute Map.has_key?(metadata, "target")
+      refute Map.has_key?(metadata, "run_mcp_command")
+      refute Map.has_key?(metadata, "claimed_by")
+      refute Map.has_key?(metadata, "env_var")
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  test "deletes a recorded local handoff by work package and worker grant identity" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-delete-by-grant-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = worker_grant("synthetic-delete-by-grant-payload")
+    secret_path = metadata_local_secret_path(package, grant, store_dir)
+    metadata_path = managed_metadata_file(package, grant, store_dir)
+
+    try do
+      File.mkdir_p!(Path.dirname(secret_path))
+      File.write!(secret_path, "synthetic-delete-by-grant-payload")
+
+      assert :ok =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "local-private-file", "path" => secret_path},
+                 store_dir: store_dir
+               )
+
+      assert File.exists?(secret_path)
+      assert File.exists?(metadata_path)
+
+      assert :ok = SecretHandoff.delete_worker_secret_for_grant(package, grant, store_dir: store_dir)
+      refute File.exists?(secret_path)
+      refute File.exists?(metadata_path)
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  test "concurrent conflicting metadata writes preserve one cleanup coordinate" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-conflict-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = worker_grant("synthetic-conflict-payload")
+    first_secret_path = metadata_local_secret_path(package, grant, store_dir, "first")
+    second_secret_path = metadata_local_secret_path(package, grant, store_dir, "second")
+    metadata_path = managed_metadata_file(package, grant, store_dir)
+
+    try do
+      File.mkdir_p!(store_dir)
+      File.write!(first_secret_path, "synthetic-first-conflict-payload")
+      File.write!(second_secret_path, "synthetic-second-conflict-payload")
+
+      results =
+        [first_secret_path, second_secret_path]
+        |> Enum.map(fn path ->
+          Task.async(fn ->
+            receive do
+              :write_metadata ->
+                SecretHandoff.store_worker_secret_metadata(
+                  package,
+                  grant,
+                  %{"mode" => "local-private-file", "path" => path},
+                  store_dir: store_dir
+                )
+            end
+          end)
+        end)
+        |> then(fn tasks ->
+          Enum.each(tasks, &send(&1.pid, :write_metadata))
+          Enum.map(tasks, &Task.await(&1, 5_000))
+        end)
+
+      assert Enum.count(results, &(&1 == :ok)) == 1
+      assert Enum.count(results, &match?({:error, {:handoff_metadata_write_failed, :conflicting_metadata}}, &1)) == 1
+
+      assert %{"path" => recorded_path} = metadata_path |> File.read!() |> Jason.decode!()
+      assert recorded_path in [first_secret_path, second_secret_path]
+
+      assert :ok = SecretHandoff.delete_worker_secret_for_grant(package, grant, store_dir: store_dir)
+      refute File.exists?(recorded_path)
+      refute File.exists?(metadata_path)
+      assert Enum.any?([first_secret_path, second_secret_path] -- [recorded_path], &File.exists?/1)
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  test "defaults metadata storage to the local private-store metadata directory" do
+    package = work_package()
+    grant = worker_grant("synthetic-default-metadata-payload", id: "ag_default_metadata_D321")
+    secret_path = metadata_local_secret_path(package, grant, default_local_private_store_dir())
+    metadata_path = managed_metadata_file(package, grant, default_local_private_store_dir())
+
+    try do
+      assert :ok =
+               SecretHandoff.store_worker_secret_metadata(package, grant, %{
+                 "mode" => "local-private-file",
+                 "path" => secret_path
+               })
+
+      assert File.exists?(metadata_path)
+      assert Path.dirname(metadata_path) == Path.expand(Path.join(default_local_private_store_dir(), "metadata"))
+    after
+      File.rm(metadata_path)
+    end
+  end
+
+  test "delete by grant reports missing or invalid metadata without guessing fallback cleanup coordinates" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-bad-metadata-#{System.unique_integer([:positive])}")
+    external_dir = Path.join(System.tmp_dir!(), "sympp-handoff-external-secret-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = worker_grant("synthetic-invalid-metadata-payload")
+    secret_path = metadata_local_secret_path(package, grant, store_dir)
+    external_secret_path = metadata_local_secret_path(package, grant, external_dir)
+    metadata_path = managed_metadata_file(package, grant, store_dir)
+
+    try do
+      File.mkdir_p!(Path.dirname(secret_path))
+      File.write!(secret_path, "synthetic-invalid-metadata-payload")
+      File.mkdir_p!(Path.dirname(external_secret_path))
+      File.write!(external_secret_path, "synthetic-external-payload")
+
+      assert {:error, {:handoff_metadata_missing, ^metadata_path}} =
+               SecretHandoff.delete_worker_secret_for_grant(package, grant, store_dir: store_dir)
+
+      assert File.exists?(secret_path)
+
+      File.mkdir_p!(Path.dirname(metadata_path))
+      File.write!(metadata_path, "{")
+
+      assert {:error, {:handoff_metadata_read_failed, :invalid_json}} =
+               SecretHandoff.delete_worker_secret_for_grant(package, grant, store_dir: store_dir)
+
+      assert File.exists?(secret_path)
+      assert File.exists?(metadata_path)
+
+      File.write!(
+        metadata_path,
+        Jason.encode!(%{
+          "version" => 1,
+          "work_package_id" => package.id,
+          "worker_grant_display_key" => grant.display_key,
+          "worker_grant_id" => grant.id,
+          "mode" => "local-private-file",
+          "path" => external_secret_path
+        })
+      )
+
+      assert {:error, {:handoff_metadata_invalid, :invalid_local_path}} =
+               SecretHandoff.delete_worker_secret_for_grant(package, grant, store_dir: store_dir)
+
+      assert File.exists?(external_secret_path)
+      assert File.exists?(metadata_path)
+
+      File.write!(
+        metadata_path,
+        Jason.encode!(%{
+          "version" => 1,
+          "work_package_id" => package.id,
+          "worker_grant_display_key" => grant.display_key,
+          "worker_grant_id" => grant.id,
+          "mode" => "local-private-file",
+          "path" => Path.join(store_dir, "unrelated.secret")
+        })
+      )
+
+      assert {:error, {:handoff_metadata_invalid, :invalid_local_path}} =
+               SecretHandoff.delete_worker_secret_for_grant(package, grant, store_dir: store_dir)
+
+      assert File.exists?(secret_path)
+      assert File.exists?(metadata_path)
+    after
+      File.rm_rf!(store_dir)
+      File.rm_rf!(external_dir)
+    end
+  end
+
+  test "rejects caller supplied handoff metadata directories" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-managed-metadata-#{System.unique_integer([:positive])}")
+    metadata_dir = Path.join(System.tmp_dir!(), "sympp-handoff-arbitrary-metadata-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = worker_grant("synthetic-managed-metadata-payload")
+    secret_path = metadata_local_secret_path(package, grant, store_dir)
+
+    try do
+      assert {:error, :unsupported_handoff_metadata_dir} =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "local-private-file", "path" => secret_path},
+                 store_dir: store_dir,
+                 metadata_dir: metadata_dir
+               )
+
+      assert {:error, :unsupported_handoff_metadata_dir} =
+               SecretHandoff.delete_worker_secret_for_grant(package, grant,
+                 store_dir: store_dir,
+                 metadata_dir: metadata_dir
+               )
+
+      refute File.exists?(metadata_dir)
+    after
+      File.rm_rf!(store_dir)
+      File.rm_rf!(metadata_dir)
+    end
+  end
+
   test "deletes local handoff files from serialized metadata and reports Windows cleanup input errors" do
     path = Path.join(System.tmp_dir!(), "sympp-secret-delete-#{System.unique_integer([:positive])}.secret")
     File.write!(path, "synthetic-local-secret")
@@ -352,12 +595,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     assert SecretHandoff.error_message(:missing_secret) =~ "one-time secret"
     assert SecretHandoff.error_message(:missing_claimed_by) =~ "claimed_by"
     assert SecretHandoff.error_message(:missing_repo_root) =~ "repository root"
+    assert SecretHandoff.error_message(:missing_worker_grant_display_key) =~ "display key"
     assert SecretHandoff.error_message(:missing_worker_grant_identity) =~ "stable non-secret id"
     assert SecretHandoff.error_message(:missing_worker_grant) =~ "worker grant"
     assert SecretHandoff.error_message(:missing_work_package) =~ "work package"
+    assert SecretHandoff.error_message(:unsupported_handoff_metadata_dir) =~ "managed private-store"
     assert SecretHandoff.error_message(:unsupported_secret_handoff_mode) =~ "local-private-file"
     assert SecretHandoff.error_message(:local_private_file_unavailable_on_windows) =~ "non-Windows"
     assert SecretHandoff.error_message(:windows_credential_manager_unavailable) =~ "Windows Credential Manager"
+    assert SecretHandoff.error_message({:handoff_metadata_delete_failed, :eacces}) =~ "metadata cleanup failed"
+    assert SecretHandoff.error_message({:handoff_metadata_invalid, :unsupported_mode}) =~ "metadata is invalid"
+    assert SecretHandoff.error_message({:handoff_metadata_missing, "/tmp/missing.json"}) =~ "not found"
+    assert SecretHandoff.error_message({:handoff_metadata_read_failed, :invalid_json}) =~ "metadata read failed"
+    assert SecretHandoff.error_message({:handoff_metadata_write_failed, :eacces}) =~ "metadata write failed"
     assert SecretHandoff.error_message({:local_private_file_failed, RuntimeError}) =~ "RuntimeError"
     assert SecretHandoff.error_message({:windows_credential_manager_failed, 1}) =~ "exit status 1"
   end
@@ -480,6 +730,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
 
   defp worker_grant(secret \\ "synthetic-secret", attrs \\ []) do
     Map.merge(%{id: @default_worker_grant_id, display_key: "D321", secret: secret}, Map.new(attrs))
+  end
+
+  defp managed_metadata_file(%WorkPackage{} = work_package, worker_grant, store_dir) do
+    filename =
+      "#{safe_filename(work_package.id)}-#{safe_filename(worker_grant.display_key)}-#{safe_filename(worker_grant.id)}-#{metadata_hash(work_package.id, worker_grant.display_key, worker_grant.id)}.json"
+
+    store_dir
+    |> Path.expand()
+    |> Path.join("metadata")
+    |> Path.join(filename)
+  end
+
+  defp metadata_local_secret_path(%WorkPackage{} = work_package, worker_grant, store_dir, suffix \\ "manual") do
+    filename =
+      "#{safe_filename(work_package.id)}-#{safe_filename(worker_grant.display_key)}-#{safe_filename(worker_grant.id)}-#{suffix}.secret"
+
+    Path.join(Path.expand(store_dir), filename)
+  end
+
+  defp default_local_private_store_dir do
+    if windows?() do
+      local_app_data = System.get_env("LOCALAPPDATA") || Path.join(System.user_home!(), "AppData/Local")
+      Path.join([local_app_data, "SymphonyPlusPlus", "worker-secrets"])
+    else
+      Path.join([System.user_home!(), ".local", "share", "symphony-plus-plus", "worker-secrets"])
+    end
+  end
+
+  defp safe_filename(value) when is_binary(value) do
+    Regex.replace(~r/[^A-Za-z0-9._-]+/, value, "_")
+  end
+
+  defp metadata_hash(work_package_id, display_key, grant_identity) do
+    hash_source = [work_package_id, 0, display_key, 0, grant_identity]
+
+    :sha256
+    |> :crypto.hash(hash_source)
+    |> Base.url_encode64(padding: false)
+    |> binary_part(0, 16)
   end
 
   defp remove_windows_credential!(powershell, target) do

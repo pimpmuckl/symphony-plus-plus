@@ -69,6 +69,13 @@ identity. Normal command output must keep showing only non-secret handoff
 metadata and bootstrap shape; raw worker secrets stay in the private store and
 must remain redacted from stdout, prompts, PR text, review text, and logs.
 
+Managed cleanup metadata is separate from worker secrets and is written only by
+the explicit SecretHandoff metadata primitive. It contains non-secret deletion
+coordinates only: work package id, worker grant display key, stable worker grant
+id, and the recorded local file path or credential target needed for cleanup.
+It must stay under the managed private-store metadata directory, not an
+arbitrary caller-supplied metadata path.
+
 ## Worker capabilities
 
 ```text
