@@ -155,6 +155,138 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
     assert reasons["changed_files_unavailable"]["changed_files_count"] == 2
   end
 
+  test "current head follows ledger sequence when DateTime term ordering would select stale branch" do
+    package = %{package(["elixir/lib/**"]) | base_branch: "main"}
+    stale_created_at = ~U[2026-04-30 23:59:59Z]
+    final_created_at = ~U[2026-05-01 00:00:00Z]
+    stale_head = "e268481"
+    final_head = "c4c2a71d312439ac41acf89e1907a8ca8fc6d6cf"
+
+    assert Enum.sort_by([stale_created_at, final_created_at], & &1) == [final_created_at, stale_created_at]
+    assert DateTime.compare(stale_created_at, final_created_at) == :lt
+
+    events = [
+      event(
+        1,
+        %{"type" => "branch", "source_tool" => "attach_branch", "branch" => "agent/SYMPP-V2-WR-002", "head_sha" => stale_head},
+        stale_created_at
+      ),
+      event(
+        2,
+        %{"type" => "branch", "source_tool" => "attach_branch", "branch" => "agent/SYMPP-V2-WR-002", "head_sha" => final_head},
+        final_created_at
+      ),
+      event(
+        3,
+        %{"type" => "pr", "source_tool" => "attach_pr", "url" => "https://github.com/nextide/symphony-plus-plus/pull/64", "head_sha" => final_head},
+        DateTime.add(final_created_at, 1, :second)
+      ),
+      event(
+        4,
+        %{
+          "type" => "pr",
+          "source_tool" => "sync_pr",
+          "url" => "https://github.com/nextide/symphony-plus-plus/pull/64",
+          "head_sha" => final_head,
+          "base_branch" => "main",
+          "changed_files" => [%{"path" => "elixir/lib/symphony_elixir/symphony_plus_plus/readiness/scope_guard.ex"}],
+          "changed_files_count" => 1,
+          "changed_files_available" => true,
+          "changed_files_count_available" => true
+        },
+        DateTime.add(final_created_at, 2, :second)
+      )
+    ]
+
+    assert ScopeGuard.failure_reasons(package, events) == []
+  end
+
+  test "sequenced events remain authoritative when mixed with unsequenced events" do
+    package = %{package(["elixir/lib/**"]) | base_branch: "main"}
+    stale_head = "head-old"
+    final_head = "head-final"
+
+    events = [
+      event(
+        1,
+        %{"type" => "branch", "source_tool" => "attach_branch", "branch" => "agent/SYMPP-SCOPE-UNIT", "head_sha" => final_head},
+        ~U[2026-05-01 00:00:00Z]
+      ),
+      event(
+        2,
+        %{"type" => "pr", "source_tool" => "attach_pr", "url" => "https://github.com/nextide/symphony-plus-plus/pull/7", "head_sha" => final_head},
+        ~U[2026-05-01 00:00:01Z]
+      ),
+      event(
+        3,
+        %{
+          "type" => "pr",
+          "source_tool" => "sync_pr",
+          "url" => "https://github.com/nextide/symphony-plus-plus/pull/7",
+          "head_sha" => final_head,
+          "base_branch" => "main",
+          "changed_files" => [%{"path" => "elixir/lib/example.ex"}],
+          "changed_files_count" => 1,
+          "changed_files_available" => true,
+          "changed_files_count_available" => true
+        },
+        ~U[2026-05-01 00:00:02Z]
+      ),
+      unsequenced_event(
+        "event-stale-branch",
+        %{"type" => "branch", "source_tool" => "attach_branch", "branch" => "agent/SYMPP-SCOPE-UNIT", "head_sha" => stale_head},
+        ~U[2026-05-01 00:00:03Z]
+      )
+    ]
+
+    assert ScopeGuard.failure_reasons(package, events) == []
+  end
+
+  test "fully unsequenced event streams use normalized timestamp ordering" do
+    package = %{package(["elixir/lib/**"]) | base_branch: "main"}
+    stale_created_at = ~U[2026-04-30 23:59:59Z]
+    final_created_at = ~U[2026-05-01 00:00:00Z]
+    stale_head = "head-old"
+    final_head = "head-final"
+
+    assert Enum.sort_by([stale_created_at, final_created_at], & &1) == [final_created_at, stale_created_at]
+
+    events = [
+      unsequenced_event(
+        "event-stale-branch",
+        %{"type" => "branch", "source_tool" => "attach_branch", "branch" => "agent/SYMPP-SCOPE-UNIT", "head_sha" => stale_head},
+        stale_created_at
+      ),
+      unsequenced_event(
+        "event-final-branch",
+        %{"type" => "branch", "source_tool" => "attach_branch", "branch" => "agent/SYMPP-SCOPE-UNIT", "head_sha" => final_head},
+        final_created_at
+      ),
+      unsequenced_event(
+        "event-final-pr",
+        %{"type" => "pr", "source_tool" => "attach_pr", "url" => "https://github.com/nextide/symphony-plus-plus/pull/7", "head_sha" => final_head},
+        DateTime.add(final_created_at, 1, :second)
+      ),
+      unsequenced_event(
+        "event-final-sync",
+        %{
+          "type" => "pr",
+          "source_tool" => "sync_pr",
+          "url" => "https://github.com/nextide/symphony-plus-plus/pull/7",
+          "head_sha" => final_head,
+          "base_branch" => "main",
+          "changed_files" => [%{"path" => "elixir/lib/example.ex"}],
+          "changed_files_count" => 1,
+          "changed_files_available" => true,
+          "changed_files_count_available" => true
+        },
+        DateTime.add(final_created_at, 2, :second)
+      )
+    ]
+
+    assert ScopeGuard.failure_reasons(package, events) == []
+  end
+
   test "count-only sync does not reuse changed-file paths from a different base snapshot" do
     package = %{package(["elixir/lib/**"]) | base_branch: "main"}
 
@@ -289,7 +421,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
   defp changed_file_payload(%{} = file), do: file
   defp changed_file_payload(value), do: value
 
-  defp event(sequence, payload) do
+  defp event(sequence, payload, created_at \\ nil) do
     %ProgressEvent{
       id: "event-#{sequence}",
       work_package_id: "SYMPP-SCOPE-UNIT",
@@ -297,7 +429,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ScopeGuardTest do
       status: "recorded",
       sequence: sequence,
       payload: payload,
-      created_at: DateTime.add(~U[2026-05-06 00:00:00Z], sequence, :second)
+      created_at: created_at || DateTime.add(~U[2026-05-06 00:00:00Z], sequence, :second)
+    }
+  end
+
+  defp unsequenced_event(id, payload, created_at) do
+    %ProgressEvent{
+      id: id,
+      work_package_id: "SYMPP-SCOPE-UNIT",
+      summary: id,
+      status: "recorded",
+      sequence: nil,
+      payload: payload,
+      created_at: created_at
     }
   end
 end
