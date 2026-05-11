@@ -76,7 +76,9 @@ and must not contain work keys, bearer material, run commands, or claimed owner
 identity. In the current pre-production v1 child minting contract,
 `mint_child_worker_key` allows only one active child-worker grant/handoff per
 child package and rejects remint attempts while one exists; it does not perform
-implicit replacement or old-handoff cleanup.
+implicit replacement or old-handoff cleanup. `revoke_child_worker_key` remains a
+not-implemented Phase 7 stub in this package; deleting persisted child handoffs
+on revoke belongs with the future child-revocation implementation.
 
 Architect child worker minting follows the same private-handoff rule. The
 `mint_child_worker_key` MCP response returns `worker_grant.secret_handoff` and

@@ -187,7 +187,9 @@ configured with `repo_root`/`--repo-root` before child minting so handoff
 scripts are resolved from an operator-chosen repository root. `template.secret_handoff`
 is optional and narrow: only `mode`, `store_dir`, and `claimed_by` are accepted,
 blank values are rejected, and grant capabilities cannot be broadened through
-handoff settings.
+handoff settings. `revoke_child_worker_key` remains a not-implemented Phase 7
+stub in this package; deleting persisted child handoffs on revoke belongs with
+the future child-revocation implementation.
 `read_child_status(work_package_id)` requires both `read:child_progress` and
 `read:child_findings`; it can read the architect anchor package or a same-phase
 child package. `approve_child_ready_state(work_package_id, rationale, request_id?)` can

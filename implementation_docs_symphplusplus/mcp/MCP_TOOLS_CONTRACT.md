@@ -87,7 +87,9 @@ The MCP server must be configured with `repo_root`/`--repo-root` before child
 minting so handoff scripts are resolved from an operator-chosen repository root.
 `template.secret_handoff` may specify only `mode`, `store_dir`, and
 `claimed_by`; unexpected fields or blank values are rejected and do not alter
-worker-grant capabilities.
+worker-grant capabilities. `revoke_child_worker_key` remains a not-implemented
+Phase 7 stub in this package; deleting persisted child handoffs on revoke
+belongs with the future child-revocation implementation.
 `read_child_status` requires both `read:child_progress` and
 `read:child_findings` because its summary includes progress, findings, and
 artifact counts. `approve_child_ready_state` revalidates the ready child against
