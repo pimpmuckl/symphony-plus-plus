@@ -5,8 +5,12 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  import Phoenix.HTML.Form, only: [input_value: 2]
+
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
   alias SymphonyElixirWeb.SymppBoardLive
   alias SymphonyElixirWeb.SymppDashboardApiController
 
@@ -19,12 +23,13 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
      socket
      |> assign(:board_grant_id, board_grant_id)
      |> assign(:board_grant, authorized_grant(authorization))
+     |> assign(:path_prefix, "")
      |> assign(:work_request_id, params["work_request_id"])
      |> assign(:page, initial_page(socket.assigns.live_action, authorization))}
   end
 
   @impl true
-  def handle_params(params, _uri, socket) do
+  def handle_params(params, uri, socket) do
     socket = assign(socket, :work_request_id, params["work_request_id"])
 
     case board_grant_authorization(socket.assigns.board_grant_id) do
@@ -32,6 +37,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
         {:noreply,
          socket
          |> assign(:board_grant, grant)
+         |> assign(:path_prefix, path_prefix(uri, socket.assigns.live_action, params))
          |> assign(:page, load_page(socket.assigns.live_action, grant, socket.assigns.work_request_id))}
 
       {:error, reason} ->
@@ -49,10 +55,13 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
           <h1 class="sympp-work-request-title">WorkRequests</h1>
         </div>
 
-        <nav class="sympp-surface-nav" aria-label="Symphony++ surfaces">
-          <a href="board">Work packages</a>
-          <a class="active" href="work-requests">WorkRequests</a>
-        </nav>
+        <div class="sympp-work-request-header-actions">
+          <nav class="sympp-surface-nav" aria-label="Symphony++ surfaces">
+            <a href="board">Work packages</a>
+            <a class="active" href="work-requests">WorkRequests</a>
+          </nav>
+          <a :if={can_create_work_request?(@board_grant)} class="sympp-primary-link" href="work-requests/new">New WorkRequest</a>
+        </div>
       </header>
 
       <%= if @page.error do %>
@@ -137,6 +146,90 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     """
   end
 
+  def render(%{live_action: :new} = assigns) do
+    ~H"""
+    <section class="sympp-work-request-shell">
+      <header class="sympp-work-request-header">
+        <div>
+          <p class="eyebrow">Symphony++ WorkRequest</p>
+          <h1 class="sympp-work-request-title">New WorkRequest</h1>
+        </div>
+
+        <nav class="sympp-surface-nav" aria-label="Symphony++ surfaces">
+          <a href="../board">Work packages</a>
+          <a href="../work-requests">WorkRequests</a>
+        </nav>
+      </header>
+
+      <%= if @page.error do %>
+        <section class="error-card">
+          <h2 class="error-title">WorkRequest intake unavailable</h2>
+          <p class="error-copy"><%= @page.error %></p>
+        </section>
+      <% else %>
+        <.form :let={f} for={@page.form} as={:work_request} phx-submit="create_work_request" class="sympp-work-request-form">
+          <section class="sympp-locked-scope" aria-label="Locked WorkRequest scope">
+            <div>
+              <span>Repo</span>
+              <strong><%= @page.intake_scope.repo %></strong>
+            </div>
+            <div>
+              <span>Base branch</span>
+              <strong><%= @page.intake_scope.base_branch %></strong>
+            </div>
+          </section>
+
+          <p :if={@page.form_error} class="sympp-form-error"><%= @page.form_error %></p>
+
+          <div class="sympp-form-grid">
+            <label>
+              <span>Title</span>
+              <input name={f[:title].name} value={input_value(f, :title)} required maxlength="160" />
+            </label>
+
+            <label>
+              <span>Work type</span>
+              <select name={f[:work_type].name} required>
+                <option :for={work_type <- WorkRequest.work_types()} value={work_type} selected={input_value(f, :work_type) == work_type}>
+                  <%= label_value(work_type) %>
+                </option>
+              </select>
+            </label>
+
+            <label>
+              <span>Dispatch shape</span>
+              <select name={f[:desired_dispatch_shape].name} required>
+                <option
+                  :for={shape <- WorkRequest.dispatch_shapes()}
+                  value={shape}
+                  selected={input_value(f, :desired_dispatch_shape) == shape}
+                >
+                  <%= label_value(shape) %>
+                </option>
+              </select>
+            </label>
+
+            <label class="sympp-form-wide">
+              <span>Description</span>
+              <textarea name={f[:human_description].name} required rows="6"><%= input_value(f, :human_description) %></textarea>
+            </label>
+
+            <label class="sympp-form-wide">
+              <span>Constraints JSON</span>
+              <textarea name={f[:constraints_json].name} rows="7" spellcheck="false"><%= input_value(f, :constraints_json) %></textarea>
+            </label>
+          </div>
+
+          <div class="sympp-form-actions">
+            <button type="submit">Create draft</button>
+            <a class="sympp-secondary-link" href="../work-requests">Cancel</a>
+          </div>
+        </.form>
+      <% end %>
+    </section>
+    """
+  end
+
   def render(%{live_action: :show} = assigns) do
     ~H"""
     <section class="sympp-work-request-shell">
@@ -169,6 +262,14 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
               <span class="sympp-readiness"><%= label_value(value(@page.work_request, :work_type)) %></span>
               <span class="sympp-readiness"><%= label_value(value(@page.work_request, :desired_dispatch_shape)) %></span>
             </div>
+            <p :if={@page.action_error} class="sympp-form-error"><%= @page.action_error %></p>
+            <button
+              :if={value(@page.work_request, :status) == "draft"}
+              type="button"
+              phx-click="mark_ready_for_clarification"
+            >
+              Mark ready for clarification
+            </button>
             <p><%= value(@page.work_request, :human_description) %></p>
           </div>
 
@@ -288,6 +389,54 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     """
   end
 
+  @impl true
+  def handle_event("create_work_request", %{"work_request" => params}, socket) do
+    case board_grant_authorization(socket.assigns.board_grant_id) do
+      {:ok, %AccessGrant{} = grant} ->
+        socket = assign(socket, :board_grant, grant)
+
+        case create_work_request(grant, params) do
+          {:ok, work_request} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "WorkRequest draft created.")
+             |> push_navigate(to: work_request_route(socket, work_request.id))}
+
+          {:error, reason, form} ->
+            {:noreply, assign(socket, :page, new_page(grant, form, form_error_message(reason)))}
+        end
+
+      {:error, reason} ->
+        {:noreply, assign(socket, :page, unauthorized_page(reason))}
+    end
+  end
+
+  def handle_event("mark_ready_for_clarification", _params, socket) do
+    case board_grant_authorization(socket.assigns.board_grant_id) do
+      {:ok, %AccessGrant{} = grant} ->
+        socket = assign(socket, :board_grant, grant)
+
+        case mark_ready_for_clarification(grant, socket.assigns.work_request_id) do
+          {:ok, _work_request} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "WorkRequest marked ready for clarification.")
+             |> assign(:page, load_page(:show, grant, socket.assigns.work_request_id))}
+
+          {:error, reason} ->
+            page =
+              :show
+              |> load_page(grant, socket.assigns.work_request_id)
+              |> Map.put(:action_error, action_error_message(reason))
+
+            {:noreply, assign(socket, :page, page)}
+        end
+
+      {:error, reason} ->
+        {:noreply, assign(socket, :page, unauthorized_page(reason))}
+    end
+  end
+
   defp board_grant_authorization(grant_id) do
     case SymppDashboardApiController.authorize_board_grant_id(grant_id) do
       {:ok, grant} -> {:ok, grant}
@@ -303,14 +452,16 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp load_page(:index, %AccessGrant{} = grant, _work_request_id) do
     case SymppBoardLive.with_dashboard_repo(&Dashboard.work_requests_for_grant(&1, grant)) do
-      {:ok, payload} -> Map.merge(%{error: nil}, payload)
+      {:ok, payload} -> loading_page() |> Map.merge(payload) |> Map.put(:error, nil)
       {:error, reason} -> error_page(reason)
     end
   end
 
+  defp load_page(:new, %AccessGrant{} = grant, _work_request_id), do: new_page(grant)
+
   defp load_page(:show, %AccessGrant{} = grant, work_request_id) when is_binary(work_request_id) do
     case SymppBoardLive.with_dashboard_repo(&Dashboard.work_request_detail_for_grant(&1, work_request_id, grant)) do
-      {:ok, payload} -> Map.merge(%{error: nil}, payload)
+      {:ok, payload} -> loading_page() |> Map.merge(payload) |> Map.put(:error, nil)
       {:error, reason} -> error_page(reason)
     end
   end
@@ -326,8 +477,25 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
       clarification_questions: [],
       decision_logs: [],
       planned_slices: [],
-      summary: %{}
+      summary: %{},
+      form: work_request_form(),
+      form_error: nil,
+      intake_scope: nil,
+      action_error: nil
     }
+  end
+
+  defp new_page(%AccessGrant{} = grant, form \\ work_request_form(), form_error \\ nil) do
+    case intake_scope(grant) do
+      {:ok, scope} ->
+        loading_page()
+        |> Map.put(:form, work_request_form(form))
+        |> Map.put(:form_error, form_error)
+        |> Map.put(:intake_scope, scope)
+
+      {:error, reason} ->
+        error_page(reason)
+    end
   end
 
   defp unauthorized_page(reason) when reason in [:unauthorized, :forbidden] do
@@ -339,9 +507,181 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp error_page(reason), do: Map.put(loading_page(), :error, error_message(reason))
 
   defp error_message(:not_found), do: "The WorkRequest was not found in this board scope."
+  defp error_message(:forbidden), do: "This board grant cannot create WorkRequests for a frozen repo and base branch."
   defp error_message(:database_busy), do: "The Symphony++ ledger is busy. Refresh shortly."
   defp error_message({:storage_failed, _reason}), do: "The Symphony++ ledger could not be read."
   defp error_message(_reason), do: "The WorkRequest surface could not be loaded."
+
+  defp form_error_message(:invalid_constraints_json), do: "Constraints must be valid JSON."
+  defp form_error_message(:constraints_not_object), do: "Constraints JSON must be an object."
+  defp form_error_message(:forbidden), do: error_message(:forbidden)
+  defp form_error_message(:database_busy), do: "The Symphony++ ledger is busy. Try again shortly."
+  defp form_error_message({:storage_failed, _reason}), do: "The Symphony++ ledger could not store the WorkRequest."
+  defp form_error_message(%Ecto.Changeset{}), do: "Check the required fields and selected values."
+  defp form_error_message(_reason), do: "The WorkRequest could not be created."
+
+  defp action_error_message(:stale_status), do: "The WorkRequest status changed. Refresh and try again."
+  defp action_error_message(:not_found), do: "The WorkRequest was not found in this board scope."
+  defp action_error_message(:database_busy), do: "The Symphony++ ledger is busy. Try again shortly."
+  defp action_error_message({:storage_failed, _reason}), do: "The Symphony++ ledger could not update the WorkRequest."
+  defp action_error_message(:forbidden), do: error_message(:forbidden)
+  defp action_error_message(_reason), do: "The WorkRequest could not be updated."
+
+  defp create_work_request(%AccessGrant{} = grant, params) do
+    form = work_request_form(params)
+
+    with {:ok, scope} <- intake_scope(grant),
+         {:ok, constraints} <- decode_constraints(form["constraints_json"]) do
+      attrs =
+        form
+        |> Map.take(["title", "work_type", "human_description", "desired_dispatch_shape"])
+        |> Map.put("repo", scope.repo)
+        |> Map.put("base_branch", scope.base_branch)
+        |> Map.put("constraints", constraints)
+
+      case SymppBoardLive.with_dashboard_repo(&WorkRequestService.create(&1, attrs)) do
+        {:ok, work_request} -> {:ok, work_request}
+        {:error, reason} -> {:error, reason, form}
+      end
+    else
+      {:error, reason} -> {:error, reason, form}
+    end
+  end
+
+  defp mark_ready_for_clarification(%AccessGrant{} = grant, work_request_id) when is_binary(work_request_id) do
+    SymppBoardLive.with_dashboard_repo(&mark_ready_in_repo(&1, grant, work_request_id))
+  end
+
+  defp mark_ready_for_clarification(_grant, _work_request_id), do: {:error, :not_found}
+
+  defp mark_ready_in_repo(repo, %AccessGrant{} = grant, work_request_id) do
+    with {:ok, scope} <- intake_scope(repo, grant),
+         {:ok, work_request} <- WorkRequestService.get(repo, work_request_id),
+         :ok <- work_request_in_scope?(work_request, scope),
+         :ok <- visible_work_request?(repo, work_request, grant) do
+      WorkRequestService.update_status(repo, work_request_id, "draft", "ready_for_clarification")
+    end
+  end
+
+  defp visible_work_request?(repo, work_request, %AccessGrant{} = grant) do
+    with {:ok, filters} <- Dashboard.work_request_filters_for_grant(repo, grant) do
+      if work_request_matches_filters?(work_request, filters) do
+        :ok
+      else
+        {:error, :not_found}
+      end
+    end
+  end
+
+  defp work_request_matches_filters?(work_request, filters) do
+    Enum.all?(filters, fn
+      {:repo, repo} when is_binary(repo) -> work_request.repo == repo
+      {:base_branch, base_branch} when is_binary(base_branch) -> work_request.base_branch == base_branch
+      _filter -> false
+    end)
+  end
+
+  defp can_create_work_request?(%AccessGrant{} = grant), do: match?({:ok, _scope}, intake_scope(grant))
+  defp can_create_work_request?(_grant), do: false
+
+  defp intake_scope(%AccessGrant{} = grant) do
+    case SymppBoardLive.with_dashboard_repo(&intake_scope(&1, grant)) do
+      {:ok, scope} -> {:ok, scope}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp intake_scope(repo, %AccessGrant{} = grant) do
+    with {:ok, grant_scope} <- grant_frozen_scope(grant),
+         {:ok, filters} <- Dashboard.work_request_filters_for_grant(repo, grant),
+         {:ok, filter_scope} <- supported_intake_filter_scope(filters),
+         :ok <- matching_intake_scopes?(grant_scope, filter_scope) do
+      {:ok, grant_scope}
+    else
+      {:error, :forbidden} -> {:error, :forbidden}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp work_request_in_scope?(work_request, %{repo: repo, base_branch: base_branch}) do
+    if work_request.repo == repo and work_request.base_branch == base_branch do
+      :ok
+    else
+      {:error, :not_found}
+    end
+  end
+
+  defp grant_frozen_scope(%AccessGrant{scope_repo: repo, scope_base_branch: base_branch}) do
+    with {:ok, repo} <- locked_scope_value(repo),
+         {:ok, base_branch} <- locked_scope_value(base_branch) do
+      {:ok, %{repo: repo, base_branch: base_branch}}
+    end
+  end
+
+  defp supported_intake_filter_scope(filters) when is_list(filters) do
+    Enum.reduce_while(filters, {:ok, %{}}, fn
+      {:repo, repo}, {:ok, scope} -> {:cont, {:ok, Map.put(scope, :repo, repo)}}
+      {:base_branch, base_branch}, {:ok, scope} -> {:cont, {:ok, Map.put(scope, :base_branch, base_branch)}}
+      _filter, _acc -> {:halt, {:error, :forbidden}}
+    end)
+    |> case do
+      {:ok, %{repo: repo, base_branch: base_branch}} ->
+        with {:ok, repo} <- locked_scope_value(repo),
+             {:ok, base_branch} <- locked_scope_value(base_branch) do
+          {:ok, %{repo: repo, base_branch: base_branch}}
+        end
+
+      {:ok, _scope} ->
+        {:error, :forbidden}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp matching_intake_scopes?(scope, scope), do: :ok
+  defp matching_intake_scopes?(_grant_scope, _filter_scope), do: {:error, :forbidden}
+
+  defp locked_scope_value(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> {:error, :forbidden}
+      trimmed -> {:ok, trimmed}
+    end
+  end
+
+  defp locked_scope_value(_value), do: {:error, :forbidden}
+
+  defp work_request_form(attrs \\ %{}) do
+    attrs = normalize_keys(attrs)
+
+    %{
+      "title" => Map.get(attrs, "title", ""),
+      "work_type" => Map.get(attrs, "work_type", "feature"),
+      "desired_dispatch_shape" => Map.get(attrs, "desired_dispatch_shape", "single_package"),
+      "human_description" => Map.get(attrs, "human_description", ""),
+      "constraints_json" => Map.get(attrs, "constraints_json", "{\n  \"allowed_paths\": []\n}")
+    }
+  end
+
+  defp decode_constraints(value) when is_binary(value) do
+    case String.trim(value) do
+      "" ->
+        {:ok, %{}}
+
+      json ->
+        case Jason.decode(json) do
+          {:ok, constraints} when is_map(constraints) -> {:ok, constraints}
+          {:ok, _value} -> {:error, :constraints_not_object}
+          {:error, _reason} -> {:error, :invalid_constraints_json}
+        end
+    end
+  end
+
+  defp decode_constraints(_value), do: {:error, :invalid_constraints_json}
+
+  defp normalize_keys(attrs) when is_map(attrs) do
+    Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
+  end
 
   defp detail_title(%{work_request: work_request}) when is_map(work_request) do
     value(work_request, :title) || value(work_request, :id) || "WorkRequest"
@@ -350,6 +690,44 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp detail_title(_page), do: "WorkRequest"
 
   defp work_request_path(request), do: "work-requests/#{path_segment(value(request, :id))}"
+
+  defp work_request_route(socket, work_request_id) do
+    prefixed_path(socket.assigns.path_prefix, "/sympp/work-requests/#{path_segment(work_request_id)}")
+  end
+
+  defp path_prefix(uri, :new, _params), do: path_prefix(uri, "/sympp/work-requests/new")
+  defp path_prefix(uri, :index, _params), do: path_prefix(uri, "/sympp/work-requests")
+  defp path_prefix(uri, :show, %{"work_request_id" => id}), do: path_prefix(uri, "/sympp/work-requests/#{path_segment(id)}")
+  defp path_prefix(_uri, _action, _params), do: ""
+
+  defp path_prefix(uri, route_path) do
+    path = uri |> URI.parse() |> Map.get(:path) |> Kernel.||("")
+
+    if String.ends_with?(path, route_path) do
+      path
+      |> String.slice(0, byte_size(path) - byte_size(route_path))
+      |> normalize_path_prefix()
+    else
+      ""
+    end
+  end
+
+  defp normalize_path_prefix(""), do: ""
+  defp normalize_path_prefix("/"), do: ""
+  defp normalize_path_prefix(prefix), do: String.trim_trailing(prefix, "/")
+
+  defp prefixed_path("", path), do: path
+  defp prefixed_path(prefix, path), do: prefix <> path
+
+  if Mix.env() == :test do
+    @doc false
+    @spec __test_work_request_route(URI.t(), atom(), map(), String.t()) :: String.t()
+    def __test_work_request_route(uri, action, params, work_request_id) do
+      uri
+      |> path_prefix(action, params)
+      |> prefixed_path("/sympp/work-requests/#{path_segment(work_request_id)}")
+    end
+  end
 
   defp path_segment("."), do: "%2E"
   defp path_segment(".."), do: "%2E%2E"

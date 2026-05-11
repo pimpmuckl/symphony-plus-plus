@@ -50,7 +50,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
     :ok
   end
 
-  test "board provides a read-only navigation path to WorkRequests" do
+  test "board provides a navigation path to WorkRequests" do
     anchor = create_anchor_package!()
     secret = create_architect_grant_secret(Repo, anchor.id)
 
@@ -89,6 +89,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
     assert html =~ "ready for slicing"
     assert html =~ "nextide/symphony-plus-plus / symphony-plus-plus/beta"
     assert html =~ ~s(href="work-requests/WR-LIVE-IN-SCOPE")
+    assert html =~ ~s(href="work-requests/new")
+    assert html =~ "New WorkRequest"
     assert html =~ "Open Q"
     assert html =~ "Decisions"
     assert html =~ "Slices"
@@ -110,7 +112,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
     refute html =~ ~s(href="/sympp/work-requests/#{path_segment(raw_id)}")
   end
 
-  test "renders WorkRequest detail in deterministic order without mutating controls" do
+  test "renders WorkRequest detail in deterministic order" do
     anchor = create_anchor_package!()
 
     request =
@@ -153,11 +155,142 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
     assert html =~ "Planned slices"
     assert html =~ ~s(href="../board")
     assert html =~ ~s(href="../work-requests")
+    assert html =~ "Mark ready for clarification"
     assert appears_before?(html, second_question.id, first_question.id)
     assert appears_before?(html, second_decision.id, first_decision.id)
     assert appears_before?(html, second_slice.id, first_slice.id)
-    refute html =~ ~s(method="post")
-    refute html =~ ~r/<button[^>]*>/
+  end
+
+  test "renders scoped WorkRequest intake form with locked repo and base branch" do
+    anchor = create_anchor_package!()
+    secret = create_architect_grant_secret(Repo, anchor.id)
+
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/new")
+
+    assert html =~ "New WorkRequest"
+    assert html =~ "Repo"
+    assert html =~ "Base branch"
+    assert html =~ anchor.repo
+    assert html =~ anchor.base_branch
+    assert html =~ "Constraints JSON"
+    refute html =~ ~s(name="work_request[repo]")
+    refute html =~ ~s(name="work_request[base_branch]")
+  end
+
+  test "submits valid scoped intake and ignores caller supplied repo and base branch" do
+    anchor = create_anchor_package!()
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, view, _html} = live(board_session_conn(secret), "/sympp/work-requests/new")
+
+    render_submit(view, "create_work_request", %{
+      "work_request" => %{
+        "title" => "Scoped dashboard intake",
+        "work_type" => "feature",
+        "desired_dispatch_shape" => "single_package",
+        "human_description" => "Create this from the board form.",
+        "constraints_json" => ~s({"allowed_paths":["elixir/lib"],"requires_secret":false}),
+        "repo" => "nextide/forged",
+        "base_branch" => "forged"
+      }
+    })
+
+    assert {redirected_path, _flash} = assert_redirect(view)
+    assert redirected_path =~ "/sympp/work-requests/"
+    created_id = redirected_path |> String.split("/") |> List.last()
+
+    assert {:ok, created} = WorkRequestRepository.get(Repo, created_id)
+    assert created.title == "Scoped dashboard intake"
+    assert created.status == "draft"
+    assert created.repo == anchor.repo
+    assert created.base_branch == anchor.base_branch
+    assert created.constraints == %{"allowed_paths" => ["elixir/lib"], "requires_secret" => false}
+
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests")
+    assert html =~ "Scoped dashboard intake"
+  end
+
+  test "intake submit preserves script-name prefix in redirect" do
+    assert SymphonyElixirWeb.SymppWorkRequestLive.__test_work_request_route(
+             "http://www.example.com/app/sympp/work-requests/new",
+             :new,
+             %{},
+             "WR/PREFIX"
+           ) == "/app/sympp/work-requests/WR%2FPREFIX"
+  end
+
+  test "invalid intake data and invalid constraints JSON render safe errors" do
+    anchor = create_anchor_package!()
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, view, _html} = live(board_session_conn(secret), "/sympp/work-requests/new")
+
+    html =
+      render_submit(view, "create_work_request", %{
+        "work_request" => %{
+          "title" => "Broken constraints",
+          "work_type" => "feature",
+          "desired_dispatch_shape" => "single_package",
+          "human_description" => "This should stay on the form.",
+          "constraints_json" => "{not json"
+        }
+      })
+
+    assert html =~ "Constraints must be valid JSON."
+    assert html =~ "Broken constraints"
+
+    html =
+      render_submit(view, "create_work_request", %{
+        "work_request" => %{
+          "title" => "",
+          "work_type" => "fix",
+          "desired_dispatch_shape" => "single_package",
+          "human_description" => "",
+          "constraints_json" => "{}"
+        }
+      })
+
+    assert html =~ "Check the required fields and selected values."
+    refute html =~ "secret"
+  end
+
+  test "board grants without frozen scope cannot open create path" do
+    anchor = create_anchor_package!()
+    secret = create_legacy_phase_grant_secret(Repo, anchor.id, "grant-live-wr-legacy")
+
+    conn = post(build_conn(), "/sympp/board/session", %{"work_key" => secret})
+
+    assert response(conn, 403) =~ "not allowed to open the board"
+  end
+
+  test "marks draft WorkRequest ready for clarification with stale status protection" do
+    anchor = create_anchor_package!()
+    request = create_work_request!(id: "WR-LIVE-READY", repo: anchor.repo, base_branch: anchor.base_branch)
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{request.id}")
+
+    assert html =~ "draft"
+
+    html = render_click(view, "mark_ready_for_clarification", %{"current-status" => "draft"})
+
+    assert html =~ "ready for clarification"
+    refute html =~ "Mark ready for clarification"
+    assert {:ok, updated} = WorkRequestRepository.get(Repo, request.id)
+    assert updated.status == "ready_for_clarification"
+  end
+
+  test "stale ready transition shows a safe error" do
+    anchor = create_anchor_package!()
+    request = create_work_request!(id: "WR-LIVE-STALE", repo: anchor.repo, base_branch: anchor.base_branch)
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{request.id}")
+
+    assert html =~ "draft"
+    assert {:ok, _updated} = WorkRequestRepository.update_status(Repo, request.id, "draft", "clarifying")
+
+    html = render_click(view, "mark_ready_for_clarification", %{"current-status" => "clarifying"})
+
+    assert html =~ "The WorkRequest status changed. Refresh and try again."
+    assert html =~ "clarifying"
+    refute html =~ "raw-secret"
   end
 
   test "detail hides out-of-scope WorkRequests as not found" do
@@ -275,6 +408,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
              AccessGrantRepository.claim(repo, work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
 
     assert grant.display_key == work_key.display_key
+    work_key.secret
+  end
+
+  defp create_legacy_phase_grant_secret(repo, work_package_id, grant_id) do
+    work_key = WorkKey.generate()
+
+    repo.insert!(%AccessGrant{
+      id: grant_id,
+      work_package_id: work_package_id,
+      phase_id: nil,
+      display_key: work_key.display_key,
+      secret_hash: WorkKey.secret_hash(work_key.secret),
+      grant_role: "architect",
+      capabilities: ["read:phase"],
+      expires_at: DateTime.add(DateTime.utc_now(:microsecond), 3600, :second)
+    })
+
+    assert {:ok, _assignment} =
+             AccessGrantRepository.claim(repo, work_key.secret, %{claimed_by: "architect-legacy"}, DateTime.utc_now(:microsecond))
+
     work_key.secret
   end
 

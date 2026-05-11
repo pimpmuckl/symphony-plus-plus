@@ -5,9 +5,10 @@ product documentation only. It preserves the existing WorkPackage ledger,
 AccessGrant permissions, virtual planning resources, readiness gates,
 review-suite evidence, PR evidence, and human merge controls.
 
-This document does not claim that WorkRequest storage beyond the planned-slice
-rows below, dashboard intake, MCP intake tools, automatic slicing, or plugin
-packaging already exists.
+WorkRequest core persistence, planned-slice persistence, read API/list/detail
+dashboard views, and scoped dashboard intake exist. MCP intake tools, automatic
+question generation, automatic slicing, dispatch, Linear state creation, and
+plugin packaging remain future work.
 
 ## Purpose
 
@@ -39,13 +40,21 @@ Every WorkRequest records:
 The request may include preferred branch names, known risks, relevant docs,
 expected tests, desired reviewers, and links to existing issues or PRs.
 
-## Docs-Only Source Of Truth
+## Runtime And Artifact Source Of Truth
 
-Until runtime WorkRequest intake exists, the canonical WorkRequest is one
-versioned, operator-approved Markdown artifact. `implementation_docs_symphplusplus/`
-defines the stable product contract; individual WorkRequest artifacts are
-request state and should live in the operator-approved planning location for
-that project or lane.
+When runtime intake is available, the canonical WorkRequest fields live in the
+Symphony++ ledger and can be read through the dashboard API or dashboard UI.
+The dashboard create path is intentionally scoped: it is available only to
+board-authenticated grants with frozen repo and base-branch scope. The create
+form accepts title, work type, desired dispatch shape, human description, and
+constraints JSON. Repo and base branch are visible locked values, and submitted
+repo/base fields are ignored in favor of the grant scope.
+
+When runtime intake is not available for a lane, the canonical WorkRequest is
+one versioned, operator-approved Markdown artifact.
+`implementation_docs_symphplusplus/` defines the stable product contract;
+individual WorkRequest artifacts are request state and should live in the
+operator-approved planning location for that project or lane.
 
 Before slicing starts, the architect WorkPackage context or handoff must include
 a durable reference to the canonical artifact and a bounded summary of the
@@ -91,6 +100,11 @@ sliced
 
 Clarification is about product and architecture intent. It is not a place for
 workers to broaden scope after dispatch.
+
+The dashboard detail view can move a `draft` WorkRequest to
+`ready_for_clarification` with a stale-status-safe action. If another process
+has already changed the status, the UI reports a safe retry message instead of
+overwriting the newer state.
 
 ## Architect Outputs
 
@@ -170,11 +184,11 @@ replace the implementing worker's normal review-suite responsibility.
 
 This contract does not implement or require:
 
-- Runtime WorkRequest persistence beyond the planned-slice rows described above.
-- Dashboard WorkRequest intake screens.
 - MCP WorkRequest intake tools or architect-planner tools.
 - Plugin packaging changes.
+- Automatic question generation.
 - Automatic WorkPackage slicing.
+- WorkPackage dispatch or linkage.
 - Live Linear state creation.
 - Historical runbook rewrites.
 
