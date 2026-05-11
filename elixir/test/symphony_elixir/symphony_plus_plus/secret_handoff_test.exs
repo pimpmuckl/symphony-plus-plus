@@ -307,6 +307,446 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
+  test "stores managed handoff metadata using exact non-secret namespace identity" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-metadata-#{System.unique_integer([:positive])}")
+    hidden_value = "runtime-sensitive-value-#{System.unique_integer([:positive])}"
+    package = work_package("wp/raw:id")
+    grant = worker_grant(hidden_value, id: "ag/raw:identity", display_key: "D/21?")
+    opts = [mode: "local-private-file", store_dir: store_dir, claimed_by: "worker-local-1", repo_root: @repo_root]
+    handoff_path = local_private_file_path(package, grant, opts)
+    metadata_path = managed_metadata_file(package, grant, opts)
+
+    handoff = %{
+      mode: "local-private-file",
+      path: handoff_path,
+      target: "not-used-for-local-coordinate",
+      run_mcp_command: "command text #{hidden_value}",
+      claimed_by: "worker-local-1",
+      secret: hidden_value,
+      work_key: hidden_value,
+      token: hidden_value,
+      bearer: hidden_value
+    }
+
+    try do
+      File.mkdir_p!(Path.dirname(handoff_path))
+      File.write!(handoff_path, "metadata fixture")
+
+      assert :ok = SecretHandoff.store_worker_secret_metadata(package, grant, handoff, opts)
+
+      assert File.exists?(metadata_path)
+      assert Path.basename(metadata_path) == "handoff-#{metadata_hash(package.id, grant.display_key, grant.id, opts)}.json"
+
+      metadata_json = File.read!(metadata_path)
+      metadata = Jason.decode!(metadata_json)
+
+      assert metadata == %{
+               "version" => 1,
+               "work_package_id" => package.id,
+               "worker_grant_display_key" => grant.display_key,
+               "worker_grant_id" => grant.id,
+               "mode" => "local-private-file",
+               "path" => Path.expand(handoff_path)
+             }
+
+      refute metadata_json =~ hidden_value
+      refute Map.has_key?(metadata, "handoff")
+      refute metadata_json =~ "run_mcp_command"
+      refute metadata_json =~ "claimed_by"
+      refute metadata_json =~ "work_key"
+      refute metadata_json =~ "token"
+      refute metadata_json =~ "bearer"
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  test "metadata persistence API requires handoff opts and namespaces repo database and store dir" do
+    first_store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-context-a-#{System.unique_integer([:positive])}")
+    second_store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-context-b-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = worker_grant()
+
+    first_opts = [
+      mode: "local-private-file",
+      store_dir: first_store_dir,
+      repo_root: @repo_root,
+      database: "first.sqlite3",
+      claimed_by: "worker-local-1"
+    ]
+
+    second_opts = Keyword.put(first_opts, :database, "second.sqlite3")
+    third_opts = Keyword.put(first_opts, :store_dir, second_store_dir)
+
+    try do
+      for opts <- [first_opts, second_opts, third_opts] do
+        handoff_path = local_private_file_path(package, grant, opts)
+        File.mkdir_p!(Path.dirname(handoff_path))
+        File.write!(handoff_path, "metadata fixture")
+
+        assert :ok =
+                 SecretHandoff.store_worker_secret_metadata(
+                   package,
+                   grant,
+                   %{"mode" => "local-private-file", "path" => handoff_path},
+                   opts
+                 )
+      end
+
+      assert function_exported?(SecretHandoff, :store_worker_secret_metadata, 4)
+      refute function_exported?(SecretHandoff, :store_worker_secret_metadata, 3)
+
+      first_metadata_path = managed_metadata_file(package, grant, first_opts)
+      second_metadata_path = managed_metadata_file(package, grant, second_opts)
+      third_metadata_path = managed_metadata_file(package, grant, third_opts)
+
+      assert first_metadata_path != second_metadata_path
+      assert first_metadata_path != third_metadata_path
+      assert File.exists?(first_metadata_path)
+      assert File.exists?(second_metadata_path)
+      assert File.exists?(third_metadata_path)
+
+      credential_opts = [
+        mode: "windows-credential-manager",
+        store_dir: first_store_dir,
+        repo_root: @repo_root,
+        claimed_by: "worker-windows-1"
+      ]
+
+      equivalent_credential_opts = Keyword.put(credential_opts, :repo_root, Path.join(@repo_root, "."))
+      credential_metadata_path = managed_metadata_file(package, grant, credential_opts)
+      target = credential_target(package, grant)
+
+      assert managed_metadata_file(package, grant, equivalent_credential_opts) == credential_metadata_path
+
+      assert :ok =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "windows-credential-manager", "target" => target},
+                 credential_opts
+               )
+
+      assert :ok =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "windows-credential-manager", "target" => target},
+                 equivalent_credential_opts
+               )
+    after
+      File.rm_rf!(first_store_dir)
+      File.rm_rf!(second_store_dir)
+    end
+  end
+
+  test "metadata persistence treats nil store dir as the default store" do
+    package = work_package()
+    grant = worker_grant()
+
+    nil_store_opts = [
+      mode: "local-private-file",
+      store_dir: nil,
+      repo_root: @repo_root,
+      claimed_by: "worker-local-1"
+    ]
+
+    default_store_opts = Keyword.delete(nil_store_opts, :store_dir)
+    handoff_path = local_private_file_path(package, grant, default_store_opts)
+
+    assert managed_metadata_file(package, grant, nil_store_opts) ==
+             managed_metadata_file(package, grant, default_store_opts)
+
+    assert {:error, {:handoff_metadata_invalid, :missing_local_file}} =
+             SecretHandoff.store_worker_secret_metadata(
+               package,
+               grant,
+               %{"mode" => "local-private-file", "path" => handoff_path},
+               nil_store_opts
+             )
+  end
+
+  test "rejects arbitrary existing local files instead of accepting path ownership lookalikes" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-local-reject-#{System.unique_integer([:positive])}")
+    package = work_package("a/b")
+    grant = worker_grant("synthetic-secret", id: "ag/one", display_key: "D/21?")
+    opts = [mode: "local-private-file", store_dir: store_dir, claimed_by: "worker-local-1", repo_root: @repo_root]
+    expected_path = local_private_file_path(package, grant, opts)
+    arbitrary_path = Path.join(store_dir, "a_b-D_21_-ag_one-existing.secret")
+
+    try do
+      File.mkdir_p!(Path.dirname(expected_path))
+      File.write!(expected_path, "metadata fixture")
+      File.write!(arbitrary_path, "not the generated handoff path")
+
+      assert {:error, {:handoff_metadata_invalid, :local_path_mismatch}} =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "local-private-file", "path" => arbitrary_path},
+                 opts
+               )
+
+      assert {:error, {:handoff_metadata_invalid, :local_path_mismatch}} =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "local-private-file", "path" => Path.dirname(expected_path)},
+                 opts
+               )
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  test "accepts identical metadata replay and rejects conflicting coordinates without overwrite" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-replay-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = worker_grant()
+    opts = [mode: "local-private-file", store_dir: store_dir, claimed_by: "worker-local-1", repo_root: @repo_root]
+    handoff_path = local_private_file_path(package, grant, opts)
+    metadata_path = managed_metadata_file(package, grant, opts)
+    target = credential_target(package, grant)
+
+    try do
+      File.mkdir_p!(Path.dirname(handoff_path))
+      File.write!(handoff_path, "metadata fixture")
+
+      first_handoff = %{"mode" => "local-private-file", "path" => handoff_path}
+      second_handoff = %{"mode" => "windows-credential-manager", "target" => target}
+
+      assert :ok = SecretHandoff.store_worker_secret_metadata(package, grant, first_handoff, opts)
+      first_metadata_json = File.read!(metadata_path)
+
+      assert :ok = SecretHandoff.store_worker_secret_metadata(package, grant, first_handoff, opts)
+      assert File.read!(metadata_path) == first_metadata_json
+
+      assert {:error, :handoff_metadata_conflict} =
+               SecretHandoff.store_worker_secret_metadata(package, grant, second_handoff, opts)
+
+      assert File.read!(metadata_path) == first_metadata_json
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  test "recovers stale metadata locks without ignoring live lock contention" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-lock-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = worker_grant()
+    opts = [mode: "local-private-file", store_dir: store_dir, claimed_by: "worker-local-1", repo_root: @repo_root]
+    handoff_path = local_private_file_path(package, grant, opts)
+    metadata_path = managed_metadata_file(package, grant, opts)
+    lock_path = "#{metadata_path}.lock"
+    handoff = %{"mode" => "local-private-file", "path" => handoff_path}
+
+    try do
+      File.mkdir_p!(Path.dirname(handoff_path))
+      File.write!(handoff_path, "metadata fixture")
+      File.mkdir_p!(Path.dirname(metadata_path))
+      File.write!(lock_path, "active")
+
+      active_lock_opts = Keyword.merge(opts, metadata_lock_attempts: 1, metadata_lock_sleep_ms: 0, metadata_lock_stale_seconds: 3_600)
+
+      assert {:error, {:handoff_metadata_write_failed, {:lock, :timeout}}} =
+               SecretHandoff.store_worker_secret_metadata(package, grant, handoff, active_lock_opts)
+
+      assert File.exists?(lock_path)
+
+      File.touch!(lock_path, System.os_time(:second) - 3_600)
+
+      stale_lock_opts = Keyword.merge(opts, metadata_lock_attempts: 2, metadata_lock_sleep_ms: 0, metadata_lock_stale_seconds: 60)
+
+      assert :ok = SecretHandoff.store_worker_secret_metadata(package, grant, handoff, stale_lock_opts)
+
+      refute File.exists?(lock_path)
+      assert File.exists?(metadata_path)
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  test "concurrent conflicting metadata writes preserve one coordinate" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-concurrent-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = worker_grant()
+    opts = [mode: "local-private-file", store_dir: store_dir, claimed_by: "worker-local-1", repo_root: @repo_root]
+    handoff_path = local_private_file_path(package, grant, opts)
+    metadata_path = managed_metadata_file(package, grant, opts)
+    target = credential_target(package, grant)
+
+    try do
+      File.mkdir_p!(Path.dirname(handoff_path))
+      File.write!(handoff_path, "metadata fixture")
+
+      results =
+        [
+          %{"mode" => "local-private-file", "path" => handoff_path},
+          %{"mode" => "windows-credential-manager", "target" => target}
+        ]
+        |> Enum.map(fn handoff ->
+          Task.async(fn ->
+            receive do
+              :write_metadata -> SecretHandoff.store_worker_secret_metadata(package, grant, handoff, opts)
+            end
+          end)
+        end)
+        |> then(fn tasks ->
+          Enum.each(tasks, &send(&1.pid, :write_metadata))
+          Enum.map(tasks, &Task.await(&1, 5_000))
+        end)
+
+      assert Enum.count(results, &(&1 == :ok)) == 1
+      assert Enum.count(results, &(&1 == {:error, :handoff_metadata_conflict})) == 1
+
+      metadata = metadata_path |> File.read!() |> Jason.decode!()
+
+      assert Map.take(metadata, ["mode", "path"]) == %{"mode" => "local-private-file", "path" => handoff_path} or
+               Map.take(metadata, ["mode", "target"]) == %{"mode" => "windows-credential-manager", "target" => target}
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  test "stores Windows credential metadata only for the generated target" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-target-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = worker_grant()
+    opts = [mode: "windows-credential-manager", store_dir: store_dir, claimed_by: "worker-windows-1", repo_root: @repo_root]
+    target = credential_target(package, grant)
+    metadata_path = managed_metadata_file(package, grant, opts)
+
+    try do
+      assert :ok =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "windows-credential-manager", "target" => target},
+                 opts
+               )
+
+      assert %{
+               "mode" => "windows-credential-manager",
+               "target" => ^target
+             } = metadata_path |> File.read!() |> Jason.decode!()
+
+      refute File.read!(metadata_path) =~ "path"
+
+      assert {:error, {:handoff_metadata_invalid, :credential_target_mismatch}} =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "windows-credential-manager", "target" => "other-target"},
+                 opts
+               )
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  test "rejects unsupported managed metadata inputs" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-invalid-#{System.unique_integer([:positive])}")
+    metadata_dir = Path.join(System.tmp_dir!(), "sympp-handoff-arbitrary-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = worker_grant()
+    opts = [mode: "local-private-file", store_dir: store_dir, claimed_by: "worker-local-1", repo_root: @repo_root]
+    handoff_path = local_private_file_path(package, grant, opts)
+
+    try do
+      File.mkdir_p!(Path.dirname(handoff_path))
+      File.write!(handoff_path, "metadata fixture")
+
+      assert {:error, :missing_worker_grant_display_key} =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 Map.delete(grant, :display_key),
+                 %{"mode" => "local-private-file", "path" => handoff_path},
+                 opts
+               )
+
+      assert {:error, :missing_worker_grant_identity} =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 Map.delete(grant, :id),
+                 %{"mode" => "local-private-file", "path" => handoff_path},
+                 opts
+               )
+
+      assert {:error, :missing_claimed_by} =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "local-private-file", "path" => handoff_path},
+                 Keyword.delete(opts, :claimed_by)
+               )
+
+      assert {:error, :unsupported_handoff_metadata_location} =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "local-private-file", "path" => handoff_path},
+                 Keyword.put(opts, :metadata_dir, metadata_dir)
+               )
+
+      assert {:error, :unsupported_handoff_metadata_location} =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "local-private-file", "path" => handoff_path},
+                 Keyword.put(opts, :metadata_path, Path.join(metadata_dir, "arbitrary.json"))
+               )
+
+      assert {:error, {:handoff_metadata_invalid, :missing_local_path}} =
+               SecretHandoff.store_worker_secret_metadata(package, grant, %{"mode" => "local-private-file"}, opts)
+
+      missing_file_opts = Keyword.put(opts, :database, "missing-file.sqlite3")
+
+      assert {:error, {:handoff_metadata_invalid, :missing_local_file}} =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 grant,
+                 %{"mode" => "local-private-file", "path" => local_private_file_path(package, grant, missing_file_opts)},
+                 missing_file_opts
+               )
+
+      refute File.exists?(metadata_dir)
+    after
+      File.rm_rf!(store_dir)
+      File.rm_rf!(metadata_dir)
+    end
+  end
+
+  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
+
+  test "does not persist managed metadata during worker secret storage" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-explicit-only-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = worker_grant("runtime-storage-value-#{System.unique_integer([:positive])}")
+
+    metadata_path =
+      managed_metadata_file(package, grant,
+        mode: "local-private-file",
+        store_dir: store_dir,
+        claimed_by: "worker-local-1",
+        repo_root: @repo_root
+      )
+
+    try do
+      assert {:ok, _handoff} =
+               SecretHandoff.store_worker_secret(
+                 %{work_package: package, worker_grant: grant},
+                 mode: "local-private-file",
+                 store_dir: store_dir,
+                 claimed_by: "worker-local-1",
+                 repo_root: @repo_root
+               )
+
+      refute File.exists?(metadata_path)
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
   test "redacts worker grant secrets and reports handoff input errors" do
     handoff = %{target: "SymphonyPlusPlus:worker:wp-secret-handoff:D321"}
 
@@ -352,12 +792,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     assert SecretHandoff.error_message(:missing_secret) =~ "one-time secret"
     assert SecretHandoff.error_message(:missing_claimed_by) =~ "claimed_by"
     assert SecretHandoff.error_message(:missing_repo_root) =~ "repository root"
+    assert SecretHandoff.error_message(:missing_worker_grant_display_key) =~ "display key"
     assert SecretHandoff.error_message(:missing_worker_grant_identity) =~ "stable non-secret id"
     assert SecretHandoff.error_message(:missing_worker_grant) =~ "worker grant"
     assert SecretHandoff.error_message(:missing_work_package) =~ "work package"
+    assert SecretHandoff.error_message(:unsupported_handoff_metadata_location) =~ "managed metadata"
     assert SecretHandoff.error_message(:unsupported_secret_handoff_mode) =~ "local-private-file"
+    assert SecretHandoff.error_message(:handoff_metadata_conflict) =~ "different coordinates"
     assert SecretHandoff.error_message(:local_private_file_unavailable_on_windows) =~ "non-Windows"
     assert SecretHandoff.error_message(:windows_credential_manager_unavailable) =~ "Windows Credential Manager"
+    assert SecretHandoff.error_message({:handoff_metadata_invalid, :missing_mode}) =~ "metadata is invalid"
+    assert SecretHandoff.error_message({:handoff_metadata_read_failed, :invalid_json}) =~ "metadata read failed"
+    assert SecretHandoff.error_message({:handoff_metadata_write_failed, :eacces}) =~ "metadata write failed"
     assert SecretHandoff.error_message({:local_private_file_failed, RuntimeError}) =~ "RuntimeError"
     assert SecretHandoff.error_message({:windows_credential_manager_failed, 1}) =~ "exit status 1"
   end
@@ -480,6 +926,88 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
 
   defp worker_grant(secret \\ "synthetic-secret", attrs \\ []) do
     Map.merge(%{id: @default_worker_grant_id, display_key: "D321", secret: secret}, Map.new(attrs))
+  end
+
+  defp managed_metadata_file(%WorkPackage{} = work_package, worker_grant, opts) do
+    opts
+    |> metadata_store_dir()
+    |> Path.join("metadata")
+    |> Path.join("handoff-#{metadata_hash(work_package.id, worker_grant.display_key, worker_grant.id, opts)}.json")
+  end
+
+  defp metadata_hash(work_package_id, display_key, grant_identity, opts) do
+    hash_source = [
+      "v1",
+      0,
+      opts |> Keyword.get(:repo_root, "") |> to_string() |> Path.expand(),
+      0,
+      to_string(Keyword.get(opts, :database, "")),
+      0,
+      metadata_store_dir(opts),
+      0,
+      work_package_id,
+      0,
+      display_key,
+      0,
+      grant_identity
+    ]
+
+    :sha256
+    |> :crypto.hash(hash_source)
+    |> Base.url_encode64(padding: false)
+    |> binary_part(0, 32)
+  end
+
+  defp metadata_store_dir(opts) do
+    store_dir = Keyword.get(opts, :store_dir) || default_local_private_store_dir()
+    Path.expand(store_dir)
+  end
+
+  defp local_private_file_path(%WorkPackage{} = work_package, worker_grant, opts) do
+    store_dir = Keyword.get(opts, :store_dir) || default_local_private_store_dir()
+    display_key = worker_grant.display_key
+    grant_identity = String.trim(worker_grant.id)
+
+    filename =
+      "#{safe_filename(work_package.id)}-#{safe_filename(display_key)}-#{safe_filename(grant_identity)}-#{handoff_filename_hash(work_package, display_key, grant_identity, opts)}.secret"
+
+    Path.join(Path.expand(store_dir), filename)
+  end
+
+  defp handoff_filename_hash(%WorkPackage{} = work_package, display_key, grant_identity, opts) do
+    hash_source = [
+      opts |> Keyword.get(:repo_root, "") |> to_string() |> Path.expand(),
+      0,
+      to_string(Keyword.get(opts, :database, "")),
+      0,
+      work_package.id,
+      0,
+      display_key,
+      0,
+      grant_identity
+    ]
+
+    :sha256
+    |> :crypto.hash(hash_source)
+    |> Base.url_encode64(padding: false)
+    |> binary_part(0, 16)
+  end
+
+  defp credential_target(%WorkPackage{id: work_package_id}, worker_grant) do
+    "SymphonyPlusPlus:worker:#{work_package_id}:#{worker_grant.display_key}:#{String.trim(worker_grant.id)}"
+  end
+
+  defp default_local_private_store_dir do
+    if windows?() do
+      local_app_data = System.get_env("LOCALAPPDATA") || Path.join(System.user_home!(), "AppData/Local")
+      Path.join([local_app_data, "SymphonyPlusPlus", "worker-secrets"])
+    else
+      Path.join([System.user_home!(), ".local", "share", "symphony-plus-plus", "worker-secrets"])
+    end
+  end
+
+  defp safe_filename(value) when is_binary(value) do
+    Regex.replace(~r/[^A-Za-z0-9._-]+/, value, "_")
   end
 
   defp remove_windows_credential!(powershell, target) do

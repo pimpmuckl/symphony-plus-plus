@@ -69,6 +69,12 @@ identity. Normal command output must keep showing only non-secret handoff
 metadata and bootstrap shape; raw worker secrets stay in the private store and
 must remain redacted from stdout, prompts, PR text, review text, and logs.
 
+Managed handoff metadata records are non-secret deletion-coordinate metadata.
+They identify the work package, worker grant, mode, and managed private-store
+path or credential target needed for later cleanup; they are not worker secrets
+and must not contain work keys, bearer material, run commands, or claimed owner
+identity.
+
 ## Worker capabilities
 
 ```text
