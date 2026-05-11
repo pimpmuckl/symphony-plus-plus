@@ -20,6 +20,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
           | :unsupported_secret_handoff_mode
           | :handoff_metadata_conflict
           | {:handoff_metadata_invalid, term()}
+          | {:handoff_metadata_delete_failed, term()}
           | {:handoff_metadata_read_failed, term()}
           | {:handoff_metadata_write_failed, term()}
           | :local_private_file_unavailable_on_windows
@@ -65,6 +66,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     do: {:error, {:handoff_metadata_invalid, :missing_handoff}}
 
   def store_worker_secret_metadata(%{}, _worker_grant, _handoff, _opts), do: {:error, :missing_work_package}
+
+  @spec delete_worker_secret_by_grant(WorkPackage.t(), map(), keyword()) :: :ok | {:error, error()}
+  def delete_worker_secret_by_grant(%WorkPackage{} = work_package, worker_grant, opts)
+      when is_map(worker_grant) and is_list(opts) do
+    with {:ok, opts} <- require_handoff_opts(opts),
+         :ok <- reject_metadata_location_overrides(opts),
+         {:ok, context} <- handoff_metadata_context(work_package, worker_grant, opts) do
+      delete_worker_secret_from_metadata(context, opts)
+    end
+  end
+
+  def delete_worker_secret_by_grant(%WorkPackage{}, worker_grant, _opts) when not is_map(worker_grant),
+    do: {:error, :missing_worker_grant}
+
+  def delete_worker_secret_by_grant(%{}, _worker_grant, _opts), do: {:error, :missing_work_package}
 
   @spec redacted_worker_grant(map(), map()) :: map()
   def redacted_worker_grant(worker_grant, handoff) when is_map(worker_grant) and is_map(handoff) do
@@ -112,6 +128,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
   def error_message({:windows_credential_manager_failed, status}),
     do: "Windows Credential Manager handoff command failed with exit status #{status}"
+
+  def error_message({:handoff_metadata_delete_failed, reason}),
+    do: "secret handoff metadata cleanup failed: #{inspect(reason)}"
 
   def error_message({:handoff_metadata_invalid, reason}),
     do: "secret handoff metadata is invalid: #{inspect(reason)}"
@@ -577,6 +596,93 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     end
   end
 
+  defp delete_worker_secret_from_metadata(context, opts) do
+    with :ok <- prepare_handoff_metadata_lock_dir(context.metadata_path) do
+      with_handoff_metadata_lock(context.metadata_path, opts, fn ->
+        delete_worker_secret_from_locked_metadata(context, opts)
+      end)
+    end
+  end
+
+  defp prepare_handoff_metadata_lock_dir(path) do
+    case File.mkdir_p(Path.dirname(path)) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:handoff_metadata_read_failed, {:mkdir, reason}}}
+    end
+  end
+
+  defp delete_worker_secret_from_locked_metadata(context, opts) do
+    with {:ok, metadata} <- read_handoff_metadata(context.metadata_path),
+         {:ok, handoff} <- handoff_from_metadata_for_cleanup(metadata, context),
+         :ok <- delete_worker_secret(handoff, opts) do
+      delete_handoff_metadata_file(context.metadata_path)
+    end
+  end
+
+  defp handoff_from_metadata_for_cleanup(metadata, context) do
+    with :ok <- validate_handoff_metadata_identity(metadata, context),
+         {:ok, mode} <- handoff_metadata_mode(metadata),
+         {:ok, coordinates} <- handoff_metadata_cleanup_coordinates(mode, metadata, context),
+         :ok <- validate_handoff_metadata_keys(metadata, mode) do
+      {:ok, Map.put(coordinates, "mode", mode)}
+    end
+  end
+
+  defp validate_handoff_metadata_identity(metadata, context) do
+    with :ok <- expect_handoff_metadata_field(metadata, "version", @metadata_version),
+         :ok <- expect_handoff_metadata_field(metadata, "work_package_id", context.work_package_id),
+         :ok <- expect_handoff_metadata_field(metadata, "worker_grant_display_key", context.display_key) do
+      expect_handoff_metadata_field(metadata, "worker_grant_id", context.grant_identity)
+    end
+  end
+
+  defp expect_handoff_metadata_field(metadata, key, expected) do
+    case Map.fetch(metadata, key) do
+      {:ok, ^expected} -> :ok
+      {:ok, _value} -> {:error, {:handoff_metadata_invalid, {:metadata_mismatch, key}}}
+      :error -> {:error, {:handoff_metadata_invalid, {:metadata_missing, key}}}
+    end
+  end
+
+  defp handoff_metadata_cleanup_coordinates("local-private-file", metadata, context) do
+    case Map.get(metadata, "path") do
+      path when is_binary(path) -> validate_handoff_metadata_local_cleanup_path(path, context)
+      _path -> {:error, {:handoff_metadata_invalid, :missing_local_path}}
+    end
+  end
+
+  defp handoff_metadata_cleanup_coordinates("windows-credential-manager", metadata, context) do
+    expected_target =
+      credential_target(context.work_package, %{display_key: context.display_key, id: context.grant_identity})
+
+    case Map.get(metadata, "target") do
+      ^expected_target -> {:ok, %{"target" => expected_target}}
+      target when is_binary(target) -> {:error, {:handoff_metadata_invalid, :credential_target_mismatch}}
+      _target -> {:error, {:handoff_metadata_invalid, :missing_credential_target}}
+    end
+  end
+
+  defp validate_handoff_metadata_keys(metadata, mode) do
+    expected_keys = expected_handoff_metadata_keys(mode)
+    actual_keys = Map.keys(metadata)
+    missing_keys = expected_keys -- actual_keys
+    unexpected_keys = actual_keys -- expected_keys
+
+    cond do
+      missing_keys != [] -> {:error, {:handoff_metadata_invalid, {:metadata_missing_keys, Enum.sort(missing_keys)}}}
+      unexpected_keys != [] -> {:error, {:handoff_metadata_invalid, {:metadata_unexpected_keys, Enum.sort(unexpected_keys)}}}
+      true -> :ok
+    end
+  end
+
+  defp expected_handoff_metadata_keys("local-private-file") do
+    ["version", "work_package_id", "worker_grant_display_key", "worker_grant_id", "mode", "path"]
+  end
+
+  defp expected_handoff_metadata_keys("windows-credential-manager") do
+    ["version", "work_package_id", "worker_grant_display_key", "worker_grant_id", "mode", "target"]
+  end
+
   defp handoff_metadata_mode(handoff) do
     case handoff_value(handoff, :mode) do
       mode when mode in ["local-private-file", "windows-credential-manager"] -> {:ok, mode}
@@ -618,6 +724,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
       true ->
         {:error, {:handoff_metadata_invalid, :missing_local_file}}
+    end
+  end
+
+  defp validate_handoff_metadata_local_cleanup_path(path, context) do
+    expanded_path = Path.expand(path)
+
+    cond do
+      String.trim(path) == "" ->
+        {:error, {:handoff_metadata_invalid, :missing_local_path}}
+
+      expanded_path != context.expected_local_private_file_path ->
+        {:error, {:handoff_metadata_invalid, :local_path_mismatch}}
+
+      true ->
+        {:ok, %{"path" => context.expected_local_private_file_path}}
     end
   end
 
@@ -776,11 +897,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     end
   end
 
+  defp read_handoff_metadata(path) do
+    case File.read(path) do
+      {:ok, content} -> decode_handoff_metadata(content)
+      {:error, reason} -> {:error, {:handoff_metadata_read_failed, reason}}
+    end
+  end
+
   defp decode_handoff_metadata(content) do
     case Jason.decode(content) do
       {:ok, metadata} when is_map(metadata) -> {:ok, metadata}
       {:ok, _metadata} -> {:error, {:handoff_metadata_read_failed, :not_a_map}}
       {:error, _reason} -> {:error, {:handoff_metadata_read_failed, :invalid_json}}
+    end
+  end
+
+  defp delete_handoff_metadata_file(path) do
+    case File.rm(path) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, {:handoff_metadata_delete_failed, reason}}
     end
   end
 

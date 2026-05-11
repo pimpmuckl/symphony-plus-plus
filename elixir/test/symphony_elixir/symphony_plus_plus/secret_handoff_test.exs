@@ -440,6 +440,179 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
+  test "deletes local private-file handoff and metadata by grant identity" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-delete-local-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = worker_grant("cleanup-secret")
+    opts = [mode: "local-private-file", store_dir: store_dir, claimed_by: "worker-local-1", repo_root: @repo_root]
+    handoff_path = local_private_file_path(package, grant, opts)
+    metadata_path = managed_metadata_file(package, grant, opts)
+    handoff = %{"mode" => "local-private-file", "path" => handoff_path}
+
+    try do
+      File.mkdir_p!(Path.dirname(handoff_path))
+      File.write!(handoff_path, "cleanup fixture")
+
+      assert :ok = SecretHandoff.store_worker_secret_metadata(package, grant, handoff, opts)
+      assert :ok = SecretHandoff.delete_worker_secret_by_grant(package, grant, opts)
+      refute File.exists?(handoff_path)
+      refute File.exists?(metadata_path)
+
+      File.write!(handoff_path, "cleanup fixture")
+      assert :ok = SecretHandoff.store_worker_secret_metadata(package, grant, handoff, opts)
+      File.rm!(handoff_path)
+
+      assert :ok = SecretHandoff.delete_worker_secret_by_grant(package, grant, opts)
+      refute File.exists?(metadata_path)
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  test "delete by grant requires managed metadata and namespace inputs" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-delete-inputs-#{System.unique_integer([:positive])}")
+    metadata_dir = Path.join(System.tmp_dir!(), "sympp-handoff-delete-arbitrary-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = worker_grant()
+    opts = [mode: "local-private-file", store_dir: store_dir, claimed_by: "worker-local-1", repo_root: @repo_root]
+    metadata_path = managed_metadata_file(package, grant, opts)
+
+    try do
+      assert function_exported?(SecretHandoff, :delete_worker_secret_by_grant, 3)
+      refute function_exported?(SecretHandoff, :delete_worker_secret_by_grant, 2)
+
+      assert {:error, :missing_repo_root} =
+               SecretHandoff.delete_worker_secret_by_grant(package, grant, Keyword.delete(opts, :repo_root))
+
+      assert {:error, :unsupported_handoff_metadata_location} =
+               SecretHandoff.delete_worker_secret_by_grant(package, grant, Keyword.put(opts, :metadata_dir, metadata_dir))
+
+      assert {:error, {:handoff_metadata_read_failed, :enoent}} =
+               SecretHandoff.delete_worker_secret_by_grant(package, grant, opts)
+
+      File.mkdir_p!(Path.dirname(metadata_path))
+      File.write!(metadata_path, "{not json")
+
+      assert {:error, {:handoff_metadata_read_failed, :invalid_json}} =
+               SecretHandoff.delete_worker_secret_by_grant(package, grant, opts)
+    after
+      File.rm_rf!(store_dir)
+      File.rm_rf!(metadata_dir)
+    end
+  end
+
+  test "delete by grant takes the metadata lock before reading the record" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-delete-lock-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = worker_grant()
+
+    opts = [
+      mode: "local-private-file",
+      store_dir: store_dir,
+      claimed_by: "worker-local-1",
+      repo_root: @repo_root,
+      metadata_lock_attempts: 1,
+      metadata_lock_sleep_ms: 0,
+      metadata_lock_stale_seconds: 3_600
+    ]
+
+    metadata_path = managed_metadata_file(package, grant, opts)
+    lock_path = "#{metadata_path}.lock"
+
+    try do
+      File.mkdir_p!(Path.dirname(metadata_path))
+      File.write!(lock_path, "active")
+
+      assert {:error, {:handoff_metadata_write_failed, {:lock, :timeout}}} =
+               SecretHandoff.delete_worker_secret_by_grant(package, grant, opts)
+
+      assert File.exists?(lock_path)
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  test "delete by grant rejects mismatched metadata without deleting local files" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-delete-mismatch-#{System.unique_integer([:positive])}")
+    package = work_package("wp/delete")
+    grant = worker_grant("cleanup-secret", id: "ag/delete", display_key: "D/21?")
+    opts = [mode: "local-private-file", store_dir: store_dir, claimed_by: "worker-local-1", repo_root: @repo_root]
+    expected_path = local_private_file_path(package, grant, opts)
+    arbitrary_path = Path.join(store_dir, "arbitrary.secret")
+    metadata_path = managed_metadata_file(package, grant, opts)
+    metadata = metadata_record(package, grant, "local-private-file", %{"path" => expected_path})
+
+    try do
+      File.mkdir_p!(Path.dirname(expected_path))
+      File.mkdir_p!(Path.dirname(metadata_path))
+      File.write!(expected_path, "cleanup fixture")
+      File.write!(arbitrary_path, "not a generated handoff")
+
+      for {key, value, reason} <- [
+            {"work_package_id", "other-package", {:metadata_mismatch, "work_package_id"}},
+            {"worker_grant_display_key", "other-key", {:metadata_mismatch, "worker_grant_display_key"}},
+            {"worker_grant_id", "other-grant", {:metadata_mismatch, "worker_grant_id"}},
+            {"mode", "unsupported", {:unsupported_mode, "unsupported"}}
+          ] do
+        File.write!(metadata_path, Jason.encode!(Map.put(metadata, key, value)))
+
+        assert {:error, {:handoff_metadata_invalid, ^reason}} =
+                 SecretHandoff.delete_worker_secret_by_grant(package, grant, opts)
+
+        assert File.exists?(expected_path)
+        assert File.exists?(metadata_path)
+      end
+
+      File.write!(metadata_path, Jason.encode!(Map.put(metadata, "path", arbitrary_path)))
+
+      assert {:error, {:handoff_metadata_invalid, :local_path_mismatch}} =
+               SecretHandoff.delete_worker_secret_by_grant(package, grant, opts)
+
+      assert File.exists?(expected_path)
+      assert File.exists?(arbitrary_path)
+      assert File.exists?(metadata_path)
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  test "delete by grant validates Windows credential metadata before cleanup and preserves failed cleanup metadata" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-delete-credential-#{System.unique_integer([:positive])}")
+    missing_repo_root = Path.join(store_dir, "missing-repo")
+    package = work_package()
+    grant = worker_grant()
+
+    opts = [
+      mode: "windows-credential-manager",
+      store_dir: store_dir,
+      claimed_by: "worker-windows-1",
+      repo_root: missing_repo_root
+    ]
+
+    target = credential_target(package, grant)
+    metadata_path = managed_metadata_file(package, grant, opts)
+    metadata = metadata_record(package, grant, "windows-credential-manager", %{"target" => target})
+
+    try do
+      File.mkdir_p!(Path.dirname(metadata_path))
+      File.write!(metadata_path, Jason.encode!(Map.put(metadata, "target", "other-target")))
+
+      assert {:error, {:handoff_metadata_invalid, :credential_target_mismatch}} =
+               SecretHandoff.delete_worker_secret_by_grant(package, grant, opts)
+
+      assert File.exists?(metadata_path)
+
+      File.write!(metadata_path, Jason.encode!(metadata))
+
+      assert {:error, {:windows_credential_manager_delete_failed, _reason}} =
+               SecretHandoff.delete_worker_secret_by_grant(package, grant, opts)
+
+      assert File.exists?(metadata_path)
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
   test "metadata persistence treats nil store dir as the default store" do
     package = work_package()
     grant = worker_grant()
@@ -802,6 +975,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     assert SecretHandoff.error_message(:local_private_file_unavailable_on_windows) =~ "non-Windows"
     assert SecretHandoff.error_message(:windows_credential_manager_unavailable) =~ "Windows Credential Manager"
     assert SecretHandoff.error_message({:handoff_metadata_invalid, :missing_mode}) =~ "metadata is invalid"
+    assert SecretHandoff.error_message({:handoff_metadata_delete_failed, :eacces}) =~ "metadata cleanup failed"
     assert SecretHandoff.error_message({:handoff_metadata_read_failed, :invalid_json}) =~ "metadata read failed"
     assert SecretHandoff.error_message({:handoff_metadata_write_failed, :eacces}) =~ "metadata write failed"
     assert SecretHandoff.error_message({:local_private_file_failed, RuntimeError}) =~ "RuntimeError"
@@ -926,6 +1100,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
 
   defp worker_grant(secret \\ "synthetic-secret", attrs \\ []) do
     Map.merge(%{id: @default_worker_grant_id, display_key: "D321", secret: secret}, Map.new(attrs))
+  end
+
+  defp metadata_record(%WorkPackage{} = work_package, worker_grant, mode, coordinates) do
+    %{
+      "version" => 1,
+      "work_package_id" => work_package.id,
+      "worker_grant_display_key" => worker_grant.display_key,
+      "worker_grant_id" => worker_grant.id,
+      "mode" => mode
+    }
+    |> Map.merge(coordinates)
   end
 
   defp managed_metadata_file(%WorkPackage{} = work_package, worker_grant, opts) do
