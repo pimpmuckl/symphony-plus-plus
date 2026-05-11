@@ -182,8 +182,10 @@ set to `false`, and omits `secret` and `secret_returned_once`. `template.secret_
 is optional and narrow: only `mode`, `store_dir`, and `claimed_by` are accepted,
 blank values are rejected, and grant capabilities cannot be broadened through
 handoff settings. Superseded unclaimed child handoffs are cleaned from managed
-handoff metadata after a successful replacement mint; old cleanup failures are
-reported as a warning status without failing the new mint.
+handoff metadata in the current child handoff namespace after a successful
+replacement mint; old cleanup failures, including metadata not found after a
+namespace-affecting `store_dir` change, are reported as a warning status without
+failing the new mint.
 `read_child_status(work_package_id)` requires both `read:child_progress` and
 `read:child_findings`; it can read the architect anchor package or a same-phase
 child package. `approve_child_ready_state(work_package_id, rationale, request_id?)` can

@@ -87,7 +87,7 @@
       "scope_policy": "Worker grants are single-package grants, capabilities are limited to worker:claim and worker:lifecycle.transition, unclaimed active child-delegated worker grants for the same child may be superseded transactionally, claimed active child-delegated worker grants for the child are rejected, unrelated normal worker grants are ignored, and expiry cannot exceed the transaction-current architect grant.",
       "response_policy": "The raw child worker secret is stored through SecretHandoff and is not returned in content or structuredContent. The response includes worker_grant.secret_handoff metadata and worker_grant.secret_in_response=false, and omits secret and secret_returned_once.",
       "handoff_template_policy": "Optional template.secret_handoff may include only mode, store_dir, and claimed_by. Unexpected fields, blank values, and unsupported modes are rejected and cannot broaden grant capabilities.",
-      "superseded_handoff_cleanup_policy": "After a successful replacement mint, superseded unclaimed child handoffs are cleaned through managed metadata. Old cleanup failures are reported in superseded_child_handoff_cleanup with warning status and do not fail the new mint."
+      "superseded_handoff_cleanup_policy": "After a successful replacement mint, superseded unclaimed child handoffs are cleaned through managed metadata in the current child handoff namespace when possible. Old cleanup failures, including metadata not found after a namespace-affecting store_dir change, are reported in superseded_child_handoff_cleanup with warning status and do not fail the new mint."
     },
     {
       "name": "revoke_child_worker_key",

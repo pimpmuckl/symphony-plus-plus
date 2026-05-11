@@ -4038,7 +4038,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert :ok = SecretHandoff.delete_worker_secret(first_handoff, test_handoff_opts())
   end
 
-  test "child worker key minting warns without failing when old handoff cleanup fails", %{repo: repo} do
+  test "child worker key minting warns without failing when old handoff cleanup is outside the current namespace", %{
+    repo: repo
+  } do
     {_anchor, architect_session} =
       create_architect_session(repo, "SYMPP-P7-002-HANDOFF-CLEANUP-WARN-ANCHOR", [
         "create:child_work_package",
@@ -4047,28 +4049,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       ])
 
     child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-HANDOFF-CLEANUP-WARN-CHILD")
+    first_store_dir = Path.join(test_handoff_store_dir(), "first-namespace")
+    replacement_store_dir = Path.join(test_handoff_store_dir(), "replacement-namespace")
 
     first_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
         "work_package_id" => child_id,
-        "template" => child_worker_template()
+        "template" => child_worker_template(%{"store_dir" => first_store_dir})
       })
 
     first_handoff = get_in(first_response, ["result", "structuredContent", "worker_grant", "secret_handoff"])
-    assert [metadata_path] = Path.wildcard(Path.join([test_handoff_store_dir(), "metadata", "handoff-*.json"]))
-    File.rm!(metadata_path)
+    first_grant_id = get_in(first_response, ["result", "structuredContent", "worker_grant", "id"])
+    assert [_metadata_path] = Path.wildcard(Path.join([first_store_dir, "metadata", "handoff-*.json"]))
 
     second_response =
       mcp_tool(repo, architect_session, "mint_child_worker_key", %{
         "work_package_id" => child_id,
-        "template" => child_worker_template()
+        "template" => child_worker_template(%{"store_dir" => replacement_store_dir})
       })
 
     assert get_in(second_response, ["result", "structuredContent", "worker_grant", "work_package_id"]) == child_id
     assert get_in(second_response, ["result", "structuredContent", "superseded_child_handoff_cleanup", "status"]) == "warning"
     assert get_in(second_response, ["result", "structuredContent", "superseded_child_handoff_cleanup", "failed"]) == 1
 
+    assert [%{"grant_id" => ^first_grant_id, "reason" => reason, "status" => "warning"}] =
+             get_in(second_response, ["result", "structuredContent", "superseded_child_handoff_cleanup", "failures"])
+
+    assert reason =~ "secret handoff metadata read failed"
+
+    second_handoff = get_in(second_response, ["result", "structuredContent", "worker_grant", "secret_handoff"])
+
     assert :ok = SecretHandoff.delete_worker_secret(first_handoff, test_handoff_opts())
+    assert :ok = SecretHandoff.delete_worker_secret(second_handoff, test_handoff_opts())
   end
 
   test "child worker key minting rejects child packages not ready for worker", %{repo: repo} do

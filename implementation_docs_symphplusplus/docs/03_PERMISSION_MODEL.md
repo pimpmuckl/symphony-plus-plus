@@ -74,7 +74,11 @@ They identify the work package, worker grant, mode, and managed private-store
 path or credential target needed for later cleanup; they are not worker secrets
 and must not contain work keys, bearer material, run commands, or claimed owner
 identity. The same managed metadata may be used to clean superseded handoffs by
-work package and grant identity without exposing the stored secret.
+work package and grant identity within the current handoff namespace without
+exposing the stored secret. If namespace-affecting handoff settings such as
+`store_dir` change between child mint attempts, old metadata cleanup is
+best-effort and should be reported as a cleanup warning rather than failing the
+new mint.
 
 Architect child worker minting follows the same private-handoff rule. The
 `mint_child_worker_key` MCP response returns `worker_grant.secret_handoff` and

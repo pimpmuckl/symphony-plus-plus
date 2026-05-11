@@ -83,8 +83,11 @@ store and returns only redacted metadata under `worker_grant.secret_handoff`;
 may specify only `mode`, `store_dir`, and `claimed_by`; unexpected fields or
 blank values are rejected and do not alter worker-grant capabilities. After a
 successful replacement mint, superseded unclaimed child handoffs are cleaned
-from managed handoff metadata when possible; cleanup failure is reported as a
-warning in `superseded_child_handoff_cleanup` and does not fail the new mint.
+from managed handoff metadata in the current child handoff namespace when
+possible; cleanup failure is reported as a warning in
+`superseded_child_handoff_cleanup` and does not fail the new mint. If
+namespace-affecting handoff settings such as `store_dir` change between mints,
+old cleanup may not find the old metadata and should surface as that warning.
 `read_child_status` requires both `read:child_progress` and
 `read:child_findings` because its summary includes progress, findings, and
 artifact counts. `approve_child_ready_state` revalidates the ready child against
