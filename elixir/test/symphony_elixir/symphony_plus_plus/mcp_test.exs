@@ -3735,9 +3735,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert handoff_secret_absent?(worker_grant["secret_handoff"], content_text)
 
     assert [metadata_path] = Path.wildcard(Path.join([test_handoff_store_dir(), "metadata", "handoff-*.json"]))
-    assert {:ok, metadata} = metadata_path |> File.read!() |> Jason.decode()
+    metadata_content = File.read!(metadata_path)
+    assert {:ok, metadata} = Jason.decode(metadata_content)
     assert metadata["work_package_id"] == child_id
     assert metadata["worker_grant_id"] == worker_grant["id"]
+    assert handoff_secret_absent?(worker_grant["secret_handoff"], metadata_content)
+    refute Map.has_key?(metadata, "secret")
     refute Map.has_key?(metadata, "claimed_by")
     refute Map.has_key?(metadata, "run_mcp_command")
 

@@ -1860,10 +1860,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp store_child_worker_secret_handoff(%WorkPackage{} = child, minted, handoff_opts) do
     worker_grant = child_worker_grant_secret_payload(minted)
+    metadata_worker_grant = redacted_child_worker_grant(worker_grant)
 
     case SecretHandoff.store_worker_secret(%{work_package: child, worker_grant: worker_grant}, handoff_opts) do
       {:ok, handoff} ->
-        store_child_worker_secret_handoff_metadata(child, worker_grant, handoff, handoff_opts)
+        store_child_worker_secret_handoff_metadata(child, metadata_worker_grant, handoff, handoff_opts)
 
       {:error, reason} ->
         {:tool_error, secret_handoff_reason(reason)}
