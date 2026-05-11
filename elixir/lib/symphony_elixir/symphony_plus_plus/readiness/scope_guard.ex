@@ -8,6 +8,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
   @gate "scope_guard"
+  @changed_file_metadata_keys [
+    "changed_files",
+    "changed_files_count",
+    "changed_files_available",
+    "changed_files_count_available"
+  ]
 
   @spec gate() :: String.t()
   def gate, do: @gate
@@ -263,7 +269,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
   defp latest_current_pr_metadata_event(progress_events, current_head_sha, attached_ref, attach_sequence) do
     progress_events
     |> Enum.reverse()
-    |> Enum.find(fn
+    |> Enum.filter(fn
       %ProgressEvent{payload: payload} = event when is_map(payload) ->
         payload_type?(event, "pr", "sync_pr") and progress_after_pr_attach_boundary?(event, attach_sequence) and
           PullRequest.head_sha_matches?(Map.get(payload, "head_sha"), current_head_sha) and pr_payload_ref(payload) == attached_ref
@@ -271,6 +277,70 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
       %ProgressEvent{} ->
         false
     end)
+    |> select_scope_guard_pr_metadata_event()
+  end
+
+  defp select_scope_guard_pr_metadata_event([]), do: nil
+
+  defp select_scope_guard_pr_metadata_event([%ProgressEvent{payload: payload} = latest | _rest] = events) do
+    if changed_files_unavailable_payload?(payload) do
+      case Enum.find(events, &same_snapshot_changed_files_available_event?(&1, payload)) do
+        %ProgressEvent{payload: changed_file_payload} ->
+          %{latest | payload: merge_changed_file_metadata(payload, changed_file_payload)}
+
+        nil ->
+          latest
+      end
+    else
+      latest
+    end
+  end
+
+  defp same_snapshot_changed_files_available_event?(%ProgressEvent{payload: payload}, latest_payload) when is_map(payload) do
+    changed_files_available_payload?(payload) and same_changed_file_snapshot?(latest_payload, payload)
+  end
+
+  defp same_snapshot_changed_files_available_event?(%ProgressEvent{}, _latest_payload), do: false
+
+  defp changed_files_available_payload?(payload) do
+    {_paths, failures} = changed_file_paths(payload)
+    failures == []
+  end
+
+  defp changed_files_unavailable_payload?(payload) do
+    {_paths, failures} = changed_file_paths(payload)
+    Enum.any?(failures, &(Map.get(&1, "code") == "changed_files_unavailable"))
+  end
+
+  defp same_changed_file_snapshot?(latest_payload, changed_file_payload) do
+    changed_file_counts_match?(latest_payload, changed_file_payload) and
+      head_sha_matches?(latest_payload, changed_file_payload) and
+      base_sha_matches?(latest_payload, changed_file_payload)
+  end
+
+  defp changed_file_counts_match?(left, right) do
+    left_count = Map.get(left, "changed_files_count")
+    right_count = Map.get(right, "changed_files_count")
+
+    is_integer(left_count) and left_count == right_count
+  end
+
+  defp head_sha_matches?(left, right) do
+    left_head_sha = clean_string(Map.get(left, "head_sha"))
+    right_head_sha = clean_string(Map.get(right, "head_sha"))
+
+    not is_nil(left_head_sha) and left_head_sha == right_head_sha
+  end
+
+  defp base_sha_matches?(left, right) do
+    left_base_sha = clean_string(Map.get(left, "base_sha"))
+    right_base_sha = clean_string(Map.get(right, "base_sha"))
+
+    not is_nil(left_base_sha) and left_base_sha == right_base_sha
+  end
+
+  defp merge_changed_file_metadata(payload, changed_file_payload) do
+    Map.merge(payload, Map.take(changed_file_payload, @changed_file_metadata_keys))
   end
 
   defp latest_current_head_sha(progress_events) do

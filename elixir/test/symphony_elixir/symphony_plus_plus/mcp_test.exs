@@ -8442,6 +8442,106 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert post_ready_package.allowed_file_globs == ["elixir/lib/**", "docs/**"]
   end
 
+  test "scope guard uses current-head changed-file paths from sync_pr when a later sync omits file paths", %{repo: repo} do
+    changed_paths = [
+      "implementation_docs_symphplusplus/README.md",
+      "implementation_docs_symphplusplus/docs/01_IMPLEMENTATION_GUIDE.md",
+      "implementation_docs_symphplusplus/docs/02_SYSTEM_SPEC.md",
+      "implementation_docs_symphplusplus/docs/07_DASHBOARD_SPEC.md",
+      "implementation_docs_symphplusplus/docs/09_OPERATIONAL_RUNBOOK.md",
+      "implementation_docs_symphplusplus/docs/12_OPERATOR_TRAINING.md",
+      "implementation_docs_symphplusplus/docs/13_WORKREQUEST_CONTRACT.md"
+    ]
+
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-SCOPE-GUARD-SYNC-PR",
+                 kind: "mcp",
+                 repo: "Pimpmuckl/symphony-plus-plus",
+                 base_branch: "main",
+                 status: "ci_waiting",
+                 policy_template: "mcp_changed_file_scope_guard",
+                 allowed_file_globs: changed_paths
+               )
+             )
+
+    append_done_plan(repo, package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+    head_sha = "scope-docs-head-a"
+    pr_url = "https://github.com/Pimpmuckl/symphony-plus-plus/pull/61"
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-V2-PRODUCT-001/workrequest-contract", "head_sha" => head_sha})
+    attach_tool(repo, session, "attach_pr", %{"url" => pr_url, "head_sha" => head_sha})
+
+    path_sync_response =
+      attach_tool(repo, session, "sync_pr", %{
+        "url" => pr_url,
+        "metadata" => %{
+          "head_sha" => head_sha,
+          "base" => %{"ref" => "main", "sha" => "base-pr61"},
+          "changed_files" => Enum.map(changed_paths, &%{"filename" => &1, "status" => "modified"}),
+          "changed_files_count" => length(changed_paths),
+          "check_summary" => %{"conclusion" => "success"},
+          "review_state" => %{"state" => "approved"},
+          "merge_state" => %{"state" => "clean"}
+        }
+      })
+
+    path_sync_payload = get_in(path_sync_response, ["result", "structuredContent", "progress_event", "payload"])
+    assert path_sync_payload["changed_files_available"] == true
+    assert path_sync_payload["changed_files_count"] == 7
+    assert length(path_sync_payload["changed_files"]) == 7
+
+    count_only_sync_response =
+      attach_tool(repo, session, "sync_pr", %{
+        "url" => pr_url,
+        "metadata" => %{
+          "head_sha" => head_sha,
+          "base" => %{"ref" => "main", "sha" => "base-pr61"},
+          "changed_files" => 7,
+          "check_summary" => %{"conclusion" => "success"},
+          "review_state" => %{"state" => "approved"},
+          "merge_state" => %{"state" => "clean"}
+        }
+      })
+
+    count_only_payload = get_in(count_only_sync_response, ["result", "structuredContent", "progress_event", "payload"])
+    assert count_only_payload["changed_files_available"] == false
+    assert count_only_payload["changed_files_count"] == 7
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready review package",
+      "tests" => ["mix test"],
+      "artifacts" => ["review.txt"],
+      "head_sha" => head_sha,
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+    })
+
+    attach_tool(repo, session, "attach_review_suite_result", %{
+      "work_package_id" => package.id,
+      "head_sha" => head_sha,
+      "suite" => "review-suite",
+      "anchor" => "phase_gate-scope-docs-head-a",
+      "summary" => "T1 and T2 are green",
+      "status" => "passed",
+      "verdict" => "green"
+    })
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-after-doc-sync", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+  end
+
   test "architect approval repairs overbroad existing scope constraints", %{repo: repo} do
     assert {:ok, package} =
              WorkPackageRepository.create(
