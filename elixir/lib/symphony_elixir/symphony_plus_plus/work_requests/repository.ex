@@ -2,16 +2,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
   @moduledoc false
 
   alias Ecto.Changeset
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
   import Ecto.Query, only: [from: 2]
 
+  @default_sequence_retry_attempts 200
+  @question_create_ignored_attrs [
+    "answer",
+    "answered_at",
+    "answered_by",
+    "created_at",
+    "inserted_at",
+    "sequence",
+    "status",
+    "updated_at"
+  ]
+
   @type repo :: module()
   @type error ::
-          :database_busy
+          :already_answered
+          | :already_closed
+          | :database_busy
           | :not_found
           | :id_already_exists
           | :invalid_status
+          | :sequence_conflict
           | :stale_status
           | {:constraint_failed, String.t()}
           | {:migration_failed, term()}
@@ -83,6 +100,78 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     end
   end
 
+  @spec ask_question(repo(), String.t(), map()) :: {:ok, ClarificationQuestion.t()} | {:error, error()}
+  def ask_question(repo, work_request_id, attrs)
+      when is_atom(repo) and is_binary(work_request_id) and is_map(attrs) do
+    attrs =
+      attrs
+      |> normalize_keys()
+      |> Map.drop(@question_create_ignored_attrs)
+      |> Map.put("work_request_id", work_request_id)
+      |> Map.put("status", "open")
+
+    insert_with_sequence(repo, attrs, &next_question_sequence/2, &ClarificationQuestion.create_changeset/1)
+  end
+
+  @spec list_questions(repo(), String.t()) :: {:ok, [ClarificationQuestion.t()]} | {:error, error()}
+  def list_questions(repo, work_request_id) when is_atom(repo) and is_binary(work_request_id) do
+    questions =
+      repo.all(
+        from(question in ClarificationQuestion,
+          where: question.work_request_id == ^work_request_id,
+          order_by: [asc: question.sequence, asc: question.id]
+        )
+      )
+
+    {:ok, questions}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  @spec answer_question(repo(), String.t(), String.t(), map()) :: {:ok, ClarificationQuestion.t()} | {:error, error()}
+  def answer_question(repo, id, current_status, attrs)
+      when is_atom(repo) and is_binary(id) and is_binary(current_status) and is_map(attrs) do
+    with :ok <- validate_question_status(current_status),
+         {:ok, answer} <- normalize_answer(attrs) do
+      answer_valid_question(repo, id, current_status, answer)
+    end
+  end
+
+  @spec close_question(repo(), String.t(), String.t()) :: {:ok, ClarificationQuestion.t()} | {:error, error()}
+  def close_question(repo, id, current_status)
+      when is_atom(repo) and is_binary(id) and is_binary(current_status) do
+    with :ok <- validate_question_status(current_status) do
+      close_valid_question(repo, id, current_status)
+    end
+  end
+
+  @spec record_decision(repo(), String.t(), map()) :: {:ok, DecisionLogEntry.t()} | {:error, error()}
+  def record_decision(repo, work_request_id, attrs)
+      when is_atom(repo) and is_binary(work_request_id) and is_map(attrs) do
+    attrs =
+      attrs
+      |> normalize_keys()
+      |> Map.drop(["sequence", "inserted_at", "updated_at"])
+      |> Map.put("work_request_id", work_request_id)
+
+    insert_with_sequence(repo, attrs, &next_decision_sequence/2, &DecisionLogEntry.create_changeset/1)
+  end
+
+  @spec list_decisions(repo(), String.t()) :: {:ok, [DecisionLogEntry.t()]} | {:error, error()}
+  def list_decisions(repo, work_request_id) when is_atom(repo) and is_binary(work_request_id) do
+    decisions =
+      repo.all(
+        from(decision in DecisionLogEntry,
+          where: decision.work_request_id == ^work_request_id,
+          order_by: [asc: decision.sequence, asc: decision.id]
+        )
+      )
+
+    {:ok, decisions}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
   defp list_query(filters) do
     base_query =
       from(work_request in WorkRequest,
@@ -132,6 +221,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     end
   end
 
+  defp validate_question_status(status) do
+    if status in ClarificationQuestion.statuses() do
+      :ok
+    else
+      {:error, :invalid_status}
+    end
+  end
+
   defp stale_status_error(repo, id) do
     case get(repo, id) do
       {:ok, _work_request} -> {:error, :stale_status}
@@ -146,6 +243,180 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     )
   end
 
+  defp insert_with_sequence(repo, attrs, next_sequence, changeset_fun) do
+    do_insert_with_sequence(repo, attrs, next_sequence, changeset_fun, sequence_retry_attempts())
+  end
+
+  defp do_insert_with_sequence(repo, attrs, next_sequence, changeset_fun, attempts_left) do
+    repo
+    |> insert_sequence_transaction(attrs, next_sequence, changeset_fun)
+    |> handle_sequence_insert_result(repo, attrs, next_sequence, changeset_fun, attempts_left)
+  end
+
+  defp insert_sequence_transaction(repo, attrs, next_sequence, changeset_fun) do
+    repo.transaction(fn ->
+      attrs = Map.put(attrs, "sequence", next_sequence.(repo, Map.fetch!(attrs, "work_request_id")))
+
+      attrs
+      |> changeset_fun.()
+      |> repo.insert()
+      |> normalize_insert_result()
+      |> case do
+        {:ok, record} -> record
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+    |> normalize_transaction_result()
+  rescue
+    error in Ecto.ConstraintError -> normalize_constraint_error(error)
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp handle_sequence_insert_result({:ok, record}, _repo, _attrs, _next_sequence, _changeset_fun, _attempts_left) do
+    {:ok, record}
+  end
+
+  defp handle_sequence_insert_result(
+         {:error, {:constraint_failed, constraint}},
+         repo,
+         attrs,
+         next_sequence,
+         changeset_fun,
+         attempts_left
+       ) do
+    if sequence_constraint?(constraint) do
+      retry_or_error(repo, attrs, next_sequence, changeset_fun, attempts_left, :sequence_conflict)
+    else
+      {:error, {:constraint_failed, constraint}}
+    end
+  end
+
+  defp handle_sequence_insert_result({:error, :database_busy}, repo, attrs, next_sequence, changeset_fun, attempts_left) do
+    retry_or_error(repo, attrs, next_sequence, changeset_fun, attempts_left, :database_busy)
+  end
+
+  defp handle_sequence_insert_result({:error, reason}, _repo, _attrs, _next_sequence, _changeset_fun, _attempts_left) do
+    {:error, reason}
+  end
+
+  defp retry_or_error(_repo, _attrs, _next_sequence, _changeset_fun, 0, terminal_error), do: {:error, terminal_error}
+
+  defp retry_or_error(repo, attrs, next_sequence, changeset_fun, attempts_left, _terminal_error) do
+    Process.sleep(retry_delay_ms(attempts_left, sequence_retry_attempts()))
+    do_insert_with_sequence(repo, attrs, next_sequence, changeset_fun, attempts_left - 1)
+  end
+
+  defp retry_delay_ms(attempts_left, total_attempts) do
+    used_attempts = max(total_attempts - attempts_left, 0)
+    min(100, 5 + used_attempts * 5)
+  end
+
+  defp sequence_retry_attempts do
+    :symphony_elixir
+    |> Application.get_env(:sympp_work_request_sequence_retry_attempts, @default_sequence_retry_attempts)
+    |> max(0)
+  end
+
+  defp next_question_sequence(repo, work_request_id) do
+    next_sequence(repo, ClarificationQuestion, work_request_id)
+  end
+
+  defp next_decision_sequence(repo, work_request_id) do
+    next_sequence(repo, DecisionLogEntry, work_request_id)
+  end
+
+  defp next_sequence(repo, schema, work_request_id) do
+    max_sequence =
+      repo.one(
+        from(record in schema,
+          where: record.work_request_id == ^work_request_id,
+          select: max(record.sequence)
+        )
+      )
+
+    (max_sequence || 0) + 1
+  end
+
+  defp normalize_answer(attrs) do
+    attrs =
+      attrs
+      |> normalize_keys()
+      |> put_new_value("answered_at", DateTime.utc_now(:microsecond))
+
+    attrs
+    |> ClarificationQuestion.answer_changeset()
+    |> Changeset.apply_action(:update)
+  end
+
+  defp answer_valid_question(repo, id, current_status, answer) do
+    now = DateTime.utc_now(:microsecond)
+
+    repo.transaction(fn ->
+      id
+      |> answer_question_query(current_status)
+      |> repo.update_all(
+        set: [
+          status: "answered",
+          answer: answer.answer,
+          answered_by: answer.answered_by,
+          answered_at: answer.answered_at,
+          updated_at: now
+        ]
+      )
+      |> case do
+        {1, _rows} -> repo.get!(ClarificationQuestion, id)
+        {0, _rows} -> repo.rollback(question_terminal_error(repo, id, current_status))
+      end
+    end)
+    |> normalize_transaction_result()
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp close_valid_question(repo, id, current_status) do
+    now = DateTime.utc_now(:microsecond)
+
+    repo.transaction(fn ->
+      id
+      |> close_question_query(current_status)
+      |> repo.update_all(set: [status: "closed", updated_at: now])
+      |> case do
+        {1, _rows} -> repo.get!(ClarificationQuestion, id)
+        {0, _rows} -> repo.rollback(question_terminal_error(repo, id, current_status))
+      end
+    end)
+    |> normalize_transaction_result()
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp answer_question_query(id, current_status) do
+    from(question in ClarificationQuestion,
+      where:
+        question.id == ^id and question.status == ^current_status and question.status == "open" and
+          is_nil(question.answer)
+    )
+  end
+
+  defp close_question_query(id, current_status) do
+    from(question in ClarificationQuestion,
+      where:
+        question.id == ^id and question.status == ^current_status and question.status == "open" and
+          is_nil(question.answer)
+    )
+  end
+
+  defp question_terminal_error(repo, id, current_status) do
+    case repo.get(ClarificationQuestion, id) do
+      nil -> :not_found
+      %ClarificationQuestion{status: "closed"} -> :already_closed
+      %ClarificationQuestion{status: "answered"} -> :already_answered
+      %ClarificationQuestion{answer: answer} when not is_nil(answer) -> :already_answered
+      %ClarificationQuestion{status: status} when status != current_status -> :stale_status
+      %ClarificationQuestion{} -> :stale_status
+    end
+  end
+
   defp normalize_insert_result({:ok, work_request}), do: {:ok, work_request}
 
   defp normalize_insert_result({:error, %Changeset{} = changeset}) do
@@ -156,6 +427,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     end
   end
 
+  defp normalize_transaction_result({:ok, record}), do: {:ok, record}
+  defp normalize_transaction_result({:error, reason}), do: {:error, reason}
+
   defp duplicate_id?(changeset) do
     Enum.any?(changeset.errors, fn
       {:id, {_message, options}} -> Keyword.get(options, :constraint) == :unique
@@ -164,15 +438,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
   end
 
   defp normalize_constraint_error(%Ecto.ConstraintError{constraint: constraint}) when is_binary(constraint) do
-    cond do
-      constraint in ["sympp_work_requests_id_unique_index", "sympp_work_requests_id_index"] ->
-        {:error, :id_already_exists}
-
-      String.contains?(constraint, "sympp_work_requests") and String.contains?(constraint, ".id") ->
-        {:error, :id_already_exists}
-
-      true ->
-        {:error, {:constraint_failed, constraint}}
+    if duplicate_id_constraint?(constraint) do
+      {:error, :id_already_exists}
+    else
+      {:error, {:constraint_failed, constraint}}
     end
   end
 
@@ -191,12 +460,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     end
   end
 
+  defp duplicate_id_constraint?(constraint) do
+    constraint in [
+      "sympp_work_requests_id_unique_index",
+      "sympp_work_requests_id_index",
+      "sympp_work_request_questions_id_unique_index",
+      "sympp_work_request_clarification_questions_id_index",
+      "sympp_work_request_decision_logs_id_unique_index",
+      "sympp_work_request_decision_logs_id_index"
+    ] or
+      (String.contains?(constraint, "sympp_work_requests") and String.contains?(constraint, ".id")) or
+      (String.contains?(constraint, "sympp_work_request_clarification_questions") and
+         String.contains?(constraint, ".id")) or
+      (String.contains?(constraint, "sympp_work_request_decision_logs") and String.contains?(constraint, ".id"))
+  end
+
+  defp sequence_constraint?(constraint) do
+    constraint in [
+      "sympp_work_request_questions_work_request_sequence_unique_index",
+      "sympp_work_request_decision_logs_work_request_sequence_unique_index"
+    ] or
+      (String.contains?(constraint, "sympp_work_request_clarification_questions") and
+         String.contains?(constraint, "sequence")) or
+      (String.contains?(constraint, "sympp_work_request_decision_logs") and String.contains?(constraint, "sequence"))
+  end
+
   defp normalize_keys(attrs) when is_map(attrs) do
     Map.new(attrs, fn {key, value} -> {normalize_key(key), value} end)
   end
 
   defp normalize_key(key) when is_atom(key), do: Atom.to_string(key)
   defp normalize_key(key), do: to_string(key)
+
+  defp put_new_value(attrs, key, value) do
+    if Map.get(attrs, key) in [nil, ""] do
+      Map.put(attrs, key, value)
+    else
+      attrs
+    end
+  end
 
   @doc false
   @spec migrations_path() :: Path.t()
