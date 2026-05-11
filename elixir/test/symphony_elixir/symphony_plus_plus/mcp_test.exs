@@ -3780,6 +3780,95 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(child_status_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_worker"
   end
 
+  test "child worker key handoff bootstraps MCP through Windows Credential Manager", %{repo: repo} do
+    if windows?() do
+      {_anchor, architect_session} =
+        create_architect_session(repo, "SYMPP-P7-002-MINT-WINCRED-ANCHOR", [
+          "create:child_work_package",
+          "mint:child_worker_key",
+          "read:phase"
+        ])
+
+      claimed_by = "worker-wincred-bootstrap"
+      child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-WINCRED-CHILD")
+
+      mint_response =
+        mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+          "work_package_id" => child_id,
+          "template" => child_worker_template(%{"mode" => "windows-credential-manager", "claimed_by" => claimed_by})
+        })
+
+      worker_grant = get_in(mint_response, ["result", "structuredContent", "worker_grant"])
+      handoff = Map.fetch!(worker_grant, "secret_handoff")
+
+      assert worker_grant["secret_in_response"] == false
+      refute Map.has_key?(worker_grant, "secret")
+      refute Map.has_key?(worker_grant, "secret_returned_once")
+      assert handoff["mode"] == "windows-credential-manager"
+      assert is_binary(handoff["target"])
+      refute Map.has_key?(handoff, "claimed_by")
+      refute Map.has_key?(handoff, "run_mcp_command")
+
+      try do
+        input =
+          [
+            Jason.encode!(%{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()}),
+            Jason.encode!(%{
+              "jsonrpc" => "2.0",
+              "id" => "health",
+              "method" => "tools/call",
+              "params" => %{"name" => "sympp.health", "arguments" => %{}}
+            }),
+            Jason.encode!(%{
+              "jsonrpc" => "2.0",
+              "id" => "assignment",
+              "method" => "resources/read",
+              "params" => %{"uri" => "sympp://assignment/current"}
+            })
+          ]
+          |> Enum.join("\n")
+          |> Kernel.<>("\n")
+
+        {output, status} =
+          run_mcp_with_windows_credential_handoff(
+            handoff,
+            claimed_by,
+            current_main_database_path(repo),
+            input
+          )
+
+        assert status == 0, output
+        refute output =~ ~s("secret")
+        refute output =~ "SYMPP_WORK_KEY_SECRET"
+
+        responses = decode_json_objects_from_mixed_output(output)
+        response_summary = json_rpc_response_summary(responses)
+        health_response = Enum.find(responses, &(Map.get(&1, "id") == "health"))
+        assignment_response = Enum.find(responses, &(Map.get(&1, "id") == "assignment"))
+
+        assert health_response, inspect(response_summary)
+        assert assignment_response, inspect(response_summary)
+
+        assignment_text = get_in(assignment_response, ["result", "contents", Access.at(0), "text"])
+        assert is_binary(assignment_text), inspect(response_summary)
+        assignment = Jason.decode!(assignment_text)
+
+        assert get_in(health_response, ["result", "structuredContent", "status"]) == "ok"
+        assert get_in(health_response, ["result", "structuredContent", "ledger"]) == %{"reachable" => true}
+        assert assignment["work_package_id"] == child_id
+        assert assignment["claimed_by"] == claimed_by
+
+        assert {:ok, claimed_grant} = AccessGrantRepository.get(repo, worker_grant["id"])
+        assert claimed_grant.claimed_by == claimed_by
+        assert %DateTime{} = claimed_grant.claimed_at
+      after
+        cleanup_child_worker_handoff(handoff, claimed_by)
+      end
+    else
+      assert test_secret_handoff_mode() == "local-private-file"
+    end
+  end
+
   test "child worker key minting ignores normal worker grants when checking active child mint", %{repo: repo} do
     {_anchor, architect_session} =
       create_architect_session(repo, "SYMPP-P7-002-MINT-NORMAL-ANCHOR", [
@@ -10274,11 +10363,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     }
   end
 
-  defp test_secret_handoff_mode do
+  defp windows? do
     case :os.type() do
-      {:win32, _name} -> "windows-credential-manager"
-      _type -> "local-private-file"
+      {:win32, _name} -> true
+      _type -> false
     end
+  end
+
+  defp test_secret_handoff_mode do
+    if windows?(), do: "windows-credential-manager", else: "local-private-file"
   end
 
   defp test_handoff_store_dir do
@@ -10294,6 +10387,58 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       mode: test_secret_handoff_mode(),
       store_dir: test_handoff_store_dir()
     ]
+  end
+
+  defp current_main_database_path(repo) do
+    assert {:ok, %{rows: rows}} = SQL.query(repo, "PRAGMA database_list", [], log: false)
+
+    case Enum.find(rows, &main_database_row?/1) do
+      [_seq, "main", path] when is_binary(path) and path != "" -> path
+      row -> flunk("expected file-backed test ledger for external MCP bootstrap, got: #{inspect(row)}")
+    end
+  end
+
+  defp run_mcp_with_windows_credential_handoff(handoff, claimed_by, database_path, input) do
+    powershell = powershell_executable!()
+    input_path = Path.join(System.tmp_dir!(), "sympp-mcp-stdin-#{System.unique_integer([:positive])}.jsonl")
+    runner_path = Path.join(System.tmp_dir!(), "sympp-mcp-runner-#{System.unique_integer([:positive])}.cmd")
+
+    try do
+      File.write!(input_path, input)
+
+      File.write!(runner_path, """
+      @echo off
+      "%SYMPP_MCP_TEST_POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -File "%SYMPP_MCP_TEST_SCRIPT%" run-mcp -Target "%SYMPP_MCP_TEST_TARGET%" -Database "%SYMPP_MCP_TEST_DATABASE%" -ClaimedBy "%SYMPP_MCP_TEST_CLAIMED_BY%" -ElixirDir "%SYMPP_MCP_TEST_ELIXIR_DIR%" < "%SYMPP_MCP_TEST_STDIN_FILE%"
+      exit /b %ERRORLEVEL%
+      """)
+
+      System.cmd(
+        "cmd.exe",
+        ["/d", "/s", "/c", runner_path],
+        cd: test_repo_root(),
+        env: [
+          {"MIX_ENV", "test"},
+          {"MISE_NO_CONFIG", "1"},
+          {"SYMPP_MCP_TEST_STDIN_FILE", input_path},
+          {"SYMPP_MCP_TEST_POWERSHELL", powershell},
+          {"SYMPP_MCP_TEST_SCRIPT", Path.join(test_repo_root(), "scripts/sympp-worker-secret.ps1")},
+          {"SYMPP_MCP_TEST_TARGET", Map.fetch!(handoff, "target")},
+          {"SYMPP_MCP_TEST_DATABASE", database_path},
+          {"SYMPP_MCP_TEST_CLAIMED_BY", claimed_by},
+          {"SYMPP_MCP_TEST_ELIXIR_DIR", Path.join(test_repo_root(), "elixir")}
+        ],
+        stderr_to_stdout: true
+      )
+    after
+      File.rm(input_path)
+      File.rm(runner_path)
+    end
+  end
+
+  defp powershell_executable! do
+    powershell = Enum.find_value(["powershell.exe", "powershell", "pwsh"], &System.find_executable/1)
+    assert is_binary(powershell), "Windows Credential Manager MCP bootstrap test requires powershell.exe or pwsh"
+    powershell
   end
 
   defp cleanup_test_child_worker_handoffs(repo) do
@@ -10333,6 +10478,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           MCPHarness.session(worker_assignment, proof_hash: WorkKey.secret_hash(worker_secret))
 
         "windows-credential-manager" ->
+          # Windows Credential Manager retrieval is covered by the dedicated run-mcp bootstrap test.
           claim_child_worker_without_secret(repo, Map.fetch!(worker_grant, "id"), claimed_by)
       end
 
@@ -10468,5 +10614,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     output
     |> String.split("\n", trim: true)
     |> Enum.map(&Jason.decode!/1)
+  end
+
+  defp decode_json_objects_from_mixed_output(output) do
+    output
+    |> String.split(~r/\R/, trim: true)
+    |> Enum.map(&String.trim_leading/1)
+    |> Enum.filter(&String.starts_with?(&1, "{"))
+    |> Enum.map(&Jason.decode!/1)
+  end
+
+  defp json_rpc_response_summary(responses) do
+    Enum.map(responses, fn response ->
+      result = Map.get(response, "result", %{})
+
+      %{
+        id: Map.get(response, "id"),
+        error: get_in(response, ["error", "data", "reason"]) || get_in(response, ["error", "message"]),
+        result_keys: if(is_map(result), do: Map.keys(result), else: [])
+      }
+    end)
   end
 end
