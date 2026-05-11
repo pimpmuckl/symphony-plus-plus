@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
   @default_env_var "SYMPP_WORK_KEY_SECRET"
   @metadata_version 1
+  @metadata_lock_stale_seconds 300
   @valid_modes ["auto", "windows-credential-manager", "local-private-file"]
 
   @type error ::
@@ -659,23 +660,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   defp acquire_handoff_metadata_lock(path, opts) do
     attempts = Keyword.get(opts, :metadata_lock_attempts, 100)
     sleep_ms = Keyword.get(opts, :metadata_lock_sleep_ms, 5)
+    stale_seconds = Keyword.get(opts, :metadata_lock_stale_seconds, @metadata_lock_stale_seconds)
 
-    do_acquire_handoff_metadata_lock(path, attempts, sleep_ms)
+    do_acquire_handoff_metadata_lock(path, attempts, sleep_ms, stale_seconds)
   end
 
-  defp do_acquire_handoff_metadata_lock(_path, 0, _sleep_ms), do: {:error, {:handoff_metadata_write_failed, {:lock, :timeout}}}
+  defp do_acquire_handoff_metadata_lock(_path, 0, _sleep_ms, _stale_seconds),
+    do: {:error, {:handoff_metadata_write_failed, {:lock, :timeout}}}
 
-  defp do_acquire_handoff_metadata_lock(path, attempts, sleep_ms) do
+  defp do_acquire_handoff_metadata_lock(path, attempts, sleep_ms, stale_seconds) do
     case File.open(path, [:write, :exclusive, :binary]) do
       {:ok, file} ->
         {:ok, file}
 
       {:error, :eexist} ->
+        maybe_remove_stale_handoff_metadata_lock(path, stale_seconds)
         Process.sleep(sleep_ms)
-        do_acquire_handoff_metadata_lock(path, attempts - 1, sleep_ms)
+        do_acquire_handoff_metadata_lock(path, attempts - 1, sleep_ms, stale_seconds)
 
       {:error, reason} ->
         {:error, {:handoff_metadata_write_failed, {:lock, reason}}}
+    end
+  end
+
+  defp maybe_remove_stale_handoff_metadata_lock(path, stale_seconds) when stale_seconds <= 0 do
+    File.rm(path)
+  end
+
+  defp maybe_remove_stale_handoff_metadata_lock(path, stale_seconds) do
+    if handoff_metadata_lock_stale?(path, stale_seconds), do: File.rm(path), else: :ok
+  end
+
+  defp handoff_metadata_lock_stale?(path, stale_seconds) do
+    case File.stat(path, time: :posix) do
+      {:ok, %File.Stat{mtime: mtime}} when is_integer(mtime) ->
+        System.os_time(:second) - mtime >= stale_seconds
+
+      _other ->
+        false
     end
   end
 

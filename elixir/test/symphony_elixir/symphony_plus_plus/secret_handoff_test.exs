@@ -504,6 +504,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
+  test "recovers stale metadata locks without ignoring live lock contention" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-lock-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = worker_grant()
+    opts = [mode: "local-private-file", store_dir: store_dir, claimed_by: "worker-local-1", repo_root: @repo_root]
+    handoff_path = local_private_file_path(package, grant, opts)
+    metadata_path = managed_metadata_file(package, grant, opts)
+    lock_path = "#{metadata_path}.lock"
+    handoff = %{"mode" => "local-private-file", "path" => handoff_path}
+
+    try do
+      File.mkdir_p!(Path.dirname(handoff_path))
+      File.write!(handoff_path, "metadata fixture")
+      File.mkdir_p!(Path.dirname(metadata_path))
+      File.write!(lock_path, "active")
+
+      active_lock_opts = Keyword.merge(opts, metadata_lock_attempts: 1, metadata_lock_sleep_ms: 0, metadata_lock_stale_seconds: 3_600)
+
+      assert {:error, {:handoff_metadata_write_failed, {:lock, :timeout}}} =
+               SecretHandoff.store_worker_secret_metadata(package, grant, handoff, active_lock_opts)
+
+      assert File.exists?(lock_path)
+
+      stale_lock_opts = Keyword.merge(opts, metadata_lock_attempts: 2, metadata_lock_sleep_ms: 0, metadata_lock_stale_seconds: 0)
+
+      assert :ok = SecretHandoff.store_worker_secret_metadata(package, grant, handoff, stale_lock_opts)
+
+      refute File.exists?(lock_path)
+      assert File.exists?(metadata_path)
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
   test "concurrent conflicting metadata writes preserve one coordinate" do
     store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-concurrent-#{System.unique_integer([:positive])}")
     package = work_package()
