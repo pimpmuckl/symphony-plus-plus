@@ -23,6 +23,12 @@ The source-of-truth split is:
 
 ## Choose The Work Shape
 
+Use a `WorkRequest` before creating WorkPackages when the human has a product
+goal, target repo/project, branch guidance, constraints, and a desired dispatch
+shape but still needs architect clarification and slicing. The WorkRequest is a
+pre-WorkPackage intake contract, not current runtime machinery; see
+`13_WORKREQUEST_CONTRACT.md`.
+
 Use a standalone package for one bounded quick fix, hotfix, investigation, or
 review-only task. Standalone packages do not need a phase branch or architect.
 
@@ -80,6 +86,11 @@ An architect agent starts from `00_ARCHITECT_AGENT_HANDOFF.md`, the live
 WorkPackage ledger, and the operator-approved scope. It may create same-phase
 child packages, mint narrower child worker grants, inspect child progress, and
 approve ready children for phase integration when gates still pass.
+
+For v2 WorkRequest-led work, the architect first turns the clarified request
+into an architect plan and slice plan. Feature work defaults to one feature
+branch with smaller PRs targeting that feature branch. Narrow fixes may target
+`main` directly when the plan records why a feature branch would add no value.
 
 Architect tools record local Symphony++ state; `merge_child_into_phase` records
 a merge artifact and lifecycle transition but does not perform a live Git

@@ -6,6 +6,10 @@ Give the human overseer fast situational awareness without reading agent transcr
 
 ## Views
 
+The current dashboard is WorkPackage-focused. A future v2 intake view may show
+WorkRequests, clarification state, decision logs, architect plans, and slice
+plans, but this spec does not claim that intake surface exists today.
+
 ### Board view
 
 Columns:
