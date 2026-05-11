@@ -73,7 +73,8 @@ Managed handoff metadata records are non-secret deletion-coordinate metadata.
 They identify the work package, worker grant, mode, and managed private-store
 path or credential target needed for later cleanup; they are not worker secrets
 and must not contain work keys, bearer material, run commands, or claimed owner
-identity.
+identity. The same managed metadata may be used to clean superseded handoffs by
+work package and grant identity without exposing the stored secret.
 
 ## Worker capabilities
 
