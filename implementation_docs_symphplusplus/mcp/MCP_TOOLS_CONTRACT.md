@@ -75,7 +75,16 @@ grant cannot include architect capabilities, cannot include capabilities outside
 the child worker capability set, transactionally supersedes unclaimed active
 child-delegated worker grants for the same child, rejects claimed active
 child-delegated worker grants for that child, ignores unrelated normal worker
-grants, and cannot outlive the transaction-current architect grant.
+grants, and cannot outlive the transaction-current architect grant. The tool
+stores the newly minted child worker secret through the private SecretHandoff
+store and returns only redacted metadata under `worker_grant.secret_handoff`;
+`worker_grant.secret_in_response` is always `false`, and `secret` /
+`secret_returned_once` are not part of the response. `template.secret_handoff`
+may specify only `mode`, `store_dir`, and `claimed_by`; unexpected fields or
+blank values are rejected and do not alter worker-grant capabilities. After a
+successful replacement mint, superseded unclaimed child handoffs are cleaned
+from managed handoff metadata when possible; cleanup failure is reported as a
+warning in `superseded_child_handoff_cleanup` and does not fail the new mint.
 `read_child_status` requires both `read:child_progress` and
 `read:child_findings` because its summary includes progress, findings, and
 artifact counts. `approve_child_ready_state` revalidates the ready child against

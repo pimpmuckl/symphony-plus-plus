@@ -76,6 +76,13 @@ and must not contain work keys, bearer material, run commands, or claimed owner
 identity. The same managed metadata may be used to clean superseded handoffs by
 work package and grant identity without exposing the stored secret.
 
+Architect child worker minting follows the same private-handoff rule. The
+`mint_child_worker_key` MCP response returns `worker_grant.secret_handoff` and
+`worker_grant.secret_in_response: false`, never the child worker secret or a
+`secret_returned_once` marker. Optional handoff settings are limited to
+`template.secret_handoff.mode`, `store_dir`, and `claimed_by`; they do not
+change the child grant capability or expiry boundaries.
+
 ## Worker capabilities
 
 ```text
