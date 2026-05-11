@@ -410,10 +410,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard do
   defp payload_type?(%ProgressEvent{}, _type, _source_tool), do: false
 
   defp chronological_progress_events(progress_events) do
-    Enum.sort_by(progress_events, fn %ProgressEvent{created_at: created_at, sequence: sequence, id: id} ->
-      {created_at || DateTime.from_unix!(0), sequence || 0, id || ""}
-    end)
+    Enum.sort_by(progress_events, &progress_event_order_key/1)
   end
+
+  # Event sequence is the ledger's authoritative order. Unsequenced records can
+  # order only other unsequenced records; they cannot supersede sequenced ledger
+  # entries. Raw DateTime structs do not sort chronologically under Erlang term
+  # ordering.
+  defp progress_event_order_key(%ProgressEvent{sequence: sequence, created_at: created_at, id: id}) when is_integer(sequence) do
+    {1, sequence, progress_event_timestamp_sort_value(created_at), id || ""}
+  end
+
+  defp progress_event_order_key(%ProgressEvent{created_at: created_at, id: id}) do
+    {0, progress_event_timestamp_sort_value(created_at), 0, id || ""}
+  end
+
+  defp progress_event_timestamp_sort_value(%DateTime{} = created_at), do: DateTime.to_unix(created_at, :microsecond)
+  defp progress_event_timestamp_sort_value(_created_at), do: 0
 
   defp normalize_globs(globs) when is_list(globs) do
     globs
