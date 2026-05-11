@@ -59,17 +59,24 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
           <h1 class="sympp-board-title">Work package board</h1>
         </div>
 
-        <div class="sympp-board-summary">
-          <div>
-            <span class="sympp-board-count numeric"><%= @board.total_count %></span>
-            <span class="muted">total</span>
-          </div>
-          <div>
-            <span class="sympp-board-count numeric"><%= @board.visible_count %></span>
-            <span class="muted">shown</span>
-          </div>
-          <div :if={phase_progress(Map.get(@board, :phase_summary, %{}))}>
-            <span class="sympp-board-count numeric"><%= phase_progress(Map.get(@board, :phase_summary, %{})) %> children merged</span>
+        <div class="sympp-board-header-side">
+          <nav class="sympp-surface-nav" aria-label="Symphony++ surfaces">
+            <a class="active" href="board">Work packages</a>
+            <a href="work-requests">WorkRequests</a>
+          </nav>
+
+          <div class="sympp-board-summary">
+            <div>
+              <span class="sympp-board-count numeric"><%= @board.total_count %></span>
+              <span class="muted">total</span>
+            </div>
+            <div>
+              <span class="sympp-board-count numeric"><%= @board.visible_count %></span>
+              <span class="muted">shown</span>
+            </div>
+            <div :if={phase_progress(Map.get(@board, :phase_summary, %{}))}>
+              <span class="sympp-board-count numeric"><%= phase_progress(Map.get(@board, :phase_summary, %{})) %> children merged</span>
+            </div>
           </div>
         </div>
       </header>

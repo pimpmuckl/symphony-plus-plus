@@ -1,0 +1,328 @@
+defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
+  use ExUnit.Case, async: false
+
+  import Phoenix.ConnTest
+  import Phoenix.LiveViewTest
+
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
+  alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
+  alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
+  alias SymphonyElixir.WorkPackageFactory
+
+  @endpoint SymphonyElixirWeb.Endpoint
+  @dashboard_phase_id "phase-dashboard-work-request-live-test"
+
+  setup_all do
+    database_path = WorkPackageFactory.database_path()
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+
+    start_supervised!({Repo, database: database_path, pool_size: 5})
+    assert :ok = WorkPackageRepository.migrate(Repo)
+    Application.put_env(:symphony_elixir, :sympp_repo_database, database_path)
+    start_test_endpoint()
+
+    on_exit(fn ->
+      restore_database_env(original_database)
+      File.rm(database_path)
+    end)
+
+    :ok
+  end
+
+  setup do
+    Repo.delete_all(PlannedSlice)
+    Repo.delete_all(DecisionLogEntry)
+    Repo.delete_all(ClarificationQuestion)
+    Repo.delete_all(WorkRequest)
+    Repo.delete_all(AccessGrant)
+    Repo.delete_all(WorkPackage)
+    Repo.delete_all(Phase)
+    :ok
+  end
+
+  test "board provides a read-only navigation path to WorkRequests" do
+    anchor = create_anchor_package!()
+    secret = create_architect_grant_secret(Repo, anchor.id)
+
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/board")
+
+    assert html =~ "WorkRequests"
+    assert html =~ ~s(href="work-requests")
+    refute html =~ ~s(href="/sympp/work-requests")
+    refute html =~ ~r/<button[^>]*>\s*(Create|Dispatch|Approve|Plan)\s*<\/button>/
+  end
+
+  test "renders scoped WorkRequest list cards with counts and stable links" do
+    anchor = create_anchor_package!()
+
+    request =
+      create_work_request!(
+        id: "WR-LIVE-IN-SCOPE",
+        title: "Read WorkRequests",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    create_work_request!(id: "WR-LIVE-OUT", repo: "nextide/other", base_branch: anchor.base_branch)
+
+    assert {:ok, _open_question} = WorkRequestRepository.ask_question(Repo, request.id, question_attrs(id: "WRQ-LIVE-OPEN"))
+    assert {:ok, _decision} = WorkRequestRepository.record_decision(Repo, request.id, decision_attrs(id: "WRD-LIVE-1"))
+    assert {:ok, _slice} = WorkRequestRepository.add_planned_slice(Repo, request.id, planned_slice_attrs(id: "WRS-LIVE-1"))
+
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests")
+
+    assert html =~ "WorkRequests"
+    assert html =~ "WR-LIVE-IN-SCOPE"
+    assert html =~ "Read WorkRequests"
+    assert html =~ "ready for slicing"
+    assert html =~ "nextide/symphony-plus-plus / symphony-plus-plus/beta"
+    assert html =~ ~s(href="work-requests/WR-LIVE-IN-SCOPE")
+    assert html =~ "Open Q"
+    assert html =~ "Decisions"
+    assert html =~ "Slices"
+    refute html =~ "WR-LIVE-OUT"
+    refute html =~ ~s(method="post")
+    refute html =~ ~r/<button[^>]*>/
+  end
+
+  test "encodes WorkRequest ids in list links" do
+    anchor = create_anchor_package!()
+    raw_id = "WR/LIVE LINK?x=1"
+    create_work_request!(id: raw_id, repo: anchor.repo, base_branch: anchor.base_branch)
+
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests")
+
+    assert html =~ ~s(href="work-requests/#{path_segment(raw_id)}")
+    refute html =~ ~s(href="work-requests/#{raw_id}")
+    refute html =~ ~s(href="/sympp/work-requests/#{path_segment(raw_id)}")
+  end
+
+  test "renders WorkRequest detail in deterministic order without mutating controls" do
+    anchor = create_anchor_package!()
+
+    request =
+      create_work_request!(
+        id: "WR-LIVE-DETAIL",
+        title: "Detail WorkRequest",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        human_description: "Review the existing read model.",
+        constraints: %{"allowed_paths" => ["elixir/lib"], "requires_secret" => false}
+      )
+
+    assert {:ok, second_question} =
+             WorkRequestRepository.ask_question(Repo, request.id, question_attrs(id: "WRQ-LIVE-B", question: "Second?"))
+
+    assert {:ok, first_question} =
+             WorkRequestRepository.ask_question(Repo, request.id, question_attrs(id: "WRQ-LIVE-A", question: "First?"))
+
+    assert {:ok, second_decision} =
+             WorkRequestRepository.record_decision(Repo, request.id, decision_attrs(id: "WRD-LIVE-B", decision: "Second decision"))
+
+    assert {:ok, first_decision} =
+             WorkRequestRepository.record_decision(Repo, request.id, decision_attrs(id: "WRD-LIVE-A", decision: "First decision"))
+
+    assert {:ok, second_slice} =
+             WorkRequestRepository.add_planned_slice(Repo, request.id, planned_slice_attrs(id: "WRS-LIVE-B", title: "Second slice"))
+
+    assert {:ok, first_slice} =
+             WorkRequestRepository.add_planned_slice(Repo, request.id, planned_slice_attrs(id: "WRS-LIVE-A", title: "First slice"))
+
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{request.id}")
+
+    assert html =~ "Detail WorkRequest"
+    assert html =~ "Review the existing read model."
+    assert html =~ "Constraints"
+    assert html =~ "allowed_paths"
+    assert html =~ "Clarification questions"
+    assert html =~ "Decision log"
+    assert html =~ "Planned slices"
+    assert html =~ ~s(href="../board")
+    assert html =~ ~s(href="../work-requests")
+    assert appears_before?(html, second_question.id, first_question.id)
+    assert appears_before?(html, second_decision.id, first_decision.id)
+    assert appears_before?(html, second_slice.id, first_slice.id)
+    refute html =~ ~s(method="post")
+    refute html =~ ~r/<button[^>]*>/
+  end
+
+  test "detail hides out-of-scope WorkRequests as not found" do
+    anchor = create_anchor_package!()
+    other = create_work_request!(id: "WR-LIVE-HIDDEN", repo: "nextide/other", base_branch: anchor.base_branch)
+
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{other.id}")
+
+    assert html =~ "WorkRequest unavailable"
+    assert html =~ "not found in this board scope"
+    refute html =~ "WR-LIVE-HIDDEN"
+  end
+
+  test "requires board browser authorization" do
+    conn = get(build_conn(), "/sympp/work-requests")
+
+    assert response(conn, 401) =~ "Board access"
+  end
+
+  defp create_anchor_package! do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               Repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-LIVE-WR-ANCHOR",
+                 kind: "phase_child",
+                 status: "planning",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta"
+               )
+             )
+
+    package
+  end
+
+  defp create_work_request!(overrides) do
+    assert {:ok, work_request} = WorkRequestRepository.create(Repo, work_request_attrs(overrides))
+    work_request
+  end
+
+  defp work_request_attrs(overrides) do
+    defaults = %{
+      id: "WR-LIVE-#{System.unique_integer([:positive])}",
+      title: "Improve intake flow",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "main",
+      work_type: "feature",
+      human_description: "Record the human's desired outcome before slicing.",
+      constraints: %{"allowed_paths" => ["elixir/lib"], "requires_secret" => false},
+      desired_dispatch_shape: "single_package",
+      status: "draft"
+    }
+
+    Enum.into(overrides, defaults)
+  end
+
+  defp question_attrs(overrides) do
+    defaults = %{
+      category: "scope",
+      question: "Which branch should this target?",
+      why_needed: "The architect needs the target before slicing."
+    }
+
+    Enum.into(overrides, defaults)
+  end
+
+  defp decision_attrs(overrides) do
+    defaults = %{
+      source_type: "architect",
+      decision: "Keep this WorkRequest narrow.",
+      rationale: "The next slice owns broader orchestration.",
+      scope_impact: "No new runtime tools.",
+      created_by: "architect-1"
+    }
+
+    Enum.into(overrides, defaults)
+  end
+
+  defp planned_slice_attrs(overrides) do
+    defaults = %{
+      title: "Add WorkRequest dashboard UI",
+      goal: "Expose read-only browser views.",
+      work_package_kind: "mcp",
+      target_base_branch: "main",
+      branch_pattern: "agent/SYMPP-V2-WR-005/workrequest-read-ui",
+      owned_file_globs: ["elixir/lib/symphony_elixir_web/live/sympp_work_request_live.ex"],
+      forbidden_file_globs: ["elixir/lib/symphony_elixir/symphony_plus_plus/work_requests/**"],
+      acceptance_criteria: ["WorkRequest browser reads are scoped and redacted."],
+      validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/dashboard_work_request_live_test.exs"],
+      review_lanes: ["review_t1", "review_t2"],
+      stop_conditions: ["Stop before authoring or dispatch wiring."]
+    }
+
+    Enum.into(overrides, defaults)
+  end
+
+  defp create_architect_grant_secret(repo, work_package_id) do
+    phase_id = ensure_dashboard_phase(repo)
+    assign_existing_packages_to_phase(repo, phase_id)
+    work_key = WorkKey.generate()
+
+    assert {:ok, grant} =
+             AccessGrantRepository.create(repo, %{
+               work_package_id: work_package_id,
+               phase_id: phase_id,
+               display_key: work_key.display_key,
+               secret_hash: WorkKey.secret_hash(work_key.secret),
+               grant_role: "architect",
+               capabilities: ["read:phase"],
+               expires_at: DateTime.add(DateTime.utc_now(:microsecond), 3600, :second)
+             })
+
+    assert {:ok, _assignment} =
+             AccessGrantRepository.claim(repo, work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    assert grant.display_key == work_key.display_key
+    work_key.secret
+  end
+
+  defp ensure_dashboard_phase(repo) do
+    case PhaseRepository.get(repo, @dashboard_phase_id) do
+      {:ok, phase} ->
+        phase.id
+
+      {:error, :not_found} ->
+        assert {:ok, phase} = PhaseRepository.create(repo, %{id: @dashboard_phase_id, title: "Dashboard WorkRequest live test phase"})
+        phase.id
+    end
+  end
+
+  defp assign_existing_packages_to_phase(repo, phase_id) do
+    assert {:ok, packages} = WorkPackageRepository.list(repo)
+
+    Enum.each(packages, fn package ->
+      assert {:ok, _updated} = WorkPackageRepository.update(repo, package.id, %{phase_id: phase_id})
+    end)
+  end
+
+  defp board_session_conn(secret) do
+    conn = post(build_conn(), "/sympp/board/session", %{"work_key" => secret})
+    assert redirected_to(conn) == "/sympp/board"
+    recycle(conn)
+  end
+
+  defp appears_before?(html, left, right), do: :binary.match(html, left) < :binary.match(html, right)
+
+  defp path_segment(value) do
+    case value do
+      "." -> "%2E"
+      ".." -> "%2E%2E"
+      value -> URI.encode(value, &URI.char_unreserved?/1)
+    end
+  end
+
+  defp start_test_endpoint do
+    endpoint_config =
+      :symphony_elixir
+      |> Application.get_env(SymphonyElixirWeb.Endpoint, [])
+      |> Keyword.merge(server: false, secret_key_base: String.duplicate("s", 64), sympp_repo: Repo)
+
+    Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
+    start_supervised!({SymphonyElixirWeb.Endpoint, []})
+  end
+
+  defp restore_database_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_repo_database)
+  defp restore_database_env(database), do: Application.put_env(:symphony_elixir, :sympp_repo_database, database)
+end
