@@ -4,6 +4,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
   alias Ecto.Changeset
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
   import Ecto.Query, only: [from: 2]
@@ -18,6 +19,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     "sequence",
     "status",
     "updated_at"
+  ]
+  @planned_slice_create_ignored_attrs [
+    "created_at",
+    "dispatched_at",
+    "inserted_at",
+    "sequence",
+    "updated_at",
+    "work_package_id"
   ]
 
   @type repo :: module()
@@ -155,6 +164,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
       |> Map.put("work_request_id", work_request_id)
 
     insert_with_sequence(repo, attrs, &next_decision_sequence/2, &DecisionLogEntry.create_changeset/1)
+  end
+
+  @spec add_planned_slice(repo(), String.t(), map()) :: {:ok, PlannedSlice.t()} | {:error, error()}
+  def add_planned_slice(repo, work_request_id, attrs)
+      when is_atom(repo) and is_binary(work_request_id) and is_map(attrs) do
+    attrs =
+      attrs
+      |> normalize_keys()
+      |> Map.drop(@planned_slice_create_ignored_attrs)
+      |> Map.put("work_request_id", work_request_id)
+
+    insert_with_sequence(repo, attrs, &next_planned_slice_sequence/2, &PlannedSlice.create_changeset/1)
+  end
+
+  @spec list_planned_slices(repo(), String.t()) :: {:ok, [PlannedSlice.t()]} | {:error, error()}
+  def list_planned_slices(repo, work_request_id) when is_atom(repo) and is_binary(work_request_id) do
+    planned_slices =
+      repo.all(
+        from(planned_slice in PlannedSlice,
+          where: planned_slice.work_request_id == ^work_request_id,
+          order_by: [asc: planned_slice.sequence, asc: planned_slice.id]
+        )
+      )
+
+    {:ok, planned_slices}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec list_decisions(repo(), String.t()) :: {:ok, [DecisionLogEntry.t()]} | {:error, error()}
@@ -325,6 +361,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     next_sequence(repo, DecisionLogEntry, work_request_id)
   end
 
+  defp next_planned_slice_sequence(repo, work_request_id) do
+    next_sequence(repo, PlannedSlice, work_request_id)
+  end
+
   defp next_sequence(repo, schema, work_request_id) do
     max_sequence =
       repo.one(
@@ -467,22 +507,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
       "sympp_work_request_questions_id_unique_index",
       "sympp_work_request_clarification_questions_id_index",
       "sympp_work_request_decision_logs_id_unique_index",
-      "sympp_work_request_decision_logs_id_index"
+      "sympp_work_request_decision_logs_id_index",
+      "sympp_work_request_planned_slices_id_unique_index",
+      "sympp_work_request_planned_slices_id_index"
     ] or
       (String.contains?(constraint, "sympp_work_requests") and String.contains?(constraint, ".id")) or
       (String.contains?(constraint, "sympp_work_request_clarification_questions") and
          String.contains?(constraint, ".id")) or
-      (String.contains?(constraint, "sympp_work_request_decision_logs") and String.contains?(constraint, ".id"))
+      (String.contains?(constraint, "sympp_work_request_decision_logs") and String.contains?(constraint, ".id")) or
+      (String.contains?(constraint, "sympp_work_request_planned_slices") and String.contains?(constraint, ".id"))
   end
 
   defp sequence_constraint?(constraint) do
     constraint in [
       "sympp_work_request_questions_work_request_sequence_unique_index",
-      "sympp_work_request_decision_logs_work_request_sequence_unique_index"
+      "sympp_work_request_decision_logs_work_request_sequence_unique_index",
+      "sympp_work_request_planned_slices_work_request_sequence_unique_index"
     ] or
       (String.contains?(constraint, "sympp_work_request_clarification_questions") and
          String.contains?(constraint, "sequence")) or
-      (String.contains?(constraint, "sympp_work_request_decision_logs") and String.contains?(constraint, "sequence"))
+      (String.contains?(constraint, "sympp_work_request_decision_logs") and String.contains?(constraint, "sequence")) or
+      (String.contains?(constraint, "sympp_work_request_planned_slices") and String.contains?(constraint, "sequence"))
   end
 
   defp normalize_keys(attrs) when is_map(attrs) do
