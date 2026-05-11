@@ -3721,15 +3721,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert worker_grant["secret_in_response"] == false
     assert worker_grant["secret_handoff"]["status"] == "stored"
     assert worker_grant["secret_handoff"]["secret_in_stdout"] == false
-    refute Map.has_key?(worker_grant["secret_handoff"], "claimed_by")
-    refute Map.has_key?(worker_grant["secret_handoff"], "run_mcp_command")
+    assert worker_grant["secret_handoff"]["claimed_by"] == "sympp-child-worker:#{child_id}"
+    assert is_binary(worker_grant["secret_handoff"]["run_mcp_command"])
+    assert worker_grant["secret_handoff"]["run_mcp_command"] =~ "sympp-child-worker:#{child_id}"
+    assert handoff_secret_absent?(worker_grant["secret_handoff"], worker_grant["secret_handoff"]["run_mcp_command"])
     refute Map.has_key?(worker_grant["secret_handoff"], "tradeoff")
 
     content_text = get_in(mint_response, ["result", "content", Access.at(0), "text"])
     refute content_text =~ ~s("secret":)
     refute content_text =~ "secret_returned_once"
-    refute content_text =~ "run_mcp_command"
-    refute content_text =~ "sympp-child-worker:#{child_id}"
+    assert content_text =~ "run_mcp_command"
+    assert content_text =~ "sympp-child-worker:#{child_id}"
+    assert handoff_secret_absent?(worker_grant["secret_handoff"], content_text)
 
     assert [metadata_path] = Path.wildcard(Path.join([test_handoff_store_dir(), "metadata", "handoff-*.json"]))
     assert {:ok, metadata} = metadata_path |> File.read!() |> Jason.decode()
@@ -3738,7 +3741,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute Map.has_key?(metadata, "claimed_by")
     refute Map.has_key?(metadata, "run_mcp_command")
 
-    worker_session = claim_child_worker_from_mint_response(repo, mint_response, "worker-1")
+    worker_session = claim_child_worker_from_mint_response(repo, mint_response, worker_grant["secret_handoff"]["claimed_by"])
 
     assignment_response = mcp_tool(repo, worker_session, "get_current_assignment", %{})
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == child_id
@@ -3789,25 +3792,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "read:phase"
         ])
 
-      claimed_by = "worker-wincred-bootstrap"
       child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-WINCRED-CHILD")
 
       mint_response =
         mcp_tool(repo, architect_session, "mint_child_worker_key", %{
           "work_package_id" => child_id,
-          "template" => child_worker_template(%{"mode" => "windows-credential-manager", "claimed_by" => claimed_by})
+          "template" => child_worker_template(%{"mode" => "windows-credential-manager"})
         })
 
       worker_grant = get_in(mint_response, ["result", "structuredContent", "worker_grant"])
       handoff = Map.fetch!(worker_grant, "secret_handoff")
+      claimed_by = Map.fetch!(handoff, "claimed_by")
 
       assert worker_grant["secret_in_response"] == false
       refute Map.has_key?(worker_grant, "secret")
       refute Map.has_key?(worker_grant, "secret_returned_once")
       assert handoff["mode"] == "windows-credential-manager"
       assert is_binary(handoff["target"])
-      refute Map.has_key?(handoff, "claimed_by")
-      refute Map.has_key?(handoff, "run_mcp_command")
+      assert claimed_by == "sympp-child-worker:#{child_id}"
+      assert is_binary(handoff["run_mcp_command"])
+      assert handoff["run_mcp_command"] =~ handoff["target"]
+      assert handoff["run_mcp_command"] =~ claimed_by
 
       try do
         input =
@@ -10503,6 +10508,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   defp cleanup_child_worker_handoff(handoff, claimed_by) do
     assert :ok = SecretHandoff.delete_worker_secret(handoff, test_handoff_opts(claimed_by))
   end
+
+  defp handoff_secret_absent?(%{"mode" => "local-private-file", "path" => path}, text) when is_binary(text) do
+    case File.read(path) do
+      {:ok, secret} when is_binary(secret) and secret != "" -> not String.contains?(text, secret)
+      _other -> true
+    end
+  end
+
+  defp handoff_secret_absent?(_handoff, text), do: is_binary(text)
 
   defp renew_phase_architect_session(repo, anchor, capabilities, claimed_by \\ "architect-1") do
     assert {:ok, minted} =

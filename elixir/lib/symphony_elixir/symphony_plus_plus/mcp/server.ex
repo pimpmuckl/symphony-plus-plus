@@ -86,11 +86,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @child_worker_template_keys ["capabilities", "expires_at", "secret_handoff"]
   @child_worker_secret_handoff_keys ["claimed_by", "mode", "store_dir"]
   @child_worker_secret_handoff_payload_keys [
+    :claimed_by,
     :claimed_by_required,
     :display_key,
     :env_var,
     :mode,
     :path,
+    :run_mcp_command,
     :secret_in_stdout,
     :status,
     :store,
