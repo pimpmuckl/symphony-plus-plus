@@ -130,6 +130,8 @@ generic `append_progress` payloads are not recommendation evidence.
 create_child_work_package(package)
 mint_child_worker_key(work_package_id, template)
 revoke_child_worker_key(grant_id, reason)
+list_work_requests(status?)
+read_work_request(work_request_id)
 read_child_status(work_package_id)
 read_phase_board(phase_id)
 request_child_replan(work_package_id, reason)
@@ -153,6 +155,17 @@ reconnect, but they still cannot use worker package read/write tools.
 Lifecycle capabilities such as `architect:lifecycle.transition` do not imply
 MCP architect tool capabilities; the explicit MCP capability strings listed in
 the permission model are required.
+
+`list_work_requests(status?)` and `read_work_request(work_request_id)` are
+read-only architect tools gated by `read:work_request`. They derive repo and
+base-branch scope from the live architect assignment and do not accept caller
+supplied repo or base-branch arguments. `list_work_requests` accepts only an
+optional WorkRequest `status` filter. `read_work_request` returns the scoped
+WorkRequest plus clarification questions, decision log entries, planned slices,
+and status/count summaries. Missing and out-of-scope WorkRequests fail closed
+as not found without leaking sibling request content. Returned payloads are
+JSON-safe and redact secret-looking values; they do not include work-key
+secrets, private handoff payloads, tokens, or worker secret material.
 
 Phase-dependent architect tools revalidate the grant's explicit phase scope plus
 the anchor repo/base-branch scope frozen when the phase architect grant was

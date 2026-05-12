@@ -26,6 +26,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
   alias SymphonyElixir.WorkPackageFactory
 
   @architect_phase_id "phase-mcp-architect-test"
@@ -233,6 +235,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     reset_handle_state_store()
     File.rm_rf(test_handoff_store_dir())
     repo.delete_all(AccessGrant)
+    repo.delete_all(WorkRequest)
     repo.delete_all(WorkPackage)
     repo.delete_all(Phase)
 
@@ -856,6 +859,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              create_architect_work_key(repo, package.id, [
                "read:child_progress",
                "read:child_findings",
+               "read:work_request",
                "mint:child_worker_key",
                "read:phase",
                "approve:child_ready_state",
@@ -879,6 +883,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute Map.has_key?(tools_by_name, "claim_work_key")
     refute Map.has_key?(tools_by_name, "create_child_work_package")
     refute Map.has_key?(tools_by_name, "revoke_child_worker_key")
+    assert get_in(tools_by_name, ["list_work_requests", "inputSchema", "required"]) == []
+    assert get_in(tools_by_name, ["list_work_requests", "inputSchema", "properties", "status", "type"]) == "string"
+    assert get_in(tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
+    assert get_in(tools_by_name, ["read_work_request", "inputSchema", "properties", "work_request_id", "type"]) == "string"
     assert get_in(tools_by_name, ["read_child_status", "inputSchema", "required"]) == ["work_package_id"]
     assert get_in(tools_by_name, ["read_child_status", "inputSchema", "properties", "work_package_id", "type"]) == "string"
     assert get_in(tools_by_name, ["read_phase_board", "inputSchema", "required"]) == ["phase_id"]
@@ -3076,6 +3084,169 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(sibling_response, ["error", "code"]) == -32_003
     assert get_in(sibling_response, ["error", "data", "reason"]) == "outside_session_scope"
+  end
+
+  test "architect WorkRequest read tools are scoped, filtered, redacted, and read-only", %{repo: repo} do
+    {anchor, session} = create_architect_session(repo, "SYMPP-ARCHITECT-WR-READ", ["read:work_request"])
+
+    in_scope =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-IN",
+        title: "Read WorkRequests",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing",
+        human_description: "Use Bearer raw-secret-value for validation",
+        constraints: %{"safe" => "visible", "token" => "raw-secret-value"}
+      )
+
+    _other_repo =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-OTHER-REPO",
+        repo: "nextide/other",
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    other_branch =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-OTHER-BRANCH",
+        repo: anchor.repo,
+        base_branch: "main",
+        status: "ready_for_slicing"
+      )
+
+    _other_status =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-OTHER-STATUS",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "draft"
+      )
+
+    assert {:ok, _open_question} =
+             WorkRequestRepository.ask_question(repo, in_scope.id, work_request_question_attrs(id: "WRQ-MCP-WR-OPEN"))
+
+    assert {:ok, answered_question} =
+             WorkRequestRepository.ask_question(repo, in_scope.id, work_request_question_attrs(id: "WRQ-MCP-WR-ANSWERED"))
+
+    assert {:ok, _answered} =
+             WorkRequestRepository.answer_question(repo, answered_question.id, "open", %{
+               answer: "Bearer raw-secret-value",
+               answered_by: "operator-1"
+             })
+
+    assert {:ok, closed_question} =
+             WorkRequestRepository.ask_question(repo, in_scope.id, work_request_question_attrs(id: "WRQ-MCP-WR-CLOSED"))
+
+    assert {:ok, _closed} = WorkRequestRepository.close_question(repo, closed_question.id, "open")
+
+    assert {:ok, _decision} =
+             WorkRequestRepository.record_decision(
+               repo,
+               in_scope.id,
+               work_request_decision_attrs(id: "WRD-MCP-WR-1", decision: "Use https://example.test/path?sig=raw-secret-value")
+             )
+
+    assert {:ok, _planned} = WorkRequestRepository.add_planned_slice(repo, in_scope.id, work_request_planned_slice_attrs(id: "WRS-MCP-WR-PLANNED"))
+    assert {:ok, approved} = WorkRequestRepository.add_planned_slice(repo, in_scope.id, work_request_planned_slice_attrs(id: "WRS-MCP-WR-APPROVED"))
+    assert {:ok, skipped} = WorkRequestRepository.add_planned_slice(repo, in_scope.id, work_request_planned_slice_attrs(id: "WRS-MCP-WR-SKIPPED"))
+    repo.update!(Ecto.Changeset.change(approved, status: "approved"))
+    repo.update!(Ecto.Changeset.change(skipped, status: "skipped"))
+
+    counts_before = {
+      repo.aggregate(WorkRequest, :count),
+      repo.aggregate(WorkPackage, :count),
+      repo.aggregate(AccessGrant, :count),
+      repo.aggregate(ProgressEvent, :count),
+      repo.aggregate(Artifact, :count)
+    }
+
+    list_response = mcp_tool(repo, session, "list_work_requests", %{"status" => "ready_for_slicing"})
+    list_payload = get_in(list_response, ["result", "structuredContent"])
+
+    assert list_payload["scope"] == %{"repo" => anchor.repo, "base_branch" => anchor.base_branch}
+    assert list_payload["filters"] == %{"status" => "ready_for_slicing"}
+    assert list_payload["total_count"] == 1
+
+    assert [
+             %{
+               "id" => "WR-MCP-WR-IN",
+               "title" => "Read WorkRequests",
+               "open_question_count" => 1,
+               "answered_question_count" => 1,
+               "closed_question_count" => 1,
+               "decision_count" => 1,
+               "planned_slice_count" => 1,
+               "approved_slice_count" => 1,
+               "skipped_slice_count" => 1
+             }
+           ] = list_payload["work_requests"]
+
+    read_response = mcp_tool(repo, session, "read_work_request", %{"work_request_id" => in_scope.id})
+    read_payload = get_in(read_response, ["result", "structuredContent"])
+
+    assert read_payload["work_request"]["id"] == in_scope.id
+    assert read_payload["work_request"]["constraints"]["safe"] == "visible"
+    assert read_payload["work_request"]["constraints"]["token"] == "[REDACTED]"
+    assert Enum.map(read_payload["clarification_questions"], & &1["id"]) == ["WRQ-MCP-WR-OPEN", "WRQ-MCP-WR-ANSWERED", "WRQ-MCP-WR-CLOSED"]
+    assert Enum.at(read_payload["clarification_questions"], 1)["answer"] == "[REDACTED]"
+    assert Enum.map(read_payload["decision_log_entries"], & &1["id"]) == ["WRD-MCP-WR-1"]
+    assert Enum.at(read_payload["decision_log_entries"], 0)["decision"] =~ "[REDACTED]"
+    assert Enum.map(read_payload["planned_slices"], & &1["id"]) == ["WRS-MCP-WR-PLANNED", "WRS-MCP-WR-APPROVED", "WRS-MCP-WR-SKIPPED"]
+
+    assert read_payload["summary"] == %{
+             "open_question_count" => 1,
+             "answered_question_count" => 1,
+             "closed_question_count" => 1,
+             "decision_count" => 1,
+             "planned_slice_count" => 1,
+             "approved_slice_count" => 1,
+             "dispatched_slice_count" => 0,
+             "skipped_slice_count" => 1
+           }
+
+    refute inspect(list_response) =~ "WR-MCP-WR-OTHER-REPO"
+    refute inspect(read_response) =~ "raw-secret-value"
+
+    out_of_scope_response = mcp_tool(repo, session, "read_work_request", %{"work_request_id" => other_branch.id})
+
+    assert get_in(out_of_scope_response, ["error", "code"]) == -32_004
+    assert get_in(out_of_scope_response, ["error", "data", "reason"]) == "not_found"
+    refute inspect(out_of_scope_response) =~ other_branch.id
+
+    assert {
+             repo.aggregate(WorkRequest, :count),
+             repo.aggregate(WorkPackage, :count),
+             repo.aggregate(AccessGrant, :count),
+             repo.aggregate(ProgressEvent, :count),
+             repo.aggregate(Artifact, :count)
+           } == counts_before
+  end
+
+  test "WorkRequest MCP reads require dedicated capability and fixed scope arguments", %{repo: repo} do
+    {_package, insufficient_session} = create_architect_session(repo, "SYMPP-ARCHITECT-WR-AUTHZ", ["read:phase"])
+
+    list_denied = mcp_tool(repo, insufficient_session, "list_work_requests", %{})
+    assert get_in(list_denied, ["error", "code"]) == -32_001
+    assert get_in(list_denied, ["error", "data", "reason"]) == "insufficient_capability"
+
+    read_denied = mcp_tool(repo, insufficient_session, "read_work_request", %{"work_request_id" => "WR-MCP-WR-MISSING"})
+    assert get_in(read_denied, ["error", "code"]) == -32_001
+    assert get_in(read_denied, ["error", "data", "reason"]) == "insufficient_capability"
+
+    {_package, session} = create_architect_session(repo, "SYMPP-ARCHITECT-WR-STRICT", ["read:work_request"])
+
+    repo_argument_response = mcp_tool(repo, session, "list_work_requests", %{"repo" => "nextide/other"})
+    assert get_in(repo_argument_response, ["error", "data", "reason"]) == "unexpected_argument"
+    assert get_in(repo_argument_response, ["error", "data", "arguments"]) == ["repo"]
+
+    branch_argument_response = mcp_tool(repo, session, "list_work_requests", %{"base_branch" => "other"})
+    assert get_in(branch_argument_response, ["error", "data", "reason"]) == "unexpected_argument"
+    assert get_in(branch_argument_response, ["error", "data", "arguments"]) == ["base_branch"]
+
+    invalid_status_response = mcp_tool(repo, session, "list_work_requests", %{"status" => "merged"})
+    assert get_in(invalid_status_response, ["error", "data", "reason"]) == "invalid_status"
   end
 
   test "phase architect creates child work package inside scoped phase", %{repo: repo} do
@@ -10401,6 +10572,67 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   defp review_suite_artifact_id(work_package_id, head_sha) do
     material = [work_package_id, head_sha, "review-suite-result.json"] |> Enum.join(":")
     "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
+  end
+
+  defp create_work_request!(repo, overrides) do
+    assert {:ok, work_request} = WorkRequestRepository.create(repo, work_request_attrs(overrides))
+    work_request
+  end
+
+  defp work_request_attrs(overrides) do
+    defaults = %{
+      id: "WR-MCP-#{System.unique_integer([:positive])}",
+      title: "Improve WorkRequest intake",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "main",
+      work_type: "feature",
+      human_description: "Record the human outcome before slicing.",
+      constraints: %{"allowed_paths" => ["elixir/lib"], "requires_secret" => false},
+      desired_dispatch_shape: "single_package",
+      status: "draft"
+    }
+
+    Enum.into(overrides, defaults)
+  end
+
+  defp work_request_question_attrs(overrides) do
+    defaults = %{
+      category: "scope",
+      question: "Which branch should this target?",
+      why_needed: "The architect needs the target before slicing."
+    }
+
+    Enum.into(overrides, defaults)
+  end
+
+  defp work_request_decision_attrs(overrides) do
+    defaults = %{
+      source_type: "architect",
+      decision: "Keep this WorkRequest narrow.",
+      rationale: "The next slice owns broader orchestration.",
+      scope_impact: "No new runtime tools.",
+      created_by: "architect-1"
+    }
+
+    Enum.into(overrides, defaults)
+  end
+
+  defp work_request_planned_slice_attrs(overrides) do
+    defaults = %{
+      title: "Add WorkRequest MCP reads",
+      goal: "Expose scoped read-only WorkRequest MCP payloads.",
+      work_package_kind: "mcp",
+      target_base_branch: "symphony-plus-plus/beta",
+      branch_pattern: "agent/SYMPP-V2-WR-013/workrequest-read-mcp-tools",
+      owned_file_globs: ["elixir/lib/symphony_elixir/symphony_plus_plus/mcp/server.ex"],
+      forbidden_file_globs: ["elixir/lib/symphony_elixir_web/live/**"],
+      acceptance_criteria: ["WorkRequest MCP reads are scoped and redacted."],
+      validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs"],
+      review_lanes: ["review_t1", "review_t2"],
+      stop_conditions: ["Stop before mutation or dispatch wiring."]
+    }
+
+    Enum.into(overrides, defaults)
   end
 
   defp create_phase_architect_session(repo, work_package_id, capabilities, overrides \\ []) do

@@ -30,6 +30,8 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | create_child_work_package | Create a `phase_child` work package inside the architect grant's current phase; child repo, phase, parent, and base branch are constrained to the architect phase anchor. |
 | mint_child_worker_key | Mint a child-scoped worker grant for a same-phase `phase_child` package; worker capabilities are limited to the child worker set and expiry cannot exceed the architect grant. |
 | revoke_child_worker_key | Phase 7 stub for revoking child worker keys; returns `phase7_not_implemented` after architect authorization. |
+| list_work_requests | List WorkRequests scoped to the architect assignment repo/base branch. Accepts only optional `status`. |
+| read_work_request | Read one scoped WorkRequest with clarification questions, decision log entries, planned slices, and count/status summaries. |
 | read_child_status | Read the architect grant's scoped anchor package status, or a same-phase child work-package status when the architect grant has child read capabilities. |
 | read_phase_board | Read the architect grant's scoped phase board, filtered to the frozen repo/base branch for explicit phase grants, including merged-child phase progress. |
 | request_child_replan | Phase 7 stub for child replan requests; returns `phase7_not_implemented` after architect authorization. |
@@ -91,6 +93,14 @@ there. `template.secret_handoff` may specify only `mode`, `store_dir`, and
 worker-grant capabilities. `revoke_child_worker_key` remains a not-implemented
 Phase 7 stub in this package; deleting persisted child handoffs on revoke
 belongs with the future child-revocation implementation.
+`list_work_requests` and `read_work_request` require `read:work_request`, are
+read-only, and derive their repo/base-branch scope from the live architect
+assignment. They do not accept caller-supplied repo or base-branch arguments.
+`list_work_requests` accepts only optional `status`; `read_work_request`
+requires `work_request_id`. Missing or out-of-scope WorkRequests fail closed as
+not found without leaking sibling content. Payloads are JSON-safe and redacted:
+they exclude work-key secrets, tokens, private handoff payloads, and worker
+secret material.
 `read_child_status` requires both `read:child_progress` and
 `read:child_findings` because its summary includes progress, findings, and
 artifact counts. `approve_child_ready_state` revalidates the ready child against
