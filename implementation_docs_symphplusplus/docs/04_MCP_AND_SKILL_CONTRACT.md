@@ -132,6 +132,11 @@ mint_child_worker_key(work_package_id, template)
 revoke_child_worker_key(grant_id, reason)
 list_work_requests(status?)
 read_work_request(work_request_id)
+set_work_request_status(work_request_id, current_status, next_status)
+ask_work_request_question(work_request_id, category, question, why_needed, asked_by_agent_run_id?)
+answer_work_request_question(work_request_id, question_id, current_status, answer, answered_by?)
+close_work_request_question(work_request_id, question_id, current_status)
+record_work_request_decision(work_request_id, source_type, decision, rationale, scope_impact, created_by, source_id?)
 read_child_status(work_package_id)
 read_phase_board(phase_id)
 request_child_replan(work_package_id, reason)
@@ -154,9 +159,10 @@ surface. Architect sessions may call `get_current_assignment()` and read
 reconnect, but they still cannot use worker package read/write tools.
 Lifecycle capabilities such as `architect:lifecycle.transition` do not imply
 MCP architect tool capabilities; the explicit MCP capability strings listed in
-the permission model are required. WorkRequest read tools are advertised only
-for explicit phase-scoped architect grants with usable frozen repo/base-branch
-scope; legacy null `phase_id` architect grants do not discover those tools.
+the permission model are required. WorkRequest read and mutation tools are
+advertised only for explicit phase-scoped architect grants with usable frozen
+repo/base-branch scope and the specific WorkRequest capability; legacy null
+`phase_id` architect grants do not discover those tools.
 
 `list_work_requests(status?)` and `read_work_request(work_request_id)` are
 read-only architect tools gated by `read:work_request`. They require an
@@ -171,6 +177,26 @@ Missing and out-of-scope WorkRequests fail closed as not found without leaking
 sibling request content. Returned payloads are JSON-safe and redact
 secret-looking values; they do not include work-key secrets, private handoff
 payloads, tokens, or worker secret material.
+
+`set_work_request_status`, `ask_work_request_question`,
+`answer_work_request_question`, `close_work_request_question`, and
+`record_work_request_decision` are architect mutation tools gated by
+`write:work_request`. They use the same explicit phase-scoped frozen
+repo/base-branch scope model as the read tools and require `work_request_id` on
+every call before mutating. Out-of-scope WorkRequests fail closed as not found
+or scoped denial without leaking sibling content. `answer_work_request_question`
+and `close_work_request_question` also verify that `question_id` belongs to the
+scoped WorkRequest before calling the mutation service; sibling question ids
+fail closed as not found. The tools return JSON-safe redacted payloads for the
+updated clarification question or decision entry, plus a minimal parent
+WorkRequest status projection, scope, and status metadata. Mutation responses
+do not expose the full `read_work_request` detail shape. They expose the
+existing WorkRequest service primitives: status movement is explicit through
+`set_work_request_status`, and question/decision tools do not mirror
+dashboard-only helper guards, auto-transition the parent request, or introduce
+a new lifecycle/status transition matrix. They do not implement planned-slice
+authoring, approval, dispatch, WorkPackage creation, SecretHandoff, dashboard,
+or Linear mutation.
 
 Phase-dependent architect tools revalidate the grant's explicit phase scope plus
 the anchor repo/base-branch scope frozen when the phase architect grant was
