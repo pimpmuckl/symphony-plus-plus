@@ -37,6 +37,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestScopeConstraintsTest do
              )
   end
 
+  test "unwraps map-backed WorkRequest constraints before validating owned globs" do
+    assert :ok =
+             ScopeConstraints.validate_owned_file_globs(
+               %{"constraints" => %{"allowed_paths" => ["elixir/lib"]}},
+               ["elixir/lib/foo.ex"]
+             )
+
+    assert {:error, [{:outside_allowed_paths, "apps/web/file.ex", ["elixir/lib"]}]} =
+             ScopeConstraints.validate_owned_file_globs(
+               %{constraints: %{"allowed_paths" => ["elixir/lib"]}},
+               ["apps/web/file.ex"]
+             )
+
+    assert {:error, [{:invalid_constraints, :constraints}]} =
+             ScopeConstraints.validate_owned_file_globs(%{"constraints" => "not a map"}, ["elixir/lib/foo.ex"])
+  end
+
   test "rejects malformed constraint lists" do
     assert {:error, [{:invalid_constraints, :allowed_paths}]} =
              ScopeConstraints.validate_owned_file_globs(%{"allowed_paths" => "elixir/lib"}, ["elixir/lib/**/*.ex"])

@@ -46,6 +46,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints do
     validate_owned_file_globs(constraints, planned_slice.owned_file_globs || [])
   end
 
+  def validate_owned_file_globs(%{constraints: constraints}, owned_file_globs) do
+    validate_owned_file_globs(constraints, owned_file_globs)
+  end
+
+  def validate_owned_file_globs(%{"constraints" => constraints}, owned_file_globs) do
+    validate_owned_file_globs(constraints, owned_file_globs)
+  end
+
   def validate_owned_file_globs(constraints, owned_file_globs) when is_map(constraints) do
     with {:ok, allowed_paths} <- constraint_entries(constraints, :allowed_paths),
          {:ok, forbidden_paths} <- constraint_entries(constraints, :forbidden_paths),
