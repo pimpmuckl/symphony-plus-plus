@@ -215,33 +215,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints do
   end
 
   defp owned_under_allowed?(allowed_pattern, owned_pattern) do
-    path_subset?(owned_pattern.segments, allowed_pattern.segments)
+    path_subset?(owned_pattern.segments, allowed_pattern.segments, descendant_scope?(allowed_pattern.segments))
   end
 
-  defp path_subset?(_owned_segments, []), do: true
-  defp path_subset?(_owned_segments, [:globstar]), do: true
-
-  defp path_subset?([], [:globstar | allowed_segments]), do: path_subset?([], allowed_segments)
-  defp path_subset?([], _allowed_segments), do: false
-
-  defp path_subset?([:globstar | owned_segments], [:globstar | allowed_segments]) do
-    path_subset?(owned_segments, allowed_segments) or path_subset?(owned_segments, [:globstar | allowed_segments])
+  defp descendant_scope?(segments) do
+    Enum.any?(segments, &(&1 == :globstar)) or Enum.all?(segments, &literal_segment?/1)
   end
 
-  defp path_subset?(owned_segments, [:globstar | allowed_segments]) do
-    path_subset?(owned_segments, allowed_segments) or
+  defp literal_segment?({:literal, _value}), do: true
+  defp literal_segment?(_segment), do: false
+
+  defp path_subset?([], [], _descendant_scope?), do: true
+  defp path_subset?(_owned_segments, [], true), do: true
+  defp path_subset?(_owned_segments, [], false), do: false
+  defp path_subset?(_owned_segments, [:globstar], _descendant_scope?), do: true
+
+  defp path_subset?([], [:globstar | allowed_segments], descendant_scope?), do: path_subset?([], allowed_segments, descendant_scope?)
+  defp path_subset?([], _allowed_segments, _descendant_scope?), do: false
+
+  defp path_subset?([:globstar | owned_segments], [:globstar | allowed_segments], descendant_scope?) do
+    path_subset?(owned_segments, allowed_segments, descendant_scope?) or
+      path_subset?(owned_segments, [:globstar | allowed_segments], descendant_scope?)
+  end
+
+  defp path_subset?(owned_segments, [:globstar | allowed_segments], descendant_scope?) do
+    path_subset?(owned_segments, allowed_segments, descendant_scope?) or
       case owned_segments do
-        [_owned_segment | rest_owned] -> path_subset?(rest_owned, [:globstar | allowed_segments])
+        [_owned_segment | rest_owned] -> path_subset?(rest_owned, [:globstar | allowed_segments], descendant_scope?)
         [] -> false
       end
   end
 
-  defp path_subset?([:globstar | _owned_segments], [{:wildcard, "*", _regex}, :globstar]), do: true
+  defp path_subset?([:globstar | _owned_segments], [{:wildcard, "*", _regex}, :globstar], _descendant_scope?), do: true
 
-  defp path_subset?([:globstar | _owned_segments], _allowed_segments), do: false
+  defp path_subset?([:globstar | _owned_segments], _allowed_segments, _descendant_scope?), do: false
 
-  defp path_subset?([owned_segment | rest_owned], [allowed_segment | rest_allowed]) do
-    segment_subset?(owned_segment, allowed_segment) and path_subset?(rest_owned, rest_allowed)
+  defp path_subset?([owned_segment | rest_owned], [allowed_segment | rest_allowed], descendant_scope?) do
+    segment_subset?(owned_segment, allowed_segment) and path_subset?(rest_owned, rest_allowed, descendant_scope?)
   end
 
   defp segment_subset?(:globstar, _allowed_segment), do: false

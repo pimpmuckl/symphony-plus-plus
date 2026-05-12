@@ -98,6 +98,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestScopeConstraintsTest do
                %{"allowed_paths" => ["elixir/lib/*.*"]},
                ["elixir/lib/*.ex"]
              )
+  end
+
+  test "does not treat terminal wildcard allow entries as recursive prefixes" do
+    assert :ok =
+             ScopeConstraints.validate_owned_file_globs(
+               %{"allowed_paths" => ["*"]},
+               ["foo"]
+             )
+
+    assert :ok =
+             ScopeConstraints.validate_owned_file_globs(
+               %{"allowed_paths" => ["apps/?"]},
+               ["apps/a"]
+             )
+
+    assert :ok =
+             ScopeConstraints.validate_owned_file_globs(
+               %{"allowed_paths" => ["elixir/lib/*.ex"]},
+               ["elixir/lib/foo.ex"]
+             )
+
+    assert {:error, [{:outside_allowed_paths, "foo/bar.ex", ["*"]}]} =
+             ScopeConstraints.validate_owned_file_globs(
+               %{"allowed_paths" => ["*"]},
+               ["foo/bar.ex"]
+             )
+
+    assert {:error, [{:outside_allowed_paths, "apps/a/file.ex", ["apps/?"]}]} =
+             ScopeConstraints.validate_owned_file_globs(
+               %{"allowed_paths" => ["apps/?"]},
+               ["apps/a/file.ex"]
+             )
+
+    assert {:error, [{:outside_allowed_paths, "elixir/lib/foo.ex/child", ["elixir/lib/*.ex"]}]} =
+             ScopeConstraints.validate_owned_file_globs(
+               %{"allowed_paths" => ["elixir/lib/*.ex"]},
+               ["elixir/lib/foo.ex/child"]
+             )
+
+    assert :ok =
+             ScopeConstraints.validate_owned_file_globs(
+               %{"allowed_paths" => ["apps/?/**"]},
+               ["apps/a/file.ex"]
+             )
 
     assert {:error, [{:outside_allowed_paths, "**/foo", ["*"]}]} =
              ScopeConstraints.validate_owned_file_globs(
