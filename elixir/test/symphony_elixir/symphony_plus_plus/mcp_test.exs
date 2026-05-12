@@ -343,6 +343,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert invalid_message == Config.usage()
   end
 
+  test "MCP timestamp serialization treats naive datetimes as UTC instants" do
+    assert Server.mcp_timestamp(~U[2026-05-12 12:34:56.123456Z]) == "2026-05-12T12:34:56.123456Z"
+    assert Server.mcp_timestamp(~N[2026-05-12 12:34:56.123456]) == "2026-05-12T12:34:56.123456Z"
+    assert Server.mcp_timestamp(nil) == nil
+  end
+
   test "database-scoped repo binding reaches the requested ledger while the default repo is running" do
     database_path = WorkPackageFactory.database_path()
     original_repo = Repo.get_dynamic_repo()

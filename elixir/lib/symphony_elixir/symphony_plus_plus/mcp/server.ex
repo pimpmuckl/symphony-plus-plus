@@ -6575,9 +6575,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
-  defp timestamp(%DateTime{} = timestamp), do: DateTime.to_iso8601(timestamp)
-  defp timestamp(%NaiveDateTime{} = timestamp), do: NaiveDateTime.to_iso8601(timestamp)
-  defp timestamp(nil), do: nil
+  @doc false
+  @spec mcp_timestamp(DateTime.t() | NaiveDateTime.t() | nil) :: String.t() | nil
+  def mcp_timestamp(%DateTime{} = timestamp), do: DateTime.to_iso8601(timestamp)
+
+  def mcp_timestamp(%NaiveDateTime{} = timestamp) do
+    timestamp
+    |> DateTime.from_naive!("Etc/UTC")
+    |> DateTime.to_iso8601()
+  end
+
+  def mcp_timestamp(nil), do: nil
+
+  defp timestamp(timestamp), do: mcp_timestamp(timestamp)
 
   defp work_request_not_found_error(tool) do
     {:error, -32_004, "Not found", %{"tool" => tool, "reason" => "not_found"}}
