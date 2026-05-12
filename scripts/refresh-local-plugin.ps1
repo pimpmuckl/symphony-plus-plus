@@ -91,15 +91,19 @@ if (Test-Path -LiteralPath $targetRoot) {
 }
 New-Item -ItemType Directory -Path $targetRoot -Force | Out-Null
 
-foreach ($item in @(".codex-plugin", "skills", "README.md")) {
+foreach ($item in @(".codex-plugin", ".mcp.json", "skills", "scripts", "README.md")) {
   $source = Join-Path $sourceRoot $item
   if (Test-Path -LiteralPath $source) {
     Copy-Item -LiteralPath $source -Destination $targetRoot -Recurse -Force
   }
 }
 
+$sourceRootHintPath = Join-Path $targetRoot ".sympp-source-root"
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+[System.IO.File]::WriteAllText($sourceRootHintPath, "$repoRoot`n", $utf8NoBom)
+
 Write-Host "Refreshed local Codex plugin cache:"
 Write-Host "  source: $sourceRoot"
 Write-Host "  target: $targetRoot"
 Write-Host ""
-Write-Host "Restart or reload Codex to pick up refreshed plugin skills."
+Write-Host "Restart or reload Codex to pick up refreshed plugin skills and MCP servers."

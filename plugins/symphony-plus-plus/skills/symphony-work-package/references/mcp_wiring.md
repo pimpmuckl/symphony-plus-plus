@@ -3,13 +3,40 @@
 The skill assumes the worker session has access to the Symphony++ MCP server
 from this repository's Elixir implementation.
 
+## Plugin MCP Entry
+
+The installable Codex plugin exposes a generic `symphony_plus_plus` MCP server
+entry through `plugins/symphony-plus-plus/.codex-plugin/plugin.json` and
+`plugins/symphony-plus-plus/.mcp.json`. This makes the plugin UI show an MCP
+capability in addition to the WorkPackage skill.
+
+The static plugin MCP entry is intentionally generic. It must not embed raw
+work-key secrets, bearer tokens, private-store handoff targets, or
+operator-local secret material. It may use non-secret environment variables
+such as `SYMPP_REPO_ROOT` and `SYMPP_DATABASE` so the wrapper can find the
+runtime checkout and optional ledger. The repo-local refresh script also writes
+a non-secret source-root hint into the installed cache so the generic entry can
+start from generated local install state. The generic entry uses `pwsh`, so
+hosts that enable it need PowerShell 7 on `PATH`. Its wrapper runs `mix`
+directly by default and rejects mise shims in direct mode; `mise` is opt-in
+with `SYMPP_LAUNCHER=mise`.
+
+Generic plugin MCP install is not the same as worker package dispatch. First-use
+worker sessions should still use the create-work-generated `run-mcp`
+private-store handoff command so the MCP child process receives the secret only
+through its environment and claims exactly one WorkPackage with the configured
+`claimed_by` identity.
+
 ## Server Command
 
 Run the server from `elixir/`:
 
 ```bash
-mise exec -- mix sympp.mcp --mode stdio
+mix sympp.mcp --mode stdio
 ```
+
+If an operator wants mise-managed tools for a hand-written local command, they
+can still run `mise exec -- mix ...` after trusting the checkout's mise config.
 
 Use `--database <path>` when the worker must connect to a specific Symphony++
 SQLite ledger instead of the default repo database.
@@ -24,8 +51,8 @@ Example shape for an already-bound or non-secret local smoke test:
 
 ```toml
 [mcp_servers.symphony_plus_plus]
-command = "mise"
-args = ["exec", "--", "mix", "sympp.mcp", "--mode", "stdio", "--database", "<ledger-path>"]
+command = "mix"
+args = ["sympp.mcp", "--mode", "stdio", "--database", "<ledger-path>"]
 cwd = "<repo>/elixir"
 ```
 

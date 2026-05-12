@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Symphony++ WorkPackage skills and safe local worker-secret handoff helpers for Codex.",
   "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Symphony++",
     "shortDescription": "Permissioned Symphony++ WorkPackage workflow for Codex workers",
