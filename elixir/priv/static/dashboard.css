@@ -1416,6 +1416,14 @@ pre,
   gap: 0.58rem;
 }
 
+.sympp-form-grid-slice {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.sympp-planned-slice-form {
+  margin-bottom: 0.85rem;
+}
+
 .sympp-question-actions {
   display: grid;
   gap: 0.55rem;
@@ -1495,6 +1503,24 @@ pre,
   border-top: 1px solid var(--line);
 }
 
+.sympp-slice-detail-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.sympp-slice-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  margin-top: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.sympp-inline-slice-form {
+  display: inline-flex;
+  min-width: 0;
+}
+
 .sympp-panel h2 + .sympp-slice-list .sympp-slice-row:first-child {
   border-top: 0;
   padding-top: 0;
@@ -1550,9 +1576,11 @@ pre,
   .sympp-work-request-row,
   .sympp-form-grid,
   .sympp-form-grid-compact,
+  .sympp-form-grid-slice,
   .sympp-inline-answer-form,
   .sympp-locked-scope,
-  .sympp-slice-row {
+  .sympp-slice-row,
+  .sympp-slice-detail-grid {
     grid-template-columns: 1fr;
   }
 

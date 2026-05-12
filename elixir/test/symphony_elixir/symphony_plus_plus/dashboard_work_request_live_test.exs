@@ -141,7 +141,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
              WorkRequestRepository.add_planned_slice(Repo, request.id, planned_slice_attrs(id: "WRS-LIVE-B", title: "Second slice"))
 
     assert {:ok, first_slice} =
-             WorkRequestRepository.add_planned_slice(Repo, request.id, planned_slice_attrs(id: "WRS-LIVE-A", title: "First slice"))
+             WorkRequestRepository.add_planned_slice(
+               Repo,
+               request.id,
+               planned_slice_attrs(
+                 id: "WRS-LIVE-A",
+                 title: "First slice",
+                 target_base_branch: "release_candidate",
+                 branch_pattern: "agent/foo_bar"
+               )
+             )
 
     secret = create_architect_grant_secret(Repo, anchor.id)
     {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{request.id}")
@@ -156,9 +165,234 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
     assert html =~ ~s(href="../board")
     assert html =~ ~s(href="../work-requests")
     assert html =~ "Mark ready for clarification"
+    assert html =~ "release_candidate"
+    assert html =~ "agent/foo_bar"
+    refute html =~ "release candidate"
+    refute html =~ "agent/foo bar"
     assert appears_before?(html, second_question.id, first_question.id)
     assert appears_before?(html, second_decision.id, first_decision.id)
     assert appears_before?(html, second_slice.id, first_slice.id)
+  end
+
+  test "renders planned-slice authoring form only for ready or sliced WorkRequests" do
+    anchor = create_anchor_package!()
+    draft = create_work_request!(id: "WR-LIVE-SLICE-DRAFT", repo: anchor.repo, base_branch: anchor.base_branch)
+    assert {:ok, draft_slice} = WorkRequestRepository.add_planned_slice(Repo, draft.id, planned_slice_attrs(id: "WRS-LIVE-DRAFT-SLICE"))
+
+    ready =
+      create_work_request!(
+        id: "WR-LIVE-SLICE-READY",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    sliced =
+      create_work_request!(
+        id: "WR-LIVE-SLICE-SLICED",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "sliced"
+      )
+
+    secret = create_architect_grant_secret(Repo, anchor.id)
+
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{draft.id}")
+    refute html =~ "Add planned slice"
+    refute html =~ ~s(name="planned_slice[title]")
+    refute html =~ ~s(name="slice[id]" value="#{draft_slice.id}")
+
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{ready.id}")
+    assert html =~ "Add planned slice"
+    assert html =~ ~s(name="planned_slice[title]")
+    assert html =~ ~s(name="planned_slice[owned_file_globs]")
+
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{sliced.id}")
+    assert html =~ "Add planned slice"
+    assert html =~ ~s(name="planned_slice[title]")
+  end
+
+  test "submits planned slices through scoped detail form and refreshes counts" do
+    anchor = create_anchor_package!()
+
+    request =
+      create_work_request!(
+        id: "WR-LIVE-SLICE-CREATE",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    package_count = Repo.aggregate(WorkPackage, :count, :id)
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{request.id}")
+
+    assert html =~ "0"
+    assert html =~ "planned slices"
+
+    html =
+      render_submit(view, "add_planned_slice", %{
+        "planned_slice" => %{
+          "title" => " Author slice ",
+          "goal" => " Let the architect persist a slice. ",
+          "work_package_kind" => "dashboard",
+          "target_base_branch" => anchor.base_branch,
+          "branch_pattern" => " agent/SYMPP-V2-WR-008/slice-ui ",
+          "owned_file_globs" => " elixir/lib/symphony_elixir_web/live/sympp_work_request_live.ex \n\n elixir/priv/static/dashboard.css ",
+          "forbidden_file_globs" => "\n elixir/lib/symphony_elixir/symphony_plus_plus/mcp/** \n",
+          "acceptance_criteria" => " Form creates a planned slice. \n\n Counts refresh. ",
+          "validation_steps" => " mix test test/symphony_elixir/symphony_plus_plus/dashboard_work_request_live_test.exs \n",
+          "review_lanes" => " review_t1 \n review_t2 \n",
+          "stop_conditions" => " Stop before dispatch. \n\n"
+        }
+      })
+
+    assert html =~ "Author slice"
+    assert html =~ "1"
+    assert html =~ "planned slices"
+    assert html =~ "agent/SYMPP-V2-WR-008/slice-ui"
+    assert html =~ "Stop before dispatch."
+    assert Repo.aggregate(WorkPackage, :count, :id) == package_count
+
+    assert {:ok, [planned_slice]} = WorkRequestRepository.list_planned_slices(Repo, request.id)
+    assert planned_slice.sequence == 1
+    assert planned_slice.status == "planned"
+    assert planned_slice.title == "Author slice"
+    assert planned_slice.goal == "Let the architect persist a slice."
+    assert planned_slice.work_package_kind == "dashboard"
+    assert planned_slice.target_base_branch == anchor.base_branch
+    assert planned_slice.branch_pattern == "agent/SYMPP-V2-WR-008/slice-ui"
+
+    assert planned_slice.owned_file_globs == [
+             "elixir/lib/symphony_elixir_web/live/sympp_work_request_live.ex",
+             "elixir/priv/static/dashboard.css"
+           ]
+
+    assert planned_slice.forbidden_file_globs == ["elixir/lib/symphony_elixir/symphony_plus_plus/mcp/**"]
+    assert planned_slice.acceptance_criteria == ["Form creates a planned slice.", "Counts refresh."]
+
+    assert planned_slice.validation_steps == [
+             "mix test test/symphony_elixir/symphony_plus_plus/dashboard_work_request_live_test.exs"
+           ]
+
+    assert planned_slice.review_lanes == ["review_t1", "review_t2"]
+    assert planned_slice.stop_conditions == ["Stop before dispatch."]
+  end
+
+  test "planned-slice approve skip and mark sliced actions are scoped and stale-safe" do
+    anchor = create_anchor_package!()
+
+    request =
+      create_work_request!(
+        id: "WR-LIVE-SLICE-ACTIONS",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, first} = WorkRequestRepository.add_planned_slice(Repo, request.id, planned_slice_attrs(id: "WRS-LIVE-ACTION-1"))
+    assert {:ok, second} = WorkRequestRepository.add_planned_slice(Repo, request.id, planned_slice_attrs(id: "WRS-LIVE-ACTION-2", title: "Second action"))
+    assert {:ok, dispatched} = WorkRequestRepository.add_planned_slice(Repo, request.id, planned_slice_attrs(id: "WRS-LIVE-ACTION-3", title: "Dispatched action"))
+    dispatched = Repo.update!(Ecto.Changeset.change(dispatched, status: "dispatched"))
+
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{request.id}")
+
+    assert html =~ "Mark sliced"
+    assert html =~ "Dispatched action"
+    refute html =~ ~s(name="slice[id]" value="#{dispatched.id}")
+
+    html =
+      render_submit(view, "approve_planned_slice", %{
+        "slice" => %{"id" => first.id, "current_status" => "planned"}
+      })
+
+    assert html =~ "approved"
+    assert {:ok, [approved, ^second, ^dispatched]} = WorkRequestRepository.list_planned_slices(Repo, request.id)
+    assert approved.status == "approved"
+
+    html = render_click(view, "mark_sliced", %{})
+    assert html =~ "sliced"
+    assert {:ok, sliced} = WorkRequestRepository.get(Repo, request.id)
+    assert sliced.status == "sliced"
+
+    html =
+      render_submit(view, "skip_planned_slice", %{
+        "slice" => %{"id" => first.id, "current_status" => "approved"}
+      })
+
+    assert html =~ "A sliced WorkRequest must keep at least one approved planned slice."
+    assert {:ok, [persisted_approved, ^second, ^dispatched]} = WorkRequestRepository.list_planned_slices(Repo, request.id)
+    assert persisted_approved.status == "approved"
+
+    html =
+      render_submit(view, "skip_planned_slice", %{
+        "slice" => %{"id" => second.id, "current_status" => "planned"}
+      })
+
+    assert html =~ "skipped"
+    assert {:ok, [_approved, skipped, ^dispatched]} = WorkRequestRepository.list_planned_slices(Repo, request.id)
+    assert skipped.status == "skipped"
+
+    html =
+      render_submit(view, "skip_planned_slice", %{
+        "slice" => %{"id" => dispatched.id, "current_status" => "dispatched"}
+      })
+
+    assert html =~ "That action is not available from the current status."
+    assert {:ok, [_approved, _skipped, persisted_dispatched]} = WorkRequestRepository.list_planned_slices(Repo, request.id)
+    assert persisted_dispatched.status == "dispatched"
+  end
+
+  test "mark sliced requires an approved planned slice" do
+    anchor = create_anchor_package!()
+
+    request =
+      create_work_request!(
+        id: "WR-LIVE-SLICE-GUARD",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, _planned} = WorkRequestRepository.add_planned_slice(Repo, request.id, planned_slice_attrs(id: "WRS-LIVE-SLICE-GUARD"))
+
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, view, _html} = live(board_session_conn(secret), "/sympp/work-requests/#{request.id}")
+
+    html = render_click(view, "mark_sliced", %{})
+    assert html =~ "Approve at least one planned slice before marking sliced."
+
+    assert {:ok, persisted} = WorkRequestRepository.get(Repo, request.id)
+    assert persisted.status == "ready_for_slicing"
+  end
+
+  test "stale planned-slice actions render safe errors without overwriting newer state" do
+    anchor = create_anchor_package!()
+
+    request =
+      create_work_request!(
+        id: "WR-LIVE-SLICE-STALE",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, planned} = WorkRequestRepository.add_planned_slice(Repo, request.id, planned_slice_attrs(id: "WRS-LIVE-STALE"))
+
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, view, _html} = live(board_session_conn(secret), "/sympp/work-requests/#{request.id}")
+
+    assert {:ok, _approved} = WorkRequestRepository.approve_planned_slice(Repo, request.id, planned.id, "planned")
+
+    html =
+      render_submit(view, "approve_planned_slice", %{
+        "slice" => %{"id" => planned.id, "current_status" => "planned"}
+      })
+
+    assert html =~ "The WorkRequest status changed. Refresh and try again."
+    assert {:ok, [persisted]} = WorkRequestRepository.list_planned_slices(Repo, request.id)
+    assert persisted.status == "approved"
   end
 
   test "renders scoped WorkRequest intake form with locked repo and base branch" do
@@ -443,6 +677,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
     assert {:ok, []} = WorkRequestRepository.list_questions(Repo, out_of_scope.id)
     assert {:ok, unchanged} = WorkRequestRepository.get(Repo, out_of_scope.id)
     assert unchanged.status == "ready_for_clarification"
+
+    html =
+      render_submit(view, "add_planned_slice", %{
+        "planned_slice" => %{
+          "title" => "Hidden slice",
+          "goal" => "Should not persist.",
+          "work_package_kind" => "mcp",
+          "target_base_branch" => anchor.base_branch,
+          "branch_pattern" => "agent/hidden",
+          "owned_file_globs" => "elixir/lib/**",
+          "forbidden_file_globs" => "",
+          "acceptance_criteria" => "Should not create.",
+          "validation_steps" => "mix test",
+          "review_lanes" => "review_t1",
+          "stop_conditions" => "Stop."
+        }
+      })
+
+    assert html =~ "not found in this board scope"
+    assert {:ok, []} = WorkRequestRepository.list_planned_slices(Repo, out_of_scope.id)
   end
 
   test "detail hides out-of-scope WorkRequests as not found" do

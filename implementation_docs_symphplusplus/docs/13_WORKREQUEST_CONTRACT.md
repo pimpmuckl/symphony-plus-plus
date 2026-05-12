@@ -6,10 +6,10 @@ AccessGrant permissions, virtual planning resources, readiness gates,
 review-suite evidence, PR evidence, and human merge controls.
 
 WorkRequest core persistence, planned-slice persistence, read API/list/detail
-dashboard views, scoped dashboard intake, and the board-authenticated manual
-clarification loop exist. MCP intake tools, automatic question generation,
-automatic slicing, dispatch, Linear state creation, and plugin packaging remain
-future work.
+dashboard views, scoped dashboard intake, the board-authenticated manual
+clarification loop, and manual planned-slice authoring/approval controls exist.
+MCP intake tools, automatic question generation, automatic slicing, dispatch,
+Linear state creation, and plugin packaging remain future work.
 
 ## Purpose
 
@@ -55,7 +55,11 @@ The dashboard detail path is also scoped to board-visible WorkRequests. It can
 move a `draft` request to `ready_for_clarification`, ask clarification
 questions, answer or close open questions, record decision log entries, mark
 `human_info_needed`, and mark `ready_for_slicing`. The ready-for-slicing action
-is blocked while any clarification question remains open.
+is blocked while any clarification question remains open. For
+`ready_for_slicing` or `sliced` requests, the same detail page can manually add
+planned slices, approve or skip existing mutable slices, and mark a
+`ready_for_slicing` request `sliced` only after at least one planned slice is
+approved.
 
 When runtime intake is not available for a lane, the canonical WorkRequest is
 one versioned, operator-approved Markdown artifact.
@@ -144,10 +148,15 @@ The slice plan records:
 
 Runtime planned-slice records belong to the WorkRequest until dispatch. Their
 canonical statuses are `planned`, `approved`, `dispatched`, and `skipped`.
-Planned-slice persistence does not itself create WorkPackages or link dispatch
-state; this storage-only create path starts rows as `planned`. Approved or
-dispatched slices become WorkPackages only through an explicit later dispatch
-flow.
+The dashboard manual authoring path stores title, goal, WorkPackage kind,
+target base branch, branch pattern, owned files, forbidden files, acceptance
+criteria, validation steps, review lanes, and stop conditions. List fields are
+entered as newline-delimited text and stored as ordered string lists.
+Planned-slice persistence and approval do not themselves create WorkPackages or
+link dispatch state; the create path starts rows as `planned`, approve moves
+`planned` rows to `approved`, and skip moves `planned` or `approved` rows to
+`skipped`. Dispatched slices are read-only in this UI. Approved or dispatched
+slices become WorkPackages only through an explicit later dispatch flow.
 
 Feature work defaults to one feature branch with smaller PRs targeting that
 feature branch. Use direct `main` PRs for narrow direct-main changes when the

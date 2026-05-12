@@ -34,6 +34,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
           :already_answered
           | :already_closed
           | :database_busy
+          | :last_approved_slice
+          | :no_approved_slices
           | :not_found
           | :id_already_exists
           | :invalid_status
@@ -193,6 +195,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
+  @spec approve_planned_slice(repo(), String.t(), String.t(), String.t()) ::
+          {:ok, PlannedSlice.t()} | {:error, error()}
+  def approve_planned_slice(repo, work_request_id, id, current_status)
+      when is_atom(repo) and is_binary(work_request_id) and is_binary(id) and is_binary(current_status) do
+    update_planned_slice_status(repo, work_request_id, id, current_status, "approved", ["planned"])
+  end
+
+  @spec skip_planned_slice(repo(), String.t(), String.t(), String.t()) :: {:ok, PlannedSlice.t()} | {:error, error()}
+  def skip_planned_slice(repo, work_request_id, id, current_status)
+      when is_atom(repo) and is_binary(work_request_id) and is_binary(id) and is_binary(current_status) do
+    update_planned_slice_status(repo, work_request_id, id, current_status, "skipped", ["planned", "approved"])
+  end
+
+  @spec mark_sliced(repo(), String.t(), String.t()) :: {:ok, WorkRequest.t()} | {:error, error()}
+  def mark_sliced(repo, id, current_status)
+      when is_atom(repo) and is_binary(id) and is_binary(current_status) do
+    with :ok <- validate_status(current_status),
+         :ok <- require_status(current_status, ["ready_for_slicing"]) do
+      mark_valid_sliced(repo, id, current_status)
+    end
+  end
+
   @spec list_decisions(repo(), String.t()) :: {:ok, [DecisionLogEntry.t()]} | {:error, error()}
   def list_decisions(repo, work_request_id) when is_atom(repo) and is_binary(work_request_id) do
     decisions =
@@ -259,6 +283,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
 
   defp validate_question_status(status) do
     if status in ClarificationQuestion.statuses() do
+      :ok
+    else
+      {:error, :invalid_status}
+    end
+  end
+
+  defp validate_planned_slice_status(status) do
+    if status in PlannedSlice.statuses() do
+      :ok
+    else
+      {:error, :invalid_status}
+    end
+  end
+
+  defp require_status(status, allowed_statuses) do
+    if status in allowed_statuses do
       :ok
     else
       {:error, :invalid_status}
@@ -455,6 +495,185 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
       %ClarificationQuestion{status: status} when status != current_status -> :stale_status
       %ClarificationQuestion{} -> :stale_status
     end
+  end
+
+  defp update_planned_slice_status(repo, work_request_id, id, current_status, next_status, allowed_current_statuses) do
+    with :ok <- validate_planned_slice_status(current_status),
+         :ok <- validate_planned_slice_status(next_status),
+         :ok <- require_status(current_status, allowed_current_statuses) do
+      update_valid_planned_slice_status(
+        repo,
+        work_request_id,
+        id,
+        current_status,
+        next_status,
+        allowed_current_statuses
+      )
+    end
+  end
+
+  defp update_valid_planned_slice_status(
+         repo,
+         work_request_id,
+         id,
+         current_status,
+         next_status,
+         allowed_current_statuses
+       ) do
+    now = DateTime.utc_now(:microsecond)
+
+    repo.transaction(fn ->
+      work_request_id
+      |> planned_slice_status_update_query(id, current_status, next_status, allowed_current_statuses)
+      |> repo.update_all(set: [status: next_status, updated_at: now])
+      |> case do
+        {1, _rows} ->
+          repo.get!(PlannedSlice, id)
+
+        {0, _rows} ->
+          repo.rollback(planned_slice_terminal_error(repo, work_request_id, id, current_status, next_status))
+      end
+    end)
+    |> normalize_transaction_result()
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp planned_slice_status_update_query(work_request_id, id, current_status, next_status, allowed_current_statuses) do
+    from(planned_slice in PlannedSlice,
+      join: work_request in WorkRequest,
+      on: work_request.id == planned_slice.work_request_id,
+      where:
+        planned_slice.id == ^id and planned_slice.work_request_id == ^work_request_id and
+          planned_slice.status == ^current_status and planned_slice.status in ^allowed_current_statuses,
+      where: work_request.status in ["ready_for_slicing", "sliced"]
+    )
+    |> preserve_sliced_approved_slice(next_status)
+  end
+
+  defp preserve_sliced_approved_slice(query, "skipped") do
+    from([planned_slice, work_request] in query,
+      where:
+        planned_slice.status != "approved" or work_request.status != "sliced" or
+          fragment(
+            """
+            EXISTS (
+              SELECT 1
+              FROM sympp_work_request_planned_slices AS sibling
+              WHERE sibling.work_request_id = ?
+                AND sibling.id != ?
+                AND sibling.status = 'approved'
+            )
+            """,
+            planned_slice.work_request_id,
+            planned_slice.id
+          )
+    )
+  end
+
+  defp preserve_sliced_approved_slice(query, _next_status), do: query
+
+  defp planned_slice_terminal_error(repo, work_request_id, id, current_status, next_status) do
+    case repo.get(PlannedSlice, id) do
+      nil -> :not_found
+      %PlannedSlice{work_request_id: slice_work_request_id} when slice_work_request_id != work_request_id -> :not_found
+      %PlannedSlice{status: status} when status != current_status -> :stale_status
+      %PlannedSlice{} -> parent_planned_slice_status_error(repo, work_request_id, id, current_status, next_status)
+    end
+  end
+
+  defp parent_planned_slice_status_error(repo, work_request_id, planned_slice_id, current_status, next_status) do
+    case get(repo, work_request_id) do
+      {:ok, %WorkRequest{status: "sliced"}}
+      when current_status == "approved" and next_status == "skipped" ->
+        if other_approved_planned_slice?(repo, work_request_id, planned_slice_id) do
+          :invalid_status
+        else
+          :last_approved_slice
+        end
+
+      {:ok, %WorkRequest{status: status}} when status in ["ready_for_slicing", "sliced"] ->
+        :invalid_status
+
+      {:ok, %WorkRequest{}} ->
+        :invalid_status
+
+      {:error, reason} ->
+        reason
+    end
+  end
+
+  defp other_approved_planned_slice?(repo, work_request_id, planned_slice_id) do
+    not is_nil(
+      repo.one(
+        from(planned_slice in PlannedSlice,
+          where:
+            planned_slice.work_request_id == ^work_request_id and planned_slice.id != ^planned_slice_id and
+              planned_slice.status == "approved",
+          select: 1,
+          limit: 1
+        )
+      )
+    )
+  end
+
+  defp mark_valid_sliced(repo, id, current_status) do
+    now = DateTime.utc_now(:microsecond)
+
+    repo.transaction(fn ->
+      id
+      |> sliced_status_update_query(current_status)
+      |> repo.update_all(set: [status: "sliced", updated_at: now])
+      |> case do
+        {1, _rows} -> repo.get!(WorkRequest, id)
+        {0, _rows} -> repo.rollback(sliced_status_terminal_error(repo, id, current_status))
+      end
+    end)
+    |> normalize_transaction_result()
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp sliced_status_update_query(id, current_status) do
+    from(work_request in WorkRequest,
+      where: work_request.id == ^id and work_request.status == ^current_status,
+      where:
+        fragment(
+          """
+          EXISTS (
+            SELECT 1
+            FROM sympp_work_request_planned_slices AS planned_slice
+            WHERE planned_slice.work_request_id = ? AND planned_slice.status = 'approved'
+          )
+          """,
+          work_request.id
+        )
+    )
+  end
+
+  defp sliced_status_terminal_error(repo, id, current_status) do
+    case get(repo, id) do
+      {:error, reason} ->
+        reason
+
+      {:ok, %WorkRequest{status: status}} when status != current_status ->
+        :stale_status
+
+      {:ok, %WorkRequest{}} ->
+        if approved_planned_slice?(repo, id), do: :stale_status, else: :no_approved_slices
+    end
+  end
+
+  defp approved_planned_slice?(repo, work_request_id) do
+    not is_nil(
+      repo.one(
+        from(planned_slice in PlannedSlice,
+          where: planned_slice.work_request_id == ^work_request_id and planned_slice.status == "approved",
+          select: 1,
+          limit: 1
+        )
+      )
+    )
   end
 
   defp normalize_insert_result({:ok, work_request}), do: {:ok, work_request}
