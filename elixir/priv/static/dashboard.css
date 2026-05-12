@@ -931,6 +931,13 @@ pre,
   letter-spacing: 0;
 }
 
+.sympp-detail-header-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.85rem;
+}
+
 .sympp-back-link,
 .sympp-pr-link {
   display: inline-flex;

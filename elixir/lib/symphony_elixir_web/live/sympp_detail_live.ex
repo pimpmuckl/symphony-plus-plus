@@ -84,6 +84,8 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
 
   @impl true
   def render(assigns) do
+    assigns = Map.put_new(assigns, :operator_mode?, false)
+
     ~H"""
     <section class="sympp-detail-shell">
       <header class="sympp-detail-header">
@@ -92,7 +94,10 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
           <h1 class="sympp-detail-title"><%= package_title(@detail.work_package) %></h1>
         </div>
 
-        <a :if={@phase_reader?} class="sympp-back-link" href="../board">Board</a>
+        <div class="sympp-detail-header-actions">
+          <a :if={@operator_mode?} class="sympp-back-link" href="?auth=work_key">Use work key</a>
+          <a :if={@phase_reader?} class="sympp-back-link" href="../board">Board</a>
+        </div>
       </header>
 
       <%= if @error do %>

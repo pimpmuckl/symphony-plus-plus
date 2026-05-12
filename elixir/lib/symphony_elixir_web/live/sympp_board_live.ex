@@ -77,6 +77,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
           <nav class="sympp-surface-nav" aria-label="Symphony++ surfaces">
             <a class="active" href="board"><%= if @operator_mode?, do: "Cockpit", else: "Work packages" %></a>
             <a href="work-requests">WorkRequests</a>
+            <a :if={@operator_mode?} href="board?auth=work_key">Use work key</a>
           </nav>
 
           <div class="sympp-board-summary">
@@ -738,7 +739,8 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   defp operator_board_view(%{board: board, work_requests: work_requests}, filters) do
     view = board_view(board, filters)
     visible_cards = visible_cards(view)
-    visible_requests = work_requests |> Map.get(:work_requests, []) |> filter_work_requests(filters)
+    visible_streams = visible_cards |> Enum.map(&stream_key/1) |> Enum.reject(&is_nil/1) |> MapSet.new()
+    visible_requests = work_requests |> Map.get(:work_requests, []) |> filter_work_requests(filters, visible_streams)
 
     Map.merge(view, %{
       guidance_items: guidance_items(visible_requests),
@@ -801,17 +803,21 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     |> length()
   end
 
-  defp filter_work_requests(work_requests, filters) when is_list(work_requests) do
-    Enum.filter(work_requests, &matches_work_request_filters?(&1, filters))
+  defp filter_work_requests(work_requests, filters, visible_streams) when is_list(work_requests) do
+    Enum.filter(work_requests, &matches_work_request_filters?(&1, filters, visible_streams))
   end
 
-  defp filter_work_requests(_work_requests, _filters), do: []
+  defp filter_work_requests(_work_requests, _filters, _visible_streams), do: []
 
-  defp matches_work_request_filters?(request, filters) do
-    filters.kind == @empty_filter and
-      filters.phase == @empty_filter and
-      matches_filter?(Map.get(request, :repo), filters.repo)
+  defp matches_work_request_filters?(request, filters, visible_streams) do
+    matches_filter?(Map.get(request, :repo), filters.repo) and matches_package_scope?(request, filters, visible_streams)
   end
+
+  defp matches_package_scope?(request, %{kind: @empty_filter, phase: @empty_filter}, _visible_streams) do
+    not is_nil(stream_key(request))
+  end
+
+  defp matches_package_scope?(request, _filters, visible_streams), do: MapSet.member?(visible_streams, stream_key(request))
 
   defp stream_key(item) do
     repo = Map.get(item, :repo)

@@ -100,6 +100,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     {:ok, _view, html} = live(local_conn(), "/sympp/board")
 
     assert html =~ "Local operator cockpit"
+    assert html =~ ~s(href="board?auth=work_key")
     assert html =~ "Product Guidance Needed"
     assert html =~ "Need product answer"
     assert html =~ "Blockers"
@@ -107,7 +108,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ package.id
     assert html =~ ~s(href="work-packages/#{package.id}")
     refute html =~ "Board access"
-    refute html =~ "work_key"
+    refute html =~ ~s(name="work_key")
+  end
+
+  test "local operator keeps work-key login surfaces reachable" do
+    enable_operator_mode()
+    package = create_package!(id: "SYMPP-V2-UX-WORK-KEY", title: "Work key reachable package")
+
+    board_conn = get(local_conn(), "/sympp/board?auth=work_key")
+
+    assert response(board_conn, 401) =~ "Board access"
+    assert response(board_conn, 401) =~ "work_key"
+    refute Plug.Conn.get_session(board_conn, "sympp_local_operator")
+
+    package_conn =
+      local_conn()
+      |> Plug.Test.init_test_session(%{"sympp_local_operator" => true})
+      |> get("/sympp/work-packages/#{package.id}?auth=work_key")
+
+    assert response(package_conn, 401) =~ "Package access"
+    assert response(package_conn, 401) =~ "work_key"
+    refute response(package_conn, 401) =~ "Work key reachable package"
   end
 
   test "local operator drills into package detail with redaction and no package key" do
@@ -137,7 +158,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ ~s(class="sympp-back-link")
     refute html =~ "raw-secret-value"
     refute html =~ "Package access"
-    refute html =~ "work_key"
+    refute html =~ ~s(name="work_key")
   end
 
   test "local operator drills into WorkRequest detail without scoped board grant" do
@@ -179,7 +200,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "Planned slices"
     assert html =~ "First operator slice"
     refute html =~ "Board access"
-    refute html =~ "work_key"
+    refute html =~ ~s(name="work_key")
     refute html =~ "Answer</button>"
     refute html =~ "Close unanswered"
     refute html =~ "Approve</button>"
@@ -261,6 +282,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute html =~ "Hidden guidance request"
   end
 
+  test "local operator guidance watchlist follows package kind filters by work stream" do
+    enable_operator_mode()
+
+    create_package!(
+      id: "SYMPP-V2-UX-KIND-VISIBLE",
+      title: "Visible dashboard package",
+      kind: "dashboard",
+      repo: "nextide/symphony-plus-plus"
+    )
+
+    create_package!(
+      id: "SYMPP-V2-UX-KIND-HIDDEN",
+      title: "Hidden docs package",
+      kind: "docs",
+      repo: "nextide/docs"
+    )
+
+    create_work_request!(
+      id: "WR-OPERATOR-KIND-VISIBLE",
+      title: "Visible kind guidance",
+      repo: "nextide/symphony-plus-plus",
+      status: "human_info_needed"
+    )
+
+    create_work_request!(
+      id: "WR-OPERATOR-KIND-HIDDEN",
+      title: "Hidden kind guidance",
+      repo: "nextide/docs",
+      status: "human_info_needed"
+    )
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/board?kind=dashboard")
+
+    assert html =~ "Visible dashboard package"
+    assert html =~ "Visible kind guidance"
+    refute html =~ "Hidden docs package"
+    refute html =~ "Hidden kind guidance"
+  end
+
   test "local operator direct access rejects forwarded proxy requests without a work key" do
     enable_operator_mode()
     create_package!(id: "SYMPP-V2-UX-PROXY", title: "Proxy-hidden package")
@@ -311,6 +371,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "Scoped WorkRequest actions"
     assert html =~ "Answer</button>"
     assert html =~ "Close unanswered"
+  end
+
+  test "entering local operator mode preserves cached package grants" do
+    enable_operator_mode()
+
+    package = create_package!(id: "SYMPP-V2-UX-PACKAGE-CACHE", title: "Cached package grant")
+    grant = create_package_grant!(package.id)
+
+    conn =
+      local_conn()
+      |> Plug.Test.init_test_session(%{"sympp_package_grant_ids" => %{package.id => grant.id}})
+      |> get("/sympp/board")
+
+    assert response(conn, 200) =~ "Local operator cockpit"
+    assert Plug.Conn.get_session(conn, "sympp_local_operator") == true
+    assert Plug.Conn.get_session(conn, "sympp_package_grant_ids") == %{package.id => grant.id}
+
+    scoped_conn =
+      local_conn()
+      |> Plug.Test.init_test_session(%{"sympp_local_operator" => true, "sympp_package_grant_ids" => %{package.id => grant.id}})
+      |> get("/sympp/work-packages/#{package.id}?auth=work_key")
+
+    assert response(scoped_conn, 200) =~ "Cached package grant"
+    refute Plug.Conn.get_session(scoped_conn, "sympp_local_operator")
+    assert Plug.Conn.get_session(scoped_conn, "sympp_package_grant_ids") == %{package.id => grant.id}
   end
 
   defp create_package!(overrides) do
@@ -413,6 +498,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     assert {:ok, _assignment} =
              AccessGrantRepository.claim(Repo, work_key.secret, %{claimed_by: "architect-operator"}, DateTime.utc_now(:microsecond))
+
+    grant
+  end
+
+  defp create_package_grant!(work_package_id) do
+    work_key = WorkKey.generate()
+
+    assert {:ok, grant} =
+             AccessGrantRepository.create(Repo, %{
+               work_package_id: work_package_id,
+               display_key: work_key.display_key,
+               secret_hash: WorkKey.secret_hash(work_key.secret),
+               grant_role: "worker",
+               capabilities: ["read:package"],
+               expires_at: DateTime.add(DateTime.utc_now(:microsecond), 3600, :second)
+             })
+
+    assert {:ok, _assignment} =
+             AccessGrantRepository.claim(Repo, work_key.secret, %{claimed_by: "worker-operator"}, DateTime.utc_now(:microsecond))
 
     grant
   end

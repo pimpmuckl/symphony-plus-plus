@@ -95,6 +95,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
           <nav class="sympp-surface-nav" aria-label="Symphony++ surfaces">
             <a href="board">Work packages</a>
             <a class="active" href="work-requests">WorkRequests</a>
+            <a :if={@operator_mode?} href="board?auth=work_key">Use work key</a>
           </nav>
           <a :if={can_create_work_request?(@board_grant)} class="sympp-primary-link" href="work-requests/new">New WorkRequest</a>
         </div>
@@ -194,6 +195,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
         <nav class="sympp-surface-nav" aria-label="Symphony++ surfaces">
           <a href="../board">Work packages</a>
           <a href="../work-requests">WorkRequests</a>
+          <a :if={@operator_mode?} href="../board?auth=work_key">Use work key</a>
         </nav>
       </header>
 

@@ -27,15 +27,20 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @spec authorize_board_browser(Conn.t(), term()) :: Conn.t()
   def authorize_board_browser(conn, _opts) do
     cond do
+      work_key_login_requested?(conn) ->
+        case authorize_board_request(conn) do
+          {:ok, %AccessGrant{} = grant} -> put_board_browser_session(conn, grant)
+          {:error, :unauthorized} -> conn |> board_login_response() |> Conn.halt()
+          {:error, reason} -> conn |> board_browser_error_response(reason) |> Conn.halt()
+        end
+
       local_operator_browser?(conn) and active_local_operator_session?(conn) ->
         put_local_operator_session(conn)
 
       true ->
         case authorize_board_request(conn) do
           {:ok, %AccessGrant{} = grant} ->
-            conn
-            |> Conn.delete_session(@operator_session_key)
-            |> Conn.put_session(@board_session_key, grant.id)
+            put_board_browser_session(conn, grant)
 
           {:error, :unauthorized} ->
             if local_operator_browser?(conn) do
@@ -57,6 +62,13 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     cond do
       not valid_package_route_id?(work_package_id) ->
         conn |> package_not_found_response() |> Conn.halt()
+
+      work_key_login_requested?(conn) ->
+        case authorize_package_request(conn, work_package_id) do
+          {:ok, %AccessGrant{} = grant} -> put_package_browser_session(conn, grant, work_package_id)
+          {:error, :unauthorized} -> conn |> package_login_response(work_package_id: work_package_id) |> Conn.halt()
+          {:error, reason} -> conn |> package_browser_error_response(reason, work_package_id) |> Conn.halt()
+        end
 
       local_operator_browser?(conn) and active_local_operator_session?(conn) ->
         put_local_operator_session(conn)
@@ -127,10 +139,11 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp active_local_operator_session?(conn), do: Conn.get_session(conn, @operator_session_key) == true
 
+  defp work_key_login_requested?(conn), do: Map.get(conn.params, "auth") == "work_key"
+
   defp put_local_operator_session(conn) do
     conn
     |> clear_board_session()
-    |> clear_package_session(nil)
     |> Conn.put_session(@operator_session_key, true)
   end
 
@@ -387,6 +400,12 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp package_session_grant_id(_sessions, _work_package_id), do: nil
+
+  defp put_board_browser_session(conn, %AccessGrant{} = grant) do
+    conn
+    |> Conn.delete_session(@operator_session_key)
+    |> Conn.put_session(@board_session_key, grant.id)
+  end
 
   defp put_package_browser_session(conn, %AccessGrant{} = grant, work_package_id) do
     if phase_reader?(grant) do
