@@ -25,6 +25,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
   @protocol_version "2025-03-26"
   @health_tool "sympp.health"
@@ -51,6 +56,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "create_child_work_package",
     "mint_child_worker_key",
     "revoke_child_worker_key",
+    "list_work_requests",
+    "read_work_request",
     "read_child_status",
     "approve_scope_expansion",
     "read_phase_board",
@@ -59,6 +66,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "merge_child_into_phase",
     "split_work_package",
     "publish_phase_update"
+  ]
+  @phase_scoped_work_request_tools [
+    "list_work_requests",
+    "read_work_request"
   ]
   @phase7_stub_architect_tools [
     "revoke_child_worker_key",
@@ -891,6 +902,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "Mint a narrower worker grant for a phase-child work package in the architect grant's current phase."
   end
 
+  defp architect_tool_description("list_work_requests") do
+    "List WorkRequests scoped to the architect grant's repo and base branch."
+  end
+
+  defp architect_tool_description("read_work_request") do
+    "Read a scoped WorkRequest with clarification questions, decisions, planned slices, and status summaries."
+  end
+
   defp architect_tool_description("approve_scope_expansion") do
     "Approve additional allowed file globs for this scoped work package."
   end
@@ -1077,6 +1096,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(%{"grant_id" => string_schema(), "reason" => string_schema()}, ["grant_id", "reason"])
   end
 
+  defp architect_tool_input_schema("list_work_requests"), do: schema(%{"status" => string_schema()}, [])
+
+  defp architect_tool_input_schema("read_work_request"), do: schema(%{"work_request_id" => string_schema()}, ["work_request_id"])
+
   defp architect_tool_input_schema("read_child_status"), do: schema(%{"work_package_id" => string_schema()}, ["work_package_id"])
 
   defp architect_tool_input_schema("approve_scope_expansion") do
@@ -1122,7 +1145,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp tool_specs_for_session(repo, session) do
     case Auth.require_session(session, repo) do
       {:ok, %Session{assignment: %{grant_role: "architect"}} = session} ->
-        {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs_for_session(session)]}
+        {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs_for_session(repo, session)]}
 
       {:ok, %Session{assignment: %{grant_role: "worker"}}} ->
         {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
@@ -1140,13 +1163,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp claimable_tool_specs, do: [health_tool_spec(), worker_tool_spec("claim_work_key")]
 
-  defp architect_tool_specs_for_session(%Session{assignment: %{capabilities: capabilities}}) when is_list(capabilities) do
+  defp architect_tool_specs_for_session(repo, %Session{assignment: %{capabilities: capabilities}} = session) when is_list(capabilities) do
     @architect_tools
-    |> Enum.filter(&(architect_tool_required_capabilities(&1) -- capabilities == []))
+    |> Enum.filter(fn tool ->
+      capability_allowed? = architect_tool_required_capabilities(tool) -- capabilities == []
+      capability_allowed? and architect_tool_visible_for_session?(repo, session, tool)
+    end)
     |> Enum.map(&architect_tool_spec/1)
   end
 
-  defp architect_tool_specs_for_session(_session), do: []
+  defp architect_tool_specs_for_session(_repo, _session), do: []
+
+  defp architect_tool_visible_for_session?(repo, %Session{} = session, tool) when tool in @phase_scoped_work_request_tools do
+    case scoped_work_request_filters(repo, session) do
+      {:ok, _filters, _scope} -> true
+      _reason -> false
+    end
+  end
+
+  defp architect_tool_visible_for_session?(_repo, %Session{}, _tool), do: true
 
   defp schema(properties, required) do
     %{"type" => "object", "additionalProperties" => false, "properties" => properties, "required" => required}
@@ -1539,6 +1574,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp claim_error({:migration_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
   defp claim_error(reason), do: {:error, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => reason_text(reason)}}
 
+  defp architect_tool("list_work_requests", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "read:work_request"),
+         {:ok, status} <- optional_work_request_status(arguments),
+         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
+         {:ok, work_requests} <- WorkRequestService.list(config.repo, work_request_list_filters(filters, status)) do
+      cards = work_request_cards(work_requests)
+
+      {:ok,
+       tool_result(%{
+         "work_requests" => cards,
+         "total_count" => length(cards),
+         "scope" => scope,
+         "filters" => work_request_filter_payload(status)
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "list_work_requests", "reason" => reason}}
+      {:error, reason} -> architect_error(reason, "list_work_requests")
+    end
+  end
+
+  defp architect_tool("read_work_request", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "read:work_request"),
+         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
+         {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, payload} <- work_request_detail_payload(config.repo, work_request) do
+      {:ok, tool_result(Map.put(payload, "scope", scope))}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_work_request", "reason" => reason}}
+      {:error, :not_found} -> work_request_not_found_error("read_work_request")
+      {:error, reason} -> architect_error(reason, "read_work_request")
+    end
+  end
+
   defp architect_tool("read_child_status", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- architect_session(config.repo, session, ["read:child_progress", "read:child_findings"]),
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
@@ -1663,6 +1732,92 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, :forbidden} -> {:error, :phase_scope_not_available}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp scoped_work_request_filters(repo, %Session{} = session) do
+    with {:ok, grant} <- require_live_architect_grant(repo, session),
+         :ok <- require_work_request_anchor_scope(repo, session, grant),
+         {:ok, filters} <- Dashboard.phase_board_filters_for_grant(grant),
+         {:ok, scope} <- work_request_scope_payload(filters) do
+      {:ok, work_request_filters_from_scope(scope), scope}
+    else
+      {:error, :forbidden} -> {:error, :phase_scope_not_available}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_work_request_anchor_scope(repo, %Session{} = session, %AccessGrant{} = grant) do
+    if architect_explicit_phase_grant?(grant) do
+      require_architect_phase_anchor(repo, session, grant.phase_id)
+    else
+      {:error, :phase_scope_not_available}
+    end
+  end
+
+  defp work_request_scope_payload(filters) when is_list(filters) do
+    repo = Keyword.get(filters, :repo)
+    base_branch = Keyword.get(filters, :base_branch)
+
+    if filled_string?(repo) and filled_string?(base_branch) do
+      {:ok, %{"repo" => String.trim(repo), "base_branch" => String.trim(base_branch)}}
+    else
+      {:error, :phase_scope_not_available}
+    end
+  end
+
+  defp work_request_filters_from_scope(%{"repo" => repo, "base_branch" => base_branch}) do
+    %{"repo" => repo, "base_branch" => base_branch}
+  end
+
+  defp work_request_list_filters(filters, nil), do: filters
+  defp work_request_list_filters(filters, status), do: Map.put(filters, "status", status)
+
+  defp work_request_filter_payload(nil), do: %{}
+  defp work_request_filter_payload(status), do: %{"status" => status}
+
+  defp optional_work_request_status(arguments) do
+    case Map.fetch(arguments, "status") do
+      :error ->
+        {:ok, nil}
+
+      {:ok, status} when is_binary(status) ->
+        status = String.trim(status)
+
+        if status in WorkRequest.statuses() do
+          {:ok, status}
+        else
+          {:tool_error, "invalid_status"}
+        end
+
+      {:ok, _status} ->
+        {:tool_error, "invalid_status"}
+    end
+  end
+
+  defp scoped_work_request(repo, work_request_id, filters) do
+    with {:ok, %WorkRequest{} = work_request} <- WorkRequestService.get(repo, work_request_id),
+         :ok <- require_work_request_scope(work_request, filters) do
+      {:ok, work_request}
+    else
+      {:error, :forbidden} -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_work_request_scope(%WorkRequest{} = work_request, filters) do
+    if work_request_matches_filters?(work_request, filters) do
+      :ok
+    else
+      {:error, :forbidden}
+    end
+  end
+
+  defp work_request_matches_filters?(%WorkRequest{} = work_request, filters) do
+    Enum.all?(filters, fn
+      {"repo", repo} when is_binary(repo) -> work_request.repo == repo
+      {"base_branch", base_branch} when is_binary(base_branch) -> work_request.base_branch == base_branch
+      _filter -> true
+    end)
   end
 
   defp require_architect_target_scope(repo, %Session{} = session, %{"work_package_id" => work_package_id}) do
@@ -4112,6 +4267,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool_capability("create_child_work_package"), do: "create:child_work_package"
   defp architect_tool_capability("mint_child_worker_key"), do: "mint:child_worker_key"
   defp architect_tool_capability("revoke_child_worker_key"), do: "revoke:child_worker_key"
+  defp architect_tool_capability("list_work_requests"), do: "read:work_request"
+  defp architect_tool_capability("read_work_request"), do: "read:work_request"
   defp architect_tool_capability("read_phase_board"), do: "read:phase"
   defp architect_tool_capability("approve_scope_expansion"), do: "approve:scope_expansion"
   defp architect_tool_capability("request_child_replan"), do: "request:child_replan"
@@ -6326,6 +6483,145 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       capabilities: session.assignment.capabilities,
       work_package_id: session.assignment.work_package_id
     }
+  end
+
+  defp work_request_cards(work_requests) do
+    Enum.map(work_requests, &work_request_card_payload/1)
+  end
+
+  defp work_request_card_payload(%WorkRequest{} = work_request) do
+    %{
+      "id" => work_request.id,
+      "title" => Redactor.redact_text(work_request.title),
+      "repo" => work_request.repo,
+      "base_branch" => work_request.base_branch,
+      "work_type" => work_request.work_type,
+      "desired_dispatch_shape" => work_request.desired_dispatch_shape,
+      "status" => work_request.status,
+      "inserted_at" => timestamp(work_request.inserted_at),
+      "updated_at" => timestamp(work_request.updated_at)
+    }
+  end
+
+  defp work_request_detail_payload(repo, %WorkRequest{} = work_request) do
+    with {:ok, questions} <- WorkRequestService.list_questions(repo, work_request.id),
+         {:ok, decisions} <- WorkRequestService.list_decisions(repo, work_request.id),
+         {:ok, planned_slices} <- WorkRequestService.list_planned_slices(repo, work_request.id) do
+      {:ok,
+       %{
+         "work_request" => work_request_payload(work_request),
+         "clarification_questions" => Enum.map(questions, &clarification_question_payload/1),
+         "decision_log_entries" => Enum.map(decisions, &decision_log_entry_payload/1),
+         "planned_slices" => Enum.map(planned_slices, &planned_slice_payload/1),
+         "summary" => work_request_summary_payload(questions, decisions, planned_slices)
+       }}
+    end
+  end
+
+  defp work_request_payload(%WorkRequest{} = work_request) do
+    %{
+      "id" => work_request.id,
+      "title" => Redactor.redact_text(work_request.title),
+      "repo" => work_request.repo,
+      "base_branch" => work_request.base_branch,
+      "work_type" => work_request.work_type,
+      "human_description" => Redactor.redact_text(work_request.human_description),
+      "constraints" => Redactor.redact_output(work_request.constraints || %{}),
+      "desired_dispatch_shape" => work_request.desired_dispatch_shape,
+      "status" => work_request.status,
+      "inserted_at" => timestamp(work_request.inserted_at),
+      "updated_at" => timestamp(work_request.updated_at)
+    }
+  end
+
+  defp clarification_question_payload(%ClarificationQuestion{} = question) do
+    %{
+      "id" => question.id,
+      "work_request_id" => question.work_request_id,
+      "sequence" => question.sequence,
+      "category" => Redactor.redact_text(question.category),
+      "question" => Redactor.redact_text(question.question),
+      "why_needed" => Redactor.redact_text(question.why_needed),
+      "status" => question.status,
+      "asked_by_agent_run_id" => question.asked_by_agent_run_id,
+      "answer" => Redactor.redact_text(question.answer),
+      "answered_by" => Redactor.redact_text(question.answered_by),
+      "answered_at" => timestamp(question.answered_at),
+      "inserted_at" => timestamp(question.inserted_at),
+      "updated_at" => timestamp(question.updated_at)
+    }
+  end
+
+  defp decision_log_entry_payload(%DecisionLogEntry{} = decision) do
+    %{
+      "id" => decision.id,
+      "work_request_id" => decision.work_request_id,
+      "sequence" => decision.sequence,
+      "source_type" => decision.source_type,
+      "source_id" => Redactor.redact_text(decision.source_id),
+      "decision" => Redactor.redact_text(decision.decision),
+      "rationale" => Redactor.redact_text(decision.rationale),
+      "scope_impact" => Redactor.redact_text(decision.scope_impact),
+      "created_by" => Redactor.redact_text(decision.created_by),
+      "created_at" => timestamp(decision.created_at),
+      "inserted_at" => timestamp(decision.inserted_at),
+      "updated_at" => timestamp(decision.updated_at)
+    }
+  end
+
+  defp planned_slice_payload(%PlannedSlice{} = planned_slice) do
+    %{
+      "id" => planned_slice.id,
+      "work_request_id" => planned_slice.work_request_id,
+      "sequence" => planned_slice.sequence,
+      "title" => Redactor.redact_text(planned_slice.title),
+      "goal" => Redactor.redact_text(planned_slice.goal),
+      "work_package_kind" => planned_slice.work_package_kind,
+      "target_base_branch" => planned_slice.target_base_branch,
+      "branch_pattern" => Redactor.redact_text(planned_slice.branch_pattern),
+      "owned_file_globs" => Enum.map(planned_slice.owned_file_globs || [], &Redactor.redact_text/1),
+      "forbidden_file_globs" => Enum.map(planned_slice.forbidden_file_globs || [], &Redactor.redact_text/1),
+      "acceptance_criteria" => Enum.map(planned_slice.acceptance_criteria || [], &Redactor.redact_text/1),
+      "validation_steps" => Enum.map(planned_slice.validation_steps || [], &Redactor.redact_text/1),
+      "review_lanes" => Enum.map(planned_slice.review_lanes || [], &Redactor.redact_text/1),
+      "stop_conditions" => Enum.map(planned_slice.stop_conditions || [], &Redactor.redact_text/1),
+      "status" => planned_slice.status,
+      "work_package_id" => planned_slice.work_package_id,
+      "dispatched_at" => timestamp(planned_slice.dispatched_at),
+      "inserted_at" => timestamp(planned_slice.inserted_at),
+      "updated_at" => timestamp(planned_slice.updated_at)
+    }
+  end
+
+  defp work_request_summary_payload(questions, decisions, planned_slices) do
+    %{
+      "open_question_count" => Enum.count(questions, &(&1.status == "open")),
+      "answered_question_count" => Enum.count(questions, &(&1.status == "answered")),
+      "closed_question_count" => Enum.count(questions, &(&1.status == "closed")),
+      "decision_count" => length(decisions),
+      "planned_slice_count" => Enum.count(planned_slices, &(&1.status == "planned")),
+      "approved_slice_count" => Enum.count(planned_slices, &(&1.status == "approved")),
+      "dispatched_slice_count" => Enum.count(planned_slices, &(&1.status == "dispatched")),
+      "skipped_slice_count" => Enum.count(planned_slices, &(&1.status == "skipped"))
+    }
+  end
+
+  @doc false
+  @spec mcp_timestamp(DateTime.t() | NaiveDateTime.t() | nil) :: String.t() | nil
+  def mcp_timestamp(%DateTime{} = timestamp), do: DateTime.to_iso8601(timestamp)
+
+  def mcp_timestamp(%NaiveDateTime{} = timestamp) do
+    timestamp
+    |> DateTime.from_naive!("Etc/UTC")
+    |> DateTime.to_iso8601()
+  end
+
+  def mcp_timestamp(nil), do: nil
+
+  defp timestamp(timestamp), do: mcp_timestamp(timestamp)
+
+  defp work_request_not_found_error(tool) do
+    {:error, -32_004, "Not found", %{"tool" => tool, "reason" => "not_found"}}
   end
 
   defp tool_result(payload) do

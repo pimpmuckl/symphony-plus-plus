@@ -6,12 +6,12 @@ AccessGrant permissions, virtual planning resources, readiness gates,
 review-suite evidence, PR evidence, and human merge controls.
 
 WorkRequest core persistence, planned-slice persistence, read API/list/detail
-dashboard views, scoped dashboard intake, the board-authenticated manual
-clarification loop, and manual planned-slice authoring/approval controls exist.
-Planned-slice dispatch linkage persistence and the core planned-slice dispatch
-CLI exist. MCP intake tools, automatic question generation, automatic slicing,
-dashboard/MCP dispatch actions, Linear state creation, and plugin packaging
-remain future work.
+dashboard views, scoped dashboard intake, read-only architect MCP WorkRequest
+reads, the board-authenticated manual clarification loop, and manual
+planned-slice authoring/approval controls exist. Planned-slice dispatch linkage
+persistence and the core planned-slice dispatch CLI exist. MCP intake tools,
+automatic question generation, automatic slicing, dashboard/MCP dispatch
+actions, Linear state creation, and plugin packaging remain future work.
 
 ## Purpose
 
@@ -62,6 +62,18 @@ is blocked while any clarification question remains open. For
 planned slices, approve or skip existing mutable slices, and mark a
 `ready_for_slicing` request `sliced` only after at least one planned slice is
 approved.
+
+Explicit phase-scoped architect MCP sessions with `read:work_request` can read
+the same scoped WorkRequest surface through `list_work_requests(status?)` and
+`read_work_request(work_request_id)`. The list tool accepts only optional
+`status` and always uses the grant's frozen repo/base-branch scope. Legacy null
+`phase_id` architect grants are not supported for these MCP reads and fail
+closed rather than deriving scope from a mutable anchor package. The detail
+tool returns the WorkRequest, clarification questions, decision log entries,
+planned slices, and count/status summaries. Missing or out-of-scope
+WorkRequests fail closed as not found, and payloads are JSON-safe and redacted
+so work-key secrets, API tokens, private handoff payloads, and worker secret
+material are not returned.
 
 When runtime intake is not available for a lane, the canonical WorkRequest is
 one versioned, operator-approved Markdown artifact.
@@ -253,7 +265,7 @@ replace the implementing worker's normal review-suite responsibility.
 
 This contract does not implement or require:
 
-- MCP WorkRequest intake tools or architect-planner tools.
+- MCP WorkRequest intake tools, WorkRequest mutation tools, or architect-planner tools.
 - Plugin packaging changes.
 - Automatic question generation.
 - Automatic WorkPackage slicing.

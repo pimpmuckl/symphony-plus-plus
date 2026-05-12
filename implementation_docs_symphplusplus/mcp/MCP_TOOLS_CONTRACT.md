@@ -30,6 +30,8 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | create_child_work_package | Create a `phase_child` work package inside the architect grant's current phase; child repo, phase, parent, and base branch are constrained to the architect phase anchor. |
 | mint_child_worker_key | Mint a child-scoped worker grant for a same-phase `phase_child` package; worker capabilities are limited to the child worker set and expiry cannot exceed the architect grant. |
 | revoke_child_worker_key | Phase 7 stub for revoking child worker keys; returns `phase7_not_implemented` after architect authorization. |
+| list_work_requests | List WorkRequests scoped to the architect assignment repo/base branch. Accepts only optional `status`. |
+| read_work_request | Read one scoped WorkRequest with clarification questions, decision log entries, planned slices, and count/status summaries. |
 | read_child_status | Read the architect grant's scoped anchor package status, or a same-phase child work-package status when the architect grant has child read capabilities. |
 | read_phase_board | Read the architect grant's scoped phase board, filtered to the frozen repo/base branch for explicit phase grants, including merged-child phase progress. |
 | request_child_replan | Phase 7 stub for child replan requests; returns `phase7_not_implemented` after architect authorization. |
@@ -57,9 +59,12 @@ than being treated as phase-wide. Existing lifecycle
 capabilities such as
 `architect:lifecycle.transition` do not imply MCP architect tool capabilities;
 P3-003 requires the explicit MCP capability strings listed in the permission
-model. Phase-dependent architect tools revalidate the grant's explicit phase
-scope plus the anchor repo/base-branch scope frozen when the phase architect
-grant was minted. Legacy null-`phase_id` grants may still derive the current
+model. WorkRequest read tools are advertised only for explicit phase-scoped
+architect grants with usable frozen repo/base-branch scope; legacy
+null-`phase_id` architect grants do not discover those tools. Phase-dependent
+architect tools revalidate the grant's explicit phase scope plus the anchor
+repo/base-branch scope frozen when the phase architect grant was minted.
+Legacy null-`phase_id` grants may still derive the current
 explicit anchor phase for non-delegation phase reads, but P7 child
 delegation/status operations fail closed when the frozen repo/base-branch
 snapshot is missing. `create_child_work_package` always creates a `phase_child`
@@ -91,6 +96,16 @@ there. `template.secret_handoff` may specify only `mode`, `store_dir`, and
 worker-grant capabilities. `revoke_child_worker_key` remains a not-implemented
 Phase 7 stub in this package; deleting persisted child handoffs on revoke
 belongs with the future child-revocation implementation.
+`list_work_requests` and `read_work_request` require `read:work_request`, are
+read-only, and require an explicit phase-scoped architect grant with frozen
+repo/base-branch scope. They do not accept caller-supplied repo or base-branch
+arguments. Legacy null `phase_id` architect grants are not supported for
+WorkRequest MCP reads and fail closed rather than deriving scope from a mutable
+anchor package. `list_work_requests` accepts only optional `status`;
+`read_work_request` requires `work_request_id`. Missing or out-of-scope
+WorkRequests fail closed as not found without leaking sibling content. Payloads
+are JSON-safe and redacted: they exclude work-key secrets, tokens, private
+handoff payloads, and worker secret material.
 `read_child_status` requires both `read:child_progress` and
 `read:child_findings` because its summary includes progress, findings, and
 artifact counts. `approve_child_ready_state` revalidates the ready child against

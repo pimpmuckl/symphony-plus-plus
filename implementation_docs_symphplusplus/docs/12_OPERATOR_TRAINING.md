@@ -48,12 +48,12 @@ not a claim that MCP intake tooling, automatic slicing, dashboard dispatch, or
 Linear state creation already exists.
 
 Runtime WorkRequest persistence, the read API, the dashboard list/detail view,
-scoped dashboard intake, the manual clarification loop, and manual planned-slice
-authoring now exist. Dashboard intake is board-authenticated and only appears
-for board grants with frozen repo and base-branch scope. The repo and base
-branch are displayed as locked values and are enforced by the server when
-creating the draft. Humans can mark a draft WorkRequest
-`ready_for_clarification` from the detail view. For board-visible, in-scope
+scoped dashboard intake, read-only architect MCP WorkRequest reads, the manual
+clarification loop, and manual planned-slice authoring now exist. Dashboard
+intake is board-authenticated and only appears for board grants with frozen repo
+and base-branch scope. The repo and base branch are displayed as locked values
+and are enforced by the server when creating the draft. Humans can mark a draft
+WorkRequest `ready_for_clarification` from the detail view. For board-visible, in-scope
 WorkRequests, the detail view can also ask clarification questions, answer or
 close open questions, record durable decisions, mark `human_info_needed`, and
 mark `ready_for_slicing` only after no open clarification questions remain.
@@ -61,6 +61,14 @@ Once a request is `ready_for_slicing` or `sliced`, the detail view can add
 planned slices, approve or skip mutable slices, and mark a request `sliced`
 only after at least one planned slice has been approved. This does not dispatch
 or link WorkPackages.
+
+Explicit phase-scoped architect MCP sessions with `read:work_request` can call
+`list_work_requests(status?)` and `read_work_request(work_request_id)` for the
+same frozen repo/base-branch WorkRequest scope. These tools are read-only, do
+not accept arbitrary repo or base-branch arguments, and hide missing or
+out-of-scope requests as not found. Legacy null `phase_id` architect grants are
+not supported for these WorkRequest reads and fail closed rather than reading
+scope from a mutable anchor package.
 
 Planned-slice dispatch is available as an operator CLI, not as a dashboard
 button or MCP tool. The CLI dispatches one `approved` planned slice by

@@ -96,6 +96,22 @@
       "purpose": "Phase 7 stub for revoking child worker keys; returns phase7_not_implemented after architect authorization."
     },
     {
+      "name": "list_work_requests",
+      "purpose": "List WorkRequests scoped to an explicit phase architect grant's frozen repo/base branch.",
+      "required_capabilities": ["read:work_request"],
+      "arguments_policy": "Accepts only optional status. Repo and base_branch are never caller-supplied; they come from the live explicit phase architect grant's frozen scope.",
+      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope and a matching claimed phase anchor. Legacy null phase_id architect grants are not supported for WorkRequest MCP reads and fail closed instead of deriving scope from a mutable anchor package. Missing or mismatched scope fails closed.",
+      "response_policy": "Returns safe JSON WorkRequest cards with redacted text plus total_count, scope, and filters. Per-request count/status summaries are returned by read_work_request. The payload excludes work-key secrets, API tokens, private handoff payloads, and worker secret material."
+    },
+    {
+      "name": "read_work_request",
+      "purpose": "Read one scoped WorkRequest with clarification questions, decision log entries, planned slices, and count/status summaries.",
+      "required_capabilities": ["read:work_request"],
+      "arguments_policy": "Requires work_request_id and accepts no repo/base-branch override.",
+      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope and a matching claimed phase anchor. Legacy null phase_id architect grants are not supported for WorkRequest MCP reads and fail closed instead of deriving scope from a mutable anchor package. The target WorkRequest must match that frozen repo and base branch. Missing or out-of-scope WorkRequests fail closed as not_found without leaking sibling content.",
+      "response_policy": "Returns safe JSON with redacted WorkRequest detail, clarification questions, decision log entries, planned slices, and summary counts. The payload excludes work-key secrets, API tokens, private handoff payloads, and worker secret material."
+    },
+    {
       "name": "read_child_status",
       "purpose": "Read the architect grant's scoped anchor package status or a same-phase child work-package status.",
       "required_capabilities": ["read:child_progress", "read:child_findings"],
@@ -129,8 +145,8 @@
       "purpose": "Phase 7 stub for phase updates; returns phase7_not_implemented after architect authorization."
     }
   ],
-  "architect_authorization_policy": "Architect tools require a live architect grant session and the matching architect capability. Phase architect grants are revalidated against the frozen phase/repo/base-branch anchor scope before phase-dependent actions; scoped explicit phase-board reads and P7 child delegation/status operations fail closed if that snapshot is missing. Missing snapshots are not backfilled from mutable anchor state. Worker grants and architect grants without the required capability are denied. Worker grants cannot be minted with architect-only MCP capabilities.",
-  "architect_discovery_policy": "tools/list advertises architect tools only for already-bound architect sessions and filters them to the live grant capabilities. Stale sessions expose only health and claim_work_key for refresh. Anonymous and worker sessions receive the worker-facing tool surface. Architect sessions may call get_current_assignment and read sympp://assignment/current for scoped assignment introspection, but cannot use worker package read/write tools. Lifecycle capabilities such as architect:lifecycle.transition do not imply MCP architect tool capabilities; explicit MCP capability strings are required.",
+  "architect_authorization_policy": "Architect tools require a live architect grant session and the matching architect capability. WorkRequest read tools require read:work_request plus an explicit phase-scoped architect grant, and use only the grant's frozen repo/base-branch scope after revalidating the claimed phase anchor. Legacy null phase_id architect grants are not supported for WorkRequest MCP reads and fail closed instead of deriving scope from a mutable anchor package. Phase architect grants are revalidated against the frozen phase/repo/base-branch anchor scope before phase-dependent actions; scoped explicit phase-board reads and P7 child delegation/status operations fail closed if that snapshot is missing. Missing snapshots are not backfilled from mutable anchor state. Worker grants and architect grants without the required capability are denied. Worker grants cannot be minted with architect-only MCP capabilities.",
+  "architect_discovery_policy": "tools/list advertises architect tools only for already-bound architect sessions and filters them to the live grant capabilities. WorkRequest read tools are advertised only for explicit phase-scoped architect grants with usable frozen repo/base-branch scope; legacy null phase_id architect grants do not discover those tools. Stale sessions expose only health and claim_work_key for refresh. Anonymous and worker sessions receive the worker-facing tool surface. Architect sessions may call get_current_assignment and read sympp://assignment/current for scoped assignment introspection, but cannot use worker package read/write tools. Lifecycle capabilities such as architect:lifecycle.transition do not imply MCP architect tool capabilities; explicit MCP capability strings are required.",
   "resources": [
     "sympp://assignment/current",
     "sympp://work-packages/{id}/context.md",
