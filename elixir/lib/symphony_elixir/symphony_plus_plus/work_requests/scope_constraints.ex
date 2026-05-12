@@ -236,6 +236,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints do
       end
   end
 
+  defp path_subset?([:globstar | _owned_segments], [{:wildcard, "*", _regex}, :globstar]), do: true
+
   defp path_subset?([:globstar | _owned_segments], _allowed_segments), do: false
 
   defp path_subset?([owned_segment | rest_owned], [allowed_segment | rest_allowed]) do

@@ -178,9 +178,9 @@ is the explicit no-allow-list-restriction mode. A wildcard allow entry without
 an explicit `**`, such as `*`, only grants that wildcard segment shape; it does
 not authorize recursive owned globs such as `**/foo` or bare `**`. Recursive
 ownership is valid only when the allow-list itself explicitly contains a
-recursive `**` scope, such as `elixir/**`, or when the allow-list is missing or
-empty. Dispatch remains future work until that contract is part of the dispatch
-path.
+recursive `**` scope, such as `elixir/**` or `*/**`, or when the allow-list is
+missing or empty. Dispatch remains future work until that contract is part of
+the dispatch path.
 
 Feature work defaults to one feature branch with smaller PRs targeting that
 feature branch. Use direct `main` PRs for narrow direct-main changes when the
