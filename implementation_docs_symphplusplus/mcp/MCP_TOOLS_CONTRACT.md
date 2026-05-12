@@ -37,6 +37,10 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | answer_work_request_question | Answer an open clarification question that belongs to a scoped WorkRequest. |
 | close_work_request_question | Close an open clarification question that belongs to a scoped WorkRequest without recording an answer. |
 | record_work_request_decision | Record a durable decision log entry on a scoped WorkRequest. |
+| add_work_request_planned_slice | Add a planned slice to a scoped WorkRequest. |
+| approve_work_request_planned_slice | Approve a planned slice that belongs to a scoped WorkRequest. |
+| skip_work_request_planned_slice | Skip a planned slice that belongs to a scoped WorkRequest. |
+| mark_work_request_sliced | Mark a scoped WorkRequest sliced using the existing approved-slice requirement. |
 | read_child_status | Read the architect grant's scoped anchor package status, or a same-phase child work-package status when the architect grant has child read capabilities. |
 | read_phase_board | Read the architect grant's scoped phase board, filtered to the frozen repo/base branch for explicit phase grants, including merged-child phase progress. |
 | request_child_replan | Phase 7 stub for child replan requests; returns `phase7_not_implemented` after architect authorization. |
@@ -130,6 +134,17 @@ service primitives: status movement is explicit through
 `set_work_request_status`, and question/decision tools do not mirror
 dashboard-only helper guards, auto-transition parent status, or add a new
 lifecycle/status transition matrix.
+`add_work_request_planned_slice`, `approve_work_request_planned_slice`,
+`skip_work_request_planned_slice`, and `mark_work_request_sliced` also require
+`write:work_request`, the same explicit phase-scoped frozen repo/base-branch
+scope, and `work_request_id` on every mutation. Approve and skip verify that
+`planned_slice_id` belongs to the scoped WorkRequest before mutating and fail
+closed as not found for sibling slices. `mark_work_request_sliced` uses the
+existing WorkRequest service behavior, including the approved-or-dispatched
+slice requirement. Responses return JSON-safe redacted planned-slice or
+WorkRequest status projections plus scope/status metadata. These tools do not
+dispatch planned slices, create WorkPackages, alter SecretHandoff, mutate
+Linear, run automatic slicing/package generation, or change dashboard behavior.
 `read_child_status` requires both `read:child_progress` and
 `read:child_findings` because its summary includes progress, findings, and
 artifact counts. `approve_child_ready_state` revalidates the ready child against

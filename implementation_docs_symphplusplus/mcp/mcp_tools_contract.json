@@ -155,6 +155,39 @@
       "response_policy": "Returns safe JSON with the redacted created decision log entry, a minimal parent WorkRequest status projection, scope, and status metadata. It excludes read_work_request detail fields, work-key secrets, API tokens, private handoff payloads, and worker secret material."
     },
     {
+      "name": "add_work_request_planned_slice",
+      "purpose": "Add a planned slice to a scoped WorkRequest.",
+      "required_capabilities": ["write:work_request"],
+      "required_arguments": ["work_request_id", "title", "goal", "work_package_kind", "target_base_branch", "owned_file_globs", "forbidden_file_globs", "acceptance_criteria", "validation_steps", "review_lanes", "stop_conditions"],
+      "optional_arguments": ["branch_pattern"],
+      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope and verifies the target WorkRequest is in scope before creating the planned slice. It does not dispatch planned slices, create WorkPackages, alter SecretHandoff, mutate Linear, run automatic slicing/package generation, or change dashboard behavior.",
+      "response_policy": "Returns safe JSON with the redacted created planned slice, a minimal parent WorkRequest status projection, scope, and status metadata. It excludes read_work_request detail fields, work-key secrets, API tokens, private handoff payloads, and worker secret material."
+    },
+    {
+      "name": "approve_work_request_planned_slice",
+      "purpose": "Approve a planned slice that belongs to a scoped WorkRequest.",
+      "required_capabilities": ["write:work_request"],
+      "required_arguments": ["work_request_id", "planned_slice_id", "current_status"],
+      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope, verifies the target WorkRequest is in scope, and verifies planned_slice_id belongs to that WorkRequest before mutating. Sibling slice ids fail closed as not_found without leaking sibling content.",
+      "response_policy": "Returns safe JSON with the redacted updated planned slice, a minimal parent WorkRequest status projection, scope, and status metadata. It excludes read_work_request detail fields, work-key secrets, API tokens, private handoff payloads, and worker secret material."
+    },
+    {
+      "name": "skip_work_request_planned_slice",
+      "purpose": "Skip a planned slice that belongs to a scoped WorkRequest.",
+      "required_capabilities": ["write:work_request"],
+      "required_arguments": ["work_request_id", "planned_slice_id", "current_status"],
+      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope, verifies the target WorkRequest is in scope, and verifies planned_slice_id belongs to that WorkRequest before mutating. Sibling slice ids fail closed as not_found without leaking sibling content. The existing service preserves the last active slice requirement for already-sliced WorkRequests.",
+      "response_policy": "Returns safe JSON with the redacted updated planned slice, a minimal parent WorkRequest status projection, scope, and status metadata. It excludes read_work_request detail fields, work-key secrets, API tokens, private handoff payloads, and worker secret material."
+    },
+    {
+      "name": "mark_work_request_sliced",
+      "purpose": "Mark a scoped WorkRequest sliced using the existing approved-slice requirement.",
+      "required_capabilities": ["write:work_request"],
+      "required_arguments": ["work_request_id", "current_status"],
+      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope and verifies the target WorkRequest is in scope before calling WorkRequestService.mark_sliced. Legacy null phase_id architect grants, missing snapshots, drifted anchors, worker sessions, anonymous sessions, stale sessions, revoked sessions, and architect sessions without write:work_request fail closed.",
+      "response_policy": "Returns safe JSON with a minimal updated WorkRequest status projection plus scope and status metadata. It preserves the existing approved-or-dispatched planned-slice requirement and excludes read_work_request detail fields, work-key secrets, API tokens, private handoff payloads, and worker secret material."
+    },
+    {
       "name": "read_child_status",
       "purpose": "Read the architect grant's scoped anchor package status or a same-phase child work-package status.",
       "required_capabilities": ["read:child_progress", "read:child_findings"],
