@@ -67,6 +67,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "split_work_package",
     "publish_phase_update"
   ]
+  @phase_scoped_work_request_tools [
+    "list_work_requests",
+    "read_work_request"
+  ]
   @phase7_stub_architect_tools [
     "revoke_child_worker_key",
     "request_child_replan",
@@ -1141,7 +1145,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp tool_specs_for_session(repo, session) do
     case Auth.require_session(session, repo) do
       {:ok, %Session{assignment: %{grant_role: "architect"}} = session} ->
-        {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs_for_session(session)]}
+        {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs_for_session(repo, session)]}
 
       {:ok, %Session{assignment: %{grant_role: "worker"}}} ->
         {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
@@ -1159,13 +1163,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp claimable_tool_specs, do: [health_tool_spec(), worker_tool_spec("claim_work_key")]
 
-  defp architect_tool_specs_for_session(%Session{assignment: %{capabilities: capabilities}}) when is_list(capabilities) do
+  defp architect_tool_specs_for_session(repo, %Session{assignment: %{capabilities: capabilities}} = session) when is_list(capabilities) do
     @architect_tools
     |> Enum.filter(&(architect_tool_required_capabilities(&1) -- capabilities == []))
+    |> Enum.filter(&architect_tool_visible_for_session?(repo, session, &1))
     |> Enum.map(&architect_tool_spec/1)
   end
 
-  defp architect_tool_specs_for_session(_session), do: []
+  defp architect_tool_specs_for_session(_repo, _session), do: []
+
+  defp architect_tool_visible_for_session?(repo, %Session{} = session, tool) when tool in @phase_scoped_work_request_tools do
+    with {:ok, grant} <- require_live_architect_grant(repo, session),
+         true <- architect_explicit_phase_grant?(grant),
+         {:ok, _filters} <- Dashboard.phase_board_filters_for_grant(grant) do
+      true
+    else
+      _reason -> false
+    end
+  end
+
+  defp architect_tool_visible_for_session?(_repo, %Session{}, _tool), do: true
 
   defp schema(properties, required) do
     %{"type" => "object", "additionalProperties" => false, "properties" => properties, "required" => required}

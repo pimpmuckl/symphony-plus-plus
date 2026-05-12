@@ -154,7 +154,9 @@ surface. Architect sessions may call `get_current_assignment()` and read
 reconnect, but they still cannot use worker package read/write tools.
 Lifecycle capabilities such as `architect:lifecycle.transition` do not imply
 MCP architect tool capabilities; the explicit MCP capability strings listed in
-the permission model are required.
+the permission model are required. WorkRequest read tools are advertised only
+for explicit phase-scoped architect grants with usable frozen repo/base-branch
+scope; legacy null `phase_id` architect grants do not discover those tools.
 
 `list_work_requests(status?)` and `read_work_request(work_request_id)` are
 read-only architect tools gated by `read:work_request`. They require an

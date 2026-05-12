@@ -859,25 +859,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   end
 
   test "tools list advertises architect schemas only for architect sessions", %{repo: repo} do
-    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-TOOLS-LIST", kind: "mcp"))
+    {_anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-TOOLS-LIST", [
+        "read:child_progress",
+        "read:child_findings",
+        "read:work_request",
+        "mint:child_worker_key",
+        "read:phase",
+        "approve:child_ready_state",
+        "approve:scope_expansion",
+        "merge:child_into_phase",
+        "split:child_work_package"
+      ])
 
-    assert {:ok, architect_work_key} =
-             create_architect_work_key(repo, package.id, [
-               "read:child_progress",
-               "read:child_findings",
-               "read:work_request",
-               "mint:child_worker_key",
-               "read:phase",
-               "approve:child_ready_state",
-               "approve:scope_expansion",
-               "merge:child_into_phase",
-               "split:child_work_package"
-             ])
-
-    assert {:ok, architect_assignment} =
-             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
-
-    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
     server = Server.new(Config.default(repo: repo), initialized: true, session: session)
 
     response = Server.handle(%{"jsonrpc" => "2.0", "id" => "architect-tools", "method" => "tools/list", "params" => %{}}, server)
@@ -905,6 +899,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["merge_child_into_phase", "inputSchema", "required"]) == ["work_package_id", "merge_artifact"]
     assert get_in(tools_by_name, ["merge_child_into_phase", "inputSchema", "properties", "merge_artifact", "required"]) == ["status", "uri"]
     assert get_in(tools_by_name, ["split_work_package", "inputSchema", "properties", "child_specs", "minItems"]) == 1
+  end
+
+  test "tools list hides WorkRequest reads for legacy architect sessions", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-WR-TOOLS-LEGACY", kind: "mcp"))
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:work_request"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+    server = Server.new(Config.default(repo: repo), initialized: true, session: session)
+
+    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "legacy-architect-tools", "method" => "tools/list", "params" => %{}}, server)
+    tools_by_name = response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
+
+    assert Map.has_key?(tools_by_name, "sympp.health")
+    assert Map.has_key?(tools_by_name, "get_current_assignment")
+    refute Map.has_key?(tools_by_name, "list_work_requests")
+    refute Map.has_key?(tools_by_name, "read_work_request")
+  end
+
+  test "tools list hides WorkRequest reads when phase scope snapshot is missing", %{repo: repo} do
+    {_anchor, session, grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-TOOLS-MISSING-SCOPE", [
+        "read:work_request"
+      ])
+
+    repo.update_all(
+      from(access_grant in AccessGrant, where: access_grant.id == ^grant.id),
+      set: [scope_base_branch: nil]
+    )
+
+    server = Server.new(Config.default(repo: repo), initialized: true, session: session)
+
+    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "missing-scope-architect-tools", "method" => "tools/list", "params" => %{}}, server)
+    tools_by_name = response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
+
+    refute Map.has_key?(tools_by_name, "list_work_requests")
+    refute Map.has_key?(tools_by_name, "read_work_request")
   end
 
   test "tools list exposes only claim refresh for stale architect sessions after grant revocation", %{repo: repo} do

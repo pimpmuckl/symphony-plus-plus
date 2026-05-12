@@ -59,9 +59,12 @@ than being treated as phase-wide. Existing lifecycle
 capabilities such as
 `architect:lifecycle.transition` do not imply MCP architect tool capabilities;
 P3-003 requires the explicit MCP capability strings listed in the permission
-model. Phase-dependent architect tools revalidate the grant's explicit phase
-scope plus the anchor repo/base-branch scope frozen when the phase architect
-grant was minted. Legacy null-`phase_id` grants may still derive the current
+model. WorkRequest read tools are advertised only for explicit phase-scoped
+architect grants with usable frozen repo/base-branch scope; legacy
+null-`phase_id` architect grants do not discover those tools. Phase-dependent
+architect tools revalidate the grant's explicit phase scope plus the anchor
+repo/base-branch scope frozen when the phase architect grant was minted.
+Legacy null-`phase_id` grants may still derive the current
 explicit anchor phase for non-delegation phase reads, but P7 child
 delegation/status operations fail closed when the frozen repo/base-branch
 snapshot is missing. `create_child_work_package` always creates a `phase_child`
