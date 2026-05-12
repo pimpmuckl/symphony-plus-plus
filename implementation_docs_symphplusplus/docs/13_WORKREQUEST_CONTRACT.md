@@ -63,15 +63,17 @@ planned slices, approve or skip existing mutable slices, and mark a
 `ready_for_slicing` request `sliced` only after at least one planned slice is
 approved.
 
-Architect MCP sessions with `read:work_request` can read the same scoped
-WorkRequest surface through `list_work_requests(status?)` and
+Explicit phase-scoped architect MCP sessions with `read:work_request` can read
+the same scoped WorkRequest surface through `list_work_requests(status?)` and
 `read_work_request(work_request_id)`. The list tool accepts only optional
-`status` and always derives repo/base-branch scope from the live architect
-assignment. The detail tool returns the WorkRequest, clarification questions,
-decision log entries, planned slices, and count/status summaries. Missing or
-out-of-scope WorkRequests fail closed as not found, and payloads are JSON-safe
-and redacted so work-key secrets, API tokens, private handoff payloads, and
-worker secret material are not returned.
+`status` and always uses the grant's frozen repo/base-branch scope. Legacy null
+`phase_id` architect grants are not supported for these MCP reads and fail
+closed rather than deriving scope from a mutable anchor package. The detail
+tool returns the WorkRequest, clarification questions, decision log entries,
+planned slices, and count/status summaries. Missing or out-of-scope
+WorkRequests fail closed as not found, and payloads are JSON-safe and redacted
+so work-key secrets, API tokens, private handoff payloads, and worker secret
+material are not returned.
 
 When runtime intake is not available for a lane, the canonical WorkRequest is
 one versioned, operator-approved Markdown artifact.

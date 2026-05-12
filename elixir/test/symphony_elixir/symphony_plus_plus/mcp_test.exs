@@ -3093,7 +3093,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   end
 
   test "architect WorkRequest read tools are scoped, filtered, redacted, and read-only", %{repo: repo} do
-    {anchor, session} = create_architect_session(repo, "SYMPP-ARCHITECT-WR-READ", ["read:work_request"])
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-READ", [
+        "read:work_request"
+      ])
 
     in_scope =
       create_work_request!(repo,
@@ -3232,7 +3235,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   end
 
   test "WorkRequest MCP reads require dedicated capability and fixed scope arguments", %{repo: repo} do
-    {_package, insufficient_session} = create_architect_session(repo, "SYMPP-ARCHITECT-WR-AUTHZ", ["read:phase"])
+    {_package, insufficient_session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-AUTHZ", ["read:phase"])
 
     list_denied = mcp_tool(repo, insufficient_session, "list_work_requests", %{})
     assert get_in(list_denied, ["error", "code"]) == -32_001
@@ -3242,7 +3246,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(read_denied, ["error", "code"]) == -32_001
     assert get_in(read_denied, ["error", "data", "reason"]) == "insufficient_capability"
 
-    {_package, session} = create_architect_session(repo, "SYMPP-ARCHITECT-WR-STRICT", ["read:work_request"])
+    {_package, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-STRICT", ["read:work_request"])
 
     repo_argument_response = mcp_tool(repo, session, "list_work_requests", %{"repo" => "nextide/other"})
     assert get_in(repo_argument_response, ["error", "data", "reason"]) == "unexpected_argument"
@@ -3254,6 +3259,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     invalid_status_response = mcp_tool(repo, session, "list_work_requests", %{"status" => "merged"})
     assert get_in(invalid_status_response, ["error", "data", "reason"]) == "invalid_status"
+  end
+
+  test "WorkRequest MCP reads reject legacy nil-phase architect grants", %{repo: repo} do
+    {anchor, session} = create_architect_session(repo, "SYMPP-ARCHITECT-WR-LEGACY", ["read:work_request"])
+
+    original_scope =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-LEGACY-ORIGINAL",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    sibling =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-LEGACY-SIBLING",
+        repo: "nextide/other",
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    repo.update!(Ecto.Changeset.change(anchor, repo: sibling.repo))
+
+    list_response = mcp_tool(repo, session, "list_work_requests", %{"status" => "ready_for_slicing"})
+    assert get_in(list_response, ["error", "code"]) == -32_003
+    assert get_in(list_response, ["error", "data", "reason"]) == "outside_session_scope"
+    refute inspect(list_response) =~ original_scope.id
+    refute inspect(list_response) =~ sibling.id
+
+    read_response = mcp_tool(repo, session, "read_work_request", %{"work_request_id" => sibling.id})
+    assert get_in(read_response, ["error", "code"]) == -32_003
+    assert get_in(read_response, ["error", "data", "reason"]) == "outside_session_scope"
+    refute inspect(read_response) =~ sibling.id
   end
 
   test "WorkRequest MCP reads fail closed when architect scope snapshot is missing", %{repo: repo} do

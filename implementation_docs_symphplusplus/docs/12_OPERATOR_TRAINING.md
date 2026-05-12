@@ -62,11 +62,13 @@ planned slices, approve or skip mutable slices, and mark a request `sliced`
 only after at least one planned slice has been approved. This does not dispatch
 or link WorkPackages.
 
-Architect MCP sessions with `read:work_request` can call
+Explicit phase-scoped architect MCP sessions with `read:work_request` can call
 `list_work_requests(status?)` and `read_work_request(work_request_id)` for the
-same repo/base-branch WorkRequest scope. These tools are read-only, do not
-accept arbitrary repo or base-branch arguments, and hide missing or out-of-scope
-requests as not found.
+same frozen repo/base-branch WorkRequest scope. These tools are read-only, do
+not accept arbitrary repo or base-branch arguments, and hide missing or
+out-of-scope requests as not found. Legacy null `phase_id` architect grants are
+not supported for these WorkRequest reads and fail closed rather than reading
+scope from a mutable anchor package.
 
 Planned-slice dispatch is available as an operator CLI, not as a dashboard
 button or MCP tool. The CLI dispatches one `approved` planned slice by

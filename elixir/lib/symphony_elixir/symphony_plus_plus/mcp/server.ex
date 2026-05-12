@@ -1721,7 +1721,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp scoped_work_request_filters(repo, %Session{} = session) do
     with {:ok, grant} <- require_live_architect_grant(repo, session),
          :ok <- require_work_request_anchor_scope(repo, session, grant),
-         {:ok, filters} <- Dashboard.work_request_filters_for_grant(repo, grant),
+         {:ok, filters} <- Dashboard.phase_board_filters_for_grant(grant),
          {:ok, scope} <- work_request_scope_payload(filters) do
       {:ok, work_request_filters_from_scope(scope), scope}
     else
@@ -1734,7 +1734,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if architect_explicit_phase_grant?(grant) do
       require_architect_phase_anchor(repo, session, grant.phase_id)
     else
-      :ok
+      {:error, :phase_scope_not_available}
     end
   end
 

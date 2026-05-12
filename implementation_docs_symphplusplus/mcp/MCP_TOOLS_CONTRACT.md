@@ -94,13 +94,15 @@ worker-grant capabilities. `revoke_child_worker_key` remains a not-implemented
 Phase 7 stub in this package; deleting persisted child handoffs on revoke
 belongs with the future child-revocation implementation.
 `list_work_requests` and `read_work_request` require `read:work_request`, are
-read-only, and derive their repo/base-branch scope from the live architect
-assignment. They do not accept caller-supplied repo or base-branch arguments.
-`list_work_requests` accepts only optional `status`; `read_work_request`
-requires `work_request_id`. Missing or out-of-scope WorkRequests fail closed as
-not found without leaking sibling content. Payloads are JSON-safe and redacted:
-they exclude work-key secrets, tokens, private handoff payloads, and worker
-secret material.
+read-only, and require an explicit phase-scoped architect grant with frozen
+repo/base-branch scope. They do not accept caller-supplied repo or base-branch
+arguments. Legacy null `phase_id` architect grants are not supported for
+WorkRequest MCP reads and fail closed rather than deriving scope from a mutable
+anchor package. `list_work_requests` accepts only optional `status`;
+`read_work_request` requires `work_request_id`. Missing or out-of-scope
+WorkRequests fail closed as not found without leaking sibling content. Payloads
+are JSON-safe and redacted: they exclude work-key secrets, tokens, private
+handoff payloads, and worker secret material.
 `read_child_status` requires both `read:child_progress` and
 `read:child_findings` because its summary includes progress, findings, and
 artifact counts. `approve_child_ready_state` revalidates the ready child against
