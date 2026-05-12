@@ -234,6 +234,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
           "read:phase",
           "read:child_progress",
           "read:child_findings",
+          "read:work_request",
           "mint:child_worker_key",
           "approve:child_ready_state",
           "split:child_work_package",
@@ -245,6 +246,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
 
       assert "worker grants cannot include architect capabilities" in errors_on(changeset).capabilities
     end
+  end
+
+  test "architect grant can include work request read capability", %{repo: repo} do
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
+    work_key = WorkKey.generate()
+
+    assert {:ok, %AccessGrant{} = grant} =
+             Repository.create(repo, %{
+               work_package_id: work_package.id,
+               display_key: work_key.display_key,
+               secret_hash: WorkKey.secret_hash(work_key.secret),
+               grant_role: "architect",
+               capabilities: ["read:work_request"],
+               expires_at: DateTime.add(DateTime.utc_now(:microsecond), 60, :second)
+             })
+
+    assert grant.capabilities == ["read:work_request"]
+    assert grant.phase_id == nil
   end
 
   test "architect read phase grants require phase scope", %{repo: repo} do
