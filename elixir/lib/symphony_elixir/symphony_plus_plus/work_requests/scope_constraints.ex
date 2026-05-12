@@ -236,11 +236,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints do
       end
   end
 
+  defp path_subset?([:globstar | _owned_segments] = owned_segments, [allowed_segment])
+       when allowed_segment != :globstar do
+    universal_segment?(allowed_segment) and pattern_requires_nonempty_path?(owned_segments)
+  end
+
+  defp path_subset?([:globstar | _owned_segments] = owned_segments, [allowed_segment, :globstar])
+       when allowed_segment != :globstar do
+    universal_segment?(allowed_segment) and pattern_requires_nonempty_path?(owned_segments)
+  end
+
   defp path_subset?([:globstar | _owned_segments], _allowed_segments), do: false
 
   defp path_subset?([owned_segment | rest_owned], [allowed_segment | rest_allowed]) do
     segment_subset?(owned_segment, allowed_segment) and path_subset?(rest_owned, rest_allowed)
   end
+
+  defp pattern_requires_nonempty_path?(segments), do: Enum.any?(segments, &(&1 != :globstar))
+
+  defp universal_segment?({:wildcard, source, _regex}) do
+    tokens = String.graphemes(source)
+
+    "*" in tokens and Enum.all?(tokens, &(&1 in ["*", "?"])) and Enum.count(tokens, &(&1 == "?")) <= 1
+  end
+
+  defp universal_segment?(_segment), do: false
 
   defp segment_subset?(:globstar, _allowed_segment), do: false
   defp segment_subset?(_owned_segment, :globstar), do: true
