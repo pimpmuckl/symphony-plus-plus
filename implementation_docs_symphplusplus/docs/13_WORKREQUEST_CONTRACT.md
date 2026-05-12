@@ -8,8 +8,9 @@ review-suite evidence, PR evidence, and human merge controls.
 WorkRequest core persistence, planned-slice persistence, read API/list/detail
 dashboard views, scoped dashboard intake, the board-authenticated manual
 clarification loop, and manual planned-slice authoring/approval controls exist.
-MCP intake tools, automatic question generation, automatic slicing, dispatch,
-Linear state creation, and plugin packaging remain future work.
+Planned-slice dispatch linkage persistence exists as a ledger primitive. MCP
+intake tools, automatic question generation, automatic slicing, dispatch
+orchestration, Linear state creation, and plugin packaging remain future work.
 
 ## Purpose
 
@@ -153,10 +154,13 @@ target base branch, branch pattern, owned files, forbidden files, acceptance
 criteria, validation steps, review lanes, and stop conditions. List fields are
 entered as newline-delimited text and stored as ordered string lists.
 Planned-slice persistence and approval do not themselves create WorkPackages or
-link dispatch state; the create path starts rows as `planned`, approve moves
-`planned` rows to `approved`, and skip moves `planned` or `approved` rows to
-`skipped`. Dispatched slices are read-only in this UI. Approved or dispatched
-slices become WorkPackages only through an explicit later dispatch flow.
+mint worker grants. The create path starts rows as `planned`, approve moves
+`planned` rows to `approved`, skip moves `planned` or `approved` rows to
+`skipped`, and dispatch linkage moves `approved` rows to `dispatched` while
+recording the linked `work_package_id` and `dispatched_at` timestamp. The linked
+WorkPackage must match the parent WorkRequest and planned-slice contract.
+Dispatched slices are read-only in this UI. Approved slices become WorkPackages
+only through an explicit later dispatch flow.
 
 Before any future dispatch flow can mint a WorkPackage from an approved planned
 slice, it must call the WorkRequest path-scope validator contract. The validator
@@ -189,8 +193,10 @@ risk.
 
 ## Dispatch Into WorkPackages
 
-Approved slices become normal WorkPackages. From that point, existing
-WorkPackage machinery is authoritative:
+Approved slices become normal WorkPackages through a later dispatch flow.
+Dispatched planned-slice rows retain `work_package_id` and `dispatched_at` as
+linkage metadata. From that point, existing WorkPackage machinery is
+authoritative:
 
 - AccessGrant scope and capabilities.
 - MCP virtual context, task plan, findings, progress, acceptance, review-suite,
@@ -236,7 +242,7 @@ This contract does not implement or require:
 - Plugin packaging changes.
 - Automatic question generation.
 - Automatic WorkPackage slicing.
-- WorkPackage dispatch or linkage.
+- WorkPackage creation dispatch orchestration or CLI usage.
 - Live Linear state creation.
 - Historical runbook rewrites.
 

@@ -38,6 +38,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice do
           review_lanes: [String.t()] | nil,
           stop_conditions: [String.t()] | nil,
           status: String.t() | nil,
+          work_package_id: String.t() | nil,
+          dispatched_at: DateTime.t() | nil,
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
@@ -57,6 +59,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice do
     field(:review_lanes, StringList, default: [])
     field(:stop_conditions, StringList, default: [])
     field(:status, :string)
+    field(:work_package_id, :string)
+    field(:dispatched_at, :utc_datetime_usec)
 
     timestamps(type: :utc_datetime_usec)
   end
