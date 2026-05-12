@@ -864,6 +864,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "read:child_progress",
         "read:child_findings",
         "read:work_request",
+        "write:work_request",
         "mint:child_worker_key",
         "read:phase",
         "approve:child_ready_state",
@@ -887,6 +888,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["list_work_requests", "inputSchema", "properties", "status", "type"]) == "string"
     assert get_in(tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
     assert get_in(tools_by_name, ["read_work_request", "inputSchema", "properties", "work_request_id", "type"]) == "string"
+    assert get_in(tools_by_name, ["set_work_request_status", "inputSchema", "required"]) == ["work_request_id", "current_status", "next_status"]
+    assert get_in(tools_by_name, ["ask_work_request_question", "inputSchema", "required"]) == ["work_request_id", "category", "question", "why_needed"]
+    assert get_in(tools_by_name, ["answer_work_request_question", "inputSchema", "required"]) == ["work_request_id", "question_id", "current_status", "answer"]
+    assert get_in(tools_by_name, ["answer_work_request_question", "inputSchema", "properties", "answered_by", "type"]) == "string"
+    assert get_in(tools_by_name, ["close_work_request_question", "inputSchema", "required"]) == ["work_request_id", "question_id", "current_status"]
+
+    assert get_in(tools_by_name, ["record_work_request_decision", "inputSchema", "required"]) == [
+             "work_request_id",
+             "source_type",
+             "decision",
+             "rationale",
+             "scope_impact",
+             "created_by"
+           ]
+
+    assert get_in(tools_by_name, ["record_work_request_decision", "inputSchema", "properties", "source_id", "type"]) == "string"
     assert get_in(tools_by_name, ["read_child_status", "inputSchema", "required"]) == ["work_package_id"]
     assert get_in(tools_by_name, ["read_child_status", "inputSchema", "properties", "work_package_id", "type"]) == "string"
     assert get_in(tools_by_name, ["read_phase_board", "inputSchema", "required"]) == ["phase_id"]
@@ -3394,6 +3411,326 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(read_response, ["error", "code"]) == -32_003
     assert get_in(read_response, ["error", "data", "reason"]) == "outside_session_scope"
     refute inspect(read_response) =~ sibling.id
+  end
+
+  test "architect WorkRequest mutation tools update scoped clarification state and redact responses", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-MUTATE", [
+        "write:work_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-MUTATE",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_clarification"
+      )
+
+    status_response =
+      mcp_tool(repo, session, "set_work_request_status", %{
+        "work_request_id" => work_request.id,
+        "current_status" => "ready_for_clarification",
+        "next_status" => "clarifying"
+      })
+
+    status_payload = get_in(status_response, ["result", "structuredContent"])
+    assert status_payload["work_request"]["status"] == "clarifying"
+    assert MapSet.new(Map.keys(status_payload["work_request"])) == MapSet.new(["id", "status", "updated_at"])
+    assert status_payload["status"] == %{"previous_status" => "ready_for_clarification", "current_status" => "clarifying"}
+    assert status_payload["scope"] == %{"repo" => anchor.repo, "base_branch" => anchor.base_branch}
+
+    assert {:ok, persisted_work_request} = WorkRequestRepository.get(repo, work_request.id)
+    assert persisted_work_request.status == "clarifying"
+
+    ask_response =
+      mcp_tool(repo, session, "ask_work_request_question", %{
+        "work_request_id" => work_request.id,
+        "category" => "scope",
+        "question" => "Can the implementation use Bearer raw_secret_value?",
+        "why_needed" => "The architect needs to avoid raw_secret_value leakage.",
+        "asked_by_agent_run_id" => "raw_secret_value"
+      })
+
+    ask_payload = get_in(ask_response, ["result", "structuredContent"])
+    question_id = get_in(ask_payload, ["clarification_question", "id"])
+    assert is_binary(question_id)
+    assert get_in(ask_payload, ["clarification_question", "status"]) == "open"
+    assert get_in(ask_payload, ["clarification_question", "asked_by_agent_run_id"]) == "[REDACTED]"
+    assert MapSet.new(Map.keys(ask_payload["work_request"])) == MapSet.new(["id", "status", "updated_at"])
+    refute inspect(ask_response) =~ "raw_secret_value"
+
+    answer_response =
+      mcp_tool(repo, session, "answer_work_request_question", %{
+        "work_request_id" => work_request.id,
+        "question_id" => question_id,
+        "current_status" => "open",
+        "answer" => "Use signed URL https://example.test/path?sig=raw_secret_value instead."
+      })
+
+    answer_payload = get_in(answer_response, ["result", "structuredContent"])
+    assert get_in(answer_payload, ["clarification_question", "status"]) == "answered"
+    assert get_in(answer_payload, ["clarification_question", "answered_by"]) == "architect-1"
+    refute inspect(answer_response) =~ "raw_secret_value"
+
+    close_ask_response =
+      mcp_tool(repo, session, "ask_work_request_question", %{
+        "work_request_id" => work_request.id,
+        "category" => "acceptance",
+        "question" => "Can the stale branch be ignored?",
+        "why_needed" => "The architect needs an explicit closure reason."
+      })
+
+    close_question_id = get_in(close_ask_response, ["result", "structuredContent", "clarification_question", "id"])
+
+    close_response =
+      mcp_tool(repo, session, "close_work_request_question", %{
+        "work_request_id" => work_request.id,
+        "question_id" => close_question_id,
+        "current_status" => "open"
+      })
+
+    assert get_in(close_response, ["result", "structuredContent", "clarification_question", "status"]) == "closed"
+
+    decision_response =
+      mcp_tool(repo, session, "record_work_request_decision", %{
+        "work_request_id" => work_request.id,
+        "source_type" => "architect",
+        "source_id" => "comment-1",
+        "decision" => "Keep this WorkRequest backend-only with token raw_secret_value excluded.",
+        "rationale" => "Dashboard work is out of scope.",
+        "scope_impact" => "No dashboard changes.",
+        "created_by" => "architect-1"
+      })
+
+    decision_payload = get_in(decision_response, ["result", "structuredContent"])
+    assert get_in(decision_payload, ["decision_log_entry", "source_id"]) == "comment-1"
+    assert decision_payload["status"] == %{"work_request_status" => "clarifying"}
+    refute inspect(decision_response) =~ "raw_secret_value"
+
+    assert {:ok, questions} = WorkRequestRepository.list_questions(repo, work_request.id)
+    assert Enum.map(questions, & &1.status) == ["answered", "closed"]
+    assert {:ok, decisions} = WorkRequestRepository.list_decisions(repo, work_request.id)
+    assert Enum.map(decisions, & &1.source_id) == ["comment-1"]
+  end
+
+  test "WorkRequest MCP question mutations leave parent status explicit", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-STATUS-EXPLICIT", [
+        "write:work_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-STATUS-EXPLICIT",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_clarification"
+      )
+
+    response =
+      mcp_tool(repo, session, "ask_work_request_question", %{
+        "work_request_id" => work_request.id,
+        "category" => "scope",
+        "question" => "Should this move status automatically?",
+        "why_needed" => "MCP uses explicit status mutation."
+      })
+
+    payload = get_in(response, ["result", "structuredContent"])
+    assert payload["work_request"]["status"] == "ready_for_clarification"
+
+    assert payload["status"] == %{
+             "work_request_status" => "ready_for_clarification",
+             "question_status" => "open"
+           }
+
+    assert {:ok, persisted_work_request} = WorkRequestRepository.get(repo, work_request.id)
+    assert persisted_work_request.status == "ready_for_clarification"
+  end
+
+  test "WorkRequest MCP mutations require write capability and explicit live phase scope", %{repo: repo} do
+    {_read_anchor, read_session, _read_grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-MUTATE-READONLY", [
+        "read:work_request"
+      ])
+
+    read_only_response =
+      mcp_tool(repo, read_session, "ask_work_request_question", %{
+        "work_request_id" => "WR-MCP-WR-MISSING",
+        "category" => "scope",
+        "question" => "Question?",
+        "why_needed" => "Capability check."
+      })
+
+    assert get_in(read_only_response, ["error", "code"]) == -32_001
+    assert get_in(read_only_response, ["error", "data", "reason"]) == "insufficient_capability"
+
+    read_only_tools =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "read-only-tools", "method" => "tools/list", "params" => %{}},
+        repo: repo,
+        session: read_session
+      )
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
+
+    refute Map.has_key?(read_only_tools, "ask_work_request_question")
+
+    {legacy_anchor, legacy_session} =
+      create_architect_session(repo, "SYMPP-ARCHITECT-WR-MUTATE-LEGACY", [
+        "write:work_request"
+      ])
+
+    legacy_work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-MUTATE-LEGACY",
+        repo: legacy_anchor.repo,
+        base_branch: legacy_anchor.base_branch,
+        status: "draft"
+      )
+
+    legacy_response =
+      mcp_tool(repo, legacy_session, "set_work_request_status", %{
+        "work_request_id" => legacy_work_request.id,
+        "current_status" => "draft",
+        "next_status" => "ready_for_clarification"
+      })
+
+    assert get_in(legacy_response, ["error", "code"]) == -32_003
+    assert get_in(legacy_response, ["error", "data", "reason"]) == "outside_session_scope"
+
+    {drift_anchor, drift_session, _drift_grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-MUTATE-DRIFT", [
+        "write:work_request"
+      ])
+
+    drift_work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-MUTATE-DRIFT",
+        repo: drift_anchor.repo,
+        base_branch: drift_anchor.base_branch,
+        status: "draft"
+      )
+
+    assert {:ok, _drifted_anchor} = WorkPackageRepository.update(repo, drift_anchor.id, %{repo: "nextide/other"})
+
+    drift_response =
+      mcp_tool(repo, drift_session, "set_work_request_status", %{
+        "work_request_id" => drift_work_request.id,
+        "current_status" => "draft",
+        "next_status" => "ready_for_clarification"
+      })
+
+    assert get_in(drift_response, ["error", "code"]) == -32_003
+    assert get_in(drift_response, ["error", "data", "reason"]) == "outside_session_scope"
+
+    {revoked_anchor, revoked_session, revoked_grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-MUTATE-REVOKED", [
+        "write:work_request"
+      ])
+
+    revoked_work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-MUTATE-REVOKED",
+        repo: revoked_anchor.repo,
+        base_branch: revoked_anchor.base_branch,
+        status: "draft"
+      )
+
+    assert {:ok, _revoked} = AccessGrantService.revoke(repo, revoked_grant.id)
+
+    revoked_response =
+      mcp_tool(repo, revoked_session, "set_work_request_status", %{
+        "work_request_id" => revoked_work_request.id,
+        "current_status" => "draft",
+        "next_status" => "ready_for_clarification"
+      })
+
+    assert get_in(revoked_response, ["error", "code"]) == -32_001
+    assert get_in(revoked_response, ["error", "data", "reason"]) == "revoked"
+
+    assert {:ok, worker_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WR-MUTATE-WORKER", kind: "mcp"))
+    assert {:ok, worker_minted} = AccessGrantService.mint_worker_grant(repo, worker_package.id)
+    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, worker_minted.work_key.secret, claimed_by: "worker-1")
+    worker_session = MCPHarness.session(worker_assignment, proof_hash: worker_minted.grant.secret_hash)
+
+    worker_response =
+      mcp_tool(repo, worker_session, "set_work_request_status", %{
+        "work_request_id" => "WR-MCP-WR-MISSING",
+        "current_status" => "draft",
+        "next_status" => "ready_for_clarification"
+      })
+
+    assert get_in(worker_response, ["error", "code"]) == -32_001
+    assert get_in(worker_response, ["error", "data", "reason"]) == "architect_grant_required"
+
+    anonymous_response =
+      mcp_tool(repo, nil, "set_work_request_status", %{
+        "work_request_id" => "WR-MCP-WR-MISSING",
+        "current_status" => "draft",
+        "next_status" => "ready_for_clarification"
+      })
+
+    assert get_in(anonymous_response, ["error", "code"]) == -32_001
+    assert get_in(anonymous_response, ["error", "data", "reason"]) == "missing_session"
+  end
+
+  test "WorkRequest MCP question mutations fail closed for sibling question ids", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-MUTATE-SIBLING-QUESTION", [
+        "write:work_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-MUTATE-QUESTION-OWNER",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "clarifying"
+      )
+
+    sibling =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-MUTATE-QUESTION-SIBLING",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "clarifying"
+      )
+
+    assert {:ok, sibling_question} =
+             WorkRequestRepository.ask_question(
+               repo,
+               sibling.id,
+               work_request_question_attrs(id: "WRQ-MCP-WR-SIBLING-QUESTION")
+             )
+
+    answer_response =
+      mcp_tool(repo, session, "answer_work_request_question", %{
+        "work_request_id" => work_request.id,
+        "question_id" => sibling_question.id,
+        "current_status" => "open",
+        "answer" => "Do not answer a sibling question.",
+        "answered_by" => "architect-1"
+      })
+
+    assert get_in(answer_response, ["error", "code"]) == -32_004
+    assert get_in(answer_response, ["error", "data", "reason"]) == "not_found"
+    refute inspect(answer_response) =~ sibling.id
+
+    close_response =
+      mcp_tool(repo, session, "close_work_request_question", %{
+        "work_request_id" => work_request.id,
+        "question_id" => sibling_question.id,
+        "current_status" => "open"
+      })
+
+    assert get_in(close_response, ["error", "code"]) == -32_004
+    assert get_in(close_response, ["error", "data", "reason"]) == "not_found"
+    refute inspect(close_response) =~ sibling.id
+
+    assert {:ok, [persisted_sibling_question]} = WorkRequestRepository.list_questions(repo, sibling.id)
+    assert persisted_sibling_question.status == "open"
+    assert persisted_sibling_question.answer == nil
   end
 
   test "phase architect creates child work package inside scoped phase", %{repo: repo} do

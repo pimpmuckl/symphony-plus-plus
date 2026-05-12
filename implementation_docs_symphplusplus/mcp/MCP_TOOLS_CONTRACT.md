@@ -32,6 +32,11 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | revoke_child_worker_key | Phase 7 stub for revoking child worker keys; returns `phase7_not_implemented` after architect authorization. |
 | list_work_requests | List WorkRequests scoped to the architect assignment repo/base branch. Accepts only optional `status`. |
 | read_work_request | Read one scoped WorkRequest with clarification questions, decision log entries, planned slices, and count/status summaries. |
+| set_work_request_status | Move a scoped WorkRequest between valid statuses with optimistic `current_status` checking. |
+| ask_work_request_question | Add a clarification question to a scoped WorkRequest. |
+| answer_work_request_question | Answer an open clarification question that belongs to a scoped WorkRequest. |
+| close_work_request_question | Close an open clarification question that belongs to a scoped WorkRequest without recording an answer. |
+| record_work_request_decision | Record a durable decision log entry on a scoped WorkRequest. |
 | read_child_status | Read the architect grant's scoped anchor package status, or a same-phase child work-package status when the architect grant has child read capabilities. |
 | read_phase_board | Read the architect grant's scoped phase board, filtered to the frozen repo/base branch for explicit phase grants, including merged-child phase progress. |
 | request_child_replan | Phase 7 stub for child replan requests; returns `phase7_not_implemented` after architect authorization. |
@@ -61,7 +66,9 @@ capabilities such as
 P3-003 requires the explicit MCP capability strings listed in the permission
 model. WorkRequest read tools are advertised only for explicit phase-scoped
 architect grants with usable frozen repo/base-branch scope; legacy
-null-`phase_id` architect grants do not discover those tools. Phase-dependent
+null-`phase_id` architect grants do not discover those tools. WorkRequest
+mutation tools use the same explicit phase-scoped discovery rule and additionally
+require `write:work_request`. Phase-dependent
 architect tools revalidate the grant's explicit phase scope plus the anchor
 repo/base-branch scope frozen when the phase architect grant was minted.
 Legacy null-`phase_id` grants may still derive the current
@@ -106,6 +113,23 @@ anchor package. `list_work_requests` accepts only optional `status`;
 WorkRequests fail closed as not found without leaking sibling content. Payloads
 are JSON-safe and redacted: they exclude work-key secrets, tokens, private
 handoff payloads, and worker secret material.
+`set_work_request_status`, `ask_work_request_question`,
+`answer_work_request_question`, `close_work_request_question`, and
+`record_work_request_decision` require `write:work_request`, the same explicit
+phase-scoped frozen repo/base-branch scope, and `work_request_id` on every
+mutation. They do not accept caller-supplied repo or base-branch arguments.
+Answer and close calls also verify that `question_id` belongs to the scoped
+WorkRequest before mutating and fail closed as not found for sibling questions.
+Responses return JSON-safe redacted updated question or decision objects plus a
+minimal parent WorkRequest status projection and scope/status metadata; they do
+not return the full `read_work_request` detail shape. These tools cover only
+the clarification and decision loop; they do not author, approve, skip, or
+dispatch planned slices, create WorkPackages, alter SecretHandoff, mutate
+Linear, or change dashboard behavior. They expose the existing WorkRequest
+service primitives: status movement is explicit through
+`set_work_request_status`, and question/decision tools do not mirror
+dashboard-only helper guards, auto-transition parent status, or add a new
+lifecycle/status transition matrix.
 `read_child_status` requires both `read:child_progress` and
 `read:child_findings` because its summary includes progress, findings, and
 artifact counts. `approve_child_ready_state` revalidates the ready child against

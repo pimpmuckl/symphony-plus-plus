@@ -48,8 +48,8 @@ not a claim that MCP intake tooling, automatic slicing, dashboard dispatch, or
 Linear state creation already exists.
 
 Runtime WorkRequest persistence, the read API, the dashboard list/detail view,
-scoped dashboard intake, read-only architect MCP WorkRequest reads, the manual
-clarification loop, and manual planned-slice authoring now exist. Dashboard
+scoped dashboard intake, architect MCP WorkRequest reads and clarification
+mutations, the manual clarification loop, and manual planned-slice authoring now exist. Dashboard
 intake is board-authenticated and only appears for board grants with frozen repo
 and base-branch scope. The repo and base branch are displayed as locked values
 and are enforced by the server when creating the draft. Humans can mark a draft
@@ -70,6 +70,16 @@ out-of-scope requests as not found. Legacy null `phase_id` architect grants are
 not supported for these WorkRequest reads and fail closed rather than reading
 scope from a mutable anchor package.
 
+Explicit phase-scoped architect MCP sessions with `write:work_request` can call
+`set_work_request_status`, `ask_work_request_question`,
+`answer_work_request_question`, `close_work_request_question`, and
+`record_work_request_decision` for the same frozen repo/base-branch scope. Each
+mutation requires a scoped `work_request_id`; answer and close calls also prove
+the `question_id` belongs to that WorkRequest before mutating. These tools
+cover the clarification and decision loop only. Planned-slice authoring,
+planned-slice approval/dispatch, WorkPackage creation, SecretHandoff, dashboard,
+and Linear mutation remain outside this MCP surface.
+
 Planned-slice dispatch is available as an operator CLI, not as a dashboard
 button or MCP tool. The CLI dispatches one `approved` planned slice by
 WorkRequest id and planned-slice id, validates the slice's owned file globs
@@ -83,10 +93,11 @@ whole-repo grant; wildcard allow entries without an explicit `**` only authorize
 their own segment shape and do not authorize recursive owned globs such as
 `**/foo` or bare `**`.
 
-MCP intake, automatic question generation, automatic slicing, dashboard/MCP
-dispatch actions, MCP planner tools, and Linear state creation remain future
-work. Until those exist, keep questions, answers, decisions, assumptions, and
-slice-plan sections in runtime WorkRequest records where available, or in one
+MCP intake, automatic question generation, automatic slicing, planned-slice
+MCP authoring/approval/dispatch actions, MCP planner tools, and Linear state
+creation remain future work. Until those exist, keep questions, answers,
+decisions, assumptions, and slice-plan sections in runtime WorkRequest records
+where available, or in one
 operator-approved Markdown artifact when the runtime surface is not available
 for a lane. Give the architect package a durable reference plus a bounded
 handoff summary before dispatch.

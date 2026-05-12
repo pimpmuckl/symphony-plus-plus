@@ -58,6 +58,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "revoke_child_worker_key",
     "list_work_requests",
     "read_work_request",
+    "set_work_request_status",
+    "ask_work_request_question",
+    "answer_work_request_question",
+    "close_work_request_question",
+    "record_work_request_decision",
     "read_child_status",
     "approve_scope_expansion",
     "read_phase_board",
@@ -69,7 +74,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   ]
   @phase_scoped_work_request_tools [
     "list_work_requests",
-    "read_work_request"
+    "read_work_request",
+    "set_work_request_status",
+    "ask_work_request_question",
+    "answer_work_request_question",
+    "close_work_request_question",
+    "record_work_request_decision"
   ]
   @phase7_stub_architect_tools [
     "revoke_child_worker_key",
@@ -910,6 +920,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "Read a scoped WorkRequest with clarification questions, decisions, planned slices, and status summaries."
   end
 
+  defp architect_tool_description("set_work_request_status") do
+    "Move a scoped WorkRequest between valid statuses with optimistic current-status checking."
+  end
+
+  defp architect_tool_description("ask_work_request_question") do
+    "Add a clarification question to a scoped WorkRequest."
+  end
+
+  defp architect_tool_description("answer_work_request_question") do
+    "Answer an open clarification question that belongs to a scoped WorkRequest."
+  end
+
+  defp architect_tool_description("close_work_request_question") do
+    "Close an open clarification question that belongs to a scoped WorkRequest without recording an answer."
+  end
+
+  defp architect_tool_description("record_work_request_decision") do
+    "Record a durable decision log entry on a scoped WorkRequest."
+  end
+
   defp architect_tool_description("approve_scope_expansion") do
     "Approve additional allowed file globs for this scoped work package."
   end
@@ -1099,6 +1129,69 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool_input_schema("list_work_requests"), do: schema(%{"status" => string_schema()}, [])
 
   defp architect_tool_input_schema("read_work_request"), do: schema(%{"work_request_id" => string_schema()}, ["work_request_id"])
+
+  defp architect_tool_input_schema("set_work_request_status") do
+    schema(
+      %{
+        "work_request_id" => string_schema(),
+        "current_status" => string_schema(),
+        "next_status" => string_schema()
+      },
+      ["work_request_id", "current_status", "next_status"]
+    )
+  end
+
+  defp architect_tool_input_schema("ask_work_request_question") do
+    schema(
+      %{
+        "work_request_id" => string_schema(),
+        "category" => string_schema(),
+        "question" => string_schema(),
+        "why_needed" => string_schema(),
+        "asked_by_agent_run_id" => string_schema()
+      },
+      ["work_request_id", "category", "question", "why_needed"]
+    )
+  end
+
+  defp architect_tool_input_schema("answer_work_request_question") do
+    schema(
+      %{
+        "work_request_id" => string_schema(),
+        "question_id" => string_schema(),
+        "current_status" => string_schema(),
+        "answer" => string_schema(),
+        "answered_by" => string_schema()
+      },
+      ["work_request_id", "question_id", "current_status", "answer"]
+    )
+  end
+
+  defp architect_tool_input_schema("close_work_request_question") do
+    schema(
+      %{
+        "work_request_id" => string_schema(),
+        "question_id" => string_schema(),
+        "current_status" => string_schema()
+      },
+      ["work_request_id", "question_id", "current_status"]
+    )
+  end
+
+  defp architect_tool_input_schema("record_work_request_decision") do
+    schema(
+      %{
+        "work_request_id" => string_schema(),
+        "source_type" => string_schema(),
+        "decision" => string_schema(),
+        "rationale" => string_schema(),
+        "scope_impact" => string_schema(),
+        "created_by" => string_schema(),
+        "source_id" => string_schema()
+      },
+      ["work_request_id", "source_type", "decision", "rationale", "scope_impact", "created_by"]
+    )
+  end
 
   defp architect_tool_input_schema("read_child_status"), do: schema(%{"work_package_id" => string_schema()}, ["work_package_id"])
 
@@ -1608,6 +1701,175 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp architect_tool("set_work_request_status", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, current_status} <- required_argument(arguments, "current_status"),
+         {:ok, next_status} <- required_argument(arguments, "next_status"),
+         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
+         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, updated_work_request} <- WorkRequestService.update_status(config.repo, work_request_id, current_status, next_status) do
+      {:ok,
+       tool_result(%{
+         "work_request" => work_request_mutation_payload(updated_work_request),
+         "scope" => scope,
+         "status" => %{
+           "previous_status" => current_status,
+           "current_status" => updated_work_request.status
+         }
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "set_work_request_status", "reason" => reason}}
+      {:error, :not_found} -> work_request_not_found_error("set_work_request_status")
+      {:error, reason} -> architect_error(reason, "set_work_request_status")
+    end
+  end
+
+  defp architect_tool("ask_work_request_question", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, category} <- required_argument(arguments, "category"),
+         {:ok, question} <- required_argument(arguments, "question"),
+         {:ok, why_needed} <- required_argument(arguments, "why_needed"),
+         {:ok, asked_by_agent_run_id} <- optional_string_argument(arguments, "asked_by_agent_run_id"),
+         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
+         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, question_record} <-
+           WorkRequestService.ask_question(
+             config.repo,
+             work_request_id,
+             optional_put(
+               %{
+                 "category" => category,
+                 "question" => question,
+                 "why_needed" => why_needed
+               },
+               "asked_by_agent_run_id",
+               asked_by_agent_run_id
+             )
+           ),
+         {:ok, updated_work_request} <- scoped_work_request(config.repo, work_request_id, filters) do
+      {:ok,
+       tool_result(%{
+         "work_request" => work_request_mutation_payload(updated_work_request),
+         "clarification_question" => clarification_question_payload(question_record),
+         "scope" => scope,
+         "status" => %{
+           "work_request_status" => updated_work_request.status,
+           "question_status" => question_record.status
+         }
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "ask_work_request_question", "reason" => reason}}
+      {:error, :not_found} -> work_request_not_found_error("ask_work_request_question")
+      {:error, reason} -> architect_error(reason, "ask_work_request_question")
+    end
+  end
+
+  defp architect_tool("answer_work_request_question", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, question_id} <- required_argument(arguments, "question_id"),
+         {:ok, current_status} <- required_argument(arguments, "current_status"),
+         {:ok, answer} <- required_argument(arguments, "answer"),
+         {:ok, answered_by} <- optional_string_argument(arguments, "answered_by", session_claimed_by(session)),
+         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
+         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, _question} <- scoped_work_request_question(config.repo, work_request_id, question_id),
+         {:ok, question_record} <-
+           WorkRequestService.answer_question(config.repo, question_id, current_status, %{
+             "answer" => answer,
+             "answered_by" => answered_by
+           }),
+         {:ok, updated_work_request} <- scoped_work_request(config.repo, work_request_id, filters) do
+      {:ok,
+       tool_result(%{
+         "work_request" => work_request_mutation_payload(updated_work_request),
+         "clarification_question" => clarification_question_payload(question_record),
+         "scope" => scope,
+         "status" => %{
+           "work_request_status" => updated_work_request.status,
+           "previous_question_status" => current_status,
+           "question_status" => question_record.status
+         }
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "answer_work_request_question", "reason" => reason}}
+      {:error, :not_found} -> work_request_not_found_error("answer_work_request_question")
+      {:error, reason} -> architect_error(reason, "answer_work_request_question")
+    end
+  end
+
+  defp architect_tool("close_work_request_question", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, question_id} <- required_argument(arguments, "question_id"),
+         {:ok, current_status} <- required_argument(arguments, "current_status"),
+         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
+         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, _question} <- scoped_work_request_question(config.repo, work_request_id, question_id),
+         {:ok, question_record} <- WorkRequestService.close_question(config.repo, question_id, current_status),
+         {:ok, updated_work_request} <- scoped_work_request(config.repo, work_request_id, filters) do
+      {:ok,
+       tool_result(%{
+         "work_request" => work_request_mutation_payload(updated_work_request),
+         "clarification_question" => clarification_question_payload(question_record),
+         "scope" => scope,
+         "status" => %{
+           "work_request_status" => updated_work_request.status,
+           "previous_question_status" => current_status,
+           "question_status" => question_record.status
+         }
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "close_work_request_question", "reason" => reason}}
+      {:error, :not_found} -> work_request_not_found_error("close_work_request_question")
+      {:error, reason} -> architect_error(reason, "close_work_request_question")
+    end
+  end
+
+  defp architect_tool("record_work_request_decision", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, source_type} <- required_argument(arguments, "source_type"),
+         {:ok, decision} <- required_argument(arguments, "decision"),
+         {:ok, rationale} <- required_argument(arguments, "rationale"),
+         {:ok, scope_impact} <- required_argument(arguments, "scope_impact"),
+         {:ok, created_by} <- required_argument(arguments, "created_by"),
+         {:ok, source_id} <- optional_string_argument(arguments, "source_id"),
+         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
+         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, decision_record} <-
+           WorkRequestService.record_decision(
+             config.repo,
+             work_request_id,
+             optional_put(
+               %{
+                 "source_type" => source_type,
+                 "decision" => decision,
+                 "rationale" => rationale,
+                 "scope_impact" => scope_impact,
+                 "created_by" => created_by
+               },
+               "source_id",
+               source_id
+             )
+           ),
+         {:ok, updated_work_request} <- scoped_work_request(config.repo, work_request_id, filters) do
+      {:ok,
+       tool_result(%{
+         "work_request" => work_request_mutation_payload(updated_work_request),
+         "decision_log_entry" => decision_log_entry_payload(decision_record),
+         "scope" => scope,
+         "status" => %{"work_request_status" => updated_work_request.status}
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "record_work_request_decision", "reason" => reason}}
+      {:error, :not_found} -> work_request_not_found_error("record_work_request_decision")
+      {:error, reason} -> architect_error(reason, "record_work_request_decision")
+    end
+  end
+
   defp architect_tool("read_child_status", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- architect_session(config.repo, session, ["read:child_progress", "read:child_findings"]),
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
@@ -1794,6 +2056,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp optional_string_argument(arguments, key, default \\ nil) do
+    case Map.fetch(arguments, key) do
+      :error ->
+        {:ok, default}
+
+      {:ok, nil} ->
+        {:ok, default}
+
+      {:ok, value} when is_binary(value) ->
+        case String.trim(value) do
+          "" -> {:ok, default}
+          trimmed -> {:ok, trimmed}
+        end
+
+      {:ok, _value} ->
+        {:tool_error, "invalid_#{key}"}
+    end
+  end
+
+  defp optional_put(attrs, _key, nil), do: attrs
+  defp optional_put(attrs, key, value), do: Map.put(attrs, key, value)
+
+  defp session_claimed_by(%Session{assignment: %{claimed_by: claimed_by}}) when is_binary(claimed_by) do
+    case String.trim(claimed_by) do
+      "" -> "architect"
+      trimmed -> trimmed
+    end
+  end
+
+  defp session_claimed_by(%Session{}), do: "architect"
+
   defp scoped_work_request(repo, work_request_id, filters) do
     with {:ok, %WorkRequest{} = work_request} <- WorkRequestService.get(repo, work_request_id),
          :ok <- require_work_request_scope(work_request, filters) do
@@ -1801,6 +2094,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     else
       {:error, :forbidden} -> {:error, :not_found}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp scoped_work_request_question(repo, work_request_id, question_id) do
+    with {:ok, questions} <- WorkRequestService.list_questions(repo, work_request_id) do
+      case Enum.find(questions, &(&1.id == question_id)) do
+        %ClarificationQuestion{} = question -> {:ok, question}
+        nil -> {:error, :not_found}
+      end
     end
   end
 
@@ -4269,6 +4571,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool_capability("revoke_child_worker_key"), do: "revoke:child_worker_key"
   defp architect_tool_capability("list_work_requests"), do: "read:work_request"
   defp architect_tool_capability("read_work_request"), do: "read:work_request"
+  defp architect_tool_capability("set_work_request_status"), do: "write:work_request"
+  defp architect_tool_capability("ask_work_request_question"), do: "write:work_request"
+  defp architect_tool_capability("answer_work_request_question"), do: "write:work_request"
+  defp architect_tool_capability("close_work_request_question"), do: "write:work_request"
+  defp architect_tool_capability("record_work_request_decision"), do: "write:work_request"
   defp architect_tool_capability("read_phase_board"), do: "read:phase"
   defp architect_tool_capability("approve_scope_expansion"), do: "approve:scope_expansion"
   defp architect_tool_capability("request_child_replan"), do: "request:child_replan"
@@ -6534,6 +6841,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
+  defp work_request_mutation_payload(%WorkRequest{} = work_request) do
+    %{
+      "id" => work_request.id,
+      "status" => work_request.status,
+      "updated_at" => timestamp(work_request.updated_at)
+    }
+  end
+
   defp clarification_question_payload(%ClarificationQuestion{} = question) do
     %{
       "id" => question.id,
@@ -6543,7 +6858,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "question" => Redactor.redact_text(question.question),
       "why_needed" => Redactor.redact_text(question.why_needed),
       "status" => question.status,
-      "asked_by_agent_run_id" => question.asked_by_agent_run_id,
+      "asked_by_agent_run_id" => Redactor.redact_text(question.asked_by_agent_run_id),
       "answer" => Redactor.redact_text(question.answer),
       "answered_by" => Redactor.redact_text(question.answered_by),
       "answered_at" => timestamp(question.answered_at),
@@ -6557,7 +6872,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "id" => decision.id,
       "work_request_id" => decision.work_request_id,
       "sequence" => decision.sequence,
-      "source_type" => decision.source_type,
+      "source_type" => Redactor.redact_text(decision.source_type),
       "source_id" => Redactor.redact_text(decision.source_id),
       "decision" => Redactor.redact_text(decision.decision),
       "rationale" => Redactor.redact_text(decision.rationale),
