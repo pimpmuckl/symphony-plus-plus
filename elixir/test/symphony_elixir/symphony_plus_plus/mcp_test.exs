@@ -3276,6 +3276,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(read_response, ["error", "data", "reason"]) == "outside_session_scope"
   end
 
+  test "WorkRequest MCP reads reject drifted architect scope snapshots", %{repo: repo} do
+    {anchor, session, grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-DRIFTED-SCOPE", [
+        "read:work_request"
+      ])
+
+    sibling =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-DRIFTED-SIBLING",
+        repo: "nextide/other",
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    repo.update_all(
+      from(access_grant in AccessGrant, where: access_grant.id == ^grant.id),
+      set: [scope_repo: sibling.repo]
+    )
+
+    list_response = mcp_tool(repo, session, "list_work_requests", %{"status" => "ready_for_slicing"})
+    assert get_in(list_response, ["error", "code"]) == -32_003
+    assert get_in(list_response, ["error", "data", "reason"]) == "outside_session_scope"
+    refute inspect(list_response) =~ sibling.id
+
+    read_response = mcp_tool(repo, session, "read_work_request", %{"work_request_id" => sibling.id})
+    assert get_in(read_response, ["error", "code"]) == -32_003
+    assert get_in(read_response, ["error", "data", "reason"]) == "outside_session_scope"
+    refute inspect(read_response) =~ sibling.id
+  end
+
   test "phase architect creates child work package inside scoped phase", %{repo: repo} do
     {anchor, session} =
       create_architect_session(repo, "SYMPP-P7-002-CREATE-ANCHOR", [
