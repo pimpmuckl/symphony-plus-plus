@@ -67,8 +67,11 @@ validate the approved slice's owned file globs against the parent WorkRequest
 path constraints before minting a WorkPackage. The validator is pure and does
 not inspect the host filesystem. Missing or empty `allowed_paths` leaves the
 slice unrestricted by allow-list, but `forbidden_paths` still block overlapping
-owned globs. Operators should treat validator success as a dispatch precondition,
-not as dispatch itself.
+owned globs. As a least-privilege rule, `allowed_paths: ["*"]` is not an
+implicit whole-repo grant; wildcard allow entries without an explicit `**` only
+authorize their own segment shape and do not authorize recursive owned globs
+such as `**/foo` or bare `**`. Operators should treat validator success as a
+dispatch precondition, not as dispatch itself.
 
 MCP intake, automatic question generation, automatic slicing, dispatch into
 WorkPackages, MCP planner tools, and Linear state creation remain future work.
