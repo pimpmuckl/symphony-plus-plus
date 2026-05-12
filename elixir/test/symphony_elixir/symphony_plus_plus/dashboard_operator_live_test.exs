@@ -97,7 +97,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
                why_needed: "The operator needs to choose the slice order."
              })
 
-    {:ok, _view, html} = live(build_conn(), "/sympp/board")
+    {:ok, _view, html} = live(local_conn(), "/sympp/board")
 
     assert html =~ "Local operator cockpit"
     assert html =~ "Product Guidance Needed"
@@ -129,7 +129,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
         severity: "high"
       })
 
-    {:ok, _view, html} = live(build_conn(), "/sympp/work-packages/#{package.id}")
+    {:ok, _view, html} = live(local_conn(), "/sympp/work-packages/#{package.id}")
 
     assert html =~ "[REDACTED]"
     assert html =~ "Virtual Task Plan"
@@ -172,7 +172,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
                stop_conditions: ["Stop before dispatch."]
              })
 
-    {:ok, _view, html} = live(build_conn(), "/sympp/work-requests/#{request.id}")
+    {:ok, _view, html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
 
     assert html =~ "Operator WorkRequest detail"
     assert html =~ "Question needing operator guidance"
@@ -208,8 +208,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
              })
 
     conn =
-      build_conn()
-      |> Plug.Test.init_test_session(%{"sympp_board_grant_id" => grant.id})
+      local_conn()
+      |> Plug.Test.init_test_session(%{"sympp_local_operator" => true, "sympp_board_grant_id" => grant.id})
       |> get("/sympp/board")
 
     assert Plug.Conn.get_session(conn, "sympp_local_operator") == true
@@ -253,12 +253,64 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
       status: "human_info_needed"
     )
 
-    {:ok, _view, html} = live(build_conn(), "/sympp/board?repo=nextide/symphony-plus-plus")
+    {:ok, _view, html} = live(local_conn(), "/sympp/board?repo=nextide/symphony-plus-plus")
 
     assert html =~ "Visible repo package"
     assert html =~ "Visible guidance request"
     refute html =~ "Hidden repo blocker"
     refute html =~ "Hidden guidance request"
+  end
+
+  test "local operator direct access rejects forwarded proxy requests without a work key" do
+    enable_operator_mode()
+    create_package!(id: "SYMPP-V2-UX-PROXY", title: "Proxy-hidden package")
+
+    conn =
+      local_conn()
+      |> Plug.Conn.put_req_header("x-forwarded-for", "203.0.113.24")
+      |> get("/sympp/board")
+
+    assert response(conn, 401) =~ "Board access"
+    refute response(conn, 401) =~ "Proxy-hidden package"
+    refute Plug.Conn.get_session(conn, "sympp_local_operator")
+  end
+
+  test "explicit scoped board grants still win on localhost while operator mode is enabled" do
+    enable_operator_mode()
+
+    package = create_package!(id: "SYMPP-V2-UX-SCOPED", title: "Scoped localhost package")
+    grant = create_architect_grant!(package.id)
+
+    request =
+      create_work_request!(
+        id: "WR-OPERATOR-SCOPED-GRANT",
+        title: "Scoped WorkRequest actions",
+        status: "human_info_needed"
+      )
+
+    assert {:ok, _question} =
+             WorkRequestRepository.ask_question(Repo, request.id, %{
+               question: "Can scoped localhost grants still answer?",
+               category: "product",
+               why_needed: "Scoped work-key behavior must survive operator mode.",
+               asked_by: "operator"
+             })
+
+    conn =
+      local_conn()
+      |> Plug.Test.init_test_session(%{"sympp_board_grant_id" => grant.id})
+      |> get("/sympp/board")
+
+    assert response(conn, 200) =~ "Work package board"
+    refute response(conn, 200) =~ "Local operator cockpit"
+    assert Plug.Conn.get_session(conn, "sympp_board_grant_id") == grant.id
+    refute Plug.Conn.get_session(conn, "sympp_local_operator")
+
+    {:ok, _view, html} = live(conn, "/sympp/work-requests/#{request.id}")
+
+    assert html =~ "Scoped WorkRequest actions"
+    assert html =~ "Answer</button>"
+    assert html =~ "Close unanswered"
   end
 
   defp create_package!(overrides) do
@@ -371,6 +423,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
   defp disable_operator_mode do
     put_endpoint_config(sympp_local_operator: false)
+  end
+
+  defp local_conn do
+    build_conn()
+    |> Map.put(:remote_ip, {127, 0, 0, 1})
+    |> Map.put(:host, "127.0.0.1")
   end
 
   defp put_endpoint_config(opts) do

@@ -27,7 +27,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @spec authorize_board_browser(Conn.t(), term()) :: Conn.t()
   def authorize_board_browser(conn, _opts) do
     cond do
-      local_operator_browser?(conn) ->
+      local_operator_browser?(conn) and active_local_operator_session?(conn) ->
         put_local_operator_session(conn)
 
       true ->
@@ -38,7 +38,11 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
             |> Conn.put_session(@board_session_key, grant.id)
 
           {:error, :unauthorized} ->
-            conn |> board_login_response() |> Conn.halt()
+            if local_operator_browser?(conn) do
+              put_local_operator_session(conn)
+            else
+              conn |> board_login_response() |> Conn.halt()
+            end
 
           {:error, reason} ->
             conn |> board_browser_error_response(reason) |> Conn.halt()
@@ -54,14 +58,23 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       not valid_package_route_id?(work_package_id) ->
         conn |> package_not_found_response() |> Conn.halt()
 
-      local_operator_browser?(conn) ->
+      local_operator_browser?(conn) and active_local_operator_session?(conn) ->
         put_local_operator_session(conn)
 
       true ->
         case authorize_package_request(conn, work_package_id) do
-          {:ok, %AccessGrant{} = grant} -> put_package_browser_session(conn, grant, work_package_id)
-          {:error, :unauthorized} -> conn |> package_login_response(work_package_id: work_package_id) |> Conn.halt()
-          {:error, reason} -> conn |> package_browser_error_response(reason, work_package_id) |> Conn.halt()
+          {:ok, %AccessGrant{} = grant} ->
+            put_package_browser_session(conn, grant, work_package_id)
+
+          {:error, :unauthorized} ->
+            if local_operator_browser?(conn) do
+              put_local_operator_session(conn)
+            else
+              conn |> package_login_response(work_package_id: work_package_id) |> Conn.halt()
+            end
+
+          {:error, reason} ->
+            conn |> package_browser_error_response(reason, work_package_id) |> Conn.halt()
         end
     end
   end
@@ -71,7 +84,9 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   def local_operator_session?(_session), do: false
 
   @spec local_operator_browser?(Conn.t()) :: boolean()
-  def local_operator_browser?(%Conn{} = conn), do: local_operator_enabled?() and loopback_request?(conn.remote_ip)
+  def local_operator_browser?(%Conn{} = conn) do
+    local_operator_enabled?() and loopback_request?(conn.remote_ip) and local_host?(conn.host) and direct_local_request?(conn)
+  end
 
   @spec local_operator_enabled?() :: boolean()
   def local_operator_enabled? do
@@ -86,6 +101,31 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp loopback_request?({127, _second, _third, _fourth}), do: true
   defp loopback_request?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
   defp loopback_request?(_remote_ip), do: false
+
+  defp local_host?(host) when is_binary(host) do
+    host |> String.downcase() |> then(&(&1 in ["localhost", "127.0.0.1", "::1"]))
+  end
+
+  defp local_host?(_host), do: false
+
+  defp direct_local_request?(conn) do
+    not forwarded_request?(conn) or local_operator_proxy_trusted?()
+  end
+
+  defp forwarded_request?(conn) do
+    Enum.any?(["forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip"], fn header ->
+      Conn.get_req_header(conn, header) != []
+    end)
+  end
+
+  defp local_operator_proxy_trusted? do
+    endpoint_config = Application.get_env(:symphony_elixir, Endpoint, [])
+
+    truthy_config?(Keyword.get(endpoint_config, :sympp_local_operator_trust_proxy)) or
+      truthy_config?(Application.get_env(:symphony_elixir, :sympp_local_operator_trust_proxy))
+  end
+
+  defp active_local_operator_session?(conn), do: Conn.get_session(conn, @operator_session_key) == true
 
   defp put_local_operator_session(conn) do
     conn
