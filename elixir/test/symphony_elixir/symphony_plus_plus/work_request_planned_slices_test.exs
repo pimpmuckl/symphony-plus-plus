@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
@@ -95,6 +96,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
 
     assert second.sequence == 2
     assert {:ok, [^first, ^second]} = Service.list_planned_slices(repo, work_request.id)
+  end
+
+  test "validates planned-slice owned globs against persisted WorkRequest constraints", %{repo: repo} do
+    work_request =
+      create_work_request!(
+        repo,
+        constraints: %{"allowed_paths" => ["elixir/lib"], "forbidden_paths" => ["elixir/lib/test_support"]}
+      )
+
+    assert {:ok, valid} =
+             Repository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-SCOPE-VALID", owned_file_globs: ["elixir/lib/*.ex"])
+             )
+
+    assert :ok = ScopeConstraints.validate_owned_file_globs(work_request, valid)
+
+    assert {:ok, invalid} =
+             Repository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-SCOPE-BLOCKED", owned_file_globs: ["elixir/lib/test_support/*.ex"])
+             )
+
+    assert {:error, [{:forbidden_path_overlap, "elixir/lib/test_support/*.ex", "elixir/lib/test_support"}]} =
+             ScopeConstraints.validate_owned_file_globs(work_request, invalid)
   end
 
   test "approves and skips planned slices with stale status protection", %{repo: repo} do

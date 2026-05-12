@@ -158,6 +158,22 @@ link dispatch state; the create path starts rows as `planned`, approve moves
 `skipped`. Dispatched slices are read-only in this UI. Approved or dispatched
 slices become WorkPackages only through an explicit later dispatch flow.
 
+Before any future dispatch flow can mint a WorkPackage from an approved planned
+slice, it must call the WorkRequest path-scope validator contract. The validator
+checks the slice `owned_file_globs` against the parent WorkRequest
+`constraints.allowed_paths` and `constraints.forbidden_paths` without reading
+the host filesystem. Missing or empty `allowed_paths` means there is no
+allow-list restriction, but `forbidden_paths` are still enforced.
+
+The validator accepts only repo-relative slash-separated paths/globs. It rejects
+absolute paths, drive-qualified paths, backslash separators, empty path
+segments, and dot segments. `*` and `?` match inside one segment, while `**` is
+only a full segment and may match zero or more path segments. Allowed-path
+checks must prove every possible owned-glob match is equal to or beneath an
+allowed path; forbidden-path checks reject any owned glob that can match a
+forbidden path or any path below it. Dispatch remains future work until that
+contract is part of the dispatch path.
+
 Feature work defaults to one feature branch with smaller PRs targeting that
 feature branch. Use direct `main` PRs for narrow direct-main changes when the
 architect plan records why a feature branch would add overhead without reducing

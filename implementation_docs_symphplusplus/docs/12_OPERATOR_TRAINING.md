@@ -62,6 +62,14 @@ planned slices, approve or skip mutable slices, and mark a request `sliced`
 only after at least one planned slice has been approved. This does not dispatch
 or link WorkPackages.
 
+Planned-slice dispatch has an explicit prerequisite: future dispatch code must
+validate the approved slice's owned file globs against the parent WorkRequest
+path constraints before minting a WorkPackage. The validator is pure and does
+not inspect the host filesystem. Missing or empty `allowed_paths` leaves the
+slice unrestricted by allow-list, but `forbidden_paths` still block overlapping
+owned globs. Operators should treat validator success as a dispatch precondition,
+not as dispatch itself.
+
 MCP intake, automatic question generation, automatic slicing, dispatch into
 WorkPackages, MCP planner tools, and Linear state creation remain future work.
 Until those exist, keep questions, answers, decisions, assumptions, and
