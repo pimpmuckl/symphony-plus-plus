@@ -293,6 +293,158 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
     refute html =~ "raw-secret"
   end
 
+  test "asks answers closes decisions and readiness through scoped detail actions" do
+    anchor = create_anchor_package!()
+    request = create_work_request!(id: "WR-LIVE-CLARIFY", repo: anchor.repo, base_branch: anchor.base_branch, status: "ready_for_clarification")
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{request.id}")
+
+    assert html =~ "Ask question"
+    assert html =~ "Mark human info needed"
+    assert html =~ "Mark ready for slicing"
+
+    html =
+      render_submit(view, "ask_question", %{
+        "question" => %{
+          "category" => "scope",
+          "question" => "Which files are in scope?",
+          "why_needed" => "The architect needs ownership before slicing.",
+          "asked_by_agent_run_id" => "forged-run"
+        }
+      })
+
+    assert html =~ "Which files are in scope?"
+    assert html =~ "Answer"
+    assert {:ok, clarified} = WorkRequestRepository.get(Repo, request.id)
+    assert clarified.status == "clarifying"
+    assert {:ok, [question]} = WorkRequestRepository.list_questions(Repo, request.id)
+    assert question.status == "open"
+    assert question.asked_by_agent_run_id == "architect-1"
+
+    html = render_click(view, "mark_ready_for_slicing", %{})
+    assert html =~ "Close or answer all open questions before marking ready for slicing."
+    assert {:ok, still_clarifying} = WorkRequestRepository.get(Repo, request.id)
+    assert still_clarifying.status == "clarifying"
+
+    html =
+      render_submit(view, "answer_question", %{
+        "question" => %{
+          "id" => question.id,
+          "current_status" => "open",
+          "answer" => "Only the assigned LiveView and docs.",
+          "answered_by" => "operator-1"
+        }
+      })
+
+    assert html =~ "Only the assigned LiveView and docs."
+    assert {:ok, [answered]} = WorkRequestRepository.list_questions(Repo, request.id)
+    assert answered.status == "answered"
+    assert answered.answered_by == "operator-1"
+
+    html =
+      render_submit(view, "record_decision", %{
+        "decision" => %{
+          "source_type" => "human",
+          "decision" => "Keep this package UI-only.",
+          "rationale" => "Backend clarification APIs already exist.",
+          "scope_impact" => "No MCP WorkRequest tools.",
+          "created_by" => "operator-1"
+        }
+      })
+
+    assert html =~ "Keep this package UI-only."
+    assert {:ok, [decision]} = WorkRequestRepository.list_decisions(Repo, request.id)
+    assert decision.source_type == "human"
+    assert decision.created_by == "operator-1"
+
+    html = render_click(view, "mark_human_info_needed", %{})
+    assert html =~ "human info needed"
+    assert {:ok, waiting} = WorkRequestRepository.get(Repo, request.id)
+    assert waiting.status == "human_info_needed"
+
+    html = render_click(view, "mark_ready_for_slicing", %{})
+    assert html =~ "ready for slicing"
+    assert {:ok, ready} = WorkRequestRepository.get(Repo, request.id)
+    assert ready.status == "ready_for_slicing"
+  end
+
+  test "close and answer actions are stale-status-safe from the detail view" do
+    anchor = create_anchor_package!()
+    request = create_work_request!(id: "WR-LIVE-Q-STALE", repo: anchor.repo, base_branch: anchor.base_branch, status: "clarifying")
+    assert {:ok, question} = WorkRequestRepository.ask_question(Repo, request.id, question_attrs(id: "WRQ-LIVE-Q-STALE"))
+    assert {:ok, _closed} = WorkRequestRepository.close_question(Repo, question.id, "open")
+
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, view, _html} = live(board_session_conn(secret), "/sympp/work-requests/#{request.id}")
+
+    html =
+      render_submit(view, "answer_question", %{
+        "question" => %{
+          "id" => question.id,
+          "current_status" => "open",
+          "answer" => "Too late.",
+          "answered_by" => "operator-1"
+        }
+      })
+
+    assert html =~ "That question is already closed."
+    assert {:ok, [persisted]} = WorkRequestRepository.list_questions(Repo, request.id)
+    assert persisted.status == "closed"
+    assert persisted.answer == nil
+  end
+
+  test "first clarification question status transition rolls back when question insert fails" do
+    anchor = create_anchor_package!()
+
+    request =
+      create_work_request!(
+        id: "WR-LIVE-ASK-ROLLBACK",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_clarification"
+      )
+
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, view, _html} = live(board_session_conn(secret), "/sympp/work-requests/#{request.id}")
+
+    html =
+      render_submit(view, "ask_question", %{
+        "question" => %{
+          "category" => "",
+          "question" => "",
+          "why_needed" => ""
+        }
+      })
+
+    assert html =~ "Check the required fields and selected values."
+    assert {:ok, unchanged} = WorkRequestRepository.get(Repo, request.id)
+    assert unchanged.status == "ready_for_clarification"
+    assert {:ok, []} = WorkRequestRepository.list_questions(Repo, request.id)
+  end
+
+  test "detail actions cannot mutate out-of-scope WorkRequests" do
+    anchor = create_anchor_package!()
+    out_of_scope = create_work_request!(id: "WR-LIVE-HIDDEN-ACTION", repo: "nextide/other", base_branch: anchor.base_branch, status: "ready_for_clarification")
+
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{out_of_scope.id}")
+    assert html =~ "not found in this board scope"
+
+    html =
+      render_submit(view, "ask_question", %{
+        "question" => %{
+          "category" => "scope",
+          "question" => "Should not persist?",
+          "why_needed" => "Out of scope."
+        }
+      })
+
+    assert html =~ "not found in this board scope"
+    assert {:ok, []} = WorkRequestRepository.list_questions(Repo, out_of_scope.id)
+    assert {:ok, unchanged} = WorkRequestRepository.get(Repo, out_of_scope.id)
+    assert unchanged.status == "ready_for_clarification"
+  end
+
   test "detail hides out-of-scope WorkRequests as not found" do
     anchor = create_anchor_package!()
     other = create_work_request!(id: "WR-LIVE-HIDDEN", repo: "nextide/other", base_branch: anchor.base_branch)

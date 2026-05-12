@@ -6,9 +6,10 @@ AccessGrant permissions, virtual planning resources, readiness gates,
 review-suite evidence, PR evidence, and human merge controls.
 
 WorkRequest core persistence, planned-slice persistence, read API/list/detail
-dashboard views, and scoped dashboard intake exist. MCP intake tools, automatic
-question generation, automatic slicing, dispatch, Linear state creation, and
-plugin packaging remain future work.
+dashboard views, scoped dashboard intake, and the board-authenticated manual
+clarification loop exist. MCP intake tools, automatic question generation,
+automatic slicing, dispatch, Linear state creation, and plugin packaging remain
+future work.
 
 ## Purpose
 
@@ -49,6 +50,12 @@ board-authenticated grants with frozen repo and base-branch scope. The create
 form accepts title, work type, desired dispatch shape, human description, and
 constraints JSON. Repo and base branch are visible locked values, and submitted
 repo/base fields are ignored in favor of the grant scope.
+
+The dashboard detail path is also scoped to board-visible WorkRequests. It can
+move a `draft` request to `ready_for_clarification`, ask clarification
+questions, answer or close open questions, record decision log entries, mark
+`human_info_needed`, and mark `ready_for_slicing`. The ready-for-slicing action
+is blocked while any clarification question remains open.
 
 When runtime intake is not available for a lane, the canonical WorkRequest is
 one versioned, operator-approved Markdown artifact.
@@ -105,6 +112,14 @@ The dashboard detail view can move a `draft` WorkRequest to
 `ready_for_clarification` with a stale-status-safe action. If another process
 has already changed the status, the UI reports a safe retry message instead of
 overwriting the newer state.
+
+When the architect asks the first question from
+`ready_for_clarification`, the dashboard uses a stale-status-safe transition to
+`clarifying` before storing the open question. Answer and close actions are
+stale-status-safe per question and do not overwrite questions that another
+process already answered or closed. Decision entries record `source_type`,
+`decision`, `rationale`, `scope_impact`, and `created_by` as durable request
+context.
 
 ## Architect Outputs
 
