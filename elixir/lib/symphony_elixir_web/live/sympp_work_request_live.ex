@@ -915,6 +915,9 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp action_error_message(:no_approved_slices),
     do: "Approve at least one planned slice before marking sliced."
 
+  defp action_error_message(:last_approved_slice),
+    do: "A sliced WorkRequest must keep at least one approved planned slice."
+
   defp action_error_message(:invalid_status),
     do: "That action is not available from the current status."
 

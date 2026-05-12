@@ -305,6 +305,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
 
     html =
       render_submit(view, "skip_planned_slice", %{
+        "slice" => %{"id" => first.id, "current_status" => "approved"}
+      })
+
+    assert html =~ "A sliced WorkRequest must keep at least one approved planned slice."
+    assert {:ok, [persisted_approved, ^second, ^dispatched]} = WorkRequestRepository.list_planned_slices(Repo, request.id)
+    assert persisted_approved.status == "approved"
+
+    html =
+      render_submit(view, "skip_planned_slice", %{
         "slice" => %{"id" => second.id, "current_status" => "planned"}
       })
 

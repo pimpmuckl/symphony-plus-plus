@@ -151,6 +151,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
     assert {:ok, sliced} = Service.mark_sliced(repo, work_request.id, "ready_for_slicing")
     assert sliced.status == "sliced"
 
+    assert {:error, :last_approved_slice} =
+             Repository.skip_planned_slice(repo, work_request.id, planned.id, "approved")
+
+    assert {:ok, [still_approved]} = Repository.list_planned_slices(repo, work_request.id)
+    assert still_approved.status == "approved"
+
     assert {:error, :stale_status} = Repository.mark_sliced(repo, work_request.id, "ready_for_slicing")
     assert {:error, :invalid_status} = Repository.mark_sliced(repo, work_request.id, "sliced")
   end
