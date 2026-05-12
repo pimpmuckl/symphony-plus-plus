@@ -76,12 +76,49 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end)
   end
 
+  @spec work_requests(repo()) :: {:ok, map()} | {:error, dashboard_error()}
+  def work_requests(repo) when is_atom(repo) do
+    safe_read(fn ->
+      with {:ok, work_requests} <- WorkRequestRepository.list(repo),
+           {:ok, cards} <- work_request_cards(repo, ordered_work_requests(work_requests)) do
+        {:ok,
+         %{
+           work_requests: cards,
+           total_count: length(cards)
+         }}
+      end
+    end)
+  end
+
   @spec work_request_detail_for_grant(repo(), String.t(), AccessGrant.t()) :: {:ok, map()} | {:error, dashboard_error()}
   def work_request_detail_for_grant(repo, work_request_id, %AccessGrant{} = grant)
       when is_atom(repo) and is_binary(work_request_id) do
     safe_read(fn ->
       with {:ok, work_request} <- WorkRequestRepository.get(repo, work_request_id),
            :ok <- require_visible_work_request_scope(repo, work_request, grant),
+           {:ok, questions} <- WorkRequestRepository.list_questions(repo, work_request_id),
+           {:ok, decisions} <- WorkRequestRepository.list_decisions(repo, work_request_id),
+           {:ok, planned_slices} <- WorkRequestRepository.list_planned_slices(repo, work_request_id) do
+        questions = ordered_sequence_records(questions)
+        decisions = ordered_sequence_records(decisions)
+        planned_slices = ordered_sequence_records(planned_slices)
+
+        {:ok,
+         %{
+           work_request: work_request_detail(work_request),
+           clarification_questions: Enum.map(questions, &clarification_question/1),
+           decision_logs: Enum.map(decisions, &decision_log_entry/1),
+           planned_slices: Enum.map(planned_slices, &planned_slice/1),
+           summary: work_request_summary(questions, decisions, planned_slices)
+         }}
+      end
+    end)
+  end
+
+  @spec work_request_detail(repo(), String.t()) :: {:ok, map()} | {:error, dashboard_error()}
+  def work_request_detail(repo, work_request_id) when is_atom(repo) and is_binary(work_request_id) do
+    safe_read(fn ->
+      with {:ok, work_request} <- WorkRequestRepository.get(repo, work_request_id),
            {:ok, questions} <- WorkRequestRepository.list_questions(repo, work_request_id),
            {:ok, decisions} <- WorkRequestRepository.list_decisions(repo, work_request_id),
            {:ok, planned_slices} <- WorkRequestRepository.list_planned_slices(repo, work_request_id) do

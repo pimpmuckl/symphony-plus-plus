@@ -528,6 +528,97 @@ pre,
   box-shadow: var(--shadow-sm);
 }
 
+.sympp-operator-priority {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid #d9dde4;
+  border-radius: 8px;
+  background: #111827;
+  color: #f8fafc;
+  overflow: hidden;
+  box-shadow: var(--shadow-md);
+}
+
+.sympp-operator-priority div {
+  display: grid;
+  gap: 0.24rem;
+  min-width: 0;
+  padding: 0.82rem 0.9rem;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.sympp-operator-priority div:first-child {
+  border-left: 0;
+}
+
+.sympp-operator-priority strong {
+  font-size: 1.7rem;
+  line-height: 1;
+}
+
+.sympp-operator-priority p {
+  margin: 0;
+  color: #cbd5e1;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.sympp-operator-priority .muted {
+  color: #94a3b8;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.sympp-operator-watchlist {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
+.sympp-operator-watchlist > div {
+  display: grid;
+  align-content: start;
+  gap: 0.45rem;
+  min-width: 0;
+  padding: 0.82rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: var(--shadow-sm);
+}
+
+.sympp-operator-watchlist h2 {
+  margin: 0 0 0.12rem;
+  font-size: 0.9rem;
+  line-height: 1.2;
+}
+
+.sympp-watch-row {
+  display: grid;
+  grid-template-columns: minmax(6.5rem, auto) minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 0.5rem;
+  align-items: center;
+  min-width: 0;
+  padding-top: 0.45rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.84rem;
+}
+
+.sympp-watch-row:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.sympp-watch-row strong,
+.sympp-watch-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .sympp-board-filters {
   display: grid;
   grid-template-columns: repeat(3, minmax(9rem, 1fr)) auto auto;
@@ -1571,6 +1662,8 @@ pre,
   }
 
   .sympp-work-request-header,
+  .sympp-operator-priority,
+  .sympp-operator-watchlist,
   .sympp-work-request-detail,
   .sympp-work-request-grid,
   .sympp-work-request-row,
@@ -1582,6 +1675,26 @@ pre,
   .sympp-slice-row,
   .sympp-slice-detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  .sympp-operator-priority div {
+    border-left: 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .sympp-operator-priority div:first-child {
+    border-top: 0;
+  }
+
+  .sympp-watch-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .sympp-watch-row strong,
+  .sympp-watch-row span {
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .sympp-inline-answer-form .sympp-form-actions,

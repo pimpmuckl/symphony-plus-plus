@@ -20,15 +20,22 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @board_session_key "sympp_board_grant_id"
   @package_session_key "sympp_package_grant_ids"
   @package_session_order_key "sympp_package_grant_order"
+  @operator_session_key "sympp_local_operator"
   @max_package_sessions 8
   @access_grant_lazy_migration_columns ["phase_id", "scope_repo", "scope_base_branch", "provenance"]
 
   @spec authorize_board_browser(Conn.t(), term()) :: Conn.t()
   def authorize_board_browser(conn, _opts) do
-    case authorize_board_request(conn) do
-      {:ok, %AccessGrant{} = grant} -> Conn.put_session(conn, @board_session_key, grant.id)
-      {:error, :unauthorized} -> conn |> board_login_response() |> Conn.halt()
-      {:error, reason} -> conn |> board_browser_error_response(reason) |> Conn.halt()
+    cond do
+      local_operator_browser?(conn) ->
+        put_local_operator_session(conn)
+
+      true ->
+        case authorize_board_request(conn) do
+          {:ok, %AccessGrant{} = grant} -> Conn.put_session(conn, @board_session_key, grant.id)
+          {:error, :unauthorized} -> conn |> board_login_response() |> Conn.halt()
+          {:error, reason} -> conn |> board_browser_error_response(reason) |> Conn.halt()
+        end
     end
   end
 
@@ -36,10 +43,68 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   def authorize_package_browser(conn, _opts) do
     work_package_id = conn.path_params |> Map.get("work_package_id") |> normalize_package_route_id()
 
-    case authorize_package_request(conn, work_package_id) do
-      {:ok, %AccessGrant{} = grant} -> put_package_browser_session(conn, grant, work_package_id)
-      {:error, :unauthorized} -> conn |> package_login_response(work_package_id: work_package_id) |> Conn.halt()
-      {:error, reason} -> conn |> package_browser_error_response(reason, work_package_id) |> Conn.halt()
+    cond do
+      not valid_package_route_id?(work_package_id) ->
+        conn |> package_not_found_response() |> Conn.halt()
+
+      local_operator_browser?(conn) ->
+        put_local_operator_session(conn)
+
+      true ->
+        case authorize_package_request(conn, work_package_id) do
+          {:ok, %AccessGrant{} = grant} -> put_package_browser_session(conn, grant, work_package_id)
+          {:error, :unauthorized} -> conn |> package_login_response(work_package_id: work_package_id) |> Conn.halt()
+          {:error, reason} -> conn |> package_browser_error_response(reason, work_package_id) |> Conn.halt()
+        end
+    end
+  end
+
+  @spec local_operator_session?(map()) :: boolean()
+  def local_operator_session?(session) when is_map(session), do: Map.get(session, @operator_session_key) == true
+  def local_operator_session?(_session), do: false
+
+  @spec local_operator_browser?(Conn.t()) :: boolean()
+  def local_operator_browser?(%Conn{} = conn), do: local_operator_enabled?() and loopback_request?(conn.remote_ip)
+
+  @spec local_operator_enabled?() :: boolean()
+  def local_operator_enabled? do
+    endpoint_config = Application.get_env(:symphony_elixir, Endpoint, [])
+
+    truthy_config?(Keyword.get(endpoint_config, :sympp_local_operator)) or
+      truthy_config?(Application.get_env(:symphony_elixir, :sympp_local_operator))
+  end
+
+  defp truthy_config?(value), do: value in [true, :enabled, "enabled", "true", "1", 1]
+
+  defp loopback_request?({127, _second, _third, _fourth}), do: true
+  defp loopback_request?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+  defp loopback_request?(_remote_ip), do: false
+
+  defp put_local_operator_session(conn) do
+    conn
+    |> clear_board_session()
+    |> clear_package_session(nil)
+    |> Conn.put_session(@operator_session_key, true)
+  end
+
+  @spec authorize_board_request(Conn.t()) :: {:ok, AccessGrant.t()} | {:error, term()}
+  def authorize_board_request(conn) do
+    with {:error, :unauthorized} <- conn |> Conn.get_session(@board_session_key) |> authorize_board_grant_id() do
+      case bearer_secret(conn) do
+        nil -> {:error, :unauthorized}
+        secret -> authorize_board_secret(secret)
+      end
+    end
+  end
+
+  @spec authorize_package_request(Conn.t(), term()) :: {:ok, AccessGrant.t()} | {:error, term()}
+  def authorize_package_request(_conn, work_package_id) when not is_binary(work_package_id), do: {:error, :not_found}
+
+  def authorize_package_request(conn, work_package_id) do
+    cond do
+      not valid_package_route_id?(work_package_id) -> {:error, :not_found}
+      is_binary(bearer_secret(conn)) -> authorize_package_secret(bearer_secret(conn), work_package_id)
+      true -> authorize_package_session(conn, work_package_id)
     end
   end
 
@@ -66,6 +131,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       {:ok, %AccessGrant{} = grant} ->
         conn
         |> Conn.put_session(@board_session_key, grant.id)
+        |> Conn.delete_session(@operator_session_key)
         |> redirect(to: prefixed_path(conn, "/sympp/board"))
 
       {:error, :forbidden} ->
@@ -102,6 +168,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       {:ok, %AccessGrant{} = grant} ->
         conn
         |> put_package_browser_session(grant, work_package_id)
+        |> Conn.delete_session(@operator_session_key)
         |> redirect(to: package_detail_path(conn, work_package_id))
 
       {:error, :forbidden} ->
@@ -244,25 +311,6 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     |> case do
       {:error, reason} -> error_response(conn, reason)
       %Conn{} = conn -> conn
-    end
-  end
-
-  defp authorize_board_request(conn) do
-    with {:error, :unauthorized} <- conn |> Conn.get_session(@board_session_key) |> authorize_board_grant_id() do
-      case bearer_secret(conn) do
-        nil -> {:error, :unauthorized}
-        secret -> authorize_board_secret(secret)
-      end
-    end
-  end
-
-  defp authorize_package_request(_conn, work_package_id) when not is_binary(work_package_id), do: {:error, :not_found}
-
-  defp authorize_package_request(conn, work_package_id) do
-    cond do
-      not valid_package_route_id?(work_package_id) -> {:error, :not_found}
-      is_binary(bearer_secret(conn)) -> authorize_package_secret(bearer_secret(conn), work_package_id)
-      true -> authorize_package_session(conn, work_package_id)
     end
   end
 

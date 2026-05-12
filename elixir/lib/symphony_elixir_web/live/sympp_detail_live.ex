@@ -32,11 +32,16 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     package_grant_id = session |> Map.get("sympp_package_grant_ids") |> package_session_grant_id(work_package_id)
     board_grant_id = Map.get(session, "sympp_board_grant_id")
 
+    operator_mode? =
+      SymppDashboardApiController.local_operator_session?(session) and
+        SymppDashboardApiController.local_operator_enabled?()
+
     {:ok,
      socket
      |> assign(:work_package_id, work_package_id)
      |> assign(:package_grant_id, package_grant_id)
      |> assign(:board_grant_id, board_grant_id)
+     |> assign(:operator_mode?, operator_mode?)
      |> assign(:grant, nil)
      |> assign(:phase_reader?, false)
      |> assign(:detail, empty_detail(error: nil))
@@ -49,6 +54,14 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     work_package_id = SymppDashboardApiController.normalize_package_route_id(work_package_id)
 
     case authorize_session(socket, work_package_id) do
+      :local_operator ->
+        {:noreply,
+         socket
+         |> assign(:work_package_id, work_package_id)
+         |> assign(:grant, nil)
+         |> assign(:phase_reader?, true)
+         |> assign_detail()}
+
       {:ok, %AccessGrant{} = grant} ->
         {:noreply,
          socket
@@ -293,18 +306,22 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
   end
 
   defp authorize_session(socket, work_package_id) do
-    package_result =
-      SymppDashboardApiController.authorize_package_grant_id(socket.assigns.package_grant_id, work_package_id)
+    if socket.assigns.operator_mode? do
+      :local_operator
+    else
+      package_result =
+        SymppDashboardApiController.authorize_package_grant_id(socket.assigns.package_grant_id, work_package_id)
 
-    board_result =
-      SymppDashboardApiController.authorize_package_grant_id(socket.assigns.board_grant_id, work_package_id)
+      board_result =
+        SymppDashboardApiController.authorize_package_grant_id(socket.assigns.board_grant_id, work_package_id)
 
-    case {package_result, board_result} do
-      {_package_result, {:ok, %AccessGrant{}} = authorized} -> authorized
-      {{:ok, %AccessGrant{}} = authorized, _board_result} -> authorized
-      {{:error, _package_reason}, {:error, :not_found}} -> {:error, :not_found}
-      {{:error, :unauthorized}, {:error, reason}} -> {:error, reason}
-      {{:error, reason}, _board_result} -> {:error, reason}
+      case {package_result, board_result} do
+        {_package_result, {:ok, %AccessGrant{}} = authorized} -> authorized
+        {{:ok, %AccessGrant{}} = authorized, _board_result} -> authorized
+        {{:error, _package_reason}, {:error, :not_found}} -> {:error, :not_found}
+        {{:error, :unauthorized}, {:error, reason}} -> {:error, reason}
+        {{:error, reason}, _board_result} -> {:error, reason}
+      end
     end
   end
 
@@ -345,6 +362,13 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
          detail: SymppDashboardApiController.scope_package_payload_for_grant(grant, detail),
          timeline: SymppDashboardApiController.scope_package_payload_for_grant(grant, timeline)
        }}
+    end
+  end
+
+  defp load_detail(repo, work_package_id, nil) do
+    with {:ok, detail} <- Dashboard.detail(repo, work_package_id),
+         {:ok, timeline} <- Dashboard.timeline(repo, work_package_id) do
+      {:ok, %{detail: detail, timeline: timeline}}
     end
   end
 
