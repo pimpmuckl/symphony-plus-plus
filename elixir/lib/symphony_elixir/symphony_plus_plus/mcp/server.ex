@@ -22,12 +22,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
   alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
+  alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
@@ -67,6 +69,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "approve_work_request_planned_slice",
     "skip_work_request_planned_slice",
     "mark_work_request_sliced",
+    "dispatch_work_request_planned_slice",
     "read_child_status",
     "approve_scope_expansion",
     "read_phase_board",
@@ -87,7 +90,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "add_work_request_planned_slice",
     "approve_work_request_planned_slice",
     "skip_work_request_planned_slice",
-    "mark_work_request_sliced"
+    "mark_work_request_sliced",
+    "dispatch_work_request_planned_slice"
   ]
   @phase7_stub_architect_tools [
     "revoke_child_worker_key",
@@ -729,7 +733,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp dispatch("tools/list", params, %__MODULE__{config: config, session: session}) when is_map(params) do
-    case tool_specs_for_session(config.repo, session) do
+    case tool_specs_for_session(config, session) do
       {:ok, tools} -> {:ok, %{"tools" => tools}}
       {:error, reason} -> worker_error(reason, "tools/list")
     end
@@ -962,6 +966,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp architect_tool_description("mark_work_request_sliced") do
     "Mark a scoped WorkRequest sliced using the existing approved-slice requirement."
+  end
+
+  defp architect_tool_description("dispatch_work_request_planned_slice") do
+    "Dispatch one approved planned slice into a WorkPackage and private worker handoff."
   end
 
   defp architect_tool_description("approve_scope_expansion") do
@@ -1270,6 +1278,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     )
   end
 
+  defp architect_tool_input_schema("dispatch_work_request_planned_slice") do
+    schema(
+      %{
+        "work_request_id" => string_schema(),
+        "planned_slice_id" => string_schema(),
+        "claimed_by" => string_schema(),
+        "secret_handoff" => string_schema(),
+        "secret_store_dir" => string_schema()
+      },
+      ["work_request_id", "planned_slice_id", "claimed_by"]
+    )
+  end
+
   defp architect_tool_input_schema("read_child_status"), do: schema(%{"work_package_id" => string_schema()}, ["work_package_id"])
 
   defp architect_tool_input_schema("approve_scope_expansion") do
@@ -1308,14 +1329,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(%{"phase_id" => string_schema(), "update" => object_schema()}, ["phase_id", "update"])
   end
 
-  defp tool_specs_for_session(_repo, nil) do
+  defp tool_specs_for_session(_config, nil) do
     {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
   end
 
-  defp tool_specs_for_session(repo, session) do
+  defp tool_specs_for_session(%Config{repo: repo} = config, session) do
     case Auth.require_session(session, repo) do
       {:ok, %Session{assignment: %{grant_role: "architect"}} = session} ->
-        {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs_for_session(repo, session)]}
+        {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs_for_session(config, session)]}
 
       {:ok, %Session{assignment: %{grant_role: "worker"}}} ->
         {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
@@ -1333,25 +1354,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp claimable_tool_specs, do: [health_tool_spec(), worker_tool_spec("claim_work_key")]
 
-  defp architect_tool_specs_for_session(repo, %Session{assignment: %{capabilities: capabilities}} = session) when is_list(capabilities) do
+  defp architect_tool_specs_for_session(%Config{} = config, %Session{assignment: %{capabilities: capabilities}} = session)
+       when is_list(capabilities) do
     @architect_tools
     |> Enum.filter(fn tool ->
       capability_allowed? = architect_tool_required_capabilities(tool) -- capabilities == []
-      capability_allowed? and architect_tool_visible_for_session?(repo, session, tool)
+      capability_allowed? and architect_tool_visible_for_session?(config, session, tool)
     end)
     |> Enum.map(&architect_tool_spec/1)
   end
 
-  defp architect_tool_specs_for_session(_repo, _session), do: []
+  defp architect_tool_specs_for_session(_config, _session), do: []
 
-  defp architect_tool_visible_for_session?(repo, %Session{} = session, tool) when tool in @phase_scoped_work_request_tools do
+  defp architect_tool_visible_for_session?(%Config{repo: repo} = config, %Session{} = session, tool)
+       when tool in @phase_scoped_work_request_tools do
     case scoped_work_request_filters(repo, session) do
-      {:ok, _filters, _scope} -> true
+      {:ok, _filters, _scope} -> dispatch_tool_visible_for_config?(config, tool)
       _reason -> false
     end
   end
 
-  defp architect_tool_visible_for_session?(_repo, %Session{}, _tool), do: true
+  defp architect_tool_visible_for_session?(_config, %Session{}, _tool), do: true
+
+  defp dispatch_tool_visible_for_config?(%Config{} = config, "dispatch_work_request_planned_slice") do
+    with {:ok, repo_root} <- config_repo_root(config),
+         :ok <- validate_child_secret_handoff_repo_root(repo_root, "auto"),
+         {:ok, _database} <- dispatch_handoff_database(config.database, config.repo) do
+      true
+    else
+      _reason -> false
+    end
+  end
+
+  defp dispatch_tool_visible_for_config?(_config, _tool), do: true
 
   defp schema(properties, required) do
     %{"type" => "object", "additionalProperties" => false, "properties" => properties, "required" => required}
@@ -2037,6 +2072,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp architect_tool("dispatch_work_request_planned_slice", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "dispatch:work_request"),
+         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
+         {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
+         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
+         {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, planned_slice} <- scoped_work_request_planned_slice(config.repo, work_request_id, planned_slice_id),
+         :ok <- require_planned_slice_target_base_branch_scope(work_request, planned_slice.target_base_branch),
+         :ok <- require_approved_dispatch_planned_slice(planned_slice),
+         {:ok, handoff_opts} <- dispatch_planned_slice_handoff_opts(config, arguments, claimed_by),
+         {:ok, dispatch} <- PlannedSliceDispatch.dispatch(config.repo, work_request_id, planned_slice_id, handoff_opts) do
+      {:ok, tool_result(dispatch_work_request_planned_slice_payload(dispatch, scope))}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "dispatch_work_request_planned_slice", "reason" => reason}}
+      {:error, :not_found} -> work_request_not_found_error("dispatch_work_request_planned_slice")
+      {:error, reason} -> dispatch_work_request_planned_slice_error(reason)
+    end
+  end
+
   defp architect_tool("read_child_status", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- architect_session(config.repo, session, ["read:child_progress", "read:child_findings"]),
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
@@ -2193,6 +2248,250 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp update_work_request_planned_slice_status(repo, work_request_id, planned_slice_id, current_status, "skipped") do
     WorkRequestService.skip_planned_slice(repo, work_request_id, planned_slice_id, current_status)
   end
+
+  defp dispatch_planned_slice_handoff_opts(%Config{} = config, arguments, claimed_by) do
+    with {:ok, repo_root} <- config_repo_root(config),
+         {:ok, secret_handoff} <- optional_string_argument(arguments, "secret_handoff", "auto"),
+         {:ok, secret_store_dir} <- optional_string_argument(arguments, "secret_store_dir"),
+         :ok <- validate_child_secret_handoff_mode(secret_handoff),
+         :ok <- validate_child_secret_handoff_repo_root(repo_root, secret_handoff),
+         {:ok, database} <- dispatch_handoff_database(config.database, config.repo) do
+      {:ok,
+       [
+         repo_root: repo_root,
+         claimed_by: claimed_by
+       ]
+       |> put_optional_handoff_opt(:database, database)
+       |> put_optional_handoff_opt(:mode, normalize_child_secret_handoff_mode(secret_handoff))
+       |> put_optional_handoff_opt(:store_dir, secret_store_dir)}
+    end
+  end
+
+  defp dispatch_handoff_database(nil, repo) do
+    with {:ok, live_database} <- live_file_backed_dispatch_database(repo),
+         configured_database <- configured_repo_dispatch_database(repo) do
+      dispatch_handoff_database_for_default_config(configured_database, live_database)
+    end
+  end
+
+  defp dispatch_handoff_database(database, repo) when is_binary(database) do
+    database
+    |> String.trim()
+    |> dispatch_handoff_database_for_trimmed_config(database, repo)
+  end
+
+  defp dispatch_handoff_database_for_default_config({:ok, configured_database}, live_database) do
+    cond do
+      configured_dispatch_database_matches_live?(configured_database, live_database) and
+          writable_dispatch_database?(configured_database) ->
+        {:ok, configured_database}
+
+      configured_dispatch_database_matches_live?(configured_database, live_database) ->
+        {:tool_error, "read_only_database"}
+
+      true ->
+        {:ok, live_database}
+    end
+  end
+
+  defp dispatch_handoff_database_for_default_config(:none, live_database), do: {:ok, live_database}
+
+  defp dispatch_handoff_database_for_trimmed_config("", _database, repo), do: dispatch_handoff_database(nil, repo)
+
+  defp dispatch_handoff_database_for_trimmed_config(_trimmed_database, database, repo) do
+    dispatch_handoff_database_for_configured_path(database, repo)
+  end
+
+  defp dispatch_handoff_database_for_configured_path(database, repo) when is_binary(database) do
+    with false <- Repo.memory_database?(database),
+         {:ok, live_database} <- live_file_backed_dispatch_database(repo) do
+      database
+      |> normalize_configured_dispatch_database()
+      |> configured_dispatch_database_result(live_database)
+    else
+      true -> {:tool_error, "file_backed_database_required"}
+      error -> error
+    end
+  end
+
+  defp configured_dispatch_database_result(configured_database, live_database) do
+    if configured_dispatch_database_matches_live?(configured_database, live_database) and
+         writable_dispatch_database?(configured_database) do
+      {:ok, configured_database}
+    else
+      configured_dispatch_database_error(configured_database, live_database)
+    end
+  end
+
+  defp normalize_configured_dispatch_database("file:" <> _uri = database) do
+    normalize_sqlite_file_uri(database)
+  end
+
+  defp normalize_configured_dispatch_database(database) when is_binary(database) do
+    if Path.type(database) == :absolute do
+      database
+    else
+      Path.expand(database)
+    end
+  end
+
+  defp normalize_sqlite_file_uri(database) do
+    case Repo.sqlite_file_uri_path(database) do
+      path when is_binary(path) and path != "" ->
+        put_sqlite_file_uri_path(database, Path.expand(path))
+
+      _path ->
+        database
+    end
+  end
+
+  defp put_sqlite_file_uri_path("file:" <> uri, expanded_path) do
+    encoded_path = encode_sqlite_file_uri_path(expanded_path)
+
+    case String.split(uri, "?", parts: 2) do
+      [_uri_path, query] -> "file:" <> encoded_path <> "?" <> query
+      [_uri_path] -> "file:" <> encoded_path
+    end
+  end
+
+  defp encode_sqlite_file_uri_path(path) do
+    path
+    |> String.replace("\\", "/")
+    |> URI.encode(&sqlite_file_uri_path_char?/1)
+  end
+
+  defp sqlite_file_uri_path_char?(char), do: URI.char_unreserved?(char) or char in [?/, ?:]
+
+  defp writable_dispatch_database?("file:" <> _uri = database) do
+    query_params = sqlite_file_uri_query_params(database)
+    mode = query_params |> Map.get("mode", "") |> String.downcase()
+
+    mode not in ["ro", "memory"] and not truthy_sqlite_uri_param?(Map.get(query_params, "immutable"))
+  end
+
+  defp writable_dispatch_database?(_database), do: true
+
+  defp configured_dispatch_database_error(configured_database, live_database) do
+    if configured_dispatch_database_matches_live?(configured_database, live_database) do
+      {:tool_error, "read_only_database"}
+    else
+      {:tool_error, "database_scope_mismatch"}
+    end
+  end
+
+  defp configured_dispatch_database_matches_live?("file:" <> _uri = database, live_database) do
+    case Repo.sqlite_file_uri_path(database) do
+      path when is_binary(path) and path != "" ->
+        Repo.same_database_path?(path, live_database)
+
+      _path ->
+        false
+    end
+  end
+
+  defp configured_dispatch_database_matches_live?(database, live_database) do
+    Repo.same_database_path?(database, live_database)
+  end
+
+  defp configured_repo_dispatch_database(repo) when is_atom(repo) do
+    cond do
+      function_exported?(repo, :database_path_if_present, 0) ->
+        repo.database_path_if_present()
+        |> configured_repo_dispatch_database_value()
+
+      function_exported?(repo, :database_path, 0) ->
+        repo.database_path()
+        |> configured_repo_dispatch_database_value()
+
+      true ->
+        :none
+    end
+  rescue
+    _error -> :none
+  catch
+    _kind, _reason -> :none
+  end
+
+  defp configured_repo_dispatch_database(_repo), do: :none
+
+  defp configured_repo_dispatch_database_value(database) when is_binary(database) do
+    if String.trim(database) == "" do
+      :none
+    else
+      configured_repo_dispatch_database_path_value(database)
+    end
+  end
+
+  defp configured_repo_dispatch_database_value(_database), do: :none
+
+  defp configured_repo_dispatch_database_path_value(database) when is_binary(database) do
+    if Repo.memory_database?(database) do
+      :none
+    else
+      {:ok, normalize_configured_dispatch_database(database)}
+    end
+  end
+
+  defp sqlite_file_uri_query_params("file:" <> uri) do
+    case String.split(uri, "?", parts: 2) do
+      [_path, query] -> URI.decode_query(query)
+      [_path] -> %{}
+    end
+  end
+
+  defp truthy_sqlite_uri_param?(value) when is_binary(value), do: String.downcase(value) in ["1", "true", "yes", "on"]
+  defp truthy_sqlite_uri_param?(_value), do: false
+
+  defp live_file_backed_dispatch_database(repo) do
+    case repo_query(repo, "PRAGMA database_list", [], log: false) do
+      {:ok, %{rows: rows}} ->
+        case Enum.find(rows, &main_database_row?/1) do
+          [_seq, "main", path] when is_binary(path) and path != "" -> {:ok, path}
+          _row -> {:tool_error, "file_backed_database_required"}
+        end
+
+      _result ->
+        {:tool_error, "database_required"}
+    end
+  rescue
+    _error ->
+      {:tool_error, "database_required"}
+  catch
+    _kind, _reason ->
+      {:tool_error, "database_required"}
+  end
+
+  defp require_approved_dispatch_planned_slice(%PlannedSlice{status: "approved"}), do: :ok
+
+  defp require_approved_dispatch_planned_slice(%PlannedSlice{status: status}),
+    do: {:error, {:invalid_planned_slice_status, status}}
+
+  defp dispatch_work_request_planned_slice_error({:invalid_planned_slice_status, _status}) do
+    {:error, -32_602, "Invalid params", %{"tool" => "dispatch_work_request_planned_slice", "reason" => "invalid_planned_slice_status"}}
+  end
+
+  defp dispatch_work_request_planned_slice_error({:invalid_work_request_status, _status}) do
+    {:error, -32_602, "Invalid params", %{"tool" => "dispatch_work_request_planned_slice", "reason" => "invalid_work_request_status"}}
+  end
+
+  defp dispatch_work_request_planned_slice_error({:planned_slice_scope_violation, _errors}) do
+    {:error, -32_602, "Invalid params", %{"tool" => "dispatch_work_request_planned_slice", "reason" => "planned_slice_scope_violation"}}
+  end
+
+  defp dispatch_work_request_planned_slice_error({:unsupported_standalone_kind, _kind}) do
+    {:error, -32_602, "Invalid params", %{"tool" => "dispatch_work_request_planned_slice", "reason" => "unsupported_standalone_kind"}}
+  end
+
+  defp dispatch_work_request_planned_slice_error({:dispatch_link_failed, _reason, recovery}) do
+    {:error, -32_000, "Server error",
+     %{
+       "tool" => "dispatch_work_request_planned_slice",
+       "reason" => "dispatch_link_failed",
+       "recovery" => dispatch_link_recovery_payload(recovery)
+     }}
+  end
+
+  defp dispatch_work_request_planned_slice_error(reason), do: architect_error(reason, "dispatch_work_request_planned_slice")
 
   defp require_architect_phase_board_grant(repo, %Session{} = session, phase_id) do
     with {:ok, grant} <- require_live_architect_grant(repo, session),
@@ -4806,6 +5105,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool_capability("approve_work_request_planned_slice"), do: "write:work_request"
   defp architect_tool_capability("skip_work_request_planned_slice"), do: "write:work_request"
   defp architect_tool_capability("mark_work_request_sliced"), do: "write:work_request"
+  defp architect_tool_capability("dispatch_work_request_planned_slice"), do: "dispatch:work_request"
   defp architect_tool_capability("read_phase_board"), do: "read:phase"
   defp architect_tool_capability("approve_scope_expansion"), do: "approve:scope_expansion"
   defp architect_tool_capability("request_child_replan"), do: "request:child_replan"
@@ -7157,6 +7457,85 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "updated_at" => timestamp(planned_slice.updated_at)
     }
   end
+
+  defp dispatch_work_request_planned_slice_payload(
+         %{work_request: %WorkRequest{} = work_request, planned_slice: %PlannedSlice{} = planned_slice} = dispatch,
+         scope
+       ) do
+    create_work =
+      dispatch
+      |> PlannedSliceDispatch.response_payload()
+      |> Map.fetch!(:create_work)
+
+    %{
+      "work_request" => %{"id" => work_request.id},
+      "planned_slice" => %{
+        "id" => planned_slice.id,
+        "status" => planned_slice.status,
+        "work_package_id" => planned_slice.work_package_id,
+        "dispatched_at" => timestamp(planned_slice.dispatched_at)
+      },
+      "work_package" => dispatch_work_package_payload(Map.fetch!(create_work, :work_package)),
+      "worker_handoff" => %{
+        "worker_grant" => dispatch_worker_grant_payload(Map.fetch!(create_work, :worker_grant)),
+        "secret_handoff" => dispatch_secret_handoff_payload(Map.get(create_work, :worker_secret_handoff))
+      },
+      "scope" => scope,
+      "status" => %{"planned_slice_status" => planned_slice.status}
+    }
+  end
+
+  defp dispatch_work_package_payload(work_package) when is_map(work_package) do
+    work_package
+    |> json_safe_payload()
+    |> Map.take(["id", "kind", "status", "repo", "base_branch"])
+  end
+
+  defp dispatch_worker_grant_payload(worker_grant) when is_map(worker_grant) do
+    worker_grant
+    |> json_safe_payload()
+    |> Map.drop(["display_key", "secret", "secret_handoff", "secret_returned_once"])
+    |> Map.put("secret_in_response", false)
+  end
+
+  defp dispatch_secret_handoff_payload(nil), do: nil
+
+  defp dispatch_secret_handoff_payload(handoff) when is_map(handoff) do
+    handoff
+    |> json_safe_payload()
+    |> Map.drop(["display_key", "secret", "payload"])
+  end
+
+  defp dispatch_link_recovery_payload(recovery) when is_map(recovery) do
+    %{}
+    |> put_optional_recovery_value("work_package_id", recovery_value(recovery, :work_package_id))
+    |> put_optional_recovery_value("worker_grant_id", recovery_value(recovery, :worker_grant_id))
+    |> put_optional_recovery_value(
+      "worker_secret_handoff",
+      dispatch_secret_handoff_payload(recovery_value(recovery, :worker_secret_handoff))
+    )
+    |> put_optional_recovery_value("cleanup", safe_recovery_value(recovery_value(recovery, :cleanup)))
+  end
+
+  defp dispatch_link_recovery_payload(_recovery), do: %{}
+
+  defp recovery_value(recovery, key) do
+    Map.get(recovery, key) || Map.get(recovery, to_string(key))
+  end
+
+  defp put_optional_recovery_value(payload, _key, nil), do: payload
+  defp put_optional_recovery_value(payload, key, value), do: Map.put(payload, key, value)
+
+  defp safe_recovery_value(value) when is_map(value) do
+    value
+    |> Enum.map(fn {key, map_value} -> {to_string(key), safe_recovery_value(map_value)} end)
+    |> Map.new()
+  end
+
+  defp safe_recovery_value(value) when is_list(value), do: Enum.map(value, &safe_recovery_value/1)
+  defp safe_recovery_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp safe_recovery_value(value) when is_binary(value) or is_number(value) or is_boolean(value) or is_nil(value), do: value
+  defp safe_recovery_value(value), do: inspect(value)
 
   defp work_request_summary_payload(questions, decisions, planned_slices) do
     %{

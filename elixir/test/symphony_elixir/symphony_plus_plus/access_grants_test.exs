@@ -236,6 +236,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
           "read:child_findings",
           "read:work_request",
           "write:work_request",
+          "dispatch:work_request",
           "mint:child_worker_key",
           "approve:child_ready_state",
           "split:child_work_package",
@@ -250,21 +251,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
   end
 
   test "architect grant can include work request capabilities", %{repo: repo} do
-    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-work-request-capabilities", title: "WorkRequest capabilities"})
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(kind: "phase_child", phase_id: phase.id)
+             )
+
     work_key = WorkKey.generate()
 
     assert {:ok, %AccessGrant{} = grant} =
              Repository.create(repo, %{
                work_package_id: work_package.id,
+               phase_id: phase.id,
                display_key: work_key.display_key,
                secret_hash: WorkKey.secret_hash(work_key.secret),
                grant_role: "architect",
-               capabilities: ["read:work_request", "write:work_request"],
+               capabilities: ["read:work_request", "write:work_request", "dispatch:work_request"],
                expires_at: DateTime.add(DateTime.utc_now(:microsecond), 60, :second)
              })
 
-    assert grant.capabilities == ["read:work_request", "write:work_request"]
-    assert grant.phase_id == nil
+    assert grant.capabilities == ["read:work_request", "write:work_request", "dispatch:work_request"]
+    assert grant.phase_id == phase.id
   end
 
   test "architect read phase grants require phase scope", %{repo: repo} do
@@ -281,7 +290,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
                expires_at: DateTime.add(DateTime.utc_now(:microsecond), 60, :second)
              })
 
-    assert "architect read phase grants require phase scope" in errors_on(changeset).phase_id
+    assert "architect phase-scoped grants require phase scope" in errors_on(changeset).phase_id
+  end
+
+  test "architect dispatch work request grants require phase scope", %{repo: repo} do
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
+    work_key = WorkKey.generate()
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Repository.create(repo, %{
+               work_package_id: work_package.id,
+               display_key: work_key.display_key,
+               secret_hash: WorkKey.secret_hash(work_key.secret),
+               grant_role: "architect",
+               capabilities: ["dispatch:work_request"],
+               expires_at: DateTime.add(DateTime.utc_now(:microsecond), 60, :second)
+             })
+
+    assert "architect phase-scoped grants require phase scope" in errors_on(changeset).phase_id
+  end
+
+  test "architect read and write work request grants require phase scope", %{repo: repo} do
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
+
+    for capability <- ["read:work_request", "write:work_request"] do
+      work_key = WorkKey.generate()
+
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Repository.create(repo, %{
+                 work_package_id: work_package.id,
+                 display_key: work_key.display_key,
+                 secret_hash: WorkKey.secret_hash(work_key.secret),
+                 grant_role: "architect",
+                 capabilities: [capability],
+                 expires_at: DateTime.add(DateTime.utc_now(:microsecond), 60, :second)
+               })
+
+      assert "architect phase-scoped grants require phase scope" in errors_on(changeset).phase_id
+    end
   end
 
   test "architect read phase grants require a work package anchor", %{repo: repo} do
@@ -298,7 +344,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
                expires_at: DateTime.add(DateTime.utc_now(:microsecond), 60, :second)
              })
 
-    assert "architect read phase grants require work package anchor" in errors_on(changeset).work_package_id
+    assert "architect phase-scoped grants require work package anchor" in errors_on(changeset).work_package_id
   end
 
   test "architect read phase grants require an anchor package inside the phase", %{repo: repo} do

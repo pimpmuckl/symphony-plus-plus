@@ -41,6 +41,7 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | approve_work_request_planned_slice | Approve a planned slice that belongs to a scoped WorkRequest. |
 | skip_work_request_planned_slice | Skip a planned slice that belongs to a scoped WorkRequest. |
 | mark_work_request_sliced | Mark a scoped WorkRequest sliced using the existing approved-slice requirement. |
+| dispatch_work_request_planned_slice | Dispatch one approved planned slice into a WorkPackage and private worker handoff. |
 | read_child_status | Read the architect grant's scoped anchor package status, or a same-phase child work-package status when the architect grant has child read capabilities. |
 | read_phase_board | Read the architect grant's scoped phase board, filtered to the frozen repo/base branch for explicit phase grants, including merged-child phase progress. |
 | request_child_replan | Phase 7 stub for child replan requests; returns `phase7_not_implemented` after architect authorization. |
@@ -68,11 +69,12 @@ than being treated as phase-wide. Existing lifecycle
 capabilities such as
 `architect:lifecycle.transition` do not imply MCP architect tool capabilities;
 P3-003 requires the explicit MCP capability strings listed in the permission
-model. WorkRequest read tools are advertised only for explicit phase-scoped
+model. WorkRequest read, mutation, and dispatch tools are advertised only for explicit phase-scoped
 architect grants with usable frozen repo/base-branch scope; legacy
 null-`phase_id` architect grants do not discover those tools. WorkRequest
 mutation tools use the same explicit phase-scoped discovery rule and additionally
-require `write:work_request`. Phase-dependent
+require `write:work_request`; planned-slice dispatch additionally requires
+`dispatch:work_request`. Phase-dependent
 architect tools revalidate the grant's explicit phase scope plus the anchor
 repo/base-branch scope frozen when the phase architect grant was minted.
 Legacy null-`phase_id` grants may still derive the current
@@ -145,6 +147,32 @@ slice requirement. Responses return JSON-safe redacted planned-slice or
 WorkRequest status projections plus scope/status metadata. These tools do not
 dispatch planned slices, create WorkPackages, alter SecretHandoff, mutate
 Linear, run automatic slicing/package generation, or change dashboard behavior.
+`dispatch_work_request_planned_slice` is separate from those mutation tools and
+requires `dispatch:work_request` because it creates a WorkPackage, worker grant,
+and private SecretHandoff side effects. It requires `work_request_id`,
+`planned_slice_id`, and `claimed_by`, with optional `secret_handoff` and
+`secret_store_dir`, uses the same frozen repo/base-branch WorkRequest scope, and
+calls the existing `PlannedSliceDispatch.dispatch` orchestration. MCP dispatch
+is advertised only when `repo_root`/`--repo-root` points at a repository
+containing the worker secret handoff script, and direct calls fail closed if that
+root is missing or invalid. It requires a file-backed live ledger so worker
+handoff commands reconnect to the same ledger; in-memory database configuration
+fails closed before dispatch side effects. Blank database configuration is
+treated as absent and uses the live ledger. Matching configured SQLite file URI
+options are preserved in the worker
+handoff command when they resolve to the same live ledger, including default
+repo database configuration; divergent explicit MCP database configuration fails
+closed, and matching read-only SQLite URI options such as `mode=ro` or
+`immutable=1` are rejected before dispatch. Missing, out-of-scope,
+non-approved, invalid-status, unsupported-kind, and
+slice-scope violations fail closed before returning sibling content or raw
+secret material. The response is intentionally narrower than CLI output:
+WorkRequest id, planned slice id/status/linkage, WorkPackage id metadata, and
+redacted worker handoff metadata only. Dispatch-link failure responses may include
+sanitized recovery identifiers such as WorkPackage id, worker grant id, cleanup
+status, and redacted handoff metadata. It must not include raw worker secrets,
+work keys, bearer tokens, API tokens, MCP auth tokens, private-store secret
+payloads, or secret-bearing claim URLs.
 `read_child_status` requires both `read:child_progress` and
 `read:child_findings` because its summary includes progress, findings, and
 artifact counts. `approve_child_ready_state` revalidates the ready child against

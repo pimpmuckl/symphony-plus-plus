@@ -867,13 +867,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "write:work_request",
         "mint:child_worker_key",
         "read:phase",
+        "dispatch:work_request",
         "approve:child_ready_state",
         "approve:scope_expansion",
         "merge:child_into_phase",
         "split:child_work_package"
       ])
 
-    server = Server.new(Config.default(repo: repo), initialized: true, session: session)
+    server = Server.new(test_mcp_config(repo), initialized: true, session: session)
 
     response = Server.handle(%{"jsonrpc" => "2.0", "id" => "architect-tools", "method" => "tools/list", "params" => %{}}, server)
     tools = get_in(response, ["result", "tools"])
@@ -936,6 +937,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
            ]
 
     assert get_in(tools_by_name, ["mark_work_request_sliced", "inputSchema", "required"]) == ["work_request_id", "current_status"]
+
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "required"]) == [
+             "work_request_id",
+             "planned_slice_id",
+             "claimed_by"
+           ]
+
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_handoff", "type"]) == "string"
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_store_dir", "type"]) == "string"
     assert get_in(tools_by_name, ["read_child_status", "inputSchema", "required"]) == ["work_package_id"]
     assert get_in(tools_by_name, ["read_child_status", "inputSchema", "properties", "work_package_id", "type"]) == "string"
     assert get_in(tools_by_name, ["read_phase_board", "inputSchema", "required"]) == ["phase_id"]
@@ -950,37 +960,61 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["split_work_package", "inputSchema", "properties", "child_specs", "minItems"]) == 1
   end
 
-  test "tools list hides WorkRequest tools for legacy architect sessions", %{repo: repo} do
-    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-WR-TOOLS-LEGACY", kind: "mcp"))
-    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:work_request", "write:work_request"])
+  test "tools list hides planned-slice dispatch when repo_root is not configured", %{repo: repo} do
+    {_anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-DISPATCH-TOOLS-NO-ROOT", [
+        "read:work_request",
+        "write:work_request",
+        "dispatch:work_request",
+        "read:phase"
+      ])
 
-    assert {:ok, architect_assignment} =
-             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
-
-    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
     server = Server.new(Config.default(repo: repo), initialized: true, session: session)
 
-    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "legacy-architect-tools", "method" => "tools/list", "params" => %{}}, server)
-    tools_by_name = response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
+    response =
+      Server.handle(%{"jsonrpc" => "2.0", "id" => "architect-tools-no-root", "method" => "tools/list", "params" => %{}}, server)
 
-    assert Map.has_key?(tools_by_name, "sympp.health")
-    assert Map.has_key?(tools_by_name, "get_current_assignment")
+    tools_by_name =
+      response
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
 
-    for tool <- [
-          "list_work_requests",
-          "read_work_request",
-          "set_work_request_status",
-          "ask_work_request_question",
-          "answer_work_request_question",
-          "close_work_request_question",
-          "record_work_request_decision",
-          "add_work_request_planned_slice",
-          "approve_work_request_planned_slice",
-          "skip_work_request_planned_slice",
-          "mark_work_request_sliced"
-        ] do
-      refute Map.has_key?(tools_by_name, tool)
-    end
+    assert Map.has_key?(tools_by_name, "list_work_requests")
+    assert Map.has_key?(tools_by_name, "add_work_request_planned_slice")
+    refute Map.has_key?(tools_by_name, "dispatch_work_request_planned_slice")
+  end
+
+  test "tools list hides planned-slice dispatch when the ledger cannot be handed off", %{repo: repo} do
+    {_anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-DISPATCH-TOOLS-MEMORY-DB", [
+        "read:work_request",
+        "write:work_request",
+        "dispatch:work_request",
+        "read:phase"
+      ])
+
+    server = Server.new(Config.default(repo: repo, repo_root: test_repo_root(), database: ":memory:"), initialized: true, session: session)
+
+    response =
+      Server.handle(%{"jsonrpc" => "2.0", "id" => "architect-tools-memory-db", "method" => "tools/list", "params" => %{}}, server)
+
+    tools_by_name =
+      response
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
+
+    assert Map.has_key?(tools_by_name, "list_work_requests")
+    assert Map.has_key?(tools_by_name, "add_work_request_planned_slice")
+    refute Map.has_key?(tools_by_name, "dispatch_work_request_planned_slice")
+  end
+
+  test "tools list cannot receive legacy WorkRequest architect sessions from grant creation", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-WR-TOOLS-LEGACY", kind: "mcp"))
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             create_architect_work_key(repo, package.id, ["read:work_request", "write:work_request"])
+
+    assert {"architect phase-scoped grants require phase scope", []} in Keyword.get_values(changeset.errors, :phase_id)
   end
 
   test "tools list hides WorkRequest tools when phase scope snapshot is missing", %{repo: repo} do
@@ -1011,7 +1045,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "add_work_request_planned_slice",
           "approve_work_request_planned_slice",
           "skip_work_request_planned_slice",
-          "mark_work_request_sliced"
+          "mark_work_request_sliced",
+          "dispatch_work_request_planned_slice"
         ] do
       refute Map.has_key?(tools_by_name, tool)
     end
@@ -1045,7 +1080,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "add_work_request_planned_slice",
           "approve_work_request_planned_slice",
           "skip_work_request_planned_slice",
-          "mark_work_request_sliced"
+          "mark_work_request_sliced",
+          "dispatch_work_request_planned_slice"
         ] do
       refute Map.has_key?(tools_by_name, tool)
     end
@@ -3405,37 +3441,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(invalid_status_response, ["error", "data", "reason"]) == "invalid_status"
   end
 
-  test "WorkRequest MCP reads reject legacy nil-phase architect grants", %{repo: repo} do
-    {anchor, session} = create_architect_session(repo, "SYMPP-ARCHITECT-WR-LEGACY", ["read:work_request"])
+  test "WorkRequest architect grants require phase scope before MCP use", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-WR-LEGACY", kind: "mcp"))
 
-    original_scope =
-      create_work_request!(repo,
-        id: "WR-MCP-WR-LEGACY-ORIGINAL",
-        repo: anchor.repo,
-        base_branch: anchor.base_branch,
-        status: "ready_for_slicing"
-      )
-
-    sibling =
-      create_work_request!(repo,
-        id: "WR-MCP-WR-LEGACY-SIBLING",
-        repo: "nextide/other",
-        base_branch: anchor.base_branch,
-        status: "ready_for_slicing"
-      )
-
-    repo.update!(Ecto.Changeset.change(anchor, repo: sibling.repo))
-
-    list_response = mcp_tool(repo, session, "list_work_requests", %{"status" => "ready_for_slicing"})
-    assert get_in(list_response, ["error", "code"]) == -32_003
-    assert get_in(list_response, ["error", "data", "reason"]) == "outside_session_scope"
-    refute inspect(list_response) =~ original_scope.id
-    refute inspect(list_response) =~ sibling.id
-
-    read_response = mcp_tool(repo, session, "read_work_request", %{"work_request_id" => sibling.id})
-    assert get_in(read_response, ["error", "code"]) == -32_003
-    assert get_in(read_response, ["error", "data", "reason"]) == "outside_session_scope"
-    refute inspect(read_response) =~ sibling.id
+    assert {:error, %Ecto.Changeset{} = changeset} = create_architect_work_key(repo, package.id, ["read:work_request"])
+    assert {"architect phase-scoped grants require phase scope", []} in Keyword.get_values(changeset.errors, :phase_id)
   end
 
   test "WorkRequest MCP reads fail closed when architect scope snapshot is missing", %{repo: repo} do
@@ -3768,6 +3779,391 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
            } == counts_before
   end
 
+  test "architect WorkRequest planned-slice dispatch tool creates safe worker handoff", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-SLICE-DISPATCH", [
+        "dispatch:work_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-SLICE-DISPATCH",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing",
+        human_description: "Do not return raw_secret_value."
+      )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-WR-SLICE-DISPATCH",
+                 target_base_branch: anchor.base_branch,
+                 goal: "Dispatch without leaking raw_secret_value.",
+                 owned_file_globs: ["elixir/lib/symphony_elixir/symphony_plus_plus/mcp/server.ex"]
+               )
+             )
+
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+    live_database_path = current_main_database_path(repo)
+    configured_database = sqlite_file_uri(live_database_path, "mode=rwc&cache=shared")
+
+    response =
+      mcp_tool(
+        repo,
+        session,
+        "dispatch_work_request_planned_slice",
+        %{
+          "work_request_id" => work_request.id,
+          "planned_slice_id" => approved_slice.id,
+          "claimed_by" => "worker-dispatch-1",
+          "secret_handoff" => test_secret_handoff_mode(),
+          "secret_store_dir" => test_dispatch_handoff_store_dir()
+        },
+        config: Config.default(repo: repo, repo_root: test_repo_root(), database: configured_database)
+      )
+
+    payload = get_in(response, ["result", "structuredContent"])
+    handoff_command = payload["worker_handoff"]["secret_handoff"]["run_mcp_command"]
+    assert payload["scope"] == %{"repo" => anchor.repo, "base_branch" => anchor.base_branch}
+    assert payload["work_request"] == %{"id" => work_request.id}
+    assert payload["planned_slice"]["id"] == approved_slice.id
+    assert payload["planned_slice"]["status"] == "dispatched"
+    assert payload["planned_slice"]["work_package_id"] == payload["work_package"]["id"]
+    assert is_binary(payload["planned_slice"]["dispatched_at"])
+    assert payload["work_package"]["kind"] == "mcp"
+    assert payload["work_package"]["repo"] == anchor.repo
+    assert payload["work_package"]["base_branch"] == anchor.base_branch
+    assert payload["worker_handoff"]["worker_grant"]["secret_in_response"] == false
+    refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "display_key")
+    refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "secret_handoff")
+    refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "secret")
+    assert payload["worker_handoff"]["secret_handoff"]["claimed_by"] == "worker-dispatch-1"
+    assert payload["worker_handoff"]["secret_handoff"]["secret_in_stdout"] == false
+    refute Map.has_key?(payload["worker_handoff"]["secret_handoff"], "display_key")
+    assert String.downcase(handoff_command) =~ String.downcase(configured_database)
+    refute inspect(response) =~ "raw_secret_value"
+
+    assert {:ok, persisted_slice} = WorkRequestRepository.get_planned_slice(repo, work_request.id, approved_slice.id)
+    assert persisted_slice.status == "dispatched"
+    assert persisted_slice.work_package_id == payload["work_package"]["id"]
+
+    assert {:ok, worker_grants} = AccessGrantRepository.list_for_work_package(repo, payload["work_package"]["id"])
+    assert [%AccessGrant{grant_role: "worker"}] = worker_grants
+  end
+
+  test "architect WorkRequest planned-slice dispatch rejects sqlite memory database handoff", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-SLICE-DISPATCH-MEMORY", [
+        "dispatch:work_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-SLICE-DISPATCH-MEMORY",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-WR-SLICE-DISPATCH-MEMORY",
+                 target_base_branch: anchor.base_branch
+               )
+             )
+
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+    counts_before = {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)}
+
+    response =
+      mcp_tool(
+        repo,
+        session,
+        "dispatch_work_request_planned_slice",
+        %{
+          "work_request_id" => work_request.id,
+          "planned_slice_id" => approved_slice.id,
+          "claimed_by" => "worker-dispatch-memory",
+          "secret_handoff" => test_secret_handoff_mode(),
+          "secret_store_dir" => test_dispatch_handoff_store_dir()
+        },
+        config: Config.default(repo: repo, repo_root: test_repo_root(), database: ":memory:")
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "reason"]) == "file_backed_database_required"
+    assert {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)} == counts_before
+  end
+
+  test "architect WorkRequest planned-slice dispatch rejects configured database outside the live ledger", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-SLICE-DISPATCH-DB-SCOPE", [
+        "dispatch:work_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-SLICE-DISPATCH-DB-SCOPE",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-WR-SLICE-DISPATCH-DB-SCOPE",
+                 target_base_branch: anchor.base_branch
+               )
+             )
+
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+    counts_before = {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)}
+    other_database = sqlite_file_uri(Path.join(System.tmp_dir!(), "sympp-mcp-other-ledger.sqlite3"), "mode=rwc&cache=shared")
+
+    response =
+      mcp_tool(
+        repo,
+        session,
+        "dispatch_work_request_planned_slice",
+        %{
+          "work_request_id" => work_request.id,
+          "planned_slice_id" => approved_slice.id,
+          "claimed_by" => "worker-dispatch-db-scope",
+          "secret_handoff" => test_secret_handoff_mode(),
+          "secret_store_dir" => test_dispatch_handoff_store_dir()
+        },
+        config: Config.default(repo: repo, repo_root: test_repo_root(), database: other_database)
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "reason"]) == "database_scope_mismatch"
+    assert {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)} == counts_before
+
+    read_only_database = sqlite_file_uri(current_main_database_path(repo), "mode=ro")
+
+    read_only_response =
+      mcp_tool(
+        repo,
+        session,
+        "dispatch_work_request_planned_slice",
+        %{
+          "work_request_id" => work_request.id,
+          "planned_slice_id" => approved_slice.id,
+          "claimed_by" => "worker-dispatch-db-read-only",
+          "secret_handoff" => test_secret_handoff_mode(),
+          "secret_store_dir" => test_dispatch_handoff_store_dir()
+        },
+        config: Config.default(repo: repo, repo_root: test_repo_root(), database: read_only_database)
+      )
+
+    assert get_in(read_only_response, ["error", "code"]) == -32_602
+    assert get_in(read_only_response, ["error", "data", "reason"]) == "read_only_database"
+    assert {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)} == counts_before
+
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+
+    default_read_only_response =
+      try do
+        Application.put_env(:symphony_elixir, :sympp_repo_database, read_only_database)
+
+        mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
+          "work_request_id" => work_request.id,
+          "planned_slice_id" => approved_slice.id,
+          "claimed_by" => "worker-dispatch-db-default-read-only",
+          "secret_handoff" => test_secret_handoff_mode(),
+          "secret_store_dir" => test_dispatch_handoff_store_dir()
+        })
+      after
+        restore_app_env(:sympp_repo_database, original_database)
+      end
+
+    assert get_in(default_read_only_response, ["error", "code"]) == -32_602
+    assert get_in(default_read_only_response, ["error", "data", "reason"]) == "read_only_database"
+    assert {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)} == counts_before
+  end
+
+  test "WorkRequest MCP planned-slice dispatch fails closed for scope and invalid slice cases", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-SLICE-DISPATCH-GUARD", [
+        "dispatch:work_request"
+      ])
+
+    in_scope =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-DISPATCH-GUARD",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    sibling =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-DISPATCH-SIBLING",
+        repo: "nextide/other",
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               in_scope.id,
+               work_request_planned_slice_attrs(id: "WRS-MCP-WR-DISPATCH-PLANNED", target_base_branch: anchor.base_branch)
+             )
+
+    assert {:ok, sibling_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               sibling.id,
+               work_request_planned_slice_attrs(id: "WRS-MCP-WR-DISPATCH-SIBLING", target_base_branch: anchor.base_branch)
+             )
+
+    out_of_scope_response =
+      mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
+        "work_request_id" => sibling.id,
+        "planned_slice_id" => sibling_slice.id,
+        "claimed_by" => "worker-dispatch-1",
+        "secret_handoff" => test_secret_handoff_mode(),
+        "secret_store_dir" => test_dispatch_handoff_store_dir()
+      })
+
+    assert get_in(out_of_scope_response, ["error", "code"]) == -32_004
+    assert get_in(out_of_scope_response, ["error", "data", "reason"]) == "not_found"
+    refute inspect(out_of_scope_response) =~ sibling_slice.id
+
+    missing_slice_response =
+      mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
+        "work_request_id" => in_scope.id,
+        "planned_slice_id" => "WRS-MCP-WR-DISPATCH-MISSING",
+        "claimed_by" => "worker-dispatch-1",
+        "secret_handoff" => test_secret_handoff_mode(),
+        "secret_store_dir" => test_dispatch_handoff_store_dir()
+      })
+
+    assert get_in(missing_slice_response, ["error", "code"]) == -32_004
+    assert get_in(missing_slice_response, ["error", "data", "reason"]) == "not_found"
+
+    planned_response =
+      mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
+        "work_request_id" => in_scope.id,
+        "planned_slice_id" => planned_slice.id,
+        "claimed_by" => "worker-dispatch-1",
+        "secret_handoff" => test_secret_handoff_mode(),
+        "secret_store_dir" => test_dispatch_handoff_store_dir()
+      })
+
+    assert get_in(planned_response, ["error", "code"]) == -32_602
+    assert get_in(planned_response, ["error", "data", "reason"]) == "invalid_planned_slice_status"
+    assert repo.aggregate(WorkPackage, :count) == 1
+    assert repo.aggregate(AccessGrant, :count) == 1
+
+    assert {:ok, live_database_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               in_scope.id,
+               work_request_planned_slice_attrs(id: "WRS-MCP-WR-DISPATCH-LIVE-DATABASE", target_base_branch: anchor.base_branch)
+             )
+
+    assert {:ok, approved_live_database_slice} =
+             WorkRequestRepository.approve_planned_slice(repo, in_scope.id, live_database_slice.id, "planned")
+
+    live_database = current_main_database_path(repo)
+    configured_live_database = sqlite_file_uri(live_database, "mode=rwc&cache=shared")
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+
+    live_database_response =
+      try do
+        Application.put_env(:symphony_elixir, :sympp_repo_database, configured_live_database)
+
+        mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
+          "work_request_id" => in_scope.id,
+          "planned_slice_id" => approved_live_database_slice.id,
+          "claimed_by" => "worker-dispatch-1",
+          "secret_handoff" => test_secret_handoff_mode(),
+          "secret_store_dir" => test_dispatch_handoff_store_dir()
+        })
+      after
+        restore_app_env(:sympp_repo_database, original_database)
+      end
+
+    live_database_payload = get_in(live_database_response, ["result", "structuredContent"])
+    assert live_database_payload["planned_slice"]["status"] == "dispatched"
+
+    assert String.downcase(live_database_payload["worker_handoff"]["secret_handoff"]["run_mcp_command"]) =~
+             String.downcase(configured_live_database)
+
+    assert {:ok, blank_database_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               in_scope.id,
+               work_request_planned_slice_attrs(id: "WRS-MCP-WR-DISPATCH-BLANK-DATABASE", target_base_branch: anchor.base_branch)
+             )
+
+    assert {:ok, approved_blank_database_slice} =
+             WorkRequestRepository.approve_planned_slice(repo, in_scope.id, blank_database_slice.id, "planned")
+
+    blank_database_response =
+      mcp_tool(
+        repo,
+        session,
+        "dispatch_work_request_planned_slice",
+        %{
+          "work_request_id" => in_scope.id,
+          "planned_slice_id" => approved_blank_database_slice.id,
+          "claimed_by" => "worker-dispatch-1",
+          "secret_handoff" => test_secret_handoff_mode(),
+          "secret_store_dir" => test_dispatch_handoff_store_dir()
+        },
+        config: Config.default(repo: repo, repo_root: test_repo_root(), database: "   ")
+      )
+
+    blank_database_payload = get_in(blank_database_response, ["result", "structuredContent"])
+    assert blank_database_payload["planned_slice"]["status"] == "dispatched"
+
+    assert String.downcase(blank_database_payload["worker_handoff"]["secret_handoff"]["run_mcp_command"]) =~
+             String.downcase(live_database)
+
+    assert {:ok, branch_mismatch_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               in_scope.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-WR-DISPATCH-BRANCH-MISMATCH",
+                 target_base_branch: "feature/out-of-scope"
+               )
+             )
+
+    assert {:ok, approved_branch_mismatch_slice} =
+             WorkRequestRepository.approve_planned_slice(repo, in_scope.id, branch_mismatch_slice.id, "planned")
+
+    counts_before_branch_mismatch = {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)}
+
+    branch_mismatch_response =
+      mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
+        "work_request_id" => in_scope.id,
+        "planned_slice_id" => approved_branch_mismatch_slice.id,
+        "claimed_by" => "worker-dispatch-1",
+        "secret_handoff" => test_secret_handoff_mode(),
+        "secret_store_dir" => test_dispatch_handoff_store_dir()
+      })
+
+    assert get_in(branch_mismatch_response, ["error", "code"]) == -32_602
+    assert get_in(branch_mismatch_response, ["error", "data", "reason"]) == "target_base_branch_scope_mismatch"
+    assert {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)} == counts_before_branch_mismatch
+  end
+
   test "mark WorkRequest sliced MCP tool preserves approved-slice requirement", %{repo: repo} do
     {anchor, session, _grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-SLICE-GUARD", [
@@ -3882,6 +4278,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(read_only_slice_response, ["error", "code"]) == -32_001
     assert get_in(read_only_slice_response, ["error", "data", "reason"]) == "insufficient_capability"
 
+    read_only_dispatch_response =
+      mcp_tool(repo, read_session, "dispatch_work_request_planned_slice", %{
+        "work_request_id" => "WR-MCP-WR-MISSING",
+        "planned_slice_id" => "WRS-MCP-WR-MISSING",
+        "claimed_by" => "worker-1"
+      })
+
+    assert get_in(read_only_dispatch_response, ["error", "code"]) == -32_001
+    assert get_in(read_only_dispatch_response, ["error", "data", "reason"]) == "insufficient_capability"
+
     read_only_tools =
       MCPHarness.request(
         %{"jsonrpc" => "2.0", "id" => "read-only-tools", "method" => "tools/list", "params" => %{}},
@@ -3896,42 +4302,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute Map.has_key?(read_only_tools, "approve_work_request_planned_slice")
     refute Map.has_key?(read_only_tools, "skip_work_request_planned_slice")
     refute Map.has_key?(read_only_tools, "mark_work_request_sliced")
+    refute Map.has_key?(read_only_tools, "dispatch_work_request_planned_slice")
 
-    {legacy_anchor, legacy_session} =
-      create_architect_session(repo, "SYMPP-ARCHITECT-WR-MUTATE-LEGACY", [
-        "write:work_request"
-      ])
+    assert {:ok, legacy_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-WR-MUTATE-LEGACY", kind: "mcp"))
 
-    legacy_work_request =
-      create_work_request!(repo,
-        id: "WR-MCP-WR-MUTATE-LEGACY",
-        repo: legacy_anchor.repo,
-        base_branch: legacy_anchor.base_branch,
-        status: "draft"
-      )
+    assert {:error, %Ecto.Changeset{} = legacy_changeset} =
+             create_architect_work_key(repo, legacy_package.id, ["write:work_request"])
 
-    legacy_response =
-      mcp_tool(repo, legacy_session, "set_work_request_status", %{
-        "work_request_id" => legacy_work_request.id,
-        "current_status" => "draft",
-        "next_status" => "ready_for_clarification"
-      })
-
-    assert get_in(legacy_response, ["error", "code"]) == -32_003
-    assert get_in(legacy_response, ["error", "data", "reason"]) == "outside_session_scope"
-
-    legacy_slice_response =
-      mcp_tool(repo, legacy_session, "mark_work_request_sliced", %{
-        "work_request_id" => legacy_work_request.id,
-        "current_status" => "ready_for_slicing"
-      })
-
-    assert get_in(legacy_slice_response, ["error", "code"]) == -32_003
-    assert get_in(legacy_slice_response, ["error", "data", "reason"]) == "outside_session_scope"
+    assert {"architect phase-scoped grants require phase scope", []} in Keyword.get_values(legacy_changeset.errors, :phase_id)
 
     {drift_anchor, drift_session, _drift_grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-MUTATE-DRIFT", [
-        "write:work_request"
+        "write:work_request",
+        "dispatch:work_request"
       ])
 
     drift_work_request =
@@ -3963,9 +4347,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(drift_slice_response, ["error", "code"]) == -32_003
     assert get_in(drift_slice_response, ["error", "data", "reason"]) == "outside_session_scope"
 
+    drift_dispatch_response =
+      mcp_tool(repo, drift_session, "dispatch_work_request_planned_slice", %{
+        "work_request_id" => drift_work_request.id,
+        "planned_slice_id" => "WRS-MCP-WR-MUTATE-DRIFT",
+        "claimed_by" => "worker-1"
+      })
+
+    assert get_in(drift_dispatch_response, ["error", "code"]) == -32_003
+    assert get_in(drift_dispatch_response, ["error", "data", "reason"]) == "outside_session_scope"
+
     {revoked_anchor, revoked_session, revoked_grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-MUTATE-REVOKED", [
-        "write:work_request"
+        "write:work_request",
+        "dispatch:work_request"
       ])
 
     revoked_work_request =
@@ -3997,6 +4392,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(revoked_slice_response, ["error", "code"]) == -32_001
     assert get_in(revoked_slice_response, ["error", "data", "reason"]) == "revoked"
 
+    revoked_dispatch_response =
+      mcp_tool(repo, revoked_session, "dispatch_work_request_planned_slice", %{
+        "work_request_id" => revoked_work_request.id,
+        "planned_slice_id" => "WRS-MCP-WR-MUTATE-REVOKED",
+        "claimed_by" => "worker-1"
+      })
+
+    assert get_in(revoked_dispatch_response, ["error", "code"]) == -32_001
+    assert get_in(revoked_dispatch_response, ["error", "data", "reason"]) == "revoked"
+
     assert {:ok, worker_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WR-MUTATE-WORKER", kind: "mcp"))
     assert {:ok, worker_minted} = AccessGrantService.mint_worker_grant(repo, worker_package.id)
     assert {:ok, worker_assignment} = AccessGrantService.claim(repo, worker_minted.work_key.secret, claimed_by: "worker-1")
@@ -4021,6 +4426,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(worker_slice_response, ["error", "code"]) == -32_001
     assert get_in(worker_slice_response, ["error", "data", "reason"]) == "architect_grant_required"
 
+    worker_dispatch_response =
+      mcp_tool(repo, worker_session, "dispatch_work_request_planned_slice", %{
+        "work_request_id" => "WR-MCP-WR-MISSING",
+        "planned_slice_id" => "WRS-MCP-WR-MISSING",
+        "claimed_by" => "worker-1"
+      })
+
+    assert get_in(worker_dispatch_response, ["error", "code"]) == -32_001
+    assert get_in(worker_dispatch_response, ["error", "data", "reason"]) == "architect_grant_required"
+
     anonymous_response =
       mcp_tool(repo, nil, "set_work_request_status", %{
         "work_request_id" => "WR-MCP-WR-MISSING",
@@ -4039,6 +4454,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(anonymous_slice_response, ["error", "code"]) == -32_001
     assert get_in(anonymous_slice_response, ["error", "data", "reason"]) == "missing_session"
+
+    anonymous_dispatch_response =
+      mcp_tool(repo, nil, "dispatch_work_request_planned_slice", %{
+        "work_request_id" => "WR-MCP-WR-MISSING",
+        "planned_slice_id" => "WRS-MCP-WR-MISSING",
+        "claimed_by" => "worker-1"
+      })
+
+    assert get_in(anonymous_dispatch_response, ["error", "code"]) == -32_001
+    assert get_in(anonymous_dispatch_response, ["error", "data", "reason"]) == "missing_session"
   end
 
   test "WorkRequest MCP question mutations fail closed for sibling question ids", %{repo: repo} do
@@ -11612,7 +12037,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     end)
   end
 
-  defp mcp_tool(repo, session, name, arguments) do
+  defp mcp_tool(repo, session, name, arguments, opts \\ []) do
     MCPHarness.request(
       %{
         "jsonrpc" => "2.0",
@@ -11620,7 +12045,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "method" => "tools/call",
         "params" => %{"name" => name, "arguments" => arguments}
       },
-      config: test_mcp_config(repo),
+      config: Keyword.get(opts, :config, test_mcp_config(repo)),
       session: session
     )
   end
@@ -11661,6 +12086,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     |> Path.expand()
   end
 
+  defp test_dispatch_handoff_store_dir do
+    test_handoff_store_dir()
+    |> Path.join("dispatch-#{System.unique_integer([:positive])}")
+  end
+
   defp test_handoff_opts(claimed_by \\ "worker-1") do
     [
       repo_root: test_repo_root(),
@@ -11670,6 +12100,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     ]
   end
 
+  defp sqlite_file_uri(path, query) do
+    encoded_path =
+      path
+      |> String.replace("\\", "/")
+      |> URI.encode(&sqlite_file_uri_path_char?/1)
+
+    "file:#{encoded_path}?#{query}"
+  end
+
+  defp sqlite_file_uri_path_char?(char), do: URI.char_unreserved?(char) or char in [?/, ?:]
+
   defp current_main_database_path(repo) do
     assert {:ok, %{rows: rows}} = SQL.query(repo, "PRAGMA database_list", [], log: false)
 
@@ -11678,6 +12119,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       row -> flunk("expected file-backed test ledger for external MCP bootstrap, got: #{inspect(row)}")
     end
   end
+
+  defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
+  defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 
   defp run_mcp_with_windows_credential_handoff(handoff, claimed_by, database_path, input) do
     powershell = powershell_executable!()

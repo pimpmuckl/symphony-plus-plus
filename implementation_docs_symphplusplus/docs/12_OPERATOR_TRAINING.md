@@ -50,7 +50,9 @@ Linear state creation already exists.
 Runtime WorkRequest persistence, the read API, the dashboard list/detail view,
 scoped dashboard intake, architect MCP WorkRequest reads, clarification and
 decision mutations, planned-slice mutations, the manual clarification loop, and
-manual planned-slice authoring now exist. Dashboard
+manual planned-slice authoring now exist. Architect MCP planned-slice dispatch
+also exists for explicit phase-scoped grants with `dispatch:work_request`.
+Dashboard
 intake is board-authenticated and only appears for board grants with frozen repo
 and base-branch scope. The repo and base branch are displayed as locked values
 and are enforced by the server when creating the draft. Humans can mark a draft
@@ -81,13 +83,33 @@ same sessions can call `add_work_request_planned_slice`,
 answer and close calls also prove the `question_id` belongs to that WorkRequest
 before mutating, while approve and skip prove the `planned_slice_id` belongs to
 that WorkRequest before mutating. `mark_work_request_sliced` keeps the existing
-approved-slice requirement. Planned-slice dispatch, WorkPackage creation,
-SecretHandoff, dashboard changes, and Linear mutation remain outside this MCP
-surface.
+approved-slice requirement. These write tools still do not dispatch planned
+slices, create WorkPackages, alter SecretHandoff, change dashboard behavior, or
+mutate Linear.
 
-Planned-slice dispatch is available as an operator CLI, not as a dashboard
-button or MCP tool. The CLI dispatches one `approved` planned slice by
-WorkRequest id and planned-slice id, validates the slice's owned file globs
+Explicit phase-scoped architect MCP sessions with `dispatch:work_request` can
+call `dispatch_work_request_planned_slice(work_request_id, planned_slice_id,
+claimed_by, secret_handoff?, secret_store_dir?)`. This is intentionally
+separate from `write:work_request` because dispatch creates a WorkPackage,
+worker grant, and private worker-secret handoff. The tool uses the existing
+planned-slice dispatch orchestration and returns only WorkRequest id,
+planned-slice linkage/status, WorkPackage id metadata, and redacted worker
+handoff metadata. Start MCP dispatch sessions with `repo_root`/`--repo-root`
+pointing at the repository that contains the worker secret handoff script;
+otherwise the tool is not advertised and direct calls fail closed. Use a
+file-backed live ledger; in-memory database configuration is rejected so the
+worker handoff cannot point at an unclaimable ledger. Blank database
+configuration is treated as absent and uses the live ledger. Matching configured
+SQLite file URI options are
+preserved for the worker command when they resolve to the same live ledger,
+including default repo database configuration; divergent explicit MCP database
+configuration is rejected. Do not start dispatch MCP with read-only SQLite URI
+options such as `mode=ro` or `immutable=1`; those are rejected before dispatch
+because workers must claim grants and write progress.
+
+Planned-slice dispatch is available as an operator CLI and architect MCP tool,
+not as a dashboard button. Both dispatch one `approved` planned slice by
+WorkRequest id and planned-slice id, validate the slice's owned file globs
 against the parent WorkRequest path constraints before minting a WorkPackage,
 creates the worker-ready package through private worker-secret handoff, and
 then records the planned-slice linkage. The validator is pure and does not
@@ -98,8 +120,8 @@ whole-repo grant; wildcard allow entries without an explicit `**` only authorize
 their own segment shape and do not authorize recursive owned globs such as
 `**/foo` or bare `**`.
 
-MCP intake, automatic question generation, automatic slicing, planned-slice
-dispatch actions, MCP planner tools, and Linear state creation remain future
+MCP intake, automatic question generation, automatic slicing, MCP planner
+tools, dashboard dispatch actions, and Linear state creation remain future
 work. Until those exist, keep questions, answers, decisions, assumptions, and
 slice-plan sections in runtime WorkRequest records where available, or in one
 operator-approved Markdown artifact when the runtime surface is not available
