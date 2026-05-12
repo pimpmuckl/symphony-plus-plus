@@ -97,6 +97,64 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
     assert {:ok, [^first, ^second]} = Service.list_planned_slices(repo, work_request.id)
   end
 
+  test "approves and skips planned slices with stale status protection", %{repo: repo} do
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
+    assert {:ok, planned} = Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-STATUS"))
+
+    assert {:ok, approved} = Service.approve_planned_slice(repo, work_request.id, planned.id, "planned")
+    assert approved.status == "approved"
+
+    assert {:error, :stale_status} = Repository.approve_planned_slice(repo, work_request.id, planned.id, "planned")
+
+    assert {:ok, skipped} = Repository.skip_planned_slice(repo, work_request.id, approved.id, "approved")
+    assert skipped.status == "skipped"
+
+    assert {:error, :invalid_status} = Repository.skip_planned_slice(repo, work_request.id, skipped.id, "skipped")
+  end
+
+  test "does not mutate dispatched planned slices", %{repo: repo} do
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
+    assert {:ok, planned} = Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-DISPATCHED"))
+    dispatched = repo.update!(Ecto.Changeset.change(planned, status: "dispatched"))
+
+    assert {:error, :invalid_status} = Repository.approve_planned_slice(repo, work_request.id, dispatched.id, "dispatched")
+    assert {:error, :invalid_status} = Repository.skip_planned_slice(repo, work_request.id, dispatched.id, "dispatched")
+
+    assert {:ok, [persisted]} = Repository.list_planned_slices(repo, work_request.id)
+    assert persisted.status == "dispatched"
+  end
+
+  test "rejects planned-slice status updates outside planning WorkRequest states", %{repo: repo} do
+    work_request = create_work_request!(repo, status: "clarifying")
+    other = create_work_request!(repo, id: "WR-SLICE-OTHER", status: "ready_for_slicing")
+    assert {:ok, planned} = Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-PARENT-STATUS"))
+
+    assert {:error, :invalid_status} =
+             Repository.approve_planned_slice(repo, work_request.id, planned.id, "planned")
+
+    assert {:error, :not_found} =
+             Repository.skip_planned_slice(repo, other.id, planned.id, "planned")
+
+    assert {:ok, [persisted]} = Repository.list_planned_slices(repo, work_request.id)
+    assert persisted.status == "planned"
+  end
+
+  test "marks WorkRequests sliced only with an approved planned slice", %{repo: repo} do
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
+
+    assert {:error, :no_approved_slices} = Repository.mark_sliced(repo, work_request.id, "ready_for_slicing")
+
+    assert {:ok, planned} = Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-SLICE-GUARD"))
+    assert {:error, :no_approved_slices} = Repository.mark_sliced(repo, work_request.id, "ready_for_slicing")
+
+    assert {:ok, _approved} = Repository.approve_planned_slice(repo, work_request.id, planned.id, "planned")
+    assert {:ok, sliced} = Service.mark_sliced(repo, work_request.id, "ready_for_slicing")
+    assert sliced.status == "sliced"
+
+    assert {:error, :stale_status} = Repository.mark_sliced(repo, work_request.id, "ready_for_slicing")
+    assert {:error, :invalid_status} = Repository.mark_sliced(repo, work_request.id, "sliced")
+  end
+
   test "defaults status and ignores caller-controlled sequence timestamps and linkage metadata", %{repo: repo} do
     work_request = create_work_request!(repo)
     forced_time = ~U[2000-01-01 00:00:00.000000Z]

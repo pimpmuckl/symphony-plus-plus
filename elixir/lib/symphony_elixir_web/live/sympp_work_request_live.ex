@@ -10,10 +10,27 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
   alias SymphonyElixirWeb.SymppBoardLive
   alias SymphonyElixirWeb.SymppDashboardApiController
+
+  @planned_slice_scalar_fields [
+    "title",
+    "goal",
+    "work_package_kind",
+    "target_base_branch",
+    "branch_pattern"
+  ]
+  @planned_slice_list_fields [
+    "owned_file_globs",
+    "forbidden_file_globs",
+    "acceptance_criteria",
+    "validation_steps",
+    "review_lanes",
+    "stop_conditions"
+  ]
 
   @impl true
   def mount(params, session, socket) do
@@ -290,6 +307,13 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
               >
                 Mark ready for slicing
               </button>
+              <button
+                :if={can_mark_sliced?(@page.work_request)}
+                type="button"
+                phx-click="mark_sliced"
+              >
+                Mark sliced
+              </button>
             </div>
             <p><%= value(@page.work_request, :human_description) %></p>
           </div>
@@ -455,6 +479,73 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
           <article class="sympp-panel sympp-panel-wide">
             <h2>Planned slices</h2>
+            <.form
+              :if={can_author_planned_slice?(@page.work_request)}
+              :let={f}
+              for={@page.planned_slice_form}
+              as={:planned_slice}
+              phx-submit="add_planned_slice"
+              class="sympp-compact-form sympp-planned-slice-form"
+            >
+              <p :if={@page.planned_slice_form_error} class="sympp-form-error"><%= @page.planned_slice_form_error %></p>
+              <div class="sympp-form-grid sympp-form-grid-slice">
+                <label>
+                  <span>Title</span>
+                  <input name={f[:title].name} value={input_value(f, :title)} required maxlength="160" />
+                </label>
+                <label>
+                  <span>Kind</span>
+                  <select name={f[:work_package_kind].name} required>
+                    <option
+                      :for={kind <- work_package_kinds()}
+                      value={kind}
+                      selected={input_value(f, :work_package_kind) == kind}
+                    >
+                      <%= label_value(kind) %>
+                    </option>
+                  </select>
+                </label>
+                <label>
+                  <span>Target base</span>
+                  <input name={f[:target_base_branch].name} value={input_value(f, :target_base_branch)} required maxlength="160" />
+                </label>
+                <label class="sympp-form-wide">
+                  <span>Goal</span>
+                  <textarea name={f[:goal].name} required rows="3"><%= input_value(f, :goal) %></textarea>
+                </label>
+                <label class="sympp-form-wide">
+                  <span>Branch pattern</span>
+                  <input name={f[:branch_pattern].name} value={input_value(f, :branch_pattern)} maxlength="220" />
+                </label>
+                <label>
+                  <span>Owned files</span>
+                  <textarea name={f[:owned_file_globs].name} rows="4"><%= input_value(f, :owned_file_globs) %></textarea>
+                </label>
+                <label>
+                  <span>Forbidden files</span>
+                  <textarea name={f[:forbidden_file_globs].name} rows="4"><%= input_value(f, :forbidden_file_globs) %></textarea>
+                </label>
+                <label>
+                  <span>Review lanes</span>
+                  <textarea name={f[:review_lanes].name} rows="4"><%= input_value(f, :review_lanes) %></textarea>
+                </label>
+                <label class="sympp-form-wide">
+                  <span>Acceptance criteria</span>
+                  <textarea name={f[:acceptance_criteria].name} rows="4"><%= input_value(f, :acceptance_criteria) %></textarea>
+                </label>
+                <label class="sympp-form-wide">
+                  <span>Validation steps</span>
+                  <textarea name={f[:validation_steps].name} rows="4"><%= input_value(f, :validation_steps) %></textarea>
+                </label>
+                <label class="sympp-form-wide">
+                  <span>Stop conditions</span>
+                  <textarea name={f[:stop_conditions].name} rows="3"><%= input_value(f, :stop_conditions) %></textarea>
+                </label>
+              </div>
+              <div class="sympp-form-actions">
+                <button type="submit">Add planned slice</button>
+              </div>
+            </.form>
             <div :if={@page.planned_slices != []} class="sympp-slice-list">
               <div :for={slice <- @page.planned_slices} class="sympp-slice-row">
                 <div>
@@ -465,8 +556,34 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                   <p class="mono"><%= value(slice, :id) %></p>
                   <h3><%= value(slice, :title) %></h3>
                   <p><%= value(slice, :goal) %></p>
+                  <div class="sympp-slice-actions">
+                    <.form
+                      :if={can_approve_slice?(@page.work_request, slice)}
+                      :let={f}
+                      for={%{}}
+                      as={:slice}
+                      phx-submit="approve_planned_slice"
+                      class="sympp-inline-slice-form"
+                    >
+                      <input type="hidden" name={f[:id].name} value={value(slice, :id)} />
+                      <input type="hidden" name={f[:current_status].name} value={value(slice, :status)} />
+                      <button type="submit">Approve</button>
+                    </.form>
+                    <.form
+                      :if={can_skip_slice?(@page.work_request, slice)}
+                      :let={f}
+                      for={%{}}
+                      as={:slice}
+                      phx-submit="skip_planned_slice"
+                      class="sympp-inline-slice-form"
+                    >
+                      <input type="hidden" name={f[:id].name} value={value(slice, :id)} />
+                      <input type="hidden" name={f[:current_status].name} value={value(slice, :status)} />
+                      <button type="submit" class="secondary">Skip</button>
+                    </.form>
+                  </div>
                 </div>
-                <dl class="sympp-work-request-meta">
+                <dl class="sympp-work-request-meta sympp-slice-detail-grid">
                   <div>
                     <dt>Kind</dt>
                     <dd><%= label_value(value(slice, :work_package_kind)) %></dd>
@@ -476,12 +593,32 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                     <dd><%= label_value(value(slice, :target_base_branch)) %></dd>
                   </div>
                   <div>
+                    <dt>Branch pattern</dt>
+                    <dd><%= label_value(value(slice, :branch_pattern)) %></dd>
+                  </div>
+                  <div>
                     <dt>Owned files</dt>
                     <dd><%= list_label(value(slice, :owned_file_globs, [])) %></dd>
                   </div>
                   <div>
+                    <dt>Forbidden files</dt>
+                    <dd><%= list_label(value(slice, :forbidden_file_globs, [])) %></dd>
+                  </div>
+                  <div>
+                    <dt>Acceptance</dt>
+                    <dd><%= list_label(value(slice, :acceptance_criteria, [])) %></dd>
+                  </div>
+                  <div>
+                    <dt>Validation</dt>
+                    <dd><%= list_label(value(slice, :validation_steps, [])) %></dd>
+                  </div>
+                  <div>
                     <dt>Review</dt>
                     <dd><%= list_label(value(slice, :review_lanes, [])) %></dd>
+                  </div>
+                  <div>
+                    <dt>Stop conditions</dt>
+                    <dd><%= list_label(value(slice, :stop_conditions, [])) %></dd>
                   </div>
                 </dl>
               </div>
@@ -566,6 +703,45 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     end)
   end
 
+  def handle_event("add_planned_slice", %{"planned_slice" => params}, socket) do
+    case board_grant_authorization(socket.assigns.board_grant_id) do
+      {:ok, %AccessGrant{} = grant} ->
+        socket = assign(socket, :board_grant, grant)
+
+        case add_planned_slice(grant, socket.assigns.work_request_id, params) do
+          {:ok, _planned_slice} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Planned slice added.")
+             |> assign(:page, load_page(:show, grant, socket.assigns.work_request_id))}
+
+          {:error, reason, form} ->
+            page =
+              :show
+              |> load_page(grant, socket.assigns.work_request_id)
+              |> Map.put(:planned_slice_form, form)
+              |> Map.put(:planned_slice_form_error, planned_slice_form_error_message(reason))
+
+            {:noreply, assign(socket, :page, page)}
+        end
+
+      {:error, reason} ->
+        {:noreply, assign(socket, :page, unauthorized_page(reason))}
+    end
+  end
+
+  def handle_event("approve_planned_slice", %{"slice" => params}, socket) do
+    handle_scoped_action(socket, fn grant ->
+      approve_planned_slice(grant, socket.assigns.work_request_id, params)
+    end)
+  end
+
+  def handle_event("skip_planned_slice", %{"slice" => params}, socket) do
+    handle_scoped_action(socket, fn grant ->
+      skip_planned_slice(grant, socket.assigns.work_request_id, params)
+    end)
+  end
+
   def handle_event("mark_human_info_needed", _params, socket) do
     handle_scoped_action(socket, fn grant ->
       mark_human_info_needed(grant, socket.assigns.work_request_id)
@@ -575,6 +751,12 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   def handle_event("mark_ready_for_slicing", _params, socket) do
     handle_scoped_action(socket, fn grant ->
       mark_ready_for_slicing(grant, socket.assigns.work_request_id)
+    end)
+  end
+
+  def handle_event("mark_sliced", _params, socket) do
+    handle_scoped_action(socket, fn grant ->
+      mark_sliced(grant, socket.assigns.work_request_id)
     end)
   end
 
@@ -626,8 +808,14 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp load_page(:show, %AccessGrant{} = grant, work_request_id)
        when is_binary(work_request_id) do
     case SymppBoardLive.with_dashboard_repo(&Dashboard.work_request_detail_for_grant(&1, work_request_id, grant)) do
-      {:ok, payload} -> loading_page() |> Map.merge(payload) |> Map.put(:error, nil)
-      {:error, reason} -> error_page(reason)
+      {:ok, payload} ->
+        loading_page()
+        |> Map.merge(payload)
+        |> Map.put(:error, nil)
+        |> put_planned_slice_form()
+
+      {:error, reason} ->
+        error_page(reason)
     end
   end
 
@@ -645,9 +833,16 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
       summary: %{},
       form: work_request_form(),
       form_error: nil,
+      planned_slice_form: planned_slice_form(),
+      planned_slice_form_error: nil,
       intake_scope: nil,
       action_error: nil
     }
+  end
+
+  defp put_planned_slice_form(%{planned_slice_form: form, work_request: work_request} = page)
+       when is_map(form) do
+    Map.put(page, :planned_slice_form, planned_slice_form(form, work_request))
   end
 
   defp new_page(%AccessGrant{} = grant, form \\ work_request_form(), form_error \\ nil) do
@@ -695,6 +890,19 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp form_error_message(%Ecto.Changeset{}), do: "Check the required fields and selected values."
   defp form_error_message(_reason), do: "The WorkRequest could not be created."
 
+  defp planned_slice_form_error_message(:forbidden), do: error_message(:forbidden)
+  defp planned_slice_form_error_message(:database_busy), do: "The Symphony++ ledger is busy. Try again shortly."
+  defp planned_slice_form_error_message(:not_found), do: action_error_message(:not_found)
+  defp planned_slice_form_error_message(:invalid_status), do: action_error_message(:invalid_status)
+
+  defp planned_slice_form_error_message({:storage_failed, _reason}),
+    do: "The Symphony++ ledger could not store the planned slice."
+
+  defp planned_slice_form_error_message(%Ecto.Changeset{}),
+    do: "Check the required fields and selected values."
+
+  defp planned_slice_form_error_message(_reason), do: "The planned slice could not be created."
+
   defp action_error_message(:stale_status),
     do: "The WorkRequest status changed. Refresh and try again."
 
@@ -703,6 +911,9 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp action_error_message(:open_questions),
     do: "Close or answer all open questions before marking ready for slicing."
+
+  defp action_error_message(:no_approved_slices),
+    do: "Approve at least one planned slice before marking sliced."
 
   defp action_error_message(:invalid_status),
     do: "That action is not available from the current status."
@@ -792,6 +1003,40 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp mark_ready_for_slicing(_grant, _work_request_id), do: {:error, :not_found}
 
+  defp add_planned_slice(%AccessGrant{} = grant, work_request_id, params)
+       when is_binary(work_request_id) and is_map(params) do
+    form = planned_slice_form(params)
+    attrs = planned_slice_attrs(form)
+
+    case SymppBoardLive.with_dashboard_repo(&add_planned_slice_in_repo(&1, grant, work_request_id, attrs)) do
+      {:ok, planned_slice} -> {:ok, planned_slice}
+      {:error, reason} -> {:error, reason, form}
+    end
+  end
+
+  defp add_planned_slice(_grant, _work_request_id, _params), do: {:error, :not_found, planned_slice_form()}
+
+  defp approve_planned_slice(%AccessGrant{} = grant, work_request_id, params)
+       when is_binary(work_request_id) and is_map(params) do
+    SymppBoardLive.with_dashboard_repo(&approve_planned_slice_in_repo(&1, grant, work_request_id, params))
+  end
+
+  defp approve_planned_slice(_grant, _work_request_id, _params), do: {:error, :not_found}
+
+  defp skip_planned_slice(%AccessGrant{} = grant, work_request_id, params)
+       when is_binary(work_request_id) and is_map(params) do
+    SymppBoardLive.with_dashboard_repo(&skip_planned_slice_in_repo(&1, grant, work_request_id, params))
+  end
+
+  defp skip_planned_slice(_grant, _work_request_id, _params), do: {:error, :not_found}
+
+  defp mark_sliced(%AccessGrant{} = grant, work_request_id)
+       when is_binary(work_request_id) do
+    SymppBoardLive.with_dashboard_repo(&mark_sliced_in_repo(&1, grant, work_request_id))
+  end
+
+  defp mark_sliced(_grant, _work_request_id), do: {:error, :not_found}
+
   defp mark_ready_in_repo(repo, %AccessGrant{} = grant, work_request_id) do
     with {:ok, scope} <- intake_scope(repo, grant),
          {:ok, work_request} <- WorkRequestService.get(repo, work_request_id),
@@ -858,6 +1103,46 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
              "human_info_needed"
            ]) do
       mark_ready_for_slicing_transaction(repo, work_request)
+    end
+  end
+
+  defp add_planned_slice_in_repo(repo, %AccessGrant{} = grant, work_request_id, attrs) do
+    with {:ok, work_request} <- scoped_work_request(repo, grant, work_request_id),
+         :ok <- require_planned_slice_authoring_status(work_request.status) do
+      WorkRequestService.add_planned_slice(repo, work_request.id, attrs)
+    end
+  end
+
+  defp approve_planned_slice_in_repo(repo, %AccessGrant{} = grant, work_request_id, params) do
+    with {:ok, work_request} <- scoped_work_request(repo, grant, work_request_id),
+         :ok <- require_planned_slice_authoring_status(work_request.status),
+         {:ok, planned_slice} <- scoped_planned_slice(repo, work_request.id, Map.get(params, "id")) do
+      WorkRequestService.approve_planned_slice(
+        repo,
+        work_request.id,
+        planned_slice.id,
+        Map.get(params, "current_status", "")
+      )
+    end
+  end
+
+  defp skip_planned_slice_in_repo(repo, %AccessGrant{} = grant, work_request_id, params) do
+    with {:ok, work_request} <- scoped_work_request(repo, grant, work_request_id),
+         :ok <- require_planned_slice_authoring_status(work_request.status),
+         {:ok, planned_slice} <- scoped_planned_slice(repo, work_request.id, Map.get(params, "id")) do
+      WorkRequestService.skip_planned_slice(
+        repo,
+        work_request.id,
+        planned_slice.id,
+        Map.get(params, "current_status", "")
+      )
+    end
+  end
+
+  defp mark_sliced_in_repo(repo, %AccessGrant{} = grant, work_request_id) do
+    with {:ok, work_request} <- scoped_work_request(repo, grant, work_request_id),
+         :ok <- require_status(work_request.status, ["ready_for_slicing"]) do
+      WorkRequestService.mark_sliced(repo, work_request.id, work_request.status)
     end
   end
 
@@ -941,6 +1226,17 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp scoped_question(_repo, _work_request_id, _question_id), do: {:error, :not_found}
 
+  defp scoped_planned_slice(repo, work_request_id, planned_slice_id) when is_binary(planned_slice_id) do
+    with {:ok, planned_slices} <- WorkRequestService.list_planned_slices(repo, work_request_id) do
+      case Enum.find(planned_slices, &(&1.id == planned_slice_id)) do
+        nil -> {:error, :not_found}
+        planned_slice -> {:ok, planned_slice}
+      end
+    end
+  end
+
+  defp scoped_planned_slice(_repo, _work_request_id, _planned_slice_id), do: {:error, :not_found}
+
   defp transition_to_clarifying(repo, %{status: "ready_for_clarification"} = work_request) do
     WorkRequestService.update_status(
       repo,
@@ -959,6 +1255,9 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp require_clarification_status(status),
     do: require_status(status, ["ready_for_clarification", "clarifying", "human_info_needed"])
+
+  defp require_planned_slice_authoring_status(status),
+    do: require_status(status, ["ready_for_slicing", "sliced"])
 
   defp require_status(status, allowed_statuses) do
     if status in allowed_statuses, do: :ok, else: {:error, :invalid_status}
@@ -1090,6 +1389,76 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     }
   end
 
+  defp planned_slice_form(attrs \\ %{}, work_request \\ %{}) do
+    attrs = normalize_keys(attrs)
+
+    defaults = %{
+      "title" => "",
+      "goal" => "",
+      "work_package_kind" => "mcp",
+      "target_base_branch" => value(work_request, :base_branch, ""),
+      "branch_pattern" => ""
+    }
+
+    defaults
+    |> Map.merge(Map.take(attrs, @planned_slice_scalar_fields))
+    |> Map.merge(planned_slice_list_form_values(attrs))
+  end
+
+  defp planned_slice_attrs(form) do
+    form = normalize_keys(form)
+
+    scalar_attrs =
+      form
+      |> Map.take(@planned_slice_scalar_fields)
+      |> trim_string_values()
+
+    list_attrs =
+      Map.new(@planned_slice_list_fields, fn field ->
+        {field, newline_list(Map.get(form, field, ""))}
+      end)
+
+    Map.merge(scalar_attrs, list_attrs)
+  end
+
+  defp planned_slice_list_form_values(attrs) do
+    Map.new(@planned_slice_list_fields, fn field ->
+      value =
+        attrs
+        |> Map.get(field, "")
+        |> multiline_form_value()
+
+      {field, value}
+    end)
+  end
+
+  defp multiline_form_value(values) when is_list(values), do: Enum.map_join(values, "\n", &to_string/1)
+  defp multiline_form_value(value) when is_binary(value), do: value
+  defp multiline_form_value(_value), do: ""
+
+  defp newline_list(value) when is_binary(value) do
+    value
+    |> String.split(~r/\r\n|\n|\r/, trim: false)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp newline_list(values) when is_list(values) do
+    values
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp newline_list(_value), do: []
+
+  defp trim_string_values(attrs) do
+    Map.new(attrs, fn
+      {key, value} when is_binary(value) -> {key, String.trim(value)}
+      pair -> pair
+    end)
+  end
+
   defp decode_constraints(value) when is_binary(value) do
     case String.trim(value) do
       "" ->
@@ -1160,6 +1529,19 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp can_mark_ready_for_slicing?(work_request) do
     value(work_request, :status) in ["ready_for_clarification", "clarifying", "human_info_needed"]
   end
+
+  defp can_author_planned_slice?(work_request),
+    do: value(work_request, :status) in ["ready_for_slicing", "sliced"]
+
+  defp can_approve_slice?(work_request, slice),
+    do: can_author_planned_slice?(work_request) and value(slice, :status) == "planned"
+
+  defp can_skip_slice?(work_request, slice),
+    do: can_author_planned_slice?(work_request) and value(slice, :status) in ["planned", "approved"]
+
+  defp can_mark_sliced?(work_request), do: value(work_request, :status) == "ready_for_slicing"
+
+  defp work_package_kinds, do: WorkPackage.kinds()
 
   defp decision_source_types, do: ["human", "architect", "operator", "ask_pro_advisory"]
 

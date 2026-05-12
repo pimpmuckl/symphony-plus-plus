@@ -48,6 +48,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service do
   @spec list_planned_slices(Repository.repo(), String.t()) :: {:ok, [PlannedSlice.t()]} | {:error, error()}
   def list_planned_slices(repo, work_request_id), do: Repository.list_planned_slices(repo, work_request_id)
 
+  @spec approve_planned_slice(Repository.repo(), String.t(), String.t(), String.t()) ::
+          {:ok, PlannedSlice.t()} | {:error, error()}
+  def approve_planned_slice(repo, work_request_id, id, current_status),
+    do: Repository.approve_planned_slice(repo, work_request_id, id, current_status)
+
+  @spec skip_planned_slice(Repository.repo(), String.t(), String.t(), String.t()) ::
+          {:ok, PlannedSlice.t()} | {:error, error()}
+  def skip_planned_slice(repo, work_request_id, id, current_status),
+    do: Repository.skip_planned_slice(repo, work_request_id, id, current_status)
+
+  @spec mark_sliced(Repository.repo(), String.t(), String.t()) :: {:ok, WorkRequest.t()} | {:error, error()}
+  def mark_sliced(repo, id, current_status), do: Repository.mark_sliced(repo, id, current_status)
+
   @spec list_decisions(Repository.repo(), String.t()) :: {:ok, [DecisionLogEntry.t()]} | {:error, error()}
   def list_decisions(repo, work_request_id), do: Repository.list_decisions(repo, work_request_id)
 end
