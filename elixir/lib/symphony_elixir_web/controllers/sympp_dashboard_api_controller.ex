@@ -32,9 +32,16 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
       true ->
         case authorize_board_request(conn) do
-          {:ok, %AccessGrant{} = grant} -> Conn.put_session(conn, @board_session_key, grant.id)
-          {:error, :unauthorized} -> conn |> board_login_response() |> Conn.halt()
-          {:error, reason} -> conn |> board_browser_error_response(reason) |> Conn.halt()
+          {:ok, %AccessGrant{} = grant} ->
+            conn
+            |> Conn.delete_session(@operator_session_key)
+            |> Conn.put_session(@board_session_key, grant.id)
+
+          {:error, :unauthorized} ->
+            conn |> board_login_response() |> Conn.halt()
+
+          {:error, reason} ->
+            conn |> board_browser_error_response(reason) |> Conn.halt()
         end
     end
   end
@@ -355,12 +362,15 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       |> Conn.put_session(@package_session_key, sessions)
       |> Conn.put_session(@package_session_order_key, order)
       |> Conn.delete_session(@board_session_key)
+      |> Conn.delete_session(@operator_session_key)
     end
   end
 
   defp maybe_put_board_session(conn, %AccessGrant{capabilities: capabilities} = grant) when is_list(capabilities) do
     if "read:phase" in capabilities do
-      Conn.put_session(conn, @board_session_key, grant.id)
+      conn
+      |> Conn.delete_session(@operator_session_key)
+      |> Conn.put_session(@board_session_key, grant.id)
     else
       conn
     end

@@ -220,6 +220,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "Stale grant WorkRequest"
     refute html =~ "Answer</button>"
     refute html =~ "Close unanswered"
+
+    remote_conn =
+      build_conn()
+      |> Map.put(:remote_ip, {10, 0, 0, 8})
+      |> Plug.Test.init_test_session(%{"sympp_local_operator" => true, "sympp_board_grant_id" => grant.id})
+      |> get("/sympp/board")
+
+    assert response(remote_conn, 200) =~ "Work package board"
+    refute response(remote_conn, 200) =~ "Local operator cockpit"
+    refute Plug.Conn.get_session(remote_conn, "sympp_local_operator")
+    assert Plug.Conn.get_session(remote_conn, "sympp_board_grant_id") == grant.id
   end
 
   test "local operator priority watchlists follow active board filters" do
