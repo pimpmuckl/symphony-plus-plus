@@ -42,6 +42,7 @@ defmodule SymphonyElixirWeb.Router do
 
     live("/sympp/board", SymppBoardLive, :index)
     live("/sympp/work-requests", SymppWorkRequestLive, :index)
+    live("/sympp/work-requests/new", SymppWorkRequestLive, :new)
     live("/sympp/work-requests/:work_request_id", SymppWorkRequestLive, :show)
   end
 

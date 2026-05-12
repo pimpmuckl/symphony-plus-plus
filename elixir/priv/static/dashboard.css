@@ -1082,6 +1082,47 @@ pre,
   overflow-wrap: anywhere;
 }
 
+.sympp-work-request-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.sympp-primary-link,
+.sympp-secondary-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.25rem;
+  max-width: 100%;
+  padding: 0.42rem 0.68rem;
+  border-radius: 8px;
+  font-size: 0.84rem;
+  font-weight: 800;
+  line-height: 1.1;
+  text-align: center;
+}
+
+.sympp-primary-link {
+  border: 1px solid #1f2937;
+  background: #111827;
+  color: #fff;
+}
+
+.sympp-primary-link:hover {
+  color: #fff;
+  text-decoration: none;
+}
+
+.sympp-secondary-link {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+}
+
 .sympp-work-request-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1244,6 +1285,112 @@ pre,
   min-width: 0;
 }
 
+.sympp-work-request-form {
+  display: grid;
+  gap: 0.8rem;
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+}
+
+.sympp-locked-scope {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.sympp-locked-scope div {
+  min-width: 0;
+  padding: 0.62rem 0.72rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card-muted);
+}
+
+.sympp-locked-scope span,
+.sympp-form-grid label span {
+  display: block;
+  margin-bottom: 0.24rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sympp-locked-scope strong {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 0.9rem;
+  line-height: 1.25;
+}
+
+.sympp-form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(10rem, 0.38fr) minmax(12rem, 0.5fr);
+  gap: 0.7rem;
+  min-width: 0;
+}
+
+.sympp-form-grid label {
+  min-width: 0;
+}
+
+.sympp-form-wide {
+  grid-column: 1 / -1;
+}
+
+.sympp-form-grid input,
+.sympp-form-grid select,
+.sympp-form-grid textarea {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.sympp-form-grid input,
+.sympp-form-grid select {
+  min-height: 2.5rem;
+  padding: 0.48rem 0.58rem;
+}
+
+.sympp-form-grid textarea {
+  resize: vertical;
+  padding: 0.58rem;
+}
+
+.sympp-form-error {
+  margin: 0;
+  padding: 0.58rem 0.72rem;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fef2f2;
+  color: #991b1b;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.sympp-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
 .sympp-json-block {
   max-height: 19rem;
   overflow: auto;
@@ -1307,6 +1454,11 @@ pre,
     overflow-x: auto;
   }
 
+  .sympp-work-request-header-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
   .sympp-board-summary {
     width: 100%;
     grid-auto-columns: 1fr;
@@ -1316,6 +1468,8 @@ pre,
   .sympp-work-request-detail,
   .sympp-work-request-grid,
   .sympp-work-request-row,
+  .sympp-form-grid,
+  .sympp-locked-scope,
   .sympp-slice-row {
     grid-template-columns: 1fr;
   }

@@ -44,13 +44,23 @@ questions and slices the work.
 
 This flow preserves existing WorkPackage grants, virtual planning resources,
 readiness gates, review evidence, PR evidence, and human merge controls. It is
-not a claim that runtime WorkRequest, dashboard intake, or MCP intake tooling
-already exists.
+not a claim that MCP intake tooling, automatic slicing, dispatch, or Linear
+state creation already exists.
 
-Until runtime intake exists, keep the WorkRequest in one operator-approved
-Markdown artifact with status, questions, answers, decisions, assumptions, and
-slice-plan sections. Give the architect package a durable reference to that
-artifact plus a bounded handoff summary before dispatch.
+Runtime WorkRequest persistence, the read API, the dashboard list/detail view,
+and scoped dashboard intake now exist. Dashboard intake is board-authenticated
+and only appears for board grants with frozen repo and base-branch scope. The
+repo and base branch are displayed as locked values and are enforced by the
+server when creating the draft. Humans can mark a draft WorkRequest
+`ready_for_clarification` from the detail view.
+
+MCP intake, automatic question generation, automatic slicing, dispatch into
+WorkPackages, and Linear state creation remain future work. Until those exist,
+keep questions, answers, decisions, assumptions, and slice-plan sections in the
+runtime WorkRequest records where available, or in one operator-approved
+Markdown artifact when the runtime surface is not available for a lane. Give
+the architect package a durable reference plus a bounded handoff summary before
+dispatch.
 
 ## Standalone Flow
 
