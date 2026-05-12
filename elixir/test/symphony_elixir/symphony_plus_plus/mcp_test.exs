@@ -3173,15 +3173,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              %{
                "id" => "WR-MCP-WR-IN",
                "title" => "Read WorkRequests",
-               "open_question_count" => 1,
-               "answered_question_count" => 1,
-               "closed_question_count" => 1,
-               "decision_count" => 1,
-               "planned_slice_count" => 1,
-               "approved_slice_count" => 1,
-               "skipped_slice_count" => 1
-             }
+               "repo" => "nextide/symphony-plus-plus",
+               "base_branch" => "symphony-plus-plus/beta",
+               "status" => "ready_for_slicing"
+             } = listed_work_request
            ] = list_payload["work_requests"]
+
+    refute Map.has_key?(listed_work_request, "open_question_count")
+    refute Map.has_key?(listed_work_request, "decision_count")
+    refute Map.has_key?(listed_work_request, "planned_slice_count")
 
     read_response = mcp_tool(repo, session, "read_work_request", %{"work_request_id" => in_scope.id})
     read_payload = get_in(read_response, ["result", "structuredContent"])
@@ -3194,6 +3194,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Enum.map(read_payload["decision_log_entries"], & &1["id"]) == ["WRD-MCP-WR-1"]
     assert Enum.at(read_payload["decision_log_entries"], 0)["decision"] =~ "[REDACTED]"
     assert Enum.map(read_payload["planned_slices"], & &1["id"]) == ["WRS-MCP-WR-PLANNED", "WRS-MCP-WR-APPROVED", "WRS-MCP-WR-SKIPPED"]
+    assert Enum.at(read_payload["planned_slices"], 0)["review_lanes"] == ["review_t1", "[REDACTED]", "review_t2"]
 
     assert read_payload["summary"] == %{
              "open_question_count" => 1,
@@ -10628,7 +10629,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       forbidden_file_globs: ["elixir/lib/symphony_elixir_web/live/**"],
       acceptance_criteria: ["WorkRequest MCP reads are scoped and redacted."],
       validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs"],
-      review_lanes: ["review_t1", "review_t2"],
+      review_lanes: ["review_t1", "raw_secret_review_lane", "review_t2"],
       stop_conditions: ["Stop before mutation or dispatch wiring."]
     }
 

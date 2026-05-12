@@ -1562,8 +1562,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- architect_session(config.repo, session, "read:work_request"),
          {:ok, status} <- optional_work_request_status(arguments),
          {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, work_requests} <- WorkRequestService.list(config.repo, work_request_list_filters(filters, status)),
-         {:ok, cards} <- work_request_cards(config.repo, work_requests) do
+         {:ok, work_requests} <- WorkRequestService.list(config.repo, work_request_list_filters(filters, status)) do
+      cards = work_request_cards(work_requests)
+
       {:ok,
        tool_result(%{
          "work_requests" => cards,
@@ -6453,30 +6454,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
-  defp work_request_cards(repo, work_requests) do
-    work_requests
-    |> Enum.map(&work_request_card_payload(repo, &1))
-    |> collect_work_request_payloads()
+  defp work_request_cards(work_requests) do
+    Enum.map(work_requests, &work_request_card_payload/1)
   end
 
-  defp work_request_card_payload(repo, %WorkRequest{} = work_request) do
-    with {:ok, questions} <- WorkRequestService.list_questions(repo, work_request.id),
-         {:ok, decisions} <- WorkRequestService.list_decisions(repo, work_request.id),
-         {:ok, planned_slices} <- WorkRequestService.list_planned_slices(repo, work_request.id) do
-      {:ok,
-       work_request_summary_payload(questions, decisions, planned_slices)
-       |> Map.merge(%{
-         "id" => work_request.id,
-         "title" => Redactor.redact_text(work_request.title),
-         "repo" => work_request.repo,
-         "base_branch" => work_request.base_branch,
-         "work_type" => work_request.work_type,
-         "desired_dispatch_shape" => work_request.desired_dispatch_shape,
-         "status" => work_request.status,
-         "inserted_at" => timestamp(work_request.inserted_at),
-         "updated_at" => timestamp(work_request.updated_at)
-       })}
-    end
+  defp work_request_card_payload(%WorkRequest{} = work_request) do
+    %{
+      "id" => work_request.id,
+      "title" => Redactor.redact_text(work_request.title),
+      "repo" => work_request.repo,
+      "base_branch" => work_request.base_branch,
+      "work_type" => work_request.work_type,
+      "desired_dispatch_shape" => work_request.desired_dispatch_shape,
+      "status" => work_request.status,
+      "inserted_at" => timestamp(work_request.inserted_at),
+      "updated_at" => timestamp(work_request.updated_at)
+    }
   end
 
   defp work_request_detail_payload(repo, %WorkRequest{} = work_request) do
@@ -6491,17 +6484,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          "planned_slices" => Enum.map(planned_slices, &planned_slice_payload/1),
          "summary" => work_request_summary_payload(questions, decisions, planned_slices)
        }}
-    end
-  end
-
-  defp collect_work_request_payloads(results) do
-    Enum.reduce_while(results, {:ok, []}, fn
-      {:ok, payload}, {:ok, payloads} -> {:cont, {:ok, [payload | payloads]}}
-      {:error, reason}, {:ok, _payloads} -> {:halt, {:error, reason}}
-    end)
-    |> case do
-      {:ok, payloads} -> {:ok, Enum.reverse(payloads)}
-      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -6570,7 +6552,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "forbidden_file_globs" => Enum.map(planned_slice.forbidden_file_globs || [], &Redactor.redact_text/1),
       "acceptance_criteria" => Enum.map(planned_slice.acceptance_criteria || [], &Redactor.redact_text/1),
       "validation_steps" => Enum.map(planned_slice.validation_steps || [], &Redactor.redact_text/1),
-      "review_lanes" => planned_slice.review_lanes || [],
+      "review_lanes" => Enum.map(planned_slice.review_lanes || [], &Redactor.redact_text/1),
       "stop_conditions" => Enum.map(planned_slice.stop_conditions || [], &Redactor.redact_text/1),
       "status" => planned_slice.status,
       "work_package_id" => planned_slice.work_package_id,
@@ -6594,6 +6576,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp timestamp(%DateTime{} = timestamp), do: DateTime.to_iso8601(timestamp)
+  defp timestamp(%NaiveDateTime{} = timestamp), do: NaiveDateTime.to_iso8601(timestamp)
   defp timestamp(nil), do: nil
 
   defp work_request_not_found_error(tool) do
