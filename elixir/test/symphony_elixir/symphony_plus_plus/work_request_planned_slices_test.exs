@@ -3,11 +3,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
 
   alias Ecto.Adapters.SQL
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
+  alias SymphonyElixir.WorkPackageFactory
 
   defmodule RetryRepo do
     alias Ecto.Changeset
@@ -67,6 +70,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
 
   setup %{repo: repo} do
     repo.delete_all(PlannedSlice)
+    repo.delete_all(WorkPackage)
     repo.delete_all(WorkRequest)
     :ok
   end
@@ -96,6 +100,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
 
     assert second.sequence == 2
     assert {:ok, [^first, ^second]} = Service.list_planned_slices(repo, work_request.id)
+  end
+
+  test "gets planned slices by WorkRequest scope without leaking siblings", %{repo: repo} do
+    work_request = create_work_request!(repo)
+    sibling_request = create_work_request!(repo, id: "WR-SLICE-SIBLING")
+
+    assert {:ok, planned} = Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-SCOPED-GET"))
+
+    assert {:ok, ^planned} = Service.get_planned_slice(repo, work_request.id, planned.id)
+    assert {:error, :not_found} = Repository.get_planned_slice(repo, sibling_request.id, planned.id)
+    assert {:error, :not_found} = Service.get_planned_slice(repo, work_request.id, "WRS-MISSING")
   end
 
   test "validates planned-slice owned globs against persisted WorkRequest constraints", %{repo: repo} do
@@ -167,7 +182,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
     assert persisted.status == "planned"
   end
 
-  test "marks WorkRequests sliced only with an approved planned slice", %{repo: repo} do
+  test "marks WorkRequests sliced with approved or dispatched planned slices", %{repo: repo} do
     work_request = create_work_request!(repo, status: "ready_for_slicing")
 
     assert {:error, :no_approved_slices} = Repository.mark_sliced(repo, work_request.id, "ready_for_slicing")
@@ -187,6 +202,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
 
     assert {:error, :stale_status} = Repository.mark_sliced(repo, work_request.id, "ready_for_slicing")
     assert {:error, :invalid_status} = Repository.mark_sliced(repo, work_request.id, "sliced")
+
+    dispatched_request = create_work_request!(repo, id: "WR-DISPATCHED-SLICE", status: "ready_for_slicing")
+
+    assert {:ok, dispatched_planned} =
+             Repository.add_planned_slice(repo, dispatched_request.id, planned_slice_attrs(id: "WRS-SLICE-DISPATCHED"))
+
+    assert {:ok, dispatched_approved} =
+             Repository.approve_planned_slice(repo, dispatched_request.id, dispatched_planned.id, "planned")
+
+    dispatched_package =
+      create_matching_work_package!(repo, dispatched_request, dispatched_approved, id: "SYMPP-DISPATCHED-SLICE")
+
+    assert {:ok, dispatched} =
+             Repository.dispatch_planned_slice(
+               repo,
+               dispatched_request.id,
+               dispatched_approved.id,
+               "approved",
+               dispatched_package.id
+             )
+
+    assert dispatched.status == "dispatched"
+    assert {:ok, sliced_from_dispatch} = Repository.mark_sliced(repo, dispatched_request.id, "ready_for_slicing")
+    assert sliced_from_dispatch.status == "sliced"
+
+    assert {:ok, extra_planned} =
+             Repository.add_planned_slice(repo, dispatched_request.id, planned_slice_attrs(id: "WRS-SLICE-EXTRA"))
+
+    assert {:ok, extra_approved} = Repository.approve_planned_slice(repo, dispatched_request.id, extra_planned.id, "planned")
+    assert {:ok, skipped_extra} = Repository.skip_planned_slice(repo, dispatched_request.id, extra_approved.id, "approved")
+    assert skipped_extra.status == "skipped"
   end
 
   test "defaults status and ignores caller-controlled sequence timestamps and linkage metadata", %{repo: repo} do
@@ -209,8 +255,163 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
 
     assert planned_slice.sequence == 1
     assert planned_slice.status == "planned"
+    assert planned_slice.work_package_id == nil
+    assert planned_slice.dispatched_at == nil
     assert DateTime.compare(planned_slice.inserted_at, forced_time) == :gt
     assert DateTime.compare(planned_slice.updated_at, forced_time) == :gt
+  end
+
+  test "links approved planned slices as dispatched with WorkPackage metadata", %{repo: repo} do
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
+
+    assert {:ok, planned} = Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-DISPATCH-LINK"))
+    assert {:ok, approved} = Service.approve_planned_slice(repo, work_request.id, planned.id, "planned")
+    work_package = create_matching_work_package!(repo, work_request, approved, id: "SYMPP-DISPATCH-LINK")
+
+    assert {:ok, dispatched} =
+             Service.dispatch_planned_slice(repo, work_request.id, approved.id, "approved", work_package.id)
+
+    assert dispatched.status == "dispatched"
+    assert dispatched.work_package_id == work_package.id
+    assert %DateTime{} = dispatched.dispatched_at
+
+    assert {:ok, persisted} = Repository.get_planned_slice(repo, work_request.id, approved.id)
+    assert persisted.status == "dispatched"
+    assert persisted.work_package_id == work_package.id
+    assert persisted.dispatched_at == dispatched.dispatched_at
+
+    other_package = create_work_package!(repo, id: "SYMPP-DISPATCH-LINK-OTHER")
+
+    assert {:error, :invalid_status} =
+             Service.dispatch_planned_slice(repo, work_request.id, approved.id, "dispatched", other_package.id)
+  end
+
+  test "dispatch linkage rejects invalid WorkPackage ids and already linked WorkPackages", %{repo: repo} do
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
+
+    assert {:ok, first_planned} =
+             Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-DISPATCH-FIRST"))
+
+    assert {:ok, first_approved} = Repository.approve_planned_slice(repo, work_request.id, first_planned.id, "planned")
+    linked_package = create_matching_work_package!(repo, work_request, first_approved, id: "SYMPP-DISPATCH-USED")
+
+    assert {:ok, _first_dispatched} =
+             Repository.dispatch_planned_slice(repo, work_request.id, first_approved.id, "approved", linked_package.id)
+
+    assert {:ok, second_planned} =
+             Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-DISPATCH-SECOND"))
+
+    assert {:ok, second_approved} = Repository.approve_planned_slice(repo, work_request.id, second_planned.id, "planned")
+
+    for invalid_work_package_id <- ["", "   ", nil] do
+      assert {:error, :invalid_work_package_id} =
+               Repository.dispatch_planned_slice(repo, work_request.id, second_approved.id, "approved", invalid_work_package_id)
+    end
+
+    assert {:error, :work_package_not_found} =
+             Service.dispatch_planned_slice(repo, work_request.id, second_approved.id, "approved", "SYMPP-MISSING-DISPATCH")
+
+    assert {:error, :work_package_already_linked} =
+             Repository.dispatch_planned_slice(repo, work_request.id, second_approved.id, "approved", linked_package.id)
+
+    assert {:ok, unchanged} = Repository.get_planned_slice(repo, work_request.id, second_approved.id)
+    assert unchanged.status == "approved"
+    assert unchanged.work_package_id == nil
+    assert unchanged.dispatched_at == nil
+  end
+
+  test "dispatch linkage rejects WorkPackages outside the planned slice contract", %{repo: repo} do
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
+    other_request = create_work_request!(repo, id: "WR-DISPATCH-UNRELATED", repo: "nextide/other", status: "ready_for_slicing")
+
+    assert {:ok, planned} = Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-DISPATCH-MATCH"))
+    assert {:ok, approved} = Repository.approve_planned_slice(repo, work_request.id, planned.id, "planned")
+
+    assert {:ok, other_planned} =
+             Repository.add_planned_slice(repo, other_request.id, planned_slice_attrs(id: "WRS-DISPATCH-OTHER-MATCH"))
+
+    assert {:ok, other_approved} = Repository.approve_planned_slice(repo, other_request.id, other_planned.id, "planned")
+
+    unrelated_package =
+      create_matching_work_package!(repo, other_request, other_approved, id: "SYMPP-DISPATCH-UNRELATED")
+
+    assert {:error, :work_package_mismatch} =
+             Service.dispatch_planned_slice(repo, work_request.id, approved.id, "approved", unrelated_package.id)
+
+    assert {:ok, unchanged} = Repository.get_planned_slice(repo, work_request.id, approved.id)
+    assert unchanged.status == "approved"
+    assert unchanged.work_package_id == nil
+    assert unchanged.dispatched_at == nil
+  end
+
+  test "dispatch linkage rejects unsafe slice states wrong WorkRequest ids and stale updates", %{repo: repo} do
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
+    other_request = create_work_request!(repo, id: "WR-DISPATCH-OTHER", status: "ready_for_slicing")
+
+    assert {:ok, planned} = Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-DISPATCH-PLANNED"))
+    work_package = create_matching_work_package!(repo, work_request, planned, id: "SYMPP-DISPATCH-REJECTIONS")
+
+    assert {:error, :invalid_status} = Repository.dispatch_planned_slice(repo, work_request.id, planned.id, "planned", work_package.id)
+
+    assert {:ok, skipped} = Repository.skip_planned_slice(repo, work_request.id, planned.id, "planned")
+    assert {:error, :invalid_status} = Repository.dispatch_planned_slice(repo, work_request.id, skipped.id, "skipped", work_package.id)
+
+    assert {:ok, stale_planned} =
+             Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-DISPATCH-STALE"))
+
+    assert {:ok, stale_approved} = Repository.approve_planned_slice(repo, work_request.id, stale_planned.id, "planned")
+    repo.update!(Ecto.Changeset.change(stale_approved, status: "skipped"))
+
+    assert {:error, :stale_status} =
+             Repository.dispatch_planned_slice(repo, work_request.id, stale_approved.id, "approved", work_package.id)
+
+    assert {:ok, approved_planned} =
+             Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-DISPATCH-WRONG-WR"))
+
+    assert {:ok, approved} = Repository.approve_planned_slice(repo, work_request.id, approved_planned.id, "planned")
+
+    assert {:error, :not_found} =
+             Repository.dispatch_planned_slice(repo, other_request.id, approved.id, "approved", work_package.id)
+
+    assert {:ok, unchanged} = Repository.get_planned_slice(repo, work_request.id, approved.id)
+    assert unchanged.status == "approved"
+    assert unchanged.work_package_id == nil
+  end
+
+  test "dispatch linkage rejects every non-dispatchable parent WorkRequest status", %{repo: repo} do
+    for status <- WorkRequest.statuses() -- ["ready_for_slicing", "sliced"] do
+      work_request = create_work_request!(repo, id: "WR-DISPATCH-PARENT-#{status}", status: "ready_for_slicing")
+
+      assert {:ok, planned} =
+               Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-DISPATCH-PARENT-#{status}"))
+
+      assert {:ok, approved} = Repository.approve_planned_slice(repo, work_request.id, planned.id, "planned")
+      work_package = create_matching_work_package!(repo, work_request, approved, id: "SYMPP-DISPATCH-PARENT-#{status}")
+
+      repo.update!(Ecto.Changeset.change(work_request, status: status))
+
+      assert {:error, :invalid_status} =
+               Repository.dispatch_planned_slice(repo, work_request.id, approved.id, "approved", work_package.id)
+
+      assert {:ok, unchanged} = Repository.get_planned_slice(repo, work_request.id, approved.id)
+      assert unchanged.status == "approved"
+      assert unchanged.work_package_id == nil
+      assert unchanged.dispatched_at == nil
+    end
+  end
+
+  test "dispatch linkage allows already sliced WorkRequests", %{repo: repo} do
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
+
+    assert {:ok, planned} = Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-DISPATCH-SLICED"))
+    assert {:ok, approved} = Repository.approve_planned_slice(repo, work_request.id, planned.id, "planned")
+    work_package = create_matching_work_package!(repo, work_request, approved, id: "SYMPP-DISPATCH-SLICED")
+
+    assert {:ok, sliced} = Repository.mark_sliced(repo, work_request.id, "ready_for_slicing")
+
+    assert {:ok, dispatched} = Repository.dispatch_planned_slice(repo, sliced.id, approved.id, "approved", work_package.id)
+    assert dispatched.status == "dispatched"
+    assert dispatched.work_package_id == work_package.id
   end
 
   test "rejects invalid status work package kind and list fields", %{repo: repo} do
@@ -340,22 +541,57 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
           "review_lanes",
           "stop_conditions",
           "status",
+          "work_package_id",
+          "dispatched_at",
           "inserted_at",
           "updated_at"
         ] do
       assert column in columns
     end
 
+    assert Enum.any?(foreign_keys(repo, "sympp_work_request_planned_slices"), fn row ->
+             Enum.at(row, 2) == "sympp_work_packages" and Enum.at(row, 3) == "work_package_id" and Enum.at(row, 4) == "id"
+           end)
+
     indexes = index_names(repo, "sympp_work_request_planned_slices")
 
     assert "sympp_work_request_planned_slices_id_unique_index" in indexes
     assert "sympp_work_request_planned_slices_work_request_sequence_unique_index" in indexes
     assert "sympp_work_request_planned_slices_work_request_status_index" in indexes
+    assert "sympp_work_request_planned_slices_work_package_id_unique_index" in indexes
+    assert index_partial?(repo, "sympp_work_request_planned_slices", "sympp_work_request_planned_slices_work_package_id_unique_index")
   end
 
   defp create_work_request!(repo, overrides \\ []) do
     assert {:ok, work_request} = Repository.create(repo, work_request_attrs(overrides))
     work_request
+  end
+
+  defp create_work_package!(repo, overrides) do
+    overrides
+    |> WorkPackageFactory.attrs()
+    |> then(&WorkPackageRepository.create(repo, &1))
+    |> case do
+      {:ok, work_package} -> work_package
+      {:error, reason} -> flunk("failed to create WorkPackage: #{inspect(reason)}")
+    end
+  end
+
+  defp create_matching_work_package!(repo, work_request, planned_slice, overrides) do
+    attrs =
+      [
+        kind: planned_slice.work_package_kind,
+        title: planned_slice.title,
+        repo: work_request.repo,
+        base_branch: planned_slice.target_base_branch,
+        branch_pattern: planned_slice.branch_pattern,
+        product_description: work_request.human_description,
+        allowed_file_globs: planned_slice.owned_file_globs,
+        acceptance_criteria: planned_slice.acceptance_criteria
+      ]
+      |> Keyword.merge(overrides)
+
+    create_work_package!(repo, attrs)
   end
 
   defp work_request_attrs(overrides) do
@@ -435,9 +671,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
     Enum.map(table_rows, &Enum.at(&1, 1))
   end
 
+  defp foreign_keys(repo, table) do
+    %{rows: foreign_key_rows} = SQL.query!(repo, "PRAGMA foreign_key_list(#{table})")
+    foreign_key_rows
+  end
+
   defp index_names(repo, table) do
     %{rows: index_rows} = SQL.query!(repo, "PRAGMA index_list(#{table})")
     Enum.map(index_rows, &Enum.at(&1, 1))
+  end
+
+  defp index_partial?(repo, table, index_name) do
+    %{rows: index_rows} = SQL.query!(repo, "PRAGMA index_list(#{table})")
+
+    Enum.any?(index_rows, fn row ->
+      Enum.at(row, 1) == index_name and Enum.at(row, 4) == 1
+    end)
   end
 
   defp database_path do
