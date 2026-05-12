@@ -8,9 +8,10 @@ review-suite evidence, PR evidence, and human merge controls.
 WorkRequest core persistence, planned-slice persistence, read API/list/detail
 dashboard views, scoped dashboard intake, the board-authenticated manual
 clarification loop, and manual planned-slice authoring/approval controls exist.
-Planned-slice dispatch linkage persistence exists as a ledger primitive. MCP
-intake tools, automatic question generation, automatic slicing, dispatch
-orchestration, Linear state creation, and plugin packaging remain future work.
+Planned-slice dispatch linkage persistence and the core planned-slice dispatch
+CLI exist. MCP intake tools, automatic question generation, automatic slicing,
+dashboard/MCP dispatch actions, Linear state creation, and plugin packaging
+remain future work.
 
 ## Purpose
 
@@ -160,9 +161,10 @@ mint worker grants. The create path starts rows as `planned`, approve moves
 recording the linked `work_package_id` and `dispatched_at` timestamp. The linked
 WorkPackage must match the parent WorkRequest and planned-slice contract.
 Dispatched slices are read-only in this UI. Approved slices become WorkPackages
-only through an explicit later dispatch flow.
+only through the explicit planned-slice dispatch CLI or a future
+operator-approved dispatch surface.
 
-Before any future dispatch flow can mint a WorkPackage from an approved planned
+Before planned-slice dispatch can mint a WorkPackage from an approved planned
 slice, it must call the WorkRequest path-scope validator contract. The validator
 checks the slice `owned_file_globs` against the parent WorkRequest
 `constraints.allowed_paths` and `constraints.forbidden_paths` without reading
@@ -183,8 +185,7 @@ an explicit `**`, such as `*`, only grants that wildcard segment shape; it does
 not authorize recursive owned globs such as `**/foo` or bare `**`. Recursive
 ownership is valid only when the allow-list itself explicitly contains a
 recursive `**` scope, such as `elixir/**` or `*/**`, or when the allow-list is
-missing or empty. Dispatch remains future work until that contract is part of
-the dispatch path.
+missing or empty.
 
 Feature work defaults to one feature branch with smaller PRs targeting that
 feature branch. Use direct `main` PRs for narrow direct-main changes when the
@@ -193,10 +194,16 @@ risk.
 
 ## Dispatch Into WorkPackages
 
-Approved slices become normal WorkPackages through a later dispatch flow.
-Dispatched planned-slice rows retain `work_package_id` and `dispatched_at` as
-linkage metadata. From that point, existing WorkPackage machinery is
-authoritative:
+Approved slices become normal WorkPackages through `mix
+sympp.dispatch_planned_slice`. The task accepts `--database`,
+`--work-request-id`, `--planned-slice-id`, `--claimed-by`, `--secret-handoff`,
+and `--secret-store-dir`. It validates required identifiers and `claimed_by`
+before opening or creating the ledger database, migrates the repo, validates the
+slice scope through `ScopeConstraints.validate_owned_file_globs/2`, creates a
+worker-ready standalone WorkPackage with private worker-secret handoff, and
+links the planned slice. Dispatched planned-slice rows retain `work_package_id`
+and `dispatched_at` as linkage metadata. From that point, existing WorkPackage
+machinery is authoritative:
 
 - AccessGrant scope and capabilities.
 - MCP virtual context, task plan, findings, progress, acceptance, review-suite,
@@ -209,6 +216,14 @@ authoritative:
 Workers own only their assigned package. They do not change the WorkRequest,
 re-slice the phase, inspect sibling packages, or expand scope unless the
 architect or operator explicitly provides that authority.
+
+The dispatch response is redacted. It may include the created WorkPackage, a
+redacted worker grant, non-secret worker-secret handoff coordinates, and linkage
+metadata, but it must not print or store raw worker secrets in normal stdout,
+docs, PR text, or logs. If WorkPackage creation succeeds and planned-slice
+linkage fails, dispatch attempts to clean up the created WorkPackage ledger
+state and worker-secret handoff. If cleanup is incomplete, the recovery payload
+contains only non-secret identifiers and handoff coordinates.
 
 ## Escalation Routing
 
@@ -242,7 +257,7 @@ This contract does not implement or require:
 - Plugin packaging changes.
 - Automatic question generation.
 - Automatic WorkPackage slicing.
-- WorkPackage creation dispatch orchestration or CLI usage.
+- Dashboard or MCP dispatch actions.
 - Live Linear state creation.
 - Historical runbook rewrites.
 
