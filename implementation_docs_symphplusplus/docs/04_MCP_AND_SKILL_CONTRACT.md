@@ -137,6 +137,10 @@ ask_work_request_question(work_request_id, category, question, why_needed, asked
 answer_work_request_question(work_request_id, question_id, current_status, answer, answered_by?)
 close_work_request_question(work_request_id, question_id, current_status)
 record_work_request_decision(work_request_id, source_type, decision, rationale, scope_impact, created_by, source_id?)
+add_work_request_planned_slice(work_request_id, title, goal, work_package_kind, target_base_branch, owned_file_globs, forbidden_file_globs, acceptance_criteria, validation_steps, review_lanes, stop_conditions, branch_pattern?)
+approve_work_request_planned_slice(work_request_id, planned_slice_id, current_status)
+skip_work_request_planned_slice(work_request_id, planned_slice_id, current_status)
+mark_work_request_sliced(work_request_id, current_status)
 read_child_status(work_package_id)
 read_phase_board(phase_id)
 request_child_replan(work_package_id, reason)
@@ -194,9 +198,21 @@ do not expose the full `read_work_request` detail shape. They expose the
 existing WorkRequest service primitives: status movement is explicit through
 `set_work_request_status`, and question/decision tools do not mirror
 dashboard-only helper guards, auto-transition the parent request, or introduce
-a new lifecycle/status transition matrix. They do not implement planned-slice
-authoring, approval, dispatch, WorkPackage creation, SecretHandoff, dashboard,
-or Linear mutation.
+a new lifecycle/status transition matrix.
+
+`add_work_request_planned_slice`, `approve_work_request_planned_slice`,
+`skip_work_request_planned_slice`, and `mark_work_request_sliced` are architect
+planned-slice mutation tools gated by `write:work_request`. They use the same
+explicit phase-scoped frozen repo/base-branch scope model and require a scoped
+`work_request_id` before mutating. Approve and skip also verify that
+`planned_slice_id` belongs to that scoped WorkRequest before calling the
+mutation service; sibling slice ids fail closed as not found. `mark_work_request_sliced`
+uses the existing `WorkRequestService.mark_sliced` behavior, including the
+approved-or-dispatched slice requirement. Responses return JSON-safe redacted
+planned-slice or WorkRequest status projections plus scope/status metadata.
+These tools do not dispatch planned slices, create WorkPackages, alter
+SecretHandoff, mutate Linear, run automatic slicing/package generation, or
+change dashboard behavior.
 
 Phase-dependent architect tools revalidate the grant's explicit phase scope plus
 the anchor repo/base-branch scope frozen when the phase architect grant was

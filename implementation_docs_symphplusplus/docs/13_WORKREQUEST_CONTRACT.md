@@ -80,20 +80,25 @@ Explicit phase-scoped architect MCP sessions with `write:work_request` can
 mutate the same scoped clarification and decision surface through
 `set_work_request_status`, `ask_work_request_question`,
 `answer_work_request_question`, `close_work_request_question`, and
-`record_work_request_decision`. Each mutation requires `work_request_id` and
-first verifies the target WorkRequest is inside the frozen repo/base-branch
-scope. Answer and close calls also require `question_id` and verify the
-question belongs to that scoped WorkRequest before mutation; sibling question
-ids fail closed as not found. Responses are JSON-safe and redacted and include
-the updated question or decision object with a minimal parent WorkRequest
-status projection plus scope/status metadata; they do not return the full
-`read_work_request` detail shape. These tools do not create, approve, skip, or
-dispatch planned slices, and do not create WorkPackages, change SecretHandoff,
-mutate Linear, or change dashboard behavior. MCP WorkRequest mutation is an
-architect control-plane surface over existing service primitives: status
-movement is explicit through `set_work_request_status`, and the
-question/decision tools do not apply dashboard-only auto-transition or
-lifecycle helper policy.
+`record_work_request_decision`, and can mutate planned slices through
+`add_work_request_planned_slice`, `approve_work_request_planned_slice`,
+`skip_work_request_planned_slice`, and `mark_work_request_sliced`. Each
+mutation requires `work_request_id` and first verifies the target WorkRequest
+is inside the frozen repo/base-branch scope. Answer and close calls also
+require `question_id` and verify the question belongs to that scoped
+WorkRequest before mutation; sibling question ids fail closed as not found.
+Approve and skip calls also require `planned_slice_id` and verify the planned
+slice belongs to that scoped WorkRequest before mutation; sibling slice ids
+fail closed as not found. Responses are JSON-safe and redacted and include the
+updated question, decision, planned-slice, or WorkRequest status projection
+plus scope/status metadata; they do not return the full `read_work_request`
+detail shape. These tools do not dispatch planned slices, create WorkPackages,
+change SecretHandoff, mutate Linear, or change dashboard behavior. MCP
+WorkRequest mutation is an architect control-plane surface over existing
+service primitives: status movement is explicit through
+`set_work_request_status`, `mark_work_request_sliced` keeps the existing
+approved-slice requirement, and the question/decision tools do not apply
+dashboard-only auto-transition or lifecycle helper policy.
 
 When runtime intake is not available for a lane, the canonical WorkRequest is
 one versioned, operator-approved Markdown artifact.

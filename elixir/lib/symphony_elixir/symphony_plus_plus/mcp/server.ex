@@ -63,6 +63,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "answer_work_request_question",
     "close_work_request_question",
     "record_work_request_decision",
+    "add_work_request_planned_slice",
+    "approve_work_request_planned_slice",
+    "skip_work_request_planned_slice",
+    "mark_work_request_sliced",
     "read_child_status",
     "approve_scope_expansion",
     "read_phase_board",
@@ -79,7 +83,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "ask_work_request_question",
     "answer_work_request_question",
     "close_work_request_question",
-    "record_work_request_decision"
+    "record_work_request_decision",
+    "add_work_request_planned_slice",
+    "approve_work_request_planned_slice",
+    "skip_work_request_planned_slice",
+    "mark_work_request_sliced"
   ]
   @phase7_stub_architect_tools [
     "revoke_child_worker_key",
@@ -940,6 +948,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "Record a durable decision log entry on a scoped WorkRequest."
   end
 
+  defp architect_tool_description("add_work_request_planned_slice") do
+    "Add a planned slice to a scoped WorkRequest."
+  end
+
+  defp architect_tool_description("approve_work_request_planned_slice") do
+    "Approve a planned slice that belongs to a scoped WorkRequest."
+  end
+
+  defp architect_tool_description("skip_work_request_planned_slice") do
+    "Skip a planned slice that belongs to a scoped WorkRequest."
+  end
+
+  defp architect_tool_description("mark_work_request_sliced") do
+    "Mark a scoped WorkRequest sliced using the existing approved-slice requirement."
+  end
+
   defp architect_tool_description("approve_scope_expansion") do
     "Approve additional allowed file globs for this scoped work package."
   end
@@ -1193,6 +1217,59 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     )
   end
 
+  defp architect_tool_input_schema("add_work_request_planned_slice") do
+    schema(
+      %{
+        "work_request_id" => string_schema(),
+        "title" => string_schema(),
+        "goal" => string_schema(),
+        "work_package_kind" => string_schema(),
+        "target_base_branch" => string_schema(),
+        "owned_file_globs" => string_array_schema(),
+        "forbidden_file_globs" => string_array_schema(),
+        "acceptance_criteria" => string_array_schema(),
+        "validation_steps" => string_array_schema(),
+        "review_lanes" => string_array_schema(),
+        "stop_conditions" => string_array_schema(),
+        "branch_pattern" => string_schema()
+      },
+      [
+        "work_request_id",
+        "title",
+        "goal",
+        "work_package_kind",
+        "target_base_branch",
+        "owned_file_globs",
+        "forbidden_file_globs",
+        "acceptance_criteria",
+        "validation_steps",
+        "review_lanes",
+        "stop_conditions"
+      ]
+    )
+  end
+
+  defp architect_tool_input_schema(name) when name in ["approve_work_request_planned_slice", "skip_work_request_planned_slice"] do
+    schema(
+      %{
+        "work_request_id" => string_schema(),
+        "planned_slice_id" => string_schema(),
+        "current_status" => string_schema()
+      },
+      ["work_request_id", "planned_slice_id", "current_status"]
+    )
+  end
+
+  defp architect_tool_input_schema("mark_work_request_sliced") do
+    schema(
+      %{
+        "work_request_id" => string_schema(),
+        "current_status" => string_schema()
+      },
+      ["work_request_id", "current_status"]
+    )
+  end
+
   defp architect_tool_input_schema("read_child_status"), do: schema(%{"work_package_id" => string_schema()}, ["work_package_id"])
 
   defp architect_tool_input_schema("approve_scope_expansion") do
@@ -1334,6 +1411,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp nonempty_string_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => nonblank_string_schema()}
+  defp string_array_schema, do: %{"type" => "array", "items" => nonblank_string_schema()}
   defp nonempty_object_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => object_schema()}
 
   defp merge_artifact_schema do
@@ -1870,6 +1948,95 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp architect_tool("add_work_request_planned_slice", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, title} <- required_argument(arguments, "title"),
+         {:ok, goal} <- required_argument(arguments, "goal"),
+         {:ok, work_package_kind} <- required_argument(arguments, "work_package_kind"),
+         {:ok, target_base_branch} <- required_argument(arguments, "target_base_branch"),
+         {:ok, owned_file_globs} <- required_string_array(arguments, "owned_file_globs"),
+         {:ok, forbidden_file_globs} <- required_string_array(arguments, "forbidden_file_globs"),
+         {:ok, acceptance_criteria} <- required_string_array(arguments, "acceptance_criteria"),
+         {:ok, validation_steps} <- required_string_array(arguments, "validation_steps"),
+         {:ok, review_lanes} <- required_string_array(arguments, "review_lanes"),
+         {:ok, stop_conditions} <- required_string_array(arguments, "stop_conditions"),
+         {:ok, branch_pattern} <- optional_string_argument(arguments, "branch_pattern"),
+         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
+         {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         :ok <- require_planned_slice_authoring_status(work_request.status),
+         :ok <- require_planned_slice_target_base_branch_scope(work_request, target_base_branch),
+         {:ok, planned_slice} <-
+           WorkRequestService.add_planned_slice(
+             config.repo,
+             work_request_id,
+             optional_put(
+               %{
+                 "title" => title,
+                 "goal" => goal,
+                 "work_package_kind" => work_package_kind,
+                 "target_base_branch" => target_base_branch,
+                 "owned_file_globs" => owned_file_globs,
+                 "forbidden_file_globs" => forbidden_file_globs,
+                 "acceptance_criteria" => acceptance_criteria,
+                 "validation_steps" => validation_steps,
+                 "review_lanes" => review_lanes,
+                 "stop_conditions" => stop_conditions
+               },
+               "branch_pattern",
+               branch_pattern
+             )
+           ),
+         {:ok, updated_work_request} <- scoped_work_request(config.repo, work_request_id, filters) do
+      {:ok,
+       tool_result(%{
+         "work_request" => work_request_mutation_payload(updated_work_request),
+         "planned_slice" => planned_slice_payload(planned_slice),
+         "scope" => scope,
+         "status" => %{
+           "work_request_status" => updated_work_request.status,
+           "planned_slice_status" => planned_slice.status
+         }
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "add_work_request_planned_slice", "reason" => reason}}
+      {:error, %Ecto.Changeset{}} -> {:error, -32_602, "Invalid params", %{"tool" => "add_work_request_planned_slice", "reason" => "invalid_planned_slice"}}
+      {:error, :not_found} -> work_request_not_found_error("add_work_request_planned_slice")
+      {:error, reason} -> architect_error(reason, "add_work_request_planned_slice")
+    end
+  end
+
+  defp architect_tool("approve_work_request_planned_slice", arguments, %__MODULE__{config: config, session: session}) do
+    mutate_work_request_planned_slice_status("approve_work_request_planned_slice", arguments, config.repo, session, "approved")
+  end
+
+  defp architect_tool("skip_work_request_planned_slice", arguments, %__MODULE__{config: config, session: session}) do
+    mutate_work_request_planned_slice_status("skip_work_request_planned_slice", arguments, config.repo, session, "skipped")
+  end
+
+  defp architect_tool("mark_work_request_sliced", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
+         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, current_status} <- required_argument(arguments, "current_status"),
+         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
+         {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, updated_work_request} <- WorkRequestService.mark_sliced(config.repo, work_request_id, current_status) do
+      {:ok,
+       tool_result(%{
+         "work_request" => work_request_mutation_payload(updated_work_request),
+         "scope" => scope,
+         "status" => %{
+           "previous_status" => current_status,
+           "current_status" => updated_work_request.status
+         }
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "mark_work_request_sliced", "reason" => reason}}
+      {:error, :not_found} -> work_request_not_found_error("mark_work_request_sliced")
+      {:error, reason} -> architect_error(reason, "mark_work_request_sliced")
+    end
+  end
+
   defp architect_tool("read_child_status", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- architect_session(config.repo, session, ["read:child_progress", "read:child_findings"]),
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
@@ -1981,6 +2148,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     else
       {:error, reason} -> architect_error(reason, name)
     end
+  end
+
+  defp mutate_work_request_planned_slice_status(tool, arguments, repo, session, next_status) do
+    with {:ok, session} <- architect_session(repo, session, "write:work_request"),
+         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, planned_slice_id} <- required_argument(arguments, "planned_slice_id"),
+         {:ok, current_status} <- required_argument(arguments, "current_status"),
+         {:ok, filters, scope} <- scoped_work_request_filters(repo, session),
+         {:ok, work_request} <- scoped_work_request(repo, work_request_id, filters),
+         :ok <- require_planned_slice_authoring_status(work_request.status),
+         {:ok, _planned_slice} <- scoped_work_request_planned_slice(repo, work_request_id, planned_slice_id),
+         {:ok, planned_slice} <-
+           update_work_request_planned_slice_status(
+             repo,
+             work_request_id,
+             planned_slice_id,
+             current_status,
+             next_status
+           ),
+         {:ok, updated_work_request} <- scoped_work_request(repo, work_request_id, filters) do
+      {:ok,
+       tool_result(%{
+         "work_request" => work_request_mutation_payload(updated_work_request),
+         "planned_slice" => planned_slice_payload(planned_slice),
+         "scope" => scope,
+         "status" => %{
+           "work_request_status" => updated_work_request.status,
+           "previous_planned_slice_status" => current_status,
+           "planned_slice_status" => planned_slice.status
+         }
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason}}
+      {:error, :not_found} -> work_request_not_found_error(tool)
+      {:error, reason} -> architect_error(reason, tool)
+    end
+  end
+
+  defp update_work_request_planned_slice_status(repo, work_request_id, planned_slice_id, current_status, "approved") do
+    WorkRequestService.approve_planned_slice(repo, work_request_id, planned_slice_id, current_status)
+  end
+
+  defp update_work_request_planned_slice_status(repo, work_request_id, planned_slice_id, current_status, "skipped") do
+    WorkRequestService.skip_planned_slice(repo, work_request_id, planned_slice_id, current_status)
   end
 
   defp require_architect_phase_board_grant(repo, %Session{} = session, phase_id) do
@@ -2106,6 +2317,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp scoped_work_request_planned_slice(repo, work_request_id, planned_slice_id) do
+    WorkRequestService.get_planned_slice(repo, work_request_id, planned_slice_id)
+  end
+
   defp require_work_request_scope(%WorkRequest{} = work_request, filters) do
     if work_request_matches_filters?(work_request, filters) do
       :ok
@@ -2113,6 +2328,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, :forbidden}
     end
   end
+
+  defp require_planned_slice_target_base_branch_scope(%WorkRequest{} = work_request, target_base_branch) do
+    if work_request.base_branch == target_base_branch do
+      :ok
+    else
+      {:tool_error, "target_base_branch_scope_mismatch"}
+    end
+  end
+
+  defp require_planned_slice_authoring_status(status) when status in ["ready_for_slicing", "sliced"], do: :ok
+  defp require_planned_slice_authoring_status(_status), do: {:tool_error, "invalid_status"}
 
   defp work_request_matches_filters?(%WorkRequest{} = work_request, filters) do
     Enum.all?(filters, fn
@@ -4576,6 +4802,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool_capability("answer_work_request_question"), do: "write:work_request"
   defp architect_tool_capability("close_work_request_question"), do: "write:work_request"
   defp architect_tool_capability("record_work_request_decision"), do: "write:work_request"
+  defp architect_tool_capability("add_work_request_planned_slice"), do: "write:work_request"
+  defp architect_tool_capability("approve_work_request_planned_slice"), do: "write:work_request"
+  defp architect_tool_capability("skip_work_request_planned_slice"), do: "write:work_request"
+  defp architect_tool_capability("mark_work_request_sliced"), do: "write:work_request"
   defp architect_tool_capability("read_phase_board"), do: "read:phase"
   defp architect_tool_capability("approve_scope_expansion"), do: "approve:scope_expansion"
   defp architect_tool_capability("request_child_replan"), do: "request:child_replan"
@@ -6594,7 +6824,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {value, "object"} when is_map(value) ->
         :ok
 
-      {[_head | _tail] = values, "array"} ->
+      {values, "array"} when is_list(values) ->
         validate_required_architect_array_argument(properties, key, values)
 
       {_value, _type} ->
@@ -6603,12 +6833,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp validate_required_architect_array_argument(properties, key, values) do
-    case get_in(properties, [key, "items", "type"]) do
-      "string" ->
+    cond do
+      properties |> Map.get(key, %{}) |> Map.get("minItems", 0) > 0 and values == [] ->
+        {:error, "missing_#{key}"}
+
+      get_in(properties, [key, "items", "type"]) == "string" ->
         if Enum.all?(values, &(is_binary(&1) and String.trim(&1) != "")), do: :ok, else: {:error, "invalid_#{key}"}
 
-      _item_type ->
+      true ->
         if Enum.all?(values, &is_map/1), do: :ok, else: {:error, "invalid_#{key}"}
+    end
+  end
+
+  defp required_string_array(arguments, key) do
+    case Map.fetch(arguments, key) do
+      {:ok, values} when is_list(values) ->
+        if Enum.all?(values, &(is_binary(&1) and String.trim(&1) != "")) do
+          {:ok, Enum.map(values, &String.trim/1)}
+        else
+          {:tool_error, "invalid_#{key}"}
+        end
+
+      :error ->
+        {:tool_error, "missing_#{key}"}
+
+      {:ok, _values} ->
+        {:tool_error, "invalid_#{key}"}
     end
   end
 
