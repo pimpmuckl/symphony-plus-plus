@@ -124,6 +124,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestScopeConstraintsTest do
   test "rejects owned globs that can overlap forbidden paths or their descendants" do
     constraints = %{"forbidden_paths" => ["elixir/lib/test_support"]}
 
+    assert {:error, [{:forbidden_path_overlap, "elixir", "elixir/**"}]} =
+             ScopeConstraints.validate_owned_file_globs(%{"forbidden_paths" => ["elixir/**"]}, ["elixir"])
+
     assert {:error, [{:forbidden_path_overlap, "elixir/lib/**/*", "elixir/lib/test_support"}]} =
              ScopeConstraints.validate_owned_file_globs(constraints, ["elixir/lib/**/*"])
 

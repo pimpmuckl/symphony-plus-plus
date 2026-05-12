@@ -265,7 +265,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints do
   end
 
   defp can_match_prefix?(_owned_segments, []), do: true
-  defp can_match_prefix?([], _forbidden_segments), do: false
+  defp can_match_prefix?([], forbidden_segments), do: Enum.all?(forbidden_segments, &(&1 == :globstar))
 
   defp can_match_prefix?([:globstar | rest_owned] = owned_segments, [_forbidden_segment | rest_forbidden] = forbidden_segments) do
     can_match_prefix?(rest_owned, forbidden_segments) or can_match_prefix?(owned_segments, rest_forbidden)
