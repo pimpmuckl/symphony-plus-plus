@@ -12,6 +12,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   @worker_secret_shell_path Path.join(@repo_root, "scripts/sympp-worker-secret.sh")
   @prompt_path Path.join(@repo_root, ".codex/skills/symphony-work-package/references/worker_prompt.md")
   @wiring_path Path.join(@repo_root, ".codex/skills/symphony-work-package/references/mcp_wiring.md")
+  @plugin_wiring_path Path.join(@repo_root, "plugins/symphony-plus-plus/skills/symphony-work-package/references/mcp_wiring.md")
   @handoff_path Path.join(@repo_root, "implementation_docs_symphplusplus/docs/00_ARCHITECT_AGENT_HANDOFF.md")
   @runbook_path Path.join(@repo_root, "implementation_docs_symphplusplus/docs/09_OPERATIONAL_RUNBOOK.md")
   @template_skill_path Path.join(@repo_root, "implementation_docs_symphplusplus/templates/SKILL.md")
@@ -80,13 +81,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
   test "MCP wiring docs explain the stdio dependency without embedding secrets" do
     wiring = File.read!(@wiring_path)
+    plugin_wiring = File.read!(@plugin_wiring_path)
+    template_wiring = File.read!(Path.join(@template_references_dir, "mcp_wiring.md"))
 
-    assert wiring =~ "mise exec -- mix sympp.mcp --mode stdio"
+    assert wiring =~ "mix sympp.mcp --mode stdio"
+    assert wiring =~ "rejects mise shims in direct mode"
+    assert wiring =~ "`mise` is opt-in"
     assert wiring =~ "[mcp_servers.symphony_plus_plus]"
     assert wiring =~ "sympp-worker-secret.ps1"
     assert wiring =~ "sympp-worker-secret.sh"
     assert wiring =~ "--work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by <stable-worker-id>"
     assert wiring =~ "should not embed raw work-key secrets or bearer tokens"
+    assert plugin_wiring == wiring
+    assert template_wiring == wiring
     refute wiring =~ "sympp_live_"
   end
 

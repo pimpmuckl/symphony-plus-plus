@@ -142,7 +142,11 @@ identifiers and handoff coordinates for operator recovery.
    the private-store handoff target and MCP bootstrap shape, not the raw worker
    secret.
 5. Ensure the worker has the local plugin or skill and MCP stdio dependency
-   configured through the private-store bootstrap.
+   configured through the private-store bootstrap. The installable Symphony++
+   Codex plugin also exposes a generic MCP entry for plugin UI discovery, but
+   that static entry is not a per-worker handoff and must not contain raw worker
+   secrets, private-store handoff targets, bearer tokens, or operator-local
+   secret material.
 6. Dispatch the worker with package id, base/target branch guidance, owned
    paths, acceptance criteria, test plan, review lanes, handoff target, stable
    `claimed_by`, and stop conditions.
@@ -180,6 +184,11 @@ Worker handoffs may include:
 Worker handoffs must not include raw grant secrets, bearer tokens, GitHub
 tokens, Linear tokens, MCP auth tokens, full secret-bearing claim URLs, private
 keys, or signed URLs.
+
+For worker dispatch, use the private-store `run-mcp` command emitted by
+`mix sympp.create_work` or planned-slice dispatch. Do not copy those
+worker-specific handoff targets into static plugin files; the plugin's generic
+MCP entry is only an installable capability entry and runtime launcher.
 
 ## Closeout Record
 
