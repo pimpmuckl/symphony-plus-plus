@@ -192,6 +192,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
         "read:child_findings",
         "read:child_progress",
         "read:phase",
+        "read:work_request",
         "write:phase_plan",
         "approve:scope_expansion",
         "request:child_replan",
