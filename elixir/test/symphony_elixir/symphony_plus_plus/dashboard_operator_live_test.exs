@@ -123,11 +123,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     cached_board_conn =
       local_conn()
-      |> Plug.Test.init_test_session(%{"sympp_board_grant_id" => create_architect_grant!(package.id).id})
+      |> Plug.Test.init_test_session(%{
+        "sympp_board_grant_id" => create_architect_grant!(package.id).id,
+        "sympp_package_grant_ids" => %{package.id => create_package_grant!(package.id).id}
+      })
       |> get("/sympp/board?auth=work_key")
 
     assert response(cached_board_conn, 401) =~ "Board access"
     refute Plug.Conn.get_session(cached_board_conn, "sympp_board_grant_id")
+    refute Plug.Conn.get_session(cached_board_conn, "sympp_package_grant_ids")
 
     package_conn =
       local_conn()
@@ -354,6 +358,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     assert response(trusted_proxy_conn, 401) =~ "Board access"
     refute Plug.Conn.get_session(trusted_proxy_conn, "sympp_local_operator")
+  end
+
+  test "local operator mode rejects cross-site fetches and accepts IPv6 loopback hosts" do
+    enable_operator_mode()
+    create_package!(id: "SYMPP-V2-UX-FETCH-SITE", title: "Fetch metadata package")
+
+    cross_site_conn =
+      local_conn()
+      |> Plug.Conn.put_req_header("sec-fetch-site", "cross-site")
+      |> get("/sympp/board")
+
+    assert response(cross_site_conn, 401) =~ "Board access"
+    refute Plug.Conn.get_session(cross_site_conn, "sympp_local_operator")
+
+    ipv6_conn =
+      build_conn()
+      |> Map.put(:remote_ip, {0, 0, 0, 0, 0, 0, 0, 1})
+      |> Map.put(:host, "[::1]")
+      |> Plug.Conn.put_req_header("sec-fetch-site", "none")
+      |> get("/sympp/board")
+
+    assert response(ipv6_conn, 200) =~ "Local operator cockpit"
+    assert Plug.Conn.get_session(ipv6_conn, "sympp_local_operator") == true
   end
 
   test "explicit scoped board grants still win on localhost while operator mode is enabled" do

@@ -28,7 +28,12 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   def authorize_board_browser(conn, _opts) do
     cond do
       work_key_login_requested?(conn) ->
-        conn |> clear_board_session() |> Conn.delete_session(@operator_session_key) |> board_login_response() |> Conn.halt()
+        conn
+        |> clear_board_session()
+        |> clear_package_session(nil)
+        |> Conn.delete_session(@operator_session_key)
+        |> board_login_response()
+        |> Conn.halt()
 
       local_operator_browser?(conn) and active_local_operator_session?(conn) ->
         put_local_operator_session(conn)
@@ -93,7 +98,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @spec local_operator_browser?(Conn.t()) :: boolean()
   def local_operator_browser?(%Conn{} = conn) do
-    local_operator_enabled?() and loopback_request?(conn.remote_ip) and local_host?(conn.host) and direct_local_request?(conn)
+    local_operator_enabled?() and loopback_request?(conn.remote_ip) and local_host?(conn.host) and direct_local_request?(conn) and
+      same_origin_browser_request?(conn)
   end
 
   @spec local_operator_enabled?() :: boolean()
@@ -111,7 +117,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp loopback_request?(_remote_ip), do: false
 
   defp local_host?(host) when is_binary(host) do
-    host |> String.downcase() |> then(&(&1 in ["localhost", "127.0.0.1", "::1"]))
+    host |> String.downcase() |> then(&(&1 in ["localhost", "127.0.0.1", "::1", "[::1]"]))
   end
 
   defp local_host?(_host), do: false
@@ -124,6 +130,25 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     Enum.any?(["forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip"], fn header ->
       Conn.get_req_header(conn, header) != []
     end)
+  end
+
+  defp same_origin_browser_request?(conn) do
+    fetch_site = conn |> Conn.get_req_header("sec-fetch-site") |> List.first()
+
+    fetch_site in [nil, "none", "same-origin"] and local_origin_header?(conn)
+  end
+
+  defp local_origin_header?(conn) do
+    case conn |> Conn.get_req_header("origin") |> List.first() do
+      nil ->
+        true
+
+      origin ->
+        case URI.parse(origin) do
+          %URI{host: host} when is_binary(host) -> local_host?(host)
+          _parsed -> false
+        end
+    end
   end
 
   defp active_local_operator_session?(conn), do: Conn.get_session(conn, @operator_session_key) == true
