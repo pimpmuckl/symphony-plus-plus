@@ -101,7 +101,7 @@
       "required_capabilities": ["read:work_request"],
       "arguments_policy": "Accepts only optional status. Repo and base_branch are never caller-supplied; they are derived from the live architect assignment.",
       "scope_policy": "Always filters by the architect assignment repo and base branch. Missing scope fails closed.",
-      "response_policy": "Returns safe JSON WorkRequest cards with redacted text and count/status summaries. The payload excludes work-key secrets, API tokens, private handoff payloads, and worker secret material."
+      "response_policy": "Returns safe JSON WorkRequest cards with redacted text plus total_count, scope, and filters. Per-request count/status summaries are returned by read_work_request. The payload excludes work-key secrets, API tokens, private handoff payloads, and worker secret material."
     },
     {
       "name": "read_work_request",

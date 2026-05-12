@@ -3256,6 +3256,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(invalid_status_response, ["error", "data", "reason"]) == "invalid_status"
   end
 
+  test "WorkRequest MCP reads fail closed when architect scope snapshot is missing", %{repo: repo} do
+    {_anchor, session, grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-MISSING-SCOPE", [
+        "read:work_request"
+      ])
+
+    repo.update_all(
+      from(access_grant in AccessGrant, where: access_grant.id == ^grant.id),
+      set: [scope_base_branch: nil]
+    )
+
+    list_response = mcp_tool(repo, session, "list_work_requests", %{})
+    assert get_in(list_response, ["error", "code"]) == -32_003
+    assert get_in(list_response, ["error", "data", "reason"]) == "outside_session_scope"
+
+    read_response = mcp_tool(repo, session, "read_work_request", %{"work_request_id" => "WR-MCP-WR-IN"})
+    assert get_in(read_response, ["error", "code"]) == -32_003
+    assert get_in(read_response, ["error", "data", "reason"]) == "outside_session_scope"
+  end
+
   test "phase architect creates child work package inside scoped phase", %{repo: repo} do
     {anchor, session} =
       create_architect_session(repo, "SYMPP-P7-002-CREATE-ANCHOR", [

@@ -1722,7 +1722,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, grant} <- require_live_architect_grant(repo, session),
          {:ok, filters} <- Dashboard.work_request_filters_for_grant(repo, grant),
          {:ok, scope} <- work_request_scope_payload(filters) do
-      {:ok, Map.new(filters, fn {key, value} -> {Atom.to_string(key), value} end), scope}
+      {:ok, work_request_filters_from_scope(scope), scope}
     else
       {:error, :forbidden} -> {:error, :phase_scope_not_available}
       {:error, reason} -> {:error, reason}
@@ -1730,12 +1730,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp work_request_scope_payload(filters) when is_list(filters) do
-    with {:ok, repo} <- Keyword.fetch(filters, :repo),
-         {:ok, base_branch} <- Keyword.fetch(filters, :base_branch) do
-      {:ok, %{"repo" => repo, "base_branch" => base_branch}}
+    repo = Keyword.get(filters, :repo)
+    base_branch = Keyword.get(filters, :base_branch)
+
+    if filled_string?(repo) and filled_string?(base_branch) do
+      {:ok, %{"repo" => String.trim(repo), "base_branch" => String.trim(base_branch)}}
     else
-      :error -> {:error, :phase_scope_not_available}
+      {:error, :phase_scope_not_available}
     end
+  end
+
+  defp work_request_filters_from_scope(%{"repo" => repo, "base_branch" => base_branch}) do
+    %{"repo" => repo, "base_branch" => base_branch}
   end
 
   defp work_request_list_filters(filters, nil), do: filters
