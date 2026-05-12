@@ -28,11 +28,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   def authorize_board_browser(conn, _opts) do
     cond do
       work_key_login_requested?(conn) ->
-        case authorize_board_request(conn) do
-          {:ok, %AccessGrant{} = grant} -> put_board_browser_session(conn, grant)
-          {:error, :unauthorized} -> conn |> board_login_response() |> Conn.halt()
-          {:error, reason} -> conn |> board_browser_error_response(reason) |> Conn.halt()
-        end
+        conn |> clear_board_session() |> Conn.delete_session(@operator_session_key) |> board_login_response() |> Conn.halt()
 
       local_operator_browser?(conn) and active_local_operator_session?(conn) ->
         put_local_operator_session(conn)
@@ -64,11 +60,11 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         conn |> package_not_found_response() |> Conn.halt()
 
       work_key_login_requested?(conn) ->
-        case authorize_package_request(conn, work_package_id) do
-          {:ok, %AccessGrant{} = grant} -> put_package_browser_session(conn, grant, work_package_id)
-          {:error, :unauthorized} -> conn |> package_login_response(work_package_id: work_package_id) |> Conn.halt()
-          {:error, reason} -> conn |> package_browser_error_response(reason, work_package_id) |> Conn.halt()
-        end
+        conn
+        |> clear_package_session(work_package_id)
+        |> Conn.delete_session(@operator_session_key)
+        |> package_login_response(work_package_id: work_package_id)
+        |> Conn.halt()
 
       local_operator_browser?(conn) and active_local_operator_session?(conn) ->
         put_local_operator_session(conn)
@@ -121,20 +117,13 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp local_host?(_host), do: false
 
   defp direct_local_request?(conn) do
-    not forwarded_request?(conn) or local_operator_proxy_trusted?()
+    not forwarded_request?(conn)
   end
 
   defp forwarded_request?(conn) do
     Enum.any?(["forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip"], fn header ->
       Conn.get_req_header(conn, header) != []
     end)
-  end
-
-  defp local_operator_proxy_trusted? do
-    endpoint_config = Application.get_env(:symphony_elixir, Endpoint, [])
-
-    truthy_config?(Keyword.get(endpoint_config, :sympp_local_operator_trust_proxy)) or
-      truthy_config?(Application.get_env(:symphony_elixir, :sympp_local_operator_trust_proxy))
   end
 
   defp active_local_operator_session?(conn), do: Conn.get_session(conn, @operator_session_key) == true

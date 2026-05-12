@@ -121,6 +121,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert response(board_conn, 401) =~ "work_key"
     refute Plug.Conn.get_session(board_conn, "sympp_local_operator")
 
+    cached_board_conn =
+      local_conn()
+      |> Plug.Test.init_test_session(%{"sympp_board_grant_id" => create_architect_grant!(package.id).id})
+      |> get("/sympp/board?auth=work_key")
+
+    assert response(cached_board_conn, 401) =~ "Board access"
+    refute Plug.Conn.get_session(cached_board_conn, "sympp_board_grant_id")
+
     package_conn =
       local_conn()
       |> Plug.Test.init_test_session(%{"sympp_local_operator" => true})
@@ -199,6 +207,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "Question needing operator guidance"
     assert html =~ "Planned slices"
     assert html =~ "First operator slice"
+    assert html =~ ~s(href="../board?auth=work_key")
     refute html =~ "Board access"
     refute html =~ ~s(name="work_key")
     refute html =~ "Answer</button>"
@@ -333,6 +342,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert response(conn, 401) =~ "Board access"
     refute response(conn, 401) =~ "Proxy-hidden package"
     refute Plug.Conn.get_session(conn, "sympp_local_operator")
+
+    trusted_proxy_conn =
+      local_conn()
+      |> Plug.Conn.put_req_header("x-forwarded-for", "203.0.113.24")
+      |> then(fn conn ->
+        put_endpoint_config(sympp_local_operator: true, sympp_local_operator_trust_proxy: true)
+        conn
+      end)
+      |> get("/sympp/board")
+
+    assert response(trusted_proxy_conn, 401) =~ "Board access"
+    refute Plug.Conn.get_session(trusted_proxy_conn, "sympp_local_operator")
   end
 
   test "explicit scoped board grants still win on localhost while operator mode is enabled" do
@@ -393,9 +414,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
       |> Plug.Test.init_test_session(%{"sympp_local_operator" => true, "sympp_package_grant_ids" => %{package.id => grant.id}})
       |> get("/sympp/work-packages/#{package.id}?auth=work_key")
 
-    assert response(scoped_conn, 200) =~ "Cached package grant"
+    assert response(scoped_conn, 401) =~ "Package access"
     refute Plug.Conn.get_session(scoped_conn, "sympp_local_operator")
-    assert Plug.Conn.get_session(scoped_conn, "sympp_package_grant_ids") == %{package.id => grant.id}
+    refute Map.has_key?(Plug.Conn.get_session(scoped_conn, "sympp_package_grant_ids", %{}), package.id)
   end
 
   defp create_package!(overrides) do
