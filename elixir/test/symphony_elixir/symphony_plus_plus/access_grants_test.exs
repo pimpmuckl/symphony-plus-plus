@@ -235,6 +235,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
           "read:child_progress",
           "read:child_findings",
           "read:work_request",
+          "write:work_request",
           "mint:child_worker_key",
           "approve:child_ready_state",
           "split:child_work_package",
@@ -248,7 +249,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     end
   end
 
-  test "architect grant can include work request read capability", %{repo: repo} do
+  test "architect grant can include work request capabilities", %{repo: repo} do
     assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
     work_key = WorkKey.generate()
 
@@ -258,11 +259,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
                display_key: work_key.display_key,
                secret_hash: WorkKey.secret_hash(work_key.secret),
                grant_role: "architect",
-               capabilities: ["read:work_request"],
+               capabilities: ["read:work_request", "write:work_request"],
                expires_at: DateTime.add(DateTime.utc_now(:microsecond), 60, :second)
              })
 
-    assert grant.capabilities == ["read:work_request"]
+    assert grant.capabilities == ["read:work_request", "write:work_request"]
     assert grant.phase_id == nil
   end
 
