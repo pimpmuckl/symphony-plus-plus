@@ -48,18 +48,22 @@ not a claim that MCP intake tooling, automatic slicing, dispatch, or Linear
 state creation already exists.
 
 Runtime WorkRequest persistence, the read API, the dashboard list/detail view,
-and scoped dashboard intake now exist. Dashboard intake is board-authenticated
-and only appears for board grants with frozen repo and base-branch scope. The
-repo and base branch are displayed as locked values and are enforced by the
-server when creating the draft. Humans can mark a draft WorkRequest
-`ready_for_clarification` from the detail view.
+scoped dashboard intake, and the manual clarification loop now exist.
+Dashboard intake is board-authenticated and only appears for board grants with
+frozen repo and base-branch scope. The repo and base branch are displayed as
+locked values and are enforced by the server when creating the draft. Humans
+can mark a draft WorkRequest `ready_for_clarification` from the detail view.
+For board-visible, in-scope WorkRequests, the detail view can also ask
+clarification questions, answer or close open questions, record durable
+decisions, mark `human_info_needed`, and mark `ready_for_slicing` only after no
+open clarification questions remain.
 
 MCP intake, automatic question generation, automatic slicing, dispatch into
 WorkPackages, and Linear state creation remain future work. Until those exist,
-keep questions, answers, decisions, assumptions, and slice-plan sections in the
+keep questions, answers, decisions, assumptions, and slice-plan sections in
 runtime WorkRequest records where available, or in one operator-approved
-Markdown artifact when the runtime surface is not available for a lane. Give
-the architect package a durable reference plus a bounded handoff summary before
+Markdown artifact when the runtime surface is not available for a lane. Give the
+architect package a durable reference plus a bounded handoff summary before
 dispatch.
 
 ## Standalone Flow
