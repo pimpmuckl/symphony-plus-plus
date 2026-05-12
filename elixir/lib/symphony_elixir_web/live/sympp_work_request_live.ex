@@ -590,11 +590,11 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                   </div>
                   <div>
                     <dt>Target base</dt>
-                    <dd><%= label_value(value(slice, :target_base_branch)) %></dd>
+                    <dd><%= exact_value(value(slice, :target_base_branch)) %></dd>
                   </div>
                   <div>
                     <dt>Branch pattern</dt>
-                    <dd><%= label_value(value(slice, :branch_pattern)) %></dd>
+                    <dd><%= exact_value(value(slice, :branch_pattern)) %></dd>
                   </div>
                   <div>
                     <dt>Owned files</dt>
@@ -1664,6 +1664,10 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp label_value(""), do: "n/a"
   defp label_value(value) when is_binary(value), do: String.replace(value, "_", " ")
   defp label_value(value), do: to_string(value)
+
+  defp exact_value(nil), do: "n/a"
+  defp exact_value(""), do: "n/a"
+  defp exact_value(value), do: to_string(value)
 
   defp list_label([]), do: "n/a"
   defp list_label(values) when is_list(values), do: Enum.map_join(values, ", ", &to_string/1)

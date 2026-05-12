@@ -141,7 +141,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
              WorkRequestRepository.add_planned_slice(Repo, request.id, planned_slice_attrs(id: "WRS-LIVE-B", title: "Second slice"))
 
     assert {:ok, first_slice} =
-             WorkRequestRepository.add_planned_slice(Repo, request.id, planned_slice_attrs(id: "WRS-LIVE-A", title: "First slice"))
+             WorkRequestRepository.add_planned_slice(
+               Repo,
+               request.id,
+               planned_slice_attrs(
+                 id: "WRS-LIVE-A",
+                 title: "First slice",
+                 target_base_branch: "release_candidate",
+                 branch_pattern: "agent/foo_bar"
+               )
+             )
 
     secret = create_architect_grant_secret(Repo, anchor.id)
     {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{request.id}")
@@ -156,6 +165,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
     assert html =~ ~s(href="../board")
     assert html =~ ~s(href="../work-requests")
     assert html =~ "Mark ready for clarification"
+    assert html =~ "release_candidate"
+    assert html =~ "agent/foo_bar"
+    refute html =~ "release candidate"
+    refute html =~ "agent/foo bar"
     assert appears_before?(html, second_question.id, first_question.id)
     assert appears_before?(html, second_decision.id, first_decision.id)
     assert appears_before?(html, second_slice.id, first_slice.id)
