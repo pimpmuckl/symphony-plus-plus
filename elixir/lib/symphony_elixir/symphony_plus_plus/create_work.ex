@@ -287,7 +287,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     end
   end
 
-  defp cleanup_created_work_package(repo, work_package_id) do
+  @doc false
+  @spec cleanup_created_work_package(module(), String.t()) :: :ok | {:error, term()}
+  def cleanup_created_work_package(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
     repo.transaction(fn ->
       delete_by_work_package_id(repo, AgentRun, work_package_id)
       delete_by_work_package_id(repo, Artifact, work_package_id)

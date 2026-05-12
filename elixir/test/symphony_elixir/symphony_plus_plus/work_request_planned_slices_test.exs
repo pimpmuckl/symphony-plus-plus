@@ -2,10 +2,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
   use ExUnit.Case, async: false
 
   alias Ecto.Adapters.SQL
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+  alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
+  alias SymphonyElixir.SymphonyPlusPlus.CreateWork
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Finding
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service
@@ -65,10 +74,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
 
     on_exit(fn -> File.rm(database_path) end)
 
-    {:ok, repo: Repo}
+    {:ok, repo: Repo, database_path: database_path}
   end
 
   setup %{repo: repo} do
+    repo.delete_all(AgentRun)
+    repo.delete_all(Artifact)
+    repo.delete_all(ProgressEvent)
+    repo.delete_all(Finding)
+    repo.delete_all(PlanNode)
+    repo.delete_all(AccessGrant)
     repo.delete_all(PlannedSlice)
     repo.delete_all(WorkPackage)
     repo.delete_all(WorkRequest)
@@ -76,7 +91,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
   end
 
   test "adds and lists planned slices deterministically", %{repo: repo} do
-    work_request = create_work_request!(repo)
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
 
     assert {:ok, first} =
              Service.add_planned_slice(
@@ -414,6 +429,191 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
     assert dispatched.work_package_id == work_package.id
   end
 
+  test "dispatch orchestration creates and links one approved planned slice", %{repo: repo, database_path: database_path} do
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
+    assert {:ok, planned} = Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-DISPATCH-ORCHESTRATE"))
+    assert {:ok, approved} = Repository.approve_planned_slice(repo, work_request.id, planned.id, "planned")
+
+    secret_store_dir = Path.join(System.tmp_dir!(), "sympp-dispatch-orchestrate-secrets-#{System.unique_integer([:positive])}")
+    handoff_opts = dispatch_handoff_opts(database_path, secret_store_dir, "worker-dispatch-orchestrate")
+
+    try do
+      assert {:ok, dispatch} = PlannedSliceDispatch.dispatch(repo, work_request.id, approved.id, handoff_opts)
+      Process.put(:dispatch_handoff, dispatch.worker_secret_handoff)
+
+      payload = PlannedSliceDispatch.response_payload(dispatch)
+      create_work = payload.create_work
+      linkage = payload.planned_slice_linkage
+
+      assert create_work.work_package.repo == work_request.repo
+      assert create_work.work_package.base_branch == approved.target_base_branch
+      assert create_work.work_package.title == approved.title
+      assert create_work.work_package.kind == approved.work_package_kind
+      assert create_work.work_package.branch_pattern == approved.branch_pattern
+      assert create_work.work_package.product_description == work_request.human_description
+      assert create_work.work_package.allowed_file_globs == approved.owned_file_globs
+      assert create_work.work_package.acceptance_criteria == approved.acceptance_criteria
+      assert create_work.work_package.engineering_scope =~ approved.goal
+      assert create_work.work_package.engineering_scope =~ "Validation steps:"
+      assert create_work.work_package.engineering_scope =~ "Review lanes:"
+      assert create_work.work_package.engineering_scope =~ "Forbidden file globs:"
+      assert create_work.work_package.engineering_scope =~ "Stop conditions:"
+
+      refute Map.has_key?(create_work.worker_grant, :secret)
+      assert create_work.secret_in_stdout == false
+      assert create_work.worker_grant.secret_handoff.target == create_work.worker_secret_handoff.target
+
+      assert linkage.work_request_id == work_request.id
+      assert linkage.planned_slice_id == approved.id
+      assert linkage.status == "dispatched"
+      assert linkage.work_package_id == create_work.work_package.id
+      assert is_binary(linkage.dispatched_at)
+
+      assert {:ok, persisted} = Repository.get_planned_slice(repo, work_request.id, approved.id)
+      assert persisted.status == "dispatched"
+      assert persisted.work_package_id == create_work.work_package.id
+    after
+      cleanup_handoff(Process.get(:dispatch_handoff), handoff_opts)
+      File.rm_rf(secret_store_dir)
+      Process.delete(:dispatch_handoff)
+    end
+  end
+
+  test "dispatch orchestration rejects preflight failures without mutation", %{repo: repo, database_path: database_path} do
+    invalid_scope_request =
+      create_work_request!(
+        repo,
+        id: "WR-DISPATCH-SCOPE-REJECT",
+        status: "ready_for_slicing",
+        constraints: %{"allowed_paths" => ["elixir/lib"], "forbidden_paths" => ["elixir/lib/symphony_elixir/symphony_plus_plus/work_requests"]}
+      )
+
+    assert {:ok, invalid_scope_planned} =
+             Repository.add_planned_slice(
+               repo,
+               invalid_scope_request.id,
+               planned_slice_attrs(id: "WRS-DISPATCH-SCOPE-REJECT")
+             )
+
+    assert {:ok, invalid_scope_approved} =
+             Repository.approve_planned_slice(repo, invalid_scope_request.id, invalid_scope_planned.id, "planned")
+
+    invalid_create_request = create_work_request!(repo, id: "WR-DISPATCH-CREATE-REJECT", status: "ready_for_slicing")
+
+    assert {:ok, invalid_create_planned} =
+             Repository.add_planned_slice(
+               repo,
+               invalid_create_request.id,
+               planned_slice_attrs(id: "WRS-DISPATCH-CREATE-REJECT", owned_file_globs: [], acceptance_criteria: [])
+             )
+
+    assert {:ok, invalid_create_approved} =
+             Repository.approve_planned_slice(repo, invalid_create_request.id, invalid_create_planned.id, "planned")
+
+    unsupported_request = create_work_request!(repo, id: "WR-DISPATCH-KIND-REJECT", status: "ready_for_slicing")
+
+    assert {:ok, unsupported_planned} =
+             Repository.add_planned_slice(
+               repo,
+               unsupported_request.id,
+               planned_slice_attrs(id: "WRS-DISPATCH-KIND-REJECT", work_package_kind: "docs")
+             )
+
+    assert {:ok, unsupported_approved} =
+             Repository.approve_planned_slice(repo, unsupported_request.id, unsupported_planned.id, "planned")
+
+    planned_request = create_work_request!(repo, id: "WR-DISPATCH-PLANNED-REJECT", status: "ready_for_slicing")
+    assert {:ok, planned_slice} = Repository.add_planned_slice(repo, planned_request.id, planned_slice_attrs(id: "WRS-DISPATCH-PLANNED-REJECT"))
+
+    secret_store_dir = Path.join(System.tmp_dir!(), "sympp-dispatch-reject-secrets-#{System.unique_integer([:positive])}")
+    handoff_opts = dispatch_handoff_opts(database_path, secret_store_dir, "worker-dispatch-reject")
+
+    try do
+      assert {:error, :not_found} = PlannedSliceDispatch.dispatch(repo, "WR-MISSING", "WRS-MISSING", handoff_opts)
+
+      assert {:error, {:invalid_planned_slice_status, "planned"}} =
+               PlannedSliceDispatch.dispatch(repo, planned_request.id, planned_slice.id, handoff_opts)
+
+      assert {:error, {:planned_slice_scope_violation, [_ | _]}} =
+               PlannedSliceDispatch.dispatch(repo, invalid_scope_request.id, invalid_scope_approved.id, handoff_opts)
+
+      assert {:error, :missing_acceptance_criteria} =
+               PlannedSliceDispatch.dispatch(repo, invalid_create_request.id, invalid_create_approved.id, handoff_opts)
+
+      assert {:error, {:unsupported_standalone_kind, "docs"}} =
+               PlannedSliceDispatch.dispatch(repo, unsupported_request.id, unsupported_approved.id, handoff_opts)
+
+      assert repo.aggregate(WorkPackage, :count, :id) == 0
+      assert repo.aggregate(AccessGrant, :count, :id) == 0
+      refute File.exists?(secret_store_dir)
+    after
+      File.rm_rf(secret_store_dir)
+    end
+  end
+
+  test "dispatch orchestration cleans up created work when linkage fails", %{repo: repo, database_path: database_path} do
+    work_request = create_work_request!(repo, id: "WR-DISPATCH-LINK-ROLLBACK", status: "ready_for_slicing")
+    assert {:ok, planned} = Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-DISPATCH-LINK-ROLLBACK"))
+    assert {:ok, approved} = Repository.approve_planned_slice(repo, work_request.id, planned.id, "planned")
+
+    secret_store_dir = Path.join(System.tmp_dir!(), "sympp-dispatch-link-rollback-secrets-#{System.unique_integer([:positive])}")
+    handoff_opts = dispatch_handoff_opts(database_path, secret_store_dir, "worker-dispatch-link-rollback")
+
+    try do
+      assert {:error, {:dispatch_link_failed, :forced_link_failure, recovery}} =
+               PlannedSliceDispatch.dispatch(repo, work_request.id, approved.id, handoff_opts,
+                 link_planned_slice: fn _repo, _work_request_id, _planned_slice_id, "approved", _work_package_id ->
+                   {:error, :forced_link_failure}
+                 end,
+                 cleanup_created_work_package: fn cleanup_repo, work_package_id ->
+                   assert :ok = CreateWork.cleanup_created_work_package(cleanup_repo, work_package_id)
+                   {:ok, :deleted}
+                 end
+               )
+
+      assert recovery.cleanup == %{ledger: :deleted, secret_handoff: :deleted}
+      assert recovery.work_package_id
+      assert recovery.worker_grant_id
+      assert recovery.worker_secret_handoff.secret_in_stdout == false
+      assert repo.aggregate(WorkPackage, :count, :id) == 0
+      assert repo.aggregate(AccessGrant, :count, :id) == 0
+
+      if recovery.worker_secret_handoff.mode == "local-private-file" do
+        refute File.exists?(recovery.worker_secret_handoff.path)
+      end
+    after
+      File.rm_rf(secret_store_dir)
+    end
+  end
+
+  test "dispatch orchestration cleans up created work when linkage raises", %{repo: repo, database_path: database_path} do
+    work_request = create_work_request!(repo, id: "WR-DISPATCH-LINK-RAISE", status: "ready_for_slicing")
+    assert {:ok, planned} = Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-DISPATCH-LINK-RAISE"))
+    assert {:ok, approved} = Repository.approve_planned_slice(repo, work_request.id, planned.id, "planned")
+
+    secret_store_dir = Path.join(System.tmp_dir!(), "sympp-dispatch-link-raise-secrets-#{System.unique_integer([:positive])}")
+    handoff_opts = dispatch_handoff_opts(database_path, secret_store_dir, "worker-dispatch-link-raise")
+
+    try do
+      assert {:error, {:dispatch_link_failed, {:link_failed, "forced link exception"}, recovery}} =
+               PlannedSliceDispatch.dispatch(repo, work_request.id, approved.id, handoff_opts,
+                 link_planned_slice: fn _repo, _work_request_id, _planned_slice_id, "approved", _work_package_id ->
+                   raise "forced link exception"
+                 end
+               )
+
+      assert recovery.cleanup == %{ledger: :deleted, secret_handoff: :deleted}
+      assert repo.aggregate(WorkPackage, :count, :id) == 0
+      assert repo.aggregate(AccessGrant, :count, :id) == 0
+
+      if recovery.worker_secret_handoff.mode == "local-private-file" do
+        refute File.exists?(recovery.worker_secret_handoff.path)
+      end
+    after
+      File.rm_rf(secret_store_dir)
+    end
+  end
+
   test "rejects invalid status work package kind and list fields", %{repo: repo} do
     work_request = create_work_request!(repo)
 
@@ -592,6 +792,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
       |> Keyword.merge(overrides)
 
     create_work_package!(repo, attrs)
+  end
+
+  defp dispatch_handoff_opts(database_path, secret_store_dir, claimed_by) do
+    [
+      mode: "auto",
+      store_dir: secret_store_dir,
+      claimed_by: claimed_by,
+      database: database_path,
+      repo_root: repo_root()
+    ]
+  end
+
+  defp cleanup_handoff(nil, _handoff_opts), do: :ok
+
+  defp cleanup_handoff(handoff, handoff_opts) when is_map(handoff) and is_list(handoff_opts) do
+    SecretHandoff.delete_worker_secret(handoff, handoff_opts)
+  end
+
+  defp repo_root do
+    Mix.Project.project_file()
+    |> Path.dirname()
+    |> Path.join("..")
+    |> Path.expand()
   end
 
   defp work_request_attrs(overrides) do

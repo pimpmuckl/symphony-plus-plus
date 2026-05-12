@@ -44,8 +44,8 @@ questions and slices the work.
 
 This flow preserves existing WorkPackage grants, virtual planning resources,
 readiness gates, review evidence, PR evidence, and human merge controls. It is
-not a claim that MCP intake tooling, automatic slicing, dispatch, or Linear
-state creation already exists.
+not a claim that MCP intake tooling, automatic slicing, dashboard dispatch, or
+Linear state creation already exists.
 
 Runtime WorkRequest persistence, the read API, the dashboard list/detail view,
 scoped dashboard intake, the manual clarification loop, and manual planned-slice
@@ -62,24 +62,51 @@ planned slices, approve or skip mutable slices, and mark a request `sliced`
 only after at least one planned slice has been approved. This does not dispatch
 or link WorkPackages.
 
-Planned-slice dispatch has an explicit prerequisite: future dispatch code must
-validate the approved slice's owned file globs against the parent WorkRequest
-path constraints before minting a WorkPackage. The validator is pure and does
-not inspect the host filesystem. Missing or empty `allowed_paths` leaves the
-slice unrestricted by allow-list, but `forbidden_paths` still block overlapping
-owned globs. As a least-privilege rule, `allowed_paths: ["*"]` is not an
-implicit whole-repo grant; wildcard allow entries without an explicit `**` only
-authorize their own segment shape and do not authorize recursive owned globs
-such as `**/foo` or bare `**`. Operators should treat validator success as a
-dispatch precondition, not as dispatch itself.
+Planned-slice dispatch is available as an operator CLI, not as a dashboard
+button or MCP tool. The CLI dispatches one `approved` planned slice by
+WorkRequest id and planned-slice id, validates the slice's owned file globs
+against the parent WorkRequest path constraints before minting a WorkPackage,
+creates the worker-ready package through private worker-secret handoff, and
+then records the planned-slice linkage. The validator is pure and does not
+inspect the host filesystem. Missing or empty `allowed_paths` leaves the slice
+unrestricted by allow-list, but `forbidden_paths` still block overlapping owned
+globs. As a least-privilege rule, `allowed_paths: ["*"]` is not an implicit
+whole-repo grant; wildcard allow entries without an explicit `**` only authorize
+their own segment shape and do not authorize recursive owned globs such as
+`**/foo` or bare `**`.
 
-MCP intake, automatic question generation, automatic slicing, dispatch into
-WorkPackages, MCP planner tools, and Linear state creation remain future work.
-Until those exist, keep questions, answers, decisions, assumptions, and
+MCP intake, automatic question generation, automatic slicing, dashboard/MCP
+dispatch actions, MCP planner tools, and Linear state creation remain future
+work. Until those exist, keep questions, answers, decisions, assumptions, and
 slice-plan sections in runtime WorkRequest records where available, or in one
 operator-approved Markdown artifact when the runtime surface is not available
 for a lane. Give the architect package a durable reference plus a bounded
 handoff summary before dispatch.
+
+## Planned-Slice Dispatch CLI
+
+Run planned-slice dispatch from `elixir/` after a slice is approved:
+
+```powershell
+mix sympp.dispatch_planned_slice `
+  --database <sqlite-path> `
+  --work-request-id <work-request-id> `
+  --planned-slice-id <planned-slice-id> `
+  --claimed-by <stable-worker-id> `
+  --secret-handoff auto
+```
+
+The task also accepts `--secret-store-dir <path>` for local private-file
+handoff storage. It validates required identifiers and `claimed_by` before
+opening or creating the ledger database, migrates the Symphony++ repo, and
+prints pretty JSON on success. Normal output is redacted: it includes the
+created WorkPackage, redacted worker grant, non-secret handoff coordinates, and
+planned-slice linkage metadata, but never the raw worker secret.
+
+If WorkPackage creation succeeds but linkage fails, the dispatcher attempts to
+delete the created WorkPackage ledger state and worker-secret handoff. When
+cleanup is incomplete, the returned recovery payload contains non-secret
+identifiers and handoff coordinates for operator recovery.
 
 ## Standalone Flow
 
