@@ -1165,19 +1165,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp architect_tool_specs_for_session(repo, %Session{assignment: %{capabilities: capabilities}} = session) when is_list(capabilities) do
     @architect_tools
-    |> Enum.filter(&(architect_tool_required_capabilities(&1) -- capabilities == []))
-    |> Enum.filter(&architect_tool_visible_for_session?(repo, session, &1))
+    |> Enum.filter(fn tool ->
+      capability_allowed? = architect_tool_required_capabilities(tool) -- capabilities == []
+      capability_allowed? and architect_tool_visible_for_session?(repo, session, tool)
+    end)
     |> Enum.map(&architect_tool_spec/1)
   end
 
   defp architect_tool_specs_for_session(_repo, _session), do: []
 
   defp architect_tool_visible_for_session?(repo, %Session{} = session, tool) when tool in @phase_scoped_work_request_tools do
-    with {:ok, grant} <- require_live_architect_grant(repo, session),
-         true <- architect_explicit_phase_grant?(grant),
-         {:ok, _filters} <- Dashboard.phase_board_filters_for_grant(grant) do
-      true
-    else
+    case scoped_work_request_filters(repo, session) do
+      {:ok, _filters, _scope} -> true
       _reason -> false
     end
   end

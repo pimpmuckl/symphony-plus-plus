@@ -940,6 +940,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute Map.has_key?(tools_by_name, "read_work_request")
   end
 
+  test "tools list hides WorkRequest reads when phase anchor no longer matches frozen scope", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-TOOLS-DRIFTED-ANCHOR", [
+        "read:work_request"
+      ])
+
+    assert {:ok, _anchor} = WorkPackageRepository.update(repo, anchor.id, %{repo: "nextide/other"})
+
+    server = Server.new(Config.default(repo: repo), initialized: true, session: session)
+
+    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "drifted-anchor-architect-tools", "method" => "tools/list", "params" => %{}}, server)
+    tools_by_name = response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
+
+    assert Map.has_key?(tools_by_name, "sympp.health")
+    assert Map.has_key?(tools_by_name, "get_current_assignment")
+    refute Map.has_key?(tools_by_name, "list_work_requests")
+    refute Map.has_key?(tools_by_name, "read_work_request")
+  end
+
   test "tools list exposes only claim refresh for stale architect sessions after grant revocation", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-TOOLS-REVOKED", kind: "mcp"))
     assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])
