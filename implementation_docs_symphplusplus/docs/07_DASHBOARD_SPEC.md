@@ -33,8 +33,12 @@ Local operator mode:
 - lets the local operator create draft WorkRequests and use the existing safe
   clarification, decision, readiness, and planned-slice controls from the
   WorkRequest detail page;
+- lets the local operator dispatch approved, undispatched planned slices into
+  WorkPackages through the existing private worker handoff flow;
 - records local operator clarification and decision attribution with the stable
   actor label `local-operator`;
+- records local browser planned-slice dispatch grants with the stable worker
+  identity `local-operator-worker`;
 - keeps board-grant WorkRequest intake locked to the grant's frozen repo/base
   scope and ignores submitted repo/base values in board-grant mode;
 - preserves explicit `?auth=work_key` paths for grant-scoped board and package
@@ -134,11 +138,18 @@ Record decisions
 Mark human info needed
 Mark ready for slicing
 Add / approve / skip planned slices
+Dispatch approved planned slices
 Mark sliced
 ```
 
-These controls only update WorkRequest planning state. They do not dispatch
-workers, mint grants, call Linear, or expose secret handoff payloads.
+Planned-slice dispatch is local-operator-only. It reuses the existing
+`PlannedSliceDispatch` flow to create a WorkPackage, mint a worker grant, store
+the worker secret through private handoff, link the planned slice, and refresh
+the page with the WorkPackage id/status. The browser may show only non-secret
+handoff metadata such as mode, target, path, and run command. It must not show a
+raw worker secret. Dispatch does not spawn Codex agents and does not call Linear.
+Board-grant WorkRequest detail remains scoped to planning controls and does not
+show the dispatch control.
 
 ### Runtime view
 

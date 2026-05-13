@@ -98,7 +98,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            :ok <- require_visible_work_request_scope(repo, work_request, grant),
            {:ok, questions} <- WorkRequestRepository.list_questions(repo, work_request_id),
            {:ok, decisions} <- WorkRequestRepository.list_decisions(repo, work_request_id),
-           {:ok, planned_slices} <- WorkRequestRepository.list_planned_slices(repo, work_request_id) do
+           {:ok, planned_slices} <- WorkRequestRepository.list_planned_slices(repo, work_request_id),
+           {:ok, work_package_statuses} <- planned_slice_work_package_statuses(repo, planned_slices) do
         questions = ordered_sequence_records(questions)
         decisions = ordered_sequence_records(decisions)
         planned_slices = ordered_sequence_records(planned_slices)
@@ -108,7 +109,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            work_request: work_request_detail(work_request),
            clarification_questions: Enum.map(questions, &clarification_question/1),
            decision_logs: Enum.map(decisions, &decision_log_entry/1),
-           planned_slices: Enum.map(planned_slices, &planned_slice/1),
+           planned_slices: Enum.map(planned_slices, &planned_slice(&1, work_package_statuses)),
            summary: work_request_summary(questions, decisions, planned_slices)
          }}
       end
@@ -121,7 +122,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       with {:ok, work_request} <- WorkRequestRepository.get(repo, work_request_id),
            {:ok, questions} <- WorkRequestRepository.list_questions(repo, work_request_id),
            {:ok, decisions} <- WorkRequestRepository.list_decisions(repo, work_request_id),
-           {:ok, planned_slices} <- WorkRequestRepository.list_planned_slices(repo, work_request_id) do
+           {:ok, planned_slices} <- WorkRequestRepository.list_planned_slices(repo, work_request_id),
+           {:ok, work_package_statuses} <- planned_slice_work_package_statuses(repo, planned_slices) do
         questions = ordered_sequence_records(questions)
         decisions = ordered_sequence_records(decisions)
         planned_slices = ordered_sequence_records(planned_slices)
@@ -131,7 +133,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            work_request: work_request_detail(work_request),
            clarification_questions: Enum.map(questions, &clarification_question/1),
            decision_logs: Enum.map(decisions, &decision_log_entry/1),
-           planned_slices: Enum.map(planned_slices, &planned_slice/1),
+           planned_slices: Enum.map(planned_slices, &planned_slice(&1, work_package_statuses)),
            summary: work_request_summary(questions, decisions, planned_slices)
          }}
       end
@@ -758,7 +760,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     }
   end
 
-  defp planned_slice(%PlannedSlice{} = planned_slice) do
+  defp planned_slice(%PlannedSlice{} = planned_slice, work_package_statuses) do
     %{
       id: planned_slice.id,
       work_request_id: planned_slice.work_request_id,
@@ -775,9 +777,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       review_lanes: planned_slice.review_lanes || [],
       stop_conditions: Enum.map(planned_slice.stop_conditions || [], &redacted_text/1),
       status: planned_slice.status,
+      work_package_id: planned_slice.work_package_id,
+      work_package_status: Map.get(work_package_statuses, planned_slice.work_package_id),
+      dispatched_at: timestamp(planned_slice.dispatched_at),
       inserted_at: timestamp(planned_slice.inserted_at),
       updated_at: timestamp(planned_slice.updated_at)
     }
+  end
+
+  defp planned_slice_work_package_statuses(repo, planned_slices) do
+    work_package_ids =
+      planned_slices
+      |> Enum.map(& &1.work_package_id)
+      |> Enum.filter(&filled_string?/1)
+      |> Enum.uniq()
+
+    if work_package_ids == [] do
+      {:ok, %{}}
+    else
+      statuses =
+        repo.all(
+          from(work_package in WorkPackage,
+            where: work_package.id in ^work_package_ids,
+            select: {work_package.id, work_package.status}
+          )
+        )
+
+      {:ok, Map.new(statuses)}
+    end
   end
 
   defp work_request_summary(questions, decisions, planned_slices) do

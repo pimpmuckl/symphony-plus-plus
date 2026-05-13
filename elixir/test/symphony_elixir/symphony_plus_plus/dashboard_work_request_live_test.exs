@@ -308,6 +308,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
       })
 
     assert html =~ "approved"
+    refute html =~ "Dispatch</button>"
     assert {:ok, [approved, ^second, ^dispatched]} = WorkRequestRepository.list_planned_slices(Repo, request.id)
     assert approved.status == "approved"
 
