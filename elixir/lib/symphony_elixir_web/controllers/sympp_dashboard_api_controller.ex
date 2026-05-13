@@ -105,6 +105,20 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     local_operator_session_browser?(conn) and same_origin_browser_request?(conn)
   end
 
+  @spec local_operator_live_connect_info?(map()) :: boolean()
+  def local_operator_live_connect_info?(connect_info) when is_map(connect_info) do
+    peer_data = Map.get(connect_info, :peer_data) || Map.get(connect_info, "peer_data")
+    uri = Map.get(connect_info, :uri) || Map.get(connect_info, "uri")
+    x_headers = Map.get(connect_info, :x_headers) || Map.get(connect_info, "x_headers") || []
+
+    local_operator_enabled?() and
+      loopback_request?(peer_address(peer_data)) and
+      local_host?(uri_host(uri)) and
+      no_forwarded_x_headers?(x_headers)
+  end
+
+  def local_operator_live_connect_info?(_connect_info), do: false
+
   defp local_operator_session_browser?(%Conn{} = conn) do
     local_operator_enabled?() and loopback_request?(conn.remote_ip) and local_host?(conn.host) and direct_local_request?(conn)
   end
@@ -128,6 +142,28 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp local_host?(_host), do: false
+
+  defp peer_address(%{address: address}), do: address
+  defp peer_address(%{"address" => address}), do: address
+  defp peer_address(_peer_data), do: nil
+
+  defp uri_host(%URI{host: host}), do: host
+  defp uri_host(%{host: host}), do: host
+  defp uri_host(%{"host" => host}), do: host
+  defp uri_host(_uri), do: nil
+
+  defp no_forwarded_x_headers?(headers) when is_list(headers) do
+    Enum.all?(headers, fn
+      {name, _value} when is_binary(name) -> not forwarded_x_header?(name)
+      _header -> true
+    end)
+  end
+
+  defp no_forwarded_x_headers?(_headers), do: false
+
+  defp forwarded_x_header?(name) do
+    name |> String.downcase() |> then(&(&1 in ["x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip"]))
+  end
 
   defp direct_local_request?(conn) do
     not forwarded_request?(conn)

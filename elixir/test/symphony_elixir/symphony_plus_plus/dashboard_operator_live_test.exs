@@ -24,6 +24,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
+  alias SymphonyElixirWeb.SymppDashboardApiController
   alias SymphonyElixir.WorkPackageFactory
 
   @endpoint SymphonyElixirWeb.Endpoint
@@ -458,6 +459,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     assert response(ipv6_conn, 200) =~ "Local operator cockpit"
     assert Plug.Conn.get_session(ipv6_conn, "sympp_local_operator") == true
+  end
+
+  test "local operator LiveView connection info must still be direct local" do
+    enable_operator_mode()
+
+    assert {"/live", Phoenix.LiveView.Socket, socket_opts} =
+             Enum.find(SymphonyElixirWeb.Endpoint.__sockets__(), &match?({"/live", Phoenix.LiveView.Socket, _opts}, &1))
+
+    assert get_in(socket_opts, [:websocket, :check_origin]) == :conn
+    assert get_in(socket_opts, [:websocket, :check_csrf]) == true
+
+    assert SymppDashboardApiController.local_operator_live_connect_info?(%{
+             peer_data: %{address: {127, 0, 0, 1}},
+             uri: URI.parse("http://127.0.0.1/sympp/board"),
+             x_headers: []
+           })
+
+    refute SymppDashboardApiController.local_operator_live_connect_info?(%{
+             peer_data: %{address: {10, 0, 0, 8}},
+             uri: URI.parse("http://127.0.0.1/sympp/board"),
+             x_headers: []
+           })
+
+    refute SymppDashboardApiController.local_operator_live_connect_info?(%{
+             peer_data: %{address: {127, 0, 0, 1}},
+             uri: URI.parse("http://example.com/sympp/board"),
+             x_headers: []
+           })
+
+    refute SymppDashboardApiController.local_operator_live_connect_info?(%{
+             peer_data: %{address: {127, 0, 0, 1}},
+             uri: URI.parse("http://127.0.0.1/sympp/board"),
+             x_headers: [{"x-forwarded-for", "10.0.0.8"}]
+           })
   end
 
   test "local operator package routes keep missing package ids as not found" do

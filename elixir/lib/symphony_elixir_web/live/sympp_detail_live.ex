@@ -32,9 +32,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     package_grant_id = session |> Map.get("sympp_package_grant_ids") |> package_session_grant_id(work_package_id)
     board_grant_id = Map.get(session, "sympp_board_grant_id")
 
-    operator_mode? =
-      SymppDashboardApiController.local_operator_session?(session) and
-        SymppDashboardApiController.local_operator_enabled?()
+    operator_mode? = local_operator_mode?(session, socket)
 
     {:ok,
      socket
@@ -338,6 +336,19 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
 
   defp phase_reader?(%AccessGrant{capabilities: capabilities}) do
     is_list(capabilities) and "read:phase" in capabilities
+  end
+
+  defp local_operator_mode?(session, socket) do
+    SymppDashboardApiController.local_operator_session?(session) and
+      if connected?(socket) do
+        SymppDashboardApiController.local_operator_live_connect_info?(%{
+          peer_data: get_connect_info(socket, :peer_data),
+          uri: get_connect_info(socket, :uri),
+          x_headers: get_connect_info(socket, :x_headers)
+        })
+      else
+        SymppDashboardApiController.local_operator_enabled?()
+      end
   end
 
   defp assign_detail(socket) do
