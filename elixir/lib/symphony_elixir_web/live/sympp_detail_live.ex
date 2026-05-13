@@ -32,11 +32,14 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     package_grant_id = session |> Map.get("sympp_package_grant_ids") |> package_session_grant_id(work_package_id)
     board_grant_id = Map.get(session, "sympp_board_grant_id")
 
+    operator_mode? = local_operator_mode?(session, socket)
+
     {:ok,
      socket
      |> assign(:work_package_id, work_package_id)
      |> assign(:package_grant_id, package_grant_id)
      |> assign(:board_grant_id, board_grant_id)
+     |> assign(:operator_mode?, operator_mode?)
      |> assign(:grant, nil)
      |> assign(:phase_reader?, false)
      |> assign(:detail, empty_detail(error: nil))
@@ -49,6 +52,14 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     work_package_id = SymppDashboardApiController.normalize_package_route_id(work_package_id)
 
     case authorize_session(socket, work_package_id) do
+      :local_operator ->
+        {:noreply,
+         socket
+         |> assign(:work_package_id, work_package_id)
+         |> assign(:grant, nil)
+         |> assign(:phase_reader?, true)
+         |> assign_detail()}
+
       {:ok, %AccessGrant{} = grant} ->
         {:noreply,
          socket
@@ -71,6 +82,8 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
 
   @impl true
   def render(assigns) do
+    assigns = Map.put_new(assigns, :operator_mode?, false)
+
     ~H"""
     <section class="sympp-detail-shell">
       <header class="sympp-detail-header">
@@ -79,7 +92,10 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
           <h1 class="sympp-detail-title"><%= package_title(@detail.work_package) %></h1>
         </div>
 
-        <a :if={@phase_reader?} class="sympp-back-link" href="../board">Board</a>
+        <div class="sympp-detail-header-actions">
+          <a :if={@operator_mode?} class="sympp-back-link" href="?auth=work_key">Use work key</a>
+          <a :if={@phase_reader?} class="sympp-back-link" href="../board">Board</a>
+        </div>
       </header>
 
       <%= if @error do %>
@@ -293,18 +309,22 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
   end
 
   defp authorize_session(socket, work_package_id) do
-    package_result =
-      SymppDashboardApiController.authorize_package_grant_id(socket.assigns.package_grant_id, work_package_id)
+    if socket.assigns.operator_mode? do
+      :local_operator
+    else
+      package_result =
+        SymppDashboardApiController.authorize_package_grant_id(socket.assigns.package_grant_id, work_package_id)
 
-    board_result =
-      SymppDashboardApiController.authorize_package_grant_id(socket.assigns.board_grant_id, work_package_id)
+      board_result =
+        SymppDashboardApiController.authorize_package_grant_id(socket.assigns.board_grant_id, work_package_id)
 
-    case {package_result, board_result} do
-      {_package_result, {:ok, %AccessGrant{}} = authorized} -> authorized
-      {{:ok, %AccessGrant{}} = authorized, _board_result} -> authorized
-      {{:error, _package_reason}, {:error, :not_found}} -> {:error, :not_found}
-      {{:error, :unauthorized}, {:error, reason}} -> {:error, reason}
-      {{:error, reason}, _board_result} -> {:error, reason}
+      case {package_result, board_result} do
+        {_package_result, {:ok, %AccessGrant{}} = authorized} -> authorized
+        {{:ok, %AccessGrant{}} = authorized, _board_result} -> authorized
+        {{:error, _package_reason}, {:error, :not_found}} -> {:error, :not_found}
+        {{:error, :unauthorized}, {:error, reason}} -> {:error, reason}
+        {{:error, reason}, _board_result} -> {:error, reason}
+      end
     end
   end
 
@@ -316,6 +336,19 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
 
   defp phase_reader?(%AccessGrant{capabilities: capabilities}) do
     is_list(capabilities) and "read:phase" in capabilities
+  end
+
+  defp local_operator_mode?(session, socket) do
+    SymppDashboardApiController.local_operator_session?(session) and
+      if connected?(socket) do
+        SymppDashboardApiController.local_operator_live_connect_info?(%{
+          peer_data: get_connect_info(socket, :peer_data),
+          uri: get_connect_info(socket, :uri),
+          x_headers: get_connect_info(socket, :x_headers)
+        })
+      else
+        SymppDashboardApiController.local_operator_enabled?()
+      end
   end
 
   defp assign_detail(socket) do
@@ -345,6 +378,13 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
          detail: SymppDashboardApiController.scope_package_payload_for_grant(grant, detail),
          timeline: SymppDashboardApiController.scope_package_payload_for_grant(grant, timeline)
        }}
+    end
+  end
+
+  defp load_detail(repo, work_package_id, nil) do
+    with {:ok, detail} <- Dashboard.detail(repo, work_package_id),
+         {:ok, timeline} <- Dashboard.timeline(repo, work_package_id) do
+      {:ok, %{detail: detail, timeline: timeline}}
     end
   end
 

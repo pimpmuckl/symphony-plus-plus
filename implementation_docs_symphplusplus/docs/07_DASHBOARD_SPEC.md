@@ -4,11 +4,28 @@
 
 Give the human overseer fast situational awareness without reading agent transcripts.
 
-## Views
+## Local Operator Mode
 
-The current dashboard is WorkPackage-focused. A future v2 intake view may show
-WorkRequests, clarification state, decision logs, architect plans, and slice
-plans, but this spec does not claim that intake surface exists today.
+When the Phoenix endpoint is configured with `sympp_local_operator: true`, the
+local browser dashboard can open `/sympp/board` as a read-only operator cockpit
+without first entering a board work key. This mode is for the human machine
+owner inspecting local Symphony++ state.
+
+Local operator mode:
+
+- requires a direct loopback request to a local host name with browser Fetch
+  Metadata;
+- rejects forwarded/proxy headers for operator entry;
+- renders redacted dashboard projections only;
+- keeps WorkRequest mutation controls hidden and server-side scoped to board
+  grants;
+- preserves explicit `?auth=work_key` paths for grant-scoped board and package
+  views.
+
+This is not a worker/agent permission grant. Worker and architect write access
+still comes from scoped work keys and MCP grants.
+
+## Views
 
 ### Board view
 

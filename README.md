@@ -28,6 +28,8 @@ readiness surfaces without replacing the base Linear-oriented runtime docs.
   `implementation_docs_symphplusplus/docs/06_SECURITY_AND_GUARDRAILS.md`
 - MCP and worker skill contract:
   `implementation_docs_symphplusplus/docs/04_MCP_AND_SKILL_CONTRACT.md`
+- Dashboard/operator cockpit:
+  `implementation_docs_symphplusplus/docs/07_DASHBOARD_SPEC.md`
 
 For new Symphony++ work, start from a live WorkPackage or operator-approved
 package request. Do not treat historical implementation phase notes as current

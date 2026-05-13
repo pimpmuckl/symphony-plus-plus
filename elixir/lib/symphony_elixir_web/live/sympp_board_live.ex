@@ -19,6 +19,9 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   @impl true
   def mount(params, session, socket) do
     board_grant_id = Map.get(session, "sympp_board_grant_id")
+
+    operator_mode? = local_operator_mode?(session, socket)
+
     authorization = board_grant_authorization(board_grant_id)
     board_grant = authorized_grant(authorization)
 
@@ -26,7 +29,8 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
      socket
      |> assign(:board_grant_id, board_grant_id)
      |> assign(:board_grant, board_grant)
-     |> assign(:authorized?, not is_nil(board_grant))
+     |> assign(:operator_mode?, operator_mode?)
+     |> assign(:authorized?, operator_mode? or not is_nil(board_grant))
      |> assign(:empty_filter, @empty_filter)
      |> assign(:filters, filters(params))
      |> assign_new(:board, fn -> unauthorized_board(authorization) end)}
@@ -36,33 +40,40 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   def handle_params(params, _uri, socket) do
     socket = assign(socket, :filters, filters(params))
 
-    case board_grant_authorization(socket.assigns.board_grant_id) do
-      {:ok, grant} ->
-        {:noreply, socket |> assign(:board_grant, grant) |> assign(:authorized?, true) |> assign_board()}
+    if socket.assigns.operator_mode? do
+      {:noreply, assign_board(socket)}
+    else
+      case board_grant_authorization(socket.assigns.board_grant_id) do
+        {:ok, grant} ->
+          {:noreply, socket |> assign(:board_grant, grant) |> assign(:authorized?, true) |> assign_board()}
 
-      {:error, reason} ->
-        {:noreply,
-         socket
-         |> assign(:board_grant, nil)
-         |> assign(:authorized?, false)
-         |> assign(:board, unauthorized_board({:error, reason}))}
+        {:error, reason} ->
+          {:noreply,
+           socket
+           |> assign(:board_grant, nil)
+           |> assign(:authorized?, false)
+           |> assign(:board, unauthorized_board({:error, reason}))}
+      end
     end
   end
 
   @impl true
   def render(assigns) do
+    assigns = Map.put_new(assigns, :operator_mode?, false)
+
     ~H"""
     <section class="sympp-board-shell">
       <header class="sympp-board-header">
         <div>
           <p class="eyebrow">Symphony++</p>
-          <h1 class="sympp-board-title">Work package board</h1>
+          <h1 class="sympp-board-title"><%= if @operator_mode?, do: "Local operator cockpit", else: "Work package board" %></h1>
         </div>
 
         <div class="sympp-board-header-side">
           <nav class="sympp-surface-nav" aria-label="Symphony++ surfaces">
-            <a class="active" href="board">Work packages</a>
+            <a class="active" href="board"><%= if @operator_mode?, do: "Cockpit", else: "Work packages" %></a>
             <a href="work-requests">WorkRequests</a>
+            <a :if={@operator_mode?} href="board?auth=work_key">Use work key</a>
           </nav>
 
           <div class="sympp-board-summary">
@@ -122,6 +133,50 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
             <button class="subtle-button" type="submit">Apply</button>
             <a class="sympp-clear-link" href="board">Clear</a>
           </form>
+        </section>
+
+        <section :if={@operator_mode?} class="sympp-operator-priority" aria-label="Operator priorities">
+          <div>
+            <span class="muted">Guidance needed</span>
+            <strong class="numeric"><%= length(@board.guidance_items) %></strong>
+            <p>Open questions, human-info-needed WorkRequests, and product decisions waiting on the machine owner.</p>
+          </div>
+          <div>
+            <span class="muted">Active blockers</span>
+            <strong class="numeric"><%= length(@board.blocker_items) %></strong>
+            <p>Packages with unresolved blocker events in the ledger-backed progress stream.</p>
+          </div>
+          <div>
+            <span class="muted">Review or ready</span>
+            <strong class="numeric"><%= @board.review_ready_count %></strong>
+            <p>Work that is reviewing, ready for merge, or already carrying review evidence.</p>
+          </div>
+          <div>
+            <span class="muted">Work streams</span>
+            <strong class="numeric"><%= @board.work_stream_count %></strong>
+            <p>Repo/base streams represented by current WorkPackages and WorkRequests.</p>
+          </div>
+        </section>
+
+        <section :if={@operator_mode? and (@board.guidance_items != [] or @board.blocker_items != [])} class="sympp-operator-watchlist">
+          <div>
+            <h2>Product Guidance Needed</h2>
+            <a :for={item <- @board.guidance_items} href={item.href} class="sympp-watch-row">
+              <span class="state-badge state-badge-warning"><%= item.state %></span>
+              <strong><%= item.title %></strong>
+              <span class="muted"><%= item.detail %></span>
+            </a>
+            <p :if={@board.guidance_items == []} class="sympp-empty-inline">No product guidance is waiting.</p>
+          </div>
+          <div>
+            <h2>Blockers</h2>
+            <a :for={item <- @board.blocker_items} href={item.href} class="sympp-watch-row">
+              <span class="state-badge state-badge-danger"><%= item.state %></span>
+              <strong><%= item.title %></strong>
+              <span class="muted"><%= item.detail %></span>
+            </a>
+            <p :if={@board.blocker_items == []} class="sympp-empty-inline">No active blockers are recorded.</p>
+          </div>
         </section>
 
         <%= if @board.visible_count == 0 do %>
@@ -189,8 +244,22 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     """
   end
 
+  defp local_operator_mode?(session, socket) do
+    SymppDashboardApiController.local_operator_session?(session) and
+      if connected?(socket) do
+        SymppDashboardApiController.local_operator_live_connect_info?(%{
+          peer_data: get_connect_info(socket, :peer_data),
+          uri: get_connect_info(socket, :uri),
+          x_headers: get_connect_info(socket, :x_headers)
+        })
+      else
+        SymppDashboardApiController.local_operator_enabled?()
+      end
+  end
+
   defp assign_board(socket) do
-    assign(socket, :board, load_board(socket.assigns.filters, socket.assigns.board_grant))
+    source = if socket.assigns.operator_mode?, do: :local_operator, else: socket.assigns.board_grant
+    assign(socket, :board, load_board(socket.assigns.filters, source))
   end
 
   defp board_grant_authorization(grant_id) do
@@ -204,6 +273,19 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     case with_dashboard_repo(&phase_board_for_grant(&1, grant)) do
       {:ok, payload} -> board_view(payload, filters)
       {:error, reason} when reason in [:unauthorized, :forbidden] -> unauthorized_board({:error, reason})
+      {:error, reason} -> empty_board(error_message(reason))
+    end
+  end
+
+  defp load_board(filters, :local_operator) do
+    with_dashboard_repo(fn repo ->
+      with {:ok, board} <- Dashboard.board(repo),
+           {:ok, work_requests} <- Dashboard.work_requests(repo) do
+        {:ok, %{board: board, work_requests: work_requests}}
+      end
+    end)
+    |> case do
+      {:ok, payload} -> operator_board_view(payload, filters)
       {:error, reason} -> empty_board(error_message(reason))
     end
   end
@@ -663,6 +745,104 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     }
   end
 
+  defp operator_board_view(%{board: board, work_requests: work_requests}, filters) do
+    view = board_view(board, filters)
+    visible_cards = visible_cards(view)
+    visible_streams = visible_cards |> Enum.map(&stream_key/1) |> Enum.reject(&is_nil/1) |> MapSet.new()
+    visible_requests = work_requests |> Map.get(:work_requests, []) |> filter_work_requests(filters, visible_streams)
+
+    Map.merge(view, %{
+      guidance_items: guidance_items(visible_requests),
+      blocker_items: blocker_items(visible_cards),
+      review_ready_count: review_ready_count(visible_cards),
+      work_stream_count: work_stream_count(visible_cards, visible_requests)
+    })
+  end
+
+  defp visible_cards(%{columns: columns}) when is_list(columns), do: Enum.flat_map(columns, & &1.cards)
+
+  defp guidance_items(work_requests) when is_list(work_requests) do
+    work_requests
+    |> Enum.filter(&(guidance_request?(&1) or (Map.get(&1, :open_question_count) || 0) > 0))
+    |> Enum.map(fn request ->
+      open_questions = Map.get(request, :open_question_count) || 0
+
+      %{
+        href: "work-requests/#{path_segment(Map.get(request, :id))}",
+        title: Map.get(request, :title) || Map.get(request, :id) || "Untitled WorkRequest",
+        state: status_label(Map.get(request, :status)),
+        detail: "#{open_questions} open questions / #{slice_total(request)} slices"
+      }
+    end)
+  end
+
+  defp guidance_request?(%{status: status}) when status in ["human_info_needed", "ready_for_clarification", "clarifying"], do: true
+  defp guidance_request?(_request), do: false
+
+  defp blocker_items(cards) when is_list(cards) do
+    cards
+    |> Enum.filter(&((Map.get(&1, :active_blocker_count) || 0) > 0))
+    |> Enum.map(fn card ->
+      %{
+        href: package_detail_path(card),
+        title: Map.get(card, :title) || Map.get(card, :id) || "Untitled package",
+        state: status_label(Map.get(card, :status)),
+        detail: "#{Map.get(card, :active_blocker_count) || 0} active blockers / #{repo_base(card)}"
+      }
+    end)
+  end
+
+  defp review_ready_count(cards) when is_list(cards) do
+    cards
+    |> Enum.count(fn card ->
+      Map.get(card, :status) in ["reviewing", "ready_for_human_merge", "ready_for_architect_merge", "merged_into_phase"] or review_present?(card)
+    end)
+  end
+
+  defp work_stream_count(cards, work_requests) when is_list(cards) and is_list(work_requests) do
+    package_streams = Enum.map(cards, &stream_key/1)
+    request_streams = Enum.map(work_requests, &stream_key/1)
+
+    (package_streams ++ request_streams)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> length()
+  end
+
+  defp filter_work_requests(work_requests, filters, visible_streams) when is_list(work_requests) do
+    Enum.filter(work_requests, &matches_work_request_filters?(&1, filters, visible_streams))
+  end
+
+  defp filter_work_requests(_work_requests, _filters, _visible_streams), do: []
+
+  defp matches_work_request_filters?(request, filters, visible_streams) do
+    matches_filter?(Map.get(request, :repo), filters.repo) and matches_package_scope?(request, filters, visible_streams)
+  end
+
+  defp matches_package_scope?(request, %{repo: @empty_filter, kind: @empty_filter, phase: @empty_filter}, _visible_streams) do
+    not is_nil(stream_key(request))
+  end
+
+  defp matches_package_scope?(request, %{kind: @empty_filter, phase: @empty_filter}, visible_streams) do
+    MapSet.member?(visible_streams, stream_key(request))
+  end
+
+  defp matches_package_scope?(_request, _filters, _visible_streams), do: false
+
+  defp stream_key(item) do
+    repo = Map.get(item, :repo)
+    base_branch = Map.get(item, :base_branch)
+
+    if is_binary(repo) and repo != "" and is_binary(base_branch) and base_branch != "" do
+      {repo, base_branch}
+    end
+  end
+
+  defp slice_total(item) do
+    (Map.get(item, :planned_slice_count) || 0) + (Map.get(item, :approved_slice_count) || 0) +
+      (Map.get(item, :dispatched_slice_count) || 0) + (Map.get(item, :skipped_slice_count) || 0)
+  end
+
   defp empty_board(error) do
     %{
       error: error,
@@ -671,7 +851,11 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       visible_count: 0,
       column_count: 1,
       columns: [],
-      filter_options: %{kinds: [], repos: [], phases: []}
+      filter_options: %{kinds: [], repos: [], phases: []},
+      guidance_items: [],
+      blocker_items: [],
+      review_ready_count: 0,
+      work_stream_count: 0
     }
   end
 
