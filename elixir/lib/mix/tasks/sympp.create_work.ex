@@ -14,6 +14,7 @@ defmodule Mix.Tasks.Sympp.CreateWork do
     :missing_secret,
     :missing_claimed_by,
     :missing_repo_root,
+    :invalid_repo_root,
     :missing_worker_grant,
     :missing_work_package,
     :unsupported_handoff_metadata_location,

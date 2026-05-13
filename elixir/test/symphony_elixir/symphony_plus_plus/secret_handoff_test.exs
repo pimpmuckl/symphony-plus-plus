@@ -9,6 +9,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
   @default_worker_grant_id "ag_secret_handoff_D321"
   @windows match?({:win32, _}, :os.type())
 
+  test "local operator repo root fails closed for an invalid configured root" do
+    invalid_repo_root =
+      Path.join(System.tmp_dir!(), "sympp-invalid-repo-root-#{System.unique_integer([:positive])}")
+
+    previous_repo_root = Application.get_env(:symphony_elixir, :sympp_repo_root)
+    Application.put_env(:symphony_elixir, :sympp_repo_root, invalid_repo_root)
+
+    on_exit(fn ->
+      restore_repo_root_env(previous_repo_root)
+      File.rm_rf(invalid_repo_root)
+    end)
+
+    assert SecretHandoff.local_operator_repo_root() == nil
+  end
+
+  test "rejects storing a handoff when repo root lacks worker-secret helper scripts" do
+    invalid_repo_root =
+      Path.join(System.tmp_dir!(), "sympp-invalid-handoff-root-#{System.unique_integer([:positive])}")
+
+    try do
+      File.mkdir_p!(invalid_repo_root)
+
+      assert {:error, :invalid_repo_root} =
+               SecretHandoff.store_worker_secret(creation("invalid-root-secret"),
+                 mode: "auto",
+                 store_dir: Path.join(System.tmp_dir!(), "sympp-invalid-root-store"),
+                 claimed_by: "worker-local-1",
+                 repo_root: invalid_repo_root
+               )
+    after
+      File.rm_rf!(invalid_repo_root)
+    end
+  end
+
   if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
 
   test "stores a worker secret in a caller-selected private local file" do
@@ -611,6 +645,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
       assert File.exists?(metadata_path)
     after
       File.rm_rf!(store_dir)
+    end
+  end
+
+  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
+
+  test "omits metadata run command when repo root no longer validates" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-no-command-#{System.unique_integer([:positive])}")
+    repo_root = Path.join(System.tmp_dir!(), "sympp-handoff-repo-root-#{System.unique_integer([:positive])}")
+    script_path = Path.join([repo_root, "scripts", "sympp-worker-secret.sh"])
+    package = work_package()
+    grant = worker_grant("display-secret", claimed_by: "claimed-worker-1")
+    opts = [mode: "local-private-file", store_dir: store_dir, claimed_by: "worker-local-1", repo_root: repo_root]
+    handoff_path = local_private_file_path(package, grant, opts)
+    handoff = %{"mode" => "local-private-file", "path" => handoff_path}
+
+    try do
+      File.mkdir_p!(Path.dirname(script_path))
+      File.write!(script_path, "#!/bin/sh\n")
+      File.mkdir_p!(Path.dirname(handoff_path))
+      File.write!(handoff_path, "display fixture")
+
+      assert :ok = SecretHandoff.store_worker_secret_metadata(package, grant, handoff, opts)
+      assert {:ok, display} = SecretHandoff.read_worker_secret_metadata(package, grant, opts)
+      assert display.run_mcp_command =~ "run-mcp-local-file"
+
+      File.rm!(script_path)
+
+      assert {:ok, display_without_command} = SecretHandoff.read_worker_secret_metadata(package, grant, opts)
+      assert display_without_command.path == handoff_path
+      refute Map.has_key?(display_without_command, :run_mcp_command)
+    after
+      File.rm_rf!(store_dir)
+      File.rm_rf!(repo_root)
     end
   end
 
@@ -1333,4 +1400,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
   defp shell_literal(value) do
     "'#{String.replace(to_string(value), "'", "'\"'\"'")}'"
   end
+
+  defp restore_repo_root_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_repo_root)
+  defp restore_repo_root_env(repo_root), do: Application.put_env(:symphony_elixir, :sympp_repo_root, repo_root)
 end

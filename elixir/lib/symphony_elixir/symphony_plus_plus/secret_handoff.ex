@@ -14,6 +14,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
           :missing_secret
           | :missing_claimed_by
           | :missing_repo_root
+          | :invalid_repo_root
           | :missing_worker_grant_display_key
           | :missing_worker_grant_identity
           | :missing_worker_grant
@@ -35,9 +36,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   @spec valid_modes() :: [String.t()]
   def valid_modes, do: @valid_modes
 
-  @spec local_operator_repo_root() :: Path.t()
+  @spec local_operator_repo_root() :: Path.t() | nil
   def local_operator_repo_root do
-    configured_local_operator_repo_root() || cwd_local_operator_repo_root() || @default_repo_root
+    case configured_local_operator_repo_root() do
+      {:ok, repo_root} -> repo_root
+      :invalid -> nil
+      :not_configured -> cwd_local_operator_repo_root() || default_local_operator_repo_root()
+    end
   end
 
   @spec store_worker_secret(map(), keyword()) :: {:ok, map()} | {:error, error()}
@@ -77,7 +82,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   @spec delete_worker_secret_by_grant(WorkPackage.t(), map(), keyword()) :: :ok | {:error, error()}
   def delete_worker_secret_by_grant(%WorkPackage{} = work_package, worker_grant, opts)
       when is_map(worker_grant) and is_list(opts) do
-    with {:ok, opts} <- require_handoff_opts(opts),
+    with {:ok, opts} <- require_handoff_namespace_opts(opts),
          :ok <- reject_metadata_location_overrides(opts),
          {:ok, context} <- handoff_metadata_context(work_package, worker_grant, opts) do
       delete_worker_secret_from_metadata(context, opts)
@@ -92,7 +97,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   @spec read_worker_secret_metadata(WorkPackage.t(), map(), keyword()) :: {:ok, map()} | {:error, error()}
   def read_worker_secret_metadata(%WorkPackage{} = work_package, worker_grant, opts)
       when is_map(worker_grant) and is_list(opts) do
-    with {:ok, opts} <- require_handoff_opts(opts),
+    with {:ok, opts} <- require_handoff_namespace_opts(opts),
          :ok <- reject_metadata_location_overrides(opts),
          {:ok, context} <- handoff_metadata_context(work_package, worker_grant, opts),
          {:ok, metadata} <- read_handoff_metadata(context.metadata_path) do
@@ -126,6 +131,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   def error_message(:missing_secret), do: "worker grant did not include a one-time secret"
   def error_message(:missing_claimed_by), do: "secret handoff requires a nonblank claimed_by worker identity"
   def error_message(:missing_repo_root), do: "secret handoff requires the repository root for MCP bootstrap metadata"
+  def error_message(:invalid_repo_root), do: "secret handoff repository root must contain a worker-secret helper script"
   def error_message(:missing_worker_grant_display_key), do: "worker grant did not include a nonblank display key"
   def error_message(:missing_worker_grant_identity), do: "worker grant did not include a stable non-secret id"
   def error_message(:missing_worker_grant), do: "create-work result did not include a worker grant"
@@ -212,6 +218,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   defp normalize_mode(_mode), do: {:error, :unsupported_secret_handoff_mode}
 
   defp require_handoff_opts(opts) do
+    with {:ok, opts} <- require_handoff_namespace_opts(opts),
+         {:ok, repo_root} <- validate_local_operator_repo_root(Keyword.fetch!(opts, :repo_root)) do
+      {:ok, Keyword.put(opts, :repo_root, repo_root)}
+    end
+  end
+
+  defp require_handoff_namespace_opts(opts) do
     with {:ok, claimed_by} <- nonblank_opt(opts, :claimed_by, :missing_claimed_by),
          {:ok, repo_root} <- nonblank_opt(opts, :repo_root, :missing_repo_root) do
       {:ok, Keyword.merge(opts, claimed_by: claimed_by, repo_root: Path.expand(repo_root))}
@@ -376,12 +389,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   end
 
   defp local_file_run_mcp_command(secret_path, opts) do
-    {:ok, shell_local_file_run_mcp_command(secret_path, opts)}
+    case shell_local_file_run_mcp_command(secret_path, opts) do
+      command when is_binary(command) -> {:ok, command}
+      nil -> {:error, :invalid_repo_root}
+    end
   end
 
   defp shell_local_file_run_mcp_command(secret_path, opts) do
-    repo_root = Keyword.fetch!(opts, :repo_root)
-    script_path = Path.join(repo_root, "scripts/sympp-worker-secret.sh")
+    case worker_secret_script_path(opts, "sympp-worker-secret.sh") do
+      {:ok, script_path} -> shell_local_file_run_mcp_command(secret_path, script_path, opts)
+      {:error, :invalid_repo_root} -> nil
+    end
+  end
+
+  defp shell_local_file_run_mcp_command(secret_path, script_path, opts) do
     claimed_by = Keyword.fetch!(opts, :claimed_by)
 
     [
@@ -701,11 +722,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   end
 
   defp handoff_metadata_run_mcp_command("windows-credential-manager", _coordinates, target, opts) do
-    script_path = Path.join(Keyword.fetch!(opts, :repo_root), "scripts/sympp-worker-secret.ps1")
-
-    case powershell_executable() do
-      {:ok, powershell} -> windows_credential_run_mcp_command(powershell, script_path, target, opts)
+    with {:ok, script_path} <- worker_secret_script_path(opts, "sympp-worker-secret.ps1"),
+         {:ok, powershell} <- powershell_executable() do
+      windows_credential_run_mcp_command(powershell, script_path, target, opts)
+    else
       :error -> nil
+      {:error, :invalid_repo_root} -> nil
     end
   end
 
@@ -874,12 +896,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
   defp configured_local_operator_repo_root do
     case Application.get_env(:symphony_elixir, :sympp_repo_root) do
-      repo_root when is_binary(repo_root) ->
-        repo_root = String.trim(repo_root)
-        if repo_root == "", do: nil, else: Path.expand(repo_root)
+      repo_root when is_binary(repo_root) -> configured_local_operator_repo_root(repo_root)
+      _repo_root -> :not_configured
+    end
+  end
 
-      _repo_root ->
-        nil
+  defp configured_local_operator_repo_root(repo_root) do
+    case String.trim(repo_root) do
+      "" -> :not_configured
+      repo_root -> configured_local_operator_repo_root_status(repo_root)
+    end
+  end
+
+  defp configured_local_operator_repo_root_status(repo_root) do
+    case validate_local_operator_repo_root(repo_root) do
+      {:ok, repo_root} -> {:ok, repo_root}
+      {:error, :invalid_repo_root} -> :invalid
     end
   end
 
@@ -887,9 +919,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     cwd = File.cwd!()
 
     [cwd, Path.expand("..", cwd)]
-    |> Enum.find(&local_operator_repo_root?/1)
+    |> Enum.find_value(fn repo_root ->
+      case validate_local_operator_repo_root(repo_root) do
+        {:ok, repo_root} -> repo_root
+        {:error, :invalid_repo_root} -> nil
+      end
+    end)
   rescue
     _error -> nil
+  end
+
+  defp default_local_operator_repo_root do
+    case validate_local_operator_repo_root(@default_repo_root) do
+      {:ok, repo_root} -> repo_root
+      {:error, :invalid_repo_root} -> nil
+    end
+  end
+
+  defp worker_secret_script_path(opts, script) do
+    repo_root = Keyword.fetch!(opts, :repo_root)
+    script_path = Path.join([repo_root, "scripts", script])
+
+    if File.regular?(script_path), do: {:ok, script_path}, else: {:error, :invalid_repo_root}
+  end
+
+  defp validate_local_operator_repo_root(repo_root) do
+    repo_root = Path.expand(repo_root)
+
+    if local_operator_repo_root?(repo_root), do: {:ok, repo_root}, else: {:error, :invalid_repo_root}
   end
 
   defp local_operator_repo_root?(repo_root) do

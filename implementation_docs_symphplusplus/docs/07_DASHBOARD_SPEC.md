@@ -157,6 +157,9 @@ uses a per-call custom secret store, that command output remains the handoff
 source of truth unless the dashboard app is configured to the same store.
 The panel uses the dashboard's configured ledger database identity and local
 repo root when deriving non-secret bootstrap commands.
+It shows handoff rows only for non-expired, non-revoked worker grants, and it
+emits runnable commands only when the repo root is configured or discovered with
+the worker-secret helper script present.
 
 ### Runtime view
 
