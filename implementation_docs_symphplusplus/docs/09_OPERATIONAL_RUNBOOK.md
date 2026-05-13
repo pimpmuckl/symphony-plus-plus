@@ -31,6 +31,19 @@ runtime WorkRequest tooling until a package explicitly implements it.
 
 ## Standalone Package
 
+To inspect local Symphony++ package state, start the read-only operator cockpit
+from `elixir/`:
+
+```powershell
+mix sympp.cockpit --database <ledger.sqlite3>
+```
+
+The command binds to `127.0.0.1` with an OS-assigned port, prints the exact
+`/sympp/board` URL, initializes an empty configured SQLite ledger through the
+existing dashboard path, and blocks until interrupted. Use `--host localhost`
+or `--port <port>` only when you need a stable local URL; public bind hosts are
+rejected.
+
 1. Choose `quick_fix`, `hotfix`, `investigation`, or another package policy
    that matches the work. Keep repo, base branch, owned paths, acceptance
    criteria, and tests narrow.

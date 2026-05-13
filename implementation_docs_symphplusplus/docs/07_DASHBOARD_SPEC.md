@@ -6,6 +6,17 @@ Give the human overseer fast situational awareness without reading agent transcr
 
 ## Local Operator Mode
 
+Start the local operator cockpit from `elixir/` with:
+
+```powershell
+mix sympp.cockpit --database <ledger.sqlite3>
+```
+
+The launcher binds to `127.0.0.1` and an OS-assigned port by default, prints
+the exact `/sympp/board` URL, enables `sympp_local_operator: true`, and keeps
+the process running until interrupted. Omit `--database` to use the default
+Symphony++ ledger for the current workflow.
+
 When the Phoenix endpoint is configured with `sympp_local_operator: true`, the
 local browser dashboard can open `/sympp/board` as a read-only operator cockpit
 without first entering a board work key. This mode is for the human machine
