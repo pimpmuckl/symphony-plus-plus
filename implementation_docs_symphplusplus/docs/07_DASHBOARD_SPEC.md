@@ -18,9 +18,10 @@ the process running until interrupted. Omit `--database` to use the default
 Symphony++ ledger for the current workflow.
 
 When the Phoenix endpoint is configured with `sympp_local_operator: true`, the
-local browser dashboard can open `/sympp/board` as a read-only operator cockpit
-without first entering a board work key. This mode is for the human machine
-owner inspecting local Symphony++ state.
+local browser dashboard can open `/sympp/board` as the operator cockpit without
+first entering a board work key. This mode is for the human machine owner
+inspecting local Symphony++ state and creating or managing local WorkRequests
+before WorkPackages exist.
 
 Local operator mode:
 
@@ -28,8 +29,14 @@ Local operator mode:
   Metadata;
 - rejects forwarded/proxy headers for operator entry;
 - renders redacted dashboard projections only;
-- keeps WorkRequest mutation controls hidden and server-side scoped to board
-  grants;
+- shows `/sympp/work-requests/new` with explicit repo and base branch fields;
+- lets the local operator create draft WorkRequests and use the existing safe
+  clarification, decision, readiness, and planned-slice controls from the
+  WorkRequest detail page;
+- records local operator clarification and decision attribution with the stable
+  actor label `local-operator`;
+- keeps board-grant WorkRequest intake locked to the grant's frozen repo/base
+  scope and ignores submitted repo/base values in board-grant mode;
 - preserves explicit `?auth=work_key` paths for grant-scoped board and package
   views.
 
@@ -103,6 +110,35 @@ Mark abandoned
 ```
 
 Do not add dangerous controls like merge-to-main until Phase 7+ and branch protection is proven.
+
+### WorkRequest intake and detail
+
+`/sympp/work-requests` lists visible WorkRequests. In local operator mode it
+shows all local WorkRequests plus a `New WorkRequest` action. In board-grant
+mode it remains filtered by the grant's board scope.
+
+`/sympp/work-requests/new` behaves differently by mode:
+
+- local operator mode requires the operator to enter repo and base branch
+  explicitly;
+- board-grant mode displays the locked repo/base branch and server-side creation
+  uses only the frozen grant scope.
+
+`/sympp/work-requests/:id` exposes existing safe WorkRequest controls when the
+viewer is the local operator or a scoped board grant holder:
+
+```text
+Mark ready for clarification
+Ask / answer / close clarification questions
+Record decisions
+Mark human info needed
+Mark ready for slicing
+Add / approve / skip planned slices
+Mark sliced
+```
+
+These controls only update WorkRequest planning state. They do not dispatch
+workers, mint grants, call Linear, or expose secret handoff payloads.
 
 ### Runtime view
 
