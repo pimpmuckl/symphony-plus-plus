@@ -29,6 +29,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
   @endpoint SymphonyElixirWeb.Endpoint
 
+  defmodule CustomOperatorRepo do
+    @moduledoc false
+
+    use Ecto.Repo, otp_app: :symphony_elixir, adapter: Ecto.Adapters.SQLite3
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
@@ -111,6 +117,206 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute html =~ "ghp_raw_secret_value"
     refute html =~ "Board access"
     refute html =~ ~s(name="work_key")
+  end
+
+  test "local operator initializes a missing configured ledger as an empty cockpit" do
+    enable_operator_mode()
+
+    missing_database_path = WorkPackageFactory.database_path()
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+    original_migrated_databases = Application.get_env(:symphony_elixir, :sympp_board_live_migrated_databases)
+
+    File.rm(missing_database_path)
+    Application.put_env(:symphony_elixir, :sympp_repo_database, missing_database_path)
+
+    on_exit(fn ->
+      restore_database_env(original_database)
+      restore_board_live_migrated_databases(original_migrated_databases)
+      File.rm(missing_database_path)
+    end)
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/board")
+
+    assert File.exists?(missing_database_path)
+    assert html =~ "Local operator cockpit"
+    assert html =~ "No work packages match the current board filters."
+    assert html =~ ~r/<span class="sympp-board-count numeric">\s*0\s*<\/span>\s*<span class="muted">total<\/span>/
+    assert html =~ ~r/<span class="sympp-board-count numeric">\s*0\s*<\/span>\s*<span class="muted">shown<\/span>/
+    assert html =~ ~r/<span class="muted">Guidance needed<\/span>\s*<strong class="numeric">\s*0\s*<\/strong>/
+    assert html =~ ~r/<span class="muted">Active blockers<\/span>\s*<strong class="numeric">\s*0\s*<\/strong>/
+    assert html =~ ~r/<span class="muted">Review or ready<\/span>\s*<strong class="numeric">\s*0\s*<\/strong>/
+    refute html =~ "Board unavailable"
+    refute html =~ "No Symphony++ work package ledger was found."
+    refute html =~ "Board access"
+    refute html =~ ~s(name="work_key")
+  end
+
+  test "local operator initializes a missing sqlite URI ledger as an empty cockpit" do
+    enable_operator_mode()
+
+    missing_database_path = WorkPackageFactory.database_path()
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+    original_migrated_databases = Application.get_env(:symphony_elixir, :sympp_board_live_migrated_databases)
+    uri_database = "file:#{missing_database_path}?mode=rwc&cache=shared"
+
+    File.rm(missing_database_path)
+    Application.put_env(:symphony_elixir, :sympp_repo_database, uri_database)
+
+    on_exit(fn ->
+      restore_database_env(original_database)
+      restore_board_live_migrated_databases(original_migrated_databases)
+      File.rm(missing_database_path)
+    end)
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/board")
+
+    assert File.exists?(missing_database_path)
+    assert html =~ "Local operator cockpit"
+    assert html =~ "No work packages match the current board filters."
+    refute html =~ "Board unavailable"
+    refute html =~ "No Symphony++ work package ledger was found."
+  end
+
+  test "local operator rejects empty-path sqlite URI ledgers" do
+    enable_operator_mode()
+
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+    original_migrated_databases = Application.get_env(:symphony_elixir, :sympp_board_live_migrated_databases)
+
+    Application.put_env(:symphony_elixir, :sympp_repo_database, "file:?mode=rwc")
+
+    on_exit(fn ->
+      restore_database_env(original_database)
+      restore_board_live_migrated_databases(original_migrated_databases)
+    end)
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/board")
+
+    assert html =~ "Board unavailable"
+    assert html =~ "No Symphony++ work package ledger was found."
+    refute html =~ "No work packages match the current board filters."
+  end
+
+  test "local operator rejects missing read-only sqlite URI ledgers" do
+    enable_operator_mode()
+
+    missing_database_path = WorkPackageFactory.database_path()
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+    original_migrated_databases = Application.get_env(:symphony_elixir, :sympp_board_live_migrated_databases)
+
+    File.rm(missing_database_path)
+    Application.put_env(:symphony_elixir, :sympp_repo_database, "file:#{missing_database_path}?mode=ro")
+
+    on_exit(fn ->
+      restore_database_env(original_database)
+      restore_board_live_migrated_databases(original_migrated_databases)
+      File.rm(missing_database_path)
+    end)
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/board")
+
+    refute File.exists?(missing_database_path)
+    assert html =~ "Board unavailable"
+    assert html =~ "No Symphony++ work package ledger was found."
+    refute html =~ "No work packages match the current board filters."
+  end
+
+  test "local operator rejects missing existing-file-only sqlite URI ledgers" do
+    enable_operator_mode()
+
+    missing_database_path = WorkPackageFactory.database_path()
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+    original_migrated_databases = Application.get_env(:symphony_elixir, :sympp_board_live_migrated_databases)
+
+    File.rm(missing_database_path)
+    Application.put_env(:symphony_elixir, :sympp_repo_database, "file:#{missing_database_path}?mode=rw")
+
+    on_exit(fn ->
+      restore_database_env(original_database)
+      restore_board_live_migrated_databases(original_migrated_databases)
+      File.rm(missing_database_path)
+    end)
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/board")
+
+    refute File.exists?(missing_database_path)
+    assert html =~ "Board unavailable"
+    assert html =~ "No Symphony++ work package ledger was found."
+    refute html =~ "No work packages match the current board filters."
+  end
+
+  test "local operator preserves existing sqlite URI ledgers" do
+    enable_operator_mode()
+
+    package = create_package!(id: "SYMPP-V2-UX-URI", title: "URI-backed cockpit package")
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+    original_migrated_databases = Application.get_env(:symphony_elixir, :sympp_board_live_migrated_databases)
+    uri_database = "file:#{Repo.database_path()}"
+
+    Application.put_env(:symphony_elixir, :sympp_repo_database, uri_database)
+
+    on_exit(fn ->
+      restore_database_env(original_database)
+      restore_board_live_migrated_databases(original_migrated_databases)
+    end)
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/board")
+
+    assert html =~ "Local operator cockpit"
+    assert html =~ package.id
+    refute html =~ "Board unavailable"
+    refute html =~ "No Symphony++ work package ledger was found."
+  end
+
+  test "local operator initializes a missing custom repo ledger as an empty cockpit" do
+    enable_operator_mode()
+
+    missing_database_path = WorkPackageFactory.database_path()
+    original_custom_repo_config = Application.get_env(:symphony_elixir, CustomOperatorRepo)
+    original_migrated_databases = Application.get_env(:symphony_elixir, :sympp_board_live_migrated_databases)
+
+    File.rm(missing_database_path)
+    Application.put_env(:symphony_elixir, CustomOperatorRepo, database: missing_database_path)
+    put_endpoint_config(sympp_repo: CustomOperatorRepo)
+
+    on_exit(fn ->
+      restore_custom_operator_repo_env(original_custom_repo_config)
+      restore_board_live_migrated_databases(original_migrated_databases)
+      put_endpoint_config(sympp_repo: Repo)
+      File.rm(missing_database_path)
+    end)
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/board")
+
+    assert File.exists?(missing_database_path)
+    assert html =~ "Local operator cockpit"
+    assert html =~ "No work packages match the current board filters."
+    refute html =~ "Board unavailable"
+    refute html =~ "No Symphony++ work package ledger was found."
+  end
+
+  test "local operator treats blank custom repo database config as unset" do
+    enable_operator_mode()
+
+    package = create_package!(id: "SYMPP-V2-UX-BLANK-CUSTOM", title: "Blank custom repo package")
+    original_custom_repo_config = Application.get_env(:symphony_elixir, CustomOperatorRepo)
+    original_migrated_databases = Application.get_env(:symphony_elixir, :sympp_board_live_migrated_databases)
+
+    Application.put_env(:symphony_elixir, CustomOperatorRepo, database: " ")
+    put_endpoint_config(sympp_repo: CustomOperatorRepo)
+
+    on_exit(fn ->
+      restore_custom_operator_repo_env(original_custom_repo_config)
+      restore_board_live_migrated_databases(original_migrated_databases)
+      put_endpoint_config(sympp_repo: Repo)
+    end)
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/board")
+
+    assert html =~ "Local operator cockpit"
+    assert html =~ package.id
+    refute html =~ "Board unavailable"
+    refute html =~ "No Symphony++ work package ledger was found."
   end
 
   test "local operator keeps work-key login surfaces reachable" do
@@ -786,4 +992,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
   defp restore_database_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_repo_database)
   defp restore_database_env(database), do: Application.put_env(:symphony_elixir, :sympp_repo_database, database)
+
+  defp restore_custom_operator_repo_env(nil), do: Application.delete_env(:symphony_elixir, CustomOperatorRepo)
+
+  defp restore_custom_operator_repo_env(config), do: Application.put_env(:symphony_elixir, CustomOperatorRepo, config)
+
+  defp restore_board_live_migrated_databases(nil), do: Application.delete_env(:symphony_elixir, :sympp_board_live_migrated_databases)
+
+  defp restore_board_live_migrated_databases(databases) do
+    Application.put_env(:symphony_elixir, :sympp_board_live_migrated_databases, databases)
+  end
 end

@@ -1820,8 +1820,15 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp custom_repo_database_path(repo) do
     repo.config()
     |> Keyword.get(:database)
+    |> normalize_custom_repo_database_config()
     |> Kernel.||(Repo.database_path())
   end
+
+  defp normalize_custom_repo_database_config(database_path) when is_binary(database_path) do
+    if String.trim(database_path) == "", do: nil, else: database_path
+  end
+
+  defp normalize_custom_repo_database_config(database_path), do: database_path
 
   defp ensure_custom_repo_started(repo, database_path) do
     case Process.whereis(repo) do
