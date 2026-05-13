@@ -641,8 +641,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
       assert display.suggested_claimed_by == "worker-local-1"
       assert display.secret_in_stdout == false
       assert display.run_mcp_command =~ "run-mcp-local-file"
-      assert display.run_mcp_command =~ "--claimed-by 'worker-local-1'"
+      assert display.run_mcp_command =~ "--claimed-by 'claimed-worker-1'"
       refute inspect(display) =~ "display-secret"
+
+      unclaimed_grant = worker_grant("unclaimed-display-secret", id: "grant-unclaimed-display", display_key: "U321")
+      unclaimed_path = local_private_file_path(package, unclaimed_grant, opts)
+      File.write!(unclaimed_path, "unclaimed display fixture")
+
+      assert :ok =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 unclaimed_grant,
+                 %{"mode" => "local-private-file", "path" => unclaimed_path},
+                 opts
+               )
+
+      assert {:ok, unclaimed_display} = SecretHandoff.read_worker_secret_metadata(package, unclaimed_grant, opts)
+      assert unclaimed_display.claimed_by == nil
+      assert unclaimed_display.suggested_claimed_by == "worker-local-1"
+      assert unclaimed_display.run_mcp_command =~ "--claimed-by 'worker-local-1'"
 
       File.write!(managed_metadata_file(package, grant, opts), Jason.encode!(metadata_record(package, grant, "local-private-file", %{"path" => Path.join(store_dir, "other.secret")})))
 

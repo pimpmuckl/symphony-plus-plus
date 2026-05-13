@@ -655,6 +655,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
   defp handoff_metadata_display(mode, coordinates, context, worker_grant, opts) do
     target = credential_target(context.work_package, %{display_key: context.display_key, id: context.grant_identity})
+    claimed_by = claimed_by(worker_grant)
+    suggested_claimed_by = Keyword.fetch!(opts, :claimed_by)
+    command_opts = Keyword.put(opts, :claimed_by, claimed_by || suggested_claimed_by)
 
     %{
       mode: mode,
@@ -663,13 +666,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
       grant_id: context.grant_identity,
       display_key: context.display_key,
       target: target,
-      claimed_by: claimed_by(worker_grant),
-      suggested_claimed_by: Keyword.fetch!(opts, :claimed_by),
+      claimed_by: claimed_by,
+      suggested_claimed_by: suggested_claimed_by,
       claimed_by_required: true,
       secret_in_stdout: false
     }
     |> maybe_put_handoff_value(:path, Map.get(coordinates, "path"))
-    |> maybe_put_handoff_value(:run_mcp_command, handoff_metadata_run_mcp_command(mode, coordinates, target, opts))
+    |> maybe_put_handoff_value(
+      :run_mcp_command,
+      handoff_metadata_run_mcp_command(mode, coordinates, target, command_opts)
+    )
   end
 
   defp claimed_by(worker_grant) do

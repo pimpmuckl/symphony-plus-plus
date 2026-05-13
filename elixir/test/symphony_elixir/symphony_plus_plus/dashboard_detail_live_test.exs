@@ -35,10 +35,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
   defmodule NoQueryRepo do
     @moduledoc false
 
-    def all(query), do: SymphonyElixir.SymphonyPlusPlus.Repo.all(query)
-    def get(queryable, id), do: SymphonyElixir.SymphonyPlusPlus.Repo.get(queryable, id)
-    def one(query), do: SymphonyElixir.SymphonyPlusPlus.Repo.one(query)
-    def transaction(fun), do: SymphonyElixir.SymphonyPlusPlus.Repo.transaction(fun)
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    def all(query), do: Repo.all(query)
+    def get(queryable, id), do: Repo.get(queryable, id)
+    def one(query), do: Repo.one(query)
+    def transaction(fun), do: Repo.transaction(fun)
   end
 
   setup_all do
@@ -174,6 +176,48 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
 
     assert {:ok, detail} = Dashboard.detail(NoQueryRepo, work_package.id)
     assert detail.worker_secret_handoffs == []
+  end
+
+  test "dashboard detail only discovers handoff metadata in the configured store" do
+    configured_store =
+      Path.join(System.tmp_dir!(), "sympp-detail-configured-store-#{System.unique_integer([:positive])}")
+
+    custom_store = Path.join(System.tmp_dir!(), "sympp-detail-custom-store-#{System.unique_integer([:positive])}")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, configured_store)
+
+    on_exit(fn ->
+      restore_store_dir_env(previous_store_dir)
+      File.rm_rf(configured_store)
+      File.rm_rf(custom_store)
+    end)
+
+    %{work_package: work_package} =
+      create_detail_package(id: "SYMPP-P5-CONFIGURED-STORE", title: "Configured store package")
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(Repo, work_package.id)
+    worker_grant = Enum.find(grants, &(&1.grant_role == "worker"))
+
+    handoff_opts = [
+      mode: "windows-credential-manager",
+      store_dir: custom_store,
+      database: live_dashboard_database(),
+      repo_root: @repo_root,
+      claimed_by: "local-operator-worker"
+    ]
+
+    handoff = %{mode: "windows-credential-manager", target: credential_target(work_package, worker_grant)}
+    assert :ok = SecretHandoff.store_worker_secret_metadata(work_package, worker_grant, handoff, handoff_opts)
+
+    assert {:ok, configured_detail} = Dashboard.detail(Repo, work_package.id)
+    assert configured_detail.worker_secret_handoffs == []
+
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, custom_store)
+
+    assert {:ok, custom_store_detail} = Dashboard.detail(Repo, work_package.id)
+    assert [%{grant_id: grant_id, target: target}] = custom_store_detail.worker_secret_handoffs
+    assert grant_id == worker_grant.id
+    assert target == handoff.target
   end
 
   test "timeline is chronological across progress and findings" do
@@ -906,6 +950,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
   defp timeline_section(html) do
     [_before, timeline] = String.split(html, "<h2>Timeline</h2>", parts: 2)
     timeline
+  end
+
+  defp credential_target(%WorkPackage{id: work_package_id}, %AccessGrant{} = worker_grant) do
+    "SymphonyPlusPlus:worker:#{work_package_id}:#{worker_grant.display_key}:#{String.trim(worker_grant.id)}"
+  end
+
+  defp live_dashboard_database do
+    case Repo.query("PRAGMA database_list", []) do
+      {:ok, %{rows: rows}} ->
+        Enum.find_value(rows, fn
+          [_seq, "main", path] when is_binary(path) and path != "" -> path
+          _row -> nil
+        end)
+
+      _result ->
+        nil
+    end
   end
 
   defp start_test_endpoint do

@@ -352,13 +352,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp dashboard_ledger_database(repo) do
-    if is_atom(repo) and function_exported?(repo, :query, 2) do
-      case repo.query("PRAGMA database_list", []) do
-        {:ok, %{rows: rows}} -> persistent_main_database_path(rows) || configured_ledger_database()
-        {:error, _reason} -> configured_ledger_database()
-      end
-    else
-      configured_ledger_database()
+    case repo.query("PRAGMA database_list", []) do
+      {:ok, %{rows: rows}} -> persistent_main_database_path(rows) || configured_ledger_database()
+      {:error, _reason} -> configured_ledger_database()
+      _result -> configured_ledger_database()
     end
   rescue
     _error in [Exqlite.Error, UndefinedFunctionError] -> configured_ledger_database()

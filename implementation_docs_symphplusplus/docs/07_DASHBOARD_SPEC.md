@@ -151,6 +151,11 @@ raw worker secret. Dispatch does not spawn Codex agents and does not call Linear
 Board-grant WorkRequest detail remains scoped to planning controls and does not
 show the dispatch control.
 
+The WorkPackage detail handoff panel reads durable handoff metadata only from
+the dashboard's configured/default local secret store. If a CLI or MCP dispatch
+uses a per-call custom secret store, that command output remains the handoff
+source of truth unless the dashboard app is configured to the same store.
+
 ### Runtime view
 
 Show:
