@@ -29,13 +29,10 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     cond do
       work_key_login_requested?(conn) ->
         conn
-        |> clear_board_session()
-        |> clear_package_session(nil)
-        |> Conn.delete_session(@operator_session_key)
         |> board_login_response()
         |> Conn.halt()
 
-      local_operator_session_browser?(conn) and active_local_operator_session?(conn) ->
+      local_operator_browser?(conn) and active_local_operator_session?(conn) ->
         put_local_operator_session(conn)
 
       true ->
@@ -66,12 +63,10 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
       work_key_login_requested?(conn) ->
         conn
-        |> clear_package_session(work_package_id)
-        |> Conn.delete_session(@operator_session_key)
         |> package_login_response(work_package_id: work_package_id)
         |> Conn.halt()
 
-      local_operator_session_browser?(conn) and active_local_operator_session?(conn) ->
+      local_operator_browser?(conn) and active_local_operator_session?(conn) ->
         if package_route_exists?(work_package_id) do
           put_local_operator_session(conn)
         else
@@ -167,7 +162,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp work_key_login_requested?(conn), do: Map.get(conn.params, "auth") == "work_key"
 
   defp package_route_exists?(work_package_id) do
-    case WorkPackageRepository.get(Repo, work_package_id) do
+    case with_dashboard_repo(fn repo -> WorkPackageRepository.get(repo, work_package_id) end) do
       {:ok, _work_package} -> true
       {:error, :not_found} -> false
       {:error, _reason} -> false

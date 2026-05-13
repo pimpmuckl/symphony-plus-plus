@@ -121,17 +121,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert response(board_conn, 401) =~ "work_key"
     refute Plug.Conn.get_session(board_conn, "sympp_local_operator")
 
+    board_grant = create_architect_grant!(package.id)
+    package_grant = create_package_grant!(package.id)
+
     cached_board_conn =
       local_conn()
       |> Plug.Test.init_test_session(%{
-        "sympp_board_grant_id" => create_architect_grant!(package.id).id,
-        "sympp_package_grant_ids" => %{package.id => create_package_grant!(package.id).id}
+        "sympp_board_grant_id" => board_grant.id,
+        "sympp_package_grant_ids" => %{package.id => package_grant.id}
       })
       |> get("/sympp/board?auth=work_key")
 
     assert response(cached_board_conn, 401) =~ "Board access"
-    refute Plug.Conn.get_session(cached_board_conn, "sympp_board_grant_id")
-    refute Plug.Conn.get_session(cached_board_conn, "sympp_package_grant_ids")
+    assert Plug.Conn.get_session(cached_board_conn, "sympp_board_grant_id") == board_grant.id
+    assert Plug.Conn.get_session(cached_board_conn, "sympp_package_grant_ids") == %{package.id => package_grant.id}
 
     package_conn =
       local_conn()
@@ -141,6 +144,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert response(package_conn, 401) =~ "Package access"
     assert response(package_conn, 401) =~ "work_key"
     refute response(package_conn, 401) =~ "Work key reachable package"
+    assert Plug.Conn.get_session(package_conn, "sympp_local_operator") == true
   end
 
   test "local operator drills into package detail with redaction and no package key" do
@@ -249,7 +253,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert Plug.Conn.get_session(conn, "sympp_local_operator") == true
     refute Plug.Conn.get_session(conn, "sympp_board_grant_id")
 
-    {:ok, _view, html} = live(conn, "/sympp/work-requests/#{request.id}")
+    {:ok, _view, html} =
+      conn
+      |> recycle_local_browser_conn()
+      |> live("/sympp/work-requests/#{request.id}")
 
     assert html =~ "Stale grant WorkRequest"
     refute html =~ "Answer</button>"
@@ -460,8 +467,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
       |> get("/sympp/work-packages/#{package.id}?auth=work_key")
 
     assert response(scoped_conn, 401) =~ "Package access"
-    refute Plug.Conn.get_session(scoped_conn, "sympp_local_operator")
-    refute Map.has_key?(Plug.Conn.get_session(scoped_conn, "sympp_package_grant_ids", %{}), package.id)
+    assert Plug.Conn.get_session(scoped_conn, "sympp_local_operator") == true
+    assert Plug.Conn.get_session(scoped_conn, "sympp_package_grant_ids") == %{package.id => grant.id}
   end
 
   defp create_package!(overrides) do
@@ -600,6 +607,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     |> Map.put(:remote_ip, {127, 0, 0, 1})
     |> Map.put(:host, "127.0.0.1")
     |> Plug.Conn.put_req_header("sec-fetch-site", "none")
+  end
+
+  defp recycle_local_browser_conn(conn) do
+    conn
+    |> recycle()
+    |> Map.put(:remote_ip, {127, 0, 0, 1})
+    |> Map.put(:host, "127.0.0.1")
+    |> Plug.Conn.put_req_header("sec-fetch-site", "same-origin")
   end
 
   defp put_endpoint_config(opts) do
