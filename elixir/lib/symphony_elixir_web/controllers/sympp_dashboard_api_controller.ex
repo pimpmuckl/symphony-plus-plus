@@ -36,20 +36,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         put_local_operator_session(conn)
 
       true ->
-        case authorize_board_request(conn) do
-          {:ok, %AccessGrant{} = grant} ->
-            put_board_browser_session(conn, grant)
-
-          {:error, :unauthorized} ->
-            if local_operator_browser?(conn) do
-              put_local_operator_session(conn)
-            else
-              conn |> board_login_response() |> Conn.halt()
-            end
-
-          {:error, reason} ->
-            conn |> board_browser_error_response(reason) |> Conn.halt()
-        end
+        authorize_board_browser_request(conn)
     end
   end
 
@@ -67,33 +54,72 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         |> Conn.halt()
 
       local_operator_browser?(conn) and active_local_operator_session?(conn) ->
-        case authorize_package_request(conn, work_package_id) do
-          {:ok, %AccessGrant{} = grant} ->
-            put_package_browser_session(conn, grant, work_package_id)
-
-          {:error, :unauthorized} ->
-            authorize_operator_package_route(conn, work_package_id)
-
-          {:error, reason} ->
-            conn |> package_browser_error_response(reason, work_package_id) |> Conn.halt()
-        end
+        authorize_active_operator_package_browser(conn, work_package_id)
 
       true ->
-        case authorize_package_request(conn, work_package_id) do
-          {:ok, %AccessGrant{} = grant} ->
-            put_package_browser_session(conn, grant, work_package_id)
-
-          {:error, :unauthorized} ->
-            if local_operator_browser?(conn) do
-              authorize_operator_package_route(conn, work_package_id)
-            else
-              conn |> package_login_response(work_package_id: work_package_id) |> Conn.halt()
-            end
-
-          {:error, reason} ->
-            conn |> package_browser_error_response(reason, work_package_id) |> Conn.halt()
-        end
+        authorize_package_browser_request(conn, work_package_id)
     end
+  end
+
+  defp authorize_board_browser_request(conn) do
+    case authorize_board_request(conn) do
+      {:ok, %AccessGrant{} = grant} ->
+        put_board_browser_session(conn, grant)
+
+      {:error, :unauthorized} ->
+        maybe_put_local_operator_session(conn)
+
+      {:error, reason} ->
+        conn |> board_browser_error_response(reason) |> Conn.halt()
+    end
+  end
+
+  defp maybe_put_local_operator_session(conn) do
+    if local_operator_browser?(conn) do
+      put_local_operator_session(conn)
+    else
+      conn |> board_login_response() |> Conn.halt()
+    end
+  end
+
+  defp authorize_active_operator_package_browser(conn, work_package_id) do
+    conn
+    |> authorize_package_request(work_package_id)
+    |> handle_active_operator_package_authorization(conn, work_package_id)
+  end
+
+  defp handle_active_operator_package_authorization({:ok, %AccessGrant{} = grant}, conn, work_package_id) do
+    put_package_browser_session(conn, grant, work_package_id)
+  end
+
+  defp handle_active_operator_package_authorization({:error, :unauthorized}, conn, work_package_id) do
+    authorize_operator_package_route(conn, work_package_id)
+  end
+
+  defp handle_active_operator_package_authorization({:error, reason}, conn, work_package_id) do
+    conn |> package_browser_error_response(reason, work_package_id) |> Conn.halt()
+  end
+
+  defp authorize_package_browser_request(conn, work_package_id) do
+    conn
+    |> authorize_package_request(work_package_id)
+    |> handle_package_browser_authorization(conn, work_package_id)
+  end
+
+  defp handle_package_browser_authorization({:ok, %AccessGrant{} = grant}, conn, work_package_id) do
+    put_package_browser_session(conn, grant, work_package_id)
+  end
+
+  defp handle_package_browser_authorization({:error, :unauthorized}, conn, work_package_id) do
+    if local_operator_browser?(conn) do
+      authorize_operator_package_route(conn, work_package_id)
+    else
+      conn |> package_login_response(work_package_id: work_package_id) |> Conn.halt()
+    end
+  end
+
+  defp handle_package_browser_authorization({:error, reason}, conn, work_package_id) do
+    conn |> package_browser_error_response(reason, work_package_id) |> Conn.halt()
   end
 
   @spec local_operator_session?(map()) :: boolean()

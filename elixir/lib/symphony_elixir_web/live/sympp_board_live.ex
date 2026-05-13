@@ -40,22 +40,20 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   def handle_params(params, _uri, socket) do
     socket = assign(socket, :filters, filters(params))
 
-    cond do
-      socket.assigns.operator_mode? ->
-        {:noreply, assign_board(socket)}
+    if socket.assigns.operator_mode? do
+      {:noreply, assign_board(socket)}
+    else
+      case board_grant_authorization(socket.assigns.board_grant_id) do
+        {:ok, grant} ->
+          {:noreply, socket |> assign(:board_grant, grant) |> assign(:authorized?, true) |> assign_board()}
 
-      true ->
-        case board_grant_authorization(socket.assigns.board_grant_id) do
-          {:ok, grant} ->
-            {:noreply, socket |> assign(:board_grant, grant) |> assign(:authorized?, true) |> assign_board()}
-
-          {:error, reason} ->
-            {:noreply,
-             socket
-             |> assign(:board_grant, nil)
-             |> assign(:authorized?, false)
-             |> assign(:board, unauthorized_board({:error, reason}))}
-        end
+        {:error, reason} ->
+          {:noreply,
+           socket
+           |> assign(:board_grant, nil)
+           |> assign(:authorized?, false)
+           |> assign(:board, unauthorized_board({:error, reason}))}
+      end
     end
   end
 
@@ -762,7 +760,6 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp visible_cards(%{columns: columns}) when is_list(columns), do: Enum.flat_map(columns, & &1.cards)
-  defp visible_cards(_view), do: []
 
   defp guidance_items(work_requests) when is_list(work_requests) do
     work_requests
@@ -778,8 +775,6 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       }
     end)
   end
-
-  defp guidance_items(_work_requests), do: []
 
   defp guidance_request?(%{status: status}) when status in ["human_info_needed", "ready_for_clarification", "clarifying"], do: true
   defp guidance_request?(_request), do: false

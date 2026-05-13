@@ -54,28 +54,26 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   def handle_params(params, uri, socket) do
     socket = assign(socket, :work_request_id, params["work_request_id"])
 
-    cond do
-      socket.assigns.operator_mode? ->
-        {:noreply,
-         socket
-         |> assign(:path_prefix, path_prefix(uri, socket.assigns.live_action, params))
-         |> assign(:page, load_page(socket.assigns.live_action, :local_operator, socket.assigns.work_request_id))}
+    if socket.assigns.operator_mode? do
+      {:noreply,
+       socket
+       |> assign(:path_prefix, path_prefix(uri, socket.assigns.live_action, params))
+       |> assign(:page, load_page(socket.assigns.live_action, :local_operator, socket.assigns.work_request_id))}
+    else
+      case board_grant_authorization(socket.assigns.board_grant_id) do
+        {:ok, grant} ->
+          {:noreply,
+           socket
+           |> assign(:board_grant, grant)
+           |> assign(:path_prefix, path_prefix(uri, socket.assigns.live_action, params))
+           |> assign(
+             :page,
+             load_page(socket.assigns.live_action, grant, socket.assigns.work_request_id)
+           )}
 
-      true ->
-        case board_grant_authorization(socket.assigns.board_grant_id) do
-          {:ok, grant} ->
-            {:noreply,
-             socket
-             |> assign(:board_grant, grant)
-             |> assign(:path_prefix, path_prefix(uri, socket.assigns.live_action, params))
-             |> assign(
-               :page,
-               load_page(socket.assigns.live_action, grant, socket.assigns.work_request_id)
-             )}
-
-          {:error, reason} ->
-            {:noreply, assign(socket, :page, unauthorized_page(reason))}
-        end
+        {:error, reason} ->
+          {:noreply, assign(socket, :page, unauthorized_page(reason))}
+      end
     end
   end
 
