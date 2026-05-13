@@ -33,7 +33,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         |> Conn.halt()
 
       local_operator_browser?(conn) and active_local_operator_session?(conn) ->
-        put_local_operator_session(conn)
+        authorize_active_operator_board_browser(conn)
 
       true ->
         authorize_board_browser_request(conn)
@@ -71,6 +71,14 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
       {:error, reason} ->
         conn |> board_browser_error_response(reason) |> Conn.halt()
+    end
+  end
+
+  defp authorize_active_operator_board_browser(conn) do
+    if is_binary(bearer_secret(conn)) do
+      authorize_board_browser_request(conn)
+    else
+      put_local_operator_session(conn)
     end
   end
 

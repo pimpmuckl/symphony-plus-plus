@@ -327,6 +327,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert Plug.Conn.get_session(remote_conn, "sympp_board_grant_id") == grant.id
   end
 
+  test "active local operator board route honors explicit board bearer grants" do
+    enable_operator_mode()
+
+    package = create_package!(id: "SYMPP-V2-UX-BEARER", title: "Bearer grant package")
+    {grant, secret} = create_architect_grant_with_secret!(package.id)
+
+    conn =
+      local_conn()
+      |> Plug.Test.init_test_session(%{"sympp_local_operator" => true})
+      |> Plug.Conn.put_req_header("authorization", "Bearer #{secret}")
+      |> get("/sympp/board")
+
+    assert response(conn, 200) =~ "Work package board"
+    refute response(conn, 200) =~ "Local operator cockpit"
+    refute Plug.Conn.get_session(conn, "sympp_local_operator")
+    assert Plug.Conn.get_session(conn, "sympp_board_grant_id") == grant.id
+  end
+
   test "local operator priority watchlists follow active board filters" do
     enable_operator_mode()
 
@@ -658,6 +676,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
   end
 
   defp create_architect_grant!(work_package_id) do
+    {grant, _secret} = create_architect_grant_with_secret!(work_package_id)
+    grant
+  end
+
+  defp create_architect_grant_with_secret!(work_package_id) do
     assert {:ok, phase} = PhaseRepository.create(Repo, %{id: "phase-operator-mode", title: "Operator mode test phase"})
     assert {:ok, _package} = WorkPackageRepository.update(Repo, work_package_id, %{phase_id: phase.id})
     work_key = WorkKey.generate()
@@ -676,7 +699,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert {:ok, _assignment} =
              AccessGrantRepository.claim(Repo, work_key.secret, %{claimed_by: "architect-operator"}, DateTime.utc_now(:microsecond))
 
-    grant
+    {grant, work_key.secret}
   end
 
   defp create_package_grant!(work_package_id) do
