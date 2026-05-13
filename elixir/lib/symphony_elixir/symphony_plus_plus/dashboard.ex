@@ -16,6 +16,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.State
   alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
+  alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
@@ -383,11 +384,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp configured_ledger_database do
     case Application.get_env(:symphony_elixir, :sympp_repo_database) do
       database when is_binary(database) ->
-        database = String.trim(database)
-        if database == "", do: nil, else: database
+        configured_ledger_database_path(database)
 
       database ->
         database
+    end
+  end
+
+  defp configured_ledger_database_path(database) do
+    database = String.trim(database)
+
+    cond do
+      database == "" -> nil
+      Repo.filesystem_database_path?(database) -> Path.expand(database)
+      true -> database
     end
   end
 

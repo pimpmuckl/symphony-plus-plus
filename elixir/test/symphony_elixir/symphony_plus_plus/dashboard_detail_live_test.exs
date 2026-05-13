@@ -252,6 +252,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert target == handoff.target
   end
 
+  test "dashboard detail emits absolute configured filesystem database in handoff command" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-detail-database-command-#{System.unique_integer([:positive])}")
+    configured_database = "configured-command-ledger-#{System.unique_integer([:positive])}.sqlite3"
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    previous_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+    Application.put_env(:symphony_elixir, :sympp_repo_database, configured_database)
+
+    on_exit(fn ->
+      restore_store_dir_env(previous_store_dir)
+      restore_database_env(previous_database)
+      File.rm_rf(store_dir)
+    end)
+
+    %{work_package: work_package} =
+      create_detail_package(id: "SYMPP-P5-ABSOLUTE-DATABASE", title: "Absolute database package")
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(Repo, work_package.id)
+    worker_grant = Enum.find(grants, &(&1.grant_role == "worker"))
+
+    handoff_opts = [
+      mode: "windows-credential-manager",
+      store_dir: store_dir,
+      database: configured_database,
+      repo_root: @repo_root,
+      claimed_by: "local-operator-worker"
+    ]
+
+    handoff = %{mode: "windows-credential-manager", target: credential_target(work_package, worker_grant)}
+    assert :ok = SecretHandoff.store_worker_secret_metadata(work_package, worker_grant, handoff, handoff_opts)
+
+    assert {:ok, detail} = Dashboard.detail(Repo, work_package.id)
+    assert [%{run_mcp_command: run_mcp_command}] = detail.worker_secret_handoffs
+    assert run_mcp_command =~ Path.expand(configured_database)
+    refute run_mcp_command =~ "-Database '#{configured_database}'"
+  end
+
   if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
 
   test "dashboard detail uses configured namespace inputs for handoff lookup" do
