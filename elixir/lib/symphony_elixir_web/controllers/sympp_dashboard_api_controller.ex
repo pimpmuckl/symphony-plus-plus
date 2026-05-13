@@ -67,7 +67,11 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         put_board_browser_session(conn, grant)
 
       {:error, :unauthorized} ->
-        maybe_put_local_operator_session(conn)
+        if explicit_bearer_request?(conn) do
+          conn |> board_browser_error_response(:unauthorized) |> Conn.halt()
+        else
+          maybe_put_local_operator_session(conn)
+        end
 
       {:error, reason} ->
         conn |> board_browser_error_response(reason) |> Conn.halt()
@@ -101,7 +105,11 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp handle_active_operator_package_authorization({:error, :unauthorized}, conn, work_package_id) do
-    authorize_operator_package_route(conn, work_package_id)
+    if explicit_bearer_request?(conn) do
+      conn |> package_browser_error_response(:unauthorized, work_package_id) |> Conn.halt()
+    else
+      authorize_operator_package_route(conn, work_package_id)
+    end
   end
 
   defp handle_active_operator_package_authorization({:error, reason}, conn, work_package_id) do
@@ -119,10 +127,15 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp handle_package_browser_authorization({:error, :unauthorized}, conn, work_package_id) do
-    if local_operator_browser?(conn) do
-      authorize_operator_package_route(conn, work_package_id)
-    else
-      conn |> package_login_response(work_package_id: work_package_id) |> Conn.halt()
+    cond do
+      explicit_bearer_request?(conn) ->
+        conn |> package_browser_error_response(:unauthorized, work_package_id) |> Conn.halt()
+
+      local_operator_browser?(conn) ->
+        authorize_operator_package_route(conn, work_package_id)
+
+      true ->
+        conn |> package_login_response(work_package_id: work_package_id) |> Conn.halt()
     end
   end
 
@@ -815,6 +828,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
+  defp explicit_bearer_request?(conn), do: is_binary(bearer_secret(conn))
+
   defp live_grant?(%AccessGrant{revoked_at: %DateTime{}}), do: {:error, :unauthorized}
   defp live_grant?(%AccessGrant{claimed_at: nil}), do: {:error, :unauthorized}
   defp live_grant?(%AccessGrant{claimed_by: nil}), do: {:error, :unauthorized}
@@ -1266,6 +1281,10 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     board_login_response(conn, status: 403, message: "The work key is not allowed to open the board.")
   end
 
+  defp board_browser_error_response(conn, :unauthorized) do
+    board_login_response(conn, status: 401, message: "The work key could not access the board.")
+  end
+
   defp board_browser_error_response(conn, :database_busy) do
     board_login_response(conn, status: 503, message: "The dashboard ledger is busy. Try again.")
   end
@@ -1288,6 +1307,10 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       message: "The current work key is not allowed to open this package.",
       work_package_id: work_package_id
     )
+  end
+
+  defp package_browser_error_response(conn, :unauthorized, work_package_id) do
+    package_login_response(conn, status: 401, message: "The work key could not access this package.", work_package_id: work_package_id)
   end
 
   defp package_browser_error_response(conn, :not_found, _work_package_id), do: package_not_found_response(conn)

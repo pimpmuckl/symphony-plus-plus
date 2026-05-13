@@ -345,6 +345,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert Plug.Conn.get_session(conn, "sympp_board_grant_id") == grant.id
   end
 
+  test "active local operator routes reject invalid explicit bearer grants" do
+    enable_operator_mode()
+
+    package = create_package!(id: "SYMPP-V2-UX-BAD-BEARER", title: "Invalid bearer package")
+    invalid_secret = WorkKey.generate().secret
+
+    board_conn =
+      local_conn()
+      |> Plug.Test.init_test_session(%{"sympp_local_operator" => true})
+      |> Plug.Conn.put_req_header("authorization", "Bearer #{invalid_secret}")
+      |> get("/sympp/board")
+
+    assert response(board_conn, 401) =~ "The work key could not access the board."
+    refute response(board_conn, 401) =~ "Local operator cockpit"
+
+    package_conn =
+      local_conn()
+      |> Plug.Test.init_test_session(%{"sympp_local_operator" => true})
+      |> Plug.Conn.put_req_header("authorization", "Bearer #{invalid_secret}")
+      |> get("/sympp/work-packages/#{package.id}")
+
+    assert response(package_conn, 401) =~ "The work key could not access this package."
+    refute response(package_conn, 401) =~ "Invalid bearer package"
+  end
+
   test "local operator priority watchlists follow active board filters" do
     enable_operator_mode()
 
