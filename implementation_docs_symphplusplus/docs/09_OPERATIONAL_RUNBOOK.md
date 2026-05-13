@@ -6,33 +6,52 @@ the short command-flow reference for operators.
 ## v2 WorkRequest Intake
 
 Use this flow before WorkPackages exist when the human request still needs
-product clarification or slicing:
+product clarification or slicing. In local operator mode, the browser cockpit is
+the preferred front door for this flow.
 
-1. Record the WorkRequest with project/repo, base branch, work type, human
-   description, constraints, and desired dispatch shape in one
-   operator-approved Markdown artifact. Do not split canonical request state
-   across chat, generated ask-pro output, or local scratch notes.
-2. Human marks the request ready for clarification.
-3. Architect asks product questions and records human answers.
-4. Architect records durable decisions and explicit assumptions before slicing.
-5. Architect writes an architect plan and slice plan. Feature work defaults to
-   a feature branch with smaller PRs against that branch; narrow fixes may use
-   direct `main` PRs when the plan explains why that is appropriate.
-6. Approved slices become normal WorkPackages with existing grant, readiness,
+1. Start the local operator cockpit from `elixir/` with
+   `mix sympp.cockpit --database <ledger.sqlite3>` and open the printed local
+   `/sympp/board` URL.
+2. Open `/sympp/work-requests` and choose `New WorkRequest`.
+3. Enter repo and base branch explicitly, then set work type, desired dispatch
+   shape, human description, and constraints JSON. The created request is a
+   draft WorkRequest in the local ledger.
+4. Human marks the request ready for clarification.
+5. Ask product questions, record human answers, and close stale unanswered
+   questions from the WorkRequest detail page.
+6. Record durable decisions and explicit assumptions before slicing.
+7. Mark the request ready for slicing, add planned slices, approve or skip the
+   slices, and mark the request sliced when at least one slice is approved.
+8. Approved slices become normal WorkPackages with existing grant, readiness,
    review-suite, PR, and human merge machinery.
+
+Board-grant mode keeps its locked-scope behavior: the WorkRequest intake form
+shows the grant's repo/base branch and creation ignores any submitted repo/base
+values. Local operator mode is the only browser mode where repo and base branch
+are manually supplied.
+
+If the browser surface is unavailable, record the WorkRequest with project/repo,
+base branch, work type, human description, constraints, and desired dispatch
+shape in one operator-approved Markdown artifact. Do not split canonical request
+state across chat, generated ask-pro output, or local scratch notes.
+
+Architect plans still decide how approved slices become packages. Feature work
+defaults to a feature branch with smaller PRs against that branch; narrow fixes
+may use direct `main` PRs when the plan explains why that is appropriate.
 
 When an architect package is created, record the current WorkRequest artifact's
 durable reference, optionally attach the artifact, and include a bounded summary
 of the current status, decisions, assumptions, open questions, and intended
 slices. Do not paste a long clarification history into package prompts.
 
-This is the product contract for future intake. Do not invent dashboard, MCP, or
-runtime WorkRequest tooling until a package explicitly implements it.
+Local operator WorkRequest controls do not change worker or architect grants.
+Workers and agents still need their existing work keys, MCP grants, private
+handoff flow, and package-scoped permissions.
 
 ## Standalone Package
 
-To inspect local Symphony++ package state, start the read-only operator cockpit
-from `elixir/`:
+To inspect local Symphony++ package state and manage pre-package WorkRequests,
+start the local operator cockpit from `elixir/`:
 
 ```powershell
 mix sympp.cockpit --database <ledger.sqlite3>

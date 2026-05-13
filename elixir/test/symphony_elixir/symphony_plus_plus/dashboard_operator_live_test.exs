@@ -119,6 +119,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute html =~ ~s(name="work_key")
   end
 
+  test "local operator creates a WorkRequest with explicit repo and base branch" do
+    enable_operator_mode()
+
+    {:ok, view, html} = live(local_conn(), "/sympp/work-requests/new")
+
+    assert html =~ "New WorkRequest"
+    assert html =~ ~s(name="work_request[repo]")
+    assert html =~ ~s(name="work_request[base_branch]")
+
+    render_submit(view, "create_work_request", %{
+      "work_request" => %{
+        "title" => "Local operator intake",
+        "repo" => "nextide/local-dogfood",
+        "base_branch" => "dogfood/base",
+        "work_type" => "feature",
+        "desired_dispatch_shape" => "single_package",
+        "human_description" => "Create from local operator mode.",
+        "constraints_json" => ~s({"allowed_paths":["elixir/lib"],"requires_secret":false})
+      }
+    })
+
+    assert {redirected_path, _flash} = assert_redirect(view)
+    assert redirected_path =~ "/sympp/work-requests/"
+    created_id = redirected_path |> String.split("/") |> List.last()
+
+    assert {:ok, created} = WorkRequestRepository.get(Repo, created_id)
+    assert created.title == "Local operator intake"
+    assert created.status == "draft"
+    assert created.repo == "nextide/local-dogfood"
+    assert created.base_branch == "dogfood/base"
+    assert created.constraints == %{"allowed_paths" => ["elixir/lib"], "requires_secret" => false}
+  end
+
   test "local operator initializes a missing configured ledger as an empty cockpit" do
     enable_operator_mode()
 
@@ -443,44 +476,169 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute html =~ "ghp_raw_secret_value"
     refute html =~ "sk-rawsecretvalue"
     refute html =~ ~s(name="work_key")
-    refute html =~ "Answer</button>"
-    refute html =~ "Close unanswered"
-    refute html =~ "Approve</button>"
-    refute html =~ "Add planned slice"
+    assert html =~ "Answer</button>"
+    assert html =~ "Close unanswered"
   end
 
-  test "local operator WorkRequest events cannot mutate without a scoped board grant" do
+  test "local operator can manage the safe WorkRequest lifecycle without a scoped board grant" do
     enable_operator_mode()
 
     request =
       create_work_request!(
-        id: "WR-OPERATOR-READONLY-EVENT",
-        title: "Operator read-only event",
-        status: "human_info_needed"
+        id: "WR-OPERATOR-MANAGE",
+        title: "Operator managed request"
       )
 
-    assert {:ok, question} =
-             WorkRequestRepository.ask_question(Repo, request.id, %{
-               question: "Question remains open",
-               category: "product",
-               why_needed: "Direct LiveView events should still need a scoped grant.",
-               asked_by: "operator"
-             })
+    {:ok, view, html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
 
-    {:ok, view, _html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
+    assert html =~ "Mark ready for clarification"
+
+    html = render_click(view, "mark_ready_for_clarification", %{})
+    assert html =~ "ready for clarification"
+
+    html =
+      render_submit(view, "ask_question", %{
+        "question" => %{
+          "category" => "product",
+          "question" => "What should the first slice own?",
+          "why_needed" => "The operator needs to decide the slice boundary.",
+          "asked_by_agent_run_id" => "forged"
+        }
+      })
+
+    assert html =~ "What should the first slice own?"
+    assert {:ok, clarified} = WorkRequestRepository.get(Repo, request.id)
+    assert clarified.status == "clarifying"
+    assert {:ok, [first_question]} = WorkRequestRepository.list_questions(Repo, request.id)
+    assert first_question.asked_by_agent_run_id == "local-operator"
+
+    html =
+      render_submit(view, "close_question", %{
+        "question" => %{"id" => first_question.id, "current_status" => "open"}
+      })
+
+    assert html =~ "closed"
+    assert {:ok, [closed_question]} = WorkRequestRepository.list_questions(Repo, request.id)
+    assert closed_question.status == "closed"
+
+    html =
+      render_submit(view, "ask_question", %{
+        "question" => %{
+          "category" => "product",
+          "question" => "Which repo docs should be updated?",
+          "why_needed" => "The runbook needs to match the UI."
+        }
+      })
+
+    assert html =~ "Which repo docs should be updated?"
+    assert {:ok, [_closed_question, second_question]} = WorkRequestRepository.list_questions(Repo, request.id)
+
+    html =
+      render_submit(view, "answer_question", %{
+        "question" => %{
+          "id" => second_question.id,
+          "current_status" => "open",
+          "answer" => "Update the dashboard spec and operational runbook.",
+          "answered_by" => "forged-answer"
+        }
+      })
+
+    assert html =~ "Update the dashboard spec and operational runbook."
+    assert {:ok, [_closed_question, answered_question]} = WorkRequestRepository.list_questions(Repo, request.id)
+    assert answered_question.status == "answered"
+    assert answered_question.answered_by == "local-operator"
 
     render_submit(view, "answer_question", %{
       "question" => %{
-        "id" => question.id,
+        "id" => second_question.id,
         "current_status" => "open",
-        "answer" => "Unauthorized answer",
-        "answered_by" => "operator"
+        "answer" => "Too late.",
+        "answered_by" => "local-operator"
       }
     })
 
-    assert {:ok, [stored_question]} = WorkRequestRepository.list_questions(Repo, request.id)
-    assert stored_question.status == "open"
-    assert is_nil(stored_question.answer)
+    assert {:ok, [_closed_question, still_answered]} = WorkRequestRepository.list_questions(Repo, request.id)
+    assert still_answered.answer == "Update the dashboard spec and operational runbook."
+
+    html =
+      render_submit(view, "record_decision", %{
+        "decision" => %{
+          "source_type" => "operator",
+          "decision" => "Keep the local operator intake browser-only.",
+          "rationale" => "Worker grants stay unchanged.",
+          "scope_impact" => "No MCP or Linear change.",
+          "created_by" => "forged-decision"
+        }
+      })
+
+    assert html =~ "Keep the local operator intake browser-only."
+    assert {:ok, [decision]} = WorkRequestRepository.list_decisions(Repo, request.id)
+    assert decision.created_by == "local-operator"
+
+    html = render_click(view, "mark_human_info_needed", %{})
+    assert html =~ "human info needed"
+
+    html = render_click(view, "mark_ready_for_slicing", %{})
+    assert html =~ "ready for slicing"
+
+    html =
+      render_submit(view, "add_planned_slice", %{
+        "planned_slice" => %{
+          "title" => "Add local operator WorkRequest controls",
+          "goal" => "Let local operators continue clarification and slicing.",
+          "work_package_kind" => "dashboard",
+          "target_base_branch" => "main",
+          "branch_pattern" => "agent/SYMPP-V2-UX-004/local-operator-workrequest-intake",
+          "owned_file_globs" => "elixir/lib/symphony_elixir_web/live/sympp_work_request_live.ex",
+          "forbidden_file_globs" => "elixir/lib/symphony_elixir/symphony_plus_plus/secret_handoff.ex",
+          "acceptance_criteria" => "Local operator can approve a slice.",
+          "validation_steps" => "mix test",
+          "review_lanes" => "review_t1\nreview_t2",
+          "stop_conditions" => "Stop before dispatch."
+        }
+      })
+
+    assert html =~ "Add local operator WorkRequest controls"
+    assert {:ok, [first_slice]} = WorkRequestRepository.list_planned_slices(Repo, request.id)
+
+    html =
+      render_submit(view, "approve_planned_slice", %{
+        "slice" => %{"id" => first_slice.id, "current_status" => "planned"}
+      })
+
+    assert html =~ "approved"
+
+    html =
+      render_submit(view, "add_planned_slice", %{
+        "planned_slice" => %{
+          "title" => "Optional follow-up",
+          "goal" => "Capture a deferrable follow-up.",
+          "work_package_kind" => "docs",
+          "target_base_branch" => "main",
+          "branch_pattern" => "agent/SYMPP-V2-UX-004/docs-followup",
+          "owned_file_globs" => "implementation_docs_symphplusplus/docs/**",
+          "forbidden_file_globs" => "elixir/lib/symphony_elixir/symphony_plus_plus/secret_handoff.ex",
+          "acceptance_criteria" => "Follow-up can be skipped.",
+          "validation_steps" => "mix test",
+          "review_lanes" => "review_t1",
+          "stop_conditions" => "Stop before dispatch."
+        }
+      })
+
+    assert html =~ "Optional follow-up"
+    assert {:ok, [_approved_slice, second_slice]} = WorkRequestRepository.list_planned_slices(Repo, request.id)
+
+    html =
+      render_submit(view, "skip_planned_slice", %{
+        "slice" => %{"id" => second_slice.id, "current_status" => "planned"}
+      })
+
+    assert html =~ "skipped"
+
+    html = render_click(view, "mark_sliced", %{})
+    assert html =~ "sliced"
+    assert {:ok, sliced} = WorkRequestRepository.get(Repo, request.id)
+    assert sliced.status == "sliced"
   end
 
   test "local operator mode clears stale scoped grants before rendering WorkRequest actions" do
@@ -518,8 +676,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
       |> live("/sympp/work-requests/#{request.id}")
 
     assert html =~ "Stale grant WorkRequest"
-    refute html =~ "Answer</button>"
-    refute html =~ "Close unanswered"
+    assert html =~ "Answer</button>"
+    assert html =~ "Close unanswered"
+    assert html =~ ~s(value="local-operator")
+    refute html =~ ~s(value="architect-operator")
 
     remote_conn =
       build_conn()
@@ -789,6 +949,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "Scoped WorkRequest actions"
     assert html =~ "Answer</button>"
     assert html =~ "Close unanswered"
+  end
+
+  test "explicit work key keeps WorkRequest intake scoped after local operator entry" do
+    enable_operator_mode()
+
+    package =
+      create_package!(
+        id: "SYMPP-V2-UX-MIXED-SCOPE",
+        title: "Mixed session package",
+        repo: "nextide/scoped-package",
+        base_branch: "feature/scoped-base"
+      )
+
+    {_grant, secret} = create_architect_grant_with_secret!(package.id)
+
+    conn =
+      local_conn()
+      |> get("/sympp/board")
+
+    assert response(conn, 200) =~ "Local operator cockpit"
+    assert Plug.Conn.get_session(conn, "sympp_local_operator") == true
+
+    scoped_conn =
+      conn
+      |> recycle()
+      |> post("/sympp/board/session", %{"work_key" => secret})
+
+    assert redirected_to(scoped_conn) == "/sympp/board"
+    assert Plug.Conn.get_session(scoped_conn, "sympp_board_grant_id")
+    refute Plug.Conn.get_session(scoped_conn, "sympp_local_operator")
+
+    {:ok, view, html} = live(recycle(scoped_conn), "/sympp/work-requests/new")
+
+    assert html =~ "New WorkRequest"
+    assert html =~ "nextide/scoped-package"
+    assert html =~ "feature/scoped-base"
+    refute html =~ ~s(name="work_request[repo]")
+    refute html =~ ~s(name="work_request[base_branch]")
+
+    render_submit(view, "create_work_request", %{
+      "work_request" => %{
+        "title" => "Mixed session scoped intake",
+        "work_type" => "feature",
+        "desired_dispatch_shape" => "single_package",
+        "human_description" => "Create through the valid grant scope.",
+        "constraints_json" => ~s({"allowed_paths":["elixir/lib"]}),
+        "repo" => "nextide/forged",
+        "base_branch" => "forged"
+      }
+    })
+
+    assert {redirected_path, _flash} = assert_redirect(view)
+    created_id = redirected_path |> String.split("/") |> List.last()
+
+    assert {:ok, created} = WorkRequestRepository.get(Repo, created_id)
+    assert created.repo == "nextide/scoped-package"
+    assert created.base_branch == "feature/scoped-base"
   end
 
   test "entering local operator mode preserves cached package grants" do

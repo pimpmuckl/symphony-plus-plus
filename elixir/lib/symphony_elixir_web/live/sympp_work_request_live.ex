@@ -31,14 +31,14 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     "review_lanes",
     "stop_conditions"
   ]
+  @local_operator_actor "local-operator"
 
   @impl true
   def mount(params, session, socket) do
     board_grant_id = Map.get(session, "sympp_board_grant_id")
 
-    operator_mode? = local_operator_mode?(session, socket)
-
     authorization = board_grant_authorization(board_grant_id)
+    operator_mode? = effective_operator_mode?(local_operator_mode?(session, socket), authorization)
 
     {:ok,
      socket
@@ -93,7 +93,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
             <a class="active" href="work-requests">WorkRequests</a>
             <a :if={@operator_mode?} href="board?auth=work_key">Use work key</a>
           </nav>
-          <a :if={can_create_work_request?(@board_grant)} class="sympp-primary-link" href="work-requests/new">New WorkRequest</a>
+          <a :if={can_create_work_request?(@operator_mode?, @board_grant)} class="sympp-primary-link" href="work-requests/new">New WorkRequest</a>
         </div>
       </header>
 
@@ -202,7 +202,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
         </section>
       <% else %>
         <.form :let={f} for={@page.form} as={:work_request} phx-submit="create_work_request" class="sympp-work-request-form">
-          <section class="sympp-locked-scope" aria-label="Locked WorkRequest scope">
+          <section :if={!@operator_mode?} class="sympp-locked-scope" aria-label="Locked WorkRequest scope">
             <div>
               <span>Repo</span>
               <strong><%= @page.intake_scope.repo %></strong>
@@ -219,6 +219,16 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
             <label>
               <span>Title</span>
               <input name={f[:title].name} value={input_value(f, :title)} required maxlength="160" />
+            </label>
+
+            <label :if={@operator_mode?}>
+              <span>Repo</span>
+              <input name={f[:repo].name} value={input_value(f, :repo)} required maxlength="240" />
+            </label>
+
+            <label :if={@operator_mode?}>
+              <span>Base branch</span>
+              <input name={f[:base_branch].name} value={input_value(f, :base_branch)} required maxlength="240" />
             </label>
 
             <label>
@@ -298,7 +308,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
               <span class="sympp-readiness"><%= label_value(value(@page.work_request, :desired_dispatch_shape)) %></span>
             </div>
             <p :if={@page.action_error} class="sympp-form-error"><%= @page.action_error %></p>
-            <div :if={@board_grant} class="sympp-action-row">
+            <div :if={can_manage_work_request?(@operator_mode?, @board_grant)} class="sympp-action-row">
               <button
                 :if={value(@page.work_request, :status) == "draft"}
                 type="button"
@@ -376,7 +386,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
           <article class="sympp-panel">
             <h2>Clarification questions</h2>
             <.form
-              :if={@board_grant && can_clarify?(@page.work_request)}
+              :if={can_manage_work_request?(@operator_mode?, @board_grant) && can_clarify?(@page.work_request)}
               :let={f}
               for={%{}}
               as={:question}
@@ -411,7 +421,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                 <h3><%= value(question, :question) %></h3>
                 <p><%= value(question, :why_needed) %></p>
                 <p :if={value(question, :answer)}><strong>Answer:</strong> <%= value(question, :answer) %></p>
-                <div :if={@board_grant && value(question, :status) == "open"} class="sympp-question-actions">
+                <div :if={can_manage_work_request?(@operator_mode?, @board_grant) && value(question, :status) == "open"} class="sympp-question-actions">
                   <.form :let={f} for={%{}} as={:question} phx-submit="answer_question" class="sympp-inline-answer-form">
                     <input type="hidden" name={f[:id].name} value={value(question, :id)} />
                     <input type="hidden" name={f[:current_status].name} value={value(question, :status)} />
@@ -421,7 +431,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                     </label>
                     <label>
                       <span>Answered by</span>
-                      <input name={f[:answered_by].name} value={default_actor(@board_grant)} required maxlength="120" />
+                      <input name={f[:answered_by].name} value={default_actor(@operator_mode?, @board_grant)} required maxlength="120" />
                     </label>
                     <div class="sympp-form-actions">
                       <button type="submit">Answer</button>
@@ -441,7 +451,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
           <article class="sympp-panel">
             <h2>Decision log</h2>
             <.form
-              :if={@board_grant && can_clarify?(@page.work_request)}
+              :if={can_manage_work_request?(@operator_mode?, @board_grant) && can_clarify?(@page.work_request)}
               :let={f}
               for={%{}}
               as={:decision}
@@ -457,7 +467,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                 </label>
                 <label>
                   <span>Created by</span>
-                  <input name={f[:created_by].name} value={default_actor(@board_grant)} required maxlength="120" />
+                  <input name={f[:created_by].name} value={default_actor(@operator_mode?, @board_grant)} required maxlength="120" />
                 </label>
                 <label class="sympp-form-wide">
                   <span>Decision</span>
@@ -494,7 +504,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
           <article class="sympp-panel sympp-panel-wide">
             <h2>Planned slices</h2>
             <.form
-              :if={@board_grant && can_author_planned_slice?(@page.work_request)}
+              :if={can_manage_work_request?(@operator_mode?, @board_grant) && can_author_planned_slice?(@page.work_request)}
               :let={f}
               for={@page.planned_slice_form}
               as={:planned_slice}
@@ -572,7 +582,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                   <p><%= value(slice, :goal) %></p>
                   <div class="sympp-slice-actions">
                     <.form
-                      :if={@board_grant && can_approve_slice?(@page.work_request, slice)}
+                      :if={can_manage_work_request?(@operator_mode?, @board_grant) && can_approve_slice?(@page.work_request, slice)}
                       :let={f}
                       for={%{}}
                       as={:slice}
@@ -584,7 +594,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                       <button type="submit">Approve</button>
                     </.form>
                     <.form
-                      :if={@board_grant && can_skip_slice?(@page.work_request, slice)}
+                      :if={can_manage_work_request?(@operator_mode?, @board_grant) && can_skip_slice?(@page.work_request, slice)}
                       :let={f}
                       for={%{}}
                       as={:slice}
@@ -647,11 +657,9 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   @impl true
   def handle_event("create_work_request", %{"work_request" => params}, socket) do
-    case board_grant_authorization(socket.assigns.board_grant_id) do
-      {:ok, %AccessGrant{} = grant} ->
-        socket = assign(socket, :board_grant, grant)
-
-        case create_work_request(grant, params) do
+    case action_actor(socket) do
+      {:ok, actor, socket} ->
+        case create_work_request(actor, params) do
           {:ok, work_request} ->
             {:noreply,
              socket
@@ -659,7 +667,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
              |> push_navigate(to: work_request_route(socket, work_request.id))}
 
           {:error, reason, form} ->
-            {:noreply, assign(socket, :page, new_page(grant, form, form_error_message(reason)))}
+            {:noreply, assign(socket, :page, new_page(actor, form, form_error_message(reason)))}
         end
 
       {:error, reason} ->
@@ -668,21 +676,19 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   end
 
   def handle_event("mark_ready_for_clarification", _params, socket) do
-    case board_grant_authorization(socket.assigns.board_grant_id) do
-      {:ok, %AccessGrant{} = grant} ->
-        socket = assign(socket, :board_grant, grant)
-
-        case mark_ready_for_clarification(grant, socket.assigns.work_request_id) do
+    case action_actor(socket) do
+      {:ok, actor, socket} ->
+        case mark_ready_for_clarification(actor, socket.assigns.work_request_id) do
           {:ok, _work_request} ->
             {:noreply,
              socket
              |> put_flash(:info, "WorkRequest marked ready for clarification.")
-             |> assign(:page, load_page(:show, grant, socket.assigns.work_request_id))}
+             |> assign(:page, load_page(:show, actor, socket.assigns.work_request_id))}
 
           {:error, reason} ->
             page =
               :show
-              |> load_page(grant, socket.assigns.work_request_id)
+              |> load_page(actor, socket.assigns.work_request_id)
               |> Map.put(:action_error, action_error_message(reason))
 
             {:noreply, assign(socket, :page, page)}
@@ -718,21 +724,19 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   end
 
   def handle_event("add_planned_slice", %{"planned_slice" => params}, socket) do
-    case board_grant_authorization(socket.assigns.board_grant_id) do
-      {:ok, %AccessGrant{} = grant} ->
-        socket = assign(socket, :board_grant, grant)
-
-        case add_planned_slice(grant, socket.assigns.work_request_id, params) do
+    case action_actor(socket) do
+      {:ok, actor, socket} ->
+        case add_planned_slice(actor, socket.assigns.work_request_id, params) do
           {:ok, _planned_slice} ->
             {:noreply,
              socket
              |> put_flash(:info, "Planned slice added.")
-             |> assign(:page, load_page(:show, grant, socket.assigns.work_request_id))}
+             |> assign(:page, load_page(:show, actor, socket.assigns.work_request_id))}
 
           {:error, reason, form} ->
             page =
               :show
-              |> load_page(grant, socket.assigns.work_request_id)
+              |> load_page(actor, socket.assigns.work_request_id)
               |> Map.put(:planned_slice_form, form)
               |> Map.put(:planned_slice_form_error, planned_slice_form_error_message(reason))
 
@@ -775,18 +779,16 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   end
 
   defp handle_scoped_action(socket, action) when is_function(action, 1) do
-    case board_grant_authorization(socket.assigns.board_grant_id) do
-      {:ok, %AccessGrant{} = grant} ->
-        socket = assign(socket, :board_grant, grant)
-
-        case action.(grant) do
+    case action_actor(socket) do
+      {:ok, actor, socket} ->
+        case action.(actor) do
           {:ok, _result} ->
-            {:noreply, assign(socket, :page, load_page(:show, grant, socket.assigns.work_request_id))}
+            {:noreply, assign(socket, :page, load_page(:show, actor, socket.assigns.work_request_id))}
 
           {:error, reason} ->
             page =
               :show
-              |> load_page(grant, socket.assigns.work_request_id)
+              |> load_page(actor, socket.assigns.work_request_id)
               |> Map.put(:action_error, action_error_message(reason))
 
             {:noreply, assign(socket, :page, page)}
@@ -794,6 +796,14 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
       {:error, reason} ->
         {:noreply, assign(socket, :page, unauthorized_page(reason))}
+    end
+  end
+
+  defp action_actor(socket) do
+    case board_grant_authorization(socket.assigns.board_grant_id) do
+      {:ok, %AccessGrant{} = grant} -> {:ok, grant, assign(socket, :board_grant, grant)}
+      {:error, _reason} when socket.assigns.operator_mode? -> {:ok, :local_operator, socket}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -809,6 +819,9 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
         SymppDashboardApiController.local_operator_enabled?()
       end
   end
+
+  defp effective_operator_mode?(true, {:ok, %AccessGrant{}}), do: false
+  defp effective_operator_mode?(operator_mode?, _authorization), do: operator_mode?
 
   defp board_grant_authorization(grant_id) do
     case SymppDashboardApiController.authorize_board_grant_id(grant_id) do
@@ -838,7 +851,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     end
   end
 
-  defp load_page(:new, :local_operator, _work_request_id), do: unauthorized_page(:forbidden)
+  defp load_page(:new, :local_operator, _work_request_id), do: new_page(:local_operator)
 
   defp load_page(:new, %AccessGrant{} = grant, _work_request_id), do: new_page(grant)
 
@@ -896,7 +909,9 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     Map.put(page, :planned_slice_form, planned_slice_form(form, work_request))
   end
 
-  defp new_page(%AccessGrant{} = grant, form \\ work_request_form(), form_error \\ nil) do
+  defp new_page(actor, form \\ work_request_form(), form_error \\ nil)
+
+  defp new_page(%AccessGrant{} = grant, form, form_error) do
     case intake_scope(grant) do
       {:ok, scope} ->
         loading_page()
@@ -907,6 +922,12 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
       {:error, reason} ->
         error_page(reason)
     end
+  end
+
+  defp new_page(:local_operator, form, form_error) do
+    loading_page()
+    |> Map.put(:form, work_request_form(form))
+    |> Map.put(:form_error, form_error)
   end
 
   defp unauthorized_page(reason) when reason in [:unauthorized, :forbidden] do
@@ -1008,51 +1029,78 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     end
   end
 
+  defp create_work_request(:local_operator, params) do
+    form = work_request_form(params)
+
+    with {:ok, repo} <- filled_form_value(form["repo"], :repo_required),
+         {:ok, base_branch} <- filled_form_value(form["base_branch"], :base_branch_required),
+         {:ok, constraints} <- decode_constraints(form["constraints_json"]) do
+      attrs =
+        form
+        |> Map.take(["title", "work_type", "human_description", "desired_dispatch_shape"])
+        |> Map.put("repo", repo)
+        |> Map.put("base_branch", base_branch)
+        |> Map.put("constraints", constraints)
+
+      case SymppBoardLive.with_dashboard_repo(&WorkRequestService.create(&1, attrs)) do
+        {:ok, work_request} -> {:ok, work_request}
+        {:error, reason} -> {:error, reason, form}
+      end
+    else
+      {:error, reason} -> {:error, reason, form}
+    end
+  end
+
   defp mark_ready_for_clarification(%AccessGrant{} = grant, work_request_id)
        when is_binary(work_request_id) do
     SymppBoardLive.with_dashboard_repo(&mark_ready_in_repo(&1, grant, work_request_id))
   end
 
+  defp mark_ready_for_clarification(:local_operator, work_request_id)
+       when is_binary(work_request_id) do
+    SymppBoardLive.with_dashboard_repo(&mark_ready_in_repo(&1, :local_operator, work_request_id))
+  end
+
   defp mark_ready_for_clarification(_grant, _work_request_id), do: {:error, :not_found}
 
-  defp ask_question(%AccessGrant{} = grant, work_request_id, params)
+  defp ask_question(actor, work_request_id, params)
        when is_binary(work_request_id) and is_map(params) do
-    SymppBoardLive.with_dashboard_repo(&ask_question_in_repo(&1, grant, work_request_id, params))
+    SymppBoardLive.with_dashboard_repo(&ask_question_in_repo(&1, actor, work_request_id, params))
   end
 
   defp ask_question(_grant, _work_request_id, _params), do: {:error, :not_found}
 
-  defp answer_question(%AccessGrant{} = grant, work_request_id, params)
+  defp answer_question(actor, work_request_id, params)
        when is_binary(work_request_id) and is_map(params) do
-    SymppBoardLive.with_dashboard_repo(&answer_question_in_repo(&1, grant, work_request_id, params))
+    SymppBoardLive.with_dashboard_repo(&answer_question_in_repo(&1, actor, work_request_id, params))
   end
 
   defp answer_question(_grant, _work_request_id, _params), do: {:error, :not_found}
 
-  defp close_question(%AccessGrant{} = grant, work_request_id, params)
+  defp close_question(actor, work_request_id, params)
        when is_binary(work_request_id) and is_map(params) do
-    SymppBoardLive.with_dashboard_repo(&close_question_in_repo(&1, grant, work_request_id, params))
+    SymppBoardLive.with_dashboard_repo(&close_question_in_repo(&1, actor, work_request_id, params))
   end
 
   defp close_question(_grant, _work_request_id, _params), do: {:error, :not_found}
 
-  defp record_decision(%AccessGrant{} = grant, work_request_id, params)
+  defp record_decision(actor, work_request_id, params)
        when is_binary(work_request_id) and is_map(params) do
-    SymppBoardLive.with_dashboard_repo(&record_decision_in_repo(&1, grant, work_request_id, params))
+    SymppBoardLive.with_dashboard_repo(&record_decision_in_repo(&1, actor, work_request_id, params))
   end
 
   defp record_decision(_grant, _work_request_id, _params), do: {:error, :not_found}
 
-  defp mark_human_info_needed(%AccessGrant{} = grant, work_request_id)
+  defp mark_human_info_needed(actor, work_request_id)
        when is_binary(work_request_id) do
-    SymppBoardLive.with_dashboard_repo(&mark_human_info_needed_in_repo(&1, grant, work_request_id))
+    SymppBoardLive.with_dashboard_repo(&mark_human_info_needed_in_repo(&1, actor, work_request_id))
   end
 
   defp mark_human_info_needed(_grant, _work_request_id), do: {:error, :not_found}
 
-  defp mark_ready_for_slicing(%AccessGrant{} = grant, work_request_id)
+  defp mark_ready_for_slicing(actor, work_request_id)
        when is_binary(work_request_id) do
-    SymppBoardLive.with_dashboard_repo(&mark_ready_for_slicing_in_repo(&1, grant, work_request_id))
+    SymppBoardLive.with_dashboard_repo(&mark_ready_for_slicing_in_repo(&1, actor, work_request_id))
   end
 
   defp mark_ready_for_slicing(_grant, _work_request_id), do: {:error, :not_found}
@@ -1068,25 +1116,36 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     end
   end
 
+  defp add_planned_slice(:local_operator, work_request_id, params)
+       when is_binary(work_request_id) and is_map(params) do
+    form = planned_slice_form(params)
+    attrs = planned_slice_attrs(form)
+
+    case SymppBoardLive.with_dashboard_repo(&add_planned_slice_in_repo(&1, :local_operator, work_request_id, attrs)) do
+      {:ok, planned_slice} -> {:ok, planned_slice}
+      {:error, reason} -> {:error, reason, form}
+    end
+  end
+
   defp add_planned_slice(_grant, _work_request_id, _params), do: {:error, :not_found, planned_slice_form()}
 
-  defp approve_planned_slice(%AccessGrant{} = grant, work_request_id, params)
+  defp approve_planned_slice(actor, work_request_id, params)
        when is_binary(work_request_id) and is_map(params) do
-    SymppBoardLive.with_dashboard_repo(&approve_planned_slice_in_repo(&1, grant, work_request_id, params))
+    SymppBoardLive.with_dashboard_repo(&approve_planned_slice_in_repo(&1, actor, work_request_id, params))
   end
 
   defp approve_planned_slice(_grant, _work_request_id, _params), do: {:error, :not_found}
 
-  defp skip_planned_slice(%AccessGrant{} = grant, work_request_id, params)
+  defp skip_planned_slice(actor, work_request_id, params)
        when is_binary(work_request_id) and is_map(params) do
-    SymppBoardLive.with_dashboard_repo(&skip_planned_slice_in_repo(&1, grant, work_request_id, params))
+    SymppBoardLive.with_dashboard_repo(&skip_planned_slice_in_repo(&1, actor, work_request_id, params))
   end
 
   defp skip_planned_slice(_grant, _work_request_id, _params), do: {:error, :not_found}
 
-  defp mark_sliced(%AccessGrant{} = grant, work_request_id)
+  defp mark_sliced(actor, work_request_id)
        when is_binary(work_request_id) do
-    SymppBoardLive.with_dashboard_repo(&mark_sliced_in_repo(&1, grant, work_request_id))
+    SymppBoardLive.with_dashboard_repo(&mark_sliced_in_repo(&1, actor, work_request_id))
   end
 
   defp mark_sliced(_grant, _work_request_id), do: {:error, :not_found}
@@ -1100,44 +1159,50 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     end
   end
 
-  defp ask_question_in_repo(repo, %AccessGrant{} = grant, work_request_id, params) do
-    with {:ok, work_request} <- scoped_work_request(repo, grant, work_request_id),
+  defp mark_ready_in_repo(repo, :local_operator, work_request_id) do
+    with {:ok, _work_request} <- WorkRequestService.get(repo, work_request_id) do
+      WorkRequestService.update_status(repo, work_request_id, "draft", "ready_for_clarification")
+    end
+  end
+
+  defp ask_question_in_repo(repo, actor, work_request_id, params) do
+    with {:ok, work_request} <- scoped_work_request(repo, actor, work_request_id),
          :ok <- require_clarification_status(work_request.status),
-         attrs <- question_attrs(params, grant) do
+         attrs <- question_attrs(params, actor) do
       ask_question_transaction(repo, work_request, attrs)
     end
   end
 
-  defp answer_question_in_repo(repo, %AccessGrant{} = grant, work_request_id, params) do
-    with {:ok, work_request} <- scoped_work_request(repo, grant, work_request_id),
+  defp answer_question_in_repo(repo, actor, work_request_id, params) do
+    with {:ok, work_request} <- scoped_work_request(repo, actor, work_request_id),
          :ok <- require_clarification_status(work_request.status),
          {:ok, question} <- scoped_question(repo, work_request.id, Map.get(params, "id")) do
       WorkRequestService.answer_question(
         repo,
         question.id,
         Map.get(params, "current_status", ""),
-        answer_attrs(params, grant)
+        answer_attrs(params, actor)
       )
     end
   end
 
-  defp close_question_in_repo(repo, %AccessGrant{} = grant, work_request_id, params) do
-    with {:ok, work_request} <- scoped_work_request(repo, grant, work_request_id),
+  defp close_question_in_repo(repo, actor, work_request_id, params) do
+    with {:ok, work_request} <- scoped_work_request(repo, actor, work_request_id),
          :ok <- require_clarification_status(work_request.status),
          {:ok, question} <- scoped_question(repo, work_request.id, Map.get(params, "id")) do
       WorkRequestService.close_question(repo, question.id, Map.get(params, "current_status", ""))
     end
   end
 
-  defp record_decision_in_repo(repo, %AccessGrant{} = grant, work_request_id, params) do
-    with {:ok, work_request} <- scoped_work_request(repo, grant, work_request_id),
+  defp record_decision_in_repo(repo, actor, work_request_id, params) do
+    with {:ok, work_request} <- scoped_work_request(repo, actor, work_request_id),
          :ok <- require_clarification_status(work_request.status) do
-      WorkRequestService.record_decision(repo, work_request.id, decision_attrs(params, grant))
+      WorkRequestService.record_decision(repo, work_request.id, decision_attrs(params, actor))
     end
   end
 
-  defp mark_human_info_needed_in_repo(repo, %AccessGrant{} = grant, work_request_id) do
-    with {:ok, work_request} <- scoped_work_request(repo, grant, work_request_id),
+  defp mark_human_info_needed_in_repo(repo, actor, work_request_id) do
+    with {:ok, work_request} <- scoped_work_request(repo, actor, work_request_id),
          :ok <- require_status(work_request.status, ["ready_for_clarification", "clarifying"]) do
       WorkRequestService.update_status(
         repo,
@@ -1148,8 +1213,8 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     end
   end
 
-  defp mark_ready_for_slicing_in_repo(repo, %AccessGrant{} = grant, work_request_id) do
-    with {:ok, work_request} <- scoped_work_request(repo, grant, work_request_id),
+  defp mark_ready_for_slicing_in_repo(repo, actor, work_request_id) do
+    with {:ok, work_request} <- scoped_work_request(repo, actor, work_request_id),
          :ok <-
            require_status(work_request.status, [
              "ready_for_clarification",
@@ -1160,15 +1225,15 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     end
   end
 
-  defp add_planned_slice_in_repo(repo, %AccessGrant{} = grant, work_request_id, attrs) do
-    with {:ok, work_request} <- scoped_work_request(repo, grant, work_request_id),
+  defp add_planned_slice_in_repo(repo, actor, work_request_id, attrs) do
+    with {:ok, work_request} <- scoped_work_request(repo, actor, work_request_id),
          :ok <- require_planned_slice_authoring_status(work_request.status) do
       WorkRequestService.add_planned_slice(repo, work_request.id, attrs)
     end
   end
 
-  defp approve_planned_slice_in_repo(repo, %AccessGrant{} = grant, work_request_id, params) do
-    with {:ok, work_request} <- scoped_work_request(repo, grant, work_request_id),
+  defp approve_planned_slice_in_repo(repo, actor, work_request_id, params) do
+    with {:ok, work_request} <- scoped_work_request(repo, actor, work_request_id),
          :ok <- require_planned_slice_authoring_status(work_request.status),
          {:ok, planned_slice} <- scoped_planned_slice(repo, work_request.id, Map.get(params, "id")) do
       WorkRequestService.approve_planned_slice(
@@ -1180,8 +1245,8 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     end
   end
 
-  defp skip_planned_slice_in_repo(repo, %AccessGrant{} = grant, work_request_id, params) do
-    with {:ok, work_request} <- scoped_work_request(repo, grant, work_request_id),
+  defp skip_planned_slice_in_repo(repo, actor, work_request_id, params) do
+    with {:ok, work_request} <- scoped_work_request(repo, actor, work_request_id),
          :ok <- require_planned_slice_authoring_status(work_request.status),
          {:ok, planned_slice} <- scoped_planned_slice(repo, work_request.id, Map.get(params, "id")) do
       WorkRequestService.skip_planned_slice(
@@ -1193,8 +1258,8 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     end
   end
 
-  defp mark_sliced_in_repo(repo, %AccessGrant{} = grant, work_request_id) do
-    with {:ok, work_request} <- scoped_work_request(repo, grant, work_request_id),
+  defp mark_sliced_in_repo(repo, actor, work_request_id) do
+    with {:ok, work_request} <- scoped_work_request(repo, actor, work_request_id),
          :ok <- require_status(work_request.status, ["ready_for_slicing"]) do
       WorkRequestService.mark_sliced(repo, work_request.id, work_request.status)
     end
@@ -1267,6 +1332,10 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
          :ok <- visible_work_request?(repo, work_request, grant) do
       {:ok, work_request}
     end
+  end
+
+  defp scoped_work_request(repo, :local_operator, work_request_id) do
+    WorkRequestService.get(repo, work_request_id)
   end
 
   defp scoped_question(repo, work_request_id, question_id) when is_binary(question_id) do
@@ -1359,6 +1428,13 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp can_create_work_request?(_grant), do: false
 
+  defp can_create_work_request?(true, _grant), do: true
+  defp can_create_work_request?(_operator_mode?, grant), do: can_create_work_request?(grant)
+
+  defp can_manage_work_request?(true, _grant), do: true
+  defp can_manage_work_request?(_operator_mode?, %AccessGrant{}), do: true
+  defp can_manage_work_request?(_operator_mode?, _grant), do: false
+
   defp intake_scope(%AccessGrant{} = grant) do
     case SymppBoardLive.with_dashboard_repo(&intake_scope(&1, grant)) do
       {:ok, scope} -> {:ok, scope}
@@ -1436,6 +1512,8 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
     %{
       "title" => Map.get(attrs, "title", ""),
+      "repo" => Map.get(attrs, "repo", ""),
+      "base_branch" => Map.get(attrs, "base_branch", ""),
       "work_type" => Map.get(attrs, "work_type", "feature"),
       "desired_dispatch_shape" => Map.get(attrs, "desired_dispatch_shape", "single_package"),
       "human_description" => Map.get(attrs, "human_description", ""),
@@ -1529,6 +1607,15 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp decode_constraints(_value), do: {:error, :invalid_constraints_json}
 
+  defp filled_form_value(value, error) when is_binary(value) do
+    case String.trim(value) do
+      "" -> {:error, error}
+      trimmed -> {:ok, trimmed}
+    end
+  end
+
+  defp filled_form_value(_value, error), do: {:error, error}
+
   defp normalize_keys(attrs) when is_map(attrs) do
     Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
   end
@@ -1540,11 +1627,25 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     |> put_if_filled("asked_by_agent_run_id", default_actor(grant))
   end
 
+  defp question_attrs(params, :local_operator) do
+    params
+    |> normalize_keys()
+    |> Map.take(["category", "question", "why_needed"])
+    |> put_if_filled("asked_by_agent_run_id", @local_operator_actor)
+  end
+
   defp answer_attrs(params, %AccessGrant{} = grant) do
     params
     |> normalize_keys()
     |> Map.take(["answer", "answered_by"])
     |> put_if_filled("answered_by", default_actor(grant))
+  end
+
+  defp answer_attrs(params, :local_operator) do
+    params
+    |> normalize_keys()
+    |> Map.take(["answer"])
+    |> Map.put("answered_by", @local_operator_actor)
   end
 
   defp decision_attrs(params, %AccessGrant{} = grant) do
@@ -1559,6 +1660,19 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
       "created_by"
     ])
     |> put_if_filled("created_by", default_actor(grant))
+  end
+
+  defp decision_attrs(params, :local_operator) do
+    params
+    |> normalize_keys()
+    |> Map.take([
+      "source_type",
+      "source_id",
+      "decision",
+      "rationale",
+      "scope_impact"
+    ])
+    |> Map.put("created_by", @local_operator_actor)
   end
 
   defp put_if_filled(attrs, key, value) do
@@ -1604,6 +1718,9 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp default_actor(%AccessGrant{id: id}) when is_binary(id), do: id
   defp default_actor(_grant), do: "operator"
+
+  defp default_actor(true, _grant), do: @local_operator_actor
+  defp default_actor(_operator_mode?, grant), do: default_actor(grant)
 
   defp filled_string?(value), do: String.trim(value) != ""
 
