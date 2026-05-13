@@ -762,10 +762,12 @@ pre,
 }
 
 .sympp-card-id {
+  max-width: 100%;
   color: var(--ink);
   font-family: "Sohne Mono", "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", monospace;
   font-size: 0.78rem;
   font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .sympp-card-title {
@@ -809,9 +811,7 @@ pre,
   overflow-wrap: anywhere;
 }
 
-.sympp-card-meta div:not(:first-child) dd,
-.sympp-card-id,
-.sympp-card-title a {
+.sympp-card-meta div:not(:first-child) dd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -819,6 +819,7 @@ pre,
 
 .sympp-card-title a {
   display: block;
+  overflow-wrap: anywhere;
 }
 
 .sympp-readiness {
