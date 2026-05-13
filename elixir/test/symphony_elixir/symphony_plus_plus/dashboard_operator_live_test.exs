@@ -185,21 +185,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
         id: "WR-OPERATOR-DETAIL",
         title: "Operator WorkRequest detail",
         status: "human_info_needed",
-        human_description: "Inspect the full request."
+        human_description: "Inspect the full request with Bearer raw-secret-value."
       )
 
     assert {:ok, _question} =
              WorkRequestRepository.ask_question(Repo, request.id, %{
-               question: "Question needing operator guidance",
+               question: "Question needing operator guidance raw-secret-value",
                category: "product",
                why_needed: "Operator needs to understand the pending product answer.",
                asked_by: "operator"
              })
 
+    assert {:ok, _decision} =
+             WorkRequestRepository.record_decision(Repo, request.id, %{
+               decision: "Proceed without ghp_raw_secret_value",
+               rationale: "The token raw-secret-value is not needed.",
+               source_type: "operator",
+               scope_impact: "No scope change.",
+               created_by: "operator"
+             })
+
     assert {:ok, _slice} =
              WorkRequestRepository.add_planned_slice(Repo, request.id, %{
                title: "First operator slice",
-               goal: "Expose the cockpit.",
+               goal: "Expose the cockpit without sk-rawsecretvalue.",
                work_package_kind: "dashboard",
                target_base_branch: "main",
                branch_pattern: "agent/SYMPP-V2-UX-001/local-operator-cockpit",
@@ -212,11 +221,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     {:ok, _view, html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
 
     assert html =~ "Operator WorkRequest detail"
-    assert html =~ "Question needing operator guidance"
     assert html =~ "Planned slices"
     assert html =~ "First operator slice"
+    assert html =~ "[REDACTED]"
     assert html =~ ~s(href="../board?auth=work_key")
     refute html =~ "Board access"
+    refute html =~ "raw-secret-value"
+    refute html =~ "ghp_raw_secret_value"
+    refute html =~ "sk-rawsecretvalue"
     refute html =~ ~s(name="work_key")
     refute html =~ "Answer</button>"
     refute html =~ "Close unanswered"
@@ -294,12 +306,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
       status: "human_info_needed"
     )
 
+    create_work_request!(
+      id: "WR-OPERATOR-EMPTY-STREAM",
+      title: "Hidden empty stream guidance",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "feature/no-visible-package",
+      status: "human_info_needed"
+    )
+
     {:ok, _view, html} = live(local_conn(), "/sympp/board?repo=nextide/symphony-plus-plus")
 
     assert html =~ "Visible repo package"
     assert html =~ "Visible guidance request"
     refute html =~ "Hidden repo blocker"
     refute html =~ "Hidden guidance request"
+    refute html =~ "Hidden empty stream guidance"
   end
 
   test "local operator guidance watchlist hides unsupported package kind filters" do

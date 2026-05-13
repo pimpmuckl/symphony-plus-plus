@@ -813,8 +813,12 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     matches_filter?(Map.get(request, :repo), filters.repo) and matches_package_scope?(request, filters, visible_streams)
   end
 
-  defp matches_package_scope?(request, %{kind: @empty_filter, phase: @empty_filter}, _visible_streams) do
+  defp matches_package_scope?(request, %{repo: @empty_filter, kind: @empty_filter, phase: @empty_filter}, _visible_streams) do
     not is_nil(stream_key(request))
+  end
+
+  defp matches_package_scope?(request, %{kind: @empty_filter, phase: @empty_filter}, visible_streams) do
+    MapSet.member?(visible_streams, stream_key(request))
   end
 
   defp matches_package_scope?(_request, _filters, _visible_streams), do: false
