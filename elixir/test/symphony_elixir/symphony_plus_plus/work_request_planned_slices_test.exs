@@ -581,6 +581,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
       if recovery.worker_secret_handoff.mode == "local-private-file" do
         refute File.exists?(recovery.worker_secret_handoff.path)
       end
+
+      assert Path.wildcard(Path.join([secret_store_dir, "metadata", "*.json"])) == []
     after
       File.rm_rf(secret_store_dir)
     end
@@ -609,6 +611,59 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
       if recovery.worker_secret_handoff.mode == "local-private-file" do
         refute File.exists?(recovery.worker_secret_handoff.path)
       end
+
+      assert Path.wildcard(Path.join([secret_store_dir, "metadata", "*.json"])) == []
+    after
+      File.rm_rf(secret_store_dir)
+    end
+  end
+
+  test "dispatch link cleanup keeps the legacy secret delete fallback injectable", %{
+    repo: repo,
+    database_path: database_path
+  } do
+    work_request = create_work_request!(repo, id: "WR-DISPATCH-LINK-FALLBACK", status: "ready_for_slicing")
+
+    assert {:ok, planned} =
+             Repository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-DISPATCH-LINK-FALLBACK")
+             )
+
+    assert {:ok, approved} = Repository.approve_planned_slice(repo, work_request.id, planned.id, "planned")
+
+    secret_store_dir =
+      Path.join(System.tmp_dir!(), "sympp-dispatch-link-fallback-secrets-#{System.unique_integer([:positive])}")
+
+    handoff_opts = dispatch_handoff_opts(database_path, secret_store_dir, "worker-dispatch-link-fallback")
+    parent = self()
+
+    try do
+      assert {:error, {:dispatch_link_failed, :forced_link_failure, recovery}} =
+               PlannedSliceDispatch.dispatch(repo, work_request.id, approved.id, handoff_opts,
+                 link_planned_slice: fn _repo, _work_request_id, _planned_slice_id, "approved", _work_package_id ->
+                   {:error, :forced_link_failure}
+                 end,
+                 delete_worker_secret_by_grant: fn _work_package, _grant, _handoff_opts ->
+                   {:error, :managed_cleanup_failed}
+                 end,
+                 delete_worker_secret: fn handoff, fallback_handoff_opts ->
+                   send(parent, {:fallback_secret_delete, handoff.mode})
+                   SecretHandoff.delete_worker_secret(handoff, fallback_handoff_opts)
+                 end
+               )
+
+      assert_receive {:fallback_secret_delete, _mode}
+
+      assert recovery.cleanup == %{
+               ledger: :deleted,
+               secret_handoff: {:cleanup_failed, :managed_cleanup_failed},
+               fallback_secret_handoff: :deleted
+             }
+
+      assert repo.aggregate(WorkPackage, :count, :id) == 0
+      assert repo.aggregate(AccessGrant, :count, :id) == 0
     after
       File.rm_rf(secret_store_dir)
     end

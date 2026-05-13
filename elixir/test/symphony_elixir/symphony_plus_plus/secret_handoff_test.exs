@@ -1,12 +1,47 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
   use ExUnit.Case, async: false
 
+  alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
   @repo_root Path.expand("../../../../", __DIR__)
   @default_worker_grant_id "ag_secret_handoff_D321"
   @windows match?({:win32, _}, :os.type())
+
+  test "local operator repo root fails closed for an invalid configured root" do
+    invalid_repo_root =
+      Path.join(System.tmp_dir!(), "sympp-invalid-repo-root-#{System.unique_integer([:positive])}")
+
+    previous_repo_root = Application.get_env(:symphony_elixir, :sympp_repo_root)
+    Application.put_env(:symphony_elixir, :sympp_repo_root, invalid_repo_root)
+
+    on_exit(fn ->
+      restore_repo_root_env(previous_repo_root)
+      File.rm_rf(invalid_repo_root)
+    end)
+
+    assert SecretHandoff.local_operator_repo_root() == nil
+  end
+
+  test "rejects storing a handoff when repo root lacks worker-secret helper scripts" do
+    invalid_repo_root =
+      Path.join(System.tmp_dir!(), "sympp-invalid-handoff-root-#{System.unique_integer([:positive])}")
+
+    try do
+      File.mkdir_p!(invalid_repo_root)
+
+      assert {:error, :invalid_repo_root} =
+               SecretHandoff.store_worker_secret(creation("invalid-root-secret"),
+                 mode: "auto",
+                 store_dir: Path.join(System.tmp_dir!(), "sympp-invalid-root-store"),
+                 claimed_by: "worker-local-1",
+                 repo_root: invalid_repo_root
+               )
+    after
+      File.rm_rf!(invalid_repo_root)
+    end
+  end
 
   if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
 
@@ -613,6 +648,125 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
+  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
+
+  test "omits metadata run command when repo root no longer validates" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-no-command-#{System.unique_integer([:positive])}")
+    repo_root = Path.join(System.tmp_dir!(), "sympp-handoff-repo-root-#{System.unique_integer([:positive])}")
+    script_path = Path.join([repo_root, "scripts", "sympp-worker-secret.sh"])
+    package = work_package()
+    grant = worker_grant("display-secret", claimed_by: "claimed-worker-1")
+    opts = [mode: "local-private-file", store_dir: store_dir, claimed_by: "worker-local-1", repo_root: repo_root]
+    handoff_path = local_private_file_path(package, grant, opts)
+    handoff = %{"mode" => "local-private-file", "path" => handoff_path}
+
+    try do
+      File.mkdir_p!(Path.dirname(script_path))
+      File.write!(script_path, "#!/bin/sh\n")
+      File.mkdir_p!(Path.dirname(handoff_path))
+      File.write!(handoff_path, "display fixture")
+
+      assert :ok = SecretHandoff.store_worker_secret_metadata(package, grant, handoff, opts)
+      assert {:ok, display} = SecretHandoff.read_worker_secret_metadata(package, grant, opts)
+      assert display.run_mcp_command =~ "run-mcp-local-file"
+
+      File.rm!(script_path)
+
+      assert {:ok, display_without_command} = SecretHandoff.read_worker_secret_metadata(package, grant, opts)
+      assert display_without_command.path == handoff_path
+      refute Map.has_key?(display_without_command, :run_mcp_command)
+    after
+      File.rm_rf!(store_dir)
+      File.rm_rf!(repo_root)
+    end
+  end
+
+  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
+
+  test "reads redacted managed metadata by grant identity for operator handoff display" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-read-local-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = worker_grant("display-secret", claimed_by: "claimed-worker-1")
+    opts = [mode: "local-private-file", store_dir: store_dir, claimed_by: "worker-local-1", repo_root: @repo_root]
+    handoff_path = local_private_file_path(package, grant, opts)
+    handoff = %{"mode" => "local-private-file", "path" => handoff_path}
+
+    try do
+      File.mkdir_p!(Path.dirname(handoff_path))
+      File.write!(handoff_path, "display fixture")
+
+      assert :ok = SecretHandoff.store_worker_secret_metadata(package, grant, handoff, opts)
+      assert {:ok, display} = SecretHandoff.read_worker_secret_metadata(package, grant, opts)
+
+      assert display.mode == "local-private-file"
+      assert display.status == "stored"
+      assert display.work_package_id == package.id
+      assert display.grant_id == grant.id
+      assert display.display_key == grant.display_key
+      assert display.target == credential_target(package, grant)
+      assert display.path == handoff_path
+      assert display.claimed_by == "claimed-worker-1"
+      assert display.suggested_claimed_by == "worker-local-1"
+      assert display.secret_in_stdout == false
+      assert display.run_mcp_command =~ "run-mcp-local-file"
+      assert display.run_mcp_command =~ "--claimed-by 'claimed-worker-1'"
+      refute inspect(display) =~ "display-secret"
+
+      File.rm!(handoff_path)
+      assert {:ok, stale_display} = SecretHandoff.read_worker_secret_metadata(package, grant, opts)
+      assert stale_display.path == handoff_path
+      assert stale_display.run_mcp_command =~ "--claimed-by 'claimed-worker-1'"
+
+      unclaimed_grant = worker_grant("unclaimed-display-secret", id: "grant-unclaimed-display", display_key: "U321")
+      unclaimed_path = local_private_file_path(package, unclaimed_grant, opts)
+      File.write!(unclaimed_path, "unclaimed display fixture")
+
+      assert :ok =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 unclaimed_grant,
+                 %{"mode" => "local-private-file", "path" => unclaimed_path},
+                 opts
+               )
+
+      assert {:ok, unclaimed_display} = SecretHandoff.read_worker_secret_metadata(package, unclaimed_grant, opts)
+      assert unclaimed_display.claimed_by == nil
+      assert unclaimed_display.suggested_claimed_by == "worker-local-1"
+      assert unclaimed_display.run_mcp_command =~ "--claimed-by 'worker-local-1'"
+
+      File.write!(managed_metadata_file(package, grant, opts), Jason.encode!(metadata_record(package, grant, "local-private-file", %{"path" => Path.join(store_dir, "other.secret")})))
+
+      assert {:error, {:handoff_metadata_invalid, :local_path_mismatch}} =
+               SecretHandoff.read_worker_secret_metadata(package, grant, opts)
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  test "metadata namespace canonicalizes equivalent filesystem database paths" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-db-namespace-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = worker_grant("canonical-database-secret")
+    database_path = Path.join(File.cwd!(), "tmp/sympp-handoff-db-#{System.unique_integer([:positive])}.sqlite3")
+    relative_database = Path.relative_to(database_path, File.cwd!())
+
+    absolute_opts = [
+      mode: "local-private-file",
+      store_dir: store_dir,
+      repo_root: @repo_root,
+      database: database_path,
+      claimed_by: "worker-local-1"
+    ]
+
+    relative_opts = Keyword.put(absolute_opts, :database, relative_database)
+
+    assert managed_metadata_file(package, grant, absolute_opts) ==
+             managed_metadata_file(package, grant, relative_opts)
+
+    assert local_private_file_path(package, grant, absolute_opts) ==
+             local_private_file_path(package, grant, relative_opts)
+  end
+
   test "metadata persistence treats nil store dir as the default store" do
     package = work_package()
     grant = worker_grant()
@@ -1126,7 +1280,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
       0,
       opts |> Keyword.get(:repo_root, "") |> to_string() |> Path.expand(),
       0,
-      to_string(Keyword.get(opts, :database, "")),
+      database_hash_value(opts),
       0,
       metadata_store_dir(opts),
       0,
@@ -1163,7 +1317,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     hash_source = [
       opts |> Keyword.get(:repo_root, "") |> to_string() |> Path.expand(),
       0,
-      to_string(Keyword.get(opts, :database, "")),
+      database_hash_value(opts),
       0,
       work_package.id,
       0,
@@ -1177,6 +1331,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     |> Base.url_encode64(padding: false)
     |> binary_part(0, 16)
   end
+
+  defp database_hash_value(opts) do
+    case Keyword.get(opts, :database) do
+      database when is_binary(database) ->
+        database
+        |> String.trim()
+        |> database_hash_value(database)
+
+      nil ->
+        ""
+
+      database ->
+        :erlang.term_to_binary(database)
+    end
+  end
+
+  defp database_hash_value("", _database), do: ""
+  defp database_hash_value(_trimmed, database), do: database |> Repo.database_key() |> :erlang.term_to_binary()
 
   defp credential_target(%WorkPackage{id: work_package_id}, worker_grant) do
     "SymphonyPlusPlus:worker:#{work_package_id}:#{worker_grant.display_key}:#{String.trim(worker_grant.id)}"
@@ -1228,4 +1400,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
   defp shell_literal(value) do
     "'#{String.replace(to_string(value), "'", "'\"'\"'")}'"
   end
+
+  defp restore_repo_root_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_repo_root)
+  defp restore_repo_root_env(repo_root), do: Application.put_env(:symphony_elixir, :sympp_repo_root, repo_root)
 end

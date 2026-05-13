@@ -10,6 +10,8 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
@@ -34,7 +36,6 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   ]
   @local_operator_actor "local-operator"
   @local_operator_worker "local-operator-worker"
-  @repo_root __DIR__ |> Path.join("../../../..") |> Path.expand()
   @dispatch_handoff_display_fields [
     {"Mode", :mode},
     {"Status", :status},
@@ -1851,12 +1852,17 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     [
       mode: "auto",
       database: dashboard_ledger_database(repo),
-      repo_root: @repo_root,
+      repo_root: SecretHandoff.local_operator_repo_root(),
       claimed_by: @local_operator_worker
     ]
+    |> put_optional_handoff_opt(:store_dir, Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir))
   end
 
   defp dashboard_ledger_database(repo) do
+    configured_ledger_database() || live_ledger_database(repo)
+  end
+
+  defp live_ledger_database(repo) do
     case repo.query("PRAGMA database_list", []) do
       {:ok, %{rows: rows}} -> persistent_main_database_path(rows) || configured_ledger_database()
       {:error, _reason} -> configured_ledger_database()
@@ -1873,8 +1879,27 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   end
 
   defp configured_ledger_database do
-    Application.get_env(:symphony_elixir, :sympp_repo_database)
+    case Application.get_env(:symphony_elixir, :sympp_repo_database) do
+      database when is_binary(database) ->
+        configured_ledger_database_path(database)
+
+      database ->
+        database
+    end
   end
+
+  defp configured_ledger_database_path(database) do
+    database = String.trim(database)
+
+    cond do
+      database == "" -> nil
+      Repo.filesystem_database_path?(database) -> Path.expand(database)
+      true -> database
+    end
+  end
+
+  defp put_optional_handoff_opt(opts, _key, nil), do: opts
+  defp put_optional_handoff_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp dispatch_notice(dispatch) do
     create_work =

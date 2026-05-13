@@ -12,9 +12,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
     :missing_secret,
     :missing_claimed_by,
     :missing_repo_root,
+    :invalid_repo_root,
     :missing_worker_grant,
     :missing_work_package,
+    :unsupported_handoff_metadata_location,
     :unsupported_secret_handoff_mode,
+    :handoff_metadata_conflict,
     :local_private_file_unavailable_on_windows,
     :windows_credential_manager_unavailable
   ]
@@ -186,10 +189,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
 
     case cleanup_fun.(repo, creation.work_package.id) do
       :ok ->
-        delete_worker_secret_after_link_failure(worker_secret_handoff, handoff_opts, reason, recovery, opts)
+        delete_worker_secret_after_link_failure(creation, worker_secret_handoff, handoff_opts, reason, recovery, opts)
 
       {:ok, _result} ->
-        delete_worker_secret_after_link_failure(worker_secret_handoff, handoff_opts, reason, recovery, opts)
+        delete_worker_secret_after_link_failure(creation, worker_secret_handoff, handoff_opts, reason, recovery, opts)
 
       {:error, ledger_cleanup_reason} ->
         cleanup = %{ledger: {:cleanup_failed, ledger_cleanup_reason}, secret_handoff: :skipped_to_preserve_recovery}
@@ -197,18 +200,56 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
     end
   end
 
-  defp delete_worker_secret_after_link_failure(worker_secret_handoff, handoff_opts, reason, recovery, opts) do
-    delete_fun = Keyword.get(opts, :delete_worker_secret, &SecretHandoff.delete_worker_secret/2)
+  defp delete_worker_secret_after_link_failure(creation, worker_secret_handoff, handoff_opts, reason, recovery, opts) do
+    delete_fun = Keyword.get(opts, :delete_worker_secret_by_grant, &SecretHandoff.delete_worker_secret_by_grant/3)
 
-    case delete_fun.(worker_secret_handoff, handoff_opts) do
+    case delete_fun.(creation.work_package, worker_secret_metadata_grant(creation.worker_grant), handoff_opts) do
       :ok ->
         cleanup = %{ledger: :deleted, secret_handoff: :deleted}
         {:error, {:dispatch_link_failed, reason, Map.put(recovery, :cleanup, cleanup)}}
 
       {:error, handoff_cleanup_reason} ->
-        cleanup = %{ledger: :deleted, secret_handoff: {:cleanup_failed, handoff_cleanup_reason}}
+        cleanup =
+          fallback_delete_worker_secret_after_link_failure(
+            worker_secret_handoff,
+            handoff_opts,
+            handoff_cleanup_reason,
+            opts
+          )
+
         {:error, {:dispatch_link_failed, reason, Map.put(recovery, :cleanup, cleanup)}}
     end
+  end
+
+  defp fallback_delete_worker_secret_after_link_failure(
+         worker_secret_handoff,
+         handoff_opts,
+         handoff_cleanup_reason,
+         opts
+       ) do
+    fallback_delete_fun = Keyword.get(opts, :delete_worker_secret, &SecretHandoff.delete_worker_secret/2)
+
+    case fallback_delete_fun.(worker_secret_handoff, handoff_opts) do
+      :ok ->
+        %{
+          ledger: :deleted,
+          secret_handoff: {:cleanup_failed, handoff_cleanup_reason},
+          fallback_secret_handoff: :deleted
+        }
+
+      {:error, fallback_reason} ->
+        %{
+          ledger: :deleted,
+          secret_handoff: {:cleanup_failed, handoff_cleanup_reason},
+          fallback_secret_handoff: {:cleanup_failed, fallback_reason}
+        }
+    end
+  end
+
+  defp worker_secret_metadata_grant(worker_grant) when is_map(worker_grant) do
+    worker_grant
+    |> Map.delete(:secret)
+    |> Map.delete("secret")
   end
 
   defp recovery_payload(%{work_package: work_package, worker_grant: worker_grant}, worker_secret_handoff) do
@@ -285,6 +326,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
   defp drop_nil_values(map), do: Map.reject(map, fn {_key, value} -> is_nil(value) end)
 
   defp handoff_error?(reason) when reason in @handoff_error_reasons, do: true
+  defp handoff_error?({:handoff_metadata_delete_failed, _reason}), do: true
+  defp handoff_error?({:handoff_metadata_invalid, _reason}), do: true
+  defp handoff_error?({:handoff_metadata_read_failed, _reason}), do: true
+  defp handoff_error?({:handoff_metadata_write_failed, _reason}), do: true
   defp handoff_error?({:local_private_file_failed, _reason}), do: true
   defp handoff_error?({:windows_credential_manager_failed, _status}), do: true
   defp handoff_error?(_reason), do: false

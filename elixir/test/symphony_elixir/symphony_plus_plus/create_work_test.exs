@@ -12,6 +12,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Renderer
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
@@ -420,6 +421,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
   test "create-work private handoff storage names use the persisted grant id and redact the raw secret", %{repo: repo} do
     store_dir = Path.join(System.tmp_dir!(), "sympp-create-work-grant-handoff-#{System.unique_integer([:positive])}")
 
+    handoff_opts = [
+      mode: "local-private-file",
+      store_dir: store_dir,
+      claimed_by: "worker-create-work-grant-id",
+      repo_root: @repo_root
+    ]
+
     try do
       assert {:ok, {creation, handoff}} =
                CreateWork.create_with_worker_secret_handoff(
@@ -430,10 +438,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
                    title: "Create private grant handoff",
                    acceptance_criteria: ["Worker secret handoff is private."]
                  },
-                 mode: "local-private-file",
-                 store_dir: store_dir,
-                 claimed_by: "worker-create-work-grant-id",
-                 repo_root: @repo_root
+                 handoff_opts
                )
 
       grant_id = creation.worker_grant.id
@@ -441,13 +446,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
       payload = CreateWork.response_payload(creation, worker_secret_handoff: handoff)
       json = Jason.encode!(payload)
 
+      assert {:ok, metadata_handoff} =
+               SecretHandoff.read_worker_secret_metadata(creation.work_package, creation.worker_grant, handoff_opts)
+
       assert creation.work_package.status == "ready_for_worker"
       assert handoff.path =~ grant_id
       assert handoff.target =~ grant_id
+      assert metadata_handoff.path == handoff.path
+      assert metadata_handoff.target == handoff.target
+      assert metadata_handoff.suggested_claimed_by == "worker-create-work-grant-id"
+      assert metadata_handoff.secret_in_stdout == false
       assert File.read!(handoff.path) == secret
       refute Map.has_key?(payload.worker_grant, :secret)
       assert payload.worker_grant.secret_handoff.target == handoff.target
       refute json =~ secret
+      refute inspect(metadata_handoff) =~ secret
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
+  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
+
+  test "removes stored worker secret when managed metadata persistence fails", %{repo: repo} do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-metadata-failure-handoff-#{System.unique_integer([:positive])}")
+
+    try do
+      assert {:error, {:handoff_metadata_write_failed, {:rename, :eacces}}} =
+               CreateWork.create_with_worker_secret_handoff(
+                 repo,
+                 %{
+                   repo: "kraken",
+                   base_branch: "main",
+                   title: "Force metadata write failure",
+                   acceptance_criteria: ["Rollback removes stored handoff metadata."]
+                 },
+                 mode: "local-private-file",
+                 store_dir: store_dir,
+                 claimed_by: "worker-metadata-failure",
+                 repo_root: @repo_root,
+                 metadata_rename_fun: fn _temp_path, _path -> {:error, :eacces} end
+               )
+
+      assert repo.aggregate(WorkPackage, :count, :id) == 0
+      assert repo.aggregate(AccessGrant, :count, :id) == 0
+      assert Path.wildcard(Path.join(store_dir, "*.secret")) == []
+      assert Path.wildcard(Path.join([store_dir, "metadata", "*.json"])) == []
     after
       File.rm_rf!(store_dir)
     end
@@ -488,6 +532,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
       assert repo.aggregate(WorkPackage, :count, :id) == 0
       assert repo.aggregate(AccessGrant, :count, :id) == 0
       assert Path.wildcard(Path.join(store_dir, "*.secret")) == []
+      assert Path.wildcard(Path.join([store_dir, "metadata", "*.json"])) == []
     after
       repo.query!("DROP TRIGGER IF EXISTS sympp_force_ready_stale")
       File.rm_rf!(store_dir)
@@ -519,6 +564,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
       assert repo.aggregate(WorkPackage, :count, :id) == 0
       assert repo.aggregate(AccessGrant, :count, :id) == 0
       assert Path.wildcard(Path.join(store_dir, "*.secret")) == []
+      assert Path.wildcard(Path.join([store_dir, "metadata", "*.json"])) == []
     after
       File.rm_rf!(store_dir)
     end

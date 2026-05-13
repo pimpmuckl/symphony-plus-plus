@@ -11,6 +11,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
+  alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
@@ -20,13 +21,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
   alias SymphonyElixirWeb.SymppDetailLive
 
   @endpoint SymphonyElixirWeb.Endpoint
+  @repo_root Path.expand("../../../../", __DIR__)
   @detail_phase_id "phase-dashboard-detail-test"
+  @windows match?({:win32, _}, :os.type())
+
+  defmodule NoQueryRepo do
+    @moduledoc false
+
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    def all(query), do: Repo.all(query)
+    def get(queryable, id), do: Repo.get(queryable, id)
+    def one(query), do: Repo.one(query)
+    def transaction(fun), do: Repo.transaction(fun)
+  end
 
   setup_all do
     database_path = WorkPackageFactory.database_path()
@@ -105,6 +120,274 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert html =~ "No progress or finding timeline events recorded."
     assert html =~ "No artifacts recorded."
     assert html =~ "No agent runs recorded."
+  end
+
+  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
+
+  test "renders durable worker handoff metadata on package detail" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-detail-handoff-#{System.unique_integer([:positive])}")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+
+    on_exit(fn ->
+      restore_store_dir_env(previous_store_dir)
+      File.rm_rf(store_dir)
+    end)
+
+    %{work_package: work_package, architect_secret: secret} =
+      create_detail_package(id: "SYMPP-P5-HANDOFF", title: "Detail handoff package")
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(Repo, work_package.id)
+    worker_grant = Enum.find(grants, &(&1.grant_role == "worker"))
+    worker_secret = "durable-worker-secret-#{System.unique_integer([:positive])}"
+
+    handoff_opts = [
+      mode: "local-private-file",
+      store_dir: store_dir,
+      database: Application.fetch_env!(:symphony_elixir, :sympp_repo_database),
+      repo_root: @repo_root,
+      claimed_by: "local-operator-worker"
+    ]
+
+    handoff_grant = %{id: worker_grant.id, display_key: worker_grant.display_key, secret: worker_secret}
+    creation = %{work_package: work_package, worker_grant: handoff_grant}
+
+    assert {:ok, handoff} = SecretHandoff.store_worker_secret(creation, handoff_opts)
+    assert :ok = SecretHandoff.store_worker_secret_metadata(work_package, worker_grant, handoff, handoff_opts)
+
+    {:ok, _view, html} = live(auth_conn(secret), "/sympp/work-packages/#{work_package.id}")
+
+    assert html =~ "Worker Handoff"
+    assert html =~ "local-private-file"
+    assert html =~ "Claimed by"
+    assert html =~ "worker-1"
+    assert html =~ "Secret in stdout"
+    assert html =~ "false"
+    assert html =~ handoff.target
+    assert html =~ Path.basename(handoff.path)
+    assert html =~ "Run MCP"
+    assert html =~ "local-operator-worker"
+    refute html =~ worker_secret
+  end
+
+  test "dashboard detail ignores revoked worker handoff metadata" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-detail-revoked-handoff-#{System.unique_integer([:positive])}")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+
+    on_exit(fn ->
+      restore_store_dir_env(previous_store_dir)
+      File.rm_rf(store_dir)
+    end)
+
+    %{work_package: work_package} =
+      create_detail_package(id: "SYMPP-P5-REVOKED-HANDOFF", title: "Revoked handoff package")
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(Repo, work_package.id)
+    worker_grant = Enum.find(grants, &(&1.grant_role == "worker"))
+
+    handoff_opts = [
+      mode: "windows-credential-manager",
+      store_dir: store_dir,
+      database: live_dashboard_database(),
+      repo_root: @repo_root,
+      claimed_by: "local-operator-worker"
+    ]
+
+    handoff = %{mode: "windows-credential-manager", target: credential_target(work_package, worker_grant)}
+    assert :ok = SecretHandoff.store_worker_secret_metadata(work_package, worker_grant, handoff, handoff_opts)
+    assert {:ok, _revoked} = AccessGrantRepository.revoke(Repo, worker_grant.id, DateTime.utc_now(:microsecond))
+
+    assert {:ok, detail} = Dashboard.detail(Repo, work_package.id)
+    assert detail.worker_secret_handoffs == []
+  end
+
+  test "dashboard detail tolerates repos without query callback" do
+    %{work_package: work_package} =
+      create_detail_package(id: "SYMPP-P5-NOQUERY", title: "No query callback package")
+
+    assert {:ok, detail} = Dashboard.detail(NoQueryRepo, work_package.id)
+    assert detail.worker_secret_handoffs == []
+  end
+
+  test "dashboard detail only discovers handoff metadata in the configured store" do
+    configured_store =
+      Path.join(System.tmp_dir!(), "sympp-detail-configured-store-#{System.unique_integer([:positive])}")
+
+    custom_store = Path.join(System.tmp_dir!(), "sympp-detail-custom-store-#{System.unique_integer([:positive])}")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, configured_store)
+
+    on_exit(fn ->
+      restore_store_dir_env(previous_store_dir)
+      File.rm_rf(configured_store)
+      File.rm_rf(custom_store)
+    end)
+
+    %{work_package: work_package} =
+      create_detail_package(id: "SYMPP-P5-CONFIGURED-STORE", title: "Configured store package")
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(Repo, work_package.id)
+    worker_grant = Enum.find(grants, &(&1.grant_role == "worker"))
+
+    handoff_opts = [
+      mode: "windows-credential-manager",
+      store_dir: custom_store,
+      database: live_dashboard_database(),
+      repo_root: @repo_root,
+      claimed_by: "local-operator-worker"
+    ]
+
+    handoff = %{mode: "windows-credential-manager", target: credential_target(work_package, worker_grant)}
+    assert :ok = SecretHandoff.store_worker_secret_metadata(work_package, worker_grant, handoff, handoff_opts)
+
+    assert {:ok, configured_detail} = Dashboard.detail(Repo, work_package.id)
+    assert configured_detail.worker_secret_handoffs == []
+
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, custom_store)
+
+    assert {:ok, custom_store_detail} = Dashboard.detail(Repo, work_package.id)
+    assert [%{grant_id: grant_id, target: target}] = custom_store_detail.worker_secret_handoffs
+    assert grant_id == worker_grant.id
+    assert target == handoff.target
+  end
+
+  test "dashboard detail emits absolute configured filesystem database in handoff command" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-detail-database-command-#{System.unique_integer([:positive])}")
+    configured_database = "configured-command-ledger-#{System.unique_integer([:positive])}.sqlite3"
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    previous_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+    Application.put_env(:symphony_elixir, :sympp_repo_database, configured_database)
+
+    on_exit(fn ->
+      restore_store_dir_env(previous_store_dir)
+      restore_database_env(previous_database)
+      File.rm_rf(store_dir)
+    end)
+
+    %{work_package: work_package} =
+      create_detail_package(id: "SYMPP-P5-ABSOLUTE-DATABASE", title: "Absolute database package")
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(Repo, work_package.id)
+    worker_grant = Enum.find(grants, &(&1.grant_role == "worker"))
+
+    handoff_opts = [
+      mode: "windows-credential-manager",
+      store_dir: store_dir,
+      database: configured_database,
+      repo_root: @repo_root,
+      claimed_by: "local-operator-worker"
+    ]
+
+    handoff = %{mode: "windows-credential-manager", target: credential_target(work_package, worker_grant)}
+    assert :ok = SecretHandoff.store_worker_secret_metadata(work_package, worker_grant, handoff, handoff_opts)
+
+    assert {:ok, detail} = Dashboard.detail(Repo, work_package.id)
+    assert [%{run_mcp_command: run_mcp_command}] = detail.worker_secret_handoffs
+    assert run_mcp_command =~ Path.expand(configured_database)
+    refute run_mcp_command =~ "-Database '#{configured_database}'"
+  end
+
+  test "dashboard detail keeps handoff metadata when command root no longer validates" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-detail-invalid-command-root-#{System.unique_integer([:positive])}")
+    configured_repo_root = Path.join(System.tmp_dir!(), "sympp-detail-command-root-#{System.unique_integer([:positive])}")
+    configured_database = live_dashboard_database()
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    previous_repo_root = Application.get_env(:symphony_elixir, :sympp_repo_root)
+    previous_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+    Application.put_env(:symphony_elixir, :sympp_repo_root, configured_repo_root)
+    Application.put_env(:symphony_elixir, :sympp_repo_database, configured_database)
+
+    on_exit(fn ->
+      restore_store_dir_env(previous_store_dir)
+      restore_repo_root_env(previous_repo_root)
+      restore_database_env(previous_database)
+      File.rm_rf(store_dir)
+      File.rm_rf(configured_repo_root)
+    end)
+
+    write_worker_secret_scripts!(configured_repo_root)
+
+    %{work_package: work_package} =
+      create_detail_package(id: "SYMPP-P5-NO-COMMAND-ROOT", title: "No command root package")
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(Repo, work_package.id)
+    worker_grant = Enum.find(grants, &(&1.grant_role == "worker"))
+
+    handoff_opts = [
+      mode: "windows-credential-manager",
+      store_dir: store_dir,
+      database: configured_database,
+      repo_root: configured_repo_root,
+      claimed_by: "local-operator-worker"
+    ]
+
+    handoff = %{mode: "windows-credential-manager", target: credential_target(work_package, worker_grant)}
+    assert :ok = SecretHandoff.store_worker_secret_metadata(work_package, worker_grant, handoff, handoff_opts)
+
+    File.rm_rf!(Path.join(configured_repo_root, "scripts"))
+
+    assert SecretHandoff.local_operator_repo_root() == nil
+    assert {:ok, detail} = Dashboard.detail(Repo, work_package.id)
+    assert [%{mode: "windows-credential-manager", target: target} = display] = detail.worker_secret_handoffs
+    assert target == handoff.target
+    assert display.display_key == worker_grant.display_key
+    assert display.secret_in_stdout == false
+    refute Map.has_key?(display, :run_mcp_command)
+  end
+
+  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
+
+  test "dashboard detail uses configured namespace inputs for handoff lookup" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-detail-namespace-store-#{System.unique_integer([:positive])}")
+    configured_repo_root = Path.join(System.tmp_dir!(), "sympp-detail-repo-root-#{System.unique_integer([:positive])}")
+    configured_database = "configured-ledger-#{System.unique_integer([:positive])}.sqlite3"
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    previous_repo_root = Application.get_env(:symphony_elixir, :sympp_repo_root)
+    previous_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+    Application.put_env(:symphony_elixir, :sympp_repo_root, configured_repo_root)
+    Application.put_env(:symphony_elixir, :sympp_repo_database, configured_database)
+
+    on_exit(fn ->
+      restore_store_dir_env(previous_store_dir)
+      restore_repo_root_env(previous_repo_root)
+      restore_database_env(previous_database)
+      File.rm_rf(store_dir)
+      File.rm_rf(configured_repo_root)
+    end)
+
+    %{work_package: work_package} =
+      create_detail_package(id: "SYMPP-P5-CONFIGURED-NAMESPACE", title: "Configured namespace package")
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(Repo, work_package.id)
+    worker_grant = Enum.find(grants, &(&1.grant_role == "worker"))
+    handoff_secret = "configured-namespace-secret-#{System.unique_integer([:positive])}"
+
+    handoff_opts = [
+      mode: "local-private-file",
+      store_dir: store_dir,
+      database: configured_database,
+      repo_root: configured_repo_root,
+      claimed_by: "local-operator-worker"
+    ]
+
+    handoff_grant = %{id: worker_grant.id, display_key: worker_grant.display_key, secret: handoff_secret}
+    creation = %{work_package: work_package, worker_grant: handoff_grant}
+
+    assert {:ok, handoff} = SecretHandoff.store_worker_secret(creation, handoff_opts)
+    assert :ok = SecretHandoff.store_worker_secret_metadata(work_package, worker_grant, handoff, handoff_opts)
+
+    assert {:ok, detail} = Dashboard.detail(Repo, work_package.id)
+    assert [%{run_mcp_command: run_mcp_command}] = detail.worker_secret_handoffs
+    assert run_mcp_command =~ configured_repo_root
+    assert run_mcp_command =~ configured_database
+    refute run_mcp_command =~ handoff_secret
   end
 
   test "timeline is chronological across progress and findings" do
@@ -839,6 +1122,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     timeline
   end
 
+  defp credential_target(%WorkPackage{id: work_package_id}, %AccessGrant{} = worker_grant) do
+    "SymphonyPlusPlus:worker:#{work_package_id}:#{worker_grant.display_key}:#{String.trim(worker_grant.id)}"
+  end
+
+  defp live_dashboard_database do
+    case Repo.query("PRAGMA database_list", []) do
+      {:ok, %{rows: rows}} ->
+        Enum.find_value(rows, fn
+          [_seq, "main", path] when is_binary(path) and path != "" -> path
+          _row -> nil
+        end)
+
+      _result ->
+        nil
+    end
+  end
+
+  defp write_worker_secret_scripts!(repo_root) do
+    scripts_dir = Path.join(repo_root, "scripts")
+    File.mkdir_p!(scripts_dir)
+    File.write!(Path.join(scripts_dir, "sympp-worker-secret.sh"), "#!/bin/sh\n")
+    File.write!(Path.join(scripts_dir, "sympp-worker-secret.ps1"), "param()\n")
+  end
+
   defp start_test_endpoint do
     endpoint_config =
       :symphony_elixir
@@ -851,4 +1158,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
 
   defp restore_database_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_repo_database)
   defp restore_database_env(database), do: Application.put_env(:symphony_elixir, :sympp_repo_database, database)
+
+  defp restore_repo_root_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_repo_root)
+  defp restore_repo_root_env(repo_root), do: Application.put_env(:symphony_elixir, :sympp_repo_root, repo_root)
+
+  defp restore_store_dir_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+  defp restore_store_dir_env(store_dir), do: Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
 end

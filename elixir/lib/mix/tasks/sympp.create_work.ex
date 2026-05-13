@@ -14,9 +14,12 @@ defmodule Mix.Tasks.Sympp.CreateWork do
     :missing_secret,
     :missing_claimed_by,
     :missing_repo_root,
+    :invalid_repo_root,
     :missing_worker_grant,
     :missing_work_package,
+    :unsupported_handoff_metadata_location,
     :unsupported_secret_handoff_mode,
+    :handoff_metadata_conflict,
     :local_private_file_unavailable_on_windows,
     :windows_credential_manager_unavailable
   ]
@@ -147,6 +150,10 @@ defmodule Mix.Tasks.Sympp.CreateWork do
   end
 
   defp handoff_error?(reason) when reason in @handoff_error_reasons, do: true
+  defp handoff_error?({:handoff_metadata_delete_failed, _reason}), do: true
+  defp handoff_error?({:handoff_metadata_invalid, _reason}), do: true
+  defp handoff_error?({:handoff_metadata_read_failed, _reason}), do: true
+  defp handoff_error?({:handoff_metadata_write_failed, _reason}), do: true
   defp handoff_error?({:local_private_file_failed, _reason}), do: true
   defp handoff_error?({:windows_credential_manager_failed, _status}), do: true
   defp handoff_error?(_reason), do: false

@@ -644,6 +644,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
   test "local operator dispatches approved planned slices through private handoff" do
     enable_operator_mode()
+    store_dir = Path.join(System.tmp_dir!(), "sympp-operator-dispatch-store-#{System.unique_integer([:positive])}")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+
+    on_exit(fn ->
+      restore_store_dir_env(previous_store_dir)
+      File.rm_rf(store_dir)
+    end)
 
     request =
       create_work_request!(
@@ -691,6 +699,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "local-operator-worker"
     assert html =~ "Secret in stdout"
     assert html =~ "false"
+    assert_handoff_store_dir!(handoff, store_dir)
+    metadata_dir = Path.join(store_dir, "metadata")
+    assert File.dir?(metadata_dir)
+    assert metadata_dir |> File.ls!() |> Enum.any?(&String.ends_with?(&1, ".json"))
 
     expected_database =
       :symphony_elixir
@@ -708,11 +720,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     assert {:ok, work_package} = WorkPackageRepository.get(Repo, dispatched_slice.work_package_id)
     assert work_package.status == "ready_for_worker"
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(Repo, work_package.id)
+    worker_grant = Enum.find(grants, &(&1.grant_role == "worker"))
+
+    on_exit(fn ->
+      cleanup_handoff_by_grant(work_package, worker_grant)
+    end)
 
     assert html =~ dispatched_slice.work_package_id
     assert html =~ ~s(href="/sympp/work-packages/#{dispatched_slice.work_package_id}")
     assert html =~ "ready for worker"
     refute html =~ ~s(name="slice[id]" value="#{approved_slice.id}")
+
+    {:ok, _detail_view, detail_html} = live(local_conn(), "/sympp/work-packages/#{dispatched_slice.work_package_id}")
+
+    assert detail_html =~ "Worker Handoff"
+    assert detail_html =~ "local-operator-worker"
+    assert detail_html =~ "Secret in stdout"
+    assert detail_html =~ "false"
+    assert detail_html =~ handoff["target"]
+    assert detail_html =~ "Run MCP"
+    refute detail_html =~ "secret_returned_once"
+    refute detail_html =~ "secret_not_persisted"
   end
 
   test "local operator mode clears stale scoped grants before rendering WorkRequest actions" do
@@ -1274,6 +1303,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
   end
 
   defp cleanup_handoff(_handoff), do: :ok
+
+  defp cleanup_handoff_by_grant(work_package, worker_grant) do
+    SecretHandoff.delete_worker_secret_by_grant(work_package, worker_grant, local_operator_handoff_opts())
+  end
+
+  defp local_operator_handoff_opts do
+    [
+      repo_root: repo_root(),
+      claimed_by: "local-operator-worker",
+      database: Application.fetch_env!(:symphony_elixir, :sympp_repo_database)
+    ]
+    |> put_optional_handoff_opt(:store_dir, Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir))
+  end
+
+  defp assert_handoff_store_dir!(%{"path" => path}, store_dir) when is_binary(path) do
+    assert String.starts_with?(path, store_dir)
+  end
+
+  defp assert_handoff_store_dir!(%{"target" => target}, _store_dir) when is_binary(target), do: :ok
+
+  defp put_optional_handoff_opt(opts, _key, nil), do: opts
+  defp put_optional_handoff_opt(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp restore_store_dir_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+  defp restore_store_dir_env(store_dir), do: Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
 
   defp repo_root do
     Mix.Project.project_file()

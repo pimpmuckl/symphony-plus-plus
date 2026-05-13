@@ -207,10 +207,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   defp store_worker_secret_handoff(repo, creation, handoff_opts) do
     case SecretHandoff.store_worker_secret(creation, handoff_opts) do
       {:ok, worker_secret_handoff} ->
-        {:ok, {creation, worker_secret_handoff}}
+        store_worker_secret_handoff_metadata(repo, creation, worker_secret_handoff, handoff_opts)
 
       {:error, reason} ->
         handle_worker_secret_handoff_error(repo, creation, reason)
+    end
+  end
+
+  defp store_worker_secret_handoff_metadata(
+         repo,
+         %{work_package: %WorkPackage{} = work_package, worker_grant: worker_grant} = creation,
+         worker_secret_handoff,
+         handoff_opts
+       ) do
+    metadata_grant = worker_secret_metadata_grant(worker_grant)
+
+    case SecretHandoff.store_worker_secret_metadata(
+           work_package,
+           metadata_grant,
+           worker_secret_handoff,
+           handoff_opts
+         ) do
+      :ok ->
+        {:ok, {creation, worker_secret_handoff}}
+
+      {:error, reason} ->
+        handle_worker_secret_handoff_metadata_error(repo, creation, worker_secret_handoff, handoff_opts, reason)
     end
   end
 
@@ -251,6 +273,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     end
   end
 
+  defp handle_worker_secret_handoff_metadata_error(
+         repo,
+         %{work_package: %WorkPackage{} = work_package} = creation,
+         worker_secret_handoff,
+         handoff_opts,
+         reason
+       ) do
+    recovery = recovery_metadata(creation, worker_secret_handoff)
+
+    case cleanup_created_work_package(repo, work_package.id) do
+      :ok ->
+        case SecretHandoff.delete_worker_secret(worker_secret_handoff, handoff_opts) do
+          :ok ->
+            {:error, reason}
+
+          {:error, handoff_cleanup_reason} ->
+            cleanup_reason = %{
+              recovery: recovery,
+              secret_handoff: {:secret_handoff_cleanup_failed, handoff_cleanup_reason}
+            }
+
+            {:error, {:handoff_cleanup_failed, reason, cleanup_reason}}
+        end
+
+      {:error, ledger_cleanup_reason} ->
+        cleanup_reason = %{
+          ledger: ledger_cleanup_reason,
+          recovery: recovery,
+          secret_handoff: :skipped_to_preserve_recovery_secret
+        }
+
+        {:error, {:handoff_cleanup_failed, reason, cleanup_reason}}
+    end
+  end
+
   defp handle_worker_secret_handoff_ready_error(
          repo,
          %{work_package: %WorkPackage{} = work_package} = creation,
@@ -263,7 +320,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
 
     case cleanup_created_work_package(repo, work_package_id) do
       :ok ->
-        case SecretHandoff.delete_worker_secret(worker_secret_handoff, handoff_opts) do
+        case delete_worker_secret_handoff_by_grant(creation, worker_secret_handoff, handoff_opts) do
           :ok ->
             {:error, reason}
 
@@ -285,6 +342,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
 
         {:error, {:handoff_ready_cleanup_failed, reason, cleanup_reason}}
     end
+  end
+
+  defp delete_worker_secret_handoff_by_grant(
+         %{work_package: %WorkPackage{} = work_package, worker_grant: worker_grant},
+         worker_secret_handoff,
+         handoff_opts
+       ) do
+    metadata_grant = worker_secret_metadata_grant(worker_grant)
+
+    case SecretHandoff.delete_worker_secret_by_grant(work_package, metadata_grant, handoff_opts) do
+      :ok ->
+        :ok
+
+      {:error, metadata_cleanup_reason} ->
+        case SecretHandoff.delete_worker_secret(worker_secret_handoff, handoff_opts) do
+          :ok ->
+            {:error, managed_secret_handoff_cleanup_failed(metadata_cleanup_reason, :deleted)}
+
+          {:error, secret_cleanup_reason} ->
+            {:error, managed_secret_handoff_cleanup_failed(metadata_cleanup_reason, secret_cleanup_reason)}
+        end
+    end
+  end
+
+  defp managed_secret_handoff_cleanup_failed(metadata_cleanup_reason, fallback_reason) do
+    {:managed_secret_handoff_cleanup_failed, metadata_cleanup_reason, fallback_secret_handoff: fallback_reason}
   end
 
   @doc false
@@ -324,6 +407,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
 
   defp maybe_put_recovery_handoff(recovery, nil), do: recovery
   defp maybe_put_recovery_handoff(recovery, worker_secret_handoff), do: Map.put(recovery, :worker_secret_handoff, worker_secret_handoff)
+
+  defp worker_secret_metadata_grant(worker_grant) when is_map(worker_grant) do
+    worker_grant
+    |> Map.delete(:secret)
+    |> Map.delete("secret")
+  end
 
   defp create_transaction(repo, request) do
     policy = Map.fetch!(request, "policy")

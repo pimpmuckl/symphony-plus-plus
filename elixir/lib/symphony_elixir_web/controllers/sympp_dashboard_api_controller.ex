@@ -988,6 +988,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp scope_worker_package_payload(payload, grant) do
     payload
     |> scope_grants(grant)
+    |> scope_worker_secret_handoffs(grant)
     |> scope_agent_runs(grant)
     |> redact_worker_activity_identifiers()
     |> redact_worker_metadata_identifiers()
@@ -1002,6 +1003,16 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         |> Map.put(grants_key, grants)
         |> put_summary_count("grant_count", length(grants))
         |> put_summary_count("active_grant_count", Enum.count(grants, &grant_active?/1))
+
+      _missing ->
+        payload
+    end
+  end
+
+  defp scope_worker_secret_handoffs(payload, %AccessGrant{}) do
+    case fetch_payload_field(payload, :worker_secret_handoffs) do
+      {:ok, handoffs_key, _handoffs} ->
+        Map.put(payload, handoffs_key, [])
 
       _missing ->
         payload
