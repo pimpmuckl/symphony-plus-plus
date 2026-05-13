@@ -1855,6 +1855,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
       repo_root: SecretHandoff.local_operator_repo_root(),
       claimed_by: @local_operator_worker
     ]
+    |> put_optional_handoff_opt(:store_dir, Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir))
   end
 
   defp dashboard_ledger_database(repo) do
@@ -1896,6 +1897,9 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
       true -> database
     end
   end
+
+  defp put_optional_handoff_opt(opts, _key, nil), do: opts
+  defp put_optional_handoff_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp dispatch_notice(dispatch) do
     create_work =

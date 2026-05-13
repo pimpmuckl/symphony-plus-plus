@@ -644,6 +644,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
   test "local operator dispatches approved planned slices through private handoff" do
     enable_operator_mode()
+    store_dir = Path.join(System.tmp_dir!(), "sympp-operator-dispatch-store-#{System.unique_integer([:positive])}")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+
+    on_exit(fn ->
+      restore_store_dir_env(previous_store_dir)
+      File.rm_rf(store_dir)
+    end)
 
     request =
       create_work_request!(
@@ -691,6 +699,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "local-operator-worker"
     assert html =~ "Secret in stdout"
     assert html =~ "false"
+    assert_handoff_store_dir!(handoff, store_dir)
+    metadata_dir = Path.join(store_dir, "metadata")
+    assert File.dir?(metadata_dir)
+    assert metadata_dir |> File.ls!() |> Enum.any?(&String.ends_with?(&1, ".json"))
 
     expected_database =
       :symphony_elixir
@@ -1302,7 +1314,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
       claimed_by: "local-operator-worker",
       database: Application.fetch_env!(:symphony_elixir, :sympp_repo_database)
     ]
+    |> put_optional_handoff_opt(:store_dir, Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir))
   end
+
+  defp assert_handoff_store_dir!(%{"path" => path}, store_dir) when is_binary(path) do
+    assert String.starts_with?(path, store_dir)
+  end
+
+  defp assert_handoff_store_dir!(%{"target" => target}, _store_dir) when is_binary(target), do: :ok
+
+  defp put_optional_handoff_opt(opts, _key, nil), do: opts
+  defp put_optional_handoff_opt(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp restore_store_dir_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+  defp restore_store_dir_env(store_dir), do: Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
 
   defp repo_root do
     Mix.Project.project_file()
