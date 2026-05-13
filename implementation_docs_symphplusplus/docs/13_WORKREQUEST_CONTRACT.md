@@ -9,10 +9,11 @@ WorkRequest core persistence, planned-slice persistence, read API/list/detail
 dashboard views, scoped dashboard intake, architect MCP WorkRequest reads and
 clarification/decision mutations, the board-authenticated manual clarification
 loop, and manual planned-slice authoring/approval controls exist. Planned-slice
-dispatch linkage persistence, the core planned-slice dispatch CLI, and the
-architect MCP planned-slice dispatch tool exist. MCP intake tools, automatic
-question generation, automatic slicing, Linear state creation, and plugin
-packaging remain future work.
+dispatch linkage persistence, the core planned-slice dispatch CLI, the
+architect MCP planned-slice dispatch tool, and local-operator dashboard
+planned-slice dispatch exist. MCP intake tools, automatic question generation,
+automatic slicing, Linear state creation, and plugin packaging remain future
+work.
 
 ## Purpose
 
@@ -62,7 +63,9 @@ is blocked while any clarification question remains open. For
 `ready_for_slicing` or `sliced` requests, the same detail page can manually add
 planned slices, approve or skip existing mutable slices, and mark a
 `ready_for_slicing` request `sliced` only after at least one planned slice is
-approved.
+approved. In local operator mode, the same detail page can also dispatch
+approved, undispatched planned slices. Board-grant WorkRequest detail remains
+scoped to planning controls and does not expose planned-slice dispatch.
 
 Explicit phase-scoped architect MCP sessions with `read:work_request` can read
 the same scoped WorkRequest surface through `list_work_requests(status?)` and
@@ -211,8 +214,8 @@ mint worker grants. The create path starts rows as `planned`, approve moves
 recording the linked `work_package_id` and `dispatched_at` timestamp. The linked
 WorkPackage must match the parent WorkRequest and planned-slice contract.
 Dispatched slices are read-only in this UI. Approved slices become WorkPackages
-only through the explicit planned-slice dispatch CLI or architect MCP dispatch
-tool.
+only through explicit planned-slice dispatch: the operator CLI, architect MCP
+dispatch tool, or local-operator dashboard dispatch control.
 
 Before planned-slice dispatch can mint a WorkPackage from an approved planned
 slice, it must call the WorkRequest path-scope validator contract. The validator
@@ -245,12 +248,19 @@ risk.
 ## Dispatch Into WorkPackages
 
 Approved slices become normal WorkPackages through `mix
-sympp.dispatch_planned_slice` or the architect MCP
-`dispatch_work_request_planned_slice` tool. Both paths accept a WorkRequest id,
+sympp.dispatch_planned_slice`, the architect MCP
+`dispatch_work_request_planned_slice` tool, or the local-operator dashboard
+dispatch control. All dispatch paths accept or derive a WorkRequest id,
 planned-slice id, claimed worker identity, and private handoff options. They
-validate required identifiers and `claimed_by`, validate the slice scope through
-`ScopeConstraints.validate_owned_file_globs/2`, create a worker-ready standalone
-WorkPackage with private worker-secret handoff, and link the planned slice.
+validate required identifiers and worker identity, validate the slice scope
+through `ScopeConstraints.validate_owned_file_globs/2`, create a worker-ready
+standalone WorkPackage with private worker-secret handoff, and link the planned
+slice. Local-operator dashboard dispatch reuses the existing
+`PlannedSliceDispatch` orchestration, records the stable worker identity
+`local-operator-worker`, and shows only non-secret WorkPackage/linkage and
+handoff metadata. It does not spawn Codex agents and does not call Linear.
+Board-grant WorkRequest detail remains scoped to planning controls and does not
+show dispatch controls.
 MCP dispatch is advertised only when the MCP server has `repo_root`/`--repo-root`
 configured to a repository containing the worker secret handoff script, and
 direct calls fail closed if that root is missing or invalid. It additionally
@@ -320,8 +330,7 @@ This contract does not implement or require:
 - MCP WorkRequest intake tools or architect-planner tools.
 - Plugin packaging changes.
 - Automatic question generation.
-- Automatic WorkPackage slicing.
-- Dashboard dispatch actions.
+- Automatic WorkPackage slicing/planning.
 - Live Linear state creation.
 - Historical runbook rewrites.
 
