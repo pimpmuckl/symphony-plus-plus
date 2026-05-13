@@ -67,7 +67,16 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         |> Conn.halt()
 
       local_operator_browser?(conn) and active_local_operator_session?(conn) ->
-        authorize_operator_package_route(conn, work_package_id)
+        case authorize_package_request(conn, work_package_id) do
+          {:ok, %AccessGrant{} = grant} ->
+            put_package_browser_session(conn, grant, work_package_id)
+
+          {:error, :unauthorized} ->
+            authorize_operator_package_route(conn, work_package_id)
+
+          {:error, reason} ->
+            conn |> package_browser_error_response(reason, work_package_id) |> Conn.halt()
+        end
 
       true ->
         case authorize_package_request(conn, work_package_id) do

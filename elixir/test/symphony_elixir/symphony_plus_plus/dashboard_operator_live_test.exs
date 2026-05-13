@@ -530,6 +530,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert response(scoped_conn, 401) =~ "Package access"
     assert Plug.Conn.get_session(scoped_conn, "sympp_local_operator") == true
     assert Plug.Conn.get_session(scoped_conn, "sympp_package_grant_ids") == %{package.id => grant.id}
+
+    {:ok, _view, html} =
+      local_conn()
+      |> Plug.Test.init_test_session(%{"sympp_local_operator" => true, "sympp_package_grant_ids" => %{package.id => grant.id}})
+      |> live("/sympp/work-packages/#{package.id}")
+
+    assert html =~ "Cached package grant"
+    refute html =~ ~s(href="?auth=work_key")
   end
 
   defp create_package!(overrides) do
