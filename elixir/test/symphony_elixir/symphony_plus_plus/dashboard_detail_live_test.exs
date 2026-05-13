@@ -290,6 +290,56 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     refute run_mcp_command =~ "-Database '#{configured_database}'"
   end
 
+  test "dashboard detail keeps handoff metadata when command root no longer validates" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-detail-invalid-command-root-#{System.unique_integer([:positive])}")
+    configured_repo_root = Path.join(System.tmp_dir!(), "sympp-detail-command-root-#{System.unique_integer([:positive])}")
+    configured_database = live_dashboard_database()
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    previous_repo_root = Application.get_env(:symphony_elixir, :sympp_repo_root)
+    previous_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+    Application.put_env(:symphony_elixir, :sympp_repo_root, configured_repo_root)
+    Application.put_env(:symphony_elixir, :sympp_repo_database, configured_database)
+
+    on_exit(fn ->
+      restore_store_dir_env(previous_store_dir)
+      restore_repo_root_env(previous_repo_root)
+      restore_database_env(previous_database)
+      File.rm_rf(store_dir)
+      File.rm_rf(configured_repo_root)
+    end)
+
+    write_worker_secret_scripts!(configured_repo_root)
+
+    %{work_package: work_package} =
+      create_detail_package(id: "SYMPP-P5-NO-COMMAND-ROOT", title: "No command root package")
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(Repo, work_package.id)
+    worker_grant = Enum.find(grants, &(&1.grant_role == "worker"))
+
+    handoff_opts = [
+      mode: "windows-credential-manager",
+      store_dir: store_dir,
+      database: configured_database,
+      repo_root: configured_repo_root,
+      claimed_by: "local-operator-worker"
+    ]
+
+    handoff = %{mode: "windows-credential-manager", target: credential_target(work_package, worker_grant)}
+    assert :ok = SecretHandoff.store_worker_secret_metadata(work_package, worker_grant, handoff, handoff_opts)
+
+    File.rm_rf!(Path.join(configured_repo_root, "scripts"))
+
+    assert SecretHandoff.local_operator_repo_root() == nil
+    assert {:ok, detail} = Dashboard.detail(Repo, work_package.id)
+    assert [%{mode: "windows-credential-manager", target: target} = display] = detail.worker_secret_handoffs
+    assert target == handoff.target
+    assert display.display_key == worker_grant.display_key
+    assert display.secret_in_stdout == false
+    refute Map.has_key?(display, :run_mcp_command)
+  end
+
   if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
 
   test "dashboard detail uses configured namespace inputs for handoff lookup" do
@@ -1087,6 +1137,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
       _result ->
         nil
     end
+  end
+
+  defp write_worker_secret_scripts!(repo_root) do
+    scripts_dir = Path.join(repo_root, "scripts")
+    File.mkdir_p!(scripts_dir)
+    File.write!(Path.join(scripts_dir, "sympp-worker-secret.sh"), "#!/bin/sh\n")
+    File.write!(Path.join(scripts_dir, "sympp-worker-secret.ps1"), "param()\n")
   end
 
   defp start_test_endpoint do

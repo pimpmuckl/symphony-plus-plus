@@ -45,6 +45,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     end
   end
 
+  @spec local_operator_namespace_repo_roots() :: [Path.t()]
+  def local_operator_namespace_repo_roots do
+    case configured_local_operator_namespace_repo_root() do
+      nil -> unique_repo_roots(cwd_local_operator_namespace_repo_roots() ++ [@default_repo_root])
+      repo_root -> [repo_root]
+    end
+  end
+
   @spec store_worker_secret(map(), keyword()) :: {:ok, map()} | {:error, error()}
   def store_worker_secret(%{work_package: %WorkPackage{} = work_package, worker_grant: worker_grant}, opts)
       when is_map(worker_grant) and is_list(opts) do
@@ -219,15 +227,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
   defp require_handoff_opts(opts) do
     with {:ok, opts} <- require_handoff_namespace_opts(opts),
-         {:ok, repo_root} <- validate_local_operator_repo_root(Keyword.fetch!(opts, :repo_root)) do
-      {:ok, Keyword.put(opts, :repo_root, repo_root)}
+         {:ok, repo_root} <- nonblank_opt(opts, :repo_root, :missing_repo_root),
+         {:ok, repo_root} <- validate_local_operator_repo_root(repo_root) do
+      {:ok, opts |> Keyword.put(:repo_root, repo_root) |> Keyword.put(:namespace_repo_root, repo_root)}
     end
   end
 
   defp require_handoff_namespace_opts(opts) do
     with {:ok, claimed_by} <- nonblank_opt(opts, :claimed_by, :missing_claimed_by),
-         {:ok, repo_root} <- nonblank_opt(opts, :repo_root, :missing_repo_root) do
-      {:ok, Keyword.merge(opts, claimed_by: claimed_by, repo_root: Path.expand(repo_root))}
+         {:ok, namespace_repo_root} <- namespace_repo_root_opt(opts) do
+      {:ok,
+       opts
+       |> maybe_put_expanded_repo_root()
+       |> Keyword.put(:claimed_by, claimed_by)
+       |> Keyword.put(:namespace_repo_root, Path.expand(namespace_repo_root))}
+    end
+  end
+
+  defp namespace_repo_root_opt(opts) do
+    case Keyword.get(opts, :namespace_repo_root) || Keyword.get(opts, :repo_root) do
+      repo_root when is_binary(repo_root) ->
+        repo_root = String.trim(repo_root)
+        if repo_root == "", do: {:error, :missing_repo_root}, else: {:ok, repo_root}
+
+      _repo_root ->
+        {:error, :missing_repo_root}
+    end
+  end
+
+  defp maybe_put_expanded_repo_root(opts) do
+    case Keyword.get(opts, :repo_root) do
+      repo_root when is_binary(repo_root) ->
+        case String.trim(repo_root) do
+          "" -> Keyword.delete(opts, :repo_root)
+          repo_root -> Keyword.put(opts, :repo_root, Path.expand(repo_root))
+        end
+
+      _repo_root ->
+        Keyword.delete(opts, :repo_root)
     end
   end
 
@@ -552,7 +589,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
   defp handoff_filename_hash(%WorkPackage{} = work_package, display_key, grant_identity, opts) do
     hash_source = [
-      to_string(Keyword.get(opts, :repo_root, "")),
+      to_string(Keyword.get(opts, :namespace_repo_root, Keyword.get(opts, :repo_root, ""))),
       0,
       handoff_database_hash_value(opts),
       0,
@@ -604,7 +641,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     hash_source = [
       "v1",
       0,
-      opts |> Keyword.fetch!(:repo_root) |> Path.expand(),
+      opts |> Keyword.fetch!(:namespace_repo_root) |> Path.expand(),
       0,
       handoff_database_hash_value(opts),
       0,
@@ -937,16 +974,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   end
 
   defp worker_secret_script_path(opts, script) do
-    repo_root = Keyword.fetch!(opts, :repo_root)
-    script_path = Path.join([repo_root, "scripts", script])
+    with {:ok, repo_root} <- nonblank_opt(opts, :repo_root, :invalid_repo_root) do
+      script_path = Path.join([repo_root, "scripts", script])
 
-    if File.regular?(script_path), do: {:ok, script_path}, else: {:error, :invalid_repo_root}
+      if File.regular?(script_path), do: {:ok, script_path}, else: {:error, :invalid_repo_root}
+    end
   end
 
   defp validate_local_operator_repo_root(repo_root) do
     repo_root = Path.expand(repo_root)
 
     if local_operator_repo_root?(repo_root), do: {:ok, repo_root}, else: {:error, :invalid_repo_root}
+  end
+
+  defp configured_local_operator_namespace_repo_root do
+    case Application.get_env(:symphony_elixir, :sympp_repo_root) do
+      repo_root when is_binary(repo_root) ->
+        case String.trim(repo_root) do
+          "" -> nil
+          repo_root -> Path.expand(repo_root)
+        end
+
+      _repo_root ->
+        nil
+    end
+  end
+
+  defp cwd_local_operator_namespace_repo_roots do
+    cwd = File.cwd!()
+    [cwd, Path.expand("..", cwd)]
+  rescue
+    _error -> []
+  end
+
+  defp unique_repo_roots(repo_roots) do
+    repo_roots
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&Path.expand/1)
+    |> Enum.uniq()
   end
 
   defp local_operator_repo_root?(repo_root) do

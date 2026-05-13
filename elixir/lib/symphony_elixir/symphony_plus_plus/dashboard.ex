@@ -338,11 +338,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     grants
     |> Enum.filter(&live_worker_grant?(&1, now))
     |> Enum.flat_map(fn %AccessGrant{} = grant ->
-      case SecretHandoff.read_worker_secret_metadata(work_package, grant, handoff_opts) do
-        {:ok, handoff} -> [handoff]
-        {:error, _reason} -> []
-      end
+      read_worker_secret_handoff(work_package, grant, handoff_opts)
     end)
+  end
+
+  defp read_worker_secret_handoff(%WorkPackage{} = work_package, %AccessGrant{} = grant, handoff_opts) do
+    handoffs =
+      handoff_opts
+      |> namespace_handoff_opts()
+      |> Enum.find_value(fn opts ->
+        case SecretHandoff.read_worker_secret_metadata(work_package, grant, opts) do
+          {:ok, handoff} -> [handoff]
+          {:error, _reason} -> nil
+        end
+      end)
+
+    case handoffs do
+      [_handoff | _rest] -> handoffs
+      nil -> []
+    end
+  end
+
+  defp namespace_handoff_opts(opts) do
+    case Keyword.get(opts, :namespace_repo_roots) do
+      roots when is_list(roots) ->
+        roots
+        |> Enum.filter(&is_binary/1)
+        |> Enum.uniq()
+        |> Enum.map(fn root ->
+          opts
+          |> Keyword.delete(:namespace_repo_roots)
+          |> Keyword.put(:namespace_repo_root, root)
+        end)
+
+      _roots ->
+        [opts]
+    end
   end
 
   defp live_worker_grant?(%AccessGrant{grant_role: "worker", revoked_at: nil, expires_at: %DateTime{} = expires_at}, now) do
@@ -354,6 +385,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp local_operator_handoff_opts(repo) do
     [
       repo_root: SecretHandoff.local_operator_repo_root(),
+      namespace_repo_roots: SecretHandoff.local_operator_namespace_repo_roots(),
       claimed_by: @local_operator_worker
     ]
     |> put_optional_handoff_opt(:database, dashboard_ledger_database(repo))
