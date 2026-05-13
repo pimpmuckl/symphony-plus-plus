@@ -581,6 +581,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
       if recovery.worker_secret_handoff.mode == "local-private-file" do
         refute File.exists?(recovery.worker_secret_handoff.path)
       end
+
+      assert Path.wildcard(Path.join([secret_store_dir, "metadata", "*.json"])) == []
     after
       File.rm_rf(secret_store_dir)
     end
@@ -609,6 +611,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
       if recovery.worker_secret_handoff.mode == "local-private-file" do
         refute File.exists?(recovery.worker_secret_handoff.path)
       end
+
+      assert Path.wildcard(Path.join([secret_store_dir, "metadata", "*.json"])) == []
     after
       File.rm_rf(secret_store_dir)
     end

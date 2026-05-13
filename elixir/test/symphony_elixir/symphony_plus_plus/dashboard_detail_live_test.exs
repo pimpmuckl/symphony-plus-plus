@@ -20,13 +20,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
   alias SymphonyElixirWeb.SymppDetailLive
 
   @endpoint SymphonyElixirWeb.Endpoint
+  @repo_root Path.expand("../../../../", __DIR__)
   @detail_phase_id "phase-dashboard-detail-test"
+  @windows match?({:win32, _}, :os.type())
 
   setup_all do
     database_path = WorkPackageFactory.database_path()
@@ -105,6 +108,54 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert html =~ "No progress or finding timeline events recorded."
     assert html =~ "No artifacts recorded."
     assert html =~ "No agent runs recorded."
+  end
+
+  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
+
+  test "renders durable worker handoff metadata on package detail" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-detail-handoff-#{System.unique_integer([:positive])}")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+
+    on_exit(fn ->
+      restore_store_dir_env(previous_store_dir)
+      File.rm_rf(store_dir)
+    end)
+
+    %{work_package: work_package, architect_secret: secret} =
+      create_detail_package(id: "SYMPP-P5-HANDOFF", title: "Detail handoff package")
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(Repo, work_package.id)
+    worker_grant = Enum.find(grants, &(&1.grant_role == "worker"))
+    worker_secret = "durable-worker-secret-#{System.unique_integer([:positive])}"
+
+    handoff_opts = [
+      mode: "local-private-file",
+      store_dir: store_dir,
+      database: Application.fetch_env!(:symphony_elixir, :sympp_repo_database),
+      repo_root: @repo_root,
+      claimed_by: "local-operator-worker"
+    ]
+
+    handoff_grant = %{id: worker_grant.id, display_key: worker_grant.display_key, secret: worker_secret}
+    creation = %{work_package: work_package, worker_grant: handoff_grant}
+
+    assert {:ok, handoff} = SecretHandoff.store_worker_secret(creation, handoff_opts)
+    assert :ok = SecretHandoff.store_worker_secret_metadata(work_package, worker_grant, handoff, handoff_opts)
+
+    {:ok, _view, html} = live(auth_conn(secret), "/sympp/work-packages/#{work_package.id}")
+
+    assert html =~ "Worker Handoff"
+    assert html =~ "local-private-file"
+    assert html =~ "Claimed by"
+    assert html =~ "worker-1"
+    assert html =~ "Secret in stdout"
+    assert html =~ "false"
+    assert html =~ handoff.target
+    assert html =~ Path.basename(handoff.path)
+    assert html =~ "Run MCP"
+    assert html =~ "local-operator-worker"
+    refute html =~ worker_secret
   end
 
   test "timeline is chronological across progress and findings" do
@@ -851,4 +902,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
 
   defp restore_database_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_repo_database)
   defp restore_database_env(database), do: Application.put_env(:symphony_elixir, :sympp_repo_database, database)
+  defp restore_store_dir_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+  defp restore_store_dir_env(store_dir), do: Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
 end

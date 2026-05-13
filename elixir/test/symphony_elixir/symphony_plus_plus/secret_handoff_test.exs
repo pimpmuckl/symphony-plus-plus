@@ -613,6 +613,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
+  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
+
+  test "reads redacted managed metadata by grant identity for operator handoff display" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-read-local-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = worker_grant("display-secret", claimed_by: "claimed-worker-1")
+    opts = [mode: "local-private-file", store_dir: store_dir, claimed_by: "worker-local-1", repo_root: @repo_root]
+    handoff_path = local_private_file_path(package, grant, opts)
+    handoff = %{"mode" => "local-private-file", "path" => handoff_path}
+
+    try do
+      File.mkdir_p!(Path.dirname(handoff_path))
+      File.write!(handoff_path, "display fixture")
+
+      assert :ok = SecretHandoff.store_worker_secret_metadata(package, grant, handoff, opts)
+      assert {:ok, display} = SecretHandoff.read_worker_secret_metadata(package, grant, opts)
+
+      assert display.mode == "local-private-file"
+      assert display.status == "stored"
+      assert display.work_package_id == package.id
+      assert display.grant_id == grant.id
+      assert display.display_key == grant.display_key
+      assert display.target == credential_target(package, grant)
+      assert display.path == handoff_path
+      assert display.claimed_by == "claimed-worker-1"
+      assert display.suggested_claimed_by == "worker-local-1"
+      assert display.secret_in_stdout == false
+      assert display.run_mcp_command =~ "run-mcp-local-file"
+      assert display.run_mcp_command =~ "--claimed-by 'worker-local-1'"
+      refute inspect(display) =~ "display-secret"
+
+      File.write!(managed_metadata_file(package, grant, opts), Jason.encode!(metadata_record(package, grant, "local-private-file", %{"path" => Path.join(store_dir, "other.secret")})))
+
+      assert {:error, {:handoff_metadata_invalid, :local_path_mismatch}} =
+               SecretHandoff.read_worker_secret_metadata(package, grant, opts)
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
+
   test "metadata persistence treats nil store dir as the default store" do
     package = work_package()
     grant = worker_grant()

@@ -14,15 +14,16 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     access_grant_id active_agent_run_count active_blocker_count active_grant_count
     active alert_indicators agent_run_count agent_runs artifact_count artifacts base_branch
     body branch branch_pattern capabilities claimed_at claimed_by codex_total_tokens
-    completed_count created_at detail display_key engineering_scope events expires_at
-    failed_count finding_count findings finished_at grant_count grant_role grants
+    claimed_by_required completed_count created_at detail display_key engineering_scope
+    events expires_at failed_count finding_count findings finished_at grant_count
+    grant_id grant_role grants mode
     head_sha id inserted_at kind label latest last_seen_at latest_progress_at metadata
     missing open_count path placeholder plan position pr product_description progress_event_count
-    queued_agent_run_count reason repo revoked_at runtime runtime_state scope severity
-    sequence session_id stale stale_after_seconds stale_agent_run_count
+    queued_agent_run_count reason repo revoked_at run_mcp_command runtime runtime_state
+    scope secret_in_stdout severity sequence session_id stale stale_after_seconds stale_agent_run_count
     stale_heartbeat_after_seconds status stopped_agent_run_count summary terminal_count
-    timeline_order title total_count turn_count type updated_at uri url work_package
-    worker_host worker_task_handle workspace_path
+    suggested_claimed_by target timeline_order title total_count turn_count type updated_at
+    uri url work_package worker_host worker_secret_handoffs worker_task_handle workspace_path
   )
   @known_key_atoms Map.new(@known_keys, &{&1, String.to_atom(&1)})
 
@@ -280,6 +281,18 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
                 <span class="mono"><%= grant.display_key %></span>
               </div>
             </div>
+            <div :if={worker_secret_handoffs(@detail) != []} class="sympp-stack-list">
+              <div :for={handoff <- worker_secret_handoffs(@detail)} class="sympp-stack-item">
+                <span class="state-badge"><%= status_label(handoff.status) %></span>
+                <h3>Worker Handoff <span class="mono"><%= present(handoff.display_key) %></span></h3>
+                <dl class="sympp-detail-list">
+                  <div :for={{label, value} <- worker_handoff_items(handoff)}>
+                    <dt><%= label %></dt>
+                    <dd class="mono"><%= value %></dd>
+                  </div>
+                </dl>
+              </div>
+            </div>
           </article>
 
           <article class="sympp-panel">
@@ -398,6 +411,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     |> Map.put_new(:findings, [])
     |> Map.put_new(:artifacts, [])
     |> Map.put_new(:grants, [])
+    |> Map.put_new(:worker_secret_handoffs, [])
     |> Map.put_new(:agent_runs, [])
     |> Map.put_new(:alert_indicators, [])
     |> then(fn detail ->
@@ -409,6 +423,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
       |> Map.update!(:findings, &atomize_list/1)
       |> Map.update!(:artifacts, &atomize_list/1)
       |> Map.update!(:grants, &atomize_list/1)
+      |> Map.update!(:worker_secret_handoffs, &atomize_list/1)
       |> Map.update!(:agent_runs, &atomize_list/1)
       |> Map.update!(:alert_indicators, &atomize_list/1)
     end)
@@ -453,6 +468,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
       findings: [],
       artifacts: [],
       grants: [],
+      worker_secret_handoffs: [],
       agent_runs: [],
       alert_indicators: []
     })
@@ -586,7 +602,46 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
   defp compact_state_value(value) when is_number(value), do: to_string(value)
   defp compact_state_value(_value), do: nil
 
-  defp map_value(%{} = map, key) when is_atom(key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp worker_secret_handoffs(detail) do
+    case map_value(detail, :worker_secret_handoffs) do
+      values when is_list(values) -> values
+      _values -> []
+    end
+  end
+
+  defp worker_handoff_items(handoff) do
+    [
+      {"Mode", map_value(handoff, :mode)},
+      worker_handoff_claimed_by_item(handoff),
+      {"Secret in stdout", handoff |> map_value(:secret_in_stdout) |> boolean_text()},
+      {"Target", map_value(handoff, :target)},
+      {"Path", map_value(handoff, :path)},
+      {"Run MCP", map_value(handoff, :run_mcp_command)}
+    ]
+    |> Enum.reject(fn {_label, value} -> blank_value?(value) end)
+  end
+
+  defp worker_handoff_claimed_by_item(handoff) do
+    case map_value(handoff, :claimed_by) do
+      value when is_binary(value) and value != "" -> {"Claimed by", value}
+      _value -> {"Suggested worker", map_value(handoff, :suggested_claimed_by)}
+    end
+  end
+
+  defp boolean_text(value) when is_boolean(value), do: to_string(value)
+  defp boolean_text(value), do: value
+
+  defp blank_value?(nil), do: true
+  defp blank_value?(""), do: true
+  defp blank_value?(_value), do: false
+
+  defp map_value(%{} = map, key) when is_atom(key) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
+  end
+
   defp map_value(%{} = map, key) when is_binary(key), do: Map.get(map, key)
   defp map_value(_map, _key), do: nil
 

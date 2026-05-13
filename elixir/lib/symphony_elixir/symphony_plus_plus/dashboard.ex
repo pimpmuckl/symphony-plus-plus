@@ -16,6 +16,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.State
   alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
+  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
@@ -32,6 +33,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   @merge_required_gates ["human_merge", "architect_merge"]
   @runtime_merge_required_kinds ["hotfix", "adapter", "mcp", "skill", "hooks", "phase_child"]
   @scope_guard_gate "scope_guard"
+  @repo_root __DIR__ |> Path.join("../../../..") |> Path.expand()
+  @local_operator_worker "local-operator-worker"
   @dropped_child_statuses ["abandoned"]
   @non_open_child_statuses ["merged_into_phase", "closed", "abandoned"]
   @work_request_count_chunk_size 500
@@ -188,12 +191,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   @spec detail(repo(), String.t()) :: {:ok, map()} | {:error, dashboard_error()}
   def detail(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
+    detail(repo, work_package_id, [])
+  end
+
+  @spec detail(repo(), String.t(), keyword()) :: {:ok, map()} | {:error, dashboard_error()}
+  def detail(repo, work_package_id, opts) when is_atom(repo) and is_binary(work_package_id) and is_list(opts) do
     safe_read(fn ->
       with {:ok, state} <- planning_state(repo, work_package_id),
            {:ok, grants} <- AccessGrantRepository.list_for_work_package(repo, work_package_id),
            {:ok, agent_runs} <- AgentRunRepository.list_for_work_package(repo, work_package_id) do
         blockers = blockers(state.progress_events)
         summary = summary(state, grants, agent_runs, blockers)
+        worker_secret_handoffs = worker_secret_handoffs(repo, state.work_package, grants, opts)
 
         {:ok,
          %{
@@ -205,6 +214,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            artifacts: Enum.map(state.artifacts, &artifact/1),
            blockers: blockers,
            grants: Enum.map(grants, &grant/1),
+           worker_secret_handoffs: worker_secret_handoffs,
            agent_runs: Enum.map(agent_runs, &agent_run/1),
            metadata: metadata(state.progress_events, state.artifacts, state.work_package.id),
            alert_indicators: alert_indicators(state, summary.runtime)
@@ -318,6 +328,51 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       {:ok, %{artifacts: artifacts, findings: findings}}
     end
   end
+
+  defp worker_secret_handoffs(_repo, %WorkPackage{}, [], _opts), do: []
+
+  defp worker_secret_handoffs(repo, %WorkPackage{} = work_package, grants, opts) do
+    handoff_opts = Keyword.get(opts, :secret_handoff_opts) || local_operator_handoff_opts(repo)
+
+    Enum.flat_map(grants, fn %AccessGrant{} = grant ->
+      case SecretHandoff.read_worker_secret_metadata(work_package, grant, handoff_opts) do
+        {:ok, handoff} -> [handoff]
+        {:error, _reason} -> []
+      end
+    end)
+  end
+
+  defp local_operator_handoff_opts(repo) do
+    [
+      repo_root: @repo_root,
+      claimed_by: @local_operator_worker
+    ]
+    |> put_optional_handoff_opt(:database, dashboard_ledger_database(repo))
+    |> put_optional_handoff_opt(:store_dir, Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir))
+  end
+
+  defp dashboard_ledger_database(repo) do
+    case repo.query("PRAGMA database_list", []) do
+      {:ok, %{rows: rows}} -> persistent_main_database_path(rows) || configured_ledger_database()
+      {:error, _reason} -> configured_ledger_database()
+    end
+  rescue
+    _error in [Exqlite.Error, UndefinedFunctionError] -> configured_ledger_database()
+  end
+
+  defp persistent_main_database_path(rows) do
+    Enum.find_value(rows, fn
+      [_seq, "main", path] when is_binary(path) and path != "" -> path
+      _row -> nil
+    end)
+  end
+
+  defp configured_ledger_database do
+    Application.get_env(:symphony_elixir, :sympp_repo_database)
+  end
+
+  defp put_optional_handoff_opt(opts, _key, nil), do: opts
+  defp put_optional_handoff_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp readiness_artifacts(repo, %WorkPackage{status: status} = work_package) when status in @ready_statuses do
     PlanningRepository.list_artifacts(repo, work_package.id)

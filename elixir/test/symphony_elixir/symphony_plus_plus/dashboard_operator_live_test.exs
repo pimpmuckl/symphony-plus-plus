@@ -708,11 +708,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     assert {:ok, work_package} = WorkPackageRepository.get(Repo, dispatched_slice.work_package_id)
     assert work_package.status == "ready_for_worker"
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(Repo, work_package.id)
+    worker_grant = Enum.find(grants, &(&1.grant_role == "worker"))
+
+    on_exit(fn ->
+      cleanup_handoff_by_grant(work_package, worker_grant)
+    end)
 
     assert html =~ dispatched_slice.work_package_id
     assert html =~ ~s(href="/sympp/work-packages/#{dispatched_slice.work_package_id}")
     assert html =~ "ready for worker"
     refute html =~ ~s(name="slice[id]" value="#{approved_slice.id}")
+
+    {:ok, _detail_view, detail_html} = live(local_conn(), "/sympp/work-packages/#{dispatched_slice.work_package_id}")
+
+    assert detail_html =~ "Worker Handoff"
+    assert detail_html =~ "local-operator-worker"
+    assert detail_html =~ "Secret in stdout"
+    assert detail_html =~ "false"
+    assert detail_html =~ handoff["target"]
+    assert detail_html =~ "Run MCP"
+    refute detail_html =~ "secret_returned_once"
+    refute detail_html =~ "secret_not_persisted"
   end
 
   test "local operator mode clears stale scoped grants before rendering WorkRequest actions" do
@@ -1274,6 +1291,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
   end
 
   defp cleanup_handoff(_handoff), do: :ok
+
+  defp cleanup_handoff_by_grant(work_package, worker_grant) do
+    SecretHandoff.delete_worker_secret_by_grant(work_package, worker_grant, local_operator_handoff_opts())
+  end
+
+  defp local_operator_handoff_opts do
+    [
+      repo_root: repo_root(),
+      claimed_by: "local-operator-worker",
+      database: Application.fetch_env!(:symphony_elixir, :sympp_repo_database)
+    ]
+  end
 
   defp repo_root do
     Mix.Project.project_file()

@@ -82,6 +82,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
   def delete_worker_secret_by_grant(%{}, _worker_grant, _opts), do: {:error, :missing_work_package}
 
+  @spec read_worker_secret_metadata(WorkPackage.t(), map(), keyword()) :: {:ok, map()} | {:error, error()}
+  def read_worker_secret_metadata(%WorkPackage{} = work_package, worker_grant, opts)
+      when is_map(worker_grant) and is_list(opts) do
+    with {:ok, opts} <- require_handoff_opts(opts),
+         :ok <- reject_metadata_location_overrides(opts),
+         {:ok, context} <- handoff_metadata_context(work_package, worker_grant, opts),
+         {:ok, metadata} <- read_handoff_metadata(context.metadata_path) do
+      handoff_from_metadata_for_display(metadata, context, worker_grant, opts)
+    end
+  end
+
+  def read_worker_secret_metadata(%WorkPackage{}, worker_grant, _opts) when not is_map(worker_grant),
+    do: {:error, :missing_worker_grant}
+
+  def read_worker_secret_metadata(%{}, _worker_grant, _opts), do: {:error, :missing_work_package}
+
   @spec redacted_worker_grant(map(), map()) :: map()
   def redacted_worker_grant(worker_grant, handoff) when is_map(worker_grant) and is_map(handoff) do
     worker_grant
@@ -627,6 +643,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
       {:ok, Map.put(coordinates, "mode", mode)}
     end
   end
+
+  defp handoff_from_metadata_for_display(metadata, context, worker_grant, opts) do
+    with :ok <- validate_handoff_metadata_identity(metadata, context),
+         {:ok, mode} <- handoff_metadata_mode(metadata),
+         {:ok, coordinates} <- handoff_metadata_cleanup_coordinates(mode, metadata, context),
+         :ok <- validate_handoff_metadata_keys(metadata, mode) do
+      {:ok, handoff_metadata_display(mode, coordinates, context, worker_grant, opts)}
+    end
+  end
+
+  defp handoff_metadata_display(mode, coordinates, context, worker_grant, opts) do
+    target = credential_target(context.work_package, %{display_key: context.display_key, id: context.grant_identity})
+
+    %{
+      mode: mode,
+      status: "stored",
+      work_package_id: context.work_package_id,
+      grant_id: context.grant_identity,
+      display_key: context.display_key,
+      target: target,
+      claimed_by: claimed_by(worker_grant),
+      suggested_claimed_by: Keyword.fetch!(opts, :claimed_by),
+      claimed_by_required: true,
+      secret_in_stdout: false
+    }
+    |> maybe_put_handoff_value(:path, Map.get(coordinates, "path"))
+    |> maybe_put_handoff_value(:run_mcp_command, handoff_metadata_run_mcp_command(mode, coordinates, target, opts))
+  end
+
+  defp claimed_by(worker_grant) do
+    case handoff_value(worker_grant, :claimed_by) do
+      value when is_binary(value) ->
+        value = String.trim(value)
+        if value == "", do: nil, else: value
+
+      _value ->
+        nil
+    end
+  end
+
+  defp handoff_metadata_run_mcp_command("local-private-file", %{"path" => path}, _target, opts) when is_binary(path) do
+    shell_local_file_run_mcp_command(path, opts)
+  end
+
+  defp handoff_metadata_run_mcp_command("windows-credential-manager", _coordinates, target, opts) do
+    script_path = Path.join(Keyword.fetch!(opts, :repo_root), "scripts/sympp-worker-secret.ps1")
+
+    case powershell_executable() do
+      {:ok, powershell} -> windows_credential_run_mcp_command(powershell, script_path, target, opts)
+      :error -> nil
+    end
+  end
+
+  defp handoff_metadata_run_mcp_command(_mode, _coordinates, _target, _opts), do: nil
+
+  defp maybe_put_handoff_value(map, _key, nil), do: map
+  defp maybe_put_handoff_value(map, key, value), do: Map.put(map, key, value)
 
   defp validate_handoff_metadata_identity(metadata, context) do
     with :ok <- expect_handoff_metadata_field(metadata, "version", @metadata_version),
