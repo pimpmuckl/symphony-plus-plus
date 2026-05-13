@@ -154,7 +154,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
   defp validate_architect_phase_scope(changeset, _role, _capabilities, _work_package_id, _phase_id), do: changeset
 
   defp phase_scoped_architect_capabilities?(capabilities) when is_list(capabilities) do
-    Enum.any?(capabilities, &(&1 in ["read:phase", "read:work_request", "write:work_request", "dispatch:work_request"]))
+    Enum.any?(
+      capabilities,
+      &(&1 in [
+          "read:phase",
+          "read:work_request",
+          "write:work_request",
+          "dispatch:work_request",
+          "read:guidance_request",
+          "write:guidance_request"
+        ])
+    )
   end
 
   defp phase_scoped_architect_capabilities?(_capabilities), do: false
@@ -201,6 +211,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
         "read:work_request",
         "write:work_request",
         "dispatch:work_request",
+        "read:guidance_request",
+        "write:guidance_request",
         "write:phase_plan",
         "approve:scope_expansion",
         "request:child_replan",

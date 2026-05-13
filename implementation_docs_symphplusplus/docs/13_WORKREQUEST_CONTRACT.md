@@ -11,9 +11,10 @@ clarification/decision mutations, the board-authenticated manual clarification
 loop, and manual planned-slice authoring/approval controls exist. Planned-slice
 dispatch linkage persistence, the core planned-slice dispatch CLI, the
 architect MCP planned-slice dispatch tool, and local-operator dashboard
-planned-slice dispatch exist. MCP intake tools, automatic question generation,
-automatic slicing, Linear state creation, and plugin packaging remain future
-work.
+planned-slice dispatch exist. Package-scoped guidance request persistence and
+MCP worker/architect routing exist for dispatched packages. MCP intake tools,
+automatic question generation, automatic slicing, Linear state creation, and
+plugin packaging remain future work.
 
 ## Purpose
 
@@ -302,7 +303,35 @@ contains only non-secret identifiers and handoff coordinates.
 ## Escalation Routing
 
 After dispatch, workers ask the architect first for product, architecture,
-dependency, or slice-boundary ambiguity.
+dependency, or slice-boundary ambiguity. Worker-created guidance is allowed
+only with a valid claimed worker grant and a WorkPackage in the worker-active
+window: `ready_for_worker`, `claimed`, `planning`, `implementing`, `reviewing`,
+`ci_waiting`, or `blocked`. It is not allowed from `created`, ready/merge, or
+terminal states because those states are not worker-dispatch-ready or are
+evidence-frozen/operator-controlled.
+
+Workers use `create_guidance_request(summary, question, context,
+idempotency_key)` when they need package-scoped direction, then poll
+`read_guidance_request(guidance_request_id)` for status and answers. The
+request is scoped to the worker's current WorkPackage and grant; workers cannot
+answer their own guidance requests. Exact idempotent create replays for the
+same package, requester grant, idempotency key, and content may return the
+existing request after the package leaves the worker-active window; this replay
+is read-only and does not create, reopen, or mutate guidance state.
+
+Explicit phase-scoped architect MCP sessions with `read:guidance_request` can
+use `list_guidance_requests(status?, work_package_id?)` and
+`read_guidance_request(guidance_request_id)` to see only guidance requests whose
+packages are inside the architect grant's phase plus frozen repo/base-branch
+scope. Requests from unrelated sibling packages fail closed as not found.
+
+Architect sessions with `write:guidance_request` can answer open requests with
+`answer_guidance_request(guidance_request_id, answer, answered_by?)` or escalate
+them with `escalate_guidance_request(guidance_request_id, reason,
+recommended_language)`. Escalation marks the guidance request
+`human_info_needed` and records an active package blocker with the recommended
+human-facing language, so the existing `mark_ready` readiness gate blocks until
+the blocker is resolved by a future resolution path.
 
 The architect may consult ask-pro for hard architecture or product decisions
 when current durable context is insufficient. The architect records the decision
@@ -311,6 +340,9 @@ themselves.
 
 If the architect cannot make a defensible decision without more human intent,
 the package records `human_info_needed` and blocks instead of inventing behavior.
+Clearing a guidance-created blocker is intentionally not part of this narrow
+runtime slice; a follow-up package should add the explicit human-answer and
+blocker-resolution path.
 
 ## Review Responsibility
 

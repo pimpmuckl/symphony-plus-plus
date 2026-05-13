@@ -47,6 +47,16 @@ process aids when the operator explicitly asks for them.
 - Use `request_scope_expansion(summary, idempotency_key, payload)` when the
   needed work exceeds the assignment. This records a request; it does not
   approve the expansion.
+- Use `create_guidance_request(summary, question, context, idempotency_key)`
+  when product, architecture, dependency, or slice-boundary ambiguity would
+  otherwise force you to invent behavior. Read the result with
+  `read_guidance_request(guidance_request_id)` and continue only when the answer
+  is clear or the package is explicitly blocked.
+- Worker guidance creation is available only with a valid claimed worker grant
+  while the WorkPackage is in `ready_for_worker`, `claimed`, `planning`,
+  `implementing`, `reviewing`, `ci_waiting`, or `blocked`.
+- Treat architect escalation to `human_info_needed` as an active package
+  blocker. Do not work around it with assumptions.
 - Stay inside the assigned WorkPackage. Do not inspect or mutate sibling
   WorkPackages unless Symphony++ exposes a specific context slice.
 
@@ -60,6 +70,8 @@ process aids when the operator explicitly asks for them.
   `submit_review_package(summary, tests, artifacts, head_sha)`.
 - Include review lane verdicts in the review package when the package policy
   requires them.
+- Implementing workers run review-suite T1, T2, and GitHub review by default
+  unless the package policy explicitly says otherwise.
 - Always use the current branch head SHA. Older review evidence can replay for
   lost-response stability, but readiness evaluates against the current head.
 
