@@ -141,6 +141,7 @@ add_work_request_planned_slice(work_request_id, title, goal, work_package_kind, 
 approve_work_request_planned_slice(work_request_id, planned_slice_id, current_status)
 skip_work_request_planned_slice(work_request_id, planned_slice_id, current_status)
 mark_work_request_sliced(work_request_id, current_status)
+dispatch_work_request_planned_slice(work_request_id, planned_slice_id, claimed_by, secret_handoff?, secret_store_dir?)
 read_child_status(work_package_id)
 read_phase_board(phase_id)
 request_child_replan(work_package_id, reason)
@@ -163,7 +164,7 @@ surface. Architect sessions may call `get_current_assignment()` and read
 reconnect, but they still cannot use worker package read/write tools.
 Lifecycle capabilities such as `architect:lifecycle.transition` do not imply
 MCP architect tool capabilities; the explicit MCP capability strings listed in
-the permission model are required. WorkRequest read and mutation tools are
+the permission model are required. WorkRequest read, mutation, and dispatch tools are
 advertised only for explicit phase-scoped architect grants with usable frozen
 repo/base-branch scope and the specific WorkRequest capability; legacy null
 `phase_id` architect grants do not discover those tools.
@@ -213,6 +214,30 @@ planned-slice or WorkRequest status projections plus scope/status metadata.
 These tools do not dispatch planned slices, create WorkPackages, alter
 SecretHandoff, mutate Linear, run automatic slicing/package generation, or
 change dashboard behavior.
+
+`dispatch_work_request_planned_slice` is an architect dispatch tool gated by
+`dispatch:work_request`, not by generic `write:work_request`. It uses the same
+explicit phase-scoped frozen repo/base-branch scope, requires `work_request_id`,
+`planned_slice_id`, and `claimed_by`, accepts optional `secret_handoff` and
+`secret_store_dir`, and calls the existing `PlannedSliceDispatch.dispatch`
+orchestration. MCP dispatch is advertised only when the MCP server is started
+with `repo_root`/`--repo-root` pointing at a repository that contains the worker
+secret handoff script, and direct calls fail closed if that root is missing or
+invalid. MCP dispatch requires a file-backed live ledger so the returned worker
+bootstrap command reconnects to the same ledger; in-memory database
+configuration fails closed before dispatch side effects. Blank database
+configuration is treated as absent and uses the live ledger. Matching configured
+SQLite file URI options are preserved in the worker bootstrap command when they
+resolve to the same live ledger, including default repo database configuration;
+divergent explicit MCP database configuration fails closed, and matching
+read-only SQLite URI options such as `mode=ro` or `immutable=1` are rejected
+before dispatch. The tool verifies the WorkRequest and planned slice are in scope before
+mutation and fails closed for missing, out-of-scope, non-approved,
+invalid-status, unsupported-kind, and slice-scope-violation cases. Responses
+include only WorkRequest id, planned-slice status/linkage, WorkPackage id
+metadata, and redacted worker handoff metadata. They must not include raw worker
+secrets, work keys, bearer tokens, API tokens, MCP auth tokens, private-store
+secret payloads, or secret-bearing claim URLs.
 
 Phase-dependent architect tools revalidate the grant's explicit phase scope plus
 the anchor repo/base-branch scope frozen when the phase architect grant was

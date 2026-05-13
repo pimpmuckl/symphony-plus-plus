@@ -142,7 +142,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
   defp validate_worker_scope(changeset, _role, _work_package_id, _phase_id), do: changeset
 
   defp validate_architect_phase_scope(changeset, "architect", capabilities, work_package_id, phase_id) do
-    if "read:phase" in capabilities do
+    if phase_scoped_architect_capabilities?(capabilities) do
       changeset
       |> require_architect_phase_anchor(work_package_id)
       |> require_architect_phase_scope(phase_id)
@@ -153,13 +153,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
 
   defp validate_architect_phase_scope(changeset, _role, _capabilities, _work_package_id, _phase_id), do: changeset
 
+  defp phase_scoped_architect_capabilities?(capabilities) when is_list(capabilities) do
+    Enum.any?(capabilities, &(&1 in ["read:phase", "read:work_request", "write:work_request", "dispatch:work_request"]))
+  end
+
+  defp phase_scoped_architect_capabilities?(_capabilities), do: false
+
   defp require_architect_phase_anchor(changeset, nil),
-    do: add_error(changeset, :work_package_id, "architect read phase grants require work package anchor")
+    do: add_error(changeset, :work_package_id, "architect phase-scoped grants require work package anchor")
 
   defp require_architect_phase_anchor(changeset, _work_package_id), do: changeset
 
   defp require_architect_phase_scope(changeset, nil),
-    do: add_error(changeset, :phase_id, "architect read phase grants require phase scope")
+    do: add_error(changeset, :phase_id, "architect phase-scoped grants require phase scope")
 
   defp require_architect_phase_scope(changeset, _phase_id), do: changeset
 
@@ -194,6 +200,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
         "read:phase",
         "read:work_request",
         "write:work_request",
+        "dispatch:work_request",
         "write:phase_plan",
         "approve:scope_expansion",
         "request:child_replan",

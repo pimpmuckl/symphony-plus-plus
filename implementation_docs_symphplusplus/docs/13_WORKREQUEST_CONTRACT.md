@@ -9,9 +9,9 @@ WorkRequest core persistence, planned-slice persistence, read API/list/detail
 dashboard views, scoped dashboard intake, architect MCP WorkRequest reads and
 clarification/decision mutations, the board-authenticated manual clarification
 loop, and manual planned-slice authoring/approval controls exist. Planned-slice
-dispatch linkage persistence and the core planned-slice dispatch CLI exist. MCP
-intake tools, automatic question generation, automatic slicing, planned-slice
-MCP authoring/approval/dispatch actions, Linear state creation, and plugin
+dispatch linkage persistence, the core planned-slice dispatch CLI, and the
+architect MCP planned-slice dispatch tool exist. MCP intake tools, automatic
+question generation, automatic slicing, Linear state creation, and plugin
 packaging remain future work.
 
 ## Purpose
@@ -99,6 +99,19 @@ service primitives: status movement is explicit through
 `set_work_request_status`, `mark_work_request_sliced` keeps the existing
 approved-slice requirement, and the question/decision tools do not apply
 dashboard-only auto-transition or lifecycle helper policy.
+
+Explicit phase-scoped architect MCP sessions with `dispatch:work_request` can
+dispatch one approved planned slice through
+`dispatch_work_request_planned_slice`. The tool is separate from
+`write:work_request` because it creates WorkPackage, AccessGrant, and
+SecretHandoff side effects. It requires `work_request_id`, `planned_slice_id`,
+and `claimed_by`, supports the existing dispatch handoff options
+`secret_handoff` and `secret_store_dir`, verifies the WorkRequest and slice are
+inside the frozen repo/base-branch scope before mutation, and fails closed for
+out-of-scope, missing, non-approved, invalid, unsupported-kind, or slice-scope
+violation cases. The response is safe JSON containing WorkRequest id,
+planned-slice linkage/status, WorkPackage id metadata, and redacted worker
+handoff metadata only.
 
 When runtime intake is not available for a lane, the canonical WorkRequest is
 one versioned, operator-approved Markdown artifact.
@@ -198,8 +211,8 @@ mint worker grants. The create path starts rows as `planned`, approve moves
 recording the linked `work_package_id` and `dispatched_at` timestamp. The linked
 WorkPackage must match the parent WorkRequest and planned-slice contract.
 Dispatched slices are read-only in this UI. Approved slices become WorkPackages
-only through the explicit planned-slice dispatch CLI or a future
-operator-approved dispatch surface.
+only through the explicit planned-slice dispatch CLI or architect MCP dispatch
+tool.
 
 Before planned-slice dispatch can mint a WorkPackage from an approved planned
 slice, it must call the WorkRequest path-scope validator contract. The validator
@@ -232,15 +245,29 @@ risk.
 ## Dispatch Into WorkPackages
 
 Approved slices become normal WorkPackages through `mix
-sympp.dispatch_planned_slice`. The task accepts `--database`,
-`--work-request-id`, `--planned-slice-id`, `--claimed-by`, `--secret-handoff`,
-and `--secret-store-dir`. It validates required identifiers and `claimed_by`
-before opening or creating the ledger database, migrates the repo, validates the
-slice scope through `ScopeConstraints.validate_owned_file_globs/2`, creates a
-worker-ready standalone WorkPackage with private worker-secret handoff, and
-links the planned slice. Dispatched planned-slice rows retain `work_package_id`
-and `dispatched_at` as linkage metadata. From that point, existing WorkPackage
-machinery is authoritative:
+sympp.dispatch_planned_slice` or the architect MCP
+`dispatch_work_request_planned_slice` tool. Both paths accept a WorkRequest id,
+planned-slice id, claimed worker identity, and private handoff options. They
+validate required identifiers and `claimed_by`, validate the slice scope through
+`ScopeConstraints.validate_owned_file_globs/2`, create a worker-ready standalone
+WorkPackage with private worker-secret handoff, and link the planned slice.
+MCP dispatch is advertised only when the MCP server has `repo_root`/`--repo-root`
+configured to a repository containing the worker secret handoff script, and
+direct calls fail closed if that root is missing or invalid. It additionally
+requires a file-backed live ledger database so the worker handoff command
+reconnects to the same ledger; in-memory database configuration fails closed
+before WorkPackage or grant side effects. Blank database configuration is
+treated as absent and uses the live ledger. Matching
+configured SQLite file URI options are preserved for the worker command when they
+resolve to the same live ledger, including default repo database configuration;
+divergent explicit MCP database configuration fails closed, and matching
+read-only SQLite URI options such as `mode=ro` or `immutable=1` are rejected
+before dispatch. Dispatch-link
+failures return sanitized recovery identifiers and redacted handoff metadata
+without raw worker secrets.
+Dispatched planned-slice rows retain `work_package_id` and `dispatched_at` as
+linkage metadata. From that point, existing WorkPackage machinery is
+authoritative:
 
 - AccessGrant scope and capabilities.
 - MCP virtual context, task plan, findings, progress, acceptance, review-suite,
@@ -290,11 +317,11 @@ replace the implementing worker's normal review-suite responsibility.
 
 This contract does not implement or require:
 
-- MCP WorkRequest intake tools, planned-slice MCP mutation tools, or architect-planner tools.
+- MCP WorkRequest intake tools or architect-planner tools.
 - Plugin packaging changes.
 - Automatic question generation.
 - Automatic WorkPackage slicing.
-- Dashboard or MCP dispatch actions.
+- Dashboard dispatch actions.
 - Live Linear state creation.
 - Historical runbook rewrites.
 
