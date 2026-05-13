@@ -78,7 +78,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     package =
       create_package!(
         id: "SYMPP-V2-UX-001",
-        title: "Local operator cockpit",
+        title: "Package raw-secret-value",
         status: "implementing",
         blocker?: true,
         pr_url: "https://github.com/example/symphony-plus-plus/pull/101"
@@ -86,7 +86,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     create_work_request!(
       id: "WR-OPERATOR-GUIDANCE",
-      title: "Need product answer",
+      title: "Need product answer ghp_raw_secret_value",
       status: "human_info_needed"
     )
 
@@ -102,11 +102,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "Local operator cockpit"
     assert html =~ ~s(href="board?auth=work_key")
     assert html =~ "Product Guidance Needed"
-    assert html =~ "Need product answer"
     assert html =~ "Blockers"
-    assert html =~ "Local operator cockpit"
     assert html =~ package.id
     assert html =~ ~s(href="work-packages/#{package.id}")
+    assert Regex.scan(~r/\[REDACTED\]/, html) |> length() >= 2
+    refute html =~ "raw-secret-value"
+    refute html =~ "ghp_raw_secret_value"
     refute html =~ "Board access"
     refute html =~ ~s(name="work_key")
   end
