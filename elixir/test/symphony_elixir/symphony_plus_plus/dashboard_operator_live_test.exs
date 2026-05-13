@@ -188,7 +188,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
         human_description: "Inspect the full request with Bearer raw-secret-value."
       )
 
-    assert {:ok, _question} =
+    assert {:ok, question} =
              WorkRequestRepository.ask_question(Repo, request.id, %{
                question: "Question needing operator guidance raw-secret-value",
                category: "product",
@@ -196,7 +196,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
                asked_by: "operator"
              })
 
-    assert {:ok, _decision} =
+    assert {:ok, decision} =
              WorkRequestRepository.record_decision(Repo, request.id, %{
                decision: "Proceed without ghp_raw_secret_value",
                rationale: "The token raw-secret-value is not needed.",
@@ -205,7 +205,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
                created_by: "operator"
              })
 
-    assert {:ok, _slice} =
+    assert {:ok, slice} =
              WorkRequestRepository.add_planned_slice(Repo, request.id, %{
                title: "First operator slice",
                goal: "Expose the cockpit without sk-rawsecretvalue.",
@@ -221,9 +221,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     {:ok, _view, html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
 
     assert html =~ "Operator WorkRequest detail"
+    assert html =~ "Clarification questions"
+    assert html =~ question.id
+    assert html =~ "Decision log"
+    assert html =~ decision.id
     assert html =~ "Planned slices"
+    assert html =~ slice.id
     assert html =~ "First operator slice"
-    assert html =~ "[REDACTED]"
+    assert Regex.scan(~r/\[REDACTED\]/, html) |> length() >= 5
     assert html =~ ~s(href="../board?auth=work_key")
     refute html =~ "Board access"
     refute html =~ "raw-secret-value"
