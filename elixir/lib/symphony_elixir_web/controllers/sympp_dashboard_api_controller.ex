@@ -67,11 +67,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         |> Conn.halt()
 
       local_operator_browser?(conn) and active_local_operator_session?(conn) ->
-        if package_route_exists?(work_package_id) do
-          put_local_operator_session(conn)
-        else
-          conn |> package_not_found_response() |> Conn.halt()
-        end
+        authorize_operator_package_route(conn, work_package_id)
 
       true ->
         case authorize_package_request(conn, work_package_id) do
@@ -80,11 +76,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
           {:error, :unauthorized} ->
             if local_operator_browser?(conn) do
-              if package_route_exists?(work_package_id) do
-                put_local_operator_session(conn)
-              else
-                conn |> package_not_found_response() |> Conn.halt()
-              end
+              authorize_operator_package_route(conn, work_package_id)
             else
               conn |> package_login_response(work_package_id: work_package_id) |> Conn.halt()
             end
@@ -161,11 +153,19 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp work_key_login_requested?(conn), do: Map.get(conn.params, "auth") == "work_key"
 
-  defp package_route_exists?(work_package_id) do
+  defp authorize_operator_package_route(conn, work_package_id) do
+    case package_route_status(work_package_id) do
+      :exists -> put_local_operator_session(conn)
+      :missing -> conn |> package_not_found_response() |> Conn.halt()
+      {:error, reason} -> conn |> package_browser_error_response(reason, work_package_id) |> Conn.halt()
+    end
+  end
+
+  defp package_route_status(work_package_id) do
     case with_dashboard_repo(fn repo -> WorkPackageRepository.get(repo, work_package_id) end) do
-      {:ok, _work_package} -> true
-      {:error, :not_found} -> false
-      {:error, _reason} -> false
+      {:ok, _work_package} -> :exists
+      {:error, :not_found} -> :missing
+      {:error, reason} -> {:error, reason}
     end
   end
 

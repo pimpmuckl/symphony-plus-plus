@@ -817,7 +817,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     not is_nil(stream_key(request))
   end
 
-  defp matches_package_scope?(request, _filters, visible_streams), do: MapSet.member?(visible_streams, stream_key(request))
+  defp matches_package_scope?(_request, _filters, _visible_streams), do: false
 
   defp stream_key(item) do
     repo = Map.get(item, :repo)

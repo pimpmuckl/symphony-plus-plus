@@ -302,7 +302,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute html =~ "Hidden guidance request"
   end
 
-  test "local operator guidance watchlist follows package kind filters by work stream" do
+  test "local operator guidance watchlist hides unsupported package kind filters" do
     enable_operator_mode()
 
     create_package!(
@@ -336,7 +336,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     {:ok, _view, html} = live(local_conn(), "/sympp/board?kind=dashboard")
 
     assert html =~ "Visible dashboard package"
-    assert html =~ "Visible kind guidance"
+    refute html =~ "Visible kind guidance"
     refute html =~ "Hidden docs package"
     refute html =~ "Hidden kind guidance"
   end
