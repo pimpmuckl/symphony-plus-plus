@@ -212,7 +212,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
           fallback_delete_worker_secret_after_link_failure(
             worker_secret_handoff,
             handoff_opts,
-            handoff_cleanup_reason
+            handoff_cleanup_reason,
+            opts
           )
 
         {:error, {:dispatch_link_failed, reason, Map.put(recovery, :cleanup, cleanup)}}
@@ -222,9 +223,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
   defp fallback_delete_worker_secret_after_link_failure(
          worker_secret_handoff,
          handoff_opts,
-         handoff_cleanup_reason
+         handoff_cleanup_reason,
+         opts
        ) do
-    case SecretHandoff.delete_worker_secret(worker_secret_handoff, handoff_opts) do
+    fallback_delete_fun = Keyword.get(opts, :delete_worker_secret, &SecretHandoff.delete_worker_secret/2)
+
+    case fallback_delete_fun.(worker_secret_handoff, handoff_opts) do
       :ok ->
         %{
           ledger: :deleted,

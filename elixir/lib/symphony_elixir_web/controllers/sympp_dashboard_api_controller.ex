@@ -1009,11 +1009,10 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
-  defp scope_worker_secret_handoffs(payload, %AccessGrant{id: grant_id}) do
+  defp scope_worker_secret_handoffs(payload, %AccessGrant{}) do
     case fetch_payload_field(payload, :worker_secret_handoffs) do
-      {:ok, handoffs_key, handoffs} when is_list(handoffs) ->
-        handoffs = Enum.filter(handoffs, &(Map.get(&1, :grant_id) == grant_id or Map.get(&1, "grant_id") == grant_id))
-        Map.put(payload, handoffs_key, handoffs)
+      {:ok, handoffs_key, _handoffs} ->
+        Map.put(payload, handoffs_key, [])
 
       _missing ->
         payload

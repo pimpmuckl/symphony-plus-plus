@@ -20,6 +20,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
@@ -32,6 +33,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
   @endpoint SymphonyElixirWeb.Endpoint
   @dashboard_phase_id "phase-dashboard-test"
+  @repo_root Path.expand("../../../../", __DIR__)
 
   defmodule BusyRepo do
     @moduledoc false
@@ -2801,13 +2803,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   end
 
   test "worker-scoped API cannot fetch global board and cannot fetch sibling packages", %{repo: repo} do
-    %{work_package: work_package, work_key_secret: secret} = create_dashboard_fixture(repo)
+    %{work_package: work_package, work_key_secret: secret, grant: grant} = create_dashboard_fixture(repo)
     assert {:ok, sibling} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SIBLING"))
+    store_dir = Path.join(System.tmp_dir!(), "sympp-api-worker-handoff-#{System.unique_integer([:positive])}")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+
+    on_exit(fn ->
+      restore_store_dir_env(previous_store_dir)
+      File.rm_rf(store_dir)
+    end)
+
+    handoff_opts = [
+      mode: "windows-credential-manager",
+      store_dir: store_dir,
+      database: Application.fetch_env!(:symphony_elixir, :sympp_repo_database),
+      repo_root: @repo_root,
+      claimed_by: "local-operator-worker"
+    ]
+
+    handoff = %{mode: "windows-credential-manager", target: credential_target(work_package, grant)}
+    assert :ok = SecretHandoff.store_worker_secret_metadata(work_package, grant, handoff, handoff_opts)
 
     assert %{"error" => %{"code" => "forbidden"}} =
              json_response(get(auth_conn(secret), "/api/v1/sympp/board"), 403)
 
-    assert %{"work_package" => %{"id" => fetched_id}} =
+    assert %{"work_package" => %{"id" => fetched_id}, "worker_secret_handoffs" => []} =
              json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
 
     assert fetched_id == work_package.id
@@ -3659,6 +3681,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert {:ok, grant} = AccessGrantRepository.get(repo, grant.id)
     grant
   end
+
+  defp credential_target(%WorkPackage{id: work_package_id}, %AccessGrant{} = worker_grant) do
+    "SymphonyPlusPlus:worker:#{work_package_id}:#{worker_grant.display_key}:#{String.trim(worker_grant.id)}"
+  end
+
+  defp restore_store_dir_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+  defp restore_store_dir_env(store_dir), do: Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
 
   defp auth_conn(secret) do
     build_conn()

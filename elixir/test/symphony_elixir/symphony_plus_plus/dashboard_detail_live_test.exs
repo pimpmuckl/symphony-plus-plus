@@ -11,6 +11,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
+  alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
@@ -30,6 +31,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
   @repo_root Path.expand("../../../../", __DIR__)
   @detail_phase_id "phase-dashboard-detail-test"
   @windows match?({:win32, _}, :os.type())
+
+  defmodule NoQueryRepo do
+    @moduledoc false
+
+    def all(query), do: SymphonyElixir.SymphonyPlusPlus.Repo.all(query)
+    def get(queryable, id), do: SymphonyElixir.SymphonyPlusPlus.Repo.get(queryable, id)
+    def one(query), do: SymphonyElixir.SymphonyPlusPlus.Repo.one(query)
+    def transaction(fun), do: SymphonyElixir.SymphonyPlusPlus.Repo.transaction(fun)
+  end
 
   setup_all do
     database_path = WorkPackageFactory.database_path()
@@ -156,6 +166,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert html =~ "Run MCP"
     assert html =~ "local-operator-worker"
     refute html =~ worker_secret
+  end
+
+  test "dashboard detail tolerates repos without query callback" do
+    %{work_package: work_package} =
+      create_detail_package(id: "SYMPP-P5-NOQUERY", title: "No query callback package")
+
+    assert {:ok, detail} = Dashboard.detail(NoQueryRepo, work_package.id)
+    assert detail.worker_secret_handoffs == []
   end
 
   test "timeline is chronological across progress and findings" do
