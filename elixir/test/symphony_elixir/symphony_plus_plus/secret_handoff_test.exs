@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
   use ExUnit.Case, async: false
 
+  alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
@@ -644,6 +645,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
       assert display.run_mcp_command =~ "--claimed-by 'claimed-worker-1'"
       refute inspect(display) =~ "display-secret"
 
+      File.rm!(handoff_path)
+      assert {:ok, stale_display} = SecretHandoff.read_worker_secret_metadata(package, grant, opts)
+      assert stale_display.path == handoff_path
+      assert stale_display.run_mcp_command =~ "--claimed-by 'claimed-worker-1'"
+
       unclaimed_grant = worker_grant("unclaimed-display-secret", id: "grant-unclaimed-display", display_key: "U321")
       unclaimed_path = local_private_file_path(package, unclaimed_grant, opts)
       File.write!(unclaimed_path, "unclaimed display fixture")
@@ -668,6 +674,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     after
       File.rm_rf!(store_dir)
     end
+  end
+
+  test "metadata namespace canonicalizes equivalent filesystem database paths" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-db-namespace-#{System.unique_integer([:positive])}")
+    package = work_package()
+    grant = worker_grant("canonical-database-secret")
+    database_path = Path.join(File.cwd!(), "tmp/sympp-handoff-db-#{System.unique_integer([:positive])}.sqlite3")
+    relative_database = Path.relative_to(database_path, File.cwd!())
+
+    absolute_opts = [
+      mode: "local-private-file",
+      store_dir: store_dir,
+      repo_root: @repo_root,
+      database: database_path,
+      claimed_by: "worker-local-1"
+    ]
+
+    relative_opts = Keyword.put(absolute_opts, :database, relative_database)
+
+    assert managed_metadata_file(package, grant, absolute_opts) ==
+             managed_metadata_file(package, grant, relative_opts)
+
+    assert local_private_file_path(package, grant, absolute_opts) ==
+             local_private_file_path(package, grant, relative_opts)
   end
 
   test "metadata persistence treats nil store dir as the default store" do
@@ -1183,7 +1213,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
       0,
       opts |> Keyword.get(:repo_root, "") |> to_string() |> Path.expand(),
       0,
-      to_string(Keyword.get(opts, :database, "")),
+      database_hash_value(opts),
       0,
       metadata_store_dir(opts),
       0,
@@ -1220,7 +1250,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     hash_source = [
       opts |> Keyword.get(:repo_root, "") |> to_string() |> Path.expand(),
       0,
-      to_string(Keyword.get(opts, :database, "")),
+      database_hash_value(opts),
       0,
       work_package.id,
       0,
@@ -1234,6 +1264,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     |> Base.url_encode64(padding: false)
     |> binary_part(0, 16)
   end
+
+  defp database_hash_value(opts) do
+    case Keyword.get(opts, :database) do
+      database when is_binary(database) ->
+        database
+        |> String.trim()
+        |> database_hash_value(database)
+
+      nil ->
+        ""
+
+      database ->
+        :erlang.term_to_binary(database)
+    end
+  end
+
+  defp database_hash_value("", _database), do: ""
+  defp database_hash_value(_trimmed, database), do: database |> Repo.database_key() |> :erlang.term_to_binary()
 
   defp credential_target(%WorkPackage{id: work_package_id}, worker_grant) do
     "SymphonyPlusPlus:worker:#{work_package_id}:#{worker_grant.display_key}:#{String.trim(worker_grant.id)}"

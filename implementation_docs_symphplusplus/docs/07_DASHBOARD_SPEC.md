@@ -155,6 +155,8 @@ The WorkPackage detail handoff panel reads durable handoff metadata only from
 the dashboard's configured/default local secret store. If a CLI or MCP dispatch
 uses a per-call custom secret store, that command output remains the handoff
 source of truth unless the dashboard app is configured to the same store.
+The panel uses the dashboard's configured ledger database identity and local
+repo root when deriving non-secret bootstrap commands.
 
 ### Runtime view
 

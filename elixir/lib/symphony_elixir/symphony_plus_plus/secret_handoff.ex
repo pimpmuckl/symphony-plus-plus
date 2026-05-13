@@ -1,9 +1,11 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   @moduledoc false
 
+  alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
   @default_env_var "SYMPP_WORK_KEY_SECRET"
+  @default_repo_root __DIR__ |> Path.join("../../../..") |> Path.expand()
   @metadata_version 1
   @metadata_lock_stale_seconds 300
   @valid_modes ["auto", "windows-credential-manager", "local-private-file"]
@@ -32,6 +34,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
   @spec valid_modes() :: [String.t()]
   def valid_modes, do: @valid_modes
+
+  @spec local_operator_repo_root() :: Path.t()
+  def local_operator_repo_root do
+    configured_local_operator_repo_root() || cwd_local_operator_repo_root() || @default_repo_root
+  end
 
   @spec store_worker_secret(map(), keyword()) :: {:ok, map()} | {:error, error()}
   def store_worker_secret(%{work_package: %WorkPackage{} = work_package, worker_grant: worker_grant}, opts)
@@ -526,7 +533,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     hash_source = [
       to_string(Keyword.get(opts, :repo_root, "")),
       0,
-      to_string(Keyword.get(opts, :database, "")),
+      handoff_database_hash_value(opts),
       0,
       work_package.id,
       0,
@@ -578,7 +585,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
       0,
       opts |> Keyword.fetch!(:repo_root) |> Path.expand(),
       0,
-      to_string(Keyword.get(opts, :database, "")),
+      handoff_database_hash_value(opts),
       0,
       store_dir,
       0,
@@ -647,7 +654,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   defp handoff_from_metadata_for_display(metadata, context, worker_grant, opts) do
     with :ok <- validate_handoff_metadata_identity(metadata, context),
          {:ok, mode} <- handoff_metadata_mode(metadata),
-         {:ok, coordinates} <- handoff_metadata_cleanup_coordinates(mode, metadata, context),
+         {:ok, coordinates} <- handoff_metadata_display_coordinates(mode, metadata, context),
          :ok <- validate_handoff_metadata_keys(metadata, mode) do
       {:ok, handoff_metadata_display(mode, coordinates, context, worker_grant, opts)}
     end
@@ -819,6 +826,76 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
       true ->
         {:ok, %{"path" => context.expected_local_private_file_path}}
     end
+  end
+
+  defp handoff_metadata_display_coordinates("local-private-file", metadata, context) do
+    case Map.get(metadata, "path") do
+      path when is_binary(path) -> validate_handoff_metadata_local_display_path(path, context)
+      _path -> {:error, {:handoff_metadata_invalid, :missing_local_path}}
+    end
+  end
+
+  defp handoff_metadata_display_coordinates("windows-credential-manager", metadata, context) do
+    handoff_metadata_cleanup_coordinates("windows-credential-manager", metadata, context)
+  end
+
+  defp validate_handoff_metadata_local_display_path(path, context) do
+    expanded_path = Path.expand(path)
+
+    cond do
+      String.trim(path) == "" ->
+        {:error, {:handoff_metadata_invalid, :missing_local_path}}
+
+      expanded_path != context.expected_local_private_file_path ->
+        {:error, {:handoff_metadata_invalid, :local_path_mismatch}}
+
+      true ->
+        {:ok, %{"path" => context.expected_local_private_file_path}}
+    end
+  end
+
+  defp handoff_database_hash_value(opts) do
+    case Keyword.get(opts, :database) do
+      database when is_binary(database) ->
+        database
+        |> String.trim()
+        |> database_hash_value(database)
+
+      nil ->
+        ""
+
+      database ->
+        :erlang.term_to_binary(database)
+    end
+  end
+
+  defp database_hash_value("", _database), do: ""
+  defp database_hash_value(_trimmed, database), do: database |> Repo.database_key() |> :erlang.term_to_binary()
+
+  defp configured_local_operator_repo_root do
+    case Application.get_env(:symphony_elixir, :sympp_repo_root) do
+      repo_root when is_binary(repo_root) ->
+        repo_root = String.trim(repo_root)
+        if repo_root == "", do: nil, else: Path.expand(repo_root)
+
+      _repo_root ->
+        nil
+    end
+  end
+
+  defp cwd_local_operator_repo_root do
+    cwd = File.cwd!()
+
+    [cwd, Path.expand("..", cwd)]
+    |> Enum.find(&local_operator_repo_root?/1)
+  rescue
+    _error -> nil
+  end
+
+  defp local_operator_repo_root?(repo_root) do
+    Enum.any?(["sympp-worker-secret.sh", "sympp-worker-secret.ps1"], fn script ->
+      File.regular?(Path.join([repo_root, "scripts", script]))
+    end)
   end
 
   defp encode_handoff_metadata(metadata) do

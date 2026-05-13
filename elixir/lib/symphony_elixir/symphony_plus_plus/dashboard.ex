@@ -33,7 +33,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   @merge_required_gates ["human_merge", "architect_merge"]
   @runtime_merge_required_kinds ["hotfix", "adapter", "mcp", "skill", "hooks", "phase_child"]
   @scope_guard_gate "scope_guard"
-  @repo_root __DIR__ |> Path.join("../../../..") |> Path.expand()
   @local_operator_worker "local-operator-worker"
   @dropped_child_statuses ["abandoned"]
   @non_open_child_statuses ["merged_into_phase", "closed", "abandoned"]
@@ -344,7 +343,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp local_operator_handoff_opts(repo) do
     [
-      repo_root: @repo_root,
+      repo_root: SecretHandoff.local_operator_repo_root(),
       claimed_by: @local_operator_worker
     ]
     |> put_optional_handoff_opt(:database, dashboard_ledger_database(repo))
@@ -352,6 +351,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp dashboard_ledger_database(repo) do
+    configured_ledger_database() || live_ledger_database(repo)
+  end
+
+  defp live_ledger_database(repo) do
     case repo.query("PRAGMA database_list", []) do
       {:ok, %{rows: rows}} -> persistent_main_database_path(rows) || configured_ledger_database()
       {:error, _reason} -> configured_ledger_database()
@@ -369,7 +372,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp configured_ledger_database do
-    Application.get_env(:symphony_elixir, :sympp_repo_database)
+    case Application.get_env(:symphony_elixir, :sympp_repo_database) do
+      database when is_binary(database) ->
+        database = String.trim(database)
+        if database == "", do: nil, else: database
+
+      database ->
+        database
+    end
   end
 
   defp put_optional_handoff_opt(opts, _key, nil), do: opts
