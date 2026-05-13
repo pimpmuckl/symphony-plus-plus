@@ -308,6 +308,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
       })
 
     assert html =~ "approved"
+    refute html =~ "Dispatch</button>"
     assert {:ok, [approved, ^second, ^dispatched]} = WorkRequestRepository.list_planned_slices(Repo, request.id)
     assert approved.status == "approved"
 
@@ -342,6 +343,53 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
     assert html =~ "That action is not available from the current status."
     assert {:ok, [_approved, _skipped, persisted_dispatched]} = WorkRequestRepository.list_planned_slices(Repo, request.id)
     assert persisted_dispatched.status == "dispatched"
+  end
+
+  test "board grant hides dispatched WorkPackage linkage metadata" do
+    anchor = create_anchor_package!()
+
+    request =
+      create_work_request!(
+        id: "WR-LIVE-DISPATCH-LINKAGE",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "sliced"
+      )
+
+    assert {:ok, slice} =
+             WorkRequestRepository.add_planned_slice(
+               Repo,
+               request.id,
+               planned_slice_attrs(id: "WRS-LIVE-DISPATCH-LINKAGE", title: "Linked dispatched action")
+             )
+
+    assert {:ok, linked_package} =
+             WorkPackageRepository.create(
+               Repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-LIVE-WR-DISPATCHED",
+                 kind: "mcp",
+                 status: "ready_for_worker",
+                 repo: anchor.repo,
+                 base_branch: anchor.base_branch
+               )
+             )
+
+    Repo.update!(
+      Ecto.Changeset.change(slice,
+        status: "dispatched",
+        work_package_id: linked_package.id,
+        dispatched_at: DateTime.utc_now(:microsecond)
+      )
+    )
+
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{request.id}")
+
+    assert html =~ "Linked dispatched action"
+    assert html =~ "dispatched"
+    refute html =~ linked_package.id
+    refute html =~ "ready for worker"
   end
 
   test "mark sliced requires an approved planned slice" do

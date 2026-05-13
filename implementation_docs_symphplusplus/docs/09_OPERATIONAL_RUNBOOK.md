@@ -21,9 +21,14 @@ the preferred front door for this flow.
    questions from the WorkRequest detail page.
 6. Record durable decisions and explicit assumptions before slicing.
 7. Mark the request ready for slicing, add planned slices, approve or skip the
-   slices, and mark the request sliced when at least one slice is approved.
-8. Approved slices become normal WorkPackages with existing grant, readiness,
-   review-suite, PR, and human merge machinery.
+   slices, then dispatch approved slices that should become WorkPackages.
+8. Browser dispatch creates the WorkPackage, worker grant, and private worker
+   secret handoff through the existing `PlannedSliceDispatch` flow. Use the
+   visible WorkPackage id/status and non-secret handoff metadata to continue the
+   normal worker setup.
+9. Mark the request sliced when at least one slice is approved or dispatched.
+10. Dispatched slices become normal WorkPackages with existing readiness,
+    review-suite, PR, and human merge machinery.
 
 Board-grant mode keeps its locked-scope behavior: the WorkRequest intake form
 shows the grant's repo/base branch and creation ignores any submitted repo/base
@@ -44,9 +49,10 @@ durable reference, optionally attach the artifact, and include a bounded summary
 of the current status, decisions, assumptions, open questions, and intended
 slices. Do not paste a long clarification history into package prompts.
 
-Local operator WorkRequest controls do not change worker or architect grants.
-Workers and agents still need their existing work keys, MCP grants, private
-handoff flow, and package-scoped permissions.
+Local operator planned-slice dispatch creates worker grants through the existing
+private handoff flow. It does not spawn Codex agents, call Linear, or replace
+package-scoped permissions. Board-grant WorkRequest detail remains scoped to
+planning controls and does not expose planned-slice dispatch.
 
 ## Standalone Package
 

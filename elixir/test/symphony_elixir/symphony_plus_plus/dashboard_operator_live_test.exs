@@ -17,6 +17,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
@@ -641,6 +642,79 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert sliced.status == "sliced"
   end
 
+  test "local operator dispatches approved planned slices through private handoff" do
+    enable_operator_mode()
+
+    request =
+      create_work_request!(
+        id: "WR-OPERATOR-DISPATCH",
+        title: "Dispatch local slice",
+        status: "ready_for_slicing",
+        constraints: %{"allowed_paths" => ["elixir/lib"], "requires_secret" => false}
+      )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(Repo, request.id, %{
+               title: "Dispatch from WorkRequest detail",
+               goal: "Create a worker-ready WorkPackage without spawning Codex.",
+               work_package_kind: "mcp",
+               target_base_branch: "main",
+               branch_pattern: "agent/SYMPP-V2-UX-005/local-operator-slice-dispatch",
+               owned_file_globs: ["elixir/lib/symphony_elixir_web/live/sympp_work_request_live.ex"],
+               forbidden_file_globs: ["elixir/lib/symphony_elixir/symphony_plus_plus/secret_handoff.ex"],
+               acceptance_criteria: ["Dispatch links the planned slice to a WorkPackage."],
+               validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/dashboard_operator_live_test.exs"],
+               review_lanes: ["review_t1", "review_t2"],
+               stop_conditions: ["Stop before spawning Codex."]
+             })
+
+    assert {:ok, approved_slice} =
+             WorkRequestRepository.approve_planned_slice(Repo, request.id, planned_slice.id, "planned")
+
+    {:ok, view, html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
+
+    assert html =~ "Dispatch from WorkRequest detail"
+    assert html =~ "Dispatch</button>"
+
+    html =
+      render_submit(view, "dispatch_planned_slice", %{
+        "slice" => %{"id" => approved_slice.id}
+      })
+
+    handoff = dispatch_handoff_from_html(html)
+
+    on_exit(fn ->
+      cleanup_handoff(handoff)
+    end)
+
+    assert html =~ "Private worker handoff stored"
+    assert html =~ "local-operator-worker"
+    assert html =~ "Secret in stdout"
+    assert html =~ "false"
+
+    expected_database =
+      :symphony_elixir
+      |> Application.fetch_env!(:sympp_repo_database)
+
+    assert html =~ "-Database"
+    assert html =~ Path.basename(expected_database)
+    refute html =~ "secret_returned_once"
+    refute html =~ "secret_not_persisted"
+
+    assert {:ok, [dispatched_slice]} = WorkRequestRepository.list_planned_slices(Repo, request.id)
+    assert dispatched_slice.status == "dispatched"
+    assert is_binary(dispatched_slice.work_package_id)
+    assert %DateTime{} = dispatched_slice.dispatched_at
+
+    assert {:ok, work_package} = WorkPackageRepository.get(Repo, dispatched_slice.work_package_id)
+    assert work_package.status == "ready_for_worker"
+
+    assert html =~ dispatched_slice.work_package_id
+    assert html =~ ~s(href="/sympp/work-packages/#{dispatched_slice.work_package_id}")
+    assert html =~ "ready for worker"
+    refute html =~ ~s(name="slice[id]" value="#{approved_slice.id}")
+  end
+
   test "local operator mode clears stale scoped grants before rendering WorkRequest actions" do
     enable_operator_mode()
 
@@ -1167,6 +1241,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
              AccessGrantRepository.claim(Repo, work_key.secret, %{claimed_by: "worker-operator"}, DateTime.utc_now(:microsecond))
 
     grant
+  end
+
+  defp dispatch_handoff_from_html(html) do
+    %{}
+    |> maybe_put("mode", dispatch_handoff_mode(html))
+    |> maybe_put("target", regex_capture(html, ~r/SymphonyPlusPlus:worker:[^\s<]+/))
+    |> maybe_put("path", regex_capture(html, ~r/<dt>Path<\/dt>\s*<dd class="mono">([^<]+)<\/dd>/))
+  end
+
+  defp dispatch_handoff_mode(html) do
+    cond do
+      html =~ "windows-credential-manager" -> "windows-credential-manager"
+      html =~ "local-private-file" -> "local-private-file"
+      true -> nil
+    end
+  end
+
+  defp regex_capture(html, regex) do
+    case Regex.run(regex, html) do
+      [match] -> match
+      [_match, capture] -> capture
+      nil -> nil
+    end
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp cleanup_handoff(%{"mode" => _mode} = handoff) do
+    SecretHandoff.delete_worker_secret(handoff, repo_root: repo_root())
+  end
+
+  defp cleanup_handoff(_handoff), do: :ok
+
+  defp repo_root do
+    Mix.Project.project_file()
+    |> Path.dirname()
+    |> Path.join("..")
+    |> Path.expand()
   end
 
   defp enable_operator_mode do

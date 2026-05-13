@@ -11,6 +11,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
   alias SymphonyElixirWeb.SymppBoardLive
@@ -32,6 +33,17 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     "stop_conditions"
   ]
   @local_operator_actor "local-operator"
+  @local_operator_worker "local-operator-worker"
+  @repo_root __DIR__ |> Path.join("../../../..") |> Path.expand()
+  @dispatch_handoff_display_fields [
+    {"Mode", :mode},
+    {"Status", :status},
+    {"Claimed by", :claimed_by},
+    {"Secret in stdout", :secret_in_stdout},
+    {"Target", :target},
+    {"Path", :path},
+    {"Run MCP", :run_mcp_command}
+  ]
 
   @impl true
   def mount(params, session, socket) do
@@ -308,6 +320,30 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
               <span class="sympp-readiness"><%= label_value(value(@page.work_request, :desired_dispatch_shape)) %></span>
             </div>
             <p :if={@page.action_error} class="sympp-form-error"><%= @page.action_error %></p>
+            <div :if={@page.dispatch_notice} class="sympp-stack-item sympp-dispatch-notice">
+              <div class="sympp-work-request-row-heading">
+                <span class="state-badge state-badge-active">dispatched</span>
+                <span class="sympp-readiness">Private worker handoff stored</span>
+              </div>
+              <dl class="sympp-work-request-meta">
+                <div>
+                  <dt>WorkPackage</dt>
+                  <dd>
+                    <a href={work_package_route(@path_prefix, @page.dispatch_notice.work_package_id)}>
+                      <%= @page.dispatch_notice.work_package_id %>
+                    </a>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Package status</dt>
+                  <dd><%= status_label(@page.dispatch_notice.work_package_status) %></dd>
+                </div>
+                <div :for={{label, value} <- @page.dispatch_notice.handoff_items}>
+                  <dt><%= label %></dt>
+                  <dd class="mono"><%= exact_value(value) %></dd>
+                </div>
+              </dl>
+            </div>
             <div :if={can_manage_work_request?(@operator_mode?, @board_grant)} class="sympp-action-row">
               <button
                 :if={value(@page.work_request, :status) == "draft"}
@@ -605,6 +641,17 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                       <input type="hidden" name={f[:current_status].name} value={value(slice, :status)} />
                       <button type="submit" class="secondary">Skip</button>
                     </.form>
+                    <.form
+                      :if={can_dispatch_slice?(@operator_mode?, @board_grant, @page.work_request, slice)}
+                      :let={f}
+                      for={%{}}
+                      as={:slice}
+                      phx-submit="dispatch_planned_slice"
+                      class="sympp-inline-slice-form"
+                    >
+                      <input type="hidden" name={f[:id].name} value={value(slice, :id)} />
+                      <button type="submit">Dispatch</button>
+                    </.form>
                   </div>
                 </div>
                 <dl class="sympp-work-request-meta sympp-slice-detail-grid">
@@ -619,6 +666,22 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                   <div>
                     <dt>Branch pattern</dt>
                     <dd><%= exact_value(value(slice, :branch_pattern)) %></dd>
+                  </div>
+                  <div :if={value(slice, :work_package_id)}>
+                    <dt>WorkPackage</dt>
+                    <dd>
+                      <a href={work_package_route(@path_prefix, value(slice, :work_package_id))}>
+                        <%= value(slice, :work_package_id) %>
+                      </a>
+                    </dd>
+                  </div>
+                  <div :if={value(slice, :work_package_status)}>
+                    <dt>Package status</dt>
+                    <dd><%= status_label(value(slice, :work_package_status)) %></dd>
+                  </div>
+                  <div :if={value(slice, :dispatched_at)}>
+                    <dt>Dispatched</dt>
+                    <dd class="numeric"><%= timestamp_label(value(slice, :dispatched_at)) %></dd>
                   </div>
                   <div>
                     <dt>Owned files</dt>
@@ -758,6 +821,40 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     handle_scoped_action(socket, fn grant ->
       skip_planned_slice(grant, socket.assigns.work_request_id, params)
     end)
+  end
+
+  def handle_event("dispatch_planned_slice", %{"slice" => params}, socket) do
+    case action_actor(socket) do
+      {:ok, :local_operator, socket} ->
+        case dispatch_planned_slice(:local_operator, socket.assigns.work_request_id, params) do
+          {:ok, dispatch} ->
+            page =
+              :show
+              |> load_page(:local_operator, socket.assigns.work_request_id)
+              |> Map.put(:dispatch_notice, dispatch_notice(dispatch))
+
+            {:noreply, socket |> put_flash(:info, "Planned slice dispatched.") |> assign(:page, page)}
+
+          {:error, reason} ->
+            page =
+              :show
+              |> load_page(:local_operator, socket.assigns.work_request_id)
+              |> Map.put(:action_error, dispatch_error_message(reason))
+
+            {:noreply, assign(socket, :page, page)}
+        end
+
+      {:ok, actor, socket} ->
+        page =
+          :show
+          |> load_page(actor, socket.assigns.work_request_id)
+          |> Map.put(:action_error, dispatch_error_message(:forbidden))
+
+        {:noreply, assign(socket, :page, page)}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, :page, unauthorized_page(reason))}
+    end
   end
 
   def handle_event("mark_human_info_needed", _params, socket) do
@@ -900,7 +997,8 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
       planned_slice_form: planned_slice_form(),
       planned_slice_form_error: nil,
       intake_scope: nil,
-      action_error: nil
+      action_error: nil,
+      dispatch_notice: nil
     }
   end
 
@@ -1007,6 +1105,11 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     do: "Check the required fields and selected values."
 
   defp action_error_message(_reason), do: "The WorkRequest could not be updated."
+
+  defp dispatch_error_message(:forbidden),
+    do: "Planned-slice dispatch is only available in local operator mode."
+
+  defp dispatch_error_message(reason), do: "Planned slice dispatch failed: #{PlannedSliceDispatch.error_message(reason)}"
 
   defp create_work_request(%AccessGrant{} = grant, params) do
     form = work_request_form(params)
@@ -1143,6 +1246,15 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp skip_planned_slice(_grant, _work_request_id, _params), do: {:error, :not_found}
 
+  defp dispatch_planned_slice(:local_operator, work_request_id, params)
+       when is_binary(work_request_id) and is_map(params) do
+    with {:ok, planned_slice_id} <- filled_form_value(Map.get(params, "id"), :not_found) do
+      SymppBoardLive.with_dashboard_repo(&dispatch_planned_slice_in_repo(&1, work_request_id, planned_slice_id))
+    end
+  end
+
+  defp dispatch_planned_slice(_actor, _work_request_id, _params), do: {:error, :not_found}
+
   defp mark_sliced(actor, work_request_id)
        when is_binary(work_request_id) do
     SymppBoardLive.with_dashboard_repo(&mark_sliced_in_repo(&1, actor, work_request_id))
@@ -1256,6 +1368,10 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
         Map.get(params, "current_status", "")
       )
     end
+  end
+
+  defp dispatch_planned_slice_in_repo(repo, work_request_id, planned_slice_id) do
+    PlannedSliceDispatch.dispatch(repo, work_request_id, planned_slice_id, dispatch_handoff_opts(repo))
   end
 
   defp mark_sliced_in_repo(repo, actor, work_request_id) do
@@ -1707,6 +1823,13 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp can_skip_slice?(work_request, slice),
     do: can_author_planned_slice?(work_request) and value(slice, :status) in ["planned", "approved"]
 
+  defp can_dispatch_slice?(true, nil, work_request, slice) do
+    can_author_planned_slice?(work_request) and value(slice, :status) == "approved" and
+      is_nil(value(slice, :work_package_id)) and is_nil(value(slice, :dispatched_at))
+  end
+
+  defp can_dispatch_slice?(_operator_mode?, _board_grant, _work_request, _slice), do: false
+
   defp can_mark_sliced?(work_request), do: value(work_request, :status) == "ready_for_slicing"
 
   defp work_package_kinds, do: WorkPackage.kinds()
@@ -1724,6 +1847,62 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp filled_string?(value), do: String.trim(value) != ""
 
+  defp dispatch_handoff_opts(repo) do
+    [
+      mode: "auto",
+      database: dashboard_ledger_database(repo),
+      repo_root: @repo_root,
+      claimed_by: @local_operator_worker
+    ]
+  end
+
+  defp dashboard_ledger_database(repo) do
+    case repo.query("PRAGMA database_list", []) do
+      {:ok, %{rows: rows}} -> persistent_main_database_path(rows) || configured_ledger_database()
+      {:error, _reason} -> configured_ledger_database()
+    end
+  rescue
+    _error in [Exqlite.Error, UndefinedFunctionError] -> configured_ledger_database()
+  end
+
+  defp persistent_main_database_path(rows) do
+    Enum.find_value(rows, fn
+      [_seq, "main", path] when is_binary(path) and path != "" -> path
+      _row -> nil
+    end)
+  end
+
+  defp configured_ledger_database do
+    Application.get_env(:symphony_elixir, :sympp_repo_database)
+  end
+
+  defp dispatch_notice(dispatch) do
+    create_work =
+      dispatch
+      |> PlannedSliceDispatch.response_payload()
+      |> Map.fetch!(:create_work)
+
+    work_package = Map.fetch!(create_work, :work_package)
+
+    %{
+      work_package_id: value(work_package, :id),
+      work_package_status: value(work_package, :status),
+      handoff_items: handoff_items(Map.get(create_work, :worker_secret_handoff))
+    }
+  end
+
+  defp handoff_items(handoff) when is_map(handoff) do
+    Enum.flat_map(@dispatch_handoff_display_fields, fn {label, key} ->
+      case value(handoff, key) do
+        nil -> []
+        "" -> []
+        value -> [{label, value}]
+      end
+    end)
+  end
+
+  defp handoff_items(_handoff), do: []
+
   defp detail_title(%{work_request: work_request}) when is_map(work_request) do
     value(work_request, :title) || value(work_request, :id) || "WorkRequest"
   end
@@ -1731,6 +1910,10 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp detail_title(_page), do: "WorkRequest"
 
   defp work_request_path(request), do: "work-requests/#{path_segment(value(request, :id))}"
+
+  defp work_package_route(path_prefix, work_package_id) do
+    prefixed_path(path_prefix, "/sympp/work-packages/#{path_segment(work_package_id)}")
+  end
 
   defp work_request_route(socket, work_request_id) do
     prefixed_path(
