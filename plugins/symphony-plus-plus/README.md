@@ -42,12 +42,21 @@ repository root:
 ```
 
 Restart or reload Codex so the refreshed skill and MCP server list is loaded.
+Existing Codex sessions may continue to show only the already-loaded skill list;
+start a new session after reload before treating missing `symphony_plus_plus`
+MCP tools as a packaging failure.
 
 ## Plugin MCP Entry
 
 The plugin manifest declares `mcpServers: "./.mcp.json"`. That file registers a
 generic installable `symphony_plus_plus` stdio MCP entry for Codex plugin UI and
 capability discovery.
+
+ValidateOnly proves the wrapper can resolve the checkout and launcher. It does
+not prove that an already-running Codex session has reloaded plugin MCP
+discovery. If the manifest and installed cache contain `.mcp.json` and
+ValidateOnly passes but MCP tools are absent, restart or reload Codex and open a
+new session before debugging repo packaging.
 
 The generic entry runs `plugins/symphony-plus-plus/scripts/start-sympp-mcp.ps1`
 through `pwsh`, the cross-platform PowerShell executable. Hosts that use the
