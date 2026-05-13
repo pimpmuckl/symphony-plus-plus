@@ -92,6 +92,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert wiring =~ "sympp-worker-secret.sh"
     assert wiring =~ "--work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by <stable-worker-id>"
     assert wiring =~ "should not embed raw work-key secrets or bearer tokens"
+    assert wiring =~ "open a new session before treating missing `symphony_plus_plus`"
+    assert wiring =~ "ValidateOnly checks the wrapper and launcher"
     assert plugin_wiring == wiring
     assert template_wiring == wiring
     refute wiring =~ "sympp_live_"
@@ -122,6 +124,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.exists?(@worker_secret_script_path)
     assert File.exists?(@worker_secret_shell_path)
     assert File.read!(@plugin_readme_path) =~ ~s("path": "./plugins/symphony-plus-plus")
+    assert File.read!(@plugin_readme_path) =~ "start a new session after reload"
+    assert File.read!(@plugin_readme_path) =~ "already-running Codex session"
     refute File.read!(@plugin_readme_path) =~ "../../Code/"
     assert File.read!(@worker_secret_script_path) =~ "CRED_PERSIST_LOCAL_MACHINE"
     refute File.read!(@worker_secret_script_path) =~ "CRED_PERSIST_SESSION"
