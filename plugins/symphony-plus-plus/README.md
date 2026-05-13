@@ -52,11 +52,22 @@ The plugin manifest declares `mcpServers: "./.mcp.json"`. That file registers a
 generic installable `symphony_plus_plus` stdio MCP entry for Codex plugin UI and
 capability discovery.
 
-ValidateOnly proves the wrapper can resolve the checkout and launcher. It does
-not prove that an already-running Codex session has reloaded plugin MCP
-discovery. If the manifest and installed cache contain `.mcp.json` and
-ValidateOnly passes but MCP tools are absent, restart or reload Codex and open a
-new session before debugging repo packaging.
+Repo validation proves only the plugin package contract:
+
+- `.codex-plugin/plugin.json` points `mcpServers` at `./.mcp.json`.
+- `.mcp.json` defines a generic `symphony_plus_plus` stdio server.
+- `scripts/refresh-local-plugin.ps1` copies `.mcp.json` into the installed
+  cache and writes a non-secret `.sympp-source-root` hint.
+- `scripts/start-sympp-mcp.ps1 -ValidateOnly` can resolve the checkout and
+  launcher.
+
+Those checks do not prove that an already-running Codex host has reloaded plugin
+MCP discovery. If the manifest and installed cache contain `.mcp.json` and
+ValidateOnly passes but the plugin detail UI still lists only skills, reload
+Codex and open a new session. If a fresh host still omits `symphony_plus_plus`,
+treat it as a Codex host/plugin-UI discovery issue with the package evidence
+above; do not work around it by adding a global `[mcp_servers]` entry to generic
+worker config.
 
 The generic entry runs `plugins/symphony-plus-plus/scripts/start-sympp-mcp.ps1`
 through `pwsh`, the cross-platform PowerShell executable. Hosts that use the

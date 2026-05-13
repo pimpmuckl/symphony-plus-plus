@@ -4,6 +4,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   @repo_root Path.expand("../../../../", __DIR__)
   @skill_path Path.join(@repo_root, ".codex/skills/symphony-work-package/SKILL.md")
   @plugin_manifest_path Path.join(@repo_root, "plugins/symphony-plus-plus/.codex-plugin/plugin.json")
+  @plugin_mcp_path Path.join(@repo_root, "plugins/symphony-plus-plus/.mcp.json")
   @plugin_skill_path Path.join(@repo_root, "plugins/symphony-plus-plus/skills/symphony-work-package/SKILL.md")
   @marketplace_path Path.join(@repo_root, ".agents/plugins/marketplace.json")
   @plugin_readme_path Path.join(@repo_root, "plugins/symphony-plus-plus/README.md")
@@ -112,6 +113,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
     assert manifest["name"] == "symphony-plus-plus"
     assert manifest["skills"] == "./skills/"
+    assert manifest["mcpServers"] == "./.mcp.json"
     assert manifest["interface"]["displayName"] == "Symphony++"
     assert File.read!(@plugin_skill_path) == File.read!(@skill_path)
 
@@ -125,10 +127,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.exists?(@worker_secret_shell_path)
     assert File.read!(@plugin_readme_path) =~ ~s("path": "./plugins/symphony-plus-plus")
     assert File.read!(@plugin_readme_path) =~ "start a new session after reload"
-    assert File.read!(@plugin_readme_path) =~ "already-running Codex session"
+    assert File.read!(@plugin_readme_path) =~ "already-running Codex host"
     refute File.read!(@plugin_readme_path) =~ "../../Code/"
     assert File.read!(@worker_secret_script_path) =~ "CRED_PERSIST_LOCAL_MACHINE"
     refute File.read!(@worker_secret_script_path) =~ "CRED_PERSIST_SESSION"
+  end
+
+  test "Codex plugin package exposes a host-discoverable generic MCP entry" do
+    manifest =
+      @plugin_manifest_path
+      |> File.read!()
+      |> Jason.decode!()
+
+    mcp_config =
+      @plugin_mcp_path
+      |> File.read!()
+      |> Jason.decode!()
+
+    assert manifest["mcpServers"] == "./.mcp.json"
+
+    assert %{
+             "symphony_plus_plus" => %{
+               "type" => "stdio",
+               "command" => "pwsh",
+               "args" => args,
+               "cwd" => "."
+             }
+           } = mcp_config["mcpServers"]
+
+    assert "-NoProfile" in args
+    assert Enum.any?(args, &String.contains?(&1, "scripts/start-sympp-mcp.ps1"))
+
+    serialized = Jason.encode!(mcp_config)
+    refute serialized =~ "SYMPP_WORK_KEY_SECRET"
+    refute serialized =~ "bearer"
+    refute serialized =~ "token"
+    refute serialized =~ "worker-secret"
   end
 
   test "refresh script installs the repo-local plugin into the requested Codex home" do
@@ -166,7 +200,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
             "plugin.json"
           ])
 
+        refreshed_mcp_path =
+          Path.join([
+            temp_codex_home,
+            "plugins",
+            "cache",
+            "jonat-local",
+            "symphony-plus-plus",
+            "local",
+            ".mcp.json"
+          ])
+
+        source_hint_path =
+          Path.join([
+            temp_codex_home,
+            "plugins",
+            "cache",
+            "jonat-local",
+            "symphony-plus-plus",
+            "local",
+            ".sympp-source-root"
+          ])
+
         assert refreshed_manifest_path |> File.read!() |> Jason.decode!() |> Map.fetch!("name") == "symphony-plus-plus"
+        assert refreshed_mcp_path |> File.read!() |> Jason.decode!() |> get_in(["mcpServers", "symphony_plus_plus", "command"]) == "pwsh"
+        assert same_path?(String.trim(File.read!(source_hint_path)), @repo_root)
       after
         File.rm_rf!(temp_codex_home)
       end
@@ -275,7 +333,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
             "plugin.json"
           ])
 
+        refreshed_mcp_path =
+          Path.join([
+            temp_codex_home,
+            "plugins",
+            "cache",
+            "jonat-local",
+            "symphony-plus-plus",
+            "local",
+            ".mcp.json"
+          ])
+
         assert refreshed_manifest_path |> File.read!() |> Jason.decode!() |> Map.fetch!("name") == "symphony-plus-plus"
+        assert File.exists?(refreshed_mcp_path)
       after
         File.rm(marketplace_path)
         File.rm_rf(temp_codex_home)
@@ -321,5 +391,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   defp frontmatter(content) do
     [_, metadata | _rest] = String.split(content, "---", parts: 3)
     String.trim(metadata)
+  end
+
+  defp same_path?(left, right) do
+    Path.expand(left) |> String.downcase() == Path.expand(right) |> String.downcase()
   end
 end
