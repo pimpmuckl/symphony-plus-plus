@@ -44,16 +44,18 @@ questions and slices the work.
 
 This flow preserves existing WorkPackage grants, virtual planning resources,
 readiness gates, review evidence, PR evidence, and human merge controls. It is
-not a claim that MCP intake tooling, automatic slicing, dashboard dispatch, or
-Linear state creation already exists.
+not a claim that MCP intake tooling, automatic slicing/planning, automatic
+question generation, Linear state creation, or richer plugin packaging already
+exists.
 
 Runtime WorkRequest persistence, the read API, the dashboard list/detail view,
 scoped dashboard intake, architect MCP WorkRequest reads, clarification and
 decision mutations, planned-slice mutations, the manual clarification loop, and
 manual planned-slice authoring now exist. Architect MCP planned-slice dispatch
 also exists for explicit phase-scoped grants with `dispatch:work_request`.
-Dashboard
-intake is board-authenticated and only appears for board grants with frozen repo
+Local-operator dashboard dispatch also exists for approved, undispatched
+planned slices. Dashboard intake is board-authenticated and only appears for
+board grants with frozen repo
 and base-branch scope. The repo and base branch are displayed as locked values
 and are enforced by the server when creating the draft. Humans can mark a draft
 WorkRequest `ready_for_clarification` from the detail view. For board-visible, in-scope
@@ -62,8 +64,10 @@ close open questions, record durable decisions, mark `human_info_needed`, and
 mark `ready_for_slicing` only after no open clarification questions remain.
 Once a request is `ready_for_slicing` or `sliced`, the detail view can add
 planned slices, approve or skip mutable slices, and mark a request `sliced`
-only after at least one planned slice has been approved. This does not dispatch
-or link WorkPackages.
+only after at least one planned slice has been approved. In local operator mode,
+the detail view can also dispatch approved, undispatched planned slices into
+WorkPackages. Board-grant WorkRequest detail remains scoped to planning
+controls and does not expose planned-slice dispatch.
 
 Explicit phase-scoped architect MCP sessions with `read:work_request` can call
 `list_work_requests(status?)` and `read_work_request(work_request_id)` for the
@@ -107,21 +111,25 @@ configuration is rejected. Do not start dispatch MCP with read-only SQLite URI
 options such as `mode=ro` or `immutable=1`; those are rejected before dispatch
 because workers must claim grants and write progress.
 
-Planned-slice dispatch is available as an operator CLI and architect MCP tool,
-not as a dashboard button. Both dispatch one `approved` planned slice by
-WorkRequest id and planned-slice id, validate the slice's owned file globs
-against the parent WorkRequest path constraints before minting a WorkPackage,
-creates the worker-ready package through private worker-secret handoff, and
-then records the planned-slice linkage. The validator is pure and does not
-inspect the host filesystem. Missing or empty `allowed_paths` leaves the slice
-unrestricted by allow-list, but `forbidden_paths` still block overlapping owned
-globs. As a least-privilege rule, `allowed_paths: ["*"]` is not an implicit
-whole-repo grant; wildcard allow entries without an explicit `**` only authorize
-their own segment shape and do not authorize recursive owned globs such as
-`**/foo` or bare `**`.
+Planned-slice dispatch is available as an operator CLI, architect MCP tool, and
+local-operator dashboard action. Each path dispatches one `approved` planned
+slice by WorkRequest id and planned-slice id, validates the slice's owned file
+globs against the parent WorkRequest path constraints before minting a
+WorkPackage, creates the worker-ready package through private worker-secret
+handoff, and then records the planned-slice linkage. The dashboard action
+reuses the existing `PlannedSliceDispatch` orchestration, records the stable
+worker identity `local-operator-worker`, and shows only non-secret
+WorkPackage/linkage and handoff metadata. It does not spawn Codex agents and
+does not call Linear. The validator is pure and does not inspect the host
+filesystem. Missing or empty `allowed_paths` leaves the slice unrestricted by
+allow-list, but `forbidden_paths` still block overlapping owned globs. As a
+least-privilege rule, `allowed_paths: ["*"]` is not an implicit whole-repo
+grant; wildcard allow entries without an explicit `**` only authorize their own
+segment shape and do not authorize recursive owned globs such as `**/foo` or
+bare `**`.
 
-MCP intake, automatic question generation, automatic slicing, MCP planner
-tools, dashboard dispatch actions, and Linear state creation remain future
+MCP intake, automatic question generation, automatic slicing/planning, MCP
+planner tools, Linear state creation, and richer plugin packaging remain future
 work. Until those exist, keep questions, answers, decisions, assumptions, and
 slice-plan sections in runtime WorkRequest records where available, or in one
 operator-approved Markdown artifact when the runtime surface is not available
