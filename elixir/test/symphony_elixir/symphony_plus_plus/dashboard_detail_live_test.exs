@@ -170,6 +170,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     refute html =~ worker_secret
   end
 
+  test "dashboard detail ignores revoked worker handoff metadata" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-detail-revoked-handoff-#{System.unique_integer([:positive])}")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+
+    on_exit(fn ->
+      restore_store_dir_env(previous_store_dir)
+      File.rm_rf(store_dir)
+    end)
+
+    %{work_package: work_package} =
+      create_detail_package(id: "SYMPP-P5-REVOKED-HANDOFF", title: "Revoked handoff package")
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(Repo, work_package.id)
+    worker_grant = Enum.find(grants, &(&1.grant_role == "worker"))
+
+    handoff_opts = [
+      mode: "windows-credential-manager",
+      store_dir: store_dir,
+      database: live_dashboard_database(),
+      repo_root: @repo_root,
+      claimed_by: "local-operator-worker"
+    ]
+
+    handoff = %{mode: "windows-credential-manager", target: credential_target(work_package, worker_grant)}
+    assert :ok = SecretHandoff.store_worker_secret_metadata(work_package, worker_grant, handoff, handoff_opts)
+    assert {:ok, _revoked} = AccessGrantRepository.revoke(Repo, worker_grant.id, DateTime.utc_now(:microsecond))
+
+    assert {:ok, detail} = Dashboard.detail(Repo, work_package.id)
+    assert detail.worker_secret_handoffs == []
+  end
+
   test "dashboard detail tolerates repos without query callback" do
     %{work_package: work_package} =
       create_detail_package(id: "SYMPP-P5-NOQUERY", title: "No query callback package")

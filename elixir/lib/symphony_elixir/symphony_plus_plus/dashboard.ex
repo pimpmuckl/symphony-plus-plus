@@ -332,14 +332,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp worker_secret_handoffs(repo, %WorkPackage{} = work_package, grants, opts) do
     handoff_opts = Keyword.get(opts, :secret_handoff_opts) || local_operator_handoff_opts(repo)
+    now = DateTime.utc_now(:microsecond)
 
-    Enum.flat_map(grants, fn %AccessGrant{} = grant ->
+    grants
+    |> Enum.filter(&live_worker_grant?(&1, now))
+    |> Enum.flat_map(fn %AccessGrant{} = grant ->
       case SecretHandoff.read_worker_secret_metadata(work_package, grant, handoff_opts) do
         {:ok, handoff} -> [handoff]
         {:error, _reason} -> []
       end
     end)
   end
+
+  defp live_worker_grant?(%AccessGrant{grant_role: "worker", revoked_at: nil, expires_at: %DateTime{} = expires_at}, now) do
+    DateTime.compare(expires_at, now) == :gt
+  end
+
+  defp live_worker_grant?(%AccessGrant{}, %DateTime{}), do: false
 
   defp local_operator_handoff_opts(repo) do
     [
