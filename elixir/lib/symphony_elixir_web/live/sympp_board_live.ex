@@ -278,12 +278,15 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp load_board(filters, :local_operator) do
-    with_dashboard_repo(fn repo ->
-      with {:ok, board} <- Dashboard.board(repo),
-           {:ok, work_requests} <- Dashboard.work_requests(repo) do
-        {:ok, %{board: board, work_requests: work_requests}}
-      end
-    end)
+    with_dashboard_repo(
+      fn repo ->
+        with {:ok, board} <- Dashboard.board(repo),
+             {:ok, work_requests} <- Dashboard.work_requests(repo) do
+          {:ok, %{board: board, work_requests: work_requests}}
+        end
+      end,
+      initialize_missing?: true
+    )
     |> case do
       {:ok, payload} -> operator_board_view(payload, filters)
       {:error, reason} -> empty_board(error_message(reason))
@@ -340,14 +343,14 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   defp authorized_grant({:ok, grant}), do: grant
   defp authorized_grant(_authorization), do: nil
 
-  @spec with_dashboard_repo((module() -> {:ok, map()} | {:error, term()})) :: {:ok, map()} | {:error, term()}
-  def with_dashboard_repo(fun) when is_function(fun, 1) do
+  @spec with_dashboard_repo((module() -> {:ok, map()} | {:error, term()}), keyword()) :: {:ok, map()} | {:error, term()}
+  def with_dashboard_repo(fun, opts \\ []) when is_function(fun, 1) and is_list(opts) do
     case configured_dashboard_repo() do
       repo when is_atom(repo) and not is_nil(repo) and repo != Repo ->
-        with_custom_dashboard_repo(repo, fun)
+        with_custom_dashboard_repo(repo, fun, opts)
 
       _repo ->
-        with_default_dashboard_repo(fun)
+        with_default_dashboard_repo(fun, opts)
     end
   end
 
@@ -358,16 +361,16 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     |> Kernel.||(Endpoint.config(:sympp_repo))
   end
 
-  defp with_custom_dashboard_repo(repo, fun) do
+  defp with_custom_dashboard_repo(repo, fun, opts) do
     if ecto_repo?(repo) do
-      with_ecto_custom_dashboard_repo(repo, fun)
+      with_configured_ecto_custom_dashboard_repo(repo, fun, opts)
     else
       fun.(repo)
     end
   end
 
-  defp with_ecto_custom_dashboard_repo(repo, fun) do
-    case custom_repo_database_path(repo) do
+  defp with_configured_ecto_custom_dashboard_repo(repo, fun, opts) do
+    case custom_repo_database_path(repo, opts) do
       database_path when is_binary(database_path) -> with_ecto_custom_dashboard_repo(repo, database_path, fun)
       _missing -> {:error, :not_found}
     end
@@ -391,14 +394,27 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     Code.ensure_loaded?(repo) and function_exported?(repo, :__adapter__, 0) and function_exported?(repo, :start_link, 1)
   end
 
-  defp custom_repo_database_path(repo) do
-    repo.config()
-    |> Keyword.get(:database)
-    |> Kernel.||(Repo.database_path())
-    |> existing_database_path()
+  defp custom_repo_database_path(repo, opts) do
+    database_path =
+      repo.config()
+      |> Keyword.get(:database)
+      |> normalize_custom_repo_database_config()
+      |> Kernel.||(Repo.database_path())
+
+    if Keyword.get(opts, :initialize_missing?, false) do
+      existing_database_path(database_path) || initializable_database_path(database_path)
+    else
+      existing_database_path(database_path)
+    end
   rescue
     _error -> nil
   end
+
+  defp normalize_custom_repo_database_config(database_path) when is_binary(database_path) do
+    if String.trim(database_path) == "", do: nil, else: database_path
+  end
+
+  defp normalize_custom_repo_database_config(database_path), do: database_path
 
   defp custom_repo_uses_database?(repo, database_path) do
     case repo.query("PRAGMA database_list", []) do
@@ -457,22 +473,99 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     end
   end
 
-  defp with_default_dashboard_repo(fun) do
+  defp with_default_dashboard_repo(fun, opts) do
     if explicit_database_configured?() do
-      read_configured_default_dashboard_repo(fun)
+      read_configured_default_dashboard_repo(fun, opts)
     else
       case Process.whereis(Repo) do
         pid when is_pid(pid) -> read_running_default_dashboard_repo(pid, fun)
-        nil -> read_configured_default_dashboard_repo(fun)
+        nil -> read_configured_default_dashboard_repo(fun, opts)
       end
     end
   end
 
-  defp read_configured_default_dashboard_repo(fun) do
-    case Repo.database_path_if_present() do
+  defp read_configured_default_dashboard_repo(fun, opts) do
+    case configured_default_dashboard_database_path(opts) do
       database_path when is_binary(database_path) -> read_existing_dashboard_repo(database_path, fun)
       _missing -> {:error, :not_found}
     end
+  end
+
+  defp configured_default_dashboard_database_path(opts) do
+    if Keyword.get(opts, :initialize_missing?, false) do
+      Repo.database_path_if_present() || initializable_default_database_path()
+    else
+      Repo.database_path_if_present()
+    end
+  end
+
+  defp initializable_default_database_path do
+    Repo.database_path()
+    |> initializable_database_path()
+  rescue
+    _error -> nil
+  end
+
+  defp initializable_database_path(database_path) do
+    cond do
+      Repo.filesystem_database_path?(database_path) ->
+        database_path = Path.expand(database_path)
+        File.mkdir_p!(Path.dirname(database_path))
+        database_path
+
+      sqlite_file_uri_database_path?(database_path) ->
+        ensure_sqlite_file_uri_parent(database_path)
+
+      true ->
+        nil
+    end
+  end
+
+  defp sqlite_file_uri_database_path?(database_path) do
+    case Repo.sqlite_file_uri_path(database_path) do
+      path when is_binary(path) ->
+        String.trim(path) != "" and writable_sqlite_file_uri?(database_path)
+
+      _path ->
+        false
+    end
+  end
+
+  defp ensure_sqlite_file_uri_parent(database_path) do
+    case Repo.sqlite_file_uri_path(database_path) do
+      path when is_binary(path) ->
+        path
+        |> Path.expand()
+        |> Path.dirname()
+        |> File.mkdir_p!()
+
+        database_path
+
+      _path ->
+        nil
+    end
+  end
+
+  defp writable_sqlite_file_uri?(database_path) do
+    not Repo.memory_database?(database_path) and
+      database_path
+      |> sqlite_file_uri_query_params()
+      |> read_write_sqlite_file_uri?()
+  end
+
+  defp sqlite_file_uri_query_params("file:" <> uri) do
+    case String.split(uri, "?", parts: 2) do
+      [_path, query] -> URI.decode_query(query)
+      _parts -> %{}
+    end
+  end
+
+  defp sqlite_file_uri_query_params(_database_path), do: %{}
+
+  defp read_write_sqlite_file_uri?(query_params) do
+    mode = query_params |> Map.get("mode", "") |> String.downcase()
+    immutable = query_params |> Map.get("immutable", "") |> String.downcase()
+    mode in ["", "rwc"] and immutable not in ["1", "true"]
   end
 
   defp read_running_default_dashboard_repo(pid, fun) do
