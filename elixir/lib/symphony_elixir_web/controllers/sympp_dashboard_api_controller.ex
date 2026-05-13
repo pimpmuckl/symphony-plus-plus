@@ -35,7 +35,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         |> board_login_response()
         |> Conn.halt()
 
-      local_operator_browser?(conn) and active_local_operator_session?(conn) ->
+      local_operator_session_browser?(conn) and active_local_operator_session?(conn) ->
         put_local_operator_session(conn)
 
       true ->
@@ -71,8 +71,12 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         |> package_login_response(work_package_id: work_package_id)
         |> Conn.halt()
 
-      local_operator_browser?(conn) and active_local_operator_session?(conn) ->
-        put_local_operator_session(conn)
+      local_operator_session_browser?(conn) and active_local_operator_session?(conn) ->
+        if package_route_exists?(work_package_id) do
+          put_local_operator_session(conn)
+        else
+          conn |> package_not_found_response() |> Conn.halt()
+        end
 
       true ->
         case authorize_package_request(conn, work_package_id) do
@@ -81,7 +85,11 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
           {:error, :unauthorized} ->
             if local_operator_browser?(conn) do
-              put_local_operator_session(conn)
+              if package_route_exists?(work_package_id) do
+                put_local_operator_session(conn)
+              else
+                conn |> package_not_found_response() |> Conn.halt()
+              end
             else
               conn |> package_login_response(work_package_id: work_package_id) |> Conn.halt()
             end
@@ -98,8 +106,11 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @spec local_operator_browser?(Conn.t()) :: boolean()
   def local_operator_browser?(%Conn{} = conn) do
-    local_operator_enabled?() and loopback_request?(conn.remote_ip) and local_host?(conn.host) and direct_local_request?(conn) and
-      same_origin_browser_request?(conn)
+    local_operator_session_browser?(conn) and same_origin_browser_request?(conn)
+  end
+
+  defp local_operator_session_browser?(%Conn{} = conn) do
+    local_operator_enabled?() and loopback_request?(conn.remote_ip) and local_host?(conn.host) and direct_local_request?(conn)
   end
 
   @spec local_operator_enabled?() :: boolean()
@@ -135,7 +146,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp same_origin_browser_request?(conn) do
     fetch_site = conn |> Conn.get_req_header("sec-fetch-site") |> List.first()
 
-    fetch_site in [nil, "none", "same-origin"] and local_origin_header?(conn)
+    fetch_site in ["none", "same-origin"] and local_origin_header?(conn)
   end
 
   defp local_origin_header?(conn) do
@@ -154,6 +165,14 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp active_local_operator_session?(conn), do: Conn.get_session(conn, @operator_session_key) == true
 
   defp work_key_login_requested?(conn), do: Map.get(conn.params, "auth") == "work_key"
+
+  defp package_route_exists?(work_package_id) do
+    case WorkPackageRepository.get(Repo, work_package_id) do
+      {:ok, _work_package} -> true
+      {:error, :not_found} -> false
+      {:error, _reason} -> false
+    end
+  end
 
   defp put_local_operator_session(conn) do
     conn

@@ -360,9 +360,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute Plug.Conn.get_session(trusted_proxy_conn, "sympp_local_operator")
   end
 
-  test "local operator mode rejects cross-site fetches and accepts IPv6 loopback hosts" do
+  test "local operator mode requires browser provenance and accepts IPv6 loopback hosts" do
     enable_operator_mode()
     create_package!(id: "SYMPP-V2-UX-FETCH-SITE", title: "Fetch metadata package")
+
+    headerless_conn =
+      build_conn()
+      |> Map.put(:remote_ip, {127, 0, 0, 1})
+      |> Map.put(:host, "127.0.0.1")
+      |> get("/sympp/board")
+
+    assert response(headerless_conn, 401) =~ "Board access"
+    refute Plug.Conn.get_session(headerless_conn, "sympp_local_operator")
 
     cross_site_conn =
       local_conn()
@@ -381,6 +390,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     assert response(ipv6_conn, 200) =~ "Local operator cockpit"
     assert Plug.Conn.get_session(ipv6_conn, "sympp_local_operator") == true
+  end
+
+  test "local operator package routes keep missing package ids as not found" do
+    enable_operator_mode()
+
+    conn = get(local_conn(), "/sympp/work-packages/SYMPP-DOES-NOT-EXIST")
+
+    assert response(conn, 404) =~ "Package not found"
+    refute Plug.Conn.get_session(conn, "sympp_local_operator")
   end
 
   test "explicit scoped board grants still win on localhost while operator mode is enabled" do
@@ -581,6 +599,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     build_conn()
     |> Map.put(:remote_ip, {127, 0, 0, 1})
     |> Map.put(:host, "127.0.0.1")
+    |> Plug.Conn.put_req_header("sec-fetch-site", "none")
   end
 
   defp put_endpoint_config(opts) do
