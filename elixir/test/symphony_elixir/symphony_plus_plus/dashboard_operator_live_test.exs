@@ -242,6 +242,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute html =~ "Add planned slice"
   end
 
+  test "local operator WorkRequest events cannot mutate without a scoped board grant" do
+    enable_operator_mode()
+
+    request =
+      create_work_request!(
+        id: "WR-OPERATOR-READONLY-EVENT",
+        title: "Operator read-only event",
+        status: "human_info_needed"
+      )
+
+    assert {:ok, question} =
+             WorkRequestRepository.ask_question(Repo, request.id, %{
+               question: "Question remains open",
+               category: "product",
+               why_needed: "Direct LiveView events should still need a scoped grant.",
+               asked_by: "operator"
+             })
+
+    {:ok, view, _html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
+
+    render_submit(view, "answer_question", %{
+      "question" => %{
+        "id" => question.id,
+        "current_status" => "open",
+        "answer" => "Unauthorized answer",
+        "answered_by" => "operator"
+      }
+    })
+
+    assert {:ok, [stored_question]} = WorkRequestRepository.list_questions(Repo, request.id)
+    assert stored_question.status == "open"
+    assert is_nil(stored_question.answer)
+  end
+
   test "local operator mode clears stale scoped grants before rendering WorkRequest actions" do
     enable_operator_mode()
 
