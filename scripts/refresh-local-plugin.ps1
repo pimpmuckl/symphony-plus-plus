@@ -163,11 +163,12 @@ $manifestVersion = [string]$manifest.version
 Assert-SafeVersionSegment $manifestVersion
 
 $codexHomePath = [System.IO.Path]::GetFullPath($CodexHome)
+$pluginsRoot = Join-And-Normalize $codexHomePath @("plugins")
 $cacheRoot = Join-And-Normalize $codexHomePath @("plugins", "cache")
 $marketplaceCacheRoot = Join-And-Normalize $cacheRoot @($marketplaceName)
 $pluginCacheRoot = Join-And-Normalize $cacheRoot @($marketplaceName, $PluginName)
 Assert-PathInside $pluginCacheRoot $cacheRoot "Resolved plugin cache path is outside Codex plugin cache"
-Assert-ExistingCachePathNotReparsePoint @($cacheRoot, $marketplaceCacheRoot, $pluginCacheRoot)
+Assert-ExistingCachePathNotReparsePoint @($codexHomePath, $pluginsRoot, $cacheRoot, $marketplaceCacheRoot, $pluginCacheRoot)
 
 $localTargetRoot = Join-And-Normalize $pluginCacheRoot @("local")
 $versionTargetRoot = Join-And-Normalize $pluginCacheRoot @($manifestVersion)

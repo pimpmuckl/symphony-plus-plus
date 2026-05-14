@@ -134,7 +134,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@refresh_script_path) =~ "ReparsePoint"
 
     assert File.read!(@refresh_script_path) =~
-             "Assert-ExistingCachePathNotReparsePoint @($cacheRoot, $marketplaceCacheRoot, $pluginCacheRoot)"
+             "Assert-ExistingCachePathNotReparsePoint @($codexHomePath, $pluginsRoot, $cacheRoot, $marketplaceCacheRoot, $pluginCacheRoot)"
 
     assert File.read!(@refresh_script_path) =~ "Assert-NoReparsePointDescendants $TargetRoot"
     assert File.read!(@refresh_script_path) =~ "Refusing to refresh reparse-point plugin cache directory"
