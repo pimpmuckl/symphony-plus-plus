@@ -8,9 +8,18 @@ A v2 pre-WorkPackage intake object. A WorkRequest captures the human's intended
 project or repo, base branch, work type, description, constraints, and desired
 dispatch shape before an architect slices the work into WorkPackages.
 
-WorkRequests are product-contract documentation in this repo today. They do not
-imply that runtime WorkRequest storage, dashboard intake, MCP intake tools, or
-automatic slicing already exist.
+WorkRequests are persisted in the Symphony++ runtime ledger. The local operator
+dashboard can list, create, inspect, clarify, and prepare architect handoff for
+WorkRequests, while scoped board views can create and manage WorkRequests only
+inside their frozen repo/base-branch scope. Architect MCP sessions with explicit
+WorkRequest capabilities can read, clarify, record decisions, author planned
+slices, and dispatch approved planned slices through the existing private worker
+handoff flow.
+
+This is still a manual architect-led flow. MCP WorkRequest intake tools,
+automatic question generation, automatic slicing/planning, live Linear state
+creation, richer plugin packaging, and automatic Codex spawning remain future
+work.
 
 ### WorkPackage
 
@@ -200,10 +209,13 @@ Codex/Symphony
 
 ## v2 intake boundary
 
-A clarified WorkRequest can become one architect-owned plan plus one or more
-WorkPackages. Existing WorkPackage status, grants, virtual planning resources,
-readiness gates, review evidence, and human merge rules remain authoritative
-after packages are created.
+A clarified WorkRequest becomes one architect-owned plan plus one or more
+planned slices. Approved slices can then be dispatched into WorkPackages through
+the local operator dashboard, the planned-slice dispatch CLI, or the architect
+MCP dispatch tool when the session has explicit dispatch scope. Existing
+WorkPackage status, grants, virtual planning resources, readiness gates, review
+evidence, and human merge rules remain authoritative after packages are
+created.
 
 If a worker hits ambiguity after dispatch, it asks the architect first. The
 architect may consult ask-pro for hard architecture or product calls. If the

@@ -26,8 +26,17 @@ The source-of-truth split is:
 Use a `WorkRequest` before creating WorkPackages when the human has a product
 goal, target repo/project, branch guidance, constraints, and a desired dispatch
 shape but still needs architect clarification and slicing. The WorkRequest is a
-pre-WorkPackage intake contract, not current runtime machinery; see
-`13_WORKREQUEST_CONTRACT.md`.
+pre-WorkPackage runtime intake object backed by the Symphony++ ledger; see
+`13_WORKREQUEST_CONTRACT.md` and `09_OPERATIONAL_RUNBOOK.md`.
+
+The normal human flow is: create the WorkRequest in the local operator cockpit,
+mark it ready for clarification, prepare the architect handoff from the
+WorkRequest detail page, let the architect use the
+`symphony-plus-plus:symphony-architect` skill and scoped MCP tools to clarify,
+record decisions, author/approve planned slices, and dispatch approved slices,
+then let workers handle their assigned WorkPackages. Workers route product or
+architecture ambiguity back to the architect first; unresolved human intent is
+recorded as `human_info_needed` for the operator instead of being guessed.
 
 Use a standalone package for one bounded quick fix, hotfix, investigation, or
 review-only task. Standalone packages do not need a phase branch or architect.
