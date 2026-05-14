@@ -12,9 +12,10 @@ loop, and manual planned-slice authoring/approval controls exist. Planned-slice
 dispatch linkage persistence, the core planned-slice dispatch CLI, the
 architect MCP planned-slice dispatch tool, and local-operator dashboard
 planned-slice dispatch exist. Package-scoped guidance request persistence and
-MCP worker/architect routing exist for dispatched packages. MCP intake tools,
-automatic question generation, automatic slicing, Linear state creation, and
-plugin packaging remain future work.
+MCP worker/architect routing exist for dispatched packages. Local-operator
+dashboard handling for escalated `human_info_needed` package guidance also
+exists. MCP intake tools, automatic question generation, automatic slicing,
+Linear state creation, and plugin packaging remain future work.
 
 ## Purpose
 
@@ -331,7 +332,19 @@ them with `escalate_guidance_request(guidance_request_id, reason,
 recommended_language)`. Escalation marks the guidance request
 `human_info_needed` and records an active package blocker with the recommended
 human-facing language, so the existing `mark_ready` readiness gate blocks until
-the blocker is resolved by a future resolution path.
+the local operator answers the request from the cockpit.
+
+The local operator board includes `human_info_needed` package guidance in the
+Product Guidance Needed watchlist. The WorkPackage detail page shows safe
+guidance fields: status, summary, question, context, requester, blocker id,
+human escalation reason, recommended language, answer, and answer attribution.
+The local cockpit can answer only `human_info_needed` guidance. That action
+records `answered_by = local-operator`, moves the guidance request to answered,
+and appends a matching `resolve_blocker` progress event for the guidance
+blocker so existing readiness no longer fails on that item. Board-grant,
+package-grant, worker, and architect-read views do not gain local-operator
+answer rights. Ordinary open guidance remains architect-owned and must be
+answered or escalated through the architect guidance flow.
 
 The architect may consult ask-pro for hard architecture or product decisions
 when current durable context is insufficient. The architect records the decision
@@ -340,9 +353,8 @@ themselves.
 
 If the architect cannot make a defensible decision without more human intent,
 the package records `human_info_needed` and blocks instead of inventing behavior.
-Clearing a guidance-created blocker is intentionally not part of this narrow
-runtime slice; a follow-up package should add the explicit human-answer and
-blocker-resolution path.
+The human answer is recorded through the local cockpit; clearing the matching
+guidance-created blocker is part of that same local-operator action.
 
 ## Review Responsibility
 

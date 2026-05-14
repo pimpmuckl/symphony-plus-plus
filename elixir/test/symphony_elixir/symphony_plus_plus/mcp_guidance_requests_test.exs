@@ -8,6 +8,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
+  alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service, as: GuidanceRequestService
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Session}
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
@@ -242,6 +243,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
 
     ready_response = mcp_tool(repo, worker_session, "mark_ready", %{})
     assert "no_active_blockers" in get_in(ready_response, ["error", "data", "missing"])
+
+    assert {:error, :unauthenticated} =
+             GuidanceRequestService.answer_human_info_needed_for_local_operator(repo, nil, request_id, %{
+               "work_package_id" => package.id,
+               "answer" => "Do not accept unauthenticated service calls."
+             })
+
+    assert repo.get!(GuidanceRequest, request_id).status == "human_info_needed"
+
+    assert {:ok, %{guidance_request: answered, blocker_event: resolve_event}} =
+             GuidanceRequestService.answer_human_info_needed_for_local_operator(
+               repo,
+               :local_operator,
+               request_id,
+               %{
+                 "work_package_id" => package.id,
+                 "answer" => "Implement the explicit public behavior."
+               }
+             )
+
+    assert answered.status == "answered"
+    assert answered.answered_by == "local-operator"
+    assert answered.answer == "Implement the explicit public behavior."
+    assert resolve_event.work_package_id == package.id
+    assert resolve_event.status == "resolved"
+    assert resolve_event.payload["source_tool"] == "resolve_blocker"
+    assert resolve_event.payload["blocker_id"] == "guidance_request:#{request_id}"
+    assert resolve_event.payload["active"] == false
+
+    unblocked_ready_response = mcp_tool(repo, worker_session, "mark_ready", %{})
+    unblocked_missing = get_in(unblocked_ready_response, ["error", "data", "missing"]) || []
+    refute "no_active_blockers" in unblocked_missing
+  end
+
+  test "local operator answer path denies ordinary open guidance", %{repo: repo} do
+    {package, worker_session} = create_worker_session(repo, "SYMPP-GUIDANCE-OPEN-DENIED", status: "ci_waiting")
+
+    request_id =
+      create_guidance_request(repo, worker_session, %{
+        "summary" => "Open architect-owned guidance",
+        "question" => "Can the local operator bypass architect guidance?",
+        "context" => "Architects own ordinary open guidance answers.",
+        "idempotency_key" => "open-guidance-denied"
+      })
+
+    assert {:error, :invalid_status} =
+             GuidanceRequestService.answer_human_info_needed_for_local_operator(
+               repo,
+               :local_operator,
+               request_id,
+               %{
+                 "work_package_id" => package.id,
+                 "answer" => "Do not bypass the architect."
+               }
+             )
+
+    assert repo.get!(GuidanceRequest, request_id).status == "open"
   end
 
   test "worker guidance creation is gated to worker-active lifecycle statuses", %{repo: repo} do

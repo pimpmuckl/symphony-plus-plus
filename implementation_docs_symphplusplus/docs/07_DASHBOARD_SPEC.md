@@ -35,6 +35,9 @@ Local operator mode:
   WorkRequest detail page;
 - lets the local operator dispatch approved, undispatched planned slices into
   WorkPackages through the existing private worker handoff flow;
+- shows package guidance requests that need human input in the operator
+  priority watchlist and lets the local operator answer only
+  `human_info_needed` guidance from the WorkPackage detail page;
 - records local operator clarification and decision attribution with the stable
   actor label `local-operator`;
 - records local browser planned-slice dispatch grants with the stable worker
@@ -93,6 +96,7 @@ Overview
 Product outcome
 Engineering scope
 Acceptance criteria
+Guidance requests
 Virtual task plan
 Findings
 Progress timeline
@@ -114,6 +118,17 @@ Mark abandoned
 ```
 
 Do not add dangerous controls like merge-to-main until Phase 7+ and branch protection is proven.
+
+The WorkPackage detail guidance section shows package guidance request status,
+summary, question, context, requester, blocker id, escalation language, and any
+recorded answer. In local operator mode, a request in `human_info_needed`
+renders a compact answer form. Submitting it records the answer with
+`answered_by = local-operator`, moves the guidance request to answered, and
+records a matching blocker resolution event so the existing readiness gate no
+longer fails on that guidance blocker. Ordinary open guidance remains an
+architect responsibility and is not answerable from the local cockpit.
+Board-grant and package-grant views can inspect safe guidance fields but cannot
+submit guidance answers.
 
 ### WorkRequest intake and detail
 

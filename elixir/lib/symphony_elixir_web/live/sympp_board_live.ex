@@ -281,8 +281,9 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     with_dashboard_repo(
       fn repo ->
         with {:ok, board} <- Dashboard.board(repo),
-             {:ok, work_requests} <- Dashboard.work_requests(repo) do
-          {:ok, %{board: board, work_requests: work_requests}}
+             {:ok, work_requests} <- Dashboard.work_requests(repo),
+             {:ok, guidance_requests} <- Dashboard.human_guidance_requests(repo) do
+          {:ok, %{board: board, work_requests: work_requests, guidance_requests: guidance_requests}}
         end
       end,
       initialize_missing?: true
@@ -838,17 +839,18 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     }
   end
 
-  defp operator_board_view(%{board: board, work_requests: work_requests}, filters) do
+  defp operator_board_view(%{board: board, work_requests: work_requests, guidance_requests: guidance_requests}, filters) do
     view = board_view(board, filters)
     visible_cards = visible_cards(view)
     visible_streams = visible_cards |> Enum.map(&stream_key/1) |> Enum.reject(&is_nil/1) |> MapSet.new()
     visible_requests = work_requests |> Map.get(:work_requests, []) |> filter_work_requests(filters, visible_streams)
+    visible_guidance_requests = guidance_requests |> Map.get(:guidance_requests, []) |> filter_guidance_requests(visible_cards)
 
     Map.merge(view, %{
-      guidance_items: guidance_items(visible_requests),
+      guidance_items: guidance_items(visible_requests) ++ package_guidance_items(visible_guidance_requests),
       blocker_items: blocker_items(visible_cards),
       review_ready_count: review_ready_count(visible_cards),
-      work_stream_count: work_stream_count(visible_cards, visible_requests)
+      work_stream_count: work_stream_count(visible_cards, visible_requests ++ visible_guidance_requests)
     })
   end
 
@@ -871,6 +873,31 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   defp guidance_request?(%{status: status}) when status in ["human_info_needed", "ready_for_clarification", "clarifying"], do: true
   defp guidance_request?(_request), do: false
+
+  defp filter_guidance_requests(guidance_requests, visible_cards) when is_list(guidance_requests) and is_list(visible_cards) do
+    visible_package_ids =
+      visible_cards
+      |> Enum.map(&Map.get(&1, :id))
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new()
+
+    Enum.filter(guidance_requests, &MapSet.member?(visible_package_ids, Map.get(&1, :work_package_id)))
+  end
+
+  defp filter_guidance_requests(_guidance_requests, _visible_cards), do: []
+
+  defp package_guidance_items(guidance_requests) when is_list(guidance_requests) do
+    Enum.map(guidance_requests, fn guidance_request ->
+      work_package_id = Map.get(guidance_request, :work_package_id)
+
+      %{
+        href: "work-packages/#{path_segment(work_package_id)}#guidance-requests",
+        title: Map.get(guidance_request, :summary) || Map.get(guidance_request, :work_package_title) || work_package_id || "Guidance request",
+        state: status_label(Map.get(guidance_request, :status)),
+        detail: "#{Map.get(guidance_request, :requested_by) || "unknown requester"} / #{repo_base(guidance_request)}"
+      }
+    end)
+  end
 
   defp blocker_items(cards) when is_list(cards) do
     cards

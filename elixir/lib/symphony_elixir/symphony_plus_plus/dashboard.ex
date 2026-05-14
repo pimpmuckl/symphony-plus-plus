@@ -6,6 +6,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
   alias SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest
+  alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
+  alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository, as: GuidanceRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
@@ -87,6 +89,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
         {:ok,
          %{
            work_requests: cards,
+           total_count: length(cards)
+         }}
+      end
+    end)
+  end
+
+  @spec human_guidance_requests(repo()) :: {:ok, map()} | {:error, dashboard_error()}
+  def human_guidance_requests(repo) when is_atom(repo) do
+    safe_read(fn ->
+      with {:ok, cards} <- human_guidance_request_cards(repo) do
+        {:ok,
+         %{
+           guidance_requests: cards,
            total_count: length(cards)
          }}
       end
@@ -199,9 +214,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     safe_read(fn ->
       with {:ok, state} <- planning_state(repo, work_package_id),
            {:ok, grants} <- AccessGrantRepository.list_for_work_package(repo, work_package_id),
-           {:ok, agent_runs} <- AgentRunRepository.list_for_work_package(repo, work_package_id) do
+           {:ok, agent_runs} <- AgentRunRepository.list_for_work_package(repo, work_package_id),
+           {:ok, guidance_requests} <- GuidanceRequestRepository.list_for_work_package(repo, work_package_id) do
         blockers = blockers(state.progress_events)
-        summary = summary(state, grants, agent_runs, blockers)
+        summary = summary(state, grants, agent_runs, blockers, guidance_requests)
         worker_secret_handoffs = worker_secret_handoffs(repo, state.work_package, grants, opts)
 
         {:ok,
@@ -213,6 +229,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            progress: Enum.map(state.progress_events, &progress_event/1),
            artifacts: Enum.map(state.artifacts, &artifact/1),
            blockers: blockers,
+           guidance_requests: Enum.map(guidance_requests, &guidance_request/1),
            grants: Enum.map(grants, &grant/1),
            worker_secret_handoffs: worker_secret_handoffs,
            agent_runs: Enum.map(agent_runs, &agent_run/1),
@@ -699,7 +716,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end)
   end
 
-  defp summary(%State{} = state, grants, agent_runs, blockers) do
+  defp summary(%State{} = state, grants, agent_runs, blockers, guidance_requests) do
     runtime = runtime_summary(agent_runs)
 
     %{
@@ -707,6 +724,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       finding_count: length(state.findings),
       progress_event_count: length(state.progress_events),
       active_blocker_count: Enum.count(blockers, & &1.active),
+      guidance_request_count: length(guidance_requests),
       grant_count: length(grants),
       active_grant_count: Enum.count(grants, &active_grant?/1),
       agent_run_count: length(agent_runs),
@@ -825,6 +843,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     })
   end
 
+  defp human_guidance_request_cards(repo) do
+    rows =
+      repo.all(
+        from(guidance_request in GuidanceRequest,
+          join: work_package in WorkPackage,
+          on: work_package.id == guidance_request.work_package_id,
+          where: guidance_request.status == "human_info_needed",
+          order_by: [asc: guidance_request.inserted_at, asc: guidance_request.id],
+          select: {guidance_request, work_package}
+        )
+      )
+
+    {:ok, Enum.map(rows, fn {guidance_request, work_package} -> guidance_request_card(guidance_request, work_package) end)}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp guidance_request_card(%GuidanceRequest{} = guidance_request, %WorkPackage{} = work_package) do
+    guidance_request(guidance_request)
+    |> Map.merge(%{
+      work_package_title: redacted_text(work_package.title),
+      package_kind: work_package.kind,
+      repo: work_package.repo,
+      base_branch: work_package.base_branch,
+      phase_id: work_package.phase_id
+    })
+  end
+
   defp work_request_detail(%WorkRequest{} = work_request) do
     %{
       id: work_request.id,
@@ -838,6 +884,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       status: work_request.status,
       inserted_at: timestamp(work_request.inserted_at),
       updated_at: timestamp(work_request.updated_at)
+    }
+  end
+
+  defp guidance_request(%GuidanceRequest{} = guidance_request) do
+    %{
+      id: guidance_request.id,
+      work_package_id: guidance_request.work_package_id,
+      summary: redacted_text(guidance_request.summary),
+      question: redacted_text(guidance_request.question),
+      context: redacted_text(guidance_request.context),
+      status: guidance_request.status,
+      requested_by: redacted_text(guidance_request.requested_by),
+      answer: redacted_text(guidance_request.answer),
+      answered_by: redacted_text(guidance_request.answered_by),
+      answered_at: timestamp(guidance_request.answered_at),
+      human_info_reason: redacted_text(guidance_request.human_info_reason),
+      recommended_language: redacted_text(guidance_request.recommended_language),
+      blocker_id: guidance_request.blocker_id,
+      inserted_at: timestamp(guidance_request.inserted_at),
+      updated_at: timestamp(guidance_request.updated_at)
     }
   end
 
