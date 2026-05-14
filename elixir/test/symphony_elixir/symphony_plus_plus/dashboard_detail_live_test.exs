@@ -875,6 +875,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
           plan: [],
           findings: [],
           artifacts: [],
+          guidance_requests: [
+            %{
+              "id" => "guidance-helper-1",
+              "status" => "human_info_needed",
+              "summary" => "String-keyed guidance",
+              "question" => "Can string-keyed guidance render?",
+              "context" => "String-keyed context renders.",
+              "requested_by" => "worker-a",
+              "blocker_id" => "guidance_request:guidance-helper-1",
+              "answered_by" => nil,
+              "answer" => nil,
+              "human_info_reason" => "Needs product input.",
+              "recommended_language" => "Choose one operator behavior."
+            }
+          ],
           grants: [],
           agent_runs: [],
           alert_indicators: []
@@ -896,6 +911,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert html =~ "approved"
     assert html =~ "Merge"
     assert html =~ "clean"
+    assert html =~ "String-keyed guidance"
+    assert html =~ "String-keyed context renders."
     refute html =~ ">open<"
   end
 

@@ -88,21 +88,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository do
 
   @spec answer(repo(), String.t(), map()) :: {:ok, GuidanceRequest.t()} | {:error, error()}
   def answer(repo, id, attrs) when is_atom(repo) and is_binary(id) and is_map(attrs) do
-    terminal_update(repo, id, attrs, "answered", &GuidanceRequest.answer_changeset/2)
+    terminal_update(repo, id, attrs, "answered", "open", &GuidanceRequest.answer_changeset/2)
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  @spec answer_human_info_needed(repo(), String.t(), map()) :: {:ok, GuidanceRequest.t()} | {:error, error()}
+  def answer_human_info_needed(repo, id, attrs) when is_atom(repo) and is_binary(id) and is_map(attrs) do
+    terminal_update(repo, id, attrs, "answered", "human_info_needed", &GuidanceRequest.answer_changeset/2)
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec escalate_human_info_needed(repo(), String.t(), map()) :: {:ok, GuidanceRequest.t()} | {:error, error()}
   def escalate_human_info_needed(repo, id, attrs) when is_atom(repo) and is_binary(id) and is_map(attrs) do
-    terminal_update(repo, id, attrs, "human_info_needed", &GuidanceRequest.escalate_changeset/2)
+    terminal_update(repo, id, attrs, "human_info_needed", "open", &GuidanceRequest.escalate_changeset/2)
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
-  defp terminal_update(repo, id, attrs, status, changeset_fun) do
+  @spec list_for_work_package(repo(), String.t()) :: {:ok, [GuidanceRequest.t()]} | {:error, error()}
+  def list_for_work_package(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
+    query =
+      from(guidance_request in GuidanceRequest,
+        where: guidance_request.work_package_id == ^work_package_id,
+        order_by: [asc: guidance_request.inserted_at, asc: guidance_request.id]
+      )
+
+    {:ok, repo.all(query)}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp terminal_update(repo, id, attrs, status, current_status, changeset_fun) do
     changeset =
-      %GuidanceRequest{id: id, status: "open"}
+      %GuidanceRequest{id: id, status: current_status}
       |> changeset_fun.(Map.merge(normalize_keys(attrs), %{"status" => status}))
 
     if changeset.valid? do
@@ -114,7 +134,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository do
       query =
         from(guidance_request in GuidanceRequest,
           where: guidance_request.id == ^id,
-          where: guidance_request.status == "open"
+          where: guidance_request.status == ^current_status
         )
 
       case repo.update_all(query, set: updates) do

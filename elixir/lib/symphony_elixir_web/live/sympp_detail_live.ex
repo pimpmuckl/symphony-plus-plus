@@ -7,19 +7,20 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service, as: GuidanceRequestService
   alias SymphonyElixirWeb.SymppBoardLive
   alias SymphonyElixirWeb.SymppDashboardApiController
 
   @known_keys ~w(
     access_grant_id active_agent_run_count active_blocker_count active_grant_count
     active alert_indicators agent_run_count agent_runs artifact_count artifacts base_branch
-    body branch branch_pattern capabilities claimed_at claimed_by codex_total_tokens
-    claimed_by_required completed_count created_at detail display_key engineering_scope
+    answer answered_at answered_by blocker_id body branch branch_pattern capabilities claimed_at claimed_by codex_total_tokens
+    claimed_by_required completed_count context created_at detail display_key engineering_scope
     events expires_at failed_count finding_count findings finished_at grant_count
-    grant_id grant_role grants mode
+    grant_id grant_role grants guidance_request_count guidance_requests human_info_reason mode
     head_sha id inserted_at kind label latest last_seen_at latest_progress_at metadata
     missing open_count path placeholder plan position pr product_description progress_event_count
-    queued_agent_run_count reason repo revoked_at run_mcp_command runtime runtime_state
+    question queued_agent_run_count reason recommended_language repo requested_by revoked_at run_mcp_command runtime runtime_state
     scope secret_in_stdout severity sequence session_id stale stale_after_seconds stale_agent_run_count
     stale_heartbeat_after_seconds status stopped_agent_run_count summary terminal_count
     suggested_claimed_by target timeline_order title total_count turn_count type updated_at
@@ -45,6 +46,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
      |> assign(:phase_reader?, false)
      |> assign(:detail, empty_detail(error: nil))
      |> assign(:timeline, %{events: []})
+     |> assign(:action_error, nil)
      |> assign(:error, nil)}
   end
 
@@ -84,6 +86,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
   @impl true
   def render(assigns) do
     assigns = Map.put_new(assigns, :operator_mode?, false)
+    assigns = Map.put_new(assigns, :action_error, nil)
 
     ~H"""
     <section class="sympp-detail-shell">
@@ -124,6 +127,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
                 Review <%= if review_evidence_present?(@detail.metadata), do: "recorded", else: "pending" %>
               </span>
             </div>
+            <p :if={@action_error} class="sympp-form-error"><%= @action_error %></p>
 
             <dl class="sympp-detail-meta">
               <div>
@@ -212,6 +216,57 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
                 <span class="muted"><%= alert.detail %></span>
               </div>
             </div>
+          </article>
+
+          <article id="guidance-requests" class="sympp-panel sympp-panel-wide">
+            <h2>Guidance Requests</h2>
+            <div :if={guidance_requests(@detail) != []} class="sympp-stack-list">
+              <div :for={guidance <- guidance_requests(@detail)} id={guidance_request_dom_id(guidance.id)} class="sympp-stack-item">
+                <div class="sympp-work-request-row-heading">
+                  <span class={guidance_status_class(guidance.status)}><%= status_label(guidance.status) %></span>
+                  <span class="sympp-card-id"><%= guidance.id %></span>
+                </div>
+                <h3><%= present(guidance.summary) %></h3>
+                <dl class="sympp-detail-list">
+                  <div>
+                    <dt>Requested by</dt>
+                    <dd><%= present(guidance.requested_by) %></dd>
+                  </div>
+                  <div>
+                    <dt>Blocker</dt>
+                    <dd class="mono"><%= present(guidance.blocker_id) %></dd>
+                  </div>
+                  <div>
+                    <dt>Answered by</dt>
+                    <dd><%= present(guidance.answered_by) %></dd>
+                  </div>
+                </dl>
+                <p><strong>Question:</strong> <%= present(guidance.question) %></p>
+                <p><strong>Context:</strong> <%= present(guidance.context) %></p>
+                <p :if={guidance.human_info_reason}><strong>Escalation:</strong> <%= guidance.human_info_reason %></p>
+                <p :if={guidance.recommended_language}><strong>Recommended language:</strong> <%= guidance.recommended_language %></p>
+                <p :if={guidance.answer}><strong>Answer:</strong> <%= guidance.answer %></p>
+                <.form
+                  :if={can_answer_guidance?(@operator_mode?, guidance)}
+                  :let={f}
+                  for={%{}}
+                  as={:guidance_request}
+                  phx-submit="answer_guidance_request"
+                  class="sympp-inline-answer-form sympp-guidance-answer-form"
+                >
+                  <input type="hidden" name={f[:id].name} value={guidance.id} />
+                  <input type="hidden" name={f[:work_package_id].name} value={@detail.work_package.id || @work_package_id} />
+                  <label>
+                    <span>Answer</span>
+                    <textarea name={f[:answer].name} required rows="3"></textarea>
+                  </label>
+                  <div class="sympp-form-actions">
+                    <button type="submit">Answer guidance</button>
+                  </div>
+                </.form>
+              </div>
+            </div>
+            <p :if={guidance_requests(@detail) == []} class="sympp-empty-inline">No guidance requests recorded.</p>
           </article>
 
           <article class="sympp-panel sympp-panel-wide">
@@ -321,6 +376,40 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     """
   end
 
+  @impl true
+  def handle_event("answer_guidance_request", %{"guidance_request" => params}, socket) do
+    if socket.assigns.operator_mode? do
+      answer_guidance_request(socket, params)
+    else
+      {:noreply, assign(socket, :action_error, guidance_answer_error_message(:forbidden))}
+    end
+  end
+
+  defp answer_guidance_request(socket, params) when is_map(params) do
+    with {:ok, guidance_request_id} <- required_param(params, "id"),
+         answer_params <- Map.put(params, "work_package_id", socket.assigns.work_package_id),
+         {:ok, _result} <-
+           SymppBoardLive.with_dashboard_repo(fn repo ->
+             GuidanceRequestService.answer_human_info_needed_for_local_operator(
+               repo,
+               local_operator_answer_context(socket),
+               guidance_request_id,
+               answer_params
+             )
+           end) do
+      {:noreply,
+       socket
+       |> put_flash(:info, "Guidance answer recorded.")
+       |> assign_detail()}
+    else
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign_detail()
+         |> assign(:action_error, guidance_answer_error_message(reason))}
+    end
+  end
+
   defp authorize_session(socket, work_package_id) do
     if socket.assigns.operator_mode? do
       :local_operator
@@ -351,6 +440,9 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     is_list(capabilities) and "read:phase" in capabilities
   end
 
+  defp local_operator_answer_context(%{assigns: %{operator_mode?: true}}), do: :local_operator
+  defp local_operator_answer_context(_socket), do: nil
+
   defp local_operator_mode?(session, socket) do
     SymppDashboardApiController.local_operator_session?(session) and
       if connected?(socket) do
@@ -373,6 +465,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
         socket
         |> assign(:detail, detail_view(detail))
         |> assign(:timeline, timeline_view(timeline))
+        |> assign(:action_error, nil)
         |> assign(:error, nil)
 
       {:error, reason} ->
@@ -410,6 +503,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     |> Map.put_new(:plan, [])
     |> Map.put_new(:findings, [])
     |> Map.put_new(:artifacts, [])
+    |> Map.put_new(:guidance_requests, [])
     |> Map.put_new(:grants, [])
     |> Map.put_new(:worker_secret_handoffs, [])
     |> Map.put_new(:agent_runs, [])
@@ -422,6 +516,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
       |> Map.update!(:plan, &atomize_list/1)
       |> Map.update!(:findings, &atomize_list/1)
       |> Map.update!(:artifacts, &atomize_list/1)
+      |> Map.update!(:guidance_requests, &atomize_list/1)
       |> Map.update!(:grants, &atomize_list/1)
       |> Map.update!(:worker_secret_handoffs, &atomize_list/1)
       |> Map.update!(:agent_runs, &atomize_list/1)
@@ -436,6 +531,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     |> Map.put_new(:finding_count, 0)
     |> Map.put_new(:progress_event_count, 0)
     |> Map.put_new(:active_blocker_count, 0)
+    |> Map.put_new(:guidance_request_count, 0)
     |> Map.put_new(:grant_count, 0)
     |> Map.put_new(:active_grant_count, 0)
     |> Map.put_new(:agent_run_count, 0)
@@ -467,6 +563,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
       plan: [],
       findings: [],
       artifacts: [],
+      guidance_requests: [],
       grants: [],
       worker_secret_handoffs: [],
       agent_runs: [],
@@ -609,6 +706,13 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     end
   end
 
+  defp guidance_requests(detail) do
+    case map_value(detail, :guidance_requests) do
+      values when is_list(values) -> atomize_list(values)
+      _values -> []
+    end
+  end
+
   defp worker_handoff_items(handoff) do
     [
       {"Mode", map_value(handoff, :mode)},
@@ -699,6 +803,41 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
   defp run_badge_class(%{stale: true}), do: "state-badge state-badge-warning"
   defp run_badge_class(%{runtime_state: runtime_state}) when runtime_state in ["active", "queued"], do: "state-badge state-badge-active"
   defp run_badge_class(_run), do: "state-badge"
+
+  defp guidance_status_class("answered"), do: "state-badge state-badge-active"
+  defp guidance_status_class("human_info_needed"), do: "state-badge state-badge-warning"
+  defp guidance_status_class(_status), do: "state-badge"
+
+  defp can_answer_guidance?(true, %{status: "human_info_needed"}), do: true
+  defp can_answer_guidance?(_operator_mode?, _guidance), do: false
+
+  defp guidance_request_dom_id(id) do
+    encoded = id |> to_string() |> Base.url_encode64(padding: false)
+    "guidance-request-#{encoded}"
+  end
+
+  defp required_param(params, key) do
+    case map_value(params, key) do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> {:error, :missing_guidance_request}
+          trimmed -> {:ok, trimmed}
+        end
+
+      _value ->
+        {:error, :missing_guidance_request}
+    end
+  end
+
+  defp guidance_answer_error_message(:forbidden), do: "Only the local operator cockpit can answer human info guidance."
+  defp guidance_answer_error_message(:invalid_status), do: "Only human-info-needed guidance can be answered here."
+  defp guidance_answer_error_message(:missing_answer), do: "Enter an answer before submitting."
+  defp guidance_answer_error_message(:missing_guidance_request), do: "The selected guidance request could not be found."
+  defp guidance_answer_error_message(:not_found), do: "The selected guidance request could not be found."
+  defp guidance_answer_error_message(:work_package_scope_mismatch), do: "The selected guidance request is outside this package."
+  defp guidance_answer_error_message(:database_busy), do: "The Symphony++ package ledger is busy. Try again shortly."
+  defp guidance_answer_error_message({:storage_failed, _reason}), do: "The Symphony++ package ledger could not be updated."
+  defp guidance_answer_error_message(_reason), do: "The guidance answer could not be recorded."
 
   defp run_status_label(%{status: status}) when status in ["completed", "failed"], do: status
   defp run_status_label(%{runtime_state: runtime_state}) when is_binary(runtime_state), do: runtime_state

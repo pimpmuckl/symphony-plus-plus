@@ -37,7 +37,8 @@ questions and slices the work.
 4. Architect dispatches approved slices as normal WorkPackages.
 5. After dispatch, workers ask the architect first when product or architecture
    ambiguity appears. The architect may use ask-pro for hard calls. Unresolved
-   product ambiguity becomes `human_info_needed`.
+   product ambiguity becomes `human_info_needed`; the local operator answers it
+   from the package cockpit, which clears the matching readiness blocker.
 6. Implementing workers run review-suite T1, T2, and GitHub review by default
    unless the package policy says otherwise. A dedicated reviewer package is
    optional for high-risk business logic or live smoke-test ownership.
@@ -54,10 +55,16 @@ decision mutations, planned-slice mutations, the manual clarification loop, and
 manual planned-slice authoring now exist. Architect MCP planned-slice dispatch
 also exists for explicit phase-scoped grants with `dispatch:work_request`.
 Local-operator dashboard dispatch also exists for approved, undispatched
-planned slices. Dashboard intake is board-authenticated and only appears for
-board grants with frozen repo
-and base-branch scope. The repo and base branch are displayed as locked values
-and are enforced by the server when creating the draft. Humans can mark a draft
+planned slices. Package-scoped guidance requests can be escalated by architects
+to `human_info_needed`; the local operator cockpit shows those package guidance
+items in the product guidance watchlist and can answer only that escalated
+state with stable `local-operator` attribution. The answer records a matching
+blocker resolution event so the existing readiness gates no longer fail on the
+resolved guidance request. Ordinary open guidance remains architect-owned.
+Dashboard intake is board-authenticated and only appears for board grants with
+frozen repo and base-branch scope. The repo and base branch are displayed as
+locked values and are enforced by the server when creating the draft. Humans
+can mark a draft
 WorkRequest `ready_for_clarification` from the detail view. For board-visible, in-scope
 WorkRequests, the detail view can also ask clarification questions, answer or
 close open questions, record durable decisions, mark `human_info_needed`, and

@@ -9,6 +9,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
+  alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
+  alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository, as: GuidanceRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
@@ -63,6 +66,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     Repo.delete_all(ProgressEvent)
     Repo.delete_all(Finding)
     Repo.delete_all(PlanNode)
+    Repo.delete_all(GuidanceRequest)
     Repo.delete_all(AccessGrant)
     Repo.delete_all(WorkPackage)
     Repo.delete_all(Phase)
@@ -118,6 +122,121 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute html =~ "ghp_raw_secret_value"
     refute html =~ "Board access"
     refute html =~ ~s(name="work_key")
+  end
+
+  test "local operator board shows human-info guidance requests from packages" do
+    enable_operator_mode()
+
+    package =
+      create_package!(
+        id: "SYMPP-V2-GUIDANCE-BOARD",
+        title: "Guidance board package",
+        status: "blocked",
+        blocker?: true
+      )
+
+    guidance = create_human_guidance_request!(package, id: "guidance-board-visible", summary: "Choose product behavior")
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/board")
+
+    assert html =~ "Local operator cockpit"
+    assert html =~ "Product Guidance Needed"
+    assert html =~ "Choose product behavior"
+    assert html =~ "worker-operator"
+    assert html =~ ~s(href="work-packages/#{package.id}#guidance-requests")
+    assert html =~ "Human info needed"
+    refute html =~ "raw-secret-value"
+    assert guidance.status == "human_info_needed"
+  end
+
+  test "local operator answers human-info guidance from package detail and resolves readiness blocker" do
+    enable_operator_mode()
+
+    package =
+      create_package!(
+        id: "SYMPP-V2-GUIDANCE-ANSWER",
+        title: "Guidance answer package",
+        status: "ci_waiting"
+      )
+
+    guidance =
+      create_human_guidance_request!(
+        package,
+        id: "guidance-answer-visible",
+        summary: "Need package behavior",
+        question: "Which behavior should this package implement?",
+        context: "Two product behaviors fit the package scope."
+      )
+
+    {:ok, detail} = Dashboard.detail(Repo, package.id)
+    assert detail.summary.active_blocker_count == 1
+
+    {:ok, view, html} = live(local_conn(), "/sympp/work-packages/#{package.id}")
+
+    assert html =~ "Guidance Requests"
+    assert html =~ "Need package behavior"
+    assert html =~ "Which behavior should this package implement?"
+    assert html =~ "worker-operator"
+    assert html =~ "guidance_request:#{guidance.id}"
+    assert html =~ "Answer guidance"
+
+    html =
+      render_submit(view, "answer_guidance_request", %{
+        "guidance_request" => %{
+          "id" => guidance.id,
+          "work_package_id" => "forged-package",
+          "answer" => "Implement the explicit product behavior."
+        }
+      })
+
+    assert html =~ "Implement the explicit product behavior."
+    assert html =~ "local-operator"
+    refute html =~ "Answer guidance"
+
+    answered = Repo.get!(GuidanceRequest, guidance.id)
+    assert answered.status == "answered"
+    assert answered.answered_by == "local-operator"
+    assert answered.answer == "Implement the explicit product behavior."
+
+    assert {:ok, events} = PlanningRepository.list_progress_events(Repo, package.id)
+    resolve_event = Enum.find(events, &(&1.payload["source_tool"] == "resolve_blocker"))
+    assert resolve_event.status == "resolved"
+    assert resolve_event.payload["blocker_id"] == "guidance_request:#{guidance.id}"
+    assert resolve_event.payload["active"] == false
+
+    {:ok, updated_detail} = Dashboard.detail(Repo, package.id)
+    assert updated_detail.summary.active_blocker_count == 0
+  end
+
+  test "package-grant sessions cannot answer human-info guidance from package detail" do
+    enable_operator_mode()
+
+    package =
+      create_package!(
+        id: "SYMPP-V2-GUIDANCE-DENIED",
+        title: "Guidance denied package",
+        status: "blocked"
+      )
+
+    guidance = create_human_guidance_request!(package, id: "guidance-answer-denied")
+    grant = create_package_grant!(package.id)
+
+    {:ok, view, html} =
+      build_conn()
+      |> Plug.Test.init_test_session(%{"sympp_package_grant_ids" => %{package.id => grant.id}})
+      |> live("/sympp/work-packages/#{package.id}")
+
+    assert html =~ "Guidance Requests"
+    assert html =~ guidance.summary
+    refute html =~ "Answer guidance"
+
+    html =
+      render_submit(view, "answer_guidance_request", %{
+        "guidance_request" => %{"id" => guidance.id, "answer" => "Bypass architect responsibility."}
+      })
+
+    assert html =~ "Only the local operator cockpit can answer human info guidance."
+    assert Repo.get!(GuidanceRequest, guidance.id).status == "human_info_needed"
   end
 
   test "local operator creates a WorkRequest with explicit repo and base branch" do
@@ -1224,6 +1343,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     assert {:ok, work_request} = WorkRequestRepository.create(Repo, Enum.into(overrides, defaults))
     work_request
+  end
+
+  defp create_human_guidance_request!(package, overrides) do
+    worker_grant = create_package_grant!(package.id)
+    id = Keyword.get(overrides, :id, "guidance-operator")
+    blocker_id = "guidance_request:#{id}"
+
+    assert {:ok, guidance_request} =
+             GuidanceRequestRepository.create(Repo, %{
+               id: id,
+               work_package_id: package.id,
+               requester_grant_id: worker_grant.id,
+               requested_by: Keyword.get(overrides, :requested_by, "worker-operator"),
+               idempotency_key: Keyword.get(overrides, :idempotency_key, "guidance-key-#{id}"),
+               summary: Keyword.get(overrides, :summary, "Need product guidance"),
+               question: Keyword.get(overrides, :question, "Which product behavior should this package implement?"),
+               context: Keyword.get(overrides, :context, "The worker needs local human input before continuing."),
+               status: "human_info_needed",
+               human_info_reason: Keyword.get(overrides, :human_info_reason, "Product input is required before work can continue."),
+               recommended_language: Keyword.get(overrides, :recommended_language, "Choose the package behavior before implementation continues."),
+               blocker_id: blocker_id
+             })
+
+    assert {:ok, _blocker} =
+             PlanningRepository.append_progress_event(Repo, %{
+               work_package_id: package.id,
+               summary: "Human info needed for guidance request",
+               status: "blocked",
+               payload: %{
+                 type: "blocker",
+                 source_tool: "report_blocker",
+                 blocker_id: blocker_id,
+                 active: true,
+                 guidance_request_id: id,
+                 human_info_needed: true
+               }
+             })
+
+    guidance_request
   end
 
   defp create_architect_grant!(work_package_id) do
