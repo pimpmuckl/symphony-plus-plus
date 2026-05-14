@@ -46,12 +46,14 @@ Existing Codex sessions may continue to show only the already-loaded skill list;
 start a new session after reload before treating missing `symphony_plus_plus`
 MCP tools as a packaging failure.
 
-The refresh script writes both install cache shapes Codex may consult:
+The refresh script overlays both install cache shapes Codex may consult:
 `~/.codex/plugins/cache/<marketplace>/symphony-plus-plus/local` and the
 manifest-version directory, for example
-`~/.codex/plugins/cache/<marketplace>/symphony-plus-plus/0.1.0`. Older cache
-directories are ignored; the fix for stale cache state is current-version cache
-parity plus a Codex reload/new session.
+`~/.codex/plugins/cache/<marketplace>/symphony-plus-plus/0.1.0`. It overwrites
+the known plugin package entries in place instead of deleting active cache roots,
+so unrelated stale files may remain. Older cache directories are ignored; the
+fix for stale cache state is current-version cache parity plus a Codex
+reload/new session, not cache garbage collection.
 If an existing cache parent, cache directory, or child path is a junction or
 symlink, refresh stops with a manual cleanup message instead of recursively
 deleting or copying through the link.

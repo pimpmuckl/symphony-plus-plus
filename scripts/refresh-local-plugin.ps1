@@ -64,7 +64,9 @@ function Assert-NoReparsePointDescendants([string]$Target) {
     return
   }
 
-  $reparsePoint = Get-ChildItem -LiteralPath $Target -Force -Recurse -Attributes ReparsePoint -ErrorAction Stop | Select-Object -First 1
+  $reparsePoint = Get-ChildItem -LiteralPath $Target -Force -Recurse -ErrorAction Stop |
+    Where-Object { ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 } |
+    Select-Object -First 1
   if ($null -ne $reparsePoint) {
     throw "Refusing to refresh plugin cache directory containing a reparse-point child. Remove the link manually and rerun refresh: $($reparsePoint.FullName)"
   }
@@ -81,14 +83,14 @@ function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [strin
   Assert-NotReparsePoint $TargetRoot
   Assert-NoReparsePointDescendants $TargetRoot
 
-  if (Test-Path -LiteralPath $TargetRoot) {
-    Remove-Item -LiteralPath $TargetRoot -Recurse -Force
-  }
   New-Item -ItemType Directory -Path $TargetRoot -Force | Out-Null
 
   foreach ($item in @(".codex-plugin", ".mcp.json", "skills", "scripts", "README.md")) {
     $source = Join-Path $SourceRoot $item
     if (Test-Path -LiteralPath $source) {
+      $target = Join-Path $TargetRoot $item
+      Assert-NotReparsePoint $target
+      Assert-NoReparsePointDescendants $target
       Copy-Item -LiteralPath $source -Destination $TargetRoot -Recurse -Force
     }
   }
