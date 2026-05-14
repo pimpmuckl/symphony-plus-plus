@@ -139,6 +139,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@refresh_script_path) =~ "Assert-NoReparsePointDescendants $TargetRoot"
     assert File.read!(@refresh_script_path) =~ "Assert-NotReparsePoint $target"
     assert File.read!(@refresh_script_path) =~ "Assert-NoReparsePointDescendants $target"
+    assert File.read!(@refresh_script_path) =~ "Assert-NotReparsePoint $sourceRootHintPath"
     refute File.read!(@refresh_script_path) =~ "Remove-Item -LiteralPath $TargetRoot -Recurse"
     assert File.read!(@refresh_script_path) =~ "Refusing to refresh reparse-point plugin cache directory"
     assert File.read!(@refresh_script_path) =~ "Refusing to refresh plugin cache directory containing a reparse-point child"

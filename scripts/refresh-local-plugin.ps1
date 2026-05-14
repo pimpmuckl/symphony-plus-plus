@@ -96,6 +96,7 @@ function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [strin
   }
 
   $sourceRootHintPath = Join-Path $TargetRoot ".sympp-source-root"
+  Assert-NotReparsePoint $sourceRootHintPath
   $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
   [System.IO.File]::WriteAllText($sourceRootHintPath, "$RepoRoot`n", $utf8NoBom)
 }
