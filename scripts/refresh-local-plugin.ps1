@@ -44,6 +44,70 @@ function Assert-PathInside([string]$Child, [string]$Parent, [string]$Message) {
   }
 }
 
+function Assert-SafeCacheTarget([string]$Target, [string]$PluginCacheRoot) {
+  Assert-PathInside $Target $PluginCacheRoot "Resolved target cache path is outside this plugin cache"
+}
+
+function Assert-NotReparsePoint([string]$Target) {
+  if (-not (Test-Path -LiteralPath $Target)) {
+    return
+  }
+
+  $item = Get-Item -LiteralPath $Target -Force
+  if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Refusing to refresh reparse-point plugin cache directory. Remove the link manually and rerun refresh: $Target"
+  }
+}
+
+function Assert-NoReparsePointDescendants([string]$Target) {
+  if (-not (Test-Path -LiteralPath $Target)) {
+    return
+  }
+
+  $reparsePoint = Get-ChildItem -LiteralPath $Target -Force -Recurse -Attributes ReparsePoint -ErrorAction Stop | Select-Object -First 1
+  if ($null -ne $reparsePoint) {
+    throw "Refusing to refresh plugin cache directory containing a reparse-point child. Remove the link manually and rerun refresh: $($reparsePoint.FullName)"
+  }
+}
+
+function Assert-ExistingCachePathNotReparsePoint([string[]]$Paths) {
+  foreach ($path in $Paths) {
+    Assert-NotReparsePoint $path
+  }
+}
+
+function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [string]$RepoRoot) {
+  Assert-SafeCacheTarget $TargetRoot $pluginCacheRoot
+  Assert-NotReparsePoint $TargetRoot
+  Assert-NoReparsePointDescendants $TargetRoot
+
+  if (Test-Path -LiteralPath $TargetRoot) {
+    Remove-Item -LiteralPath $TargetRoot -Recurse -Force
+  }
+  New-Item -ItemType Directory -Path $TargetRoot -Force | Out-Null
+
+  foreach ($item in @(".codex-plugin", ".mcp.json", "skills", "scripts", "README.md")) {
+    $source = Join-Path $SourceRoot $item
+    if (Test-Path -LiteralPath $source) {
+      Copy-Item -LiteralPath $source -Destination $TargetRoot -Recurse -Force
+    }
+  }
+
+  $sourceRootHintPath = Join-Path $TargetRoot ".sympp-source-root"
+  $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+  [System.IO.File]::WriteAllText($sourceRootHintPath, "$RepoRoot`n", $utf8NoBom)
+}
+
+function Assert-SafeVersionSegment([string]$Version) {
+  if ([string]::IsNullOrWhiteSpace($Version)) {
+    throw "Plugin manifest must include a non-empty version."
+  }
+
+  if ($Version.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0 -or $Version.Contains("/") -or $Version.Contains("\")) {
+    throw "Plugin manifest version is not safe for a cache directory name: $Version"
+  }
+}
+
 $repoRoot = Resolve-StrictPath (Join-Path $PSScriptRoot "..")
 if ([string]::IsNullOrWhiteSpace($MarketplacePath)) {
   $MarketplacePath = Join-Path $repoRoot ".agents\plugins\marketplace.json"
@@ -79,31 +143,28 @@ $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 if ($manifest.name -ne $PluginName) {
   throw "Plugin manifest name '$($manifest.name)' does not match requested plugin '$PluginName'."
 }
+$manifestVersion = [string]$manifest.version
+Assert-SafeVersionSegment $manifestVersion
 
 $codexHomePath = [System.IO.Path]::GetFullPath($CodexHome)
+$pluginsRoot = Join-And-Normalize $codexHomePath @("plugins")
 $cacheRoot = Join-And-Normalize $codexHomePath @("plugins", "cache")
+$marketplaceCacheRoot = Join-And-Normalize $cacheRoot @($marketplaceName)
 $pluginCacheRoot = Join-And-Normalize $cacheRoot @($marketplaceName, $PluginName)
-$targetRoot = Join-And-Normalize $pluginCacheRoot @("local")
 Assert-PathInside $pluginCacheRoot $cacheRoot "Resolved plugin cache path is outside Codex plugin cache"
+Assert-ExistingCachePathNotReparsePoint @($codexHomePath, $pluginsRoot, $cacheRoot, $marketplaceCacheRoot, $pluginCacheRoot)
 
-if (Test-Path -LiteralPath $targetRoot) {
-  Remove-Item -LiteralPath $targetRoot -Recurse -Force
-}
-New-Item -ItemType Directory -Path $targetRoot -Force | Out-Null
+$localTargetRoot = Join-And-Normalize $pluginCacheRoot @("local")
+$versionTargetRoot = Join-And-Normalize $pluginCacheRoot @($manifestVersion)
 
-foreach ($item in @(".codex-plugin", ".mcp.json", "skills", "scripts", "README.md")) {
-  $source = Join-Path $sourceRoot $item
-  if (Test-Path -LiteralPath $source) {
-    Copy-Item -LiteralPath $source -Destination $targetRoot -Recurse -Force
-  }
-}
+New-Item -ItemType Directory -Path $pluginCacheRoot -Force | Out-Null
 
-$sourceRootHintPath = Join-Path $targetRoot ".sympp-source-root"
-$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-[System.IO.File]::WriteAllText($sourceRootHintPath, "$repoRoot`n", $utf8NoBom)
+Copy-PluginCacheTarget $localTargetRoot $sourceRoot $repoRoot
+Copy-PluginCacheTarget $versionTargetRoot $sourceRoot $repoRoot
 
 Write-Host "Refreshed local Codex plugin cache:"
 Write-Host "  source: $sourceRoot"
-Write-Host "  target: $targetRoot"
+Write-Host "  local target: $localTargetRoot"
+Write-Host "  version target: $versionTargetRoot"
 Write-Host ""
 Write-Host "Restart or reload Codex to pick up refreshed plugin skills and MCP servers."
