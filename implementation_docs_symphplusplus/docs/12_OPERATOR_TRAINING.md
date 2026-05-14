@@ -59,12 +59,18 @@ decision mutations, planned-slice mutations, the manual clarification loop, and
 manual planned-slice authoring now exist. Architect MCP planned-slice dispatch
 also exists for explicit phase-scoped grants with `dispatch:work_request`.
 Local-operator dashboard dispatch also exists for approved, undispatched
-planned slices. Package-scoped guidance requests can be escalated by architects
-to `human_info_needed`; the local operator cockpit shows those package guidance
-items in the product guidance watchlist and can answer only that escalated
-state with stable `local-operator` attribution. The answer records a matching
-blocker resolution event so the existing readiness gates no longer fail on the
-resolved guidance request. Ordinary open guidance remains architect-owned.
+planned slices. Local-operator WorkRequest detail can also prepare an architect
+handoff for ready/active WorkRequest planning states. That handoff creates or
+reuses the WorkRequest-scoped phase and architect anchor package, mints an
+unclaimed architect grant for WorkRequest/guidance MCP capabilities, stores the
+secret through private handoff, and shows only non-secret/redacted bootstrap
+metadata plus a prompt for the `symphony-plus-plus:symphony-architect` skill.
+Package-scoped guidance requests can be escalated by architects to
+`human_info_needed`; the local operator cockpit shows those package guidance
+items in the product guidance watchlist and can answer only that escalated state
+with stable `local-operator` attribution. The answer records a matching blocker
+resolution event so the existing readiness gates no longer fail on the resolved
+guidance request. Ordinary open guidance remains architect-owned.
 Dashboard intake is board-authenticated and only appears for board grants with
 frozen repo and base-branch scope. The repo and base branch are displayed as
 locked values and are enforced by the server when creating the draft. Humans
@@ -80,13 +86,26 @@ the detail view can also dispatch approved, undispatched planned slices into
 WorkPackages. Board-grant WorkRequest detail remains scoped to planning
 controls and does not expose planned-slice dispatch.
 
+For WorkRequests in `ready_for_clarification`, `clarifying`,
+`human_info_needed`, `ready_for_slicing`, or `sliced`, local operator detail can
+prepare an architect handoff before slicing or dispatch. Repeating the action
+replays the existing active unclaimed handoff when available; otherwise it reuses
+the same phase/anchor and mints a renewed unclaimed architect grant. If an
+active unclaimed handoff can be safely proven stale from stored metadata, the
+old grant is retired before renewal. Missing or otherwise unverifiable metadata
+fails closed rather than minting a duplicate grant. The UI must not show raw
+work-key secrets, secret hashes, or full MCP secret-retrieval commands.
+Board-grant WorkRequest detail cannot create this handoff.
+
 Explicit phase-scoped architect MCP sessions with `read:work_request` can call
 `list_work_requests(status?)` and `read_work_request(work_request_id)` for the
-same frozen repo/base-branch WorkRequest scope. These tools are read-only, do
-not accept arbitrary repo or base-branch arguments, and hide missing or
-out-of-scope requests as not found. Legacy null `phase_id` architect grants are
-not supported for these WorkRequest reads and fail closed rather than reading
-scope from a mutable anchor package.
+same frozen repo/base-branch WorkRequest scope. For local architect handoff
+phases, the deterministic phase id also pins these tools to the selected
+WorkRequest, so sibling WorkRequests on the same repo/base branch are hidden as
+not found. These tools are read-only, do not accept arbitrary repo or
+base-branch arguments, and hide missing or out-of-scope requests as not found.
+Legacy null `phase_id` architect grants are not supported for these WorkRequest
+reads and fail closed rather than reading scope from a mutable anchor package.
 
 Explicit phase-scoped architect MCP sessions with `write:work_request` can call
 `set_work_request_status`, `ask_work_request_question`,

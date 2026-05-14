@@ -75,13 +75,34 @@ approved. In local operator mode, the same detail page can also dispatch
 approved, undispatched planned slices. Board-grant WorkRequest detail remains
 scoped to planning controls and does not expose planned-slice dispatch.
 
+In local operator mode, eligible WorkRequests in `ready_for_clarification`,
+`clarifying`, `human_info_needed`, `ready_for_slicing`, or `sliced` can prepare
+an architect handoff from the detail page. The handoff creates or reuses a
+deterministic phase and architect anchor WorkPackage scoped to the WorkRequest
+repo and base branch, then mints an unclaimed phase-scoped architect grant with
+`read:phase`, WorkRequest read/write/dispatch, and guidance read/write
+capabilities. Repeating the action replays the existing active unclaimed
+handoff when possible; if the prior architect grant is claimed or otherwise not
+replayable, the same phase and anchor are reused and a new unclaimed grant is
+minted. Active handoff metadata that can be safely proven stale is retired
+before renewal; missing or otherwise unverifiable metadata fails closed rather
+than minting a duplicate grant or reporting cleanup that cannot be proven. The
+browser shows only non-secret grant metadata, redacted private handoff metadata,
+and a safe prompt referencing the
+`symphony-plus-plus:symphony-architect` skill. It must not show raw work-key
+secrets, secret hashes, or full MCP secret-retrieval commands. Board-grant
+detail views cannot mint architect handoffs.
+
 Explicit phase-scoped architect MCP sessions with `read:work_request` can read
 the same scoped WorkRequest surface through `list_work_requests(status?)` and
 `read_work_request(work_request_id)`. The list tool accepts only optional
-`status` and always uses the grant's frozen repo/base-branch scope. Legacy null
-`phase_id` architect grants are not supported for these MCP reads and fail
-closed rather than deriving scope from a mutable anchor package. The detail
-tool returns the WorkRequest, clarification questions, decision log entries,
+`status` and always uses the grant's frozen repo/base-branch scope. For phases
+created by local WorkRequest architect handoff, the deterministic phase id also
+pins the MCP WorkRequest tools to that selected WorkRequest, so sibling
+WorkRequests on the same repo/base branch fail closed as out of scope. Legacy
+null `phase_id` architect grants are not supported for these MCP reads and fail
+closed rather than deriving scope from a mutable anchor package. The detail tool
+returns the WorkRequest, clarification questions, decision log entries,
 planned slices, and count/status summaries. Missing or out-of-scope
 WorkRequests fail closed as not found, and payloads are JSON-safe and redacted
 so work-key secrets, API tokens, private handoff payloads, and worker secret
@@ -269,6 +290,11 @@ slice. Local-operator dashboard dispatch reuses the existing
 handoff metadata. It does not spawn Codex agents and does not call Linear.
 Board-grant WorkRequest detail remains scoped to planning controls and does not
 show dispatch controls.
+
+Architect handoff is separate from planned-slice dispatch. It bootstraps the
+owning architect agent for the WorkRequest-led flow and does not create worker
+WorkPackages, spawn Codex agents, create Linear state, or dispatch planned
+slices.
 MCP dispatch is advertised only when the MCP server has `repo_root`/`--repo-root`
 configured to a repository containing the worker secret handoff script, and
 direct calls fail closed if that root is missing or invalid. It additionally

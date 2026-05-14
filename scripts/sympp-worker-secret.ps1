@@ -1,12 +1,13 @@
 param(
   [Parameter(Position = 0, Mandatory = $true)]
-  [ValidateSet("store", "remove", "run-mcp")]
+  [ValidateSet("store", "remove", "exists", "verify", "run-mcp")]
   [string]$Action,
 
   [string]$Target,
 
   [string]$UserName = "sympp-worker",
   [string]$SecretFile,
+  [string]$SecretSha256,
   [string]$Database,
   [string]$ClaimedBy,
   [string]$EnvVar = "SYMPP_WORK_KEY_SECRET",
@@ -131,6 +132,43 @@ function Read-GenericCredentialSecret([string]$CredentialTarget) {
   }
 }
 
+function Test-GenericCredential([string]$CredentialTarget) {
+  Assert-NonBlank $CredentialTarget "Target"
+
+  $credentialPtr = [IntPtr]::Zero
+  if (-not [SymppNativeCredential]::CredRead($CredentialTarget, [SymppNativeCredential]::CRED_TYPE_GENERIC, 0, [ref]$credentialPtr)) {
+    $errorCode = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    if ($errorCode -eq 1168) {
+      return $false
+    }
+
+    throw "CredRead failed with Windows error $errorCode."
+  }
+
+  try {
+    return $true
+  }
+  finally {
+    if ($credentialPtr -ne [IntPtr]::Zero) {
+      [SymppNativeCredential]::CredFree($credentialPtr)
+    }
+  }
+}
+
+function ConvertTo-Sha256Hex([string]$Secret) {
+  Assert-NonBlank $Secret "Secret"
+
+  $sha256 = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Secret)
+    $hashBytes = $sha256.ComputeHash($bytes)
+    return -join ($hashBytes | ForEach-Object { $_.ToString("x2") })
+  }
+  finally {
+    $sha256.Dispose()
+  }
+}
+
 function Remove-GenericCredential([string]$CredentialTarget) {
   Assert-NonBlank $CredentialTarget "Target"
 
@@ -189,6 +227,34 @@ switch ($Action) {
     Assert-NonBlank $Target "Target"
     Remove-GenericCredential -CredentialTarget $Target
     Write-Output "removed"
+  }
+  "exists" {
+    Assert-NonBlank $Target "Target"
+    if (Test-GenericCredential -CredentialTarget $Target) {
+      Write-Output "present"
+      exit 0
+    }
+
+    Write-Output "missing"
+    exit 2
+  }
+  "verify" {
+    Assert-NonBlank $Target "Target"
+    Assert-NonBlank $SecretSha256 "SecretSha256"
+
+    if (-not (Test-GenericCredential -CredentialTarget $Target)) {
+      Write-Output "missing"
+      exit 2
+    }
+
+    $secret = Read-GenericCredentialSecret -CredentialTarget $Target
+    if ((ConvertTo-Sha256Hex -Secret $secret) -ieq $SecretSha256) {
+      Write-Output "match"
+      exit 0
+    }
+
+    Write-Output "mismatch"
+    exit 3
   }
   "run-mcp" {
     Assert-NonBlank $Target "Target"

@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   @moduledoc false
 
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
@@ -117,6 +118,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     do: {:error, :missing_worker_grant}
 
   def read_worker_secret_metadata(%{}, _worker_grant, _opts), do: {:error, :missing_work_package}
+
+  @spec worker_secret_available?(map(), keyword()) :: boolean()
+  def worker_secret_available?(handoff, opts \\ []) when is_map(handoff) and is_list(opts) do
+    worker_secret_availability(handoff, opts) == :available
+  end
+
+  @spec worker_secret_availability(map(), keyword()) :: :available | :missing | :unknown
+  def worker_secret_availability(handoff, opts \\ []) when is_map(handoff) and is_list(opts) do
+    case handoff_value(handoff, :mode) do
+      "local-private-file" -> local_private_file_availability(handoff)
+      "windows-credential-manager" -> windows_credential_availability(handoff, opts)
+      _mode -> :missing
+    end
+  end
+
+  @spec worker_secret_integrity(map(), String.t() | nil, keyword()) :: :match | :mismatch | :unknown
+  def worker_secret_integrity(handoff, secret_hash, opts \\ []) when is_map(handoff) and is_list(opts) do
+    case {handoff_value(handoff, :mode), secret_hash} do
+      {"local-private-file", hash} when is_binary(hash) -> local_private_file_integrity(handoff, hash)
+      {"windows-credential-manager", hash} when is_binary(hash) -> windows_credential_integrity(handoff, hash, opts)
+      {_mode, _hash} -> :unknown
+    end
+  end
 
   @spec redacted_worker_grant(map(), map()) :: map()
   def redacted_worker_grant(worker_grant, handoff) when is_map(worker_grant) and is_map(handoff) do
@@ -693,12 +717,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   end
 
   defp delete_worker_secret_from_locked_metadata(context, opts) do
-    with {:ok, metadata} <- read_handoff_metadata(context.metadata_path),
-         {:ok, handoff} <- handoff_from_metadata_for_cleanup(metadata, context),
-         :ok <- delete_worker_secret(handoff, opts) do
-      delete_handoff_metadata_file(context.metadata_path)
+    case read_handoff_metadata(context.metadata_path) do
+      {:ok, metadata} ->
+        delete_worker_secret_from_validated_metadata(metadata, context, opts)
+
+      {:error, {:handoff_metadata_read_failed, _reason} = reason} ->
+        {:error, reason}
     end
   end
+
+  defp delete_worker_secret_from_validated_metadata(metadata, context, opts) do
+    case handoff_from_metadata_for_cleanup(metadata, context) do
+      {:ok, handoff} ->
+        with :ok <- delete_worker_secret(handoff, opts) do
+          delete_handoff_metadata_file(context.metadata_path)
+        end
+
+      {:error, {:handoff_metadata_invalid, _reason} = error} ->
+        maybe_delete_worker_secret_from_invalid_metadata(metadata, error, context, opts)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp maybe_delete_worker_secret_from_invalid_metadata(
+         metadata,
+         {:handoff_metadata_invalid, :missing_local_file} = error,
+         context,
+         opts
+       ) do
+    if Keyword.get(opts, :cleanup_unreadable_metadata?, false) == true do
+      case handoff_metadata_mode(metadata) do
+        {:ok, "local-private-file"} ->
+          delete_handoff_metadata_file(context.metadata_path)
+
+        _mode ->
+          {:error, error}
+      end
+    else
+      {:error, error}
+    end
+  end
+
+  defp maybe_delete_worker_secret_from_invalid_metadata(_metadata, error, _context, _opts), do: {:error, error}
 
   defp handoff_from_metadata_for_cleanup(metadata, context) do
     with :ok <- validate_handoff_metadata_identity(metadata, context),
@@ -1212,6 +1274,57 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     end
   end
 
+  defp local_private_file_availability(handoff) do
+    case handoff_value(handoff, :path) do
+      path when is_binary(path) -> path |> Path.expand() |> local_private_file_path_availability()
+      _path -> :missing
+    end
+  end
+
+  defp local_private_file_path_availability(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :regular}} -> if file_readable?(path), do: :available, else: :unknown
+      {:ok, %File.Stat{}} -> :unknown
+      {:error, reason} when reason in [:enoent, :enotdir] -> :missing
+      {:error, _reason} -> :unknown
+    end
+  end
+
+  defp file_readable?(path) do
+    case File.open(path, [:read], fn _io_device -> :ok end) do
+      {:ok, :ok} -> true
+      _error -> false
+    end
+  end
+
+  defp local_private_file_integrity(handoff, secret_hash) do
+    case handoff_value(handoff, :path) do
+      path when is_binary(path) -> path |> Path.expand() |> local_private_file_path_integrity(secret_hash)
+      _path -> :mismatch
+    end
+  end
+
+  defp local_private_file_path_integrity(path, secret_hash) do
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :regular}} -> read_local_private_file_integrity(path, secret_hash)
+      {:ok, %File.Stat{}} -> :unknown
+      {:error, reason} when reason in [:enoent, :enotdir] -> :mismatch
+      {:error, _reason} -> :unknown
+    end
+  end
+
+  defp read_local_private_file_integrity(path, secret_hash) do
+    case File.read(path) do
+      {:ok, secret} -> secret_integrity(secret, secret_hash)
+      {:error, :enoent} -> :mismatch
+      {:error, _reason} -> :unknown
+    end
+  end
+
+  defp secret_integrity(secret, secret_hash) when is_binary(secret) and is_binary(secret_hash) do
+    if WorkKey.secret_hash(secret) == secret_hash, do: :match, else: :mismatch
+  end
+
   defp delete_windows_credential(handoff, opts) do
     with target when is_binary(target) <- handoff_value(handoff, :target),
          {:ok, repo_root} <-
@@ -1231,6 +1344,86 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
       nil -> :ok
       {:error, reason} -> {:error, reason}
       _target -> :ok
+    end
+  end
+
+  defp windows_credential_availability(handoff, opts) do
+    with target when is_binary(target) <- handoff_value(handoff, :target),
+         {:ok, repo_root} <- nonblank_opt(opts, :repo_root, :missing_repo_root),
+         {:ok, powershell} <- powershell_executable_for_check() do
+      script_path = Path.join(repo_root, "scripts/sympp-worker-secret.ps1")
+      windows_credential_availability(powershell, script_path, target)
+    else
+      _missing_or_unavailable -> :unknown
+    end
+  end
+
+  defp windows_credential_integrity(handoff, secret_hash, opts) do
+    with target when is_binary(target) <- handoff_value(handoff, :target),
+         {:ok, repo_root} <- nonblank_opt(opts, :repo_root, :missing_repo_root),
+         {:ok, powershell} <- powershell_executable_for_check() do
+      script_path = Path.join(repo_root, "scripts/sympp-worker-secret.ps1")
+      windows_credential_integrity(powershell, script_path, target, secret_hash)
+    else
+      _missing_or_unavailable -> :unknown
+    end
+  end
+
+  defp windows_credential_availability(powershell, script_path, target) do
+    if File.regular?(script_path) do
+      run_windows_credential_exists(powershell, script_path, target)
+    else
+      :unknown
+    end
+  end
+
+  defp windows_credential_integrity(powershell, script_path, target, secret_hash) do
+    if File.regular?(script_path) do
+      run_windows_credential_verify(powershell, script_path, target, secret_hash)
+    else
+      :unknown
+    end
+  end
+
+  defp run_windows_credential_exists(powershell, script_path, target) do
+    case System.cmd(
+           powershell,
+           ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script_path, "exists", "-Target", target],
+           stderr_to_stdout: true
+         ) do
+      {_output, 0} -> :available
+      {_output, 2} -> :missing
+      {_output, _status} -> :unknown
+    end
+  end
+
+  defp run_windows_credential_verify(powershell, script_path, target, secret_hash) do
+    case System.cmd(
+           powershell,
+           [
+             "-NoProfile",
+             "-ExecutionPolicy",
+             "Bypass",
+             "-File",
+             script_path,
+             "verify",
+             "-Target",
+             target,
+             "-SecretSha256",
+             secret_hash
+           ],
+           stderr_to_stdout: true
+         ) do
+      {_output, 0} -> :match
+      {_output, status} when status in [2, 3] -> :mismatch
+      {_output, _status} -> :unknown
+    end
+  end
+
+  defp powershell_executable_for_check do
+    case powershell_executable() do
+      {:ok, powershell} -> {:ok, powershell}
+      :error -> {:error, :windows_credential_manager_unavailable}
     end
   end
 

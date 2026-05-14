@@ -13,6 +13,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
@@ -44,6 +45,16 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     {"Target", :target},
     {"Path", :path},
     {"Run MCP", :run_mcp_command}
+  ]
+  @architect_handoff_display_fields [
+    {"Mode", :mode},
+    {"Status", :status},
+    {"Suggested claimed by", :suggested_claimed_by},
+    {"Claimed by", :claimed_by},
+    {"Secret in stdout", :secret_in_stdout},
+    {"Ledger database", :database},
+    {"Target", :target},
+    {"Path", :path}
   ]
 
   @impl true
@@ -375,6 +386,14 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
               >
                 Mark sliced
               </button>
+              <button
+                :if={can_create_architect_handoff?(@operator_mode?, @board_grant, @page.work_request)}
+                type="button"
+                class="secondary"
+                phx-click="create_architect_handoff"
+              >
+                Prepare architect handoff
+              </button>
             </div>
             <p><%= value(@page.work_request, :human_description) %></p>
           </div>
@@ -412,6 +431,59 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
             <span class="sympp-board-count numeric"><%= summary_slice_total(@page.summary) %></span>
             <span class="muted">planned slices</span>
           </div>
+        </section>
+
+        <section :if={@page.architect_handoff} class="sympp-work-request-grid" aria-label="Architect handoff">
+          <article class="sympp-panel sympp-panel-wide">
+            <div class="sympp-work-request-row-heading">
+              <span class="state-badge state-badge-active"><%= handoff_status_label(@page.architect_handoff.status) %></span>
+              <span class="sympp-readiness">Private architect handoff stored</span>
+            </div>
+            <dl class="sympp-work-request-meta sympp-slice-detail-grid">
+              <div>
+                <dt>WorkRequest</dt>
+                <dd class="mono"><%= value(@page.architect_handoff.work_request, :id) %></dd>
+              </div>
+              <div>
+                <dt>Phase</dt>
+                <dd class="mono"><%= value(@page.architect_handoff.phase, :id) %></dd>
+              </div>
+              <div>
+                <dt>Anchor package</dt>
+                <dd>
+                  <a href={work_package_route(@path_prefix, value(@page.architect_handoff.anchor_package, :id))}>
+                    <%= value(@page.architect_handoff.anchor_package, :id) %>
+                  </a>
+                </dd>
+              </div>
+              <div>
+                <dt>Grant</dt>
+                <dd class="mono"><%= value(@page.architect_handoff.grant, :id) %></dd>
+              </div>
+              <div>
+                <dt>Display key</dt>
+                <dd class="mono"><%= value(@page.architect_handoff.grant, :display_key) %></dd>
+              </div>
+              <div>
+                <dt>Scope</dt>
+                <dd><%= architect_handoff_scope(@page.architect_handoff) %></dd>
+              </div>
+              <div>
+                <dt>Capabilities</dt>
+                <dd><%= list_label(value(@page.architect_handoff.grant, :capabilities, [])) %></dd>
+              </div>
+              <div>
+                <dt>Expires</dt>
+                <dd class="numeric"><%= exact_value(value(@page.architect_handoff.grant, :expires_at)) %></dd>
+              </div>
+              <div :for={{label, value} <- architect_handoff_items(@page.architect_handoff)}>
+                <dt><%= label %></dt>
+                <dd class="mono"><%= exact_value(value) %></dd>
+              </div>
+            </dl>
+            <h2>Architect prompt</h2>
+            <pre class="sympp-json-block"><%= value(@page.architect_handoff, :prompt) %></pre>
+          </article>
         </section>
 
         <section class="sympp-work-request-grid">
@@ -858,6 +930,43 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     end
   end
 
+  def handle_event("create_architect_handoff", _params, socket) do
+    case action_actor(socket) do
+      {:ok, :local_operator, socket} ->
+        case create_architect_handoff(:local_operator, socket.assigns.work_request_id) do
+          {:ok, handoff} ->
+            page =
+              :show
+              |> load_page(:local_operator, socket.assigns.work_request_id)
+              |> Map.put(:architect_handoff, handoff)
+
+            {:noreply,
+             socket
+             |> put_flash(:info, architect_handoff_flash(handoff.status))
+             |> assign(:page, page)}
+
+          {:error, reason} ->
+            page =
+              :show
+              |> load_page(:local_operator, socket.assigns.work_request_id)
+              |> Map.put(:action_error, architect_handoff_error_message(reason))
+
+            {:noreply, assign(socket, :page, page)}
+        end
+
+      {:ok, actor, socket} ->
+        page =
+          :show
+          |> load_page(actor, socket.assigns.work_request_id)
+          |> Map.put(:action_error, architect_handoff_error_message(:forbidden))
+
+        {:noreply, assign(socket, :page, page)}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, :page, unauthorized_page(reason))}
+    end
+  end
+
   def handle_event("mark_human_info_needed", _params, socket) do
     handle_scoped_action(socket, fn grant ->
       mark_human_info_needed(grant, socket.assigns.work_request_id)
@@ -999,7 +1108,8 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
       planned_slice_form_error: nil,
       intake_scope: nil,
       action_error: nil,
-      dispatch_notice: nil
+      dispatch_notice: nil,
+      architect_handoff: nil
     }
   end
 
@@ -1111,6 +1221,15 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     do: "Planned-slice dispatch is only available in local operator mode."
 
   defp dispatch_error_message(reason), do: "Planned slice dispatch failed: #{PlannedSliceDispatch.error_message(reason)}"
+
+  defp architect_handoff_error_message(:forbidden),
+    do: "Architect handoff is only available in local operator mode."
+
+  defp architect_handoff_error_message(reason), do: ArchitectHandoff.error_message(reason)
+
+  defp architect_handoff_flash(:replayed), do: "Existing architect handoff replayed."
+  defp architect_handoff_flash(:renewed), do: "Architect handoff renewed."
+  defp architect_handoff_flash(_status), do: "Architect handoff ready."
 
   defp create_work_request(%AccessGrant{} = grant, params) do
     form = work_request_form(params)
@@ -1255,6 +1374,18 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   end
 
   defp dispatch_planned_slice(_actor, _work_request_id, _params), do: {:error, :not_found}
+
+  defp create_architect_handoff(:local_operator, work_request_id)
+       when is_binary(work_request_id) do
+    SymppBoardLive.with_dashboard_repo(fn repo ->
+      ArchitectHandoff.create_or_replay(repo, work_request_id,
+        local_operator?: true,
+        secret_handoff_opts: architect_handoff_opts(repo)
+      )
+    end)
+  end
+
+  defp create_architect_handoff(_actor, _work_request_id), do: {:error, :forbidden}
 
   defp mark_sliced(actor, work_request_id)
        when is_binary(work_request_id) do
@@ -1831,6 +1962,13 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp can_dispatch_slice?(_operator_mode?, _board_grant, _work_request, _slice), do: false
 
+  defp can_create_architect_handoff?(true, nil, work_request) do
+    ArchitectHandoff.eligible_status?(value(work_request, :status)) and
+      ArchitectHandoff.eligible_scope?(work_request)
+  end
+
+  defp can_create_architect_handoff?(_operator_mode?, _board_grant, _work_request), do: false
+
   defp can_mark_sliced?(work_request), do: value(work_request, :status) == "ready_for_slicing"
 
   defp work_package_kinds, do: WorkPackage.kinds()
@@ -1846,7 +1984,8 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp default_actor(true, _grant), do: @local_operator_actor
   defp default_actor(_operator_mode?, grant), do: default_actor(grant)
 
-  defp filled_string?(value), do: String.trim(value) != ""
+  defp filled_string?(value) when is_binary(value), do: String.trim(value) != ""
+  defp filled_string?(_value), do: false
 
   defp dispatch_handoff_opts(repo) do
     [
@@ -1856,6 +1995,20 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
       claimed_by: @local_operator_worker
     ]
     |> put_optional_handoff_opt(:store_dir, Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir))
+  end
+
+  defp architect_handoff_opts(repo) do
+    [
+      mode: local_operator_secret_handoff_mode(),
+      database: dashboard_ledger_database(repo),
+      repo_root: SecretHandoff.local_operator_repo_root(),
+      claimed_by: ArchitectHandoff.claimed_by()
+    ]
+    |> put_optional_handoff_opt(:store_dir, Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir))
+  end
+
+  defp local_operator_secret_handoff_mode do
+    if match?({:win32, _}, :os.type()), do: "windows-credential-manager", else: "local-private-file"
   end
 
   defp dashboard_ledger_database(repo) do
@@ -1927,6 +2080,34 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   end
 
   defp handoff_items(_handoff), do: []
+
+  defp architect_handoff_items(%{secret_handoff: handoff}) when is_map(handoff) do
+    Enum.flat_map(@architect_handoff_display_fields, fn {label, key} ->
+      case value(handoff, key) do
+        nil -> []
+        "" -> []
+        value -> [{label, value}]
+      end
+    end)
+  end
+
+  defp architect_handoff_items(_handoff), do: []
+
+  defp architect_handoff_scope(%{grant: grant}) when is_map(grant) do
+    [value(grant, :scope_repo), value(grant, :scope_base_branch)]
+    |> Enum.reject(&(is_nil(&1) or &1 == ""))
+    |> Enum.join(" / ")
+    |> case do
+      "" -> "n/a"
+      scope -> scope
+    end
+  end
+
+  defp architect_handoff_scope(_handoff), do: "n/a"
+
+  defp handoff_status_label(:replayed), do: "replayed"
+  defp handoff_status_label(:renewed), do: "renewed"
+  defp handoff_status_label(_status), do: "created"
 
   defp detail_title(%{work_request: work_request}) when is_map(work_request) do
     value(work_request, :title) || value(work_request, :id) || "WorkRequest"

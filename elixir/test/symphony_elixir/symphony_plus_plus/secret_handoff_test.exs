@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
   use ExUnit.Case, async: false
 
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
@@ -109,6 +110,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
       refute File.exists?(handoff.path)
     after
       File.rm_rf!(absolute_store_dir)
+    end
+  end
+
+  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
+
+  test "checks local private file availability and integrity without returning the secret" do
+    secret = "synthetic-local-integrity-#{System.unique_integer([:positive])}"
+    store_dir = Path.join(System.tmp_dir!(), "sympp-secret-integrity-#{System.unique_integer([:positive])}")
+
+    try do
+      assert {:ok, handoff} =
+               SecretHandoff.store_worker_secret(creation(secret),
+                 mode: "local-private-file",
+                 store_dir: store_dir,
+                 repo_root: @repo_root,
+                 claimed_by: "worker-local-integrity"
+               )
+
+      secret_hash = WorkKey.secret_hash(secret)
+      assert SecretHandoff.worker_secret_availability(handoff, repo_root: @repo_root) == :available
+      assert SecretHandoff.worker_secret_integrity(handoff, secret_hash, repo_root: @repo_root) == :match
+
+      File.write!(handoff.path, "corrupted-secret")
+      assert SecretHandoff.worker_secret_availability(handoff, repo_root: @repo_root) == :available
+      assert SecretHandoff.worker_secret_integrity(handoff, secret_hash, repo_root: @repo_root) == :mismatch
+
+      File.chmod!(handoff.path, 0o000)
+      assert SecretHandoff.worker_secret_availability(handoff, repo_root: @repo_root) == :unknown
+      assert SecretHandoff.worker_secret_integrity(handoff, secret_hash, repo_root: @repo_root) == :unknown
+
+      File.chmod!(handoff.path, 0o600)
+      File.rm!(handoff.path)
+      assert SecretHandoff.worker_secret_availability(handoff, repo_root: @repo_root) == :missing
+      assert SecretHandoff.worker_secret_integrity(handoff, secret_hash, repo_root: @repo_root) == :mismatch
+    after
+      File.rm_rf!(store_dir)
     end
   end
 
@@ -525,11 +562,66 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
       assert {:error, {:handoff_metadata_read_failed, :enoent}} =
                SecretHandoff.delete_worker_secret_by_grant(package, grant, opts)
 
+      File.mkdir_p!(Path.dirname(local_private_file_path(package, grant, opts)))
+      File.write!(local_private_file_path(package, grant, opts), "missing metadata cleanup fixture")
+
+      assert {:error, {:handoff_metadata_read_failed, :enoent}} =
+               SecretHandoff.delete_worker_secret_by_grant(
+                 package,
+                 grant,
+                 Keyword.put(opts, :cleanup_unreadable_metadata?, true)
+               )
+
+      assert File.exists?(local_private_file_path(package, grant, opts))
+
       File.mkdir_p!(Path.dirname(metadata_path))
       File.write!(metadata_path, "{not json")
+      File.write!(local_private_file_path(package, grant, opts), "cleanup fixture")
 
       assert {:error, {:handoff_metadata_read_failed, :invalid_json}} =
                SecretHandoff.delete_worker_secret_by_grant(package, grant, opts)
+
+      assert File.exists?(local_private_file_path(package, grant, opts))
+      assert File.exists?(metadata_path)
+
+      assert {:error, {:handoff_metadata_read_failed, :invalid_json}} =
+               SecretHandoff.delete_worker_secret_by_grant(
+                 package,
+                 grant,
+                 Keyword.put(opts, :cleanup_unreadable_metadata?, true)
+               )
+
+      assert File.exists?(local_private_file_path(package, grant, opts))
+      assert File.exists?(metadata_path)
+
+      File.rm!(local_private_file_path(package, grant, opts))
+
+      File.write!(
+        metadata_path,
+        Jason.encode!(metadata_record(package, grant, "local-private-file", %{"path" => local_private_file_path(package, grant, opts)}))
+      )
+
+      assert :ok =
+               SecretHandoff.delete_worker_secret_by_grant(
+                 package,
+                 grant,
+                 Keyword.put(opts, :cleanup_unreadable_metadata?, true)
+               )
+
+      refute File.exists?(local_private_file_path(package, grant, opts))
+      refute File.exists?(metadata_path)
+
+      auto_opts = Keyword.put(opts, :mode, "auto")
+      File.write!(metadata_path, "{not json")
+
+      assert {:error, {:handoff_metadata_read_failed, :invalid_json}} =
+               SecretHandoff.delete_worker_secret_by_grant(
+                 package,
+                 grant,
+                 Keyword.put(auto_opts, :cleanup_unreadable_metadata?, true)
+               )
+
+      assert File.exists?(metadata_path)
     after
       File.rm_rf!(store_dir)
       File.rm_rf!(metadata_dir)
@@ -606,6 +698,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
       assert File.exists?(expected_path)
       assert File.exists?(arbitrary_path)
       assert File.exists?(metadata_path)
+
+      assert {:error, {:handoff_metadata_invalid, :local_path_mismatch}} =
+               SecretHandoff.delete_worker_secret_by_grant(
+                 package,
+                 grant,
+                 Keyword.put(opts, :cleanup_unreadable_metadata?, true)
+               )
+
+      assert File.exists?(expected_path)
+      assert File.exists?(arbitrary_path)
+      assert File.exists?(metadata_path)
     after
       File.rm_rf!(store_dir)
     end
@@ -634,6 +737,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
 
       assert {:error, {:handoff_metadata_invalid, :credential_target_mismatch}} =
                SecretHandoff.delete_worker_secret_by_grant(package, grant, opts)
+
+      assert File.exists?(metadata_path)
+
+      assert {:error, {:handoff_metadata_invalid, :credential_target_mismatch}} =
+               SecretHandoff.delete_worker_secret_by_grant(
+                 package,
+                 grant,
+                 Keyword.put(opts, :cleanup_unreadable_metadata?, true)
+               )
+
+      assert File.exists?(metadata_path)
+
+      File.write!(metadata_path, "{not json")
+
+      assert {:error, {:handoff_metadata_read_failed, :invalid_json}} =
+               SecretHandoff.delete_worker_secret_by_grant(
+                 package,
+                 grant,
+                 Keyword.put(opts, :cleanup_unreadable_metadata?, true)
+               )
 
       assert File.exists?(metadata_path)
 
@@ -1206,6 +1329,53 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
         end
       end
     end
+  end
+
+  test "checks Windows Credential Manager handoff availability without returning the secret" do
+    powershell = powershell_executable()
+
+    if windows?() and powershell do
+      secret = "synthetic-windows-availability-#{System.unique_integer([:positive])}"
+
+      assert {:ok, handoff} =
+               SecretHandoff.store_worker_secret(creation(secret),
+                 mode: "windows-credential-manager",
+                 repo_root: @repo_root,
+                 database: "test-ledger.sqlite3",
+                 claimed_by: "worker-windows-availability"
+               )
+
+      try do
+        secret_hash = WorkKey.secret_hash(secret)
+        assert SecretHandoff.worker_secret_availability(handoff, repo_root: @repo_root) == :available
+        assert SecretHandoff.worker_secret_available?(handoff, repo_root: @repo_root)
+        assert SecretHandoff.worker_secret_integrity(handoff, secret_hash, repo_root: @repo_root) == :match
+        refute inspect(handoff) =~ secret
+
+        remove_windows_credential!(powershell, handoff.target)
+
+        assert SecretHandoff.worker_secret_availability(handoff, repo_root: @repo_root) == :missing
+        assert SecretHandoff.worker_secret_integrity(handoff, secret_hash, repo_root: @repo_root) == :mismatch
+        refute SecretHandoff.worker_secret_available?(handoff, repo_root: @repo_root)
+        refute inspect(handoff) =~ secret
+      after
+        if is_binary(handoff.target) do
+          remove_windows_credential!(powershell, handoff.target)
+        end
+      end
+    end
+  end
+
+  test "reports Windows Credential Manager availability as unknown when the helper cannot run" do
+    handoff = %{
+      mode: "windows-credential-manager",
+      target: "SymphonyPlusPlus:worker:missing-helper:D321:#{@default_worker_grant_id}"
+    }
+
+    missing_repo_root = Path.join(System.tmp_dir!(), "sympp-missing-helper-#{System.unique_integer([:positive])}")
+
+    assert SecretHandoff.worker_secret_availability(handoff, repo_root: missing_repo_root) == :unknown
+    refute SecretHandoff.worker_secret_available?(handoff, repo_root: missing_repo_root)
   end
 
   test "uses grant identity to namespace Windows Credential Manager targets when display keys collide" do
