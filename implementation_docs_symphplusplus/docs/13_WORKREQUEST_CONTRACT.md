@@ -5,6 +5,12 @@ product documentation only. It preserves the existing WorkPackage ledger,
 AccessGrant permissions, virtual planning resources, readiness gates,
 review-suite evidence, PR evidence, and human merge controls.
 
+Codex architect agents should apply this contract through the plugin-installed
+`symphony-plus-plus:symphony-architect` skill, backed by the repo-local
+`plugins/symphony-plus-plus/skills/symphony-architect/SKILL.md` playbook. That
+skill is the practical agent workflow for clarification, decisions, planned
+slices, dispatch, guidance routing, and stop conditions.
+
 WorkRequest core persistence, planned-slice persistence, read API/list/detail
 dashboard views, scoped dashboard intake, architect MCP WorkRequest reads and
 clarification/decision mutations, the board-authenticated manual clarification
