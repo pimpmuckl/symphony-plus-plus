@@ -734,33 +734,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
         end
 
       {:error, {:handoff_metadata_invalid, _reason} = error} ->
-        maybe_delete_worker_secret_from_invalid_metadata(metadata, error, context, opts)
-
-      {:error, reason} ->
-        {:error, reason}
+        {:error, error}
     end
   end
-
-  defp maybe_delete_worker_secret_from_invalid_metadata(
-         metadata,
-         {:handoff_metadata_invalid, :missing_local_file} = error,
-         context,
-         opts
-       ) do
-    if Keyword.get(opts, :cleanup_unreadable_metadata?, false) == true do
-      case handoff_metadata_mode(metadata) do
-        {:ok, "local-private-file"} ->
-          delete_handoff_metadata_file(context.metadata_path)
-
-        _mode ->
-          {:error, error}
-      end
-    else
-      {:error, error}
-    end
-  end
-
-  defp maybe_delete_worker_secret_from_invalid_metadata(_metadata, error, _context, _opts), do: {:error, error}
 
   defp handoff_from_metadata_for_cleanup(metadata, context) do
     with :ok <- validate_handoff_metadata_identity(metadata, context),

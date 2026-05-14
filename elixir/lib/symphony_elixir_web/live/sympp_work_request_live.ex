@@ -2001,7 +2001,6 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp default_actor(_operator_mode?, grant), do: default_actor(grant)
 
   defp filled_string?(value) when is_binary(value), do: String.trim(value) != ""
-  defp filled_string?(_value), do: false
 
   defp dispatch_handoff_opts(repo) do
     [

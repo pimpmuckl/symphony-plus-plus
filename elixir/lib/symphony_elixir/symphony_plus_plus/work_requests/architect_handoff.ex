@@ -509,15 +509,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
     end
   end
 
-  defp require_frozen_scope(_work_request), do: {:error, :invalid_scope}
-
   defp require_valid_file_scope(work_request) when is_map(work_request) do
     with {:ok, _allowed_file_globs} <- work_request_allowed_file_globs(work_request) do
       :ok
     end
   end
-
-  defp require_valid_file_scope(_work_request), do: {:error, :invalid_scope}
 
   defp present_string?(value) when is_binary(value), do: String.trim(value) != ""
   defp present_string?(_value), do: false
@@ -631,8 +627,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
       _constraints -> {:error, :invalid_scope}
     end
   end
-
-  defp work_request_allowed_file_globs(_work_request), do: {:error, :invalid_scope}
 
   defp work_request_allowed_file_globs_from_constraints(constraints) when is_map(constraints) do
     case work_request_constraint_value(constraints, :allowed_paths) do
