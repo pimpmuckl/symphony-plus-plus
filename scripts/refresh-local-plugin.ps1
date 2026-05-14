@@ -76,12 +76,12 @@ function Assert-ExistingCachePathNotReparsePoint([string[]]$Paths) {
   }
 }
 
-function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [string]$RepoRoot, [bool]$PreserveExistingRoot = $false) {
+function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [string]$RepoRoot) {
   Assert-SafeCacheTarget $TargetRoot $pluginCacheRoot
   Assert-NotReparsePoint $TargetRoot
   Assert-NoReparsePointDescendants $TargetRoot
 
-  if ((Test-Path -LiteralPath $TargetRoot) -and -not $PreserveExistingRoot) {
+  if (Test-Path -LiteralPath $TargetRoot) {
     Remove-Item -LiteralPath $TargetRoot -Recurse -Force
   }
   New-Item -ItemType Directory -Path $TargetRoot -Force | Out-Null
@@ -96,22 +96,6 @@ function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [strin
   $sourceRootHintPath = Join-Path $TargetRoot ".sympp-source-root"
   $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
   [System.IO.File]::WriteAllText($sourceRootHintPath, "$RepoRoot`n", $utf8NoBom)
-}
-
-function Test-CacheTargetHasMcpEntry([string]$TargetRoot) {
-  $cachedManifestPath = Join-Path $TargetRoot ".codex-plugin/plugin.json"
-  $cachedMcpPath = Join-Path $TargetRoot ".mcp.json"
-  if (-not (Test-Path -LiteralPath $cachedManifestPath) -or -not (Test-Path -LiteralPath $cachedMcpPath)) {
-    return $false
-  }
-
-  try {
-    $cachedManifest = Get-Content -LiteralPath $cachedManifestPath -Raw | ConvertFrom-Json
-    $cachedMcp = Get-Content -LiteralPath $cachedMcpPath -Raw | ConvertFrom-Json
-    return $cachedManifest.mcpServers -eq "./.mcp.json" -and $null -ne $cachedMcp.mcpServers.symphony_plus_plus
-  } catch {
-    return $false
-  }
 }
 
 function Assert-SafeVersionSegment([string]$Version) {
@@ -174,17 +158,6 @@ $localTargetRoot = Join-And-Normalize $pluginCacheRoot @("local")
 $versionTargetRoot = Join-And-Normalize $pluginCacheRoot @($manifestVersion)
 
 New-Item -ItemType Directory -Path $pluginCacheRoot -Force | Out-Null
-
-foreach ($existing in Get-ChildItem -LiteralPath $pluginCacheRoot -Directory -ErrorAction SilentlyContinue) {
-  $existingPath = [System.IO.Path]::GetFullPath($existing.FullName)
-  Assert-SafeCacheTarget $existingPath $pluginCacheRoot
-  Assert-NotReparsePoint $existingPath
-
-  if ($existing.Name -ne "local" -and $existing.Name -ne $manifestVersion -and -not (Test-CacheTargetHasMcpEntry $existingPath)) {
-    Copy-PluginCacheTarget $existingPath $sourceRoot $repoRoot $true
-    Write-Host "Repaired stale MCP-incomplete Codex plugin cache: $existingPath"
-  }
-}
 
 Copy-PluginCacheTarget $localTargetRoot $sourceRoot $repoRoot
 Copy-PluginCacheTarget $versionTargetRoot $sourceRoot $repoRoot

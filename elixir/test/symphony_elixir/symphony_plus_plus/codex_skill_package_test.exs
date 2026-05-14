@@ -318,16 +318,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
-  test "refresh script updates the manifest-version cache and repairs stale MCP-incomplete versioned caches" do
+  test "refresh script updates only local and manifest-version caches" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-refresh-#{System.unique_integer([:positive])}")
 
     if powershell do
       stale_manifest_path = plugin_cache_path(temp_codex_home, ["0.0.9", ".codex-plugin", "plugin.json"])
       sentinel_path = plugin_cache_path(temp_codex_home, ["0.0.9", "already-open.txt"])
+      scratch_path = plugin_cache_path(temp_codex_home, ["scratch", "note.txt"])
       File.mkdir_p!(Path.dirname(stale_manifest_path))
       File.write!(stale_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "0.0.9"}))
       File.write!(sentinel_path, "preserve")
+      File.mkdir_p!(Path.dirname(scratch_path))
+      File.write!(scratch_path, "do not touch")
 
       try do
         {output, status} =
@@ -346,8 +349,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           )
 
         assert status == 0, output
-        assert output =~ "Repaired stale MCP-incomplete Codex plugin cache"
-        assert File.exists?(plugin_cache_path(temp_codex_home, ["0.0.9"]))
+        refute output =~ "Repaired stale MCP-incomplete Codex plugin cache"
 
         versioned_manifest =
           plugin_cache_path(temp_codex_home, ["0.1.0", ".codex-plugin", "plugin.json"])
@@ -356,15 +358,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         assert versioned_manifest["mcpServers"] == "./.mcp.json"
         assert File.exists?(plugin_cache_path(temp_codex_home, ["0.1.0", ".mcp.json"]))
-
-        repaired_manifest =
-          plugin_cache_path(temp_codex_home, ["0.0.9", ".codex-plugin", "plugin.json"])
-          |> File.read!()
-          |> Jason.decode!()
-
-        assert repaired_manifest["mcpServers"] == "./.mcp.json"
-        assert File.exists?(plugin_cache_path(temp_codex_home, ["0.0.9", ".mcp.json"]))
+        assert plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"]) |> File.exists?()
+        refute File.exists?(plugin_cache_path(temp_codex_home, ["0.0.9", ".mcp.json"]))
         assert File.read!(sentinel_path) == "preserve"
+        assert File.read!(scratch_path) == "do not touch"
       after
         File.rm_rf(temp_codex_home)
       end

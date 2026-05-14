@@ -16,9 +16,9 @@ reload Codex and open a new session before treating missing `symphony_plus_plus`
 tools as a repo packaging failure. ValidateOnly checks the wrapper and launcher
 only; it does not prove that the current session has hot-loaded new MCP tools.
 The repo refresh script updates both the `local` cache and the manifest-version
-cache. It repairs MCP-incomplete older versioned cache directories in place so
-stale versioned manifests cannot hide the generic MCP entry while existing cache
-paths remain available to already-running hosts.
+cache so a refreshed install has both the manifest `mcpServers` pointer and the
+referenced `.mcp.json`. Older cache directories are ignored; reload Codex and
+open a new session after refresh.
 
 The static plugin MCP entry is intentionally generic. It must not embed raw
 work-key secrets, bearer tokens, private-store handoff targets, or

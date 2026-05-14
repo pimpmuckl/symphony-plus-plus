@@ -49,10 +49,9 @@ MCP tools as a packaging failure.
 The refresh script writes both install cache shapes Codex may consult:
 `~/.codex/plugins/cache/<marketplace>/symphony-plus-plus/local` and the
 manifest-version directory, for example
-`~/.codex/plugins/cache/<marketplace>/symphony-plus-plus/0.1.0`. It also repairs
-older versioned cache directories for this plugin when they are missing
-`mcpServers` or `.mcp.json`, preserving the old path for already-running Codex
-hosts while preventing a stale manifest from shadowing the refreshed package.
+`~/.codex/plugins/cache/<marketplace>/symphony-plus-plus/0.1.0`. Older cache
+directories are ignored; the fix for stale cache state is current-version cache
+parity plus a Codex reload/new session.
 If an existing cache parent, cache directory, or child path is a junction or
 symlink, refresh stops with a manual cleanup message instead of recursively
 deleting or copying through the link.
@@ -68,8 +67,8 @@ Repo validation proves only the plugin package contract:
 - `.codex-plugin/plugin.json` points `mcpServers` at `./.mcp.json`.
 - `.mcp.json` defines a generic `symphony_plus_plus` stdio server.
 - `scripts/refresh-local-plugin.ps1` copies `.mcp.json` into the installed
-  `local` and manifest-version caches, repairs MCP-incomplete older versioned
-  caches in place, and writes a non-secret `.sympp-source-root` hint.
+  `local` and manifest-version caches, and writes a non-secret
+  `.sympp-source-root` hint.
 - `scripts/start-sympp-mcp.ps1 -ValidateOnly` can resolve the checkout and
   launcher.
 
