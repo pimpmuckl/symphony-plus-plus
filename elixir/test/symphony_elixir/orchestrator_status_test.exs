@@ -850,9 +850,33 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "orchestrator triggers an immediate poll cycle shortly after startup" do
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: nil,
+      tracker_kind: "memory",
       poll_interval_ms: 5_000
     )
+
+    parent = self()
+    previous_memory_tracker_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+
+    Application.put_env(
+      :symphony_elixir,
+      :memory_tracker_issues,
+      Stream.resource(
+        fn ->
+          send(parent, :memory_tracker_fetch_candidate_issues)
+          :done
+        end,
+        fn :done -> {:halt, :done} end,
+        fn :done -> :ok end
+      )
+    )
+
+    on_exit(fn ->
+      if is_nil(previous_memory_tracker_issues) do
+        Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+      else
+        Application.put_env(:symphony_elixir, :memory_tracker_issues, previous_memory_tracker_issues)
+      end
+    end)
 
     orchestrator_name = Module.concat(__MODULE__, :ImmediateStartupOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
@@ -863,18 +887,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end
     end)
 
-    assert %{polling: %{checking?: true}} =
-             wait_for_snapshot(
-               pid,
-               fn
-                 %{polling: %{checking?: true}} ->
-                   true
-
-                 _ ->
-                   false
-               end,
-               500
-             )
+    assert_receive :memory_tracker_fetch_candidate_issues, 500
 
     assert %{
              polling: %{
@@ -887,7 +900,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                pid,
                fn
                  %{polling: %{checking?: false, next_poll_in_ms: due_in_ms}}
-                 when is_integer(due_in_ms) and due_in_ms <= 5_000 ->
+                 when is_integer(due_in_ms) and due_in_ms > 0 and due_in_ms <= 5_000 ->
                    true
 
                  _ ->
@@ -897,7 +910,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              )
 
     assert is_integer(next_poll_in_ms)
-    assert next_poll_in_ms >= 0
+    assert next_poll_in_ms > 0
   end
 
   test "orchestrator poll cycle resets next refresh countdown after a check" do
