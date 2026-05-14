@@ -105,6 +105,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
     end
   end
 
+  @spec existing_display(module(), String.t(), keyword()) :: {:ok, map() | nil} | {:error, error()}
+  def existing_display(repo, work_request_id, opts \\ [])
+      when is_atom(repo) and is_binary(work_request_id) and is_list(opts) do
+    with :ok <- require_local_operator(opts) do
+      repo
+      |> read_existing_display(work_request_id, opts)
+      |> normalize_existing_display_result()
+    end
+  end
+
   defp create_or_replay_locked(repo, work_request_id, opts) do
     now = Keyword.get(opts, :now, DateTime.utc_now(:microsecond))
     handoff_opts = handoff_opts(opts)
@@ -119,6 +129,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
       replay_or_create_handoff(repo, work_request, phase, anchor, grants, handoff_opts, now)
     end
   end
+
+  defp read_existing_display(repo, work_request_id, opts) do
+    now = Keyword.get(opts, :now, DateTime.utc_now(:microsecond))
+    handoff_opts = handoff_opts(opts)
+
+    with {:ok, work_request} <- WorkRequestRepository.get(repo, work_request_id),
+         :ok <- require_eligible_status(work_request),
+         :ok <- require_frozen_scope(work_request),
+         :ok <- require_valid_file_scope(work_request),
+         {:ok, phase} <- PhaseRepository.get(repo, phase_id(work_request)),
+         {:ok, anchor} <- WorkPackageRepository.get(repo, anchor_id(work_request)),
+         {:ok, anchor} <- validate_anchor(anchor, work_request, phase),
+         {:ok, grants} <- AccessGrantRepository.list_for_work_package(repo, anchor.id) do
+      existing_display_for_latest_handoff(work_request, phase, anchor, grants, handoff_opts, now)
+    end
+  end
+
+  defp normalize_existing_display_result({:ok, handoff}), do: {:ok, handoff}
+  defp normalize_existing_display_result({:error, {:storage_failed, _reason} = reason}), do: {:error, reason}
+  defp normalize_existing_display_result({:error, _reason}), do: {:ok, nil}
 
   @spec error_message(term()) :: String.t()
   def error_message(:forbidden), do: "architect handoff is only available in local operator mode"
@@ -702,6 +732,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
     replay_latest_active_handoff(repo, work_request, phase, anchor, replayable_grants, handoff_opts, stale_grants)
   end
 
+  defp existing_display_for_latest_handoff(
+         %WorkRequest{} = work_request,
+         %Phase{} = phase,
+         %WorkPackage{} = anchor,
+         grants,
+         handoff_opts,
+         now
+       ) do
+    grants
+    |> latest_active_unclaimed_handoff_grants(phase, anchor, now)
+    |> Enum.filter(&replayable_grant?(&1, work_request, phase, anchor, now))
+    |> existing_display_for_replayable_handoffs(work_request, phase, anchor, handoff_opts)
+  end
+
+  defp existing_display_for_replayable_handoffs([], %WorkRequest{}, %Phase{}, %WorkPackage{}, _handoff_opts),
+    do: {:ok, nil}
+
+  defp existing_display_for_replayable_handoffs(
+         [%AccessGrant{} = grant | older_grants],
+         %WorkRequest{} = work_request,
+         %Phase{} = phase,
+         %WorkPackage{} = anchor,
+         handoff_opts
+       ) do
+    case SecretHandoff.read_worker_secret_metadata(anchor, grant, handoff_opts) do
+      {:ok, handoff} ->
+        case handoff_replay_disposition(handoff, grant, handoff_opts) do
+          :replay -> {:ok, result(:replayed, work_request, phase, anchor, grant, handoff, handoff_opts)}
+          :retire -> existing_display_for_replayable_handoffs(older_grants, work_request, phase, anchor, handoff_opts)
+          :preserve -> {:ok, nil}
+        end
+
+      {:error, reason} ->
+        case handoff_metadata_error_disposition(reason) do
+          :retire -> existing_display_for_replayable_handoffs(older_grants, work_request, phase, anchor, handoff_opts)
+          :preserve -> {:ok, nil}
+        end
+    end
+  end
+
   defp replay_or_create_handoff(repo, %WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, grants, handoff_opts, now) do
     case replay_active_handoff(repo, work_request, phase, anchor, grants, handoff_opts, now) do
       {:ok, handoff} ->
@@ -973,14 +1043,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   end
 
   defp architect_handoff_grants?(grants, %Phase{} = phase, %WorkPackage{} = anchor) do
-    Enum.any?(grants, fn
-      %AccessGrant{grant_role: "architect", phase_id: phase_id, work_package_id: work_package_id} ->
-        phase_id == phase.id and work_package_id == anchor.id
-
-      _grant ->
-        false
-    end)
+    Enum.any?(grants, &architect_handoff_grant?(&1, phase, anchor))
   end
+
+  defp latest_active_unclaimed_handoff_grants(grants, %Phase{} = phase, %WorkPackage{} = anchor, now) do
+    grants
+    |> Enum.filter(&active_unclaimed_handoff_grant?(&1, phase, anchor, now))
+    |> Enum.sort_by(&architect_handoff_grant_order_key/1, :desc)
+  end
+
+  defp architect_handoff_grant?(
+         %AccessGrant{grant_role: "architect", phase_id: phase_id, work_package_id: work_package_id},
+         %Phase{} = phase,
+         %WorkPackage{} = anchor
+       ) do
+    phase_id == phase.id and work_package_id == anchor.id
+  end
+
+  defp architect_handoff_grant?(_grant, _phase, _anchor), do: false
+
+  defp architect_handoff_grant_order_key(%AccessGrant{inserted_at: %DateTime{} = inserted_at, id: id}) do
+    {DateTime.to_unix(inserted_at, :microsecond), id || ""}
+  end
+
+  defp architect_handoff_grant_order_key(%AccessGrant{id: id}), do: {-1, id || ""}
 
   defp active_unclaimed_handoff_grant?(%AccessGrant{} = grant, %Phase{} = phase, %WorkPackage{} = anchor, now) do
     grant.grant_role == "architect" and

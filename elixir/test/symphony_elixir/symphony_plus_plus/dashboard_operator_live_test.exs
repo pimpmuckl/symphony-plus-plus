@@ -933,6 +933,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert File.dir?(metadata_dir)
     assert metadata_dir |> File.ls!() |> Enum.any?(&String.ends_with?(&1, ".json"))
 
+    {:ok, _reloaded_view, reload_html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
+
+    assert reload_html =~ "Private architect handoff stored"
+    assert reload_html =~ "replayed"
+    assert reload_html =~ grant.id
+    assert reload_html =~ "symphony-plus-plus:symphony-architect"
+    assert reload_html =~ "Secret in stdout"
+    assert reload_html =~ "false"
+    refute reload_html =~ "wk_"
+    refute reload_html =~ "secret_hash"
+    refute reload_html =~ "secret_returned_once"
+    refute reload_html =~ "Run MCP"
+
     replay_html = render_click(view, "create_architect_handoff", %{})
 
     assert replay_html =~ "replayed"

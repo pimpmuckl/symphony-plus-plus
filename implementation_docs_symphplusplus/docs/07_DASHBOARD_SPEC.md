@@ -171,6 +171,10 @@ possible, otherwise reuses the same phase/anchor and renews the unclaimed grant.
 Active handoff metadata that can be safely proven stale is retired before
 renewal; missing or otherwise unverifiable metadata fails closed rather than
 minting a duplicate active grant.
+On reload, local-operator detail may display an already prepared active
+unclaimed handoff only when the existing metadata is safely readable and
+replayable; the load-time path is read-only and does not mint, renew, revoke, or
+clean up handoffs.
 The panel may show WorkRequest id, phase id, anchor package id, grant display
 metadata, capability/scope metadata, redacted handoff coordinates, and the
 plugin skill prompt. It must not show raw work-key secrets, secret hashes, or

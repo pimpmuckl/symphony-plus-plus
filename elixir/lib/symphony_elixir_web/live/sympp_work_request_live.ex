@@ -1077,7 +1077,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   end
 
   defp load_page(:show, :local_operator, work_request_id) when is_binary(work_request_id) do
-    case SymppBoardLive.with_dashboard_repo(&Dashboard.work_request_detail(&1, work_request_id)) do
+    case SymppBoardLive.with_dashboard_repo(&local_operator_work_request_detail(&1, work_request_id)) do
       {:ok, payload} ->
         loading_page()
         |> Map.merge(payload)
@@ -1091,6 +1091,22 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp load_page(:show, %AccessGrant{}, _work_request_id), do: error_page(:not_found)
   defp load_page(:show, :local_operator, _work_request_id), do: error_page(:not_found)
+
+  defp local_operator_work_request_detail(repo, work_request_id) do
+    with {:ok, payload} <- Dashboard.work_request_detail(repo, work_request_id) do
+      {:ok, Map.put(payload, :architect_handoff, existing_architect_handoff(repo, work_request_id))}
+    end
+  end
+
+  defp existing_architect_handoff(repo, work_request_id) do
+    case ArchitectHandoff.existing_display(repo, work_request_id,
+           local_operator?: true,
+           secret_handoff_opts: architect_handoff_opts(repo)
+         ) do
+      {:ok, handoff} -> handoff
+      {:error, _reason} -> nil
+    end
+  end
 
   defp loading_page do
     %{
