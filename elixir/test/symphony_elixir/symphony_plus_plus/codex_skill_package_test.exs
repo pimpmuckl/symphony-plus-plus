@@ -137,6 +137,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
              "Assert-ExistingCachePathNotReparsePoint @($codexHomePath, $pluginsRoot, $cacheRoot, $marketplaceCacheRoot, $pluginCacheRoot)"
 
     assert File.read!(@refresh_script_path) =~ "Assert-NoReparsePointDescendants $TargetRoot"
+    assert File.read!(@refresh_script_path) =~ "Assert-NotReparsePoint $target"
+    assert File.read!(@refresh_script_path) =~ "Assert-NoReparsePointDescendants $target"
+    assert File.read!(@refresh_script_path) =~ "Assert-NotReparsePoint $sourceRootHintPath"
+    refute File.read!(@refresh_script_path) =~ "Remove-Item -LiteralPath $TargetRoot -Recurse"
     assert File.read!(@refresh_script_path) =~ "Refusing to refresh reparse-point plugin cache directory"
     assert File.read!(@refresh_script_path) =~ "Refusing to refresh plugin cache directory containing a reparse-point child"
     assert File.read!(@worker_secret_script_path) =~ "CRED_PERSIST_LOCAL_MACHINE"
@@ -212,6 +216,68 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         end
       after
         File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
+  test "refresh script overlays local and manifest-version caches without deleting unrelated entries" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-refresh-#{System.unique_integer([:positive])}")
+
+    if powershell do
+      for cache_name <- ["local", "0.1.0"] do
+        stale_manifest_path = plugin_cache_path(temp_codex_home, [cache_name, ".codex-plugin", "plugin.json"])
+        stale_mcp_path = plugin_cache_path(temp_codex_home, [cache_name, ".mcp.json"])
+        marker_path = plugin_cache_path(temp_codex_home, [cache_name, "operator-marker", "keep.txt"])
+
+        File.mkdir_p!(Path.dirname(stale_manifest_path))
+        File.write!(stale_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "stale"}))
+        File.write!(stale_mcp_path, Jason.encode!(%{"mcpServers" => %{}}))
+        File.mkdir_p!(Path.dirname(marker_path))
+        File.write!(marker_path, "preserve #{cache_name}")
+      end
+
+      try do
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-ExecutionPolicy",
+              "Bypass",
+              "-File",
+              @refresh_script_path,
+              "-CodexHome",
+              temp_codex_home
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+
+        for cache_name <- ["local", "0.1.0"] do
+          manifest =
+            temp_codex_home
+            |> plugin_cache_path([cache_name, ".codex-plugin", "plugin.json"])
+            |> File.read!()
+            |> Jason.decode!()
+
+          mcp_command =
+            temp_codex_home
+            |> plugin_cache_path([cache_name, ".mcp.json"])
+            |> File.read!()
+            |> Jason.decode!()
+            |> get_in(["mcpServers", "symphony_plus_plus", "command"])
+
+          assert manifest["version"] == "0.1.0"
+          assert manifest["mcpServers"] == "./.mcp.json"
+          assert mcp_command == "pwsh"
+
+          assert File.read!(plugin_cache_path(temp_codex_home, [cache_name, "operator-marker", "keep.txt"])) ==
+                   "preserve #{cache_name}"
+        end
+      after
+        File.rm_rf(temp_codex_home)
       end
     end
   end
