@@ -12,6 +12,10 @@ policy, makes merge decisions, and archives final evidence.
 The architect sequences multi-package work, creates child packages inside the
 operator-approved scope, mints narrower child worker grants, handles approved
 scope decisions, and reports aggregate readiness.
+Codex architect agents should use the plugin-installed
+`symphony-plus-plus:symphony-architect` skill as their operating playbook for
+WorkRequest clarification, decision recording, planned-slice authoring,
+dispatch, and package guidance routing.
 
 The worker owns exactly one assigned package: claim the grant, read MCP-backed
 planning resources, keep progress/findings/current plan updated, implement the
@@ -199,6 +203,9 @@ identifiers and handoff coordinates for operator recovery.
 ## Architect-Led Flow
 
 1. Read `00_ARCHITECT_AGENT_HANDOFF.md`.
+   Codex architect agents should also load the
+   `symphony-plus-plus:symphony-architect` skill or the repo-local
+   `plugins/symphony-plus-plus/skills/symphony-architect/SKILL.md` path.
 2. Confirm the operator-approved scope, base branch, child package boundary,
    dependency order, and review policy.
 3. Mint an architect grant for that explicit scope, not a broad worker grant.

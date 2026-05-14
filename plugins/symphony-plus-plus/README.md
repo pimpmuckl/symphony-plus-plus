@@ -1,9 +1,9 @@
 # Symphony++ Codex Plugin
 
-This plugin exposes the `symphony-work-package` skill and a generic
-`symphony_plus_plus` MCP server entry as a local Codex plugin. The canonical
-source for the runtime remains this repository; the plugin cache under
-`~/.codex/plugins/cache/...` is generated install state.
+This plugin exposes Symphony++ Codex skills and a generic `symphony_plus_plus`
+MCP server entry as a local Codex plugin. The canonical source for the runtime
+remains this repository; the plugin cache under `~/.codex/plugins/cache/...` is
+generated install state.
 
 ## Install
 
@@ -113,3 +113,22 @@ commands use `scripts/sympp-worker-secret.ps1` for Windows Credential Manager.
 `local-private-file` is a non-Windows fallback and uses
 `scripts/sympp-worker-secret.sh` to read the private file and start the MCP child
 process without printing the secret.
+
+## Architect Use
+
+Architect agents use the plugin-installed
+`symphony-plus-plus:symphony-architect` skill before worker dispatch. That skill
+is for WorkRequest-led orchestration: read current WorkRequest or architect
+package context, ask and record product clarification, record decisions and
+assumptions, author/approve planned slices, dispatch approved slices, route
+package guidance, and stop instead of inventing product behavior.
+
+Use `symphony-plus-plus:symphony-architect` when assigned a Symphony++
+WorkRequest, an architect WorkPackage, phase or feature orchestration, or v2
+WorkRequest-led planning. Use `symphony-plus-plus:symphony-work-package` only
+for the implementing worker that owns one bounded WorkPackage after dispatch.
+
+The architect skill expects the same secret hygiene as worker flow. It may
+route workers to private-store handoff metadata, but static plugin docs and
+prompts must not include raw work keys, bearer tokens, MCP auth tokens, GitHub
+tokens, Linear tokens, private-store payloads, or full secret-bearing commands.
