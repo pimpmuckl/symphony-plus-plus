@@ -95,6 +95,9 @@ active unclaimed handoff can be safely proven stale from stored metadata, the
 old grant is retired before renewal. Missing or otherwise unverifiable metadata
 fails closed rather than minting a duplicate grant. The UI must not show raw
 work-key secrets, secret hashes, or full MCP secret-retrieval commands.
+Reloading local-operator detail can show the already prepared handoff again when
+its active unclaimed metadata is safely readable and replayable; reload display
+is read-only and does not mint, renew, revoke, or clean up handoffs.
 Board-grant WorkRequest detail cannot create this handoff.
 
 Explicit phase-scoped architect MCP sessions with `read:work_request` can call

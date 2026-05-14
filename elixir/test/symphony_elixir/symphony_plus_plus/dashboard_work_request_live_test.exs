@@ -10,8 +10,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
@@ -750,6 +752,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
   test "board-scoped WorkRequest detail cannot mint architect handoffs" do
     anchor = create_anchor_package!()
     secret = create_architect_grant_secret(Repo, anchor.id)
+    store_dir = Path.join(System.tmp_dir!(), "sympp-board-architect-store-#{System.unique_integer([:positive])}")
+    handoff_opts = architect_handoff_opts(store_dir)
 
     request =
       create_work_request!(
@@ -759,13 +763,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
         status: "ready_for_clarification"
       )
 
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(Repo, request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert {:ok, handoff_anchor} = WorkPackageRepository.get(Repo, handoff.anchor_package.id)
+    assert {:ok, [handoff_grant]} = AccessGrantRepository.list_for_work_package(Repo, handoff_anchor.id)
+
+    on_exit(fn ->
+      SecretHandoff.delete_worker_secret_by_grant(handoff_anchor, handoff_grant, handoff_opts)
+      File.rm_rf(store_dir)
+    end)
+
     {:ok, packages_before} = WorkPackageRepository.list(Repo)
     {:ok, grants_before} = AccessGrantRepository.list_for_work_package(Repo, anchor.id)
+    {:ok, handoff_grants_before} = AccessGrantRepository.list_for_work_package(Repo, handoff_anchor.id)
 
     {:ok, view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{request.id}")
 
     assert html =~ "Board cannot mint handoff"
     refute html =~ "Prepare architect handoff"
+    refute html =~ "Private architect handoff stored"
+    refute html =~ handoff.grant.id
 
     html = render_click(view, "create_architect_handoff", %{})
 
@@ -775,10 +796,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
 
     assert {:ok, packages_after} = WorkPackageRepository.list(Repo)
     assert Enum.map(packages_after, & &1.id) |> Enum.sort() == Enum.map(packages_before, & &1.id) |> Enum.sort()
-    refute Enum.any?(packages_after, &String.starts_with?(&1.id, "SYMPP-WR-ARCH-"))
+    assert Enum.any?(packages_after, &(&1.id == handoff.anchor_package.id))
 
     assert {:ok, grants_after} = AccessGrantRepository.list_for_work_package(Repo, anchor.id)
     assert Enum.map(grants_after, & &1.id) == Enum.map(grants_before, & &1.id)
+
+    assert {:ok, handoff_grants_after} = AccessGrantRepository.list_for_work_package(Repo, handoff_anchor.id)
+    assert Enum.map(handoff_grants_after, & &1.id) == Enum.map(handoff_grants_before, & &1.id)
   end
 
   test "detail hides out-of-scope WorkRequests as not found" do
@@ -942,6 +966,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
     conn = post(build_conn(), "/sympp/board/session", %{"work_key" => secret})
     assert redirected_to(conn) == "/sympp/board"
     recycle(conn)
+  end
+
+  defp architect_handoff_opts(store_dir) do
+    [
+      mode: architect_handoff_mode(),
+      store_dir: store_dir,
+      repo_root: repo_root(),
+      claimed_by: ArchitectHandoff.claimed_by(),
+      database: Application.fetch_env!(:symphony_elixir, :sympp_repo_database)
+    ]
+  end
+
+  defp architect_handoff_mode do
+    if match?({:win32, _}, :os.type()), do: "windows-credential-manager", else: "local-private-file"
+  end
+
+  defp repo_root do
+    Mix.Project.project_file()
+    |> Path.dirname()
+    |> Path.join("..")
+    |> Path.expand()
   end
 
   defp appears_before?(html, left, right), do: :binary.match(html, left) < :binary.match(html, right)

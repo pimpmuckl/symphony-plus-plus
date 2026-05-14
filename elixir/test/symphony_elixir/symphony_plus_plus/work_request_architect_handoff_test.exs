@@ -160,6 +160,185 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
     cleanup_handoff(anchor, grant, handoff_opts)
   end
 
+  test "existing display reads active unclaimed handoff without lifecycle changes", %{repo: repo, handoff_opts: handoff_opts} do
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
+
+    assert {:ok, first} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert {:ok, displayed} =
+             ArchitectHandoff.existing_display(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert displayed.status == :replayed
+    assert displayed.work_request == first.work_request
+    assert displayed.phase == first.phase
+    assert displayed.anchor_package == first.anchor_package
+    assert displayed.grant.id == first.grant.id
+    assert displayed.secret_handoff.secret_in_stdout == false
+    refute Map.has_key?(displayed.grant, :secret)
+    refute Map.has_key?(displayed.grant, :secret_hash)
+    refute Map.has_key?(displayed.secret_handoff, :secret)
+    refute inspect(displayed) =~ "wk_"
+    refute inspect(displayed) =~ "secret_hash"
+
+    assert {:ok, anchor} = WorkPackageRepository.get(repo, first.anchor_package.id)
+    assert {:ok, [grant]} = AccessGrantRepository.list_for_work_package(repo, anchor.id)
+    assert grant.id == first.grant.id
+    assert is_nil(grant.revoked_at)
+    assert is_nil(grant.claimed_at)
+
+    cleanup_handoff(anchor, grant, handoff_opts)
+  end
+
+  test "existing display omits claimed handoff without renewing or cleanup", %{repo: repo, handoff_opts: handoff_opts} do
+    work_request = create_work_request!(repo, status: "human_info_needed")
+
+    assert {:ok, first} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert {:ok, anchor} = WorkPackageRepository.get(repo, first.anchor_package.id)
+    assert {:ok, [first_grant]} = AccessGrantRepository.list_for_work_package(repo, anchor.id)
+
+    first_grant
+    |> Ecto.Changeset.change(claimed_at: DateTime.utc_now(:microsecond), claimed_by: "architect-agent")
+    |> repo.update!()
+
+    assert {:ok, nil} =
+             ArchitectHandoff.existing_display(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert {:ok, [preserved]} = AccessGrantRepository.list_for_work_package(repo, anchor.id)
+    assert preserved.id == first_grant.id
+    assert preserved.claimed_by == "architect-agent"
+    assert is_nil(preserved.revoked_at)
+    assert SecretHandoff.worker_secret_available?(first.secret_handoff, handoff_opts)
+
+    cleanup_handoff(anchor, preserved, handoff_opts)
+  end
+
+  test "existing display selects renewed active handoff after an older claim", %{repo: repo, handoff_opts: handoff_opts} do
+    work_request = create_work_request!(repo, status: "human_info_needed")
+
+    assert {:ok, first} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert {:ok, anchor} = WorkPackageRepository.get(repo, first.anchor_package.id)
+    assert {:ok, [first_grant]} = AccessGrantRepository.list_for_work_package(repo, anchor.id)
+
+    first_grant
+    |> Ecto.Changeset.change(claimed_at: DateTime.utc_now(:microsecond), claimed_by: "architect-agent")
+    |> repo.update!()
+
+    assert {:ok, renewed} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert {:ok, displayed} =
+             ArchitectHandoff.existing_display(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert displayed.status == :replayed
+    assert displayed.grant.id == renewed.grant.id
+    refute displayed.grant.id == first_grant.id
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(repo, anchor.id)
+    assert length(grants) == 2
+
+    Enum.each(grants, &cleanup_handoff(anchor, &1, handoff_opts))
+  end
+
+  test "existing display ignores newer claimed duplicate and replays older active handoff", %{
+    repo: repo,
+    handoff_opts: handoff_opts
+  } do
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
+
+    assert {:ok, first} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert {:ok, anchor} = WorkPackageRepository.get(repo, first.anchor_package.id)
+    assert {:ok, [first_grant]} = AccessGrantRepository.list_for_work_package(repo, anchor.id)
+
+    assert {:ok, %{grant: newer_grant}} =
+             AccessGrantService.mint_architect_grant(repo, anchor.phase_id,
+               work_package_id: anchor.id,
+               capabilities: ArchitectHandoff.capabilities()
+             )
+
+    newer_claimed_at = DateTime.add(first_grant.inserted_at, 1, :second)
+
+    newer_grant
+    |> Ecto.Changeset.change(
+      inserted_at: newer_claimed_at,
+      claimed_at: newer_claimed_at,
+      claimed_by: "architect-agent"
+    )
+    |> repo.update!()
+
+    assert {:ok, displayed} =
+             ArchitectHandoff.existing_display(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert displayed.status == :replayed
+    assert displayed.grant.id == first_grant.id
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(repo, anchor.id)
+    assert grants |> Enum.map(& &1.id) |> Enum.sort() == Enum.sort([first_grant.id, newer_grant.id])
+    assert Enum.find(grants, &(&1.id == newer_grant.id)).claimed_by == "architect-agent"
+
+    cleanup_handoff(anchor, first_grant, handoff_opts)
+  end
+
+  test "existing display omits missing metadata without revoking active grant", %{repo: repo, handoff_opts: handoff_opts} do
+    work_request = create_work_request!(repo, status: "ready_for_slicing")
+
+    assert {:ok, first} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert {:ok, anchor} = WorkPackageRepository.get(repo, first.anchor_package.id)
+    assert {:ok, [first_grant]} = AccessGrantRepository.list_for_work_package(repo, anchor.id)
+    assert :ok = SecretHandoff.delete_worker_secret_by_grant(anchor, first_grant, handoff_opts)
+
+    assert {:ok, nil} =
+             ArchitectHandoff.existing_display(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert {:ok, preserved} = AccessGrantRepository.get(repo, first.grant.id)
+    assert is_nil(preserved.revoked_at)
+    assert is_nil(preserved.claimed_at)
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(repo, anchor.id)
+    assert Enum.map(grants, & &1.id) == [first.grant.id]
+  end
+
   test "concurrent local operator handoffs converge on one active grant", %{repo: repo, handoff_opts: handoff_opts} do
     work_request = create_work_request!(repo, status: "ready_for_slicing")
 

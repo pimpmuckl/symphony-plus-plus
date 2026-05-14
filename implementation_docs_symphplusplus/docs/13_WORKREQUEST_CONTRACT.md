@@ -90,8 +90,12 @@ than minting a duplicate grant or reporting cleanup that cannot be proven. The
 browser shows only non-secret grant metadata, redacted private handoff metadata,
 and a safe prompt referencing the
 `symphony-plus-plus:symphony-architect` skill. It must not show raw work-key
-secrets, secret hashes, or full MCP secret-retrieval commands. Board-grant
-detail views cannot mint architect handoffs.
+secrets, secret hashes, or full MCP secret-retrieval commands. Local-operator
+detail may display the already prepared panel on reload only when the existing
+active unclaimed handoff metadata is safely readable and replayable; that
+load-time display path is read-only and does not mint, renew, revoke, or clean
+up handoffs. Board-grant detail views cannot mint or display architect
+handoffs.
 
 Explicit phase-scoped architect MCP sessions with `read:work_request` can read
 the same scoped WorkRequest surface through `list_work_requests(status?)` and
