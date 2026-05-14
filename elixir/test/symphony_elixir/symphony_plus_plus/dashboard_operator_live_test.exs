@@ -23,6 +23,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
@@ -863,6 +864,133 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute detail_html =~ "secret_not_persisted"
   end
 
+  test "local operator prepares and replays a WorkRequest architect handoff" do
+    enable_operator_mode()
+    store_dir = Path.join(System.tmp_dir!(), "sympp-operator-architect-store-#{System.unique_integer([:positive])}")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+
+    on_exit(fn ->
+      restore_store_dir_env(previous_store_dir)
+      File.rm_rf(store_dir)
+    end)
+
+    request =
+      create_work_request!(
+        id: "WR-OPERATOR-ARCHITECT-HANDOFF",
+        title: "Prepare architect handoff",
+        status: "ready_for_clarification",
+        constraints: %{"allowed_paths" => ["elixir/lib"], "requires_secret" => false}
+      )
+
+    {:ok, view, html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
+
+    assert html =~ "Prepare architect handoff"
+    refute html =~ "Private architect handoff stored"
+
+    html = render_click(view, "create_architect_handoff", %{})
+
+    assert html =~ "Private architect handoff stored"
+    assert html =~ "created"
+    assert html =~ request.id
+    assert html =~ "phase-wr-architect-"
+    assert html =~ "SYMPP-WR-ARCH-"
+    assert html =~ "symphony-plus-plus:symphony-architect"
+    assert html =~ "nextide/symphony-plus-plus / main"
+    assert html =~ "Secret in stdout"
+    assert html =~ "false"
+    assert html =~ "Ledger database"
+    assert html =~ Path.basename(Application.fetch_env!(:symphony_elixir, :sympp_repo_database))
+
+    Enum.each(ArchitectHandoff.capabilities(), fn capability ->
+      assert html =~ capability
+    end)
+
+    refute html =~ "wk_"
+    refute html =~ "secret_hash"
+    refute html =~ "secret_returned_once"
+    refute html =~ "run_mcp_command"
+    refute html =~ "Run MCP"
+
+    anchor_id = regex_capture(html, ~r/SYMPP-WR-ARCH-[A-Za-z0-9_-]+/)
+    assert {:ok, anchor} = WorkPackageRepository.get(Repo, anchor_id)
+    assert anchor.repo == request.repo
+    assert anchor.base_branch == request.base_branch
+    assert {:ok, [grant]} = AccessGrantRepository.list_for_work_package(Repo, anchor.id)
+
+    on_exit(fn ->
+      cleanup_architect_handoff_by_grant(anchor, grant)
+    end)
+
+    assert grant.grant_role == "architect"
+    assert grant.phase_id == anchor.phase_id
+    assert grant.capabilities == ArchitectHandoff.capabilities()
+    assert grant.scope_repo == request.repo
+    assert grant.scope_base_branch == request.base_branch
+    assert is_nil(grant.claimed_at)
+
+    metadata_dir = Path.join(store_dir, "metadata")
+    assert File.dir?(metadata_dir)
+    assert metadata_dir |> File.ls!() |> Enum.any?(&String.ends_with?(&1, ".json"))
+
+    replay_html = render_click(view, "create_architect_handoff", %{})
+
+    assert replay_html =~ "replayed"
+    assert replay_html =~ grant.id
+    refute replay_html =~ "wk_"
+    refute replay_html =~ "secret_hash"
+    refute replay_html =~ "Run MCP"
+
+    assert {:ok, replayed_grants} = AccessGrantRepository.list_for_work_package(Repo, anchor.id)
+    assert Enum.map(replayed_grants, & &1.id) == [grant.id]
+  end
+
+  test "local operator hides architect handoff action for WorkRequests without frozen scope" do
+    enable_operator_mode()
+
+    request =
+      Repo.insert!(%WorkRequest{
+        id: "WR-OPERATOR-ARCHITECT-BLANK-SCOPE",
+        title: "Blank scope architect handoff",
+        repo: "",
+        base_branch: "main",
+        work_type: "feature",
+        human_description: "Stored rows without frozen scope must not show handoff controls.",
+        constraints: %{},
+        desired_dispatch_shape: "architect_led_feature_branch",
+        status: "ready_for_slicing"
+      })
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
+
+    assert html =~ "Blank scope architect handoff"
+    refute html =~ "Prepare architect handoff"
+    refute html =~ "Private architect handoff stored"
+  end
+
+  test "local operator hides architect handoff action for WorkRequests with invalid file scope" do
+    enable_operator_mode()
+
+    request =
+      Repo.insert!(%WorkRequest{
+        id: "WR-OPERATOR-ARCHITECT-BAD-FILE-SCOPE",
+        title: "Bad file scope architect handoff",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "main",
+        work_type: "feature",
+        human_description: "Stored rows with malformed file scope must not show handoff controls.",
+        constraints: %{"allowed_paths" => "elixir/lib"},
+        desired_dispatch_shape: "architect_led_feature_branch",
+        status: "ready_for_slicing"
+      })
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
+
+    assert html =~ "Bad file scope architect handoff"
+    refute html =~ "Prepare architect handoff"
+    refute html =~ "Private architect handoff stored"
+  end
+
   test "local operator mode clears stale scoped grants before rendering WorkRequest actions" do
     enable_operator_mode()
 
@@ -1466,10 +1594,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     SecretHandoff.delete_worker_secret_by_grant(work_package, worker_grant, local_operator_handoff_opts())
   end
 
+  defp cleanup_architect_handoff_by_grant(work_package, architect_grant) do
+    SecretHandoff.delete_worker_secret_by_grant(work_package, architect_grant, local_operator_architect_handoff_opts())
+  end
+
   defp local_operator_handoff_opts do
     [
       repo_root: repo_root(),
       claimed_by: "local-operator-worker",
+      database: Application.fetch_env!(:symphony_elixir, :sympp_repo_database)
+    ]
+    |> put_optional_handoff_opt(:store_dir, Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir))
+  end
+
+  defp local_operator_architect_handoff_opts do
+    [
+      repo_root: repo_root(),
+      claimed_by: ArchitectHandoff.claimed_by(),
       database: Application.fetch_env!(:symphony_elixir, :sympp_repo_database)
     ]
     |> put_optional_handoff_opt(:store_dir, Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir))

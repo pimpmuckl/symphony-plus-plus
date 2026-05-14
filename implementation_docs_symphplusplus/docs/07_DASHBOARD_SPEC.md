@@ -35,6 +35,9 @@ Local operator mode:
   WorkRequest detail page;
 - lets the local operator dispatch approved, undispatched planned slices into
   WorkPackages through the existing private worker handoff flow;
+- lets the local operator prepare/replay a WorkRequest architect handoff with a
+  scoped phase, architect anchor package, unclaimed architect grant, and
+  redacted private handoff metadata;
 - shows package guidance requests that need human input in the operator
   priority watchlist and lets the local operator answer only
   `human_info_needed` guidance from the WorkPackage detail page;
@@ -153,9 +156,26 @@ Record decisions
 Mark human info needed
 Mark ready for slicing
 Add / approve / skip planned slices
+Prepare architect handoff
 Dispatch approved planned slices
 Mark sliced
 ```
+
+Architect handoff is local-operator-only and appears for WorkRequests in
+`ready_for_clarification`, `clarifying`, `human_info_needed`,
+`ready_for_slicing`, or `sliced`. It creates or reuses the WorkRequest-scoped
+phase and architect anchor WorkPackage, mints an unclaimed architect grant with
+WorkRequest/guidance capabilities, and stores the secret through private
+handoff. Repeated use replays the existing active unclaimed handoff when
+possible, otherwise reuses the same phase/anchor and renews the unclaimed grant.
+Active handoff metadata that can be safely proven stale is retired before
+renewal; missing or otherwise unverifiable metadata fails closed rather than
+minting a duplicate active grant.
+The panel may show WorkRequest id, phase id, anchor package id, grant display
+metadata, capability/scope metadata, redacted handoff coordinates, and the
+plugin skill prompt. It must not show raw work-key secrets, secret hashes, or
+full MCP secret-retrieval commands. Board-grant WorkRequest detail does not show
+or run this control.
 
 Planned-slice dispatch is local-operator-only. It reuses the existing
 `PlannedSliceDispatch` flow to create a WorkPackage, mint a worker grant, store

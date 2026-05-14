@@ -747,6 +747,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
     assert {:ok, []} = WorkRequestRepository.list_planned_slices(Repo, out_of_scope.id)
   end
 
+  test "board-scoped WorkRequest detail cannot mint architect handoffs" do
+    anchor = create_anchor_package!()
+    secret = create_architect_grant_secret(Repo, anchor.id)
+
+    request =
+      create_work_request!(
+        id: "WR-LIVE-BOARD-HANDOFF-DENIED",
+        title: "Board cannot mint handoff",
+        base_branch: anchor.base_branch,
+        status: "ready_for_clarification"
+      )
+
+    {:ok, packages_before} = WorkPackageRepository.list(Repo)
+    {:ok, grants_before} = AccessGrantRepository.list_for_work_package(Repo, anchor.id)
+
+    {:ok, view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{request.id}")
+
+    assert html =~ "Board cannot mint handoff"
+    refute html =~ "Prepare architect handoff"
+
+    html = render_click(view, "create_architect_handoff", %{})
+
+    assert html =~ "Architect handoff is only available in local operator mode."
+    refute html =~ "Private architect handoff stored"
+    refute html =~ "SYMPP-WR-ARCH-"
+
+    assert {:ok, packages_after} = WorkPackageRepository.list(Repo)
+    assert Enum.map(packages_after, & &1.id) |> Enum.sort() == Enum.map(packages_before, & &1.id) |> Enum.sort()
+    refute Enum.any?(packages_after, &String.starts_with?(&1.id, "SYMPP-WR-ARCH-"))
+
+    assert {:ok, grants_after} = AccessGrantRepository.list_for_work_package(Repo, anchor.id)
+    assert Enum.map(grants_after, & &1.id) == Enum.map(grants_before, & &1.id)
+  end
+
   test "detail hides out-of-scope WorkRequests as not found" do
     anchor = create_anchor_package!()
     other = create_work_request!(id: "WR-LIVE-HIDDEN", repo: "nextide/other", base_branch: anchor.base_branch)

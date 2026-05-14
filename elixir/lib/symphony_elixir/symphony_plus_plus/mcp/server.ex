@@ -28,6 +28,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
@@ -1878,7 +1879,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- architect_session(config.repo, session, "read:work_request"),
          {:ok, status} <- optional_work_request_status(arguments),
          {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
-         {:ok, work_requests} <- WorkRequestService.list(config.repo, work_request_list_filters(filters, status)) do
+         filters = work_request_list_filters(filters, status),
+         {:ok, work_requests} <- WorkRequestService.list(config.repo, work_request_repository_filters(filters)) do
+      work_requests = filter_scoped_work_requests(work_requests, filters)
       cards = work_request_cards(work_requests)
 
       {:ok,
@@ -2666,7 +2669,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, grant} <- require_live_architect_grant(repo, session),
          :ok <- require_work_request_anchor_scope(repo, session, grant),
          {:ok, filters} <- Dashboard.phase_board_filters_for_grant(grant),
-         {:ok, scope} <- work_request_scope_payload(filters) do
+         {:ok, scope} <- work_request_scope_payload(filters),
+         {:ok, scope} <- maybe_put_handoff_phase_scope(repo, scope, grant) do
       {:ok, work_request_filters_from_scope(scope), scope}
     else
       {:error, :forbidden} -> {:error, :phase_scope_not_available}
@@ -2701,12 +2705,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp work_request_filters_from_scope(%{"repo" => repo, "base_branch" => base_branch, "phase_id" => phase_id}) do
+    %{"repo" => repo, "base_branch" => base_branch, "phase_id" => phase_id}
+  end
+
   defp work_request_filters_from_scope(%{"repo" => repo, "base_branch" => base_branch}) do
     %{"repo" => repo, "base_branch" => base_branch}
   end
 
+  defp maybe_put_handoff_phase_scope(repo, scope, %AccessGrant{} = grant) do
+    case ArchitectHandoff.handoff_phase_grant?(repo, grant) do
+      {:ok, true} -> {:ok, Map.put(scope, "phase_id", grant.phase_id)}
+      {:ok, false} -> {:ok, scope}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp work_request_list_filters(filters, nil), do: filters
   defp work_request_list_filters(filters, status), do: Map.put(filters, "status", status)
+
+  defp work_request_repository_filters(filters) do
+    Map.take(filters, ["repo", "base_branch", "status"])
+  end
+
+  defp filter_scoped_work_requests(work_requests, filters) do
+    Enum.filter(work_requests, &work_request_matches_filters?(&1, filters))
+  end
 
   defp work_request_filter_payload(nil), do: %{}
   defp work_request_filter_payload(status), do: %{"status" => status}
@@ -2847,6 +2871,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     Enum.all?(filters, fn
       {"repo", repo} when is_binary(repo) -> work_request.repo == repo
       {"base_branch", base_branch} when is_binary(base_branch) -> work_request.base_branch == base_branch
+      {"status", status} when is_binary(status) -> work_request.status == status
+      {"phase_id", phase_id} when is_binary(phase_id) -> ArchitectHandoff.phase_id_for_work_request(work_request) == phase_id
       _filter -> true
     end)
   end

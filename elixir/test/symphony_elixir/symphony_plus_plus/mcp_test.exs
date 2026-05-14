@@ -26,6 +26,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
   alias SymphonyElixir.WorkPackageFactory
@@ -3497,6 +3498,205 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(read_response, ["error", "code"]) == -32_003
     assert get_in(read_response, ["error", "data", "reason"]) == "outside_session_scope"
     refute inspect(read_response) =~ sibling.id
+  end
+
+  test "WorkRequest MCP tools for handoff phases are pinned to the handoff WorkRequest", %{repo: repo} do
+    handoff_work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-HANDOFF",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "main",
+        status: "ready_for_slicing"
+      )
+
+    sibling =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-HANDOFF-SIBLING",
+        repo: handoff_work_request.repo,
+        base_branch: handoff_work_request.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    {anchor, session, _grant} =
+      create_work_request_handoff_architect_session(repo, handoff_work_request, [
+        "read:work_request",
+        "write:work_request"
+      ])
+
+    list_response = mcp_tool(repo, session, "list_work_requests", %{"status" => "ready_for_slicing"})
+    list_payload = get_in(list_response, ["result", "structuredContent"])
+
+    assert list_payload["scope"] == %{
+             "repo" => anchor.repo,
+             "base_branch" => anchor.base_branch,
+             "phase_id" => anchor.phase_id
+           }
+
+    assert Enum.map(list_payload["work_requests"], & &1["id"]) == [handoff_work_request.id]
+
+    sibling_read_response = mcp_tool(repo, session, "read_work_request", %{"work_request_id" => sibling.id})
+    assert get_in(sibling_read_response, ["error", "code"]) == -32_004
+    assert get_in(sibling_read_response, ["error", "data", "reason"]) == "not_found"
+    refute inspect(sibling_read_response) =~ sibling.id
+
+    sibling_status_response =
+      mcp_tool(repo, session, "set_work_request_status", %{
+        "work_request_id" => sibling.id,
+        "current_status" => "ready_for_slicing",
+        "next_status" => "sliced"
+      })
+
+    assert get_in(sibling_status_response, ["error", "code"]) == -32_004
+    assert get_in(sibling_status_response, ["error", "data", "reason"]) == "not_found"
+
+    assert {:ok, persisted_sibling} = WorkRequestRepository.get(repo, sibling.id)
+    assert persisted_sibling.status == "ready_for_slicing"
+
+    target_read_response = mcp_tool(repo, session, "read_work_request", %{"work_request_id" => handoff_work_request.id})
+    assert get_in(target_read_response, ["result", "structuredContent", "work_request", "id"]) == handoff_work_request.id
+  end
+
+  test "WorkRequest MCP scope is not pinned for normal non-handoff phases", %{repo: repo} do
+    first =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-PREFIX-FIRST",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "main",
+        status: "ready_for_slicing"
+      )
+
+    second =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-PREFIX-SECOND",
+        repo: first.repo,
+        base_branch: first.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    phase_id = "phase-manual-work-request-scope"
+    assert {:ok, _phase} = PhaseRepository.create(repo, %{id: phase_id, title: "Manual WorkRequest phase"})
+
+    {_anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-PREFIX-NON-HANDOFF", ["read:work_request"],
+        phase_id: phase_id,
+        repo: first.repo,
+        base_branch: first.base_branch
+      )
+
+    list_response = mcp_tool(repo, session, "list_work_requests", %{"status" => "ready_for_slicing"})
+    list_payload = get_in(list_response, ["result", "structuredContent"])
+
+    assert list_payload["scope"] == %{"repo" => first.repo, "base_branch" => first.base_branch}
+    assert Enum.map(list_payload["work_requests"], & &1["id"]) == [first.id, second.id]
+  end
+
+  test "WorkRequest MCP tools fail closed for partial handoff provenance", %{repo: repo} do
+    first =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-PARTIAL-HANDOFF-FIRST",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "main",
+        status: "ready_for_slicing"
+      )
+
+    sibling =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-PARTIAL-HANDOFF-SIBLING",
+        repo: first.repo,
+        base_branch: first.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    phase_id = "phase-wr-architect-partial-provenance"
+    assert {:ok, _phase} = PhaseRepository.create(repo, %{id: phase_id, title: "Partial handoff phase"})
+
+    {_anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-PARTIAL-HANDOFF", ["read:work_request"],
+        phase_id: phase_id,
+        repo: first.repo,
+        base_branch: first.base_branch
+      )
+
+    list_response = mcp_tool(repo, session, "list_work_requests", %{"status" => "ready_for_slicing"})
+    assert get_in(list_response, ["error", "code"]) == -32_003
+    assert get_in(list_response, ["error", "data", "reason"]) == "outside_session_scope"
+    refute inspect(list_response) =~ sibling.id
+  end
+
+  test "WorkRequest MCP tools fail closed when handoff provenance no longer matches a WorkRequest", %{repo: repo} do
+    handoff_work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-HANDOFF-DRIFTED",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "main",
+        status: "ready_for_slicing"
+      )
+
+    sibling =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-HANDOFF-DRIFTED-SIBLING",
+        repo: handoff_work_request.repo,
+        base_branch: handoff_work_request.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    {_anchor, session, _grant} =
+      create_work_request_handoff_architect_session(repo, handoff_work_request, [
+        "read:work_request"
+      ])
+
+    assert {:ok, _drifted} =
+             WorkRequestRepository.update(repo, handoff_work_request.id, %{"repo" => "nextide/drifted"})
+
+    list_response = mcp_tool(repo, session, "list_work_requests", %{"status" => "ready_for_slicing"})
+    assert get_in(list_response, ["error", "code"]) == -32_003
+    assert get_in(list_response, ["error", "data", "reason"]) == "outside_session_scope"
+    refute inspect(list_response) =~ sibling.id
+  end
+
+  test "WorkRequest MCP tools fail closed when handoff WorkRequest leaves eligible status", %{repo: repo} do
+    handoff_work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-HANDOFF-INELIGIBLE",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "main",
+        status: "ready_for_slicing"
+      )
+
+    {_anchor, session, _grant} =
+      create_work_request_handoff_architect_session(repo, handoff_work_request, [
+        "read:work_request"
+      ])
+
+    assert {:ok, _draft} = WorkRequestRepository.update_status(repo, handoff_work_request.id, "ready_for_slicing", "draft")
+
+    read_response = mcp_tool(repo, session, "read_work_request", %{"work_request_id" => handoff_work_request.id})
+    assert get_in(read_response, ["error", "code"]) == -32_003
+    assert get_in(read_response, ["error", "data", "reason"]) == "outside_session_scope"
+  end
+
+  test "WorkRequest MCP tools fail closed when handoff WorkRequest file scope changes", %{repo: repo} do
+    handoff_work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-HANDOFF-FILE-SCOPE",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "main",
+        status: "ready_for_slicing"
+      )
+
+    {_anchor, session, _grant} =
+      create_work_request_handoff_architect_session(repo, handoff_work_request, [
+        "read:work_request"
+      ])
+
+    assert {:ok, _narrowed} =
+             WorkRequestRepository.update(repo, handoff_work_request.id, %{
+               "constraints" => %{"allowed_paths" => ["docs"], "requires_secret" => false}
+             })
+
+    read_response = mcp_tool(repo, session, "read_work_request", %{"work_request_id" => handoff_work_request.id})
+    assert get_in(read_response, ["error", "code"]) == -32_003
+    assert get_in(read_response, ["error", "data", "reason"]) == "outside_session_scope"
   end
 
   test "architect WorkRequest mutation tools update scoped clarification state and redact responses", %{repo: repo} do
@@ -11966,8 +12166,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     Enum.into(overrides, defaults)
   end
 
+  defp create_work_request_handoff_architect_session(repo, %WorkRequest{} = work_request, capabilities) do
+    phase_id = ArchitectHandoff.phase_id_for_work_request(work_request)
+
+    assert {:ok, _phase} =
+             PhaseRepository.create(repo, %{
+               id: phase_id,
+               title: "Architect handoff for #{work_request.id}"
+             })
+
+    package_attrs =
+      [
+        id: ArchitectHandoff.anchor_id_for_work_request(work_request),
+        kind: "delegation",
+        title: "Architect handoff: #{work_request.title}",
+        repo: work_request.repo,
+        base_branch: work_request.base_branch,
+        allowed_file_globs: ["elixir/lib", "elixir/lib/**"],
+        phase_id: phase_id,
+        status: "planning"
+      ]
+      |> WorkPackageFactory.attrs()
+
+    assert {:ok, anchor} = WorkPackageRepository.create(repo, package_attrs)
+
+    assert {:ok, minted} =
+             AccessGrantService.mint_architect_grant(repo, phase_id,
+               work_package_id: anchor.id,
+               capabilities: capabilities
+             )
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, minted.work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: minted.grant.secret_hash)
+    assert {:ok, grant} = AccessGrantRepository.get(repo, minted.grant.id)
+
+    {anchor, session, grant}
+  end
+
   defp create_phase_architect_session(repo, work_package_id, capabilities, overrides \\ []) do
-    phase_id = ensure_architect_phase(repo)
+    phase_id = Keyword.get(overrides, :phase_id) || ensure_architect_phase(repo)
 
     package_attrs =
       [
