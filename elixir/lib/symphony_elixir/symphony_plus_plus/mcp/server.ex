@@ -10,6 +10,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.GitHub.{Client, DryClient, PullRequest}
+  alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
+  alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service, as: GuidanceRequestService
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Session}
@@ -46,6 +48,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "set_status",
     "report_blocker",
     "resolve_blocker",
+    "create_guidance_request",
+    "read_guidance_request",
     "request_scope_expansion",
     "attach_branch",
     "attach_pr",
@@ -60,6 +64,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "revoke_child_worker_key",
     "list_work_requests",
     "read_work_request",
+    "list_guidance_requests",
+    "read_guidance_request",
+    "answer_guidance_request",
+    "escalate_guidance_request",
     "set_work_request_status",
     "ask_work_request_question",
     "answer_work_request_question",
@@ -92,6 +100,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "skip_work_request_planned_slice",
     "mark_work_request_sliced",
     "dispatch_work_request_planned_slice"
+  ]
+  @phase_scoped_guidance_request_tools [
+    "list_guidance_requests",
+    "read_guidance_request",
+    "answer_guidance_request",
+    "escalate_guidance_request"
   ]
   @phase7_stub_architect_tools [
     "revoke_child_worker_key",
@@ -769,6 +783,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp dispatch("tools/call", %{"name" => "read_guidance_request"} = params, %__MODULE__{} = server) do
+    case read_guidance_request_arguments(params, server) do
+      {:ok, arguments} ->
+        read_guidance_request_tool(arguments, server)
+
+      {:error, code, message, data} ->
+        {:error, code, message, data}
+    end
+  end
+
   defp dispatch("tools/call", %{"name" => name} = params, %__MODULE__{} = server) when name in @worker_tools do
     case worker_tool_arguments(params, name) do
       {:ok, arguments} ->
@@ -932,6 +956,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "Read a scoped WorkRequest with clarification questions, decisions, planned slices, and status summaries."
   end
 
+  defp architect_tool_description("list_guidance_requests") do
+    "List package-scoped guidance requests visible to the architect grant's phase, repo, and base branch."
+  end
+
+  defp architect_tool_description("read_guidance_request") do
+    "Read one package-scoped guidance request visible to the architect grant."
+  end
+
+  defp architect_tool_description("answer_guidance_request") do
+    "Answer an open package-scoped guidance request."
+  end
+
+  defp architect_tool_description("escalate_guidance_request") do
+    "Escalate an open guidance request to human_info_needed and project it as an active package blocker."
+  end
+
   defp architect_tool_description("set_work_request_status") do
     "Move a scoped WorkRequest between valid statuses with optimistic current-status checking."
   end
@@ -1058,6 +1098,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     )
   end
 
+  defp worker_tool_input_schema("create_guidance_request") do
+    schema(
+      scoped_properties(%{
+        "summary" => string_schema(),
+        "question" => string_schema(),
+        "context" => string_schema(),
+        "idempotency_key" => string_schema()
+      }),
+      ["summary", "question", "context", "idempotency_key"]
+    )
+  end
+
+  defp worker_tool_input_schema("read_guidance_request") do
+    schema(scoped_properties(%{"guidance_request_id" => string_schema()}), ["guidance_request_id"])
+  end
+
   defp worker_tool_input_schema("set_status") do
     schema(scoped_properties(%{"status" => string_schema(), "expected_status" => string_schema(), "reason" => nullable_string_schema()}), [
       "status",
@@ -1161,6 +1217,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool_input_schema("list_work_requests"), do: schema(%{"status" => string_schema()}, [])
 
   defp architect_tool_input_schema("read_work_request"), do: schema(%{"work_request_id" => string_schema()}, ["work_request_id"])
+
+  defp architect_tool_input_schema("list_guidance_requests") do
+    schema(%{"status" => string_schema(), "work_package_id" => string_schema()}, [])
+  end
+
+  defp architect_tool_input_schema("read_guidance_request") do
+    schema(%{"guidance_request_id" => string_schema()}, ["guidance_request_id"])
+  end
+
+  defp architect_tool_input_schema("answer_guidance_request") do
+    schema(
+      %{
+        "guidance_request_id" => string_schema(),
+        "answer" => string_schema(),
+        "answered_by" => string_schema()
+      },
+      ["guidance_request_id", "answer"]
+    )
+  end
+
+  defp architect_tool_input_schema("escalate_guidance_request") do
+    schema(
+      %{
+        "guidance_request_id" => string_schema(),
+        "reason" => string_schema(),
+        "recommended_language" => string_schema()
+      },
+      ["guidance_request_id", "reason", "recommended_language"]
+    )
+  end
 
   defp architect_tool_input_schema("set_work_request_status") do
     schema(
@@ -1370,6 +1456,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        when tool in @phase_scoped_work_request_tools do
     case scoped_work_request_filters(repo, session) do
       {:ok, _filters, _scope} -> dispatch_tool_visible_for_config?(config, tool)
+      _reason -> false
+    end
+  end
+
+  defp architect_tool_visible_for_session?(%Config{repo: repo}, %Session{} = session, tool)
+       when tool in @phase_scoped_guidance_request_tools do
+    case scoped_guidance_request_filters(repo, session) do
+      {:ok, _filters, _scope} -> true
       _reason -> false
     end
   end
@@ -1811,6 +1905,68 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_work_request", "reason" => reason}}
       {:error, :not_found} -> work_request_not_found_error("read_work_request")
       {:error, reason} -> architect_error(reason, "read_work_request")
+    end
+  end
+
+  defp architect_tool("list_guidance_requests", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "read:guidance_request"),
+         {:ok, status} <- optional_guidance_request_status(arguments),
+         {:ok, work_package_id} <- optional_string_argument(arguments, "work_package_id"),
+         {:ok, filters, scope} <- scoped_guidance_request_filters(config.repo, session),
+         filters = guidance_request_list_filters(filters, status, work_package_id),
+         {:ok, guidance_requests} <- GuidanceRequestService.list_visible_to_architect(config.repo, filters) do
+      cards = guidance_request_cards(guidance_requests)
+
+      {:ok,
+       tool_result(%{
+         "guidance_requests" => cards,
+         "total_count" => length(cards),
+         "scope" => scope,
+         "filters" => guidance_request_filter_payload(status, work_package_id)
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "list_guidance_requests", "reason" => reason}}
+      {:error, reason} -> architect_error(reason, "list_guidance_requests")
+    end
+  end
+
+  defp architect_tool("answer_guidance_request", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "write:guidance_request"),
+         {:ok, guidance_request_id} <- required_argument(arguments, "guidance_request_id"),
+         {:ok, answer} <- required_argument(arguments, "answer"),
+         {:ok, answered_by} <- optional_string_argument(arguments, "answered_by", session_claimed_by(session)),
+         {:ok, filters, scope} <- scoped_guidance_request_filters(config.repo, session),
+         {:ok, _guidance_request} <- GuidanceRequestService.get_visible_to_architect(config.repo, guidance_request_id, filters),
+         {:ok, guidance_request} <-
+           GuidanceRequestService.answer(config.repo, guidance_request_id, %{
+             "answer" => answer,
+             "answered_by" => answered_by,
+             "answered_at" => DateTime.utc_now(:microsecond)
+           }) do
+      {:ok,
+       tool_result(%{
+         "guidance_request" => guidance_request_payload(guidance_request),
+         "scope" => scope,
+         "status" => %{"guidance_request_status" => guidance_request.status}
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "answer_guidance_request", "reason" => reason}}
+      {:error, :not_found} -> guidance_request_not_found_error("answer_guidance_request")
+      {:error, reason} -> architect_error(reason, "answer_guidance_request")
+    end
+  end
+
+  defp architect_tool("escalate_guidance_request", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "write:guidance_request"),
+         {:ok, guidance_request_id} <- required_argument(arguments, "guidance_request_id"),
+         {:ok, reason} <- required_argument(arguments, "reason"),
+         {:ok, recommended_language} <- required_argument(arguments, "recommended_language"),
+         {:ok, result} <- escalate_guidance_request_transaction(config.repo, session, guidance_request_id, reason, recommended_language) do
+      {:ok, tool_result(result)}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "escalate_guidance_request", "reason" => reason}}
+      {:error, :not_found} -> guidance_request_not_found_error("escalate_guidance_request")
+      {:error, reason} -> architect_error(reason, "escalate_guidance_request")
     end
   end
 
@@ -2518,6 +2674,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp scoped_guidance_request_filters(repo, %Session{} = session) do
+    with {:ok, filters, scope} <- scoped_work_request_filters(repo, session),
+         {:ok, phase_id} <- architect_phase_scope(repo, session) do
+      scope = Map.put(scope, "phase_id", phase_id)
+      {:ok, Map.put(filters, "phase_id", phase_id), scope}
+    end
+  end
+
   defp require_work_request_anchor_scope(repo, %Session{} = session, %AccessGrant{} = grant) do
     if architect_explicit_phase_grant?(grant) do
       require_architect_phase_anchor(repo, session, grant.phase_id)
@@ -2564,6 +2728,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, _status} ->
         {:tool_error, "invalid_status"}
     end
+  end
+
+  defp optional_guidance_request_status(arguments) do
+    case Map.fetch(arguments, "status") do
+      :error ->
+        {:ok, nil}
+
+      {:ok, status} when is_binary(status) ->
+        status = String.trim(status)
+
+        if status in GuidanceRequest.statuses() do
+          {:ok, status}
+        else
+          {:tool_error, "invalid_status"}
+        end
+
+      {:ok, _status} ->
+        {:tool_error, "invalid_status"}
+    end
+  end
+
+  defp guidance_request_list_filters(filters, nil, nil), do: filters
+  defp guidance_request_list_filters(filters, status, nil) when is_binary(status), do: Map.put(filters, "status", status)
+
+  defp guidance_request_list_filters(filters, nil, work_package_id) when is_binary(work_package_id) do
+    Map.put(filters, "work_package_id", work_package_id)
+  end
+
+  defp guidance_request_list_filters(filters, status, work_package_id) when is_binary(status) and is_binary(work_package_id) do
+    filters
+    |> Map.put("status", status)
+    |> Map.put("work_package_id", work_package_id)
+  end
+
+  defp guidance_request_filter_payload(nil, nil), do: %{}
+  defp guidance_request_filter_payload(status, nil) when is_binary(status), do: %{"status" => status}
+  defp guidance_request_filter_payload(nil, work_package_id) when is_binary(work_package_id), do: %{"work_package_id" => work_package_id}
+
+  defp guidance_request_filter_payload(status, work_package_id) do
+    %{"status" => status, "work_package_id" => work_package_id}
   end
 
   defp optional_string_argument(arguments, key, default \\ nil) do
@@ -4194,6 +4398,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp worker_tool("create_guidance_request", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- scoped_session(config.repo, session, arguments),
+         {:ok, summary} <- required_argument(arguments, "summary"),
+         {:ok, question} <- required_argument(arguments, "question"),
+         {:ok, context} <- required_argument(arguments, "context"),
+         {:ok, idempotency_key} <- required_argument(arguments, "idempotency_key"),
+         {:ok, guidance_request} <-
+           GuidanceRequestService.create_for_worker(config.repo, session.assignment, %{
+             "summary" => summary,
+             "question" => question,
+             "context" => context,
+             "idempotency_key" => idempotency_key
+           }) do
+      {:ok, tool_result(%{"guidance_request" => guidance_request_payload(guidance_request)})}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "create_guidance_request", "reason" => reason}}
+      {:error, reason} -> worker_error(reason, "create_guidance_request")
+    end
+  end
+
   defp worker_tool("request_scope_expansion", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- Auth.require_session(session, config.repo),
          :ok <- require_worker_assignment(session.assignment),
@@ -4310,6 +4534,53 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:error, reason} ->
         worker_error(reason, "mark_ready")
     end
+  end
+
+  defp read_guidance_request_tool(arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- Auth.require_session(session, config.repo),
+         {:ok, guidance_request_id} <- required_argument(arguments, "guidance_request_id") do
+      read_guidance_request_for_session(config.repo, session, guidance_request_id, arguments)
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_guidance_request", "reason" => reason}}
+      {:error, reason} -> worker_error(reason, "read_guidance_request")
+    end
+  end
+
+  defp read_guidance_request_for_session(
+         repo,
+         %Session{assignment: %{grant_role: "worker"}} = session,
+         guidance_request_id,
+         arguments
+       ) do
+    with {:ok, session} <- scoped_session(repo, session, arguments),
+         {:ok, guidance_request} <-
+           GuidanceRequestService.get_for_worker(repo, session.assignment, guidance_request_id) do
+      {:ok, tool_result(%{"guidance_request" => guidance_request_payload(guidance_request)})}
+    else
+      {:error, :not_found} -> guidance_request_not_found_error("read_guidance_request")
+      {:error, reason} -> worker_error(reason, "read_guidance_request")
+    end
+  end
+
+  defp read_guidance_request_for_session(
+         repo,
+         %Session{assignment: %{grant_role: "architect"}} = session,
+         guidance_request_id,
+         _arguments
+       ) do
+    with {:ok, session} <- architect_session(repo, session, "read:guidance_request"),
+         {:ok, filters, scope} <- scoped_guidance_request_filters(repo, session),
+         {:ok, guidance_request} <-
+           GuidanceRequestService.get_visible_to_architect(repo, guidance_request_id, filters) do
+      {:ok, tool_result(%{"guidance_request" => guidance_request_payload(guidance_request), "scope" => scope})}
+    else
+      {:error, :not_found} -> guidance_request_not_found_error("read_guidance_request")
+      {:error, reason} -> architect_error(reason, "read_guidance_request")
+    end
+  end
+
+  defp read_guidance_request_for_session(_repo, %Session{}, _guidance_request_id, _arguments) do
+    auth_error({:unauthorized, :unsupported_grant_role}, "read_guidance_request")
   end
 
   defp pr_metadata_payload(repo, %Session{} = session, arguments, source_tool) do
@@ -4635,6 +4906,65 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       end
     end)
   end
+
+  defp escalate_guidance_request_transaction(repo, %Session{} = session, guidance_request_id, reason, recommended_language) do
+    repo
+    |> run_architect_transaction(fn ->
+      with {:ok, filters, scope} <- scoped_guidance_request_filters(repo, session),
+           {:ok, guidance_request} <-
+             GuidanceRequestService.get_visible_to_architect(repo, guidance_request_id, filters),
+           :ok <- lock_work_package(repo, guidance_request.work_package_id),
+           blocker_id = guidance_request_blocker_id(guidance_request.id),
+           {:ok, escalated} <-
+             GuidanceRequestService.escalate_human_info_needed(repo, guidance_request.id, %{
+               "human_info_reason" => reason,
+               "recommended_language" => recommended_language,
+               "blocker_id" => blocker_id
+             }),
+           {:ok, blocker_event} <-
+             PlanningRepository.append_audit_progress_event_for_work_package(
+               repo,
+               session.assignment,
+               guidance_request.work_package_id,
+               guidance_request_blocker_attrs(escalated, reason, recommended_language, blocker_id)
+             ) do
+        {:ok,
+         %{
+           "guidance_request" => guidance_request_payload(escalated),
+           "blocker" => %{
+             "id" => blocker_id,
+             "active" => true,
+             "progress_event_id" => blocker_event.id,
+             "recommended_language" => recommended_language
+           },
+           "scope" => scope,
+           "status" => %{"guidance_request_status" => escalated.status}
+         }}
+      end
+    end)
+  end
+
+  defp guidance_request_blocker_attrs(%GuidanceRequest{} = guidance_request, reason, recommended_language, blocker_id) do
+    %{
+      "summary" => "Human info needed for guidance request: #{guidance_request.summary}",
+      "body" => "Reason: #{reason}\n\nRecommended language: #{recommended_language}",
+      "status" => "blocked",
+      "idempotency_key" => "guidance_request_human_info_needed:#{guidance_request.id}",
+      "payload" => %{
+        "type" => "blocker",
+        "source_tool" => "report_blocker",
+        "blocker_id" => blocker_id,
+        "active" => true,
+        "guidance_request_id" => guidance_request.id,
+        "guidance_request_status" => guidance_request.status,
+        "human_info_needed" => true,
+        "reason" => reason,
+        "recommended_language" => recommended_language
+      }
+    }
+  end
+
+  defp guidance_request_blocker_id(guidance_request_id), do: "guidance_request:#{guidance_request_id}"
 
   defp approve_scope_expansion_transaction(repo, %Session{} = session, arguments, allowed_file_globs, rationale) do
     repo.transaction(fn ->
@@ -5096,6 +5426,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool_capability("revoke_child_worker_key"), do: "revoke:child_worker_key"
   defp architect_tool_capability("list_work_requests"), do: "read:work_request"
   defp architect_tool_capability("read_work_request"), do: "read:work_request"
+  defp architect_tool_capability("list_guidance_requests"), do: "read:guidance_request"
+  defp architect_tool_capability("read_guidance_request"), do: "read:guidance_request"
+  defp architect_tool_capability("answer_guidance_request"), do: "write:guidance_request"
+  defp architect_tool_capability("escalate_guidance_request"), do: "write:guidance_request"
   defp architect_tool_capability("set_work_request_status"), do: "write:work_request"
   defp architect_tool_capability("ask_work_request_question"), do: "write:work_request"
   defp architect_tool_capability("answer_work_request_question"), do: "write:work_request"
@@ -7053,6 +7387,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp read_guidance_request_arguments(params, %__MODULE__{session: %Session{assignment: %{grant_role: "architect"}}}) do
+    architect_tool_arguments(params, "read_guidance_request")
+  end
+
+  defp read_guidance_request_arguments(params, %__MODULE__{}) do
+    worker_tool_arguments(params, "read_guidance_request")
+  end
+
   defp architect_tool_arguments(params, name) do
     case Map.get(params, "arguments", %{}) do
       arguments when is_map(arguments) ->
@@ -7360,6 +7702,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
+  defp guidance_request_cards(guidance_requests) do
+    Enum.map(guidance_requests, &guidance_request_card_payload/1)
+  end
+
+  defp guidance_request_card_payload(%GuidanceRequest{} = guidance_request) do
+    %{
+      "id" => guidance_request.id,
+      "work_package_id" => guidance_request.work_package_id,
+      "summary" => Redactor.redact_text(guidance_request.summary),
+      "status" => guidance_request.status,
+      "requested_by" => guidance_request.requested_by,
+      "answered_by" => guidance_request.answered_by,
+      "blocker_id" => guidance_request.blocker_id,
+      "inserted_at" => timestamp(guidance_request.inserted_at),
+      "updated_at" => timestamp(guidance_request.updated_at)
+    }
+  end
+
+  defp guidance_request_payload(%GuidanceRequest{} = guidance_request) do
+    %{
+      "id" => guidance_request.id,
+      "work_package_id" => guidance_request.work_package_id,
+      "summary" => Redactor.redact_text(guidance_request.summary),
+      "question" => Redactor.redact_text(guidance_request.question),
+      "context" => Redactor.redact_text(guidance_request.context),
+      "status" => guidance_request.status,
+      "requested_by" => guidance_request.requested_by,
+      "answer" => Redactor.redact_text(guidance_request.answer),
+      "answered_by" => guidance_request.answered_by,
+      "answered_at" => timestamp(guidance_request.answered_at),
+      "human_info_reason" => Redactor.redact_text(guidance_request.human_info_reason),
+      "recommended_language" => Redactor.redact_text(guidance_request.recommended_language),
+      "blocker_id" => guidance_request.blocker_id,
+      "inserted_at" => timestamp(guidance_request.inserted_at),
+      "updated_at" => timestamp(guidance_request.updated_at)
+    }
+  end
+
   defp work_request_detail_payload(repo, %WorkRequest{} = work_request) do
     with {:ok, questions} <- WorkRequestService.list_questions(repo, work_request.id),
          {:ok, decisions} <- WorkRequestService.list_decisions(repo, work_request.id),
@@ -7565,6 +7945,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp timestamp(timestamp), do: mcp_timestamp(timestamp)
 
   defp work_request_not_found_error(tool) do
+    {:error, -32_004, "Not found", %{"tool" => tool, "reason" => "not_found"}}
+  end
+
+  defp guidance_request_not_found_error(tool) do
     {:error, -32_004, "Not found", %{"tool" => tool, "reason" => "not_found"}}
   end
 
