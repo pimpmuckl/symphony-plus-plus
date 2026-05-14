@@ -21,6 +21,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.Workflow
   alias SymphonyElixir.WorkPackageFactory
   alias SymphonyElixirWeb.Layouts
   alias SymphonyElixirWeb.SymppBoardLive
@@ -535,16 +536,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     conn = board_session_conn(secret)
 
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
-    Application.delete_env(:symphony_elixir, :sympp_repo_database)
-    stale_database_path = Repo.database_path()
-
-    refute File.exists?(stale_database_path)
-    with_transient_repo(stale_database_path, fn -> :ok end)
+    original_workflow_path = Application.get_env(:symphony_elixir, :workflow_file_path)
+    workflow_id = "sympp-dashboard-stale-db-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+    workflow_path = Path.join([System.tmp_dir!(), workflow_id, "WORKFLOW.md"])
 
     on_exit(fn ->
       restore_database_env(original_database)
-      File.rm(stale_database_path)
+      restore_workflow_path(original_workflow_path)
     end)
+
+    Application.delete_env(:symphony_elixir, :sympp_repo_database)
+    Workflow.set_workflow_file_path(workflow_path)
+    stale_database_path = Repo.database_path()
+
+    refute File.exists?(stale_database_path)
+
+    on_exit(fn -> File.rm(stale_database_path) end)
+
+    with_transient_repo(stale_database_path, fn -> :ok end)
 
     with_endpoint_repo(nil, fn ->
       {:ok, _view, html} = live(conn, "/sympp/board")
@@ -1518,6 +1527,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
 
   defp restore_database_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_repo_database)
   defp restore_database_env(database), do: Application.put_env(:symphony_elixir, :sympp_repo_database, database)
+
+  defp restore_workflow_path(nil), do: Workflow.clear_workflow_file_path()
+  defp restore_workflow_path(path), do: Workflow.set_workflow_file_path(path)
 
   defp restore_custom_repo_env(nil), do: Application.delete_env(:symphony_elixir, CustomBoardRepo)
   defp restore_custom_repo_env(config), do: Application.put_env(:symphony_elixir, CustomBoardRepo, config)
