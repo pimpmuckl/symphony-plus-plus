@@ -112,6 +112,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       |> Jason.decode!()
 
     assert manifest["name"] == "symphony-plus-plus"
+    assert manifest["version"] == "0.1.0"
     assert manifest["skills"] == "./skills/"
     assert manifest["mcpServers"] == "./.mcp.json"
     assert manifest["interface"]["displayName"] == "Symphony++"
@@ -126,9 +127,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.exists?(@worker_secret_script_path)
     assert File.exists?(@worker_secret_shell_path)
     assert File.read!(@plugin_readme_path) =~ ~s("path": "./plugins/symphony-plus-plus")
+    assert File.read!(@plugin_readme_path) =~ "manifest-version directory"
     assert File.read!(@plugin_readme_path) =~ "start a new session after reload"
     assert File.read!(@plugin_readme_path) =~ "already-running Codex host"
     refute File.read!(@plugin_readme_path) =~ "../../Code/"
+    assert File.read!(@refresh_script_path) =~ "ReparsePoint"
+
+    assert File.read!(@refresh_script_path) =~
+             "Assert-ExistingCachePathNotReparsePoint @($cacheRoot, $marketplaceCacheRoot, $pluginCacheRoot)"
+
+    assert File.read!(@refresh_script_path) =~ "Assert-NoReparsePointDescendants $TargetRoot"
+    assert File.read!(@refresh_script_path) =~ "Refusing to refresh reparse-point plugin cache directory"
+    assert File.read!(@refresh_script_path) =~ "Refusing to refresh plugin cache directory containing a reparse-point child"
     assert File.read!(@worker_secret_script_path) =~ "CRED_PERSIST_LOCAL_MACHINE"
     refute File.read!(@worker_secret_script_path) =~ "CRED_PERSIST_SESSION"
   end
@@ -188,43 +198,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         assert status == 0, output
 
-        refreshed_manifest_path =
-          Path.join([
-            temp_codex_home,
-            "plugins",
-            "cache",
-            "jonat-local",
-            "symphony-plus-plus",
-            "local",
-            ".codex-plugin",
-            "plugin.json"
-          ])
+        for cache_name <- ["local", "0.1.0"] do
+          refreshed_manifest_path = plugin_cache_path(temp_codex_home, [cache_name, ".codex-plugin", "plugin.json"])
+          refreshed_mcp_path = plugin_cache_path(temp_codex_home, [cache_name, ".mcp.json"])
+          source_hint_path = plugin_cache_path(temp_codex_home, [cache_name, ".sympp-source-root"])
 
-        refreshed_mcp_path =
-          Path.join([
-            temp_codex_home,
-            "plugins",
-            "cache",
-            "jonat-local",
-            "symphony-plus-plus",
-            "local",
-            ".mcp.json"
-          ])
-
-        source_hint_path =
-          Path.join([
-            temp_codex_home,
-            "plugins",
-            "cache",
-            "jonat-local",
-            "symphony-plus-plus",
-            "local",
-            ".sympp-source-root"
-          ])
-
-        assert refreshed_manifest_path |> File.read!() |> Jason.decode!() |> Map.fetch!("name") == "symphony-plus-plus"
-        assert refreshed_mcp_path |> File.read!() |> Jason.decode!() |> get_in(["mcpServers", "symphony_plus_plus", "command"]) == "pwsh"
-        assert same_path?(String.trim(File.read!(source_hint_path)), @repo_root)
+          refreshed_manifest = refreshed_manifest_path |> File.read!() |> Jason.decode!()
+          assert refreshed_manifest["name"] == "symphony-plus-plus"
+          assert refreshed_manifest["version"] == "0.1.0"
+          assert refreshed_manifest["mcpServers"] == "./.mcp.json"
+          assert refreshed_mcp_path |> File.read!() |> Jason.decode!() |> get_in(["mcpServers", "symphony_plus_plus", "command"]) == "pwsh"
+          assert same_path?(String.trim(File.read!(source_hint_path)), @repo_root)
+        end
       after
         File.rm_rf!(temp_codex_home)
       end
@@ -271,7 +256,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         assert status != 0
         assert output =~ "Configured plugin source path"
-        refute File.exists?(Path.join([temp_codex_home, "plugins", "cache", "jonat-local", "symphony-plus-plus"]))
+        refute File.exists?(plugin_cache_path(temp_codex_home, []))
       after
         File.rm(marketplace_path)
         File.rm_rf(temp_codex_home)
@@ -321,33 +306,66 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         assert status == 0, output
 
-        refreshed_manifest_path =
-          Path.join([
-            temp_codex_home,
-            "plugins",
-            "cache",
-            "jonat-local",
-            "symphony-plus-plus",
-            "local",
-            ".codex-plugin",
-            "plugin.json"
-          ])
-
-        refreshed_mcp_path =
-          Path.join([
-            temp_codex_home,
-            "plugins",
-            "cache",
-            "jonat-local",
-            "symphony-plus-plus",
-            "local",
-            ".mcp.json"
-          ])
+        refreshed_manifest_path = plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"])
+        refreshed_mcp_path = plugin_cache_path(temp_codex_home, ["local", ".mcp.json"])
 
         assert refreshed_manifest_path |> File.read!() |> Jason.decode!() |> Map.fetch!("name") == "symphony-plus-plus"
         assert File.exists?(refreshed_mcp_path)
       after
         File.rm(marketplace_path)
+        File.rm_rf(temp_codex_home)
+      end
+    end
+  end
+
+  test "refresh script updates the manifest-version cache and repairs stale MCP-incomplete versioned caches" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-refresh-#{System.unique_integer([:positive])}")
+
+    if powershell do
+      stale_manifest_path = plugin_cache_path(temp_codex_home, ["0.0.9", ".codex-plugin", "plugin.json"])
+      sentinel_path = plugin_cache_path(temp_codex_home, ["0.0.9", "already-open.txt"])
+      File.mkdir_p!(Path.dirname(stale_manifest_path))
+      File.write!(stale_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "0.0.9"}))
+      File.write!(sentinel_path, "preserve")
+
+      try do
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-ExecutionPolicy",
+              "Bypass",
+              "-File",
+              @refresh_script_path,
+              "-CodexHome",
+              temp_codex_home
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+        assert output =~ "Repaired stale MCP-incomplete Codex plugin cache"
+        assert File.exists?(plugin_cache_path(temp_codex_home, ["0.0.9"]))
+
+        versioned_manifest =
+          plugin_cache_path(temp_codex_home, ["0.1.0", ".codex-plugin", "plugin.json"])
+          |> File.read!()
+          |> Jason.decode!()
+
+        assert versioned_manifest["mcpServers"] == "./.mcp.json"
+        assert File.exists?(plugin_cache_path(temp_codex_home, ["0.1.0", ".mcp.json"]))
+
+        repaired_manifest =
+          plugin_cache_path(temp_codex_home, ["0.0.9", ".codex-plugin", "plugin.json"])
+          |> File.read!()
+          |> Jason.decode!()
+
+        assert repaired_manifest["mcpServers"] == "./.mcp.json"
+        assert File.exists?(plugin_cache_path(temp_codex_home, ["0.0.9", ".mcp.json"]))
+        assert File.read!(sentinel_path) == "preserve"
+      after
         File.rm_rf(temp_codex_home)
       end
     end
@@ -395,5 +413,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
   defp same_path?(left, right) do
     Path.expand(left) |> String.downcase() == Path.expand(right) |> String.downcase()
+  end
+
+  defp plugin_cache_path(codex_home, suffix) do
+    Path.join([codex_home, "plugins", "cache", "jonat-local", "symphony-plus-plus"] ++ suffix)
   end
 end
