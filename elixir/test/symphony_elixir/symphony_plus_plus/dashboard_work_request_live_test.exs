@@ -1159,12 +1159,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
     assert html =~ "Board cannot mint handoff"
     refute html =~ "Prepare architect handoff"
     refute html =~ "Private architect handoff stored"
+    refute html =~ "Architect Launch Brief"
     refute html =~ handoff.grant.id
 
     html = render_click(view, "create_architect_handoff", %{})
 
     assert html =~ "Architect handoff is only available in local operator mode."
     refute html =~ "Private architect handoff stored"
+    refute html =~ "Architect Launch Brief"
     refute html =~ "SYMPP-WR-ARCH-"
 
     assert {:ok, packages_after} = WorkPackageRepository.list(Repo)
