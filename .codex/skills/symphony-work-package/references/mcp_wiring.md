@@ -15,10 +15,20 @@ already-running thread. After refreshing the local plugin cache, restart or
 reload Codex and open a new session before treating missing `symphony_plus_plus`
 tools as a repo packaging failure. ValidateOnly checks the wrapper and launcher
 only; it does not prove that the current session has hot-loaded new MCP tools.
+Use `scripts/refresh-local-plugin.ps1 -ValidateInstalledCache` to prove the
+installed cache copies resolve the manifest `mcpServers` pointer, contain the
+generic `symphony_plus_plus` server entry, and start the wrapper with
+`-ValidateOnly` from the cache root.
 The repo refresh script updates both the `local` cache and the manifest-version
 cache so a refreshed install has both the manifest `mcpServers` pointer and the
 referenced `.mcp.json`. Older cache directories are ignored; reload Codex and
 open a new session after refresh.
+
+Skill visibility, MCP server registration, and current-session tool
+availability are distinct. A visible skill proves Codex loaded the skill
+directory. MCP registration proves the plugin manifest and installed `.mcp.json`
+advertise the server. Current-session tools appear only after the host loads
+that registration for the session.
 
 The static plugin MCP entry is intentionally generic. It must not embed raw
 work-key secrets, bearer tokens, private-store handoff targets, or

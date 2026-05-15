@@ -1,7 +1,8 @@
 param(
   [string]$MarketplacePath,
   [string]$CodexHome = $(if ($env:CODEX_HOME) { $env:CODEX_HOME } else { "$HOME/.codex" }),
-  [string]$PluginName = "symphony-plus-plus"
+  [string]$PluginName = "symphony-plus-plus",
+  [switch]$ValidateInstalledCache
 )
 
 $ErrorActionPreference = "Stop"
@@ -111,6 +112,83 @@ function Assert-SafeVersionSegment([string]$Version) {
   }
 }
 
+function Assert-RequiredJsonValue($Value, [string]$Message) {
+  if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
+    throw $Message
+  }
+}
+
+function Assert-CacheMcpConfig([string]$TargetRoot, [string]$ExpectedVersion) {
+  $targetManifestPath = Join-Path $TargetRoot ".codex-plugin/plugin.json"
+  $targetManifest = Get-Content -LiteralPath $targetManifestPath -Raw | ConvertFrom-Json
+  if ($targetManifest.name -ne $PluginName) {
+    throw "Installed plugin manifest name mismatch in $targetManifestPath."
+  }
+  if ($targetManifest.version -ne $ExpectedVersion) {
+    throw "Installed plugin manifest version mismatch in $targetManifestPath."
+  }
+
+  Assert-RequiredJsonValue $targetManifest.mcpServers "Installed plugin manifest is missing mcpServers in $targetManifestPath."
+  $mcpConfigPath = [System.IO.Path]::GetFullPath((Join-Path $TargetRoot ([string]$targetManifest.mcpServers)))
+  Assert-PathInside $mcpConfigPath $TargetRoot "Installed plugin mcpServers path resolves outside this cache"
+  if (-not (Test-Path -LiteralPath $mcpConfigPath)) {
+    throw "Installed plugin mcpServers path does not exist: $mcpConfigPath"
+  }
+
+  $mcpConfig = Get-Content -LiteralPath $mcpConfigPath -Raw | ConvertFrom-Json
+  $server = $mcpConfig.mcpServers.symphony_plus_plus
+  if ($null -eq $server) {
+    throw "Installed MCP config does not define mcpServers.symphony_plus_plus: $mcpConfigPath"
+  }
+  if ($server.type -ne "stdio") {
+    throw "Installed MCP server type must be stdio: $mcpConfigPath"
+  }
+  if ($server.command -ne "pwsh") {
+    throw "Installed MCP server command must be pwsh: $mcpConfigPath"
+  }
+  if ($server.cwd -ne ".") {
+    throw "Installed MCP server cwd must remain cache-relative '.': $mcpConfigPath"
+  }
+
+  $args = @($server.args | ForEach-Object { [string]$_ })
+  $expectedArgs = @(
+    "-NoProfile",
+    "-Command",
+    '$env:PSExecutionPolicyPreference=''Bypass''; & ''scripts/start-sympp-mcp.ps1'''
+  )
+  if ($args.Count -ne $expectedArgs.Count) {
+    throw "Installed MCP server args must have $($expectedArgs.Count) tokens: $mcpConfigPath"
+  }
+
+  for ($index = 0; $index -lt $expectedArgs.Count; $index++) {
+    if ($args[$index] -ne $expectedArgs[$index]) {
+      throw "Installed MCP server arg[$index] mismatch in $mcpConfigPath."
+    }
+  }
+}
+
+function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [string]$ExpectedVersion) {
+  Assert-CacheMcpConfig $TargetRoot $ExpectedVersion
+
+  Push-Location -LiteralPath $TargetRoot
+  try {
+    & pwsh @(
+      "-NoProfile",
+      "-Command",
+      "`$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1' -ValidateOnly"
+    )
+    if ($LASTEXITCODE -ne 0) {
+      throw "Installed plugin MCP wrapper validation failed for $Label cache with exit code $LASTEXITCODE."
+    }
+  } finally {
+    Pop-Location
+  }
+
+  Write-Host "Validated installed Symphony++ plugin MCP cache:"
+  Write-Host "  cache: $Label"
+  Write-Host "  root: $TargetRoot"
+}
+
 $repoRoot = Resolve-StrictPath (Join-Path $PSScriptRoot "..")
 if ([string]::IsNullOrWhiteSpace($MarketplacePath)) {
   $MarketplacePath = Join-Path $repoRoot ".agents\plugins\marketplace.json"
@@ -164,6 +242,11 @@ New-Item -ItemType Directory -Path $pluginCacheRoot -Force | Out-Null
 
 Copy-PluginCacheTarget $localTargetRoot $sourceRoot $repoRoot
 Copy-PluginCacheTarget $versionTargetRoot $sourceRoot $repoRoot
+
+if ($ValidateInstalledCache) {
+  Invoke-InstalledCacheValidation $localTargetRoot "local" $manifestVersion
+  Invoke-InstalledCacheValidation $versionTargetRoot $manifestVersion $manifestVersion
+}
 
 Write-Host "Refreshed local Codex plugin cache:"
 Write-Host "  source: $sourceRoot"

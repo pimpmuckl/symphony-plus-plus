@@ -95,6 +95,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert wiring =~ "should not embed raw work-key secrets or bearer tokens"
     assert wiring =~ "open a new session before treating missing `symphony_plus_plus`"
     assert wiring =~ "ValidateOnly checks the wrapper and launcher"
+    assert wiring =~ "scripts/refresh-local-plugin.ps1 -ValidateInstalledCache"
+    assert wiring =~ "Skill visibility, MCP server registration, and current-session tool"
     assert plugin_wiring == wiring
     assert template_wiring == wiring
     refute wiring =~ "sympp_live_"
@@ -128,10 +130,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.exists?(@worker_secret_shell_path)
     assert File.read!(@plugin_readme_path) =~ ~s("path": "./plugins/symphony-plus-plus")
     assert File.read!(@plugin_readme_path) =~ "manifest-version directory"
+    assert File.read!(@plugin_readme_path) =~ "refresh-local-plugin.ps1 -ValidateInstalledCache"
+    assert File.read!(@plugin_readme_path) =~ "Plugin skill visibility, MCP server registration, and current-session tool"
     assert File.read!(@plugin_readme_path) =~ "start a new session after reload"
     assert File.read!(@plugin_readme_path) =~ "already-running Codex host"
     refute File.read!(@plugin_readme_path) =~ "../../Code/"
     assert File.read!(@refresh_script_path) =~ "ReparsePoint"
+    assert File.read!(@refresh_script_path) =~ "ValidateInstalledCache"
+    assert File.read!(@refresh_script_path) =~ "Invoke-InstalledCacheValidation"
 
     assert File.read!(@refresh_script_path) =~
              "Assert-ExistingCachePathNotReparsePoint @($codexHomePath, $pluginsRoot, $cacheRoot, $marketplaceCacheRoot, $pluginCacheRoot)"
@@ -212,6 +218,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           assert refreshed_manifest["version"] == "0.1.0"
           assert refreshed_manifest["mcpServers"] == "./.mcp.json"
           assert refreshed_mcp_path |> File.read!() |> Jason.decode!() |> get_in(["mcpServers", "symphony_plus_plus", "command"]) == "pwsh"
+          assert same_path?(String.trim(File.read!(source_hint_path)), @repo_root)
+        end
+      after
+        File.rm_rf!(temp_codex_home)
+      end
+    end
+  end
+
+  test "refresh script validates installed cache MCP config and wrapper from cache roots" do
+    powershell = System.find_executable("pwsh")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-refresh-#{System.unique_integer([:positive])}")
+
+    if powershell do
+      try do
+        expected_version =
+          @plugin_manifest_path
+          |> File.read!()
+          |> Jason.decode!()
+          |> Map.fetch!("version")
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              @refresh_script_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-ValidateInstalledCache"
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+        assert output =~ "Validated installed Symphony++ plugin MCP cache:"
+        assert output =~ "cache: local"
+        assert output =~ "cache: #{expected_version}"
+
+        for cache_name <- ["local", expected_version] do
+          source_hint_path = plugin_cache_path(temp_codex_home, [cache_name, ".sympp-source-root"])
           assert same_path?(String.trim(File.read!(source_hint_path)), @repo_root)
         end
       after
