@@ -4246,14 +4246,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp child_secret_handoff_script_name("windows-credential-manager"), do: "sympp-worker-secret.ps1"
-  defp child_secret_handoff_script_name("local-private-file"), do: "sympp-worker-secret.sh"
+  defp child_secret_handoff_script_name("local-private-file"), do: local_private_file_handoff_script_name()
   defp child_secret_handoff_script_name(_auto_or_nil), do: child_secret_handoff_script_name(default_child_secret_handoff_mode())
 
-  defp default_child_secret_handoff_mode do
-    case :os.type() do
-      {:win32, _name} -> "windows-credential-manager"
-      _type -> "local-private-file"
-    end
+  defp default_child_secret_handoff_mode, do: "local-private-file"
+
+  defp local_private_file_handoff_script_name do
+    if match?({:win32, _name}, :os.type()), do: "sympp-worker-secret.ps1", else: "sympp-worker-secret.sh"
   end
 
   defp default_child_worker_claimed_by(work_package_id), do: "sympp-child-worker:#{work_package_id}"

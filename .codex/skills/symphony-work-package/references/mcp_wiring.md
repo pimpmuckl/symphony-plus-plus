@@ -83,7 +83,16 @@ one-time secret from the local OS/user store, injects it only into the MCP child
 process environment, and starts `sympp.mcp` with both the environment variable
 name and the stable worker identity.
 
-Windows Credential Manager example:
+Windows local private-file example:
+
+```toml
+[mcp_servers.symphony_plus_plus]
+command = "powershell"
+args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "<repo>/scripts/sympp-worker-secret.ps1", "run-mcp-local-file", "-SecretFile", "<secret-file>", "-Database", "<ledger-path>", "-ClaimedBy", "<stable-worker-id>"]
+cwd = "<repo>"
+```
+
+Windows Credential Manager opt-in example:
 
 ```toml
 [mcp_servers.symphony_plus_plus]
@@ -92,7 +101,7 @@ args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "<repo>/scripts/sym
 cwd = "<repo>"
 ```
 
-Non-Windows `local-private-file` fallback example:
+Non-Windows local private-file example:
 
 ```toml
 [mcp_servers.symphony_plus_plus]

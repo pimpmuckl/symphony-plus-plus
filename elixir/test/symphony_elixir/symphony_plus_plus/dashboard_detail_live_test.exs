@@ -30,7 +30,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
   @endpoint SymphonyElixirWeb.Endpoint
   @repo_root Path.expand("../../../../", __DIR__)
   @detail_phase_id "phase-dashboard-detail-test"
-  @windows match?({:win32, _}, :os.type())
 
   defmodule NoQueryRepo do
     @moduledoc false
@@ -122,8 +121,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert html =~ "No agent runs recorded."
   end
 
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
-
   test "renders durable worker handoff metadata on package detail" do
     store_dir = Path.join(System.tmp_dir!(), "sympp-detail-handoff-#{System.unique_integer([:positive])}")
     previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
@@ -166,12 +163,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert html =~ handoff.target
     assert html =~ Path.basename(handoff.path)
     assert html =~ "Run MCP"
-    assert html =~ "local-operator-worker"
+    assert html =~ local_private_file_script_name()
     assert html =~ "Worker Launch Brief"
     assert html =~ "Package: SYMPP-P5-HANDOFF - Detail handoff package"
     assert html =~ "Repo/base: nextide/symphony-plus-plus / symphony-plus-plus/beta"
     assert html =~ "Worker branch: agent/SYMPP-P5-HANDOFF"
-    assert html =~ "Claimed by: local-operator-worker"
+    assert html =~ "Claimed by: worker-1"
     assert html =~ "Handoff mode: local-private-file"
     assert html =~ "Handoff target: #{handoff.target}"
     assert html =~ "Required skill: symphony-plus-plus:symphony-work-package"
@@ -453,8 +450,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     refute Map.has_key?(display, :run_mcp_command)
   end
 
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
-
   test "dashboard detail uses configured namespace inputs for handoff lookup" do
     store_dir = Path.join(System.tmp_dir!(), "sympp-detail-namespace-store-#{System.unique_integer([:positive])}")
     configured_repo_root = Path.join(System.tmp_dir!(), "sympp-detail-repo-root-#{System.unique_integer([:positive])}")
@@ -474,6 +469,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
       File.rm_rf(store_dir)
       File.rm_rf(configured_repo_root)
     end)
+
+    write_worker_secret_scripts!(configured_repo_root)
 
     %{work_package: work_package} =
       create_detail_package(id: "SYMPP-P5-CONFIGURED-NAMESPACE", title: "Configured namespace package")
@@ -498,7 +495,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
 
     assert {:ok, detail} = Dashboard.detail(Repo, work_package.id)
     assert [%{run_mcp_command: run_mcp_command}] = detail.worker_secret_handoffs
-    assert run_mcp_command =~ configured_repo_root
+    assert normalized_handoff_path(run_mcp_command) =~ normalized_handoff_path(configured_repo_root)
     assert run_mcp_command =~ configured_database
     refute run_mcp_command =~ handoff_secret
   end
@@ -1296,6 +1293,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     File.mkdir_p!(scripts_dir)
     File.write!(Path.join(scripts_dir, "sympp-worker-secret.sh"), "#!/bin/sh\n")
     File.write!(Path.join(scripts_dir, "sympp-worker-secret.ps1"), "param()\n")
+  end
+
+  defp local_private_file_script_name do
+    if match?({:win32, _}, :os.type()), do: "sympp-worker-secret.ps1", else: "sympp-worker-secret.sh"
+  end
+
+  defp normalized_handoff_path(path) do
+    path
+    |> String.replace("\\", "/")
+    |> String.downcase()
   end
 
   defp start_test_endpoint do

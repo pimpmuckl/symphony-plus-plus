@@ -402,8 +402,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
     Enum.each(grants, &cleanup_handoff(anchor, &1, handoff_opts))
   end
 
-  if match?({:win32, _os_name}, :os.type()), do: @tag(skip: "local-private-file handoff is non-Windows only")
-
   test "changed handoff settings do not revoke and orphan the old local private file", %{
     repo: repo,
     handoff_opts: handoff_opts
@@ -447,8 +445,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
     cleanup_handoff(anchor, first_grant, handoff_opts)
     File.rm_rf!(Keyword.fetch!(changed_handoff_opts, :store_dir))
   end
-
-  if match?({:win32, _os_name}, :os.type()), do: @tag(skip: "local-private-file handoff is non-Windows only")
 
   test "older active grant with missing metadata aborts replay of a newer handoff", %{
     repo: repo,
@@ -704,8 +700,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
     assert Enum.any?(grants, &(is_nil(&1.revoked_at) and is_nil(&1.claimed_at)))
   end
 
-  if match?({:win32, _os_name}, :os.type()), do: @tag(skip: "local-private-file handoff is non-Windows only")
-
   test "corrupted local private file secrets are renewed instead of replayed", %{repo: repo, handoff_opts: handoff_opts} do
     work_request = create_work_request!(repo, status: "ready_for_slicing")
 
@@ -914,7 +908,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
   end
 
   test "stale Windows Credential Manager metadata is renewed instead of replayed", %{repo: repo, handoff_opts: handoff_opts} do
-    if windows?() and powershell_executable() do
+    if windows_credential_manager_integration_enabled?() do
       windows_handoff_opts = Keyword.put(handoff_opts, :mode, "windows-credential-manager")
       work_request = create_work_request!(repo, status: "ready_for_slicing")
 
@@ -1224,7 +1218,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
   end
 
   defp default_handoff_mode do
-    if windows?(), do: "windows-credential-manager", else: "local-private-file"
+    "auto"
   end
 
   defp cleanup_handoff(%WorkPackage{} = anchor, %AccessGrant{} = grant, handoff_opts) do
@@ -1316,6 +1310,48 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
     System.find_executable("powershell.exe") ||
       System.find_executable("pwsh") ||
       System.find_executable("powershell")
+  end
+
+  defp windows_credential_manager_writable? do
+    with true <- windows?(),
+         powershell when is_binary(powershell) <- powershell_executable() do
+      target = "SymphonyPlusPlus:test:wcm-probe:#{System.unique_integer([:positive])}"
+      script_path = Path.join(repo_root(), "scripts/sympp-worker-secret.ps1")
+
+      try do
+        case System.cmd(
+               powershell,
+               [
+                 "-NoProfile",
+                 "-ExecutionPolicy",
+                 "Bypass",
+                 "-File",
+                 script_path,
+                 "store",
+                 "-Target",
+                 target,
+                 "-UserName",
+                 "sympp-wcm-probe"
+               ],
+               env: [{"SYMPP_WORK_KEY_SECRET", "synthetic-wcm-probe-secret"}],
+               stderr_to_stdout: true
+             ) do
+          {_output, 0} -> true
+          {_output, _status} -> false
+        end
+      after
+        SecretHandoff.delete_worker_secret(%{"mode" => "windows-credential-manager", "target" => target}, repo_root: repo_root())
+      end
+    else
+      _unavailable -> false
+    end
+  rescue
+    _error -> false
+  end
+
+  defp windows_credential_manager_integration_enabled? do
+    System.get_env("SYMPP_RUN_WCM_INTEGRATION") in ["1", "true", "TRUE"] and
+      windows_credential_manager_writable?()
   end
 
   defp windows?, do: match?({:win32, _}, :os.type())

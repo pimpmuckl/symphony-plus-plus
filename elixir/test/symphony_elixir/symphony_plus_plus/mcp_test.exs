@@ -5495,7 +5495,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   end
 
   test "child worker key handoff bootstraps MCP through Windows Credential Manager", %{repo: repo} do
-    if windows?() do
+    if windows_credential_manager_integration_enabled?() do
       {_anchor, architect_session} =
         create_architect_session(repo, "SYMPP-P7-002-MINT-WINCRED-ANCHOR", [
           "create:child_work_package",
@@ -5581,7 +5581,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         cleanup_child_worker_handoff(handoff, claimed_by)
       end
     else
-      assert test_secret_handoff_mode() == "local-private-file"
+      assert test_secret_handoff_mode() == "auto"
     end
   end
 
@@ -12322,7 +12322,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   end
 
   defp test_secret_handoff_mode do
-    if windows?(), do: "windows-credential-manager", else: "local-private-file"
+    "auto"
   end
 
   defp test_handoff_store_dir do
@@ -12406,9 +12406,55 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   end
 
   defp powershell_executable! do
-    powershell = Enum.find_value(["powershell.exe", "powershell", "pwsh"], &System.find_executable/1)
+    powershell = powershell_executable()
     assert is_binary(powershell), "Windows Credential Manager MCP bootstrap test requires powershell.exe or pwsh"
     powershell
+  end
+
+  defp powershell_executable do
+    Enum.find_value(["powershell.exe", "powershell", "pwsh"], &System.find_executable/1)
+  end
+
+  defp windows_credential_manager_writable? do
+    with true <- windows?(),
+         powershell when is_binary(powershell) <- powershell_executable() do
+      target = "SymphonyPlusPlus:test:wcm-probe:#{System.unique_integer([:positive])}"
+      script_path = Path.join(test_repo_root(), "scripts/sympp-worker-secret.ps1")
+
+      try do
+        case System.cmd(
+               powershell,
+               [
+                 "-NoProfile",
+                 "-ExecutionPolicy",
+                 "Bypass",
+                 "-File",
+                 script_path,
+                 "store",
+                 "-Target",
+                 target,
+                 "-UserName",
+                 "sympp-wcm-probe"
+               ],
+               env: [{"SYMPP_WORK_KEY_SECRET", "synthetic-wcm-probe-secret"}],
+               stderr_to_stdout: true
+             ) do
+          {_output, 0} -> true
+          {_output, _status} -> false
+        end
+      after
+        SecretHandoff.delete_worker_secret(%{"mode" => "windows-credential-manager", "target" => target}, repo_root: test_repo_root())
+      end
+    else
+      _unavailable -> false
+    end
+  rescue
+    _error -> false
+  end
+
+  defp windows_credential_manager_integration_enabled? do
+    System.get_env("SYMPP_RUN_WCM_INTEGRATION") in ["1", "true", "TRUE"] and
+      windows_credential_manager_writable?()
   end
 
   defp cleanup_test_child_worker_handoffs(repo) do

@@ -2206,7 +2206,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   end
 
   defp local_operator_secret_handoff_mode do
-    if match?({:win32, _}, :os.type()), do: "windows-credential-manager", else: "local-private-file"
+    "auto"
   end
 
   defp dashboard_ledger_database(repo) do

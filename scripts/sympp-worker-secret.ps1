@@ -1,6 +1,6 @@
 param(
   [Parameter(Position = 0, Mandatory = $true)]
-  [ValidateSet("store", "remove", "exists", "verify", "run-mcp")]
+  [ValidateSet("store", "remove", "exists", "verify", "run-mcp", "run-mcp-local-file")]
   [string]$Action,
 
   [string]$Target,
@@ -259,6 +259,16 @@ switch ($Action) {
   "run-mcp" {
     Assert-NonBlank $Target "Target"
     $secret = Read-GenericCredentialSecret -CredentialTarget $Target
+    Invoke-McpWithSecret -Secret $secret
+  }
+  "run-mcp-local-file" {
+    Assert-NonBlank $SecretFile "SecretFile"
+
+    if (-not (Test-Path -LiteralPath $SecretFile -PathType Leaf)) {
+      throw "Worker secret file was not found."
+    }
+
+    $secret = Get-Content -LiteralPath $SecretFile -Raw
     Invoke-McpWithSecret -Secret $secret
   }
 }

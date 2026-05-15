@@ -1224,7 +1224,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   defp put_optional_handoff_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp local_operator_secret_handoff_mode do
-    if match?({:win32, _}, :os.type()), do: "windows-credential-manager", else: "local-private-file"
+    "auto"
   end
 
   defp timestamp(%DateTime{} = value), do: DateTime.to_iso8601(value)

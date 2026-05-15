@@ -10,8 +10,6 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
   alias SymphonyElixir.Workflow
   alias SymphonyElixir.WorkPackageFactory
 
-  @windows match?({:win32, _}, :os.type())
-
   setup do
     Mix.Task.reenable("sympp.create_work")
     previous_shell = Mix.shell()
@@ -29,8 +27,6 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
     assert_received {:mix_shell, :info, [message]}
     assert message =~ "mix sympp.create_work --file"
   end
-
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
 
   test "creates standalone work from a YAML file and stores the one-time secret outside stdout" do
     database_path = WorkPackageFactory.database_path()
@@ -107,8 +103,6 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
       File.rm_rf(secret_store_dir)
     end
   end
-
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
 
   test "emits the resolved database path in worker handoff commands" do
     database_path = Path.join("tmp", "sympp-create-work-#{System.unique_integer([:positive])}.sqlite3")
@@ -189,8 +183,6 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
 
     refute File.exists?(database_path)
   end
-
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
 
   test "rolls back the work package when local secret handoff fails" do
     database_path = WorkPackageFactory.database_path()
