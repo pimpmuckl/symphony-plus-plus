@@ -65,6 +65,49 @@ mise exec -- mix build
 mise exec -- ./bin/symphony ./WORKFLOW.md
 ```
 
+## Solo Sessions
+
+Symphony++ Solo Sessions provide local planning memory for one repo/worktree
+without creating WorkRequests, WorkPackages, Linear state, worker grants, or
+dispatch. Agents can use the Mix task directly against a SQLite ledger;
+successful command output is JSON, while failures exit non-zero with normal
+`Mix.Error` messages:
+
+```bash
+mix sympp.solo attach \
+  --repo nextide/symphony-plus-plus \
+  --base-branch main \
+  --workspace-path /path/to/worktree \
+  --caller-id codex-local \
+  --title "Solo CLI pass" \
+  --database /tmp/sympp-solo.sqlite3
+```
+
+Append and read entries with the returned `solo_session.id`:
+
+```bash
+mix sympp.solo append \
+  --session-id <solo-session-id> \
+  --entry-kind progress \
+  --title "Implemented CLI surface" \
+  --body "Added attach, append, show, list, and lifecycle commands." \
+  --idempotency-key solo-cli-progress-1 \
+  --database /tmp/sympp-solo.sqlite3
+
+mix sympp.solo show --session-id <solo-session-id> --database /tmp/sympp-solo.sqlite3
+```
+
+Supported entry kinds are `task_plan`, `finding`, `progress`, `blocker`,
+`decision`, and `validation_note`. The task also supports `list` filters for
+`repo`, `base_branch`, `workspace_path`, `caller_id`, and `status`, plus
+`pause`, `resume`, `complete`, and `archive` lifecycle aliases. If
+`--database` is omitted, the task uses the current project `WORKFLOW.md`
+database path after validating that file exists. The database must be a durable
+local filesystem path; `:memory:` and SQLite `file:` URIs are rejected because
+Solo Sessions must persist across CLI invocations. `attach` may create the
+ledger database; other commands require the resolved local database file to
+already exist.
+
 ## Configuration
 
 Pass a custom workflow file path to `./bin/symphony` when starting the service:
