@@ -182,7 +182,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
                 <span class="numeric"><%= lane.count %></span>
               </header>
 
-              <article :for={session <- lane.items} class="sympp-solo-session-row">
+              <a :for={session <- lane.items} class="sympp-solo-session-row" href={solo_session_detail_path(session)}>
                 <div class="sympp-solo-session-topline">
                   <strong><%= session.title %></strong>
                   <span class="state-badge"><%= status_label(session.status) %></span>
@@ -202,7 +202,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
                     <%= entry_count.label %> <%= entry_count.count %>
                   </span>
                 </div>
-              </article>
+              </a>
               <p :if={lane.more_count > 0} class="sympp-solo-session-more"><%= lane.more_count %> more <%= lane.label %> sessions</p>
             </section>
           </div>
@@ -1413,6 +1413,8 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   defp runtime_label(_card), do: "active run"
 
   defp package_detail_path(%{id: id}), do: "work-packages/#{path_segment(id)}"
+
+  defp solo_session_detail_path(%{id: id}), do: "solo-sessions/#{path_segment(id)}"
 
   defp path_segment("."), do: "%2E"
   defp path_segment(".."), do: "%2E%2E"
