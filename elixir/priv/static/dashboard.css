@@ -588,7 +588,7 @@ pre,
   box-shadow: var(--shadow-sm);
 }
 
-.sympp-board-request-panel header {
+.sympp-board-request-panel > header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -607,10 +607,49 @@ pre,
   font-size: 0.8rem;
 }
 
-.sympp-board-request-panel header a {
+.sympp-board-request-panel > header a {
   color: var(--accent-ink);
   font-size: 0.82rem;
   font-weight: 800;
+  white-space: nowrap;
+}
+
+.sympp-board-request-lanes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.sympp-board-request-lane {
+  display: grid;
+  align-content: start;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0.62rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.78);
+}
+
+.sympp-board-request-lane header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.sympp-board-request-lane h3 {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
   white-space: nowrap;
 }
 
@@ -621,11 +660,11 @@ pre,
 
 .sympp-board-request-row {
   display: grid;
-  grid-template-columns: minmax(7rem, auto) minmax(0, 1fr) minmax(0, 0.7fr) minmax(7rem, auto);
-  gap: 0.55rem;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.26rem 0.45rem;
+  align-items: start;
   min-width: 0;
-  padding: 0.52rem 0;
+  padding: 0.5rem 0;
   border-top: 1px solid var(--line);
   font-size: 0.84rem;
 }
@@ -640,6 +679,15 @@ pre,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.sympp-board-request-row .state-badge {
+  justify-self: start;
+}
+
+.sympp-board-request-row strong,
+.sympp-board-request-row .muted {
+  grid-column: 1 / -1;
 }
 
 .sympp-operator-watchlist > div {

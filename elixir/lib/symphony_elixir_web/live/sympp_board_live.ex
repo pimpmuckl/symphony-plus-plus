@@ -166,22 +166,32 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
           </div>
         </section>
 
-        <section :if={@operator_mode? and @board.work_request_items != []} class="sympp-board-request-panel" aria-label="WorkRequests">
+        <section :if={@operator_mode? and @board.work_request_lanes != []} class="sympp-board-request-panel" aria-label="WorkRequests">
           <header>
             <div>
               <h2>WorkRequests</h2>
-              <p>Clarification and slicing work visible to the local operator.</p>
+              <p>Status lanes for clarification, slicing, and dispatch readiness.</p>
             </div>
             <a href="work-requests">Open all</a>
           </header>
 
-          <div class="sympp-board-request-list">
-            <a :for={request <- @board.work_request_items} href={request.href} class="sympp-board-request-row">
-              <span class="state-badge state-badge-warning"><%= request.state %></span>
-              <strong><%= request.title %></strong>
-              <span class="muted"><%= request.repo_base %></span>
-              <span class="numeric"><%= request.counts %></span>
-            </a>
+          <div class="sympp-board-request-lanes">
+            <section :for={lane <- @board.work_request_lanes} class="sympp-board-request-lane">
+              <header>
+                <h3><%= lane.label %></h3>
+                <span class="numeric"><%= lane.count %></span>
+              </header>
+
+              <div class="sympp-board-request-list">
+                <a :for={request <- lane.items} href={request.href} class="sympp-board-request-row">
+                  <span class="state-badge state-badge-warning"><%= request.state %></span>
+                  <strong><%= request.title %></strong>
+                  <span class="muted"><%= request.repo_base %></span>
+                  <span class="numeric"><%= request.questions %></span>
+                  <span class="muted"><%= request.slice_signal %></span>
+                </a>
+              </div>
+            </section>
           </div>
         </section>
 
@@ -882,7 +892,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       operation_total_count: view.total_count + length(all_requests),
       operation_visible_count: view.visible_count + length(visible_requests),
       work_request_visible_count: length(visible_requests),
-      work_request_items: work_request_items(visible_requests),
+      work_request_lanes: work_request_lanes(visible_requests),
       guidance_items: guidance_items(visible_requests) ++ package_guidance_items(visible_guidance_requests),
       blocker_items: blocker_items(visible_cards),
       review_ready_count: review_ready_count(visible_cards),
@@ -905,16 +915,50 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     %{view | filter_options: filter_options}
   end
 
-  defp work_request_items(work_requests) when is_list(work_requests) do
-    Enum.map(work_requests, fn request ->
+  defp work_request_lanes(work_requests) when is_list(work_requests) do
+    grouped = Enum.group_by(work_requests, &work_request_lane_key/1)
+
+    work_request_lane_order()
+    |> Enum.map(fn {key, label} ->
       %{
-        href: "work-requests/#{path_segment(Map.get(request, :id))}",
-        title: Map.get(request, :title) || Map.get(request, :id) || "Untitled WorkRequest",
-        state: status_label(Map.get(request, :status)),
-        repo_base: repo_base(request),
-        counts: "#{Map.get(request, :open_question_count) || 0} Q / #{slice_total(request)} slices"
+        label: label,
+        count: grouped |> Map.get(key, []) |> length(),
+        items: grouped |> Map.get(key, []) |> work_request_items()
       }
     end)
+    |> Enum.reject(&(&1.items == []))
+  end
+
+  defp work_request_lane_order do
+    [
+      draft: "Draft",
+      clarifying: "Clarifying",
+      human_info_needed: "Human Info Needed",
+      ready_for_slicing: "Ready For Slicing",
+      sliced: "Sliced/Dispatching"
+    ]
+  end
+
+  defp work_request_lane_key(%{status: "draft"}), do: :draft
+  defp work_request_lane_key(%{status: status}) when status in ["ready_for_clarification", "clarifying"], do: :clarifying
+  defp work_request_lane_key(%{status: "human_info_needed"}), do: :human_info_needed
+  defp work_request_lane_key(%{status: "ready_for_slicing"}), do: :ready_for_slicing
+  defp work_request_lane_key(%{status: "sliced"}), do: :sliced
+  defp work_request_lane_key(_request), do: :draft
+
+  defp work_request_items(work_requests) when is_list(work_requests) do
+    Enum.map(work_requests, &work_request_item/1)
+  end
+
+  defp work_request_item(request) do
+    %{
+      href: "work-requests/#{path_segment(Map.get(request, :id))}",
+      title: Map.get(request, :title) || Map.get(request, :id) || "Untitled WorkRequest",
+      state: status_label(Map.get(request, :status)),
+      repo_base: repo_base(request),
+      questions: "#{Map.get(request, :open_question_count) || 0} Q",
+      slice_signal: slice_signal(request)
+    }
   end
 
   defp guidance_items(work_requests) when is_list(work_requests) do
@@ -1020,6 +1064,27 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       (Map.get(item, :dispatched_slice_count) || 0) + (Map.get(item, :skipped_slice_count) || 0)
   end
 
+  defp slice_signal(item) do
+    total = slice_total(item)
+
+    item
+    |> slice_signal_counts()
+    |> Enum.find(fn {_label, count} -> count > 0 end)
+    |> case do
+      {label, count} -> "#{count} #{label} / #{total} slices"
+      nil -> "0 slices"
+    end
+  end
+
+  defp slice_signal_counts(item) do
+    [
+      {"approved", Map.get(item, :approved_slice_count) || 0},
+      {"planned", Map.get(item, :planned_slice_count) || 0},
+      {"dispatched", Map.get(item, :dispatched_slice_count) || 0},
+      {"skipped", Map.get(item, :skipped_slice_count) || 0}
+    ]
+  end
+
   defp empty_board(error) do
     %{
       error: error,
@@ -1032,7 +1097,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       operation_total_count: 0,
       operation_visible_count: 0,
       work_request_visible_count: 0,
-      work_request_items: [],
+      work_request_lanes: [],
       guidance_items: [],
       blocker_items: [],
       review_ready_count: 0,
