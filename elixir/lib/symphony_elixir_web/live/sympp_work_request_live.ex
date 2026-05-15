@@ -322,15 +322,31 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
       <% else %>
         <section class="sympp-work-request-detail">
           <div class="sympp-work-request-detail-main">
-            <div class="sympp-copy-row">
-              <label for="sympp-work-request-id">WorkRequest ID</label>
-              <input id="sympp-work-request-id" class="mono" readonly value={value(@page.work_request, :id)} />
-            </div>
-            <div class="sympp-detail-signal-row">
-              <span class={status_class(value(@page.work_request, :status))}><%= status_label(value(@page.work_request, :status)) %></span>
-              <span class="sympp-readiness"><%= label_value(value(@page.work_request, :work_type)) %></span>
-              <span class="sympp-readiness"><%= label_value(value(@page.work_request, :desired_dispatch_shape)) %></span>
-            </div>
+            <section class={detail_status_panel_class(@page)} aria-label="WorkRequest state">
+              <div class="sympp-detail-status-main">
+                <div class="sympp-detail-signal-row">
+                  <span class={status_class(value(@page.work_request, :status))}><%= status_label(value(@page.work_request, :status)) %></span>
+                  <span class="sympp-readiness"><%= label_value(value(@page.work_request, :work_type)) %></span>
+                  <span class="sympp-readiness"><%= label_value(value(@page.work_request, :desired_dispatch_shape)) %></span>
+                </div>
+                <h2><%= detail_next_action(@page, @operator_mode?) %></h2>
+                <p><%= detail_state_summary(@page, @operator_mode?) %></p>
+              </div>
+              <dl class="sympp-detail-status-rail">
+                <div class={detail_guidance_class(@page)}>
+                  <dt>Guidance</dt>
+                  <dd><%= detail_guidance_label(@page) %></dd>
+                </div>
+                <div>
+                  <dt>Slicing</dt>
+                  <dd><%= detail_slicing_label(@page) %></dd>
+                </div>
+                <div>
+                  <dt>Handoff</dt>
+                  <dd><%= detail_handoff_label(@page, @operator_mode?) %></dd>
+                </div>
+              </dl>
+            </section>
             <p :if={@page.action_error} class="sympp-form-error"><%= @page.action_error %></p>
             <div :if={@page.dispatch_notice} class="sympp-stack-item sympp-dispatch-notice">
               <div class="sympp-work-request-row-heading">
@@ -394,6 +410,10 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
               >
                 Prepare architect handoff
               </button>
+            </div>
+            <div class="sympp-copy-row">
+              <label for="sympp-work-request-id">WorkRequest ID</label>
+              <input id="sympp-work-request-id" class="mono" readonly value={value(@page.work_request, :id)} />
             </div>
             <p><%= value(@page.work_request, :human_description) %></p>
           </div>
@@ -481,8 +501,8 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                 <dd class="mono"><%= exact_value(value) %></dd>
               </div>
             </dl>
-            <h2>Architect prompt</h2>
-            <pre class="sympp-json-block"><%= value(@page.architect_handoff, :prompt) %></pre>
+            <h2>Safe architect prompt</h2>
+            <pre class="sympp-json-block sympp-copyable-block"><%= value(@page.architect_handoff, :prompt) %></pre>
           </article>
         </section>
 
@@ -2214,6 +2234,261 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp summary_slice_total(summary), do: slice_total(summary)
 
+  defp detail_status_panel_class(page) do
+    classes = ["sympp-detail-status-panel"]
+
+    classes =
+      if detail_guidance_attention?(page) do
+        ["sympp-detail-status-attention" | classes]
+      else
+        classes
+      end
+
+    Enum.reverse(classes)
+  end
+
+  defp detail_next_action(%{work_request: work_request} = page, operator_mode?) do
+    detail_next_action_for(
+      value(work_request, :status),
+      operator_mode?,
+      detail_open_question_count(page),
+      value(page.summary, :planned_slice_count, 0),
+      value(page.summary, :approved_slice_count, 0),
+      value(page.summary, :dispatched_slice_count, 0)
+    )
+  end
+
+  defp detail_next_action(_page, _operator_mode?), do: "Review WorkRequest state"
+
+  defp detail_state_summary(%{work_request: work_request} = page, operator_mode?) do
+    detail_state_summary_for(
+      value(work_request, :status),
+      operator_mode?,
+      detail_open_question_count(page),
+      value(page.summary, :planned_slice_count, 0),
+      value(page.summary, :approved_slice_count, 0),
+      value(page.summary, :dispatched_slice_count, 0)
+    )
+  end
+
+  defp detail_state_summary(_page, _operator_mode?), do: "Check the current status, questions, and planned slices."
+
+  defp detail_next_action_for("draft", _operator_mode?, _open_questions, _planned, _approved, _dispatched),
+    do: "Start clarification"
+
+  defp detail_next_action_for(
+         "ready_for_clarification",
+         _operator_mode?,
+         open_questions,
+         _planned,
+         _approved,
+         _dispatched
+       )
+       when open_questions > 0,
+       do: "Answer open questions"
+
+  defp detail_next_action_for(
+         "ready_for_clarification",
+         _operator_mode?,
+         _open_questions,
+         _planned,
+         _approved,
+         _dispatched
+       ),
+       do: "Ask clarification questions"
+
+  defp detail_next_action_for("clarifying", _operator_mode?, open_questions, _planned, _approved, _dispatched)
+       when open_questions > 0,
+       do: "Answer open questions"
+
+  defp detail_next_action_for("clarifying", _operator_mode?, _open_questions, _planned, _approved, _dispatched),
+    do: "Mark ready for slicing"
+
+  defp detail_next_action_for("human_info_needed", _operator_mode?, _open_questions, _planned, _approved, _dispatched),
+    do: "Human guidance needed"
+
+  defp detail_next_action_for("ready_for_slicing", true, _open_questions, _planned, approved, _dispatched)
+       when approved > 0,
+       do: "Dispatch approved slices"
+
+  defp detail_next_action_for("ready_for_slicing", false, _open_questions, _planned, approved, _dispatched)
+       when approved > 0,
+       do: "Local dispatch pending"
+
+  defp detail_next_action_for("ready_for_slicing", _operator_mode?, _open_questions, planned, _approved, _dispatched)
+       when planned > 0,
+       do: "Approve planned slices"
+
+  defp detail_next_action_for("ready_for_slicing", _operator_mode?, _open_questions, _planned, _approved, dispatched)
+       when dispatched > 0,
+       do: "Dispatched slices active"
+
+  defp detail_next_action_for("ready_for_slicing", _operator_mode?, _open_questions, _planned, _approved, _dispatched),
+    do: "Author planned slices"
+
+  defp detail_next_action_for("sliced", true, _open_questions, _planned, approved, _dispatched)
+       when approved > 0,
+       do: "Dispatch approved slices"
+
+  defp detail_next_action_for("sliced", false, _open_questions, _planned, approved, _dispatched)
+       when approved > 0,
+       do: "Local dispatch pending"
+
+  defp detail_next_action_for("sliced", _operator_mode?, _open_questions, _planned, _approved, dispatched)
+       when dispatched > 0,
+       do: "Dispatched slices active"
+
+  defp detail_next_action_for("sliced", _operator_mode?, _open_questions, _planned, _approved, _dispatched),
+    do: "No dispatchable slices"
+
+  defp detail_next_action_for(_status, _operator_mode?, _open_questions, _planned, _approved, _dispatched),
+    do: "Review WorkRequest state"
+
+  defp detail_state_summary_for("draft", _operator_mode?, _open_questions, _planned, _approved, _dispatched),
+    do: "Draft request is waiting for the clarification path to open."
+
+  defp detail_state_summary_for(
+         "ready_for_clarification",
+         _operator_mode?,
+         open_questions,
+         _planned,
+         _approved,
+         _dispatched
+       )
+       when open_questions > 0,
+       do: "Clarification is open and needs answers before slicing."
+
+  defp detail_state_summary_for(
+         "ready_for_clarification",
+         _operator_mode?,
+         _open_questions,
+         _planned,
+         _approved,
+         _dispatched
+       ),
+       do: "Clarification is ready; capture questions or decisions before slicing."
+
+  defp detail_state_summary_for("clarifying", _operator_mode?, open_questions, _planned, _approved, _dispatched)
+       when open_questions > 0,
+       do: "Open questions are blocking the slicing path."
+
+  defp detail_state_summary_for("clarifying", _operator_mode?, _open_questions, _planned, _approved, _dispatched),
+    do: "Clarification has no open questions and can move to slicing."
+
+  defp detail_state_summary_for(
+         "human_info_needed",
+         _operator_mode?,
+         _open_questions,
+         _planned,
+         _approved,
+         _dispatched
+       ),
+       do: "The architect path is paused until the human supplies guidance."
+
+  defp detail_state_summary_for("ready_for_slicing", true, _open_questions, _planned, approved, _dispatched)
+       when approved > 0,
+       do: "Approved slices are ready for local-operator dispatch."
+
+  defp detail_state_summary_for("ready_for_slicing", false, _open_questions, _planned, approved, _dispatched)
+       when approved > 0,
+       do: "Approved slices are waiting for local-operator dispatch."
+
+  defp detail_state_summary_for("ready_for_slicing", _operator_mode?, _open_questions, planned, _approved, _dispatched)
+       when planned > 0,
+       do: "Planned slices are present and need approval before dispatch."
+
+  defp detail_state_summary_for("ready_for_slicing", _operator_mode?, _open_questions, _planned, _approved, dispatched)
+       when dispatched > 0,
+       do: "At least one slice has been dispatched into a WorkPackage."
+
+  defp detail_state_summary_for("ready_for_slicing", _operator_mode?, _open_questions, _planned, _approved, _dispatched),
+    do: "Slicing is ready but no planned slice has been authored."
+
+  defp detail_state_summary_for("sliced", true, _open_questions, _planned, approved, _dispatched)
+       when approved > 0,
+       do: "Slicing is complete; approved slices can be dispatched by the local operator."
+
+  defp detail_state_summary_for("sliced", false, _open_questions, _planned, approved, _dispatched)
+       when approved > 0,
+       do: "Slicing is complete; approved slices are waiting for local-operator dispatch."
+
+  defp detail_state_summary_for("sliced", _operator_mode?, _open_questions, _planned, _approved, dispatched)
+       when dispatched > 0,
+       do: "At least one slice has been dispatched into a WorkPackage."
+
+  defp detail_state_summary_for("sliced", _operator_mode?, _open_questions, _planned, _approved, _dispatched),
+    do: "Slicing is complete with no approved slices currently dispatchable."
+
+  defp detail_state_summary_for(_status, _operator_mode?, _open_questions, _planned, _approved, _dispatched),
+    do: "Check the current status, questions, and planned slices."
+
+  defp detail_guidance_class(page) do
+    if detail_guidance_attention?(page), do: "sympp-detail-status-hot", else: ""
+  end
+
+  defp detail_guidance_attention?(%{work_request: work_request} = page) do
+    value(work_request, :status) in ["clarifying", "human_info_needed"] and
+      detail_open_question_count(page) > 0
+  end
+
+  defp detail_guidance_attention?(_page), do: false
+
+  defp detail_guidance_label(%{work_request: work_request} = page) do
+    open_count = detail_open_question_count(page)
+
+    cond do
+      value(work_request, :status) == "human_info_needed" and open_count > 0 ->
+        "#{open_count} open, human needed"
+
+      value(work_request, :status) == "human_info_needed" ->
+        "human needed"
+
+      open_count > 0 ->
+        "#{open_count} open"
+
+      value(page.summary, :answered_question_count, 0) > 0 ->
+        "answered"
+
+      true ->
+        "none open"
+    end
+  end
+
+  defp detail_guidance_label(_page), do: "n/a"
+
+  defp detail_slicing_label(%{work_request: work_request, summary: summary}) do
+    cond do
+      value(summary, :approved_slice_count, 0) > 0 ->
+        "#{value(summary, :approved_slice_count, 0)} approved"
+
+      value(summary, :dispatched_slice_count, 0) > 0 ->
+        "#{value(summary, :dispatched_slice_count, 0)} dispatched"
+
+      value(work_request, :status) in ["ready_for_slicing", "sliced"] and value(summary, :planned_slice_count, 0) == 0 ->
+        "ready, no slices"
+
+      value(summary, :planned_slice_count, 0) > 0 ->
+        "#{value(summary, :planned_slice_count, 0)} planned"
+
+      true ->
+        "not ready"
+    end
+  end
+
+  defp detail_slicing_label(_page), do: "n/a"
+
+  defp detail_handoff_label(%{architect_handoff: handoff}, _operator_mode?) when is_map(handoff),
+    do: "prepared"
+
+  defp detail_handoff_label(%{work_request: work_request}, true) do
+    if can_create_architect_handoff?(true, nil, work_request), do: "available", else: "not eligible"
+  end
+
+  defp detail_handoff_label(_page, _operator_mode?), do: "local only"
+
+  defp detail_open_question_count(%{summary: summary}), do: value(summary, :open_question_count, 0)
+  defp detail_open_question_count(_page), do: 0
+
   defp sequence_label(item), do: "##{value(item, :sequence, "?")}"
 
   defp status_label(value) when is_binary(value), do: String.replace(value, "_", " ")
@@ -2222,6 +2497,8 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp status_class("open"), do: "state-badge state-badge-warning"
   defp status_class("human_info_needed"), do: "state-badge state-badge-warning"
   defp status_class("ready_for_clarification"), do: "state-badge state-badge-warning"
+  defp status_class("clarifying"), do: "state-badge state-badge-warning"
+  defp status_class("ready_for_slicing"), do: "state-badge state-badge-active"
   defp status_class("answered"), do: "state-badge state-badge-active"
   defp status_class("approved"), do: "state-badge state-badge-active"
   defp status_class("dispatched"), do: "state-badge state-badge-active"

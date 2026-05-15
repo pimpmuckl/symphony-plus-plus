@@ -858,8 +858,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert {:ok, approved_slice} =
              WorkRequestRepository.approve_planned_slice(Repo, request.id, planned_slice.id, "planned")
 
+    assert {:ok, second_slice} =
+             WorkRequestRepository.add_planned_slice(Repo, request.id, %{
+               title: "Dispatch follow-up slice",
+               goal: "Keep approved siblings actionable after the first dispatch.",
+               work_package_kind: "mcp",
+               target_base_branch: "main",
+               branch_pattern: "agent/SYMPP-V2-UX-005/local-operator-follow-up",
+               owned_file_globs: ["elixir/test/symphony_elixir/symphony_plus_plus/dashboard_operator_live_test.exs"],
+               forbidden_file_globs: ["elixir/lib/symphony_elixir/symphony_plus_plus/secret_handoff.ex"],
+               acceptance_criteria: ["The remaining approved slice stays dispatchable."],
+               validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/dashboard_operator_live_test.exs"],
+               review_lanes: ["review_t2"],
+               stop_conditions: ["Stop before spawning Codex."]
+             })
+
+    assert {:ok, _second_approved} =
+             WorkRequestRepository.approve_planned_slice(Repo, request.id, second_slice.id, "planned")
+
     {:ok, view, html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
 
+    assert html =~ "Dispatch approved slices"
+    assert html =~ "Approved slices are ready for local-operator dispatch."
     assert html =~ "Dispatch from WorkRequest detail"
     assert html =~ "Dispatch</button>"
 
@@ -867,6 +887,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
       render_submit(view, "dispatch_planned_slice", %{
         "slice" => %{"id" => approved_slice.id}
       })
+
+    assert html =~ "Dispatch approved slices"
+    assert html =~ "1 approved"
 
     handoff = dispatch_handoff_from_html(html)
 
@@ -892,8 +915,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute html =~ "secret_returned_once"
     refute html =~ "secret_not_persisted"
 
-    assert {:ok, [dispatched_slice]} = WorkRequestRepository.list_planned_slices(Repo, request.id)
+    assert {:ok, [dispatched_slice, remaining_slice]} = WorkRequestRepository.list_planned_slices(Repo, request.id)
     assert dispatched_slice.status == "dispatched"
+    assert remaining_slice.status == "approved"
     assert is_binary(dispatched_slice.work_package_id)
     assert %DateTime{} = dispatched_slice.dispatched_at
 
@@ -952,6 +976,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "Private architect handoff stored"
     assert html =~ "created"
     assert html =~ request.id
+    assert html =~ "Safe architect prompt"
+    assert html =~ "prepared"
     assert html =~ "phase-wr-architect-"
     assert html =~ "SYMPP-WR-ARCH-"
     assert html =~ "symphony-plus-plus:symphony-architect"
@@ -996,6 +1022,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     assert reload_html =~ "Private architect handoff stored"
     assert reload_html =~ "replayed"
+    assert reload_html =~ "Safe architect prompt"
+    assert reload_html =~ "prepared"
     assert reload_html =~ grant.id
     assert reload_html =~ "symphony-plus-plus:symphony-architect"
     assert reload_html =~ "Secret in stdout"
