@@ -41,6 +41,13 @@ repository root:
 .\scripts\refresh-local-plugin.ps1
 ```
 
+To prove the installed cache entry is package-complete and the MCP wrapper can
+start from the cache path, run:
+
+```powershell
+.\scripts\refresh-local-plugin.ps1 -ValidateInstalledCache
+```
+
 Restart or reload Codex so the refreshed skill and MCP server list is loaded.
 Existing Codex sessions may continue to show only the already-loaded skill list;
 start a new session after reload before treating missing `symphony_plus_plus`
@@ -71,16 +78,25 @@ Repo validation proves only the plugin package contract:
 - `scripts/refresh-local-plugin.ps1` copies `.mcp.json` into the installed
   `local` and manifest-version caches, and writes a non-secret
   `.sympp-source-root` hint.
+- `scripts/refresh-local-plugin.ps1 -ValidateInstalledCache` validates the
+  installed cache copies, resolves the manifest `mcpServers` pointer, checks
+  the generic `symphony_plus_plus` entry, and runs the wrapper with
+  `-ValidateOnly` from each cache root.
 - `scripts/start-sympp-mcp.ps1 -ValidateOnly` can resolve the checkout and
   launcher.
 
-Those checks do not prove that an already-running Codex host has reloaded plugin
-MCP discovery. If the manifest and installed cache contain `.mcp.json` and
-ValidateOnly passes but the plugin detail UI still lists only skills, reload
-Codex and open a new session. If a fresh host still omits `symphony_plus_plus`,
-treat it as a Codex host/plugin-UI discovery issue with the package evidence
-above; do not work around it by adding a global `[mcp_servers]` entry to generic
-worker config.
+Plugin skill visibility, MCP server registration, and current-session tool
+availability are separate states. Skill visibility proves Codex loaded the skill
+directory. MCP server registration proves the plugin manifest and installed
+`.mcp.json` advertise a startable server. Current-session tool availability
+requires the Codex host to load that MCP registration for the active session.
+The installed-cache validation proves the package and wrapper; it does not prove
+that an already-running Codex host has hot-loaded plugin MCP discovery. If the
+installed-cache validation passes but the plugin detail UI still lists only
+skills, reload Codex and open a new session. If a fresh host still omits
+`symphony_plus_plus`, treat it as a Codex host/plugin-UI discovery issue with
+the package evidence above; do not work around it by adding a global
+`[mcp_servers]` entry to generic worker config.
 
 The generic entry runs `plugins/symphony-plus-plus/scripts/start-sympp-mcp.ps1`
 through `pwsh`, the cross-platform PowerShell executable. Hosts that use the
