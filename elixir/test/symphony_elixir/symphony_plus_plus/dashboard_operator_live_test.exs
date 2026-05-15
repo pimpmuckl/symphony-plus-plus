@@ -123,6 +123,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "requests shown"
     assert html =~ ~s(href="work-requests/WR-OPERATOR-GUIDANCE")
     assert html =~ "Human Info Needed"
+    assert html =~ "Provide product guidance"
     assert html =~ "1 Q"
     assert html =~ "0 slices"
     assert html =~ package.id
@@ -172,6 +173,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "Clarify operator-only request"
     assert html =~ "Clarifying"
     assert html =~ "Ready for clarification"
+    assert html =~ "Answer open questions"
     assert html =~ "nextide/symphony-plus-plus / operator/base"
     assert html =~ "1 Q"
     assert html =~ "1 planned / 1 slices"
@@ -321,6 +323,54 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
                planned_mix_package.id
              )
 
+    dispatched_only_request =
+      create_work_request!(
+        id: "WR-LANE-DISPATCHED-ONLY",
+        title: "Dispatched only intake",
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, dispatched_only_candidate} =
+             WorkRequestRepository.add_planned_slice(Repo, dispatched_only_request.id, %{
+               title: "Dispatched only lane slice",
+               goal: "Show monitor hint after dispatch.",
+               work_package_kind: "dashboard",
+               target_base_branch: "main",
+               branch_pattern: "agent/SYMPP-V2-UX-017/dispatched-only-lane-slice",
+               acceptance_criteria: ["Lane shows monitor hint after dispatch."],
+               validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/dashboard_operator_live_test.exs"],
+               review_lanes: ["review_t1"],
+               stop_conditions: ["Stop after board rendering."]
+             })
+
+    assert {:ok, dispatched_only_approved} =
+             WorkRequestRepository.approve_planned_slice(
+               Repo,
+               dispatched_only_request.id,
+               dispatched_only_candidate.id,
+               "planned"
+             )
+
+    dispatched_only_package =
+      create_package!(
+        id: "SYMPP-V2-UX-017-DISPATCHED-ONLY",
+        kind: "dashboard",
+        title: "Dispatched only lane slice",
+        product_description: "Operator-visible request.",
+        branch_pattern: "agent/SYMPP-V2-UX-017/dispatched-only-lane-slice",
+        allowed_file_globs: [],
+        acceptance_criteria: ["Lane shows monitor hint after dispatch."]
+      )
+
+    assert {:ok, _dispatched_only_slice} =
+             WorkRequestRepository.dispatch_planned_slice(
+               Repo,
+               dispatched_only_request.id,
+               dispatched_only_approved.id,
+               "approved",
+               dispatched_only_package.id
+             )
+
     create_work_request!(
       id: "WR-LANE-HUMAN",
       title: "Human answer intake",
@@ -340,6 +390,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert lane_contains?(html, "Human Info Needed", "Human answer intake")
     assert lane_contains?(html, "Ready For Slicing", "Ready slicing intake")
     assert lane_contains?(html, "Sliced/Dispatching", "Sliced dispatch intake")
+    assert html =~ "Prepare clarification"
+    assert html =~ "Prepare architect handoff"
+    assert html =~ "Provide product guidance"
+    assert html =~ "Dispatch approved slices"
+    assert html =~ "Monitor dispatched packages"
+    assert html =~ "No dispatchable slices"
     assert html =~ "1 approved / 2 slices"
     assert html =~ "Planned mixed intake"
     assert html =~ "1 planned / 2 slices"
@@ -1824,6 +1880,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     assert response(conn, 200) =~ "Work package board"
     refute response(conn, 200) =~ "Local operator cockpit"
+    refute response(conn, 200) =~ "Provide product guidance"
     assert Plug.Conn.get_session(conn, "sympp_board_grant_id") == grant.id
     refute Plug.Conn.get_session(conn, "sympp_local_operator")
 

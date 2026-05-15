@@ -186,6 +186,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
                 <a :for={request <- lane.items} href={request.href} class="sympp-board-request-row">
                   <span class="state-badge state-badge-warning"><%= request.state %></span>
                   <strong><%= request.title %></strong>
+                  <span class="sympp-board-request-hint"><%= request.action_hint %></span>
                   <span class="muted"><%= request.repo_base %></span>
                   <span class="numeric"><%= request.questions %></span>
                   <span class="muted"><%= request.slice_signal %></span>
@@ -957,9 +958,40 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       state: status_label(Map.get(request, :status)),
       repo_base: repo_base(request),
       questions: "#{Map.get(request, :open_question_count) || 0} Q",
+      action_hint: work_request_action_hint(request),
       slice_signal: slice_signal(request)
     }
   end
+
+  defp work_request_action_hint(%{status: status} = request) when status in ["ready_for_clarification", "clarifying"] do
+    if (Map.get(request, :open_question_count) || 0) > 0 do
+      "Answer open questions"
+    else
+      "Prepare architect handoff"
+    end
+  end
+
+  defp work_request_action_hint(%{status: "draft"}), do: "Prepare clarification"
+  defp work_request_action_hint(%{status: "human_info_needed"}), do: "Provide product guidance"
+
+  defp work_request_action_hint(%{status: "ready_for_slicing"} = request) do
+    cond do
+      (Map.get(request, :approved_slice_count) || 0) > 0 -> "Dispatch approved slices"
+      (Map.get(request, :planned_slice_count) || 0) > 0 -> "Approve or refine slices"
+      (Map.get(request, :dispatched_slice_count) || 0) > 0 -> "Monitor dispatched packages"
+      true -> "Add planned slices"
+    end
+  end
+
+  defp work_request_action_hint(%{status: "sliced"} = request) do
+    cond do
+      (Map.get(request, :approved_slice_count) || 0) > 0 -> "Dispatch approved slices"
+      (Map.get(request, :dispatched_slice_count) || 0) > 0 -> "Monitor dispatched packages"
+      true -> "No dispatchable slices"
+    end
+  end
+
+  defp work_request_action_hint(_request), do: "Prepare clarification"
 
   defp guidance_items(work_requests) when is_list(work_requests) do
     work_requests
