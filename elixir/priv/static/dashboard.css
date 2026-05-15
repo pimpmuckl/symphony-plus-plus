@@ -690,6 +690,13 @@ pre,
   grid-column: 1 / -1;
 }
 
+.sympp-board-request-row .sympp-board-request-hint {
+  grid-column: 1 / -1;
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
 .sympp-operator-watchlist > div {
   display: grid;
   align-content: start;

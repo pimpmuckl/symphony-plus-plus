@@ -123,6 +123,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "requests shown"
     assert html =~ ~s(href="work-requests/WR-OPERATOR-GUIDANCE")
     assert html =~ "Human Info Needed"
+    assert html =~ "Provide product guidance"
     assert html =~ "1 Q"
     assert html =~ "0 slices"
     assert html =~ package.id
@@ -172,6 +173,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "Clarify operator-only request"
     assert html =~ "Clarifying"
     assert html =~ "Ready for clarification"
+    assert html =~ "Answer open questions"
     assert html =~ "nextide/symphony-plus-plus / operator/base"
     assert html =~ "1 Q"
     assert html =~ "1 planned / 1 slices"
@@ -340,6 +342,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert lane_contains?(html, "Human Info Needed", "Human answer intake")
     assert lane_contains?(html, "Ready For Slicing", "Ready slicing intake")
     assert lane_contains?(html, "Sliced/Dispatching", "Sliced dispatch intake")
+    assert html =~ "Prepare clarification"
+    assert html =~ "Prepare architect handoff"
+    assert html =~ "Provide product guidance"
+    assert html =~ "Dispatch approved slices"
+    assert html =~ "No dispatchable slices"
     assert html =~ "1 approved / 2 slices"
     assert html =~ "Planned mixed intake"
     assert html =~ "1 planned / 2 slices"
@@ -1824,6 +1831,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     assert response(conn, 200) =~ "Work package board"
     refute response(conn, 200) =~ "Local operator cockpit"
+    refute response(conn, 200) =~ "Provide product guidance"
     assert Plug.Conn.get_session(conn, "sympp_board_grant_id") == grant.id
     refute Plug.Conn.get_session(conn, "sympp_local_operator")
 
