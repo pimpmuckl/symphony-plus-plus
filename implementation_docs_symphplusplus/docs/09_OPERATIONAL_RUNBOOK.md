@@ -14,8 +14,11 @@ the preferred front door for this flow.
    `/sympp/board` URL.
 2. Open `/sympp/work-requests` and choose `New WorkRequest`.
 3. Enter repo and base branch explicitly, then set work type, desired dispatch
-   shape, human description, and constraints JSON. The created request is a
-   draft WorkRequest in the local ledger.
+   shape, human description, and the structured constraint fields for paths,
+   compatibility stance, validation expectations, dependencies or notes, and
+   stop conditions. Use Advanced JSON only for uncommon constraint keys or
+   complex shapes. The created request is a draft WorkRequest in the local
+   ledger.
 4. Human marks the request ready for clarification.
 5. Ask product questions, record human answers, and close stale unanswered
    questions from the WorkRequest detail page.
