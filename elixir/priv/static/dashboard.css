@@ -2163,6 +2163,11 @@ pre,
     justify-content: flex-start;
   }
 
+  .sympp-detail-header-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
   .sympp-board-summary {
     width: 100%;
     grid-auto-columns: 1fr;
@@ -2331,30 +2336,45 @@ pre,
 
   .sympp-board-summary {
     grid-auto-flow: row;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .sympp-work-request-summary,
-  .sympp-work-request-counts,
-  .sympp-work-request-meta,
-  .sympp-detail-status-rail {
+  .sympp-work-request-counts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sympp-work-request-meta {
     grid-template-columns: 1fr;
   }
 
+  .sympp-detail-status-rail {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .sympp-work-request-summary div {
-    border-left: 0;
+    border-left: 1px solid var(--line);
     border-top: 1px solid var(--line);
   }
 
-  .sympp-work-request-summary div:first-child {
+  .sympp-work-request-summary div:nth-child(odd) {
+    border-left: 0;
+  }
+
+  .sympp-work-request-summary div:nth-child(-n + 2) {
     border-top: 0;
   }
 
   .sympp-board-summary div {
-    border-left: 0;
+    border-left: 1px solid var(--line);
     border-top: 1px solid var(--line);
   }
 
-  .sympp-board-summary div:first-child {
+  .sympp-board-summary div:nth-child(odd) {
+    border-left: 0;
+  }
+
+  .sympp-board-summary div:nth-child(-n + 2) {
     border-top: 0;
   }
 
