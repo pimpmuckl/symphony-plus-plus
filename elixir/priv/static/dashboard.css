@@ -1176,6 +1176,33 @@ pre,
   gap: 0.32rem;
 }
 
+.sympp-launch-brief {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.sympp-launch-brief label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.sympp-launch-brief pre {
+  margin: 0;
+  max-width: 100%;
+  padding: 0.62rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card-muted);
+  color: var(--ink);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  overflow-x: auto;
+}
+
 .sympp-mini-row {
   display: grid;
   grid-template-columns: minmax(6.5rem, auto) minmax(3.5rem, 0.45fr) minmax(0, 1fr);
