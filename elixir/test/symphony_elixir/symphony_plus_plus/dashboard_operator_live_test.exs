@@ -369,6 +369,193 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute Map.has_key?(created.constraints, "forbidden_paths")
   end
 
+  test "local operator structured WorkRequest golden path reaches worker handoff brief" do
+    enable_operator_mode()
+    raw_secret = "raw-secret-value"
+    store_dir = Path.join(System.tmp_dir!(), "sympp-operator-golden-path-store-#{System.unique_integer([:positive])}")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+
+    on_exit(fn ->
+      restore_store_dir_env(previous_store_dir)
+      File.rm_rf(store_dir)
+    end)
+
+    {:ok, intake_view, _html} = live(local_conn(), "/sympp/work-requests/new")
+
+    render_submit(intake_view, "create_work_request", %{
+      "work_request" => %{
+        "title" => "Operator golden path",
+        "repo" => "nextide/symphony-plus-plus",
+        "base_branch" => "main",
+        "work_type" => "feature",
+        "desired_dispatch_shape" => "single_package",
+        "human_description" => "Validate the local operator flow without rendering Bearer #{raw_secret}.",
+        "allowed_paths" => "elixir/lib/symphony_elixir_web/live/sympp_work_request_live.ex\nelixir/test/symphony_elixir/symphony_plus_plus/dashboard_operator_live_test.exs",
+        "forbidden_paths" => "elixir/lib/symphony_elixir/symphony_plus_plus/secret_handoff.ex",
+        "compatibility_stance" => "Pre-production clean break is acceptable.",
+        "validation_expectations" => "Run the focused dashboard operator LiveView test.",
+        "dependencies_notes" => "Depends on current local operator WorkRequest controls.",
+        "stop_conditions" => "Stop before changing permission semantics.\nStop before automatic Codex spawning.",
+        "constraints_json" => ~s({"requires_secret":false,"operator_note":"keep local only"})
+      }
+    })
+
+    assert {redirected_path, _flash} = assert_redirect(intake_view)
+    work_request_id = redirected_path |> String.split("/") |> List.last()
+
+    assert {:ok, created} = WorkRequestRepository.get(Repo, work_request_id)
+
+    assert created.constraints == %{
+             "allowed_paths" => [
+               "elixir/lib/symphony_elixir_web/live/sympp_work_request_live.ex",
+               "elixir/test/symphony_elixir/symphony_plus_plus/dashboard_operator_live_test.exs"
+             ],
+             "forbidden_paths" => ["elixir/lib/symphony_elixir/symphony_plus_plus/secret_handoff.ex"],
+             "compatibility_stance" => "Pre-production clean break is acceptable.",
+             "validation_expectations" => "Run the focused dashboard operator LiveView test.",
+             "dependencies_notes" => "Depends on current local operator WorkRequest controls.",
+             "stop_conditions" => [
+               "Stop before changing permission semantics.",
+               "Stop before automatic Codex spawning."
+             ],
+             "requires_secret" => false,
+             "operator_note" => "keep local only"
+           }
+
+    {:ok, view, html} = live(local_conn(), "/sympp/work-requests/#{work_request_id}")
+    assert html =~ "Mark ready for clarification"
+    refute html =~ raw_secret
+
+    html = render_click(view, "mark_ready_for_clarification", %{})
+    assert html =~ "ready for clarification"
+
+    html =
+      render_submit(view, "ask_question", %{
+        "question" => %{
+          "category" => "scope",
+          "question" => "Should this remain a focused dashboard regression?",
+          "why_needed" => "The operator must confirm no product-design change is needed.",
+          "asked_by_agent_run_id" => "forged"
+        }
+      })
+
+    assert html =~ "Should this remain a focused dashboard regression?"
+    assert {:ok, [question]} = WorkRequestRepository.list_questions(Repo, work_request_id)
+    assert question.asked_by_agent_run_id == "local-operator"
+
+    html =
+      render_submit(view, "answer_question", %{
+        "question" => %{
+          "id" => question.id,
+          "current_status" => "open",
+          "answer" => "Yes, keep it to the existing local operator flow.",
+          "answered_by" => "forged-answer"
+        }
+      })
+
+    assert html =~ "Yes, keep it to the existing local operator flow."
+    assert {:ok, [answered_question]} = WorkRequestRepository.list_questions(Repo, work_request_id)
+    assert answered_question.status == "answered"
+    assert answered_question.answered_by == "local-operator"
+
+    html =
+      render_submit(view, "record_decision", %{
+        "decision" => %{
+          "source_type" => "operator",
+          "decision" => "Dispatch one focused dashboard validation package.",
+          "rationale" => "The UI can perform the path without product-design changes.",
+          "scope_impact" => "No permission or plugin packaging changes.",
+          "created_by" => "forged-decision"
+        }
+      })
+
+    assert html =~ "Dispatch one focused dashboard validation package."
+    assert {:ok, [decision]} = WorkRequestRepository.list_decisions(Repo, work_request_id)
+    assert decision.created_by == "local-operator"
+
+    html = render_click(view, "mark_ready_for_slicing", %{})
+    assert html =~ "ready for slicing"
+
+    html =
+      render_submit(view, "add_planned_slice", %{
+        "planned_slice" => %{
+          "title" => "Validate operator golden path",
+          "goal" => "Prove local structured intake can become a worker-ready package.",
+          "work_package_kind" => "mcp",
+          "target_base_branch" => "main",
+          "branch_pattern" => "agent/SYMPP-V2-E2E-001/operator-golden-path-smoke",
+          "owned_file_globs" => "elixir/test/symphony_elixir/symphony_plus_plus/dashboard_operator_live_test.exs",
+          "forbidden_file_globs" => "plugins/**\nelixir/lib/symphony_elixir/symphony_plus_plus/secret_handoff.ex",
+          "acceptance_criteria" => "WorkPackage detail shows safe worker handoff metadata and Worker Launch Brief.",
+          "validation_steps" => "mix test test/symphony_elixir/symphony_plus_plus/dashboard_operator_live_test.exs",
+          "review_lanes" => "review_t1\nreview_t2\nreview_github",
+          "stop_conditions" => "Stop before automatic Codex spawning."
+        }
+      })
+
+    assert html =~ "Validate operator golden path"
+    assert {:ok, [planned_slice]} = WorkRequestRepository.list_planned_slices(Repo, work_request_id)
+
+    html =
+      render_submit(view, "approve_planned_slice", %{
+        "slice" => %{"id" => planned_slice.id, "current_status" => "planned"}
+      })
+
+    assert html =~ "approved"
+
+    html =
+      render_submit(view, "dispatch_planned_slice", %{
+        "slice" => %{"id" => planned_slice.id}
+      })
+
+    handoff = dispatch_handoff_from_html(html)
+
+    on_exit(fn ->
+      cleanup_handoff(handoff)
+    end)
+
+    assert html =~ "Private worker handoff stored"
+    assert html =~ "local-operator-worker"
+    assert html =~ "Secret in stdout"
+    assert html =~ "false"
+    refute html =~ raw_secret
+    refute html =~ "secret_returned_once"
+    refute html =~ "secret_not_persisted"
+    assert_handoff_store_dir!(handoff, store_dir)
+
+    assert {:ok, [dispatched_slice]} = WorkRequestRepository.list_planned_slices(Repo, work_request_id)
+    assert dispatched_slice.status == "dispatched"
+    assert %DateTime{} = dispatched_slice.dispatched_at
+    assert is_binary(dispatched_slice.work_package_id)
+
+    assert {:ok, work_package} = WorkPackageRepository.get(Repo, dispatched_slice.work_package_id)
+    assert work_package.status == "ready_for_worker"
+    assert work_package.branch_pattern == "agent/SYMPP-V2-E2E-001/operator-golden-path-smoke"
+
+    assert {:ok, grants} = AccessGrantRepository.list_for_work_package(Repo, work_package.id)
+    worker_grant = Enum.find(grants, &(&1.grant_role == "worker"))
+    assert worker_grant.display_key
+
+    on_exit(fn ->
+      cleanup_handoff_by_grant(work_package, worker_grant)
+    end)
+
+    {:ok, _detail_view, detail_html} = live(local_conn(), "/sympp/work-packages/#{work_package.id}")
+
+    assert detail_html =~ "Worker Handoff"
+    assert detail_html =~ "Worker Launch Brief"
+    assert detail_html =~ "Package: #{work_package.id}"
+    assert detail_html =~ "Worker branch: agent/SYMPP-V2-E2E-001/operator-golden-path-smoke"
+    assert detail_html =~ "Required skill: symphony-plus-plus:symphony-work-package"
+    assert detail_html =~ "Safety: do not paste raw work-key secrets"
+    assert detail_html =~ handoff["target"]
+    assert detail_html =~ "Run MCP"
+    refute detail_html =~ raw_secret
+    refute detail_html =~ "secret_returned_once"
+    refute detail_html =~ "secret_not_persisted"
+  end
+
   test "local operator initializes a missing configured ledger as an empty cockpit" do
     enable_operator_mode()
 
