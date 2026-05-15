@@ -769,14 +769,10 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
   defp brief_value(value) when is_binary(value) do
     value =
       value
-      |> String.replace(~r/\s+/, " ")
+      |> String.replace(~r/[\r\n\t\f\v\x{85}\x{2028}\x{2029}]+/u, " ")
       |> String.trim()
 
-    cond do
-      value in ["", "n/a"] -> nil
-      String.length(value) > 240 -> String.slice(value, 0, 240) <> "..."
-      true -> value
-    end
+    if value in ["", "n/a"], do: nil, else: value
   end
 
   defp brief_value(value) when is_boolean(value) or is_number(value), do: to_string(value)
