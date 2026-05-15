@@ -577,6 +577,71 @@ pre,
   gap: 0.75rem;
 }
 
+.sympp-board-request-panel {
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
+  padding: 0.82rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: var(--shadow-sm);
+}
+
+.sympp-board-request-panel header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.sympp-board-request-panel h2 {
+  margin: 0;
+  font-size: 0.94rem;
+  line-height: 1.2;
+}
+
+.sympp-board-request-panel p {
+  margin: 0.16rem 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.sympp-board-request-panel header a {
+  color: var(--accent-ink);
+  font-size: 0.82rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.sympp-board-request-list {
+  display: grid;
+  min-width: 0;
+}
+
+.sympp-board-request-row {
+  display: grid;
+  grid-template-columns: minmax(7rem, auto) minmax(0, 1fr) minmax(0, 0.7fr) minmax(7rem, auto);
+  gap: 0.55rem;
+  align-items: center;
+  min-width: 0;
+  padding: 0.52rem 0;
+  border-top: 1px solid var(--line);
+  font-size: 0.84rem;
+}
+
+.sympp-board-request-row:first-child {
+  border-top: 0;
+}
+
+.sympp-board-request-row strong,
+.sympp-board-request-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .sympp-operator-watchlist > div {
   display: grid;
   align-content: start;
@@ -1672,6 +1737,7 @@ pre,
   .sympp-work-request-header,
   .sympp-operator-priority,
   .sympp-operator-watchlist,
+  .sympp-board-request-row,
   .sympp-work-request-detail,
   .sympp-work-request-grid,
   .sympp-work-request-row,
@@ -1700,7 +1766,9 @@ pre,
   }
 
   .sympp-watch-row strong,
-  .sympp-watch-row span {
+  .sympp-watch-row span,
+  .sympp-board-request-row strong,
+  .sympp-board-request-row span {
     white-space: normal;
     overflow-wrap: anywhere;
   }

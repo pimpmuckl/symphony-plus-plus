@@ -116,6 +116,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ ~s(href="board?auth=work_key")
     assert html =~ "Product Guidance Needed"
     assert html =~ "Blockers"
+    assert html =~ "WorkRequests"
+    assert html =~ "operation total"
+    assert html =~ "operation shown"
+    assert html =~ "packages shown"
+    assert html =~ "requests shown"
+    assert html =~ ~s(href="work-requests/WR-OPERATOR-GUIDANCE")
+    assert html =~ "1 Q / 0 slices"
     assert html =~ package.id
     assert html =~ ~s(href="work-packages/#{package.id}")
     assert Regex.scan(~r/\[REDACTED\]/, html) |> length() >= 2
@@ -123,6 +130,56 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute html =~ "ghp_raw_secret_value"
     refute html =~ "Board access"
     refute html =~ ~s(name="work_key")
+  end
+
+  test "local operator board counts and renders WorkRequests when no packages are visible" do
+    enable_operator_mode()
+
+    request =
+      create_work_request!(
+        id: "WR-OPERATOR-ONLY",
+        title: "Clarify operator-only request",
+        status: "ready_for_clarification",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "operator/base"
+      )
+
+    assert {:ok, _question} =
+             WorkRequestRepository.ask_question(Repo, request.id, %{
+               category: "product",
+               question: "Which slice should lead?",
+               why_needed: "The operator needs the request visible before packages exist."
+             })
+
+    assert {:ok, _slice} =
+             WorkRequestRepository.add_planned_slice(Repo, request.id, %{
+               title: "Operator-only slice",
+               goal: "Keep WorkRequest state visible before dispatch.",
+               work_package_kind: "dashboard",
+               target_base_branch: "operator/base",
+               branch_pattern: "agent/SYMPP-V2-UX-012/operator-board-workrequests",
+               acceptance_criteria: ["The cockpit counts the WorkRequest."],
+               validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/dashboard_operator_live_test.exs"],
+               review_lanes: ["review_t1"],
+               stop_conditions: ["Stop before dispatch."]
+             })
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/board")
+
+    assert html =~ "Local operator cockpit"
+    assert html =~ "Clarify operator-only request"
+    assert html =~ "Ready for clarification"
+    assert html =~ "nextide/symphony-plus-plus / operator/base"
+    assert html =~ "1 Q / 1 slices"
+    assert html =~ ~s(href="work-requests/WR-OPERATOR-ONLY")
+    assert html =~ ~s(<option value="nextide/symphony-plus-plus")
+    assert html =~ ~r/<span class="sympp-board-count numeric">\s*1\s*<\/span>\s*<span class="muted">operation total<\/span>/
+    assert html =~ ~r/<span class="sympp-board-count numeric">\s*1\s*<\/span>\s*<span class="muted">operation shown<\/span>/
+    assert html =~ ~r/<span class="sympp-board-count numeric">\s*0\s*<\/span>\s*<span class="muted">packages shown<\/span>/
+    assert html =~ ~r/<span class="sympp-board-count numeric">\s*1\s*<\/span>\s*<span class="muted">requests shown<\/span>/
+    refute html =~ ~r/<span class="sympp-board-count numeric">\s*0\s*<\/span>\s*<span class="muted">total<\/span>/
+    refute html =~ ~r/<span class="sympp-board-count numeric">\s*0\s*<\/span>\s*<span class="muted">shown<\/span>/
+    refute html =~ "Board access"
   end
 
   test "local operator board shows human-info guidance requests from packages" do
@@ -294,8 +351,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert File.exists?(missing_database_path)
     assert html =~ "Local operator cockpit"
     assert html =~ "No work packages match the current board filters."
-    assert html =~ ~r/<span class="sympp-board-count numeric">\s*0\s*<\/span>\s*<span class="muted">total<\/span>/
-    assert html =~ ~r/<span class="sympp-board-count numeric">\s*0\s*<\/span>\s*<span class="muted">shown<\/span>/
+    assert html =~ ~r/<span class="sympp-board-count numeric">\s*0\s*<\/span>\s*<span class="muted">operation total<\/span>/
+    assert html =~ ~r/<span class="sympp-board-count numeric">\s*0\s*<\/span>\s*<span class="muted">operation shown<\/span>/
+    assert html =~ ~r/<span class="sympp-board-count numeric">\s*0\s*<\/span>\s*<span class="muted">packages shown<\/span>/
+    assert html =~ ~r/<span class="sympp-board-count numeric">\s*0\s*<\/span>\s*<span class="muted">requests shown<\/span>/
     assert html =~ ~r/<span class="muted">Guidance needed<\/span>\s*<strong class="numeric">\s*0\s*<\/strong>/
     assert html =~ ~r/<span class="muted">Active blockers<\/span>\s*<strong class="numeric">\s*0\s*<\/strong>/
     assert html =~ ~r/<span class="muted">Review or ready<\/span>\s*<strong class="numeric">\s*0\s*<\/strong>/
@@ -1121,7 +1180,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     create_work_request!(
       id: "WR-OPERATOR-EMPTY-STREAM",
-      title: "Hidden empty stream guidance",
+      title: "Request-only stream guidance",
       repo: "nextide/symphony-plus-plus",
       base_branch: "feature/no-visible-package",
       status: "human_info_needed"
@@ -1131,9 +1190,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     assert html =~ "Visible repo package"
     assert html =~ "Visible guidance request"
+    assert html =~ "Request-only stream guidance"
     refute html =~ "Hidden repo blocker"
     refute html =~ "Hidden guidance request"
-    refute html =~ "Hidden empty stream guidance"
   end
 
   test "local operator guidance watchlist hides unsupported package kind filters" do

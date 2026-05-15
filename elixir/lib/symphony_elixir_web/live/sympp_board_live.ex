@@ -78,12 +78,20 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
           <div class="sympp-board-summary">
             <div>
-              <span class="sympp-board-count numeric"><%= @board.total_count %></span>
-              <span class="muted">total</span>
+              <span class="sympp-board-count numeric"><%= Map.get(@board, :operation_total_count, @board.total_count) %></span>
+              <span class="muted"><%= if @operator_mode?, do: "operation total", else: "total" %></span>
             </div>
             <div>
+              <span class="sympp-board-count numeric"><%= Map.get(@board, :operation_visible_count, @board.visible_count) %></span>
+              <span class="muted"><%= if @operator_mode?, do: "operation shown", else: "shown" %></span>
+            </div>
+            <div :if={@operator_mode?}>
               <span class="sympp-board-count numeric"><%= @board.visible_count %></span>
-              <span class="muted">shown</span>
+              <span class="muted">packages shown</span>
+            </div>
+            <div :if={@operator_mode?}>
+              <span class="sympp-board-count numeric"><%= Map.get(@board, :work_request_visible_count, 0) %></span>
+              <span class="muted">requests shown</span>
             </div>
             <div :if={phase_progress(Map.get(@board, :phase_summary, %{}))}>
               <span class="sympp-board-count numeric"><%= phase_progress(Map.get(@board, :phase_summary, %{})) %> children merged</span>
@@ -158,6 +166,25 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
           </div>
         </section>
 
+        <section :if={@operator_mode? and @board.work_request_items != []} class="sympp-board-request-panel" aria-label="WorkRequests">
+          <header>
+            <div>
+              <h2>WorkRequests</h2>
+              <p>Clarification and slicing work visible to the local operator.</p>
+            </div>
+            <a href="work-requests">Open all</a>
+          </header>
+
+          <div class="sympp-board-request-list">
+            <a :for={request <- @board.work_request_items} href={request.href} class="sympp-board-request-row">
+              <span class="state-badge state-badge-warning"><%= request.state %></span>
+              <strong><%= request.title %></strong>
+              <span class="muted"><%= request.repo_base %></span>
+              <span class="numeric"><%= request.counts %></span>
+            </a>
+          </div>
+        </section>
+
         <section :if={@operator_mode? and (@board.guidance_items != [] or @board.blocker_items != [])} class="sympp-operator-watchlist">
           <div>
             <h2>Product Guidance Needed</h2>
@@ -179,9 +206,13 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
           </div>
         </section>
 
-        <%= if @board.visible_count == 0 do %>
+        <%= if @board.visible_count == 0 and Map.get(@board, :work_request_visible_count, 0) == 0 do %>
           <p class="sympp-empty-state">No work packages match the current board filters.</p>
         <% else %>
+          <p :if={@board.visible_count == 0} class="sympp-empty-state">No work packages match the current board filters.</p>
+        <% end %>
+
+        <%= if @board.visible_count > 0 do %>
           <div class="sympp-board-columns" style={"--sympp-column-count: #{@board.column_count};"}>
             <section :for={column <- @board.columns} class="sympp-board-column">
               <header class="sympp-column-header">
@@ -840,13 +871,18 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp operator_board_view(%{board: board, work_requests: work_requests, guidance_requests: guidance_requests}, filters) do
-    view = board_view(board, filters)
+    all_requests = Map.get(work_requests, :work_requests, [])
+    view = board |> board_view(filters) |> operator_filter_options(all_requests)
     visible_cards = visible_cards(view)
     visible_streams = visible_cards |> Enum.map(&stream_key/1) |> Enum.reject(&is_nil/1) |> MapSet.new()
-    visible_requests = work_requests |> Map.get(:work_requests, []) |> filter_work_requests(filters, visible_streams)
+    visible_requests = filter_work_requests(all_requests, filters, visible_streams)
     visible_guidance_requests = guidance_requests |> Map.get(:guidance_requests, []) |> filter_guidance_requests(visible_cards)
 
     Map.merge(view, %{
+      operation_total_count: view.total_count + length(all_requests),
+      operation_visible_count: view.visible_count + length(visible_requests),
+      work_request_visible_count: length(visible_requests),
+      work_request_items: work_request_items(visible_requests),
       guidance_items: guidance_items(visible_requests) ++ package_guidance_items(visible_guidance_requests),
       blocker_items: blocker_items(visible_cards),
       review_ready_count: review_ready_count(visible_cards),
@@ -855,6 +891,31 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp visible_cards(%{columns: columns}) when is_list(columns), do: Enum.flat_map(columns, & &1.cards)
+
+  defp operator_filter_options(view, work_requests) when is_list(work_requests) do
+    request_repos = sorted_present_values(work_requests, &Map.get(&1, :repo))
+
+    filter_options =
+      Map.update!(view.filter_options, :repos, fn repos ->
+        ((repos || []) ++ request_repos)
+        |> Enum.uniq()
+        |> Enum.sort()
+      end)
+
+    %{view | filter_options: filter_options}
+  end
+
+  defp work_request_items(work_requests) when is_list(work_requests) do
+    Enum.map(work_requests, fn request ->
+      %{
+        href: "work-requests/#{path_segment(Map.get(request, :id))}",
+        title: Map.get(request, :title) || Map.get(request, :id) || "Untitled WorkRequest",
+        state: status_label(Map.get(request, :status)),
+        repo_base: repo_base(request),
+        counts: "#{Map.get(request, :open_question_count) || 0} Q / #{slice_total(request)} slices"
+      }
+    end)
+  end
 
   defp guidance_items(work_requests) when is_list(work_requests) do
     work_requests
@@ -939,12 +1000,8 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     matches_filter?(Map.get(request, :repo), filters.repo) and matches_package_scope?(request, filters, visible_streams)
   end
 
-  defp matches_package_scope?(request, %{repo: @empty_filter, kind: @empty_filter, phase: @empty_filter}, _visible_streams) do
+  defp matches_package_scope?(request, %{kind: @empty_filter, phase: @empty_filter}, _visible_streams) do
     not is_nil(stream_key(request))
-  end
-
-  defp matches_package_scope?(request, %{kind: @empty_filter, phase: @empty_filter}, visible_streams) do
-    MapSet.member?(visible_streams, stream_key(request))
   end
 
   defp matches_package_scope?(_request, _filters, _visible_streams), do: false
@@ -972,6 +1029,10 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       column_count: 1,
       columns: [],
       filter_options: %{kinds: [], repos: [], phases: []},
+      operation_total_count: 0,
+      operation_visible_count: 0,
+      work_request_visible_count: 0,
+      work_request_items: [],
       guidance_items: [],
       blocker_items: [],
       review_ready_count: 0,
