@@ -757,12 +757,30 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     if length(lines) > 1, do: Enum.join(lines, "\n")
   end
 
-  defp brief_line(_label, nil), do: nil
-  defp brief_line(_label, ""), do: nil
-  defp brief_line(_label, "n/a"), do: nil
-  defp brief_line(label, value), do: "#{label}: #{value}"
+  defp brief_line(label, value) do
+    case brief_value(value) do
+      nil -> nil
+      value -> "#{label}: #{value}"
+    end
+  end
 
   defp brief_item({label, value}), do: brief_line(label, value)
+
+  defp brief_value(value) when is_binary(value) do
+    value =
+      value
+      |> String.replace(~r/\s+/, " ")
+      |> String.trim()
+
+    cond do
+      value in ["", "n/a"] -> nil
+      String.length(value) > 240 -> String.slice(value, 0, 240) <> "..."
+      true -> value
+    end
+  end
+
+  defp brief_value(value) when is_boolean(value) or is_number(value), do: to_string(value)
+  defp brief_value(_value), do: nil
 
   defp package_reference(work_package) do
     [map_value(work_package, :id), map_value(work_package, :title)]
