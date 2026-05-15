@@ -20,6 +20,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service, as: SoloSessionsService
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
@@ -40,6 +43,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   @dropped_child_statuses ["abandoned"]
   @non_open_child_statuses ["merged_into_phase", "closed", "abandoned"]
   @work_request_count_chunk_size 500
+  @solo_session_query_chunk_size 500
+  @solo_session_snippet_limit 120
 
   @type repo :: module()
   @type dashboard_error :: :not_found | :forbidden | :database_busy | {:storage_failed, String.t()} | term()
@@ -105,6 +110,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            total_count: length(cards)
          }}
       end
+    end)
+  end
+
+  @spec solo_sessions(repo()) :: {:ok, map()} | {:error, dashboard_error()}
+  @spec solo_sessions(repo(), map()) :: {:ok, map()} | {:error, dashboard_error()}
+  def solo_sessions(repo, filters \\ %{}) when is_atom(repo) and is_map(filters) do
+    safe_read(fn ->
+      with {:ok, sessions} <- SoloSessionsService.list(repo, filters),
+           {:ok, cards} <- solo_session_cards(repo, sessions) do
+        {:ok,
+         %{
+           solo_sessions: cards,
+           total_count: length(cards)
+         }}
+      end
+    end)
+  end
+
+  @spec solo_session_repos(repo()) :: {:ok, [String.t()]} | {:error, dashboard_error()}
+  def solo_session_repos(repo) when is_atom(repo) do
+    safe_read(fn ->
+      repos =
+        repo.all(
+          from(session in SoloSession,
+            where: not is_nil(session.repo) and session.repo != "",
+            distinct: true,
+            order_by: [asc: session.repo],
+            select: session.repo
+          )
+        )
+
+      {:ok, repos}
+    end)
+  end
+
+  @spec solo_session_count(repo()) :: {:ok, non_neg_integer()} | {:error, dashboard_error()}
+  def solo_session_count(repo) when is_atom(repo) do
+    safe_read(fn ->
+      count =
+        repo.one(
+          from(session in SoloSession,
+            select: count(session.id)
+          )
+        )
+
+      {:ok, count || 0}
     end)
   end
 
@@ -842,6 +893,152 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       updated_at: timestamp(work_request.updated_at)
     })
   end
+
+  defp solo_session_cards(repo, sessions) do
+    session_ids = Enum.map(sessions, & &1.id)
+
+    with {:ok, entry_counts} <- solo_session_entry_counts(repo, session_ids),
+         {:ok, latest_entries} <- latest_solo_session_entries(repo, session_ids) do
+      cards =
+        Enum.map(sessions, fn %SoloSession{} = session ->
+          solo_session_card(session, Map.get(entry_counts, session.id, []), Map.get(latest_entries, session.id))
+        end)
+
+      {:ok, cards}
+    end
+  end
+
+  defp solo_session_entry_counts(_repo, []), do: {:ok, %{}}
+
+  defp solo_session_entry_counts(repo, session_ids) do
+    rows =
+      session_ids
+      |> Enum.chunk_every(@solo_session_query_chunk_size)
+      |> Enum.flat_map(fn chunk ->
+        repo.all(
+          from(entry in SoloSessionEntry,
+            where: entry.solo_session_id in ^chunk,
+            group_by: [entry.solo_session_id, entry.entry_kind],
+            select: {entry.solo_session_id, entry.entry_kind, count(entry.id)}
+          )
+        )
+      end)
+
+    counts =
+      Enum.reduce(rows, %{}, fn {session_id, kind, count}, acc ->
+        entry_count = %{kind: kind || "unknown", label: status_label(kind || "unknown"), count: count}
+        Map.update(acc, session_id, [entry_count], &[entry_count | &1])
+      end)
+      |> Map.new(fn {session_id, counts} ->
+        {session_id, Enum.sort_by(counts, & &1.kind)}
+      end)
+
+    {:ok, counts}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp latest_solo_session_entries(_repo, []), do: {:ok, %{}}
+
+  defp latest_solo_session_entries(repo, session_ids) do
+    entries =
+      session_ids
+      |> Enum.chunk_every(@solo_session_query_chunk_size)
+      |> Enum.flat_map(fn chunk -> repo.all(latest_solo_session_entries_query(chunk)) end)
+
+    {:ok, Map.new(entries, &{&1.solo_session_id, solo_session_entry(&1)})}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp latest_solo_session_entries_query(session_ids) do
+    from(entry in SoloSessionEntry,
+      where: entry.solo_session_id in ^session_ids,
+      where:
+        entry.sequence ==
+          fragment(
+            """
+            SELECT MAX(latest.sequence)
+            FROM sympp_solo_session_entries AS latest
+            WHERE latest.solo_session_id = ?
+            """,
+            entry.solo_session_id
+          ),
+      order_by: [asc: entry.solo_session_id, desc: entry.created_at, desc: entry.id],
+      select: %{
+        solo_session_id: entry.solo_session_id,
+        entry_kind: entry.entry_kind,
+        status: entry.status,
+        title: entry.title,
+        body: entry.body,
+        created_at: entry.created_at
+      }
+    )
+  end
+
+  defp solo_session_card(%SoloSession{} = session, entry_counts, latest_entry) do
+    %{
+      id: session.id,
+      title: solo_session_title(session),
+      repo: session.repo,
+      base_branch: session.base_branch,
+      caller_id: redacted_text(session.caller_id),
+      status: session.status,
+      last_activity_at: timestamp(session.last_activity_at),
+      inserted_at: timestamp(session.inserted_at),
+      updated_at: timestamp(session.updated_at),
+      entry_counts: entry_counts,
+      latest_entry: latest_entry
+    }
+  end
+
+  defp solo_session_title(%SoloSession{title: title, id: id}) do
+    title
+    |> redacted_text()
+    |> present_text()
+    |> Kernel.||(id)
+  end
+
+  defp solo_session_entry(entry) when is_map(entry) do
+    %{
+      kind: Map.get(entry, :entry_kind),
+      kind_label: status_label(Map.get(entry, :entry_kind)),
+      status: Map.get(entry, :status),
+      title: entry |> Map.get(:title) |> redacted_text() |> snippet(@solo_session_snippet_limit),
+      body: entry |> Map.get(:body) |> redacted_text() |> snippet(@solo_session_snippet_limit),
+      created_at: entry |> Map.get(:created_at) |> timestamp()
+    }
+  end
+
+  defp present_text(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
+
+  defp present_text(_value), do: nil
+
+  defp snippet(nil, _limit), do: nil
+
+  defp snippet(value, limit) when is_binary(value) do
+    value =
+      value
+      |> String.replace(~r/\s+/, " ")
+      |> String.trim()
+
+    cond do
+      value == "" -> nil
+      String.length(value) <= limit -> value
+      true -> String.slice(value, 0, max(limit - 3, 0)) <> "..."
+    end
+  end
+
+  defp status_label(status) when is_binary(status) do
+    status
+    |> String.replace("_", " ")
+    |> String.capitalize()
+  end
+
+  defp status_label(status), do: to_string(status)
 
   defp human_guidance_request_cards(repo) do
     rows =

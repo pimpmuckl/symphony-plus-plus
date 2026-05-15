@@ -166,6 +166,48 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
           </div>
         </section>
 
+        <section :if={@operator_mode? and @board.solo_session_lanes != []} class="sympp-solo-session-panel" aria-label="Solo Sessions">
+          <header>
+            <div>
+              <h2>Solo Sessions</h2>
+              <p>Local single-agent planning sessions, separate from orchestrated work.</p>
+            </div>
+            <span class="numeric"><%= @board.solo_session_visible_count %> shown</span>
+          </header>
+
+          <div class="sympp-solo-session-lanes">
+            <section :for={lane <- @board.solo_session_lanes} class="sympp-solo-session-lane">
+              <header>
+                <h3><%= lane.label %></h3>
+                <span class="numeric"><%= lane.count %></span>
+              </header>
+
+              <article :for={session <- lane.items} class="sympp-solo-session-row">
+                <div class="sympp-solo-session-topline">
+                  <strong><%= session.title %></strong>
+                  <span class="state-badge"><%= status_label(session.status) %></span>
+                </div>
+                <div class="sympp-solo-session-meta">
+                  <span><%= session.id %></span>
+                  <span><%= repo_base(session) %></span>
+                  <span><%= session.caller_id || "unknown caller" %></span>
+                  <span class="numeric"><%= relative_time(session.last_activity_at) %></span>
+                </div>
+                <p :if={session.latest_entry} class="sympp-solo-session-latest">
+                  <span><%= session.latest_entry.kind_label %></span>
+                  <%= session.latest_entry.title || session.latest_entry.body || "No entry summary" %>
+                </p>
+                <div :if={session.entry_counts != []} class="sympp-solo-session-counts">
+                  <span :for={entry_count <- session.entry_counts}>
+                    <%= entry_count.label %> <%= entry_count.count %>
+                  </span>
+                </div>
+              </article>
+              <p :if={lane.more_count > 0} class="sympp-solo-session-more"><%= lane.more_count %> more <%= lane.label %> sessions</p>
+            </section>
+          </div>
+        </section>
+
         <section :if={@operator_mode? and @board.work_request_lanes != []} class="sympp-board-request-panel" aria-label="WorkRequests">
           <header>
             <div>
@@ -217,10 +259,8 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
           </div>
         </section>
 
-        <%= if @board.visible_count == 0 and Map.get(@board, :work_request_visible_count, 0) == 0 do %>
+        <%= if @board.visible_count == 0 and Map.get(@board, :work_request_visible_count, 0) == 0 and Map.get(@board, :solo_session_visible_count, 0) == 0 do %>
           <p class="sympp-empty-state">No work packages match the current board filters.</p>
-        <% else %>
-          <p :if={@board.visible_count == 0} class="sympp-empty-state">No work packages match the current board filters.</p>
         <% end %>
 
         <%= if @board.visible_count > 0 do %>
@@ -324,8 +364,19 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       fn repo ->
         with {:ok, board} <- Dashboard.board(repo),
              {:ok, work_requests} <- Dashboard.work_requests(repo),
-             {:ok, guidance_requests} <- Dashboard.human_guidance_requests(repo) do
-          {:ok, %{board: board, work_requests: work_requests, guidance_requests: guidance_requests}}
+             {:ok, guidance_requests} <- Dashboard.human_guidance_requests(repo),
+             {:ok, solo_sessions} <- Dashboard.solo_sessions(repo, solo_session_dashboard_filters(filters)),
+             {:ok, solo_session_repos} <- Dashboard.solo_session_repos(repo),
+             {:ok, solo_session_total_count} <- Dashboard.solo_session_count(repo) do
+          {:ok,
+           %{
+             board: board,
+             work_requests: work_requests,
+             guidance_requests: guidance_requests,
+             solo_sessions: solo_sessions,
+             solo_session_repos: solo_session_repos,
+             solo_session_total_count: solo_session_total_count
+           }}
         end
       end,
       initialize_missing?: true
@@ -337,6 +388,12 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp load_board(_filters, _grant), do: empty_board("Board access expired. Reload and enter a current board work key.")
+
+  defp solo_session_dashboard_filters(%{repo: repo}) when is_binary(repo) and repo != @empty_filter do
+    %{"repo" => repo}
+  end
+
+  defp solo_session_dashboard_filters(_filters), do: %{}
 
   defp phase_board_for_grant(repo, %AccessGrant{} = grant) do
     with {:ok, phase_id} <- phase_scope(repo, grant) do
@@ -881,39 +938,71 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     }
   end
 
-  defp operator_board_view(%{board: board, work_requests: work_requests, guidance_requests: guidance_requests}, filters) do
+  defp operator_board_view(%{board: board, work_requests: work_requests, guidance_requests: guidance_requests} = payload, filters) do
     all_requests = Map.get(work_requests, :work_requests, [])
-    view = board |> board_view(filters) |> operator_filter_options(all_requests)
+    all_solo_sessions = payload |> Map.get(:solo_sessions, %{}) |> Map.get(:solo_sessions, [])
+    solo_session_repos = Map.get(payload, :solo_session_repos, [])
+    solo_session_total_count = Map.get(payload, :solo_session_total_count, length(all_solo_sessions))
+    view = board |> board_view(filters) |> operator_filter_options(all_requests, solo_session_repos)
     visible_cards = visible_cards(view)
     visible_streams = visible_cards |> Enum.map(&stream_key/1) |> Enum.reject(&is_nil/1) |> MapSet.new()
     visible_requests = filter_work_requests(all_requests, filters, visible_streams)
     visible_guidance_requests = guidance_requests |> Map.get(:guidance_requests, []) |> filter_guidance_requests(visible_cards)
+    visible_solo_sessions = filter_solo_sessions(all_solo_sessions, filters)
+    solo_session_lanes = solo_session_lanes(visible_solo_sessions)
+    solo_session_shown_count = solo_session_shown_count(solo_session_lanes)
 
     Map.merge(view, %{
-      operation_total_count: view.total_count + length(all_requests),
-      operation_visible_count: view.visible_count + length(visible_requests),
+      operation_total_count: view.total_count + length(all_requests) + solo_session_total_count,
+      operation_visible_count: view.visible_count + length(visible_requests) + solo_session_shown_count,
       work_request_visible_count: length(visible_requests),
       work_request_lanes: work_request_lanes(visible_requests),
       guidance_items: guidance_items(visible_requests) ++ package_guidance_items(visible_guidance_requests),
       blocker_items: blocker_items(visible_cards),
       review_ready_count: review_ready_count(visible_cards),
-      work_stream_count: work_stream_count(visible_cards, visible_requests ++ visible_guidance_requests)
+      work_stream_count: work_stream_count(visible_cards, visible_requests ++ visible_guidance_requests),
+      solo_session_total_count: solo_session_total_count,
+      solo_session_visible_count: solo_session_shown_count,
+      solo_session_lanes: solo_session_lanes
     })
   end
 
   defp visible_cards(%{columns: columns}) when is_list(columns), do: Enum.flat_map(columns, & &1.cards)
 
-  defp operator_filter_options(view, work_requests) when is_list(work_requests) do
+  defp operator_filter_options(view, work_requests, solo_session_repos) when is_list(work_requests) and is_list(solo_session_repos) do
     request_repos = sorted_present_values(work_requests, &Map.get(&1, :repo))
 
     filter_options =
       Map.update!(view.filter_options, :repos, fn repos ->
-        ((repos || []) ++ request_repos)
+        ((repos || []) ++ request_repos ++ solo_session_repos)
         |> Enum.uniq()
         |> Enum.sort()
       end)
 
     %{view | filter_options: filter_options}
+  end
+
+  defp solo_session_lanes(solo_sessions) when is_list(solo_sessions) do
+    grouped = Enum.group_by(solo_sessions, &Map.get(&1, :status))
+
+    ["active", "paused", "completed", "archived"]
+    |> Enum.map(fn status ->
+      all_items = Map.get(grouped, status, [])
+      items = Enum.take(all_items, 8)
+
+      %{
+        status: status,
+        label: status_label(status),
+        count: length(all_items),
+        items: items,
+        more_count: max(length(all_items) - length(items), 0)
+      }
+    end)
+    |> Enum.reject(&(&1.items == []))
+  end
+
+  defp solo_session_shown_count(lanes) when is_list(lanes) do
+    Enum.reduce(lanes, 0, fn lane, count -> count + length(Map.get(lane, :items, [])) end)
   end
 
   defp work_request_lanes(work_requests) when is_list(work_requests) do
@@ -1072,6 +1161,10 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   defp filter_work_requests(_work_requests, _filters, _visible_streams), do: []
 
+  defp filter_solo_sessions(solo_sessions, filters) when is_list(solo_sessions) do
+    Enum.filter(solo_sessions, &matches_filter?(Map.get(&1, :repo), filters.repo))
+  end
+
   defp matches_work_request_filters?(request, filters, visible_streams) do
     matches_filter?(Map.get(request, :repo), filters.repo) and matches_package_scope?(request, filters, visible_streams)
   end
@@ -1133,7 +1226,10 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       guidance_items: [],
       blocker_items: [],
       review_ready_count: 0,
-      work_stream_count: 0
+      work_stream_count: 0,
+      solo_session_total_count: 0,
+      solo_session_visible_count: 0,
+      solo_session_lanes: []
     }
   end
 

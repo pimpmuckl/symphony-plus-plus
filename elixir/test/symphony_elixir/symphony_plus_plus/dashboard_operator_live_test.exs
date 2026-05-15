@@ -21,6 +21,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service, as: SoloSessionsService
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
@@ -62,6 +65,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     Repo.delete_all(DecisionLogEntry)
     Repo.delete_all(ClarificationQuestion)
     Repo.delete_all(WorkRequest)
+    Repo.delete_all(SoloSessionEntry)
+    Repo.delete_all(SoloSession)
     Repo.delete_all(AgentRun)
     Repo.delete_all(Artifact)
     Repo.delete_all(ProgressEvent)
@@ -425,6 +430,152 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert lane_contains?(html, "Human Info Needed", "Visible lane request")
     refute html =~ "Hidden lane request"
     assert html =~ ~r/<span class="sympp-board-count numeric">\s*1\s*<\/span>\s*<span class="muted">requests shown<\/span>/
+  end
+
+  test "local operator board shows compact Solo Sessions grouped by lifecycle" do
+    enable_operator_mode()
+
+    active =
+      create_solo_session!(
+        caller_id: "codex-local",
+        title: "Active local planning",
+        status: "active",
+        entries: [
+          %{entry_kind: "task_plan", title: "Plan first pass", status: "in_progress"},
+          %{
+            entry_kind: "progress",
+            title: "Latest contains ghp_raw_secret_value and should redact",
+            body: "This progress body is intentionally long so the cockpit summary truncates it before it becomes a detail view or payload dump.",
+            status: "recorded"
+          }
+        ]
+      )
+
+    create_solo_session!(caller_id: "codex-paused", title: "Paused local planning", status: "paused")
+    create_solo_session!(caller_id: "codex-complete", title: "Completed local planning", status: "completed")
+    create_solo_session!(caller_id: "codex-archive", title: "Archived local planning", status: "archived")
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/board")
+
+    assert html =~ "Solo Sessions"
+    assert html =~ "Local single-agent planning sessions"
+    refute html =~ "No work packages match the current board filters."
+    assert html =~ ~r/<span class="sympp-board-count numeric">\s*4\s*<\/span>\s*<span class="muted">operation total<\/span>/
+    assert html =~ ~r/<span class="sympp-board-count numeric">\s*4\s*<\/span>\s*<span class="muted">operation shown<\/span>/
+    assert lane_contains?(html, "Active", "Active local planning")
+    assert lane_contains?(html, "Paused", "Paused local planning")
+    assert lane_contains?(html, "Completed", "Completed local planning")
+    assert lane_contains?(html, "Archived", "Archived local planning")
+    assert html =~ active.id
+    assert html =~ "nextide/symphony-plus-plus / main"
+    assert html =~ "codex-local"
+    assert html =~ "Task plan 1"
+    assert html =~ "Progress 1"
+    assert html =~ "[REDACTED]"
+    refute html =~ "ghp_raw_secret_value"
+    refute html =~ "This progress body is intentionally long so the cockpit summary truncates it before it becomes a detail view or payload dump."
+    refute html =~ "session_key"
+    refute html =~ "payload"
+    refute html =~ "Pause</button>"
+    refute html =~ "Archive</button>"
+  end
+
+  test "local operator repo filter narrows Solo Sessions without phase mapping" do
+    enable_operator_mode()
+
+    create_solo_session!(caller_id: "visible-solo", title: "Visible Solo Session", repo: "nextide/symphony-plus-plus")
+    create_solo_session!(caller_id: "hidden-solo", title: "Hidden Solo Session", repo: "nextide/other")
+
+    assert {:ok, %{solo_sessions: [visible], total_count: 1}} =
+             Dashboard.solo_sessions(Repo, %{"repo" => "nextide/symphony-plus-plus"})
+
+    assert visible.title == "Visible Solo Session"
+    assert {:ok, ["nextide/other", "nextide/symphony-plus-plus"]} = Dashboard.solo_session_repos(Repo)
+    assert {:ok, 2} = Dashboard.solo_session_count(Repo)
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/board?repo=nextide/symphony-plus-plus&phase=P9")
+
+    assert html =~ "Solo Sessions"
+    assert html =~ "Visible Solo Session"
+    refute html =~ "Hidden Solo Session"
+    assert html =~ ~r/<span class="sympp-board-count numeric">\s*2\s*<\/span>\s*<span class="muted">operation total<\/span>/
+    assert html =~ ~r/<span class="sympp-board-count numeric">\s*1\s*<\/span>\s*<span class="muted">operation shown<\/span>/
+    assert html =~ ~s(<option value="nextide/other")
+  end
+
+  test "local operator Solo Sessions cap is per lifecycle lane" do
+    enable_operator_mode()
+
+    for index <- 1..9 do
+      create_solo_session!(caller_id: "active-solo-#{index}", title: "Active Solo #{index}")
+    end
+
+    create_solo_session!(caller_id: "paused-after-active", title: "Paused still visible", status: "paused")
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/board")
+
+    assert lane_contains?(html, "Active", "Active Solo 9")
+    assert lane_contains?(html, "Paused", "Paused still visible")
+    assert html =~ ~r/<span class="numeric">\s*9 shown\s*<\/span>/
+    assert html =~ ~r/<span class="sympp-board-count numeric">\s*10\s*<\/span>\s*<span class="muted">operation total<\/span>/
+    assert html =~ ~r/<span class="sympp-board-count numeric">\s*9\s*<\/span>\s*<span class="muted">operation shown<\/span>/
+    assert html =~ "1 more Active sessions"
+  end
+
+  test "Solo Session dashboard reads are chunked for long-lived local databases" do
+    now = DateTime.utc_now(:microsecond)
+
+    rows =
+      for index <- 1..1001 do
+        %{
+          id: "solo-bulk-#{index}",
+          repo: "nextide/symphony-plus-plus",
+          base_branch: "main",
+          workspace_path: "#{repo_root()}/bulk-#{index}",
+          caller_id: "bulk-caller-#{index}",
+          session_key: "solo-session-key-#{index}",
+          title: "Archived Solo #{index}",
+          status: "archived",
+          last_activity_at: now,
+          archived_at: now,
+          inserted_at: now,
+          updated_at: now
+        }
+      end
+
+    assert {1001, nil} = Repo.insert_all(SoloSession, rows)
+
+    assert {:ok, %{solo_sessions: sessions, total_count: 1001}} = Dashboard.solo_sessions(Repo)
+    assert length(sessions) == 1001
+  end
+
+  test "local operator board omits Solo Sessions panel when none exist" do
+    enable_operator_mode()
+    create_package!(id: "SYMPP-V2-SOLO-EMPTY", title: "Package without local planning")
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/board")
+
+    refute html =~ "Solo Sessions"
+    assert html =~ "Package without local planning"
+  end
+
+  test "scoped board grant does not show Solo Sessions" do
+    enable_operator_mode()
+
+    package = create_package!(id: "SYMPP-V2-SOLO-SCOPED", title: "Scoped package")
+    grant = create_architect_grant!(package.id)
+    create_solo_session!(caller_id: "scoped-hidden", title: "Hidden scoped Solo Session")
+
+    conn =
+      local_conn()
+      |> Plug.Test.init_test_session(%{"sympp_board_grant_id" => grant.id})
+
+    {:ok, _view, html} = live(conn, "/sympp/board")
+
+    assert html =~ "Work package board"
+    refute html =~ "Local operator cockpit"
+    refute html =~ "Solo Sessions"
+    refute html =~ "Hidden scoped Solo Session"
   end
 
   test "local operator board shows human-info guidance requests from packages" do
@@ -859,6 +1010,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "No work packages match the current board filters."
     refute html =~ "Board unavailable"
     refute html =~ "No Symphony++ work package ledger was found."
+  end
+
+  test "local operator upgrades an existing pre-Solo ledger before reading Solo Sessions" do
+    enable_operator_mode()
+
+    database_path = WorkPackageFactory.database_path()
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+    original_migrated_databases = Application.get_env(:symphony_elixir, :sympp_board_live_migrated_databases)
+
+    seed_dashboard_database_at_migration(database_path, 20_260_513_120_000)
+    Application.put_env(:symphony_elixir, :sympp_repo_database, database_path)
+
+    on_exit(fn ->
+      restore_database_env(original_database)
+      restore_board_live_migrated_databases(original_migrated_databases)
+      File.rm(database_path)
+    end)
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/board")
+
+    assert html =~ "Local operator cockpit"
+    assert html =~ "No work packages match the current board filters."
+    refute html =~ "Board unavailable"
+    refute html =~ "no such table"
   end
 
   test "local operator rejects empty-path sqlite URI ledgers" do
@@ -2075,9 +2250,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
   defp lane_contains?(html, lane_label, title) do
     Regex.match?(
-      ~r/<section class="sympp-board-request-lane">.*?<h3>\s*#{Regex.escape(lane_label)}\s*<\/h3>.*?#{Regex.escape(title)}/s,
+      ~r/<section class="(?:sympp-board-request-lane|sympp-solo-session-lane)">.*?<h3>\s*#{Regex.escape(lane_label)}\s*<\/h3>.*?#{Regex.escape(title)}/s,
       html
     )
+  end
+
+  defp create_solo_session!(overrides) do
+    entries = Keyword.get(overrides, :entries, [%{entry_kind: "progress", title: "Session started", status: "recorded"}])
+
+    assert {:ok, session} =
+             SoloSessionsService.create_or_attach_current(Repo, %{
+               repo: Keyword.get(overrides, :repo, "nextide/symphony-plus-plus"),
+               base_branch: Keyword.get(overrides, :base_branch, "main"),
+               workspace_path: Keyword.get(overrides, :workspace_path, repo_root()),
+               caller_id: Keyword.fetch!(overrides, :caller_id),
+               title: Keyword.get(overrides, :title, "Local planning session")
+             })
+
+    Enum.each(entries, fn entry ->
+      assert {:ok, _entry} = SoloSessionsService.append_entry(Repo, session.id, entry)
+    end)
+
+    case Keyword.get(overrides, :status, "active") do
+      "active" ->
+        session
+
+      "paused" ->
+        assert {:ok, updated} = SoloSessionsService.pause(Repo, session.id, "active")
+        updated
+
+      "completed" ->
+        assert {:ok, updated} = SoloSessionsService.complete(Repo, session.id, "active")
+        updated
+
+      "archived" ->
+        assert {:ok, updated} = SoloSessionsService.archive(Repo, session.id, "active")
+        updated
+    end
   end
 
   defp create_human_guidance_request!(package, overrides) do
@@ -2278,6 +2487,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
     start_supervised!({SymphonyElixirWeb.Endpoint, []})
+  end
+
+  defp seed_dashboard_database_at_migration(database_path, migration_version) do
+    {:ok, pid} = Repo.start_link(Repo.child_options(database: database_path, name: nil))
+    original_repo = Repo.put_dynamic_repo(pid)
+
+    try do
+      Ecto.Migrator.run(Repo, WorkPackageRepository.migrations_path(), :up,
+        to: migration_version,
+        dynamic_repo: pid,
+        log: false
+      )
+    after
+      Repo.put_dynamic_repo(original_repo)
+      Process.unlink(pid)
+      GenServer.stop(pid)
+    end
   end
 
   defp restore_database_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_repo_database)
