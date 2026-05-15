@@ -978,6 +978,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     cond do
       (Map.get(request, :approved_slice_count) || 0) > 0 -> "Dispatch approved slices"
       (Map.get(request, :planned_slice_count) || 0) > 0 -> "Approve or refine slices"
+      (Map.get(request, :dispatched_slice_count) || 0) > 0 -> "Monitor dispatched packages"
       true -> "Add planned slices"
     end
   end

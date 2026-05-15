@@ -323,6 +323,54 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
                planned_mix_package.id
              )
 
+    dispatched_only_request =
+      create_work_request!(
+        id: "WR-LANE-DISPATCHED-ONLY",
+        title: "Dispatched only intake",
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, dispatched_only_candidate} =
+             WorkRequestRepository.add_planned_slice(Repo, dispatched_only_request.id, %{
+               title: "Dispatched only lane slice",
+               goal: "Show monitor hint after dispatch.",
+               work_package_kind: "dashboard",
+               target_base_branch: "main",
+               branch_pattern: "agent/SYMPP-V2-UX-017/dispatched-only-lane-slice",
+               acceptance_criteria: ["Lane shows monitor hint after dispatch."],
+               validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/dashboard_operator_live_test.exs"],
+               review_lanes: ["review_t1"],
+               stop_conditions: ["Stop after board rendering."]
+             })
+
+    assert {:ok, dispatched_only_approved} =
+             WorkRequestRepository.approve_planned_slice(
+               Repo,
+               dispatched_only_request.id,
+               dispatched_only_candidate.id,
+               "planned"
+             )
+
+    dispatched_only_package =
+      create_package!(
+        id: "SYMPP-V2-UX-017-DISPATCHED-ONLY",
+        kind: "dashboard",
+        title: "Dispatched only lane slice",
+        product_description: "Operator-visible request.",
+        branch_pattern: "agent/SYMPP-V2-UX-017/dispatched-only-lane-slice",
+        allowed_file_globs: [],
+        acceptance_criteria: ["Lane shows monitor hint after dispatch."]
+      )
+
+    assert {:ok, _dispatched_only_slice} =
+             WorkRequestRepository.dispatch_planned_slice(
+               Repo,
+               dispatched_only_request.id,
+               dispatched_only_approved.id,
+               "approved",
+               dispatched_only_package.id
+             )
+
     create_work_request!(
       id: "WR-LANE-HUMAN",
       title: "Human answer intake",
@@ -346,6 +394,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "Prepare architect handoff"
     assert html =~ "Provide product guidance"
     assert html =~ "Dispatch approved slices"
+    assert html =~ "Monitor dispatched packages"
     assert html =~ "No dispatchable slices"
     assert html =~ "1 approved / 2 slices"
     assert html =~ "Planned mixed intake"
