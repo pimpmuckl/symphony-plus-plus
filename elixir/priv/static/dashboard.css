@@ -614,6 +614,158 @@ pre,
   white-space: nowrap;
 }
 
+.sympp-solo-session-panel {
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
+  padding: 0.82rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.78);
+  box-shadow: var(--shadow-sm);
+}
+
+.sympp-solo-session-panel > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.sympp-solo-session-panel h2 {
+  margin: 0;
+  font-size: 0.94rem;
+  line-height: 1.2;
+}
+
+.sympp-solo-session-panel p {
+  margin: 0.16rem 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.sympp-solo-session-panel > header > .numeric {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.sympp-solo-session-lanes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.sympp-solo-session-lane {
+  display: grid;
+  align-content: start;
+  gap: 0.42rem;
+  min-width: 0;
+  padding: 0.62rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.sympp-solo-session-lane > header,
+.sympp-solo-session-topline,
+.sympp-solo-session-meta,
+.sympp-solo-session-counts {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.sympp-solo-session-lane > header,
+.sympp-solo-session-topline {
+  justify-content: space-between;
+}
+
+.sympp-solo-session-lane h3 {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.sympp-solo-session-row {
+  display: grid;
+  gap: 0.32rem;
+  min-width: 0;
+  padding-top: 0.52rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.82rem;
+}
+
+.sympp-solo-session-row:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.sympp-solo-session-row strong,
+.sympp-solo-session-meta span,
+.sympp-solo-session-latest,
+.sympp-solo-session-counts span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sympp-solo-session-meta {
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.sympp-solo-session-meta span:not(:last-child)::after {
+  margin-left: 0.45rem;
+  color: #cbd5e1;
+  content: "/";
+}
+
+.sympp-solo-session-latest {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.78rem;
+}
+
+.sympp-solo-session-latest span {
+  margin-right: 0.28rem;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.sympp-solo-session-counts {
+  flex-wrap: wrap;
+}
+
+.sympp-solo-session-counts span {
+  padding: 0.14rem 0.38rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #f8fafc;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.sympp-solo-session-more {
+  margin: 0.1rem 0 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
 .sympp-board-request-lanes {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
@@ -1941,6 +2093,8 @@ pre,
   .sympp-operator-priority,
   .sympp-operator-watchlist,
   .sympp-board-request-row,
+  .sympp-solo-session-panel > header,
+  .sympp-solo-session-topline,
   .sympp-work-request-detail,
   .sympp-work-request-grid,
   .sympp-work-request-row,
@@ -1987,7 +2141,11 @@ pre,
   .sympp-watch-row strong,
   .sympp-watch-row span,
   .sympp-board-request-row strong,
-  .sympp-board-request-row span {
+  .sympp-board-request-row span,
+  .sympp-solo-session-row strong,
+  .sympp-solo-session-meta span,
+  .sympp-solo-session-latest,
+  .sympp-solo-session-counts span {
     white-space: normal;
     overflow-wrap: anywhere;
   }
