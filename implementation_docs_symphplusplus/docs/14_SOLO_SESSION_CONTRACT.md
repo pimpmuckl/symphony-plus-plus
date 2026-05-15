@@ -6,9 +6,10 @@ progress log, blocker list, decision record, and validation notes without
 creating a WorkRequest, WorkPackage, Linear record, architect handoff, or worker
 dispatch.
 
-This document is a product contract for future implementation. The current
-package lands docs only. Runtime storage, MCP tools, plugin or skill commands,
-cockpit UI, schedulers, and promotion workflows are follow-up scope.
+This document is the product contract for the Solo Session runtime foundation.
+The current CLI surface is `mix sympp.solo` in `elixir/`; MCP tools, plugin or
+skill commands, cockpit UI, schedulers, and promotion workflows are follow-up
+scope.
 
 ## Purpose
 
@@ -242,6 +243,34 @@ Follow-up MCP/plugin/skill affordances should be small and local:
 
 These affordances must not claim WorkKeys, mint grants, create WorkRequests,
 create WorkPackages, dispatch agents, or write Linear state.
+
+## Mix CLI Surface
+
+The first agent-facing surface is the `mix sympp.solo` task. Successful command
+output is JSON; failures exit non-zero with normal `Mix.Error` messages. It is
+a local operator tool over the existing Solo Session repository and service; it
+does not add orchestration semantics.
+
+Supported commands:
+
+- `attach` creates or attaches the current session for `repo`, `base_branch`,
+  `workspace_path`, and `caller_id`, with optional `title`.
+- `append` records one `task_plan`, `finding`, `progress`, `blocker`,
+  `decision`, or `validation_note` entry by `session_id`.
+- `show` returns the session and ordered entries.
+- `list` returns sessions filtered by local scope fields and status.
+- `pause`, `resume`, `complete`, and `archive` call the lifecycle transition
+  API for a session.
+
+All commands accept `--database <sqlite-path>`. When `--database` is omitted,
+the task resolves the current project `WORKFLOW.md` database path and fails
+before ledger access if that file is unavailable. The resolved database must be
+a durable local filesystem path; `:memory:` and SQLite `file:` URIs are
+rejected because Solo Sessions must persist across separate CLI invocations.
+`attach` may create the ledger database; `append`, `show`, `list`, and
+lifecycle aliases require the resolved local database file to already exist.
+The CLI uses the service redaction, idempotency, lifecycle, and validation
+behavior directly.
 
 ## Future Promotion
 
