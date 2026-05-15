@@ -10,6 +10,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
@@ -557,6 +558,10 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                 <dd class="mono"><%= exact_value(value) %></dd>
               </div>
             </dl>
+            <div :if={architect_launch_brief(@page, @operator_mode?)} class="sympp-launch-brief">
+              <label>Architect Launch Brief</label>
+              <pre class="sympp-copyable-block mono"><%= architect_launch_brief(@page, @operator_mode?) %></pre>
+            </div>
             <h2>Safe architect prompt</h2>
             <pre class="sympp-json-block sympp-copyable-block"><%= value(@page.architect_handoff, :prompt) %></pre>
           </article>
@@ -2297,6 +2302,119 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   end
 
   defp architect_handoff_scope(_handoff), do: "n/a"
+
+  defp architect_launch_brief(%{architect_handoff: handoff, work_request: request, summary: summary}, true)
+       when is_map(handoff) do
+    lines =
+      [
+        "Architect launch brief",
+        brief_line("WorkRequest", work_request_reference(request)),
+        brief_line("Status", value(request, :status)),
+        brief_line("Repo/base", repo_base(request)),
+        "Required skill: symphony-plus-plus:symphony-architect",
+        brief_line("Anchor package", value(value(handoff, :anchor_package, %{}), :id)),
+        brief_line("Grant key", architect_grant_reference(handoff)),
+        brief_line("Phase", value(value(handoff, :phase, %{}), :id)),
+        brief_line("Scope", architect_handoff_scope(handoff)),
+        brief_line("Counts", architect_launch_counts(summary)),
+        brief_line("Constraints", architect_constraints_summary(value(request, :constraints, %{}))),
+        "Next actions:",
+        "1. Use the required skill to read and update this WorkRequest from the Symphony++ MCP/session context.",
+        "2. Clarify or escalate open questions and product decisions before slicing.",
+        "3. Plan the smallest coherent slices and record the rationale on the WorkRequest.",
+        "4. Dispatch only slices explicitly approved by the local operator.",
+        "Safety: do not paste raw work-key secrets, bearer/API tokens, hashes, full secret-bearing commands, or private payloads."
+      ]
+      |> Enum.reject(&blank_brief_value?/1)
+
+    if length(lines) > 1, do: Enum.join(lines, "\n")
+  end
+
+  defp architect_launch_brief(_page, _operator_mode?), do: nil
+
+  defp work_request_reference(request) do
+    [value(request, :id), value(request, :title)]
+    |> Enum.map(&brief_value/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" - ")
+  end
+
+  defp architect_grant_reference(handoff) do
+    grant = value(handoff, :grant, %{})
+    value(grant, :display_key) || value(grant, :id)
+  end
+
+  defp architect_launch_counts(summary) do
+    [
+      "#{value(summary, :open_question_count, 0)} open questions",
+      "#{value(summary, :answered_question_count, 0)} answered questions",
+      "#{value(summary, :decision_count, 0)} decisions",
+      "#{summary_slice_total(summary)} slices"
+    ]
+    |> Enum.join(", ")
+  end
+
+  defp architect_constraints_summary(constraints) when is_map(constraints) do
+    [
+      constraint_summary_item("compatibility", value(constraints, :compatibility_stance)),
+      constraint_summary_item("validation", value(constraints, :validation_expectations)),
+      constraint_summary_item("dependencies", value(constraints, :dependencies_notes)),
+      constraint_summary_item("allowed paths", value(constraints, :allowed_paths)),
+      constraint_summary_item("forbidden paths", value(constraints, :forbidden_paths)),
+      constraint_summary_item("stop conditions", value(constraints, :stop_conditions))
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("; ")
+    |> brief_value()
+  end
+
+  defp architect_constraints_summary(_constraints), do: nil
+
+  defp constraint_summary_item(_label, nil), do: nil
+  defp constraint_summary_item(_label, ""), do: nil
+  defp constraint_summary_item(_label, []), do: nil
+
+  defp constraint_summary_item(label, values) when is_list(values) do
+    values
+    |> Enum.map(&brief_value/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(", ")
+    |> case do
+      "" -> nil
+      value -> "#{label}=#{value}"
+    end
+  end
+
+  defp constraint_summary_item(label, value) do
+    case brief_value(value) do
+      nil -> nil
+      value -> "#{label}=#{value}"
+    end
+  end
+
+  defp brief_line(label, value) do
+    case brief_value(value) do
+      nil -> nil
+      value -> "#{label}: #{value}"
+    end
+  end
+
+  defp brief_value(value) when is_binary(value) do
+    value =
+      value
+      |> Redactor.redact_text()
+      |> String.replace(~r/[\r\n\t\f\v\x{85}\x{2028}\x{2029}]+/u, " ")
+      |> String.trim()
+
+    if value in ["", "n/a"], do: nil, else: value
+  end
+
+  defp brief_value(value) when is_boolean(value) or is_number(value), do: to_string(value)
+  defp brief_value(_value), do: nil
+
+  defp blank_brief_value?(nil), do: true
+  defp blank_brief_value?(""), do: true
+  defp blank_brief_value?(_value), do: false
 
   defp handoff_status_label(:replayed), do: "replayed"
   defp handoff_status_label(:renewed), do: "renewed"

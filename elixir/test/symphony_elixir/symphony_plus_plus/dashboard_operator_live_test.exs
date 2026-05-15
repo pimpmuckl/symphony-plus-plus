@@ -1189,7 +1189,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
         id: "WR-OPERATOR-ARCHITECT-HANDOFF",
         title: "Prepare architect handoff",
         status: "ready_for_clarification",
-        constraints: %{"allowed_paths" => ["elixir/lib"], "requires_secret" => false}
+        constraints: %{
+          "allowed_paths" => ["elixir/lib"],
+          "compatibility_stance" => "pre-production; do not assume backwards compatibility",
+          "requires_secret" => false
+        }
       )
 
     {:ok, view, html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
@@ -1202,6 +1206,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "Private architect handoff stored"
     assert html =~ "created"
     assert html =~ request.id
+    assert html =~ "Architect Launch Brief"
+    assert html =~ "Architect launch brief"
+    assert html =~ "WorkRequest: #{request.id} - Prepare architect handoff"
+    assert html =~ "Status: ready_for_clarification"
+    assert html =~ "Repo/base: nextide/symphony-plus-plus / main"
+    assert html =~ "Required skill: symphony-plus-plus:symphony-architect"
+    assert html =~ "Grant key:"
+    assert html =~ "Counts: 0 open questions, 0 answered questions, 0 decisions, 0 slices"
+    assert html =~ "compatibility=pre-production; do not assume backwards compatibility"
+    assert html =~ "allowed paths=elixir/lib"
+    assert html =~ "Clarify or escalate open questions and product decisions before slicing."
+    assert html =~ "Dispatch only slices explicitly approved by the local operator."
     assert html =~ "Safe architect prompt"
     assert html =~ "prepared"
     assert html =~ "phase-wr-architect-"
@@ -1248,6 +1264,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     assert reload_html =~ "Private architect handoff stored"
     assert reload_html =~ "replayed"
+    assert reload_html =~ "Architect Launch Brief"
     assert reload_html =~ "Safe architect prompt"
     assert reload_html =~ "prepared"
     assert reload_html =~ grant.id
@@ -1262,6 +1279,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     replay_html = render_click(view, "create_architect_handoff", %{})
 
     assert replay_html =~ "replayed"
+    assert replay_html =~ "Architect Launch Brief"
     assert replay_html =~ grant.id
     refute replay_html =~ "wk_"
     refute replay_html =~ "secret_hash"
