@@ -467,6 +467,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert lane_contains?(html, "Completed", "Completed local planning")
     assert lane_contains?(html, "Archived", "Archived local planning")
     assert html =~ active.id
+    assert html =~ ~s(href="solo-sessions/#{active.id}")
     assert html =~ "nextide/symphony-plus-plus / main"
     assert html =~ "codex-local"
     assert html =~ "Task plan 1"
@@ -478,6 +479,110 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute html =~ "payload"
     refute html =~ "Pause</button>"
     refute html =~ "Archive</button>"
+  end
+
+  test "local operator opens Solo Session detail with metadata and ordered ledger entries" do
+    enable_operator_mode()
+    long_body = String.duplicate("ledger detail line\n", 300) <> "END_MARKER"
+
+    session =
+      create_solo_session!(
+        caller_id: "codex-detail",
+        title: "Detail local planning",
+        workspace_path: Path.join(repo_root(), "detail-worktree"),
+        entries: [
+          %{
+            entry_kind: "task_plan",
+            title: "Plan first pass",
+            body: "Write a tight implementation plan.",
+            status: "in_progress",
+            payload: %{"ignored" => "payload-secret-value"}
+          },
+          %{
+            entry_kind: "finding",
+            title: "Found the route seam",
+            body: long_body,
+            status: "open"
+          },
+          %{
+            entry_kind: "progress",
+            title: "Implemented detail view with ghp_raw_secret_value",
+            body: "Rendered metadata and ordered entries without dumping raw internal maps or hidden key values.",
+            status: "completed"
+          }
+        ]
+      )
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/solo-sessions/#{session.id}")
+
+    assert html =~ "Symphony++ Solo Session"
+    assert html =~ "Detail local planning"
+    assert html =~ session.id
+    assert html =~ "nextide/symphony-plus-plus / main"
+    assert html =~ "detail-worktree"
+    assert html =~ "codex-detail"
+    assert html =~ "3 ledger entries"
+    assert html =~ "Back to cockpit"
+    assert html =~ "Plan first pass"
+    assert html =~ "Found the route seam"
+    assert html =~ "END_MARKER"
+    assert html =~ "[REDACTED]"
+    refute html =~ "ghp_raw_secret_value"
+    refute html =~ "payload-secret-value"
+    refute html =~ "payload"
+    refute html =~ "session_key"
+    refute html =~ "Pause</button>"
+    refute html =~ "Archive</button>"
+
+    assert Regex.match?(~r/Plan first pass.*Found the route seam.*\[REDACTED\]/s, html)
+  end
+
+  test "local operator Solo Session detail safely handles missing ids" do
+    enable_operator_mode()
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/solo-sessions/solo_missing")
+
+    assert html =~ "Solo Session unavailable"
+    assert html =~ "No Solo Session was found for this route."
+    refute html =~ "session_key"
+    refute html =~ "payload"
+  end
+
+  test "board grant cannot inspect Solo Session detail" do
+    enable_operator_mode()
+
+    package = create_package!(id: "SYMPP-V2-SOLO-DETAIL-SCOPED", title: "Scoped package")
+    grant = create_architect_grant!(package.id)
+    session = create_solo_session!(caller_id: "scoped-detail", title: "Scoped hidden Solo Session")
+
+    conn =
+      local_conn()
+      |> Plug.Test.init_test_session(%{"sympp_board_grant_id" => grant.id})
+
+    {:ok, _view, html} = live(conn, "/sympp/solo-sessions/#{session.id}")
+
+    assert html =~ "Solo Session unavailable"
+    assert html =~ "Solo Session details are only available in local operator mode."
+    refute html =~ "Scoped hidden Solo Session"
+    refute html =~ "scoped-detail"
+    refute html =~ "nextide/symphony-plus-plus"
+  end
+
+  test "Solo Session detail disconnected render does not leak forged remote operator sessions" do
+    enable_operator_mode()
+
+    session = create_solo_session!(caller_id: "remote-detail", title: "Remote hidden Solo Session")
+
+    conn =
+      build_conn()
+      |> Map.put(:remote_ip, {10, 0, 0, 8})
+      |> Map.put(:host, "127.0.0.1")
+      |> Plug.Test.init_test_session(%{"sympp_local_operator" => true})
+      |> get("/sympp/solo-sessions/#{session.id}")
+
+    assert conn.status in [200, 401]
+    refute conn.resp_body =~ "Remote hidden Solo Session"
+    refute conn.resp_body =~ "remote-detail"
   end
 
   test "local operator repo filter narrows Solo Sessions without phase mapping" do

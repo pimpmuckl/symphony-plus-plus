@@ -41,6 +41,7 @@ defmodule SymphonyElixirWeb.Router do
     pipe_through([:browser, :sympp_board_auth])
 
     live("/sympp/board", SymppBoardLive, :index)
+    live("/sympp/solo-sessions/:solo_session_id", SymppSoloSessionLive, :show)
     live("/sympp/work-requests", SymppWorkRequestLive, :index)
     live("/sympp/work-requests/new", SymppWorkRequestLive, :new)
     live("/sympp/work-requests/:work_request_id", SymppWorkRequestLive, :show)

@@ -128,6 +128,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end)
   end
 
+  @spec solo_session_detail(repo(), String.t()) :: {:ok, map()} | {:error, dashboard_error()}
+  def solo_session_detail(repo, solo_session_id) when is_atom(repo) and is_binary(solo_session_id) do
+    safe_read(fn ->
+      with {:ok, session} <- SoloSessionsService.get(repo, solo_session_id),
+           {:ok, entries} <- SoloSessionsService.list_entries(repo, solo_session_id) do
+        {:ok,
+         %{
+           solo_session: solo_session_detail(session),
+           entries: Enum.map(entries, &solo_session_detail_entry/1),
+           entry_count: length(entries)
+         }}
+      end
+    end)
+  end
+
   @spec solo_session_repos(repo()) :: {:ok, [String.t()]} | {:error, dashboard_error()}
   def solo_session_repos(repo) when is_atom(repo) do
     safe_read(fn ->
@@ -992,6 +1007,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     }
   end
 
+  defp solo_session_detail(%SoloSession{} = session) do
+    %{
+      id: session.id,
+      title: solo_session_title(session),
+      repo: session.repo,
+      base_branch: session.base_branch,
+      workspace_path: redacted_text(session.workspace_path),
+      caller_id: redacted_text(session.caller_id),
+      status: session.status,
+      last_activity_at: timestamp(session.last_activity_at),
+      archived_at: timestamp(session.archived_at),
+      inserted_at: timestamp(session.inserted_at),
+      updated_at: timestamp(session.updated_at)
+    }
+  end
+
   defp solo_session_title(%SoloSession{title: title, id: id}) do
     title
     |> redacted_text()
@@ -1007,6 +1038,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       title: entry |> Map.get(:title) |> redacted_text() |> snippet(@solo_session_snippet_limit),
       body: entry |> Map.get(:body) |> redacted_text() |> snippet(@solo_session_snippet_limit),
       created_at: entry |> Map.get(:created_at) |> timestamp()
+    }
+  end
+
+  defp solo_session_detail_entry(%SoloSessionEntry{} = entry) do
+    %{
+      id: entry.id,
+      sequence: entry.sequence,
+      kind: entry.entry_kind,
+      kind_label: status_label(entry.entry_kind),
+      status: entry.status,
+      status_label: status_label(entry.status),
+      title: entry.title |> redacted_text() |> present_text(),
+      body: entry.body |> redacted_text() |> present_text(),
+      created_at: timestamp(entry.created_at),
+      updated_at: timestamp(entry.updated_at)
     }
   end
 

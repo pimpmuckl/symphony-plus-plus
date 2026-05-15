@@ -706,6 +706,10 @@ pre,
   font-size: 0.82rem;
 }
 
+.sympp-solo-session-row:hover strong {
+  color: var(--accent);
+}
+
 .sympp-solo-session-row:first-of-type {
   border-top: 0;
   padding-top: 0;
@@ -764,6 +768,81 @@ pre,
   color: var(--muted);
   font-size: 0.76rem;
   font-weight: 800;
+}
+
+.sympp-solo-detail-overview {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.sympp-solo-detail-meta {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.sympp-solo-ledger-panel {
+  gap: 0.9rem;
+}
+
+.sympp-solo-ledger {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sympp-solo-ledger-entry {
+  display: grid;
+  grid-template-columns: 2.1rem minmax(0, 1fr);
+  gap: 0.75rem;
+  padding: 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.sympp-solo-ledger-index {
+  display: grid;
+  place-items: center;
+  align-self: start;
+  width: 2.1rem;
+  height: 2.1rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--card-muted);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.sympp-solo-ledger-entry article,
+.sympp-solo-ledger-entry header {
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.sympp-solo-ledger-entry header {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.sympp-solo-ledger-entry header > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.sympp-solo-ledger-entry time {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.sympp-solo-ledger-entry h3 {
+  overflow-wrap: anywhere;
+}
+
+.sympp-solo-ledger-body {
+  white-space: pre-wrap;
 }
 
 .sympp-board-request-lanes {
