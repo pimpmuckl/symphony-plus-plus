@@ -7,6 +7,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessionsTest do
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
   alias SymphonyElixir.WorkPackageFactory
 
   defmodule BusyOnceRepo do
@@ -52,6 +53,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessionsTest do
     def update_all(query, updates), do: Repo.update_all(query, updates)
   end
 
+  defmodule StaleEntryIdempotencyReadRepo do
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    def transaction(fun), do: Repo.transaction(fun)
+    def rollback(reason), do: Repo.rollback(reason)
+
+    def one(query) do
+      if Process.get(:sympp_solo_stale_entry_idempotency_read) do
+        Repo.one(query)
+      else
+        Process.put(:sympp_solo_stale_entry_idempotency_read, true)
+        nil
+      end
+    end
+
+    def all(query), do: Repo.all(query)
+    def get(schema, id), do: Repo.get(schema, id)
+    def get!(schema, id), do: Repo.get!(schema, id)
+    def insert(changeset), do: Repo.insert(changeset)
+    def update_all(query, updates), do: Repo.update_all(query, updates)
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
 
@@ -64,9 +87,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessionsTest do
   end
 
   setup %{repo: repo} do
+    repo.delete_all(SoloSessionEntry)
     repo.delete_all(SoloSession)
     Process.delete(:sympp_solo_busy_once)
     Process.delete(:sympp_solo_stale_current_read)
+    Process.delete(:sympp_solo_stale_entry_idempotency_read)
     :ok
   end
 
@@ -275,6 +300,300 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessionsTest do
     assert listed.last_activity_at == session.last_activity_at
   end
 
+  test "appends ordered entries to active and paused sessions and redacts persisted text and payload", %{repo: repo} do
+    caller_time = ~U[2001-01-01 00:00:00.000000Z]
+    assert {:ok, session} = Service.create_or_attach_current(repo, session_attrs())
+    Process.sleep(5)
+
+    assert {:ok, first} =
+             Service.append_entry(repo, session.id, %{
+               id: "caller-entry-id",
+               solo_session_id: "caller-session-id",
+               entry_kind: " task_plan ",
+               title: "Plan bearer abcdefghijkl",
+               body: "Use ghp_abcdefgh as a fake token",
+               status: " pending ",
+               sequence: 99,
+               idempotency_key: " entry-1 ",
+               payload: %{
+                 token: "ghp_abcdefgh",
+                 nested: [%{url: "https://example.test/path?token=ghp_abcdefgh"}],
+                 at: caller_time
+               },
+               created_at: caller_time,
+               updated_at: caller_time
+             })
+
+    assert first.id =~ "solo_entry_"
+    assert first.solo_session_id == session.id
+    assert first.entry_kind == "task_plan"
+    assert first.title == "Plan [REDACTED]"
+    assert first.body == "Use [REDACTED] as a fake token"
+    assert first.status == "pending"
+    assert first.sequence == 1
+    assert first.idempotency_key == "entry-1"
+    assert first.payload["token"] == "[REDACTED]"
+    assert first.payload["nested"] == [%{"url" => "https://example.test/path?token=[REDACTED]"}]
+    assert first.payload["at"] == DateTime.to_iso8601(caller_time)
+    refute first.id == "caller-entry-id"
+    refute first.solo_session_id == "caller-session-id"
+    refute first.created_at == caller_time
+    refute first.updated_at == caller_time
+
+    assert {:ok, touched} = Service.get(repo, session.id)
+    assert DateTime.compare(touched.last_activity_at, session.last_activity_at) == :gt
+
+    assert {:ok, paused} = Service.pause(repo, session.id, "active")
+    Process.sleep(5)
+
+    assert {:ok, second} =
+             Service.append_entry(repo, paused.id, %{
+               entry_kind: "progress",
+               title: "Paused session progress",
+               status: "recorded"
+             })
+
+    assert second.sequence == 2
+    assert {:ok, [^first, ^second]} = Service.list_entries(repo, session.id)
+  end
+
+  test "entry validation rejects invalid kind and status without advancing activity", %{repo: repo} do
+    assert {:ok, session} = Service.create_or_attach_current(repo, session_attrs())
+    Process.sleep(5)
+
+    assert {:error, %Changeset{} = kind_changeset} =
+             Service.append_entry(repo, session.id, %{entry_kind: "claimed", title: "Bad kind"})
+
+    assert "is invalid" in errors_on(kind_changeset).entry_kind
+
+    assert {:error, %Changeset{} = status_changeset} =
+             Service.append_entry(repo, session.id, %{entry_kind: "finding", title: "Bad status", status: "ready_for_merge"})
+
+    assert "is invalid" in errors_on(status_changeset).status
+
+    assert {:ok, after_failures} = Service.get(repo, session.id)
+    assert after_failures.last_activity_at == session.last_activity_at
+    assert {:ok, []} = Service.list_entries(repo, session.id)
+  end
+
+  test "completed and archived sessions reject new entries without advancing activity", %{repo: repo} do
+    assert {:ok, completed} = session_in_status(repo, "completed", "completed-entry")
+    Process.sleep(5)
+
+    assert {:error, :session_not_mutable} =
+             Service.append_entry(repo, completed.id, %{entry_kind: "progress", title: "Too late"})
+
+    assert {:ok, completed_after_failure} = Service.get(repo, completed.id)
+    assert completed_after_failure.last_activity_at == completed.last_activity_at
+
+    assert {:ok, archived} = session_in_status(repo, "archived", "archived-entry")
+    Process.sleep(5)
+
+    assert {:error, :session_not_mutable} =
+             Service.append_entry(repo, archived.id, %{entry_kind: "progress", title: "Too late"})
+
+    assert {:ok, archived_after_failure} = Service.get(repo, archived.id)
+    assert archived_after_failure.last_activity_at == archived.last_activity_at
+  end
+
+  test "idempotency keys replay per session and secret-like keys are rejected before persistence", %{repo: repo} do
+    assert {:ok, first_session} =
+             Service.create_or_attach_current(repo, session_attrs(workspace_path: workspace_path("idempotent-1")))
+
+    assert {:ok, second_session} =
+             Service.create_or_attach_current(repo, session_attrs(workspace_path: workspace_path("idempotent-2")))
+
+    assert {:ok, first_entry} =
+             Service.append_entry(repo, first_session.id, %{
+               entry_kind: "decision",
+               title: "Use entries",
+               idempotency_key: "same-key"
+             })
+
+    Process.sleep(5)
+
+    assert {:ok, replayed} =
+             Service.append_entry(repo, first_session.id, %{
+               entry_kind: "decision",
+               title: "Changed on retry",
+               idempotency_key: " same-key "
+             })
+
+    assert replayed.id == first_entry.id
+    assert replayed.title == first_entry.title
+    assert replayed.sequence == first_entry.sequence
+    assert {:ok, [only_first_session_entry]} = Service.list_entries(repo, first_session.id)
+    assert only_first_session_entry.id == first_entry.id
+
+    assert {:ok, other_session_entry} =
+             Service.append_entry(repo, second_session.id, %{
+               entry_kind: "decision",
+               title: "Same key elsewhere",
+               idempotency_key: "same-key"
+             })
+
+    assert other_session_entry.id != first_entry.id
+    assert other_session_entry.sequence == 1
+
+    assert {:ok, before_secret_rejection} = Service.get(repo, first_session.id)
+    Process.sleep(5)
+
+    assert {:error, :invalid_entry_idempotency_key} =
+             Service.append_entry(repo, first_session.id, %{
+               entry_kind: "progress",
+               title: "Reject secret key",
+               idempotency_key: "wk_" <> String.duplicate("A", 43)
+             })
+
+    assert {:ok, after_secret_rejection} = Service.get(repo, first_session.id)
+    assert after_secret_rejection.last_activity_at == before_secret_rejection.last_activity_at
+
+    assert {:error, :invalid_entry_idempotency_key} =
+             Service.append_entry(repo, first_session.id, %{
+               entry_kind: "progress",
+               title: "Reject non-string key",
+               idempotency_key: 123
+             })
+
+    assert {:ok, after_non_string_rejection} = Service.get(repo, first_session.id)
+    assert after_non_string_rejection.last_activity_at == before_secret_rejection.last_activity_at
+  end
+
+  test "idempotent replays survive completed and archived session transitions", %{repo: repo} do
+    assert {:ok, session} =
+             Service.create_or_attach_current(
+               repo,
+               session_attrs(workspace_path: workspace_path("idempotent-lifecycle"))
+             )
+
+    assert {:ok, entry} =
+             Service.append_entry(repo, session.id, %{
+               entry_kind: "validation_note",
+               title: "Validated once",
+               idempotency_key: "lifecycle-entry-key"
+             })
+
+    assert {:ok, completed} = Service.complete(repo, session.id, "active")
+    Process.sleep(5)
+
+    assert {:ok, completed_replay} =
+             Service.append_entry(repo, session.id, %{
+               entry_kind: "validation_note",
+               title: "Retry after complete",
+               idempotency_key: "lifecycle-entry-key"
+             })
+
+    assert completed_replay.id == entry.id
+    assert {:ok, completed_after_replay} = Service.get(repo, session.id)
+    assert completed_after_replay.last_activity_at == completed.last_activity_at
+
+    Process.delete(:sympp_solo_stale_entry_idempotency_read)
+    Process.sleep(5)
+
+    assert {:ok, stale_completed_replay} =
+             Service.append_entry(StaleEntryIdempotencyReadRepo, session.id, %{
+               entry_kind: "validation_note",
+               title: "Stale retry after complete",
+               idempotency_key: "lifecycle-entry-key"
+             })
+
+    assert stale_completed_replay.id == entry.id
+    assert {:ok, completed_after_stale_replay} = Service.get(repo, session.id)
+    assert completed_after_stale_replay.last_activity_at == completed.last_activity_at
+
+    assert {:ok, archived} = Service.archive(repo, session.id, "completed")
+    Process.delete(:sympp_solo_stale_entry_idempotency_read)
+    Process.sleep(5)
+
+    assert {:ok, archived_replay} =
+             Service.append_entry(StaleEntryIdempotencyReadRepo, session.id, %{
+               entry_kind: "validation_note",
+               title: "Stale retry after archive",
+               idempotency_key: "lifecycle-entry-key"
+             })
+
+    assert archived_replay.id == entry.id
+    assert {:ok, archived_after_replay} = Service.get(repo, session.id)
+    assert archived_after_replay.last_activity_at == archived.last_activity_at
+    assert {:ok, [only_entry]} = Service.list_entries(repo, session.id)
+    assert only_entry.id == entry.id
+  end
+
+  test "idempotent append conflict replays from a fresh read path", %{repo: repo} do
+    assert {:ok, session} = Service.create_or_attach_current(repo, session_attrs(workspace_path: workspace_path("entry-conflict")))
+
+    assert {:ok, existing} =
+             Service.append_entry(repo, session.id, %{
+               entry_kind: "finding",
+               title: "Already persisted",
+               idempotency_key: "entry-conflict-key"
+             })
+
+    assert {:ok, replayed} =
+             Service.append_entry(StaleEntryIdempotencyReadRepo, session.id, %{
+               entry_kind: "finding",
+               title: "Retry after stale read",
+               idempotency_key: "entry-conflict-key"
+             })
+
+    assert replayed.id == existing.id
+    assert {:ok, [only_entry]} = Service.list_entries(repo, session.id)
+    assert only_entry.id == existing.id
+  end
+
+  test "entry reads and lists are scoped and do not advance activity", %{repo: repo} do
+    assert {:ok, first_session} =
+             Service.create_or_attach_current(repo, session_attrs(workspace_path: workspace_path("read-1")))
+
+    assert {:ok, second_session} =
+             Service.create_or_attach_current(repo, session_attrs(workspace_path: workspace_path("read-2")))
+
+    assert {:ok, first_entry} =
+             Service.append_entry(repo, first_session.id, %{entry_kind: "progress", title: "First session"})
+
+    assert {:ok, second_entry} =
+             Service.append_entry(repo, second_session.id, %{entry_kind: "progress", title: "Second session"})
+
+    assert {:ok, first_after_append} = Service.get(repo, first_session.id)
+    Process.sleep(5)
+
+    assert {:ok, [listed]} = Service.list_entries(repo, first_session.id)
+    assert listed.id == first_entry.id
+    assert {:ok, ^first_entry} = Service.get_entry(repo, first_session.id, first_entry.id)
+    assert {:error, :not_found} = Service.get_entry(repo, first_session.id, second_entry.id)
+
+    assert {:ok, first_after_reads} = Service.get(repo, first_session.id)
+    assert first_after_reads.last_activity_at == first_after_append.last_activity_at
+  end
+
+  test "concurrent appends allocate unique monotonically increasing sequences", %{repo: repo} do
+    assert {:ok, session} = Service.create_or_attach_current(repo, session_attrs(workspace_path: workspace_path("concurrent-entries")))
+
+    results =
+      1..20
+      |> Task.async_stream(
+        fn index ->
+          Service.append_entry(repo, session.id, %{
+            entry_kind: "progress",
+            title: "Concurrent #{index}",
+            idempotency_key: "concurrent-entry-#{index}"
+          })
+        end,
+        max_concurrency: 20,
+        timeout: 15_000
+      )
+      |> Enum.to_list()
+
+    assert Enum.all?(results, fn
+             {:ok, {:ok, %SoloSessionEntry{}}} -> true
+             _result -> false
+           end)
+
+    assert {:ok, entries} = Service.list_entries(repo, session.id)
+    assert Enum.map(entries, & &1.sequence) == Enum.to_list(1..20)
+    assert entries |> Enum.map(& &1.id) |> Enum.uniq() |> length() == 20
+  end
+
   test "create attach and list filters trim and canonicalize lookup fields", %{repo: repo} do
     workspace_path = workspace_path("trimmed-filters")
     dotted_workspace = Path.join(workspace_path, ".")
@@ -376,15 +695,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessionsTest do
     assert listed.id == session.id
   end
 
-  test "migration is idempotent and sessions-only", %{repo: repo} do
+  test "migration is idempotent and limited to sessions plus entries", %{repo: repo} do
     assert :ok = Repository.migrate(repo)
 
     %{rows: rows} = SQL.query!(repo, "PRAGMA table_info(sympp_solo_sessions)")
     assert [_cid, "id", _type, _not_null, _default, 1] = Enum.find(rows, &(Enum.at(&1, 1) == "id"))
     assert Enum.any?(rows, &(Enum.at(&1, 1) == "workspace_path"))
 
-    %{rows: []} =
-      SQL.query!(repo, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sympp_solo_session_entries'")
+    %{rows: entry_rows} = SQL.query!(repo, "PRAGMA table_info(sympp_solo_session_entries)")
+    assert [_cid, "id", _type, _not_null, _default, 1] = Enum.find(entry_rows, &(Enum.at(&1, 1) == "id"))
+    assert Enum.any?(entry_rows, &(Enum.at(&1, 1) == "solo_session_id"))
+    assert Enum.any?(entry_rows, &(Enum.at(&1, 1) == "idempotency_key"))
+
+    %{rows: entry_indexes} = SQL.query!(repo, "PRAGMA index_list(sympp_solo_session_entries)")
+    entry_index_names = Enum.map(entry_indexes, &Enum.at(&1, 1))
+    assert "sympp_solo_session_entries_session_sequence_unique_index" in entry_index_names
+    assert "sympp_solo_session_entries_session_idempotency_key_unique_index" in entry_index_names
 
     refute table_exists?(repo, "sympp_work_packages")
     refute table_exists?(repo, "sympp_work_requests")

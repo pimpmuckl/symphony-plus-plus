@@ -3,6 +3,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service do
 
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
 
   @type error :: Repository.error()
 
@@ -39,4 +40,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service do
 
   @spec archive_stale(Repository.repo(), DateTime.t(), pos_integer()) :: {:ok, non_neg_integer()} | {:error, error()}
   def archive_stale(repo, now, stale_after_days), do: Repository.archive_stale(repo, now, stale_after_days)
+
+  @spec append_entry(Repository.repo(), String.t(), map()) :: {:ok, SoloSessionEntry.t()} | {:error, error()}
+  def append_entry(repo, solo_session_id, attrs), do: Repository.append_entry(repo, solo_session_id, attrs)
+
+  @spec get_entry(Repository.repo(), String.t(), String.t()) :: {:ok, SoloSessionEntry.t()} | {:error, error()}
+  def get_entry(repo, solo_session_id, entry_id), do: Repository.get_entry(repo, solo_session_id, entry_id)
+
+  @spec list_entries(Repository.repo(), String.t()) :: {:ok, [SoloSessionEntry.t()]} | {:error, error()}
+  def list_entries(repo, solo_session_id), do: Repository.list_entries(repo, solo_session_id)
 end
