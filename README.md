@@ -12,6 +12,8 @@ readiness surfaces without replacing the base Linear-oriented runtime docs.
 
 ## Start Here
 
+- Local operator golden path:
+  `implementation_docs_symphplusplus/runbooks/LOCAL_OPERATOR_GOLDEN_PATH.md`
 - Runtime setup and workflow configuration: `elixir/README.md`
 - Operator/product guide:
   `implementation_docs_symphplusplus/docs/01_IMPLEMENTATION_GUIDE.md`
