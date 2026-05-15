@@ -1,9 +1,9 @@
 # Symphony++ Codex Plugin
 
-This plugin exposes Symphony++ Codex skills and a generic `symphony_plus_plus`
-MCP server entry as a local Codex plugin. The canonical source for the runtime
-remains this repository; the plugin cache under `~/.codex/plugins/cache/...` is
-generated install state.
+This plugin exposes Symphony++ Codex skills, Solo Session planning helpers, and
+a generic `symphony_plus_plus` MCP server entry as a local Codex plugin. The
+canonical source for the runtime remains this repository; the plugin cache
+under `~/.codex/plugins/cache/...` is generated install state.
 
 ## Install
 
@@ -81,9 +81,12 @@ Repo validation proves only the plugin package contract:
 - `scripts/refresh-local-plugin.ps1 -ValidateInstalledCache` validates the
   installed cache copies, resolves the manifest `mcpServers` pointer, checks
   the generic `symphony_plus_plus` entry, and runs the wrapper with
-  `-ValidateOnly` from each cache root.
+  `-ValidateOnly` from each cache root. It also validates the Solo Session
+  wrapper from each cache root.
 - `scripts/start-sympp-mcp.ps1 -ValidateOnly` can resolve the checkout and
   launcher.
+- `scripts/sympp-solo.ps1 -ValidateOnly` can resolve the checkout and validate
+  the launcher without writing ledger state or requiring a source build.
 
 Plugin skill visibility, MCP server registration, and current-session tool
 availability are separate states. Skill visibility proves Codex loaded the skill
@@ -116,6 +119,32 @@ guidance to set `SYMPP_MIX` to a non-mise Mix executable or opt into
 
 Static plugin files must not contain raw worker secrets, private-store handoff
 targets, bearer tokens, or one-off operator-local secret material.
+
+## Solo Session Use
+
+Normal single-agent Codex work can use the plugin-installed
+`symphony-plus-plus:symphony-solo-session` skill for lightweight local planning
+memory without WorkRequest, WorkPackage, MCP, Linear, architect handoff, or
+worker dispatch semantics.
+
+That skill uses `scripts/sympp-solo.ps1`, which resolves the Symphony++ checkout
+from source or installed cache and passes commands through to `mix sympp.solo`
+from the resolved `elixir/` directory. Use it to attach a local Solo Session,
+append `task_plan`, `finding`, `progress`, `blocker`, `decision`, and
+`validation_note` entries, read the ledger, and pause, resume, complete, or
+archive the session.
+
+When neither `--database` nor `SYMPP_DATABASE` is supplied, the wrapper derives
+the caller workspace from the original current directory and passes
+`<caller-workspace>/.sympp/solo-sessions.sqlite3` to `mix sympp.solo`. The
+wrapper resolves relative database paths against the caller workspace and
+restores the original current directory after invoking Mix.
+
+Solo Session planning is explicitly separate from WorkPackage orchestration.
+Use `symphony-plus-plus:symphony-work-package` for assigned WorkPackages or
+WorkKeys, and `symphony-plus-plus:symphony-architect` for WorkRequest-led
+orchestration. Solo Session entries must not include raw secrets, tokens,
+worker handoff payloads, WorkKeys, or private grant material.
 
 ## Worker Use
 
