@@ -6,6 +6,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   @plugin_manifest_path Path.join(@repo_root, "plugins/symphony-plus-plus/.codex-plugin/plugin.json")
   @plugin_mcp_path Path.join(@repo_root, "plugins/symphony-plus-plus/.mcp.json")
   @plugin_skill_path Path.join(@repo_root, "plugins/symphony-plus-plus/skills/symphony-work-package/SKILL.md")
+  @plugin_solo_skill_path Path.join(@repo_root, "plugins/symphony-plus-plus/skills/symphony-solo-session/SKILL.md")
+  @plugin_solo_script_path Path.join(@repo_root, "plugins/symphony-plus-plus/scripts/sympp-solo.ps1")
   @marketplace_path Path.join(@repo_root, ".agents/plugins/marketplace.json")
   @plugin_readme_path Path.join(@repo_root, "plugins/symphony-plus-plus/README.md")
   @refresh_script_path Path.join(@repo_root, "scripts/refresh-local-plugin.ps1")
@@ -118,7 +120,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert manifest["skills"] == "./skills/"
     assert manifest["mcpServers"] == "./.mcp.json"
     assert manifest["interface"]["displayName"] == "Symphony++"
+    assert manifest["description"] =~ "Solo Session"
+    assert manifest["interface"]["shortDescription"] =~ "Solo Session"
     assert File.read!(@plugin_skill_path) == File.read!(@skill_path)
+    assert File.read!(@plugin_solo_skill_path) =~ "name: symphony-solo-session"
+    assert File.read!(@plugin_solo_skill_path) =~ "Do not create local"
+    assert File.read!(@plugin_solo_skill_path) =~ "symphony-work-package"
+    assert File.read!(@plugin_solo_script_path) =~ "mix sympp.solo"
+    assert File.read!(@plugin_solo_script_path) =~ ".sympp-source-root"
 
     assert Enum.any?(marketplace["plugins"], fn plugin ->
              plugin["name"] == "symphony-plus-plus" and
@@ -134,10 +143,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@plugin_readme_path) =~ "Plugin skill visibility, MCP server registration, and current-session tool"
     assert File.read!(@plugin_readme_path) =~ "start a new session after reload"
     assert File.read!(@plugin_readme_path) =~ "already-running Codex host"
+    assert File.read!(@plugin_readme_path) =~ "symphony-plus-plus:symphony-solo-session"
+    assert File.read!(@plugin_readme_path) =~ "sympp-solo.ps1 -ValidateOnly"
     refute File.read!(@plugin_readme_path) =~ "../../Code/"
     assert File.read!(@refresh_script_path) =~ "ReparsePoint"
     assert File.read!(@refresh_script_path) =~ "ValidateInstalledCache"
     assert File.read!(@refresh_script_path) =~ "Invoke-InstalledCacheValidation"
+    assert File.read!(@refresh_script_path) =~ "scripts/sympp-solo.ps1"
 
     assert File.read!(@refresh_script_path) =~
              "Assert-ExistingCachePathNotReparsePoint @($codexHomePath, $pluginsRoot, $cacheRoot, $marketplaceCacheRoot, $pluginCacheRoot)"
@@ -253,7 +265,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           )
 
         assert status == 0, output
-        assert output =~ "Validated installed Symphony++ plugin MCP cache:"
+        assert output =~ "Validated installed Symphony++ plugin cache:"
         assert output =~ "cache: local"
         assert output =~ "cache: #{expected_version}"
 

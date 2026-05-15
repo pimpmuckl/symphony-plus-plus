@@ -180,11 +180,20 @@ function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [s
     if ($LASTEXITCODE -ne 0) {
       throw "Installed plugin MCP wrapper validation failed for $Label cache with exit code $LASTEXITCODE."
     }
+
+    & pwsh @(
+      "-NoProfile",
+      "-Command",
+      "`$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/sympp-solo.ps1' -ValidateOnly"
+    )
+    if ($LASTEXITCODE -ne 0) {
+      throw "Installed plugin Solo Session wrapper validation failed for $Label cache with exit code $LASTEXITCODE."
+    }
   } finally {
     Pop-Location
   }
 
-  Write-Host "Validated installed Symphony++ plugin MCP cache:"
+  Write-Host "Validated installed Symphony++ plugin cache:"
   Write-Host "  cache: $Label"
   Write-Host "  root: $TargetRoot"
 }
