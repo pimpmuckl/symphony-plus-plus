@@ -346,6 +346,10 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
                     <dd class="mono"><%= value %></dd>
                   </div>
                 </dl>
+                <div :if={worker_launch_brief(@detail.work_package, handoff)} class="sympp-launch-brief">
+                  <label>Worker Launch Brief</label>
+                  <pre class="sympp-copyable-block mono"><%= worker_launch_brief(@detail.work_package, handoff) %></pre>
+                </div>
               </div>
             </div>
           </article>
@@ -730,6 +734,54 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
       value when is_binary(value) and value != "" -> {"Claimed by", value}
       _value -> {"Suggested worker", map_value(handoff, :suggested_claimed_by)}
     end
+  end
+
+  defp worker_launch_brief(work_package, handoff) do
+    lines =
+      [
+        "Worker launch brief",
+        brief_line("Package", package_reference(work_package)),
+        brief_line("Repo/base", repo_base(work_package)),
+        brief_line("Worker branch", map_value(work_package, :branch_pattern)),
+        handoff |> worker_handoff_claimed_by_item() |> brief_item(),
+        brief_line("Handoff mode", map_value(handoff, :mode)),
+        brief_line("Handoff target", map_value(handoff, :target)),
+        brief_line("Handoff path", map_value(handoff, :path)),
+        brief_line("Handoff key", map_value(handoff, :display_key)),
+        "Required skill: symphony-plus-plus:symphony-work-package (repo-local symphony-work-package is acceptable)",
+        "Bootstrap: start from the displayed Mode, Target, Handoff path, and Run MCP handoff metadata in this Worker Handoff panel.",
+        "Safety: do not paste raw work-key secrets, bearer tokens, hashes, full secret-bearing commands, or private payloads."
+      ]
+      |> Enum.reject(&blank_value?/1)
+
+    if length(lines) > 1, do: Enum.join(lines, "\n")
+  end
+
+  defp brief_line(label, value) do
+    case brief_value(value) do
+      nil -> nil
+      value -> "#{label}: #{value}"
+    end
+  end
+
+  defp brief_item({label, value}), do: brief_line(label, value)
+
+  defp brief_value(value) when is_binary(value) do
+    value =
+      value
+      |> String.replace(~r/[\r\n\t\f\v\x{85}\x{2028}\x{2029}]+/u, " ")
+      |> String.trim()
+
+    if value in ["", "n/a"], do: nil, else: value
+  end
+
+  defp brief_value(value) when is_boolean(value) or is_number(value), do: to_string(value)
+  defp brief_value(_value), do: nil
+
+  defp package_reference(work_package) do
+    [map_value(work_package, :id), map_value(work_package, :title)]
+    |> Enum.reject(&blank_value?/1)
+    |> Enum.join(" - ")
   end
 
   defp boolean_text(value) when is_boolean(value), do: to_string(value)
