@@ -176,6 +176,192 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
     assert appears_before?(html, second_slice.id, first_slice.id)
   end
 
+  test "detail state summary makes clarification and slicing needs obvious to board grants" do
+    anchor = create_anchor_package!()
+    secret = create_architect_grant_secret(Repo, anchor.id)
+
+    draft =
+      create_work_request!(
+        id: "WR-LIVE-STATE-DRAFT",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch
+      )
+
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{draft.id}")
+
+    assert html =~ "WorkRequest state"
+    assert html =~ "Start clarification"
+    assert html =~ "Draft request is waiting for the clarification path to open."
+    assert html =~ "Handoff"
+    assert html =~ "local only"
+
+    ready =
+      create_work_request!(
+        id: "WR-LIVE-STATE-READY",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_clarification"
+      )
+
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{ready.id}")
+
+    assert html =~ "Ask clarification questions"
+    assert html =~ "none open"
+
+    human_needed =
+      create_work_request!(
+        id: "WR-LIVE-STATE-HUMAN",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "human_info_needed"
+      )
+
+    assert {:ok, _question} =
+             WorkRequestRepository.ask_question(
+               Repo,
+               human_needed.id,
+               question_attrs(id: "WRQ-LIVE-STATE-HUMAN", question: "Which product boundary wins?")
+             )
+
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{human_needed.id}")
+
+    assert html =~ "Human guidance needed"
+    assert html =~ "The architect path is paused until the human supplies guidance."
+    assert html =~ "1 open, human needed"
+    assert html =~ "sympp-detail-status-attention"
+
+    ready_for_slicing =
+      create_work_request!(
+        id: "WR-LIVE-STATE-SLICING",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{ready_for_slicing.id}")
+
+    assert html =~ "Author planned slices"
+    assert html =~ "ready, no slices"
+
+    assert {:ok, slice} =
+             WorkRequestRepository.add_planned_slice(
+               Repo,
+               ready_for_slicing.id,
+               planned_slice_attrs(id: "WRS-LIVE-STATE-SLICING")
+             )
+
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{ready_for_slicing.id}")
+
+    assert html =~ "Approve planned slices"
+    assert html =~ "1 planned"
+
+    assert {:ok, approved_slice} =
+             WorkRequestRepository.approve_planned_slice(Repo, ready_for_slicing.id, slice.id, "planned")
+
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{ready_for_slicing.id}")
+
+    assert html =~ "Local dispatch pending"
+    assert html =~ "Approved slices are waiting for local-operator dispatch."
+    assert html =~ "1 approved"
+
+    assert {:ok, linked_package} =
+             WorkPackageRepository.create(
+               Repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-LIVE-STATE-DISPATCHED",
+                 kind: "mcp",
+                 status: "ready_for_worker",
+                 repo: anchor.repo,
+                 base_branch: anchor.base_branch
+               )
+             )
+
+    Repo.update!(
+      Ecto.Changeset.change(approved_slice,
+        status: "dispatched",
+        work_package_id: linked_package.id,
+        dispatched_at: DateTime.utc_now(:microsecond)
+      )
+    )
+
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{ready_for_slicing.id}")
+
+    assert html =~ "Dispatched slices active"
+    assert html =~ "At least one slice has been dispatched into a WorkPackage."
+    assert html =~ "1 dispatched"
+
+    assert {:ok, second_slice} =
+             WorkRequestRepository.add_planned_slice(
+               Repo,
+               ready_for_slicing.id,
+               planned_slice_attrs(id: "WRS-LIVE-STATE-SLICING-SECOND")
+             )
+
+    assert {:ok, second_approved} =
+             WorkRequestRepository.approve_planned_slice(Repo, ready_for_slicing.id, second_slice.id, "planned")
+
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{ready_for_slicing.id}")
+
+    assert html =~ "Local dispatch pending"
+    assert html =~ "Approved slices are waiting for local-operator dispatch."
+    assert html =~ "1 approved"
+
+    assert {:ok, _sliced} = WorkRequestRepository.update_status(Repo, ready_for_slicing.id, "ready_for_slicing", "sliced")
+
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{ready_for_slicing.id}")
+
+    assert html =~ "Local dispatch pending"
+    assert html =~ "1 approved"
+
+    assert {:ok, second_linked_package} =
+             WorkPackageRepository.create(
+               Repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-LIVE-STATE-DISPATCHED-SECOND",
+                 kind: "mcp",
+                 status: "ready_for_worker",
+                 repo: anchor.repo,
+                 base_branch: anchor.base_branch
+               )
+             )
+
+    Repo.update!(
+      Ecto.Changeset.change(second_approved,
+        status: "dispatched",
+        work_package_id: second_linked_package.id,
+        dispatched_at: DateTime.utc_now(:microsecond)
+      )
+    )
+
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{ready_for_slicing.id}")
+
+    assert html =~ "Dispatched slices active"
+    assert html =~ "2 dispatched"
+
+    skipped_only =
+      create_work_request!(
+        id: "WR-LIVE-STATE-SKIPPED",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, skipped_slice} =
+             WorkRequestRepository.add_planned_slice(
+               Repo,
+               skipped_only.id,
+               planned_slice_attrs(id: "WRS-LIVE-STATE-SKIPPED")
+             )
+
+    assert {:ok, _skipped} = WorkRequestRepository.skip_planned_slice(Repo, skipped_only.id, skipped_slice.id, "planned")
+
+    {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{skipped_only.id}")
+
+    assert html =~ "Author planned slices"
+    assert html =~ "ready, no slices"
+    refute html =~ "1 planned"
+  end
+
   test "renders planned-slice authoring form only for ready or sliced WorkRequests" do
     anchor = create_anchor_package!()
     draft = create_work_request!(id: "WR-LIVE-SLICE-DRAFT", repo: anchor.repo, base_branch: anchor.base_branch)
