@@ -5,22 +5,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository do
 
   alias Ecto.Changeset
   alias SymphonyElixir.PathSafety
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
 
   @default_current_session_retry_attempts 50
-  @solo_session_migration_version 20_260_515_150_000
-  @solo_session_migration_module SymphonyElixir.SymphonyPlusPlus.Repo.Migrations.CreateSymppSoloSessions
+  @default_entry_append_retry_attempts 200
+  @solo_session_migrations [
+    {20_260_515_150_000, SymphonyElixir.SymphonyPlusPlus.Repo.Migrations.CreateSymppSoloSessions, "20260515150000_create_sympp_solo_sessions.exs"},
+    {20_260_515_153_000, SymphonyElixir.SymphonyPlusPlus.Repo.Migrations.CreateSymppSoloSessionEntries, "20260515153000_create_sympp_solo_session_entries.exs"}
+  ]
 
   @type repo :: module()
   @type error ::
           :current_session_conflict
           | :database_busy
           | :id_already_exists
+          | :idempotency_key_conflict
+          | :invalid_entry_idempotency_key
           | :invalid_stale_after_days
           | :invalid_status
           | :invalid_transition
           | :invalid_workspace_path
           | :not_found
+          | :sequence_conflict
+          | :session_not_mutable
           | :stale_status
           | {:constraint_failed, String.t()}
           | {:migration_failed, term()}
@@ -29,12 +38,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository do
 
   @spec migrate(repo()) :: :ok | {:error, error()}
   def migrate(repo) when is_atom(repo) do
-    :ok = load_solo_session_migration()
+    :ok = load_solo_session_migrations()
 
-    Ecto.Migrator.run(repo, [{@solo_session_migration_version, @solo_session_migration_module}], :up,
-      all: true,
-      log: false
-    )
+    migrations = Enum.map(@solo_session_migrations, fn {version, module, _file} -> {version, module} end)
+    Ecto.Migrator.run(repo, migrations, :up, all: true, log: false)
 
     :ok
   rescue
@@ -116,6 +123,184 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository do
   end
 
   def archive_stale(repo, %DateTime{}, _stale_after_days) when is_atom(repo), do: {:error, :invalid_stale_after_days}
+
+  @spec append_entry(repo(), String.t(), map()) :: {:ok, SoloSessionEntry.t()} | {:error, error()}
+  def append_entry(repo, solo_session_id, attrs) when is_atom(repo) and is_binary(solo_session_id) and is_map(attrs) do
+    with {:ok, attrs} <- normalize_entry_attrs(attrs) do
+      do_append_entry(repo, solo_session_id, attrs, entry_append_retry_attempts())
+    end
+  end
+
+  @spec get_entry(repo(), String.t(), String.t()) :: {:ok, SoloSessionEntry.t()} | {:error, error()}
+  def get_entry(repo, solo_session_id, entry_id)
+      when is_atom(repo) and is_binary(solo_session_id) and is_binary(entry_id) do
+    case repo.one(entry_by_id_query(solo_session_id, entry_id)) do
+      nil -> {:error, :not_found}
+      entry -> {:ok, entry}
+    end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  @spec list_entries(repo(), String.t()) :: {:ok, [SoloSessionEntry.t()]} | {:error, error()}
+  def list_entries(repo, solo_session_id) when is_atom(repo) and is_binary(solo_session_id) do
+    entries =
+      repo.all(
+        from(entry in SoloSessionEntry,
+          where: entry.solo_session_id == ^solo_session_id,
+          order_by: [asc: entry.sequence, asc: entry.id]
+        )
+      )
+
+    {:ok, entries}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp do_append_entry(repo, solo_session_id, attrs, attempts_left) do
+    repo
+    |> append_entry_transaction(solo_session_id, attrs)
+    |> handle_append_entry_result(repo, solo_session_id, attrs, attempts_left)
+  end
+
+  defp append_entry_transaction(repo, solo_session_id, attrs) do
+    repo.transaction(fn ->
+      case append_entry_in_transaction(repo, solo_session_id, attrs) do
+        {:ok, entry} -> entry
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+    |> normalize_transaction_result()
+  rescue
+    error in Ecto.ConstraintError -> normalize_constraint_error(error)
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp append_entry_in_transaction(repo, solo_session_id, attrs) do
+    with :ok <- ensure_mutable_session(repo, solo_session_id),
+         :not_found <- existing_entry_by_idempotency_key(repo, solo_session_id, attrs),
+         :ok <- touch_mutable_session(repo, solo_session_id),
+         sequence <- next_entry_sequence(repo, solo_session_id),
+         {:ok, entry} <- insert_entry(repo, solo_session_id, attrs, sequence) do
+      {:ok, entry}
+    else
+      {:ok, %SoloSessionEntry{} = entry} -> {:ok, entry}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp handle_append_entry_result({:ok, entry}, _repo, _solo_session_id, _attrs, _attempts_left), do: {:ok, entry}
+
+  defp handle_append_entry_result({:error, :idempotency_key_conflict}, repo, solo_session_id, attrs, attempts_left) do
+    replay_entry_after_idempotency_conflict(repo, solo_session_id, attrs, attempts_left)
+  end
+
+  defp handle_append_entry_result({:error, reason}, repo, solo_session_id, attrs, attempts_left)
+       when reason in [:database_busy, :sequence_conflict] do
+    retry_append_entry_or_error(repo, solo_session_id, attrs, attempts_left, reason)
+  end
+
+  defp handle_append_entry_result({:error, reason}, _repo, _solo_session_id, _attrs, _attempts_left), do: {:error, reason}
+
+  defp replay_entry_after_idempotency_conflict(repo, solo_session_id, attrs, attempts_left) do
+    case existing_entry_by_idempotency_key(repo, solo_session_id, attrs) do
+      {:ok, entry} ->
+        {:ok, entry}
+
+      {:error, :database_busy} ->
+        retry_append_entry_or_error(repo, solo_session_id, attrs, attempts_left, :database_busy)
+
+      _result ->
+        retry_append_entry_or_error(repo, solo_session_id, attrs, attempts_left, :idempotency_key_conflict)
+    end
+  end
+
+  defp retry_append_entry_or_error(_repo, _solo_session_id, _attrs, 0, terminal_error), do: {:error, terminal_error}
+
+  defp retry_append_entry_or_error(repo, solo_session_id, attrs, attempts_left, _terminal_error) do
+    Process.sleep(retry_delay_ms(attempts_left, entry_append_retry_attempts()))
+    do_append_entry(repo, solo_session_id, attrs, attempts_left - 1)
+  end
+
+  defp ensure_mutable_session(repo, solo_session_id) do
+    case get(repo, solo_session_id) do
+      {:ok, %SoloSession{status: status}} when status in ["active", "paused"] -> :ok
+      {:ok, %SoloSession{}} -> {:error, :session_not_mutable}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp touch_mutable_session(repo, solo_session_id) do
+    now = DateTime.utc_now(:microsecond)
+
+    solo_session_id
+    |> current_session_update_query()
+    |> repo.update_all(set: [last_activity_at: now, updated_at: now])
+    |> case do
+      {1, _rows} -> :ok
+      {0, _rows} -> mutable_session_error(repo, solo_session_id)
+    end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp mutable_session_error(repo, solo_session_id) do
+    case get(repo, solo_session_id) do
+      {:ok, %SoloSession{}} -> {:error, :session_not_mutable}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp insert_entry(repo, solo_session_id, attrs, sequence) do
+    attrs
+    |> SoloSessionEntry.create_changeset(solo_session_id: solo_session_id, sequence: sequence)
+    |> repo.insert()
+    |> normalize_entry_insert_result()
+  rescue
+    error in Ecto.ConstraintError -> normalize_constraint_error(error)
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp next_entry_sequence(repo, solo_session_id) do
+    current_max =
+      repo.one(
+        from(entry in SoloSessionEntry,
+          where: entry.solo_session_id == ^solo_session_id,
+          select: max(entry.sequence)
+        )
+      )
+
+    (current_max || 0) + 1
+  end
+
+  defp existing_entry_by_idempotency_key(_repo, _solo_session_id, %{"idempotency_key" => nil}), do: :not_found
+  defp existing_entry_by_idempotency_key(_repo, _solo_session_id, attrs) when not is_map_key(attrs, "idempotency_key"), do: :not_found
+
+  defp existing_entry_by_idempotency_key(repo, solo_session_id, %{"idempotency_key" => idempotency_key})
+       when is_binary(idempotency_key) do
+    case repo.one(entry_by_idempotency_key_query(solo_session_id, idempotency_key)) do
+      nil -> :not_found
+      entry -> {:ok, entry}
+    end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp entry_by_id_query(solo_session_id, entry_id) do
+    from(entry in SoloSessionEntry,
+      where: entry.solo_session_id == ^solo_session_id,
+      where: entry.id == ^entry_id,
+      limit: 1
+    )
+  end
+
+  defp entry_by_idempotency_key_query(solo_session_id, idempotency_key) do
+    from(entry in SoloSessionEntry,
+      where: entry.solo_session_id == ^solo_session_id,
+      where: entry.idempotency_key == ^idempotency_key,
+      limit: 1
+    )
+  end
 
   defp do_create_or_attach_current(repo, attrs, attempts_left) do
     repo
@@ -312,6 +497,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository do
     end
   end
 
+  defp normalize_entry_insert_result({:ok, entry}), do: {:ok, entry}
+
+  defp normalize_entry_insert_result({:error, %Changeset{} = changeset}) do
+    cond do
+      changeset_constraint_error?(changeset, :id, :unique) -> {:error, :id_already_exists}
+      changeset_constraint_error?(changeset, :sequence, :unique) -> {:error, :sequence_conflict}
+      changeset_constraint_error?(changeset, :idempotency_key, :unique) -> {:error, :idempotency_key_conflict}
+      true -> {:error, changeset}
+    end
+  end
+
   defp changeset_constraint_error?(changeset, field, constraint) do
     Enum.any?(changeset.errors, fn
       {^field, {_message, options}} -> Keyword.get(options, :constraint) == constraint
@@ -324,6 +520,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository do
 
   defp normalize_constraint_error(%Ecto.ConstraintError{constraint: constraint}) when is_binary(constraint) do
     cond do
+      entry_idempotency_constraint?(constraint) -> {:error, :idempotency_key_conflict}
+      entry_sequence_constraint?(constraint) -> {:error, :sequence_conflict}
+      solo_session_entry_id_constraint?(constraint) -> {:error, :id_already_exists}
       solo_session_id_constraint?(constraint) -> {:error, :id_already_exists}
       current_scope_constraint?(constraint) -> {:error, :current_session_conflict}
       true -> {:error, {:constraint_failed, constraint}}
@@ -341,6 +540,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository do
     cond do
       String.contains?(normalized_message, "busy") or String.contains?(normalized_message, "locked") ->
         {:error, :database_busy}
+
+      entry_idempotency_constraint?(message) ->
+        {:error, :idempotency_key_conflict}
+
+      entry_sequence_constraint?(message) ->
+        {:error, :sequence_conflict}
+
+      solo_session_entry_id_constraint?(message) ->
+        {:error, :id_already_exists}
 
       current_scope_constraint?(message) ->
         {:error, :current_session_conflict}
@@ -367,6 +575,55 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository do
          String.contains?(constraint, ".base_branch") and String.contains?(constraint, ".workspace_path") and
          String.contains?(constraint, ".caller_id"))
   end
+
+  defp solo_session_entry_id_constraint?(constraint) do
+    constraint in ["sympp_solo_session_entries_id_unique_index", "sympp_solo_session_entries_id_index"] or
+      (String.contains?(constraint, "sympp_solo_session_entries") and String.contains?(constraint, ".id"))
+  end
+
+  defp entry_sequence_constraint?(constraint) do
+    constraint == "sympp_solo_session_entries_session_sequence_unique_index" or
+      (String.contains?(constraint, "sympp_solo_session_entries") and String.contains?(constraint, ".sequence")) or
+      (String.contains?(constraint, "sympp_solo_session_entries") and String.contains?(constraint, "sequence"))
+  end
+
+  defp entry_idempotency_constraint?(constraint) do
+    constraint == "sympp_solo_session_entries_session_idempotency_key_unique_index" or
+      (String.contains?(constraint, "sympp_solo_session_entries") and String.contains?(constraint, "idempotency_key"))
+  end
+
+  defp normalize_entry_attrs(attrs) do
+    attrs =
+      attrs
+      |> normalize_keys()
+      |> trim_text_fields(["entry_kind", "title", "body", "status", "idempotency_key"])
+      |> normalize_entry_idempotency_key()
+
+    case Map.get(attrs, "idempotency_key") do
+      value when is_binary(value) ->
+        if secret_like_text?(value), do: {:error, :invalid_entry_idempotency_key}, else: {:ok, attrs}
+
+      _value ->
+        {:ok, attrs}
+    end
+  end
+
+  defp normalize_entry_idempotency_key(attrs) do
+    Map.update(attrs, "idempotency_key", nil, fn
+      value when is_binary(value) ->
+        value
+        |> String.trim()
+        |> case do
+          "" -> nil
+          trimmed -> trimmed
+        end
+
+      value ->
+        value
+    end)
+  end
+
+  defp secret_like_text?(value) when is_binary(value), do: Redactor.redact_text(value) != value
 
   defp normalize_session_attrs(attrs) do
     attrs
@@ -417,20 +674,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository do
 
   defp canonical_workspace_path(value), do: {:ok, value}
 
-  defp load_solo_session_migration do
-    if Code.ensure_loaded?(@solo_session_migration_module) do
-      :ok
-    else
-      @solo_session_migration_version
-      |> solo_session_migration_file()
-      |> Code.compile_file()
+  defp load_solo_session_migrations do
+    Enum.each(@solo_session_migrations, fn {_version, module, file} ->
+      unless Code.ensure_loaded?(module) do
+        file
+        |> solo_session_migration_file()
+        |> Code.compile_file()
+      end
+    end)
 
-      :ok
-    end
+    :ok
   end
 
-  defp solo_session_migration_file(version) do
-    Path.join(migrations_path(), "#{version}_create_sympp_solo_sessions.exs")
+  defp solo_session_migration_file(file) do
+    Path.join(migrations_path(), file)
   end
 
   defp canonicalize_existing_segments(path) do
@@ -469,6 +726,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository do
   defp current_session_retry_attempts do
     :symphony_elixir
     |> Application.get_env(:sympp_solo_session_current_retry_attempts, @default_current_session_retry_attempts)
+    |> max(0)
+  end
+
+  defp entry_append_retry_attempts do
+    :symphony_elixir
+    |> Application.get_env(:sympp_solo_session_entry_retry_attempts, @default_entry_append_retry_attempts)
     |> max(0)
   end
 
