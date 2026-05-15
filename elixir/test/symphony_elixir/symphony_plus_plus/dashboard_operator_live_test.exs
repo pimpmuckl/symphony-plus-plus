@@ -122,7 +122,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "packages shown"
     assert html =~ "requests shown"
     assert html =~ ~s(href="work-requests/WR-OPERATOR-GUIDANCE")
-    assert html =~ "1 Q / 0 slices"
+    assert html =~ "Human Info Needed"
+    assert html =~ "1 Q"
+    assert html =~ "0 slices"
     assert html =~ package.id
     assert html =~ ~s(href="work-packages/#{package.id}")
     assert Regex.scan(~r/\[REDACTED\]/, html) |> length() >= 2
@@ -168,9 +170,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     assert html =~ "Local operator cockpit"
     assert html =~ "Clarify operator-only request"
+    assert html =~ "Clarifying"
     assert html =~ "Ready for clarification"
     assert html =~ "nextide/symphony-plus-plus / operator/base"
-    assert html =~ "1 Q / 1 slices"
+    assert html =~ "1 Q"
+    assert html =~ "1 planned / 1 slices"
     assert html =~ ~s(href="work-requests/WR-OPERATOR-ONLY")
     assert html =~ ~s(<option value="nextide/symphony-plus-plus")
     assert html =~ ~r/<span class="sympp-board-count numeric">\s*1\s*<\/span>\s*<span class="muted">operation total<\/span>/
@@ -180,6 +184,191 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute html =~ ~r/<span class="sympp-board-count numeric">\s*0\s*<\/span>\s*<span class="muted">total<\/span>/
     refute html =~ ~r/<span class="sympp-board-count numeric">\s*0\s*<\/span>\s*<span class="muted">shown<\/span>/
     refute html =~ "Board access"
+  end
+
+  test "local operator board groups visible WorkRequests into compact status lanes" do
+    enable_operator_mode()
+
+    create_work_request!(
+      id: "WR-LANE-DRAFT",
+      title: "Draft intake",
+      status: "draft"
+    )
+
+    create_work_request!(
+      id: "WR-LANE-CLARIFY",
+      title: "Clarifying intake",
+      status: "clarifying"
+    )
+
+    ready_request =
+      create_work_request!(
+        id: "WR-LANE-READY",
+        title: "Ready slicing intake",
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(Repo, ready_request.id, %{
+               title: "Approved lane slice",
+               goal: "Show approved slice signal.",
+               work_package_kind: "dashboard",
+               target_base_branch: "main",
+               branch_pattern: "agent/SYMPP-V2-UX-017/operator-workrequest-lanes",
+               acceptance_criteria: ["Lane shows the approved signal."],
+               validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/dashboard_operator_live_test.exs"],
+               review_lanes: ["review_t1"],
+               stop_conditions: ["Stop after board rendering."]
+             })
+
+    assert {:ok, _approved_slice} =
+             WorkRequestRepository.approve_planned_slice(Repo, ready_request.id, planned_slice.id, "planned")
+
+    assert {:ok, dispatched_candidate} =
+             WorkRequestRepository.add_planned_slice(Repo, ready_request.id, %{
+               title: "Dispatched lane slice",
+               goal: "Keep remaining approved work visible.",
+               work_package_kind: "dashboard",
+               target_base_branch: "main",
+               branch_pattern: "agent/SYMPP-V2-UX-017/dispatched-lane-slice",
+               acceptance_criteria: ["Lane still shows approved work first."],
+               validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/dashboard_operator_live_test.exs"],
+               review_lanes: ["review_t1"],
+               stop_conditions: ["Stop after board rendering."]
+             })
+
+    assert {:ok, dispatched_approved} =
+             WorkRequestRepository.approve_planned_slice(Repo, ready_request.id, dispatched_candidate.id, "planned")
+
+    dispatched_package =
+      create_package!(
+        id: "SYMPP-V2-UX-017-DISPATCHED",
+        kind: "dashboard",
+        title: "Dispatched lane slice",
+        product_description: "Operator-visible request.",
+        branch_pattern: "agent/SYMPP-V2-UX-017/dispatched-lane-slice",
+        allowed_file_globs: [],
+        acceptance_criteria: ["Lane still shows approved work first."]
+      )
+
+    assert {:ok, _dispatched_slice} =
+             WorkRequestRepository.dispatch_planned_slice(
+               Repo,
+               ready_request.id,
+               dispatched_approved.id,
+               "approved",
+               dispatched_package.id
+             )
+
+    planned_mix_request =
+      create_work_request!(
+        id: "WR-LANE-PLANNED-MIX",
+        title: "Planned mixed intake",
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, _planned_slice} =
+             WorkRequestRepository.add_planned_slice(Repo, planned_mix_request.id, %{
+               title: "Planned mixed lane slice",
+               goal: "Keep planned work visible before dispatched history.",
+               work_package_kind: "dashboard",
+               target_base_branch: "main",
+               branch_pattern: "agent/SYMPP-V2-UX-017/planned-mixed-lane-slice",
+               acceptance_criteria: ["Lane shows planned work before dispatched history."],
+               validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/dashboard_operator_live_test.exs"],
+               review_lanes: ["review_t1"],
+               stop_conditions: ["Stop after board rendering."]
+             })
+
+    assert {:ok, planned_mix_dispatch_candidate} =
+             WorkRequestRepository.add_planned_slice(Repo, planned_mix_request.id, %{
+               title: "Planned mixed dispatched slice",
+               goal: "Provide dispatched history for the mixed planned signal.",
+               work_package_kind: "dashboard",
+               target_base_branch: "main",
+               branch_pattern: "agent/SYMPP-V2-UX-017/planned-mixed-dispatched-slice",
+               acceptance_criteria: ["A dispatched sibling exists."],
+               validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/dashboard_operator_live_test.exs"],
+               review_lanes: ["review_t1"],
+               stop_conditions: ["Stop after board rendering."]
+             })
+
+    assert {:ok, planned_mix_dispatch_approved} =
+             WorkRequestRepository.approve_planned_slice(
+               Repo,
+               planned_mix_request.id,
+               planned_mix_dispatch_candidate.id,
+               "planned"
+             )
+
+    planned_mix_package =
+      create_package!(
+        id: "SYMPP-V2-UX-017-PLANNED-MIX",
+        kind: "dashboard",
+        title: "Planned mixed dispatched slice",
+        product_description: "Operator-visible request.",
+        branch_pattern: "agent/SYMPP-V2-UX-017/planned-mixed-dispatched-slice",
+        allowed_file_globs: [],
+        acceptance_criteria: ["A dispatched sibling exists."]
+      )
+
+    assert {:ok, _planned_mix_dispatched_slice} =
+             WorkRequestRepository.dispatch_planned_slice(
+               Repo,
+               planned_mix_request.id,
+               planned_mix_dispatch_approved.id,
+               "approved",
+               planned_mix_package.id
+             )
+
+    create_work_request!(
+      id: "WR-LANE-HUMAN",
+      title: "Human answer intake",
+      status: "human_info_needed"
+    )
+
+    create_work_request!(
+      id: "WR-LANE-SLICED",
+      title: "Sliced dispatch intake",
+      status: "sliced"
+    )
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/board")
+
+    assert lane_contains?(html, "Draft", "Draft intake")
+    assert lane_contains?(html, "Clarifying", "Clarifying intake")
+    assert lane_contains?(html, "Human Info Needed", "Human answer intake")
+    assert lane_contains?(html, "Ready For Slicing", "Ready slicing intake")
+    assert lane_contains?(html, "Sliced/Dispatching", "Sliced dispatch intake")
+    assert html =~ "1 approved / 2 slices"
+    assert html =~ "Planned mixed intake"
+    assert html =~ "1 planned / 2 slices"
+    assert html =~ ~s(href="work-requests/WR-LANE-READY")
+    assert html =~ ~s(href="work-requests")
+  end
+
+  test "local operator WorkRequest lanes follow active board filters" do
+    enable_operator_mode()
+
+    create_work_request!(
+      id: "WR-LANE-FILTER-VISIBLE",
+      title: "Visible lane request",
+      repo: "nextide/symphony-plus-plus",
+      status: "human_info_needed"
+    )
+
+    create_work_request!(
+      id: "WR-LANE-FILTER-HIDDEN",
+      title: "Hidden lane request",
+      repo: "nextide/other",
+      status: "human_info_needed"
+    )
+
+    {:ok, _view, html} = live(local_conn(), "/sympp/board?repo=nextide/symphony-plus-plus")
+
+    assert lane_contains?(html, "Human Info Needed", "Visible lane request")
+    refute html =~ "Hidden lane request"
+    assert html =~ ~r/<span class="sympp-board-count numeric">\s*1\s*<\/span>\s*<span class="muted">requests shown<\/span>/
   end
 
   test "local operator board shows human-info guidance requests from packages" do
@@ -1742,17 +1931,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert {:ok, package} =
              WorkPackageRepository.create(
                Repo,
-               WorkPackageFactory.attrs(
-                 id: Keyword.fetch!(overrides, :id),
-                 kind: Keyword.get(overrides, :kind, "dashboard"),
-                 status: Keyword.get(overrides, :status, "planning"),
-                 title: Keyword.get(overrides, :title, "Operator package"),
-                 repo: Keyword.get(overrides, :repo, "nextide/symphony-plus-plus"),
-                 base_branch: Keyword.get(overrides, :base_branch, "main"),
-                 product_description: Keyword.get(overrides, :product_description, "Product context"),
-                 engineering_scope: "Engineering scope",
-                 acceptance_criteria: ["Visible in the operator cockpit."]
-               )
+               package_attrs(overrides)
              )
 
     assert {:ok, _plan} =
@@ -1766,6 +1945,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     if pr_url, do: append_pr!(package, pr_url)
     append_run!(package)
     package
+  end
+
+  defp package_attrs(overrides) do
+    WorkPackageFactory.attrs(
+      id: Keyword.fetch!(overrides, :id),
+      kind: Keyword.get(overrides, :kind, "dashboard"),
+      status: Keyword.get(overrides, :status, "planning"),
+      title: Keyword.get(overrides, :title, "Operator package"),
+      repo: Keyword.get(overrides, :repo, "nextide/symphony-plus-plus"),
+      base_branch: Keyword.get(overrides, :base_branch, "main"),
+      branch_pattern: Keyword.get(overrides, :branch_pattern, "agent/example"),
+      product_description: Keyword.get(overrides, :product_description, "Product context"),
+      engineering_scope: "Engineering scope",
+      acceptance_criteria: Keyword.get(overrides, :acceptance_criteria, ["Visible in the operator cockpit."])
+    )
+    |> maybe_put_package_attr(overrides, :allowed_file_globs)
+  end
+
+  defp maybe_put_package_attr(attrs, overrides, key) do
+    if Keyword.has_key?(overrides, key), do: Map.put(attrs, key, Keyword.fetch!(overrides, key)), else: attrs
   end
 
   defp append_blocker!(package) do
@@ -1815,6 +2014,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     assert {:ok, work_request} = WorkRequestRepository.create(Repo, Enum.into(overrides, defaults))
     work_request
+  end
+
+  defp lane_contains?(html, lane_label, title) do
+    Regex.match?(
+      ~r/<section class="sympp-board-request-lane">.*?<h3>\s*#{Regex.escape(lane_label)}\s*<\/h3>.*?#{Regex.escape(title)}/s,
+      html
+    )
   end
 
   defp create_human_guidance_request!(package, overrides) do
