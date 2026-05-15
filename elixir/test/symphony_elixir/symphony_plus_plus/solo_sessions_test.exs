@@ -459,6 +459,51 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessionsTest do
     assert after_non_string_rejection.last_activity_at == before_secret_rejection.last_activity_at
   end
 
+  test "idempotent replays survive completed and archived session transitions", %{repo: repo} do
+    assert {:ok, session} =
+             Service.create_or_attach_current(
+               repo,
+               session_attrs(workspace_path: workspace_path("idempotent-lifecycle"))
+             )
+
+    assert {:ok, entry} =
+             Service.append_entry(repo, session.id, %{
+               entry_kind: "validation_note",
+               title: "Validated once",
+               idempotency_key: "lifecycle-entry-key"
+             })
+
+    assert {:ok, completed} = Service.complete(repo, session.id, "active")
+    Process.sleep(5)
+
+    assert {:ok, completed_replay} =
+             Service.append_entry(repo, session.id, %{
+               entry_kind: "validation_note",
+               title: "Retry after complete",
+               idempotency_key: "lifecycle-entry-key"
+             })
+
+    assert completed_replay.id == entry.id
+    assert {:ok, completed_after_replay} = Service.get(repo, session.id)
+    assert completed_after_replay.last_activity_at == completed.last_activity_at
+
+    assert {:ok, archived} = Service.archive(repo, session.id, "completed")
+    Process.sleep(5)
+
+    assert {:ok, archived_replay} =
+             Service.append_entry(repo, session.id, %{
+               entry_kind: "validation_note",
+               title: "Retry after archive",
+               idempotency_key: "lifecycle-entry-key"
+             })
+
+    assert archived_replay.id == entry.id
+    assert {:ok, archived_after_replay} = Service.get(repo, session.id)
+    assert archived_after_replay.last_activity_at == archived.last_activity_at
+    assert {:ok, [only_entry]} = Service.list_entries(repo, session.id)
+    assert only_entry.id == entry.id
+  end
+
   test "idempotent append conflict replays from a fresh read path", %{repo: repo} do
     assert {:ok, session} = Service.create_or_attach_current(repo, session_attrs(workspace_path: workspace_path("entry-conflict")))
 

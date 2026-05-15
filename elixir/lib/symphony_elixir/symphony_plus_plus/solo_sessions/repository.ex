@@ -177,8 +177,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository do
   end
 
   defp append_entry_in_transaction(repo, solo_session_id, attrs) do
-    with :ok <- ensure_mutable_session(repo, solo_session_id),
-         :not_found <- existing_entry_by_idempotency_key(repo, solo_session_id, attrs),
+    with :not_found <- existing_entry_by_idempotency_key(repo, solo_session_id, attrs),
+         :ok <- ensure_mutable_session(repo, solo_session_id),
          :ok <- touch_mutable_session(repo, solo_session_id),
          sequence <- next_entry_sequence(repo, solo_session_id),
          {:ok, entry} <- insert_entry(repo, solo_session_id, attrs, sequence) do
