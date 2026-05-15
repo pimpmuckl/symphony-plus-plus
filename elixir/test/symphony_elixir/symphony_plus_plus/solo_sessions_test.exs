@@ -447,6 +447,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessionsTest do
 
     assert {:ok, after_secret_rejection} = Service.get(repo, first_session.id)
     assert after_secret_rejection.last_activity_at == before_secret_rejection.last_activity_at
+
+    assert {:error, :invalid_entry_idempotency_key} =
+             Service.append_entry(repo, first_session.id, %{
+               entry_kind: "progress",
+               title: "Reject non-string key",
+               idempotency_key: 123
+             })
+
+    assert {:ok, after_non_string_rejection} = Service.get(repo, first_session.id)
+    assert after_non_string_rejection.last_activity_at == before_secret_rejection.last_activity_at
   end
 
   test "idempotent append conflict replays from a fresh read path", %{repo: repo} do

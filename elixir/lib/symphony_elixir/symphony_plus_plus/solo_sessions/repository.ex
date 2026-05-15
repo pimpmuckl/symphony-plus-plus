@@ -603,8 +603,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository do
       value when is_binary(value) ->
         if secret_like_text?(value), do: {:error, :invalid_entry_idempotency_key}, else: {:ok, attrs}
 
-      _value ->
+      nil ->
         {:ok, attrs}
+
+      _value ->
+        {:error, :invalid_entry_idempotency_key}
     end
   end
 
