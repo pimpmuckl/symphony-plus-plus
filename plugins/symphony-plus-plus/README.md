@@ -166,11 +166,13 @@ connects the MCP process to the private worker-secret store and stable
 `claimed_by` identity for exactly one WorkPackage.
 
 Worker-secret bootstrap metadata is emitted by `mix sympp.create_work` after it
-stores the one-time secret in a private local store. On Windows, generated
-commands use `scripts/sympp-worker-secret.ps1` for Windows Credential Manager.
-`local-private-file` is a non-Windows fallback and uses
-`scripts/sympp-worker-secret.sh` to read the private file and start the MCP child
-process without printing the secret.
+stores the one-time secret in a private local store. In `auto` mode, local
+private-file handoff is the default local operator path on every host, including
+Windows. Windows generated commands use `scripts/sympp-worker-secret.ps1`; other
+hosts use `scripts/sympp-worker-secret.sh` to read the private file and start
+the MCP child process without printing the secret. Explicit
+`windows-credential-manager` mode remains available when the host Credential
+Manager can write credentials.
 
 ## Architect Use
 

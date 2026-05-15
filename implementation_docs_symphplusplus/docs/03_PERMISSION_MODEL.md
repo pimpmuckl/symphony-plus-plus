@@ -56,10 +56,13 @@ on ambiguous anonymous ownership.
 
 `claim_work_key(secret, claimed_by)` remains the server-side recovery primitive,
 but first-use Codex workers should not paste raw secrets into prompts or normal
-tool calls. On Windows, the local bootstrap uses Windows Credential Manager. On
-non-Windows systems, the fallback is a user-local private file store whose ACL
-strength depends on the local profile and should be treated as a smaller
-development fallback.
+tool calls. For local/private operator use, `auto` uses the local private-file
+store on every host, including Windows, so normal dogfood does not depend on
+Windows Credential Manager writes. Windows bootstrap commands use the
+PowerShell helper to read the private file and inject the secret only into the
+MCP child process. Explicit `windows-credential-manager` mode remains available
+when the operator intentionally wants that store and the host Credential Manager
+can write credentials.
 
 Private handoff metadata has its own naming contract. Local private-file paths
 and Windows Credential Manager targets use the stable, non-secret
@@ -67,7 +70,9 @@ and Windows Credential Manager targets use the stable, non-secret
 may appear as a readable operator label, but it is not the unique storage
 identity. Normal command output must keep showing only non-secret handoff
 metadata and bootstrap shape; raw worker secrets stay in the private store and
-must remain redacted from stdout, prompts, PR text, review text, and logs.
+must remain redacted from stdout, prompts, PR text, review text, and logs. Local
+private-file ACL strength depends on the local OS/user profile and is intended
+for this pre-production personal/local workflow.
 
 Managed handoff metadata records are non-secret deletion-coordinate metadata.
 They identify the work package, worker grant, mode, and managed private-store

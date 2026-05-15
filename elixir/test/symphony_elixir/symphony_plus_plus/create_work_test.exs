@@ -18,7 +18,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
   alias SymphonyElixir.WorkPackageFactory
 
   @repo_root Path.expand("../../../../", __DIR__)
-  @windows match?({:win32, _}, :os.type())
 
   defmodule FailingReadyRenderer do
     def render_all(_repo, _work_package_id), do: {:error, :render_failed}
@@ -416,8 +415,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     refute Enum.any?(creation.virtual_files, fn {_name, markdown} -> String.contains?(markdown, secret) end)
   end
 
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
-
   test "create-work private handoff storage names use the persisted grant id and redact the raw secret", %{repo: repo} do
     store_dir = Path.join(System.tmp_dir!(), "sympp-create-work-grant-handoff-#{System.unique_integer([:positive])}")
 
@@ -466,8 +463,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     end
   end
 
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
-
   test "removes stored worker secret when managed metadata persistence fails", %{repo: repo} do
     store_dir = Path.join(System.tmp_dir!(), "sympp-metadata-failure-handoff-#{System.unique_integer([:positive])}")
 
@@ -496,8 +491,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
       File.rm_rf!(store_dir)
     end
   end
-
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
 
   test "removes stored worker secret when ready promotion fails after handoff", %{repo: repo} do
     store_dir = Path.join(System.tmp_dir!(), "sympp-ready-failure-handoff-#{System.unique_integer([:positive])}")
@@ -539,8 +532,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     end
   end
 
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
-
   test "removes stored worker secret when ready rerender fails after handoff", %{repo: repo} do
     store_dir = Path.join(System.tmp_dir!(), "sympp-ready-render-failure-handoff-#{System.unique_integer([:positive])}")
 
@@ -569,8 +560,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
       File.rm_rf!(store_dir)
     end
   end
-
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
 
   test "reports recovery identifiers when handoff failure cleanup also fails", %{repo: repo} do
     store_path = Path.join(System.tmp_dir!(), "sympp-secret-store-blocker-#{System.unique_integer([:positive])}")

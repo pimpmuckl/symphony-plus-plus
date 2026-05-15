@@ -288,10 +288,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
   end
 
   defp test_secret_handoff_mode do
-    case :os.type() do
-      {:win32, _name} -> "windows-credential-manager"
-      _type -> "local-private-file"
-    end
+    "auto"
   end
 
   defp test_handoff_store_dir do

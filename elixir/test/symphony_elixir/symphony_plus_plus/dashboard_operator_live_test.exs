@@ -2538,10 +2538,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
   end
 
   defp assert_handoff_store_dir!(%{"path" => path}, store_dir) when is_binary(path) do
-    assert String.starts_with?(path, store_dir)
+    assert String.starts_with?(normalized_handoff_path(path), normalized_handoff_path(store_dir) <> "/")
   end
 
   defp assert_handoff_store_dir!(%{"target" => target}, _store_dir) when is_binary(target), do: :ok
+
+  defp normalized_handoff_path(path) do
+    path
+    |> Path.expand()
+    |> String.replace("\\", "/")
+    |> String.downcase()
+  end
 
   defp put_optional_handoff_opt(opts, _key, nil), do: opts
   defp put_optional_handoff_opt(opts, key, value), do: Keyword.put(opts, key, value)

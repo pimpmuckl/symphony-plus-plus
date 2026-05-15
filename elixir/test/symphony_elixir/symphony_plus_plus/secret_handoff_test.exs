@@ -44,8 +44,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
-
   test "stores a worker secret in a caller-selected private local file" do
     secret = "synthetic-local-secret-#{System.unique_integer([:positive])}"
     store_dir = Path.join(System.tmp_dir!(), "sympp-secret-handoff-#{System.unique_integer([:positive])}")
@@ -81,8 +79,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
-
   test "expands relative local file paths and can delete a stored local secret" do
     secret = "synthetic-local-secret-#{System.unique_integer([:positive])}"
     relative_store_dir = "tmp/sympp-secret-handoff-#{System.unique_integer([:positive])}"
@@ -113,8 +109,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
-
   test "checks local private file availability and integrity without returning the secret" do
     secret = "synthetic-local-integrity-#{System.unique_integer([:positive])}"
     store_dir = Path.join(System.tmp_dir!(), "sympp-secret-integrity-#{System.unique_integer([:positive])}")
@@ -136,11 +130,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
       assert SecretHandoff.worker_secret_availability(handoff, repo_root: @repo_root) == :available
       assert SecretHandoff.worker_secret_integrity(handoff, secret_hash, repo_root: @repo_root) == :mismatch
 
-      File.chmod!(handoff.path, 0o000)
-      assert SecretHandoff.worker_secret_availability(handoff, repo_root: @repo_root) == :unknown
-      assert SecretHandoff.worker_secret_integrity(handoff, secret_hash, repo_root: @repo_root) == :unknown
+      unless windows?() do
+        File.chmod!(handoff.path, 0o000)
+        assert SecretHandoff.worker_secret_availability(handoff, repo_root: @repo_root) == :unknown
+        assert SecretHandoff.worker_secret_integrity(handoff, secret_hash, repo_root: @repo_root) == :unknown
 
-      File.chmod!(handoff.path, 0o600)
+        File.chmod!(handoff.path, 0o600)
+      end
+
       File.rm!(handoff.path)
       assert SecretHandoff.worker_secret_availability(handoff, repo_root: @repo_root) == :missing
       assert SecretHandoff.worker_secret_integrity(handoff, secret_hash, repo_root: @repo_root) == :mismatch
@@ -148,8 +145,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
       File.rm_rf!(store_dir)
     end
   end
-
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
 
   test "escapes generated local MCP command arguments" do
     secret = "synthetic-local-secret-#{System.unique_integer([:positive])}"
@@ -180,8 +175,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
       File.rm_rf!(store_dir)
     end
   end
-
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
 
   test "namespaces local handoff filenames beyond sanitized ids" do
     store_dir = Path.join(System.tmp_dir!(), "sympp-secret-collision-#{System.unique_integer([:positive])}")
@@ -224,8 +217,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
-
   test "uses grant identity to namespace local paths and credential targets when display keys collide" do
     store_dir = Path.join(System.tmp_dir!(), "sympp-secret-grant-collision-#{System.unique_integer([:positive])}")
 
@@ -261,7 +252,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
+  if @windows, do: @tag(skip: "POSIX chmod failure hook is non-Windows only")
 
   test "does not delete an existing local handoff file when a retry fails before publishing replacement" do
     store_dir = Path.join(System.tmp_dir!(), "sympp-secret-retry-#{System.unique_integer([:positive])}")
@@ -297,8 +288,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
-
   test "replaces an existing local handoff file when retry publishes a new secret" do
     store_dir = Path.join(System.tmp_dir!(), "sympp-secret-replace-#{System.unique_integer([:positive])}")
 
@@ -326,7 +315,62 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
+  if not @windows, do: @tag(skip: "Windows file replacement command is Windows only")
+
+  test "Windows local handoff replacement honors the injected PowerShell executable" do
+    store_dir =
+      Path.join(System.tmp_dir!(), "sympp-secret-windows-replace-#{System.unique_integer([:positive])}")
+
+    package = work_package()
+    grant_attrs = [id: "ag_windows_replace_override"]
+    parent = self()
+
+    windows_file_replace_command = fn powershell, args, cmd_opts ->
+      assert powershell == "synthetic-powershell"
+      assert "-Command" in args
+
+      env = Keyword.fetch!(cmd_opts, :env)
+      source = env |> List.keyfind("SYMPP_PRIVATE_FILE_SOURCE", 0) |> elem(1)
+      destination = env |> List.keyfind("SYMPP_PRIVATE_FILE_DESTINATION", 0) |> elem(1)
+
+      send(parent, {:windows_file_replace_command, powershell, destination})
+
+      File.rm!(destination)
+      File.rename!(source, destination)
+
+      {"", 0}
+    end
+
+    try do
+      assert {:ok, first_handoff} =
+               SecretHandoff.store_worker_secret(
+                 %{work_package: package, worker_grant: worker_grant("old-secret", grant_attrs)},
+                 mode: "local-private-file",
+                 store_dir: store_dir,
+                 claimed_by: "worker-local-1",
+                 repo_root: @repo_root
+               )
+
+      assert {:ok, second_handoff} =
+               SecretHandoff.store_worker_secret(
+                 %{work_package: package, worker_grant: worker_grant("new-secret", grant_attrs)},
+                 mode: "local-private-file",
+                 store_dir: store_dir,
+                 claimed_by: "worker-local-1",
+                 repo_root: @repo_root,
+                 private_file_rename_fun: fn _temp_path, _path -> {:error, :simulated_rename_failure} end,
+                 powershell_executable: "synthetic-powershell",
+                 windows_file_replace_command: windows_file_replace_command
+               )
+
+      assert second_handoff.path == first_handoff.path
+      assert File.read!(second_handoff.path) == "new-secret"
+      expected_path = second_handoff.path
+      assert_receive {:windows_file_replace_command, "synthetic-powershell", ^expected_path}
+    after
+      File.rm_rf!(store_dir)
+    end
+  end
 
   test "preserves an existing local handoff file when replacement publish fails" do
     store_dir = Path.join(System.tmp_dir!(), "sympp-secret-publish-fail-#{System.unique_integer([:positive])}")
@@ -771,12 +815,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
-
   test "omits metadata run command when repo root no longer validates" do
     store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-no-command-#{System.unique_integer([:positive])}")
     repo_root = Path.join(System.tmp_dir!(), "sympp-handoff-repo-root-#{System.unique_integer([:positive])}")
-    script_path = Path.join([repo_root, "scripts", "sympp-worker-secret.sh"])
+    script_path = Path.join([repo_root, "scripts", local_private_file_script_name()])
     package = work_package()
     grant = worker_grant("display-secret", claimed_by: "claimed-worker-1")
     opts = [mode: "local-private-file", store_dir: store_dir, claimed_by: "worker-local-1", repo_root: repo_root]
@@ -804,8 +846,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
-
   test "reads redacted managed metadata by grant identity for operator handoff display" do
     store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-read-local-#{System.unique_integer([:positive])}")
     package = work_package()
@@ -832,13 +872,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
       assert display.suggested_claimed_by == "worker-local-1"
       assert display.secret_in_stdout == false
       assert display.run_mcp_command =~ "run-mcp-local-file"
-      assert display.run_mcp_command =~ "--claimed-by 'claimed-worker-1'"
+      assert local_file_run_mcp_command_claims_worker?(display.run_mcp_command, "claimed-worker-1")
       refute inspect(display) =~ "display-secret"
 
       File.rm!(handoff_path)
       assert {:ok, stale_display} = SecretHandoff.read_worker_secret_metadata(package, grant, opts)
       assert stale_display.path == handoff_path
-      assert stale_display.run_mcp_command =~ "--claimed-by 'claimed-worker-1'"
+      assert local_file_run_mcp_command_claims_worker?(stale_display.run_mcp_command, "claimed-worker-1")
 
       unclaimed_grant = worker_grant("unclaimed-display-secret", id: "grant-unclaimed-display", display_key: "U321")
       unclaimed_path = local_private_file_path(package, unclaimed_grant, opts)
@@ -855,7 +895,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
       assert {:ok, unclaimed_display} = SecretHandoff.read_worker_secret_metadata(package, unclaimed_grant, opts)
       assert unclaimed_display.claimed_by == nil
       assert unclaimed_display.suggested_claimed_by == "worker-local-1"
-      assert unclaimed_display.run_mcp_command =~ "--claimed-by 'worker-local-1'"
+      assert local_file_run_mcp_command_claims_worker?(unclaimed_display.run_mcp_command, "worker-local-1")
 
       File.write!(managed_metadata_file(package, grant, opts), Jason.encode!(metadata_record(package, grant, "local-private-file", %{"path" => Path.join(store_dir, "other.secret")})))
 
@@ -1166,8 +1206,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
-
   test "does not persist managed metadata during worker secret storage" do
     store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-explicit-only-#{System.unique_integer([:positive])}")
     package = work_package()
@@ -1249,8 +1287,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     assert SecretHandoff.error_message(:unsupported_handoff_metadata_location) =~ "managed metadata"
     assert SecretHandoff.error_message(:unsupported_secret_handoff_mode) =~ "local-private-file"
     assert SecretHandoff.error_message(:handoff_metadata_conflict) =~ "different coordinates"
-    assert SecretHandoff.error_message(:local_private_file_unavailable_on_windows) =~ "non-Windows"
-    assert SecretHandoff.error_message(:windows_credential_manager_unavailable) =~ "Windows Credential Manager"
+    assert SecretHandoff.error_message(:local_private_file_unavailable_on_windows) =~ "local-private-file"
+    assert SecretHandoff.error_message(:windows_credential_manager_unavailable) =~ "Windows handoff helpers"
     assert SecretHandoff.error_message({:handoff_metadata_invalid, :missing_mode}) =~ "metadata is invalid"
     assert SecretHandoff.error_message({:handoff_metadata_delete_failed, :eacces}) =~ "metadata cleanup failed"
     assert SecretHandoff.error_message({:handoff_metadata_read_failed, :invalid_json}) =~ "metadata read failed"
@@ -1259,18 +1297,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     assert SecretHandoff.error_message({:windows_credential_manager_failed, 1}) =~ "exit status 1"
   end
 
-  test "rejects local private-file handoff on Windows" do
-    if windows?() do
-      assert {:error, :local_private_file_unavailable_on_windows} =
-               SecretHandoff.store_worker_secret(creation("synthetic-secret"),
-                 mode: "local-private-file",
-                 claimed_by: "worker-local-1",
+  test "auto mode stores a local private-file handoff" do
+    secret = "synthetic-auto-local-secret-#{System.unique_integer([:positive])}"
+    store_dir = Path.join(System.tmp_dir!(), "sympp-secret-auto-#{System.unique_integer([:positive])}")
+
+    try do
+      assert {:ok, handoff} =
+               SecretHandoff.store_worker_secret(creation(secret),
+                 mode: "auto",
+                 store_dir: store_dir,
+                 claimed_by: "worker-auto-1",
                  repo_root: @repo_root
                )
+
+      assert handoff.mode == "local-private-file"
+      assert handoff.secret_in_stdout == false
+      assert local_file_run_mcp_command_uses_platform_wrapper?(handoff.run_mcp_command)
+      assert File.read!(handoff.path) == secret
+    after
+      File.rm_rf!(store_dir)
     end
   end
 
-  if @windows, do: @tag(skip: "local-private-file handoff is non-Windows only")
+  if @windows, do: @tag(skip: "POSIX chmod failure hook is non-Windows only")
 
   test "fails and removes the private local file when chmod fails" do
     secret = "synthetic-local-secret-#{System.unique_integer([:positive])}"
@@ -1299,10 +1348,54 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
+  test "explicit Windows Credential Manager mode uses command result without local fallback" do
+    secret = "synthetic-windows-command-#{System.unique_integer([:positive])}"
+
+    command = fn powershell, args, cmd_opts ->
+      assert powershell == "synthetic-powershell"
+      assert "store" in args
+      assert "-Target" in args
+      assert Keyword.fetch!(cmd_opts, :env) == [{"SYMPP_WORK_KEY_SECRET", secret}]
+      {"stored", 0}
+    end
+
+    assert {:ok, handoff} =
+             SecretHandoff.store_worker_secret(creation(secret),
+               mode: "windows-credential-manager",
+               repo_root: @repo_root,
+               database: "test-ledger.sqlite3",
+               claimed_by: "worker-windows-1",
+               powershell_executable: "synthetic-powershell",
+               windows_credential_command: command
+             )
+
+    assert handoff.mode == "windows-credential-manager"
+    assert handoff.store == "Windows Credential Manager"
+    assert handoff.run_mcp_command =~ "synthetic-powershell"
+    assert handoff.run_mcp_command =~ handoff.target
+    refute inspect(handoff) =~ secret
+  end
+
+  test "explicit Windows Credential Manager store failure is reported" do
+    command = fn _powershell, args, _cmd_opts ->
+      assert "store" in args
+      {"failed", 1}
+    end
+
+    assert {:error, {:windows_credential_manager_failed, 1}} =
+             SecretHandoff.store_worker_secret(creation("synthetic-windows-failure"),
+               mode: "windows-credential-manager",
+               repo_root: @repo_root,
+               claimed_by: "worker-windows-1",
+               powershell_executable: "synthetic-powershell",
+               windows_credential_command: command
+             )
+  end
+
   test "stores a synthetic secret in Windows Credential Manager without returning the secret" do
     powershell = powershell_executable()
 
-    if windows?() and powershell do
+    if windows_credential_manager_integration_enabled?(powershell) do
       secret = "synthetic-windows-secret-#{System.unique_integer([:positive])}"
 
       assert {:ok, handoff} =
@@ -1334,7 +1427,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
   test "checks Windows Credential Manager handoff availability without returning the secret" do
     powershell = powershell_executable()
 
-    if windows?() and powershell do
+    if windows_credential_manager_integration_enabled?(powershell) do
       secret = "synthetic-windows-availability-#{System.unique_integer([:positive])}"
 
       assert {:ok, handoff} =
@@ -1381,7 +1474,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
   test "uses grant identity to namespace Windows Credential Manager targets when display keys collide" do
     powershell = powershell_executable()
 
-    if windows?() and powershell do
+    if windows_credential_manager_integration_enabled?(powershell) do
       assert {:ok, first_handoff} =
                SecretHandoff.store_worker_secret(
                  %{work_package: work_package(), worker_grant: worker_grant("first-secret", id: "ag_collision_one")},
@@ -1547,6 +1640,49 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     )
   end
 
+  defp windows_credential_manager_writable?(powershell) when is_binary(powershell) do
+    if windows?() do
+      target = "SymphonyPlusPlus:test:wcm-probe:#{System.unique_integer([:positive])}"
+      script_path = Path.join(@repo_root, "scripts/sympp-worker-secret.ps1")
+
+      try do
+        case System.cmd(
+               powershell,
+               [
+                 "-NoProfile",
+                 "-ExecutionPolicy",
+                 "Bypass",
+                 "-File",
+                 script_path,
+                 "store",
+                 "-Target",
+                 target,
+                 "-UserName",
+                 "sympp-wcm-probe"
+               ],
+               env: [{"SYMPP_WORK_KEY_SECRET", "synthetic-wcm-probe-secret"}],
+               stderr_to_stdout: true
+             ) do
+          {_output, 0} -> true
+          {_output, _status} -> false
+        end
+      after
+        remove_windows_credential!(powershell, target)
+      end
+    else
+      false
+    end
+  rescue
+    _error -> false
+  end
+
+  defp windows_credential_manager_writable?(_powershell), do: false
+
+  defp windows_credential_manager_integration_enabled?(powershell) do
+    System.get_env("SYMPP_RUN_WCM_INTEGRATION") in ["1", "true", "TRUE"] and
+      windows_credential_manager_writable?(powershell)
+  end
+
   defp powershell_executable do
     System.find_executable("powershell.exe") ||
       System.find_executable("pwsh") ||
@@ -1556,11 +1692,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
   defp windows?, do: match?({:win32, _}, :os.type())
 
   defp local_file_run_mcp_command_uses_platform_wrapper?(command) do
-    command =~ "sympp-worker-secret.sh" and command =~ "run-mcp-local-file"
+    if windows?() do
+      command =~ "sympp-worker-secret.ps1" and command =~ "run-mcp-local-file" and command =~ "-SecretFile"
+    else
+      command =~ "sympp-worker-secret.sh" and command =~ "run-mcp-local-file"
+    end
   end
 
   defp local_file_run_mcp_command_claims_worker?(command, claimed_by) do
-    command =~ ~s(--claimed-by #{shell_literal(claimed_by)})
+    if windows?() do
+      command =~ ~s(-ClaimedBy #{powershell_literal(claimed_by)})
+    else
+      command =~ ~s(--claimed-by #{shell_literal(claimed_by)})
+    end
+  end
+
+  defp local_private_file_script_name do
+    if windows?(), do: "sympp-worker-secret.ps1", else: "sympp-worker-secret.sh"
   end
 
   defp powershell_literal(value) do

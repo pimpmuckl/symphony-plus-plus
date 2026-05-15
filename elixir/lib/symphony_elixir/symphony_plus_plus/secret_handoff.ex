@@ -173,10 +173,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   def error_message(:handoff_metadata_conflict), do: "secret handoff metadata already exists with different coordinates"
 
   def error_message(:local_private_file_unavailable_on_windows),
-    do: "local-private-file handoff is only available on non-Windows hosts; use windows-credential-manager on Windows"
+    do: "local-private-file handoff could not be prepared on this host"
 
   def error_message(:windows_credential_manager_unavailable),
-    do: "Windows Credential Manager handoff requires powershell.exe or pwsh"
+    do: "Windows handoff helpers require powershell.exe or pwsh"
 
   def error_message({:local_private_file_failed, reason}),
     do: "local private file handoff failed: #{inspect(reason)}"
@@ -304,7 +304,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   end
 
   defp auto_mode do
-    if windows?(), do: :windows_credential_manager, else: :local_private_file
+    :local_private_file
   end
 
   defp store_secret(:windows_credential_manager, secret, work_package, worker_grant, opts) do
@@ -312,10 +312,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     repo_root = Keyword.fetch!(opts, :repo_root)
     script_path = Path.join(repo_root, "scripts/sympp-worker-secret.ps1")
 
-    case powershell_executable() do
+    case powershell_executable(opts) do
       {:ok, powershell} ->
         powershell
-        |> run_windows_credential_store(script_path, target, worker_grant_user(worker_grant), secret)
+        |> run_windows_credential_store(script_path, target, worker_grant_user(worker_grant), secret, opts)
         |> case do
           :ok ->
             {:ok,
@@ -334,11 +334,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   end
 
   defp store_secret(:local_private_file, secret, work_package, worker_grant, opts) do
-    if windows?() do
-      {:error, :local_private_file_unavailable_on_windows}
-    else
-      store_local_private_file(secret, work_package, worker_grant, opts)
-    end
+    store_local_private_file(secret, work_package, worker_grant, opts)
   end
 
   defp store_local_private_file(secret, work_package, worker_grant, opts) do
@@ -370,7 +366,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
                  |> Map.put(:run_mcp_command, run_mcp_command)
                  |> Map.put(
                    :tradeoff,
-                   "File ACL strength depends on the local OS/user profile. Prefer Windows Credential Manager on Windows."
+                   "Intended for local/private operator use. File ACL strength depends on the local OS/user profile."
                  )}
 
               {:error, reason} ->
@@ -387,8 +383,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     end
   end
 
-  defp run_windows_credential_store(powershell, script_path, target, user_name, secret) do
-    case System.cmd(
+  defp run_windows_credential_store(powershell, script_path, target, user_name, secret, opts) do
+    case windows_credential_command(
            powershell,
            [
              "-NoProfile",
@@ -402,8 +398,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
              "-UserName",
              user_name
            ],
-           env: [{@default_env_var, secret}],
-           stderr_to_stdout: true
+           [env: [{@default_env_var, secret}], stderr_to_stdout: true],
+           opts
          ) do
       {_, 0} ->
         :ok
@@ -450,16 +446,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   end
 
   defp local_file_run_mcp_command(secret_path, opts) do
-    case shell_local_file_run_mcp_command(secret_path, opts) do
-      command when is_binary(command) -> {:ok, command}
-      nil -> {:error, :invalid_repo_root}
+    if windows?() do
+      powershell_local_file_run_mcp_command(secret_path, opts)
+    else
+      shell_local_file_run_mcp_command(secret_path, opts)
     end
+  end
+
+  defp powershell_local_file_run_mcp_command(secret_path, opts) do
+    with {:ok, script_path} <- worker_secret_script_path(opts, "sympp-worker-secret.ps1"),
+         {:ok, powershell} <- powershell_executable(opts) do
+      {:ok, powershell_local_file_run_mcp_command(secret_path, powershell, script_path, opts)}
+    else
+      :error -> {:error, :windows_credential_manager_unavailable}
+      {:error, :invalid_repo_root} -> {:error, :invalid_repo_root}
+    end
+  end
+
+  defp powershell_local_file_run_mcp_command(secret_path, powershell, script_path, opts) do
+    claimed_by = Keyword.fetch!(opts, :claimed_by)
+
+    [
+      ~s(& #{powershell_literal(powershell)} -NoProfile -ExecutionPolicy Bypass -File #{powershell_literal(script_path)} run-mcp-local-file),
+      ~s(-SecretFile #{powershell_literal(secret_path)}),
+      maybe_powershell_arg("-Database", Keyword.get(opts, :database)),
+      ~s(-ClaimedBy #{powershell_literal(claimed_by)})
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" ")
   end
 
   defp shell_local_file_run_mcp_command(secret_path, opts) do
     case worker_secret_script_path(opts, "sympp-worker-secret.sh") do
-      {:ok, script_path} -> shell_local_file_run_mcp_command(secret_path, script_path, opts)
-      {:error, :invalid_repo_root} -> nil
+      {:ok, script_path} -> {:ok, shell_local_file_run_mcp_command(secret_path, script_path, opts)}
+      {:error, :invalid_repo_root} -> {:error, :invalid_repo_root}
     end
   end
 
@@ -556,9 +576,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
   defp replace_existing_private_file(temp_path, path, opts, rename_reason) do
     if windows?() and File.exists?(path) do
-      replace_fun = Keyword.get(opts, :private_file_replace_fun, &windows_replace_existing_private_file/2)
+      replace_result =
+        case Keyword.fetch(opts, :private_file_replace_fun) do
+          {:ok, replace_fun} -> replace_fun.(temp_path, path)
+          :error -> windows_replace_existing_private_file(temp_path, path, opts)
+        end
 
-      case replace_fun.(temp_path, path) do
+      case replace_result do
         :ok -> :ok
         {:error, reason} -> {:error, {:replace_existing, reason}}
       end
@@ -567,19 +591,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     end
   end
 
-  defp windows_replace_existing_private_file(temp_path, path) do
-    case powershell_executable() do
+  defp windows_replace_existing_private_file(temp_path, path, opts) do
+    case powershell_executable(opts) do
       {:ok, powershell} ->
         command =
           "$ErrorActionPreference = 'Stop'; " <>
             "[System.IO.File]::Replace($env:SYMPP_PRIVATE_FILE_SOURCE, " <>
             "$env:SYMPP_PRIVATE_FILE_DESTINATION, [NullString]::Value, $true)"
 
-        case System.cmd(
+        case windows_file_replace_command(
                powershell,
                ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
-               env: [{"SYMPP_PRIVATE_FILE_SOURCE", temp_path}, {"SYMPP_PRIVATE_FILE_DESTINATION", path}],
-               stderr_to_stdout: true
+               [
+                 env: [{"SYMPP_PRIVATE_FILE_SOURCE", temp_path}, {"SYMPP_PRIVATE_FILE_DESTINATION", path}],
+                 stderr_to_stdout: true
+               ],
+               opts
              ) do
           {_, 0} -> :ok
           {_output, status} -> {:error, {:exit_status, status}}
@@ -588,6 +615,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
       :error ->
         {:error, :powershell_unavailable}
     end
+  end
+
+  defp windows_file_replace_command(powershell, args, cmd_opts, opts) do
+    command_fun = Keyword.get(opts, :windows_file_replace_command, &System.cmd/3)
+    command_fun.(powershell, args, cmd_opts)
   end
 
   defp chmod_private_path(path, mode, opts) do
@@ -793,12 +825,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   end
 
   defp handoff_metadata_run_mcp_command("local-private-file", %{"path" => path}, _target, opts) when is_binary(path) do
-    shell_local_file_run_mcp_command(path, opts)
+    case local_file_run_mcp_command(path, opts) do
+      {:ok, command} -> command
+      {:error, _reason} -> nil
+    end
   end
 
   defp handoff_metadata_run_mcp_command("windows-credential-manager", _coordinates, target, opts) do
     with {:ok, script_path} <- worker_secret_script_path(opts, "sympp-worker-secret.ps1"),
-         {:ok, powershell} <- powershell_executable() do
+         {:ok, powershell} <- powershell_executable(opts) do
       windows_credential_run_mcp_command(powershell, script_path, target, opts)
     else
       :error -> nil
@@ -1305,13 +1340,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     with target when is_binary(target) <- handoff_value(handoff, :target),
          {:ok, repo_root} <-
            nonblank_opt(opts, :repo_root, {:windows_credential_manager_delete_failed, :missing_repo_root}),
-         {:ok, powershell} <- powershell_executable_for_delete() do
+         {:ok, powershell} <- powershell_executable_for_delete(opts) do
       script_path = Path.join(repo_root, "scripts/sympp-worker-secret.ps1")
 
-      case System.cmd(
+      case windows_credential_command(
              powershell,
              ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script_path, "remove", "-Target", target],
-             stderr_to_stdout: true
+             [stderr_to_stdout: true],
+             opts
            ) do
         {_, 0} -> :ok
         {_output, status} -> {:error, {:windows_credential_manager_delete_failed, {:exit_status, status}}}
@@ -1326,9 +1362,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   defp windows_credential_availability(handoff, opts) do
     with target when is_binary(target) <- handoff_value(handoff, :target),
          {:ok, repo_root} <- nonblank_opt(opts, :repo_root, :missing_repo_root),
-         {:ok, powershell} <- powershell_executable_for_check() do
+         {:ok, powershell} <- powershell_executable_for_check(opts) do
       script_path = Path.join(repo_root, "scripts/sympp-worker-secret.ps1")
-      windows_credential_availability(powershell, script_path, target)
+      windows_credential_availability(powershell, script_path, target, opts)
     else
       _missing_or_unavailable -> :unknown
     end
@@ -1337,35 +1373,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   defp windows_credential_integrity(handoff, secret_hash, opts) do
     with target when is_binary(target) <- handoff_value(handoff, :target),
          {:ok, repo_root} <- nonblank_opt(opts, :repo_root, :missing_repo_root),
-         {:ok, powershell} <- powershell_executable_for_check() do
+         {:ok, powershell} <- powershell_executable_for_check(opts) do
       script_path = Path.join(repo_root, "scripts/sympp-worker-secret.ps1")
-      windows_credential_integrity(powershell, script_path, target, secret_hash)
+      windows_credential_integrity(powershell, script_path, target, secret_hash, opts)
     else
       _missing_or_unavailable -> :unknown
     end
   end
 
-  defp windows_credential_availability(powershell, script_path, target) do
+  defp windows_credential_availability(powershell, script_path, target, opts) do
     if File.regular?(script_path) do
-      run_windows_credential_exists(powershell, script_path, target)
+      run_windows_credential_exists(powershell, script_path, target, opts)
     else
       :unknown
     end
   end
 
-  defp windows_credential_integrity(powershell, script_path, target, secret_hash) do
+  defp windows_credential_integrity(powershell, script_path, target, secret_hash, opts) do
     if File.regular?(script_path) do
-      run_windows_credential_verify(powershell, script_path, target, secret_hash)
+      run_windows_credential_verify(powershell, script_path, target, secret_hash, opts)
     else
       :unknown
     end
   end
 
-  defp run_windows_credential_exists(powershell, script_path, target) do
-    case System.cmd(
+  defp run_windows_credential_exists(powershell, script_path, target, opts) do
+    case windows_credential_command(
            powershell,
            ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script_path, "exists", "-Target", target],
-           stderr_to_stdout: true
+           [stderr_to_stdout: true],
+           opts
          ) do
       {_output, 0} -> :available
       {_output, 2} -> :missing
@@ -1373,8 +1410,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     end
   end
 
-  defp run_windows_credential_verify(powershell, script_path, target, secret_hash) do
-    case System.cmd(
+  defp run_windows_credential_verify(powershell, script_path, target, secret_hash, opts) do
+    case windows_credential_command(
            powershell,
            [
              "-NoProfile",
@@ -1388,7 +1425,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
              "-SecretSha256",
              secret_hash
            ],
-           stderr_to_stdout: true
+           [stderr_to_stdout: true],
+           opts
          ) do
       {_output, 0} -> :match
       {_output, status} when status in [2, 3] -> :mismatch
@@ -1396,15 +1434,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     end
   end
 
-  defp powershell_executable_for_check do
-    case powershell_executable() do
+  defp powershell_executable_for_check(opts) do
+    case powershell_executable(opts) do
       {:ok, powershell} -> {:ok, powershell}
       :error -> {:error, :windows_credential_manager_unavailable}
     end
   end
 
-  defp powershell_executable_for_delete do
-    case powershell_executable() do
+  defp powershell_executable_for_delete(opts) do
+    case powershell_executable(opts) do
       {:ok, powershell} -> {:ok, powershell}
       :error -> {:error, {:windows_credential_manager_delete_failed, :powershell_unavailable}}
     end
@@ -1432,13 +1470,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
     Regex.replace(~r/[^A-Za-z0-9._-]+/, value, "_")
   end
 
-  defp powershell_executable do
+  defp powershell_executable(opts) do
+    case Keyword.get(opts, :powershell_executable) do
+      executable when is_binary(executable) ->
+        executable = String.trim(executable)
+        if executable == "", do: :error, else: {:ok, executable}
+
+      _other ->
+        find_powershell_executable()
+    end
+  end
+
+  defp find_powershell_executable do
     cond do
       executable = System.find_executable("powershell.exe") -> {:ok, executable}
       executable = System.find_executable("powershell") -> {:ok, executable}
       executable = System.find_executable("pwsh") -> {:ok, executable}
       true -> :error
     end
+  end
+
+  defp windows_credential_command(powershell, args, cmd_opts, opts) do
+    command_fun = Keyword.get(opts, :windows_credential_command, &System.cmd/3)
+    command_fun.(powershell, args, cmd_opts)
   end
 
   defp windows?, do: match?({:win32, _}, :os.type())

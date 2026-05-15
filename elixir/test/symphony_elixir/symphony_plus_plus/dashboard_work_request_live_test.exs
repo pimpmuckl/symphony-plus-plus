@@ -1354,7 +1354,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
   end
 
   defp architect_handoff_mode do
-    if match?({:win32, _}, :os.type()), do: "windows-credential-manager", else: "local-private-file"
+    "auto"
   end
 
   defp repo_root do
