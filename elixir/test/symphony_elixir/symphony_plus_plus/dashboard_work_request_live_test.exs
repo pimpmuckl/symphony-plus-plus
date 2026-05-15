@@ -642,6 +642,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
     assert html =~ "Base branch"
     assert html =~ anchor.repo
     assert html =~ anchor.base_branch
+    assert html =~ "Allowed paths"
+    assert html =~ "Forbidden paths"
+    assert html =~ "Compatibility stance"
+    assert html =~ "Validation expectations"
+    assert html =~ "Dependencies / notes"
+    assert html =~ "Stop conditions"
+    assert html =~ "Advanced JSON"
     assert html =~ "Constraints JSON"
     refute html =~ ~s(name="work_request[repo]")
     refute html =~ ~s(name="work_request[base_branch]")
@@ -677,6 +684,186 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
 
     {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests")
     assert html =~ "Scoped dashboard intake"
+  end
+
+  test "structured scoped intake persists constraints omits blanks and keeps repo base frozen" do
+    anchor = create_anchor_package!()
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, view, _html} = live(board_session_conn(secret), "/sympp/work-requests/new")
+
+    render_submit(view, "create_work_request", %{
+      "work_request" => %{
+        "title" => "Structured scoped intake",
+        "work_type" => "feature",
+        "desired_dispatch_shape" => "single_package",
+        "human_description" => "Create this from structured fields.",
+        "allowed_paths" => " elixir/lib \n\n elixir/test ",
+        "forbidden_paths" => " priv/repo/** \n",
+        "compatibility_stance" => " Not a current requirement in this pre-production phase. ",
+        "validation_expectations" => " Run focused LiveView tests before review. ",
+        "dependencies_notes" => "",
+        "stop_conditions" => " Stop before MCP wiring. \n Stop if schema changes are needed. ",
+        "constraints_json" => ~s({"requires_secret":false,"allowed_paths":["advanced/ignored"],"extra_flag":true}),
+        "repo" => "nextide/forged",
+        "base_branch" => "forged"
+      }
+    })
+
+    assert {redirected_path, _flash} = assert_redirect(view)
+    created_id = redirected_path |> String.split("/") |> List.last()
+
+    assert {:ok, created} = WorkRequestRepository.get(Repo, created_id)
+    assert created.repo == anchor.repo
+    assert created.base_branch == anchor.base_branch
+
+    assert created.constraints == %{
+             "allowed_paths" => ["elixir/lib", "elixir/test"],
+             "forbidden_paths" => ["priv/repo/**"],
+             "compatibility_stance" => "Not a current requirement in this pre-production phase.",
+             "validation_expectations" => "Run focused LiveView tests before review.",
+             "stop_conditions" => ["Stop before MCP wiring.", "Stop if schema changes are needed."],
+             "requires_secret" => false,
+             "extra_flag" => true
+           }
+
+    refute Map.has_key?(created.constraints, "dependencies_notes")
+  end
+
+  test "blank structured intake fields preserve matching advanced JSON constraints" do
+    anchor = create_anchor_package!()
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, view, _html} = live(board_session_conn(secret), "/sympp/work-requests/new")
+
+    render_submit(view, "create_work_request", %{
+      "work_request" => %{
+        "title" => "Preserve advanced constraints",
+        "work_type" => "feature",
+        "desired_dispatch_shape" => "single_package",
+        "human_description" => "Blank structured fields should leave advanced JSON intact.",
+        "allowed_paths" => "",
+        "forbidden_paths" => "",
+        "compatibility_stance" => "",
+        "validation_expectations" => "",
+        "dependencies_notes" => "",
+        "stop_conditions" => "",
+        "constraints_json" =>
+          ~s({"allowed_paths":["advanced/allowed"],"forbidden_paths":["advanced/forbidden"],"compatibility_stance":"advanced","validation_expectations":"advanced","dependencies_notes":"advanced","stop_conditions":{"needs_human":true},"extra_flag":true})
+      }
+    })
+
+    assert {redirected_path, _flash} = assert_redirect(view)
+    created_id = redirected_path |> String.split("/") |> List.last()
+
+    assert {:ok, created} = WorkRequestRepository.get(Repo, created_id)
+
+    assert created.constraints == %{
+             "allowed_paths" => ["advanced/allowed"],
+             "forbidden_paths" => ["advanced/forbidden"],
+             "compatibility_stance" => "advanced",
+             "validation_expectations" => "advanced",
+             "dependencies_notes" => "advanced",
+             "stop_conditions" => %{"needs_human" => true},
+             "extra_flag" => true
+           }
+  end
+
+  test "validation rerender hydrates blank structured fields from representable advanced JSON" do
+    anchor = create_anchor_package!()
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, view, _html} = live(board_session_conn(secret), "/sympp/work-requests/new")
+
+    html =
+      render_submit(view, "create_work_request", %{
+        "work_request" => %{
+          "title" => "",
+          "work_type" => "feature",
+          "desired_dispatch_shape" => "single_package",
+          "human_description" => "Retry after a validation error.",
+          "allowed_paths" => "",
+          "forbidden_paths" => "",
+          "compatibility_stance" => "",
+          "validation_expectations" => "",
+          "dependencies_notes" => "",
+          "stop_conditions" => "",
+          "constraints_json" =>
+            ~s({"allowed_paths":["advanced/allowed","advanced/test"],"forbidden_paths":["advanced/forbidden"],"compatibility_stance":"advanced stance","validation_expectations":"advanced validation","dependencies_notes":"advanced notes","stop_conditions":{"needs_human":true}})
+        }
+      })
+
+    document = Floki.parse_document!(html)
+
+    assert textarea_value(document, "allowed_paths") == "advanced/allowed\nadvanced/test"
+    assert textarea_value(document, "forbidden_paths") == "advanced/forbidden"
+    assert input_value(document, "compatibility_stance") == "advanced stance"
+    assert textarea_value(document, "validation_expectations") == "advanced validation"
+    assert textarea_value(document, "dependencies_notes") == "advanced notes"
+    assert textarea_value(document, "stop_conditions") == ""
+
+    assert textarea_json_value(document, "constraints_json") == %{
+             "stop_conditions" => %{"needs_human" => true}
+           }
+  end
+
+  test "validation rerender removes advanced JSON duplicates when structured fields have values" do
+    anchor = create_anchor_package!()
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, view, _html} = live(board_session_conn(secret), "/sympp/work-requests/new")
+
+    html =
+      render_submit(view, "create_work_request", %{
+        "work_request" => %{
+          "title" => "",
+          "work_type" => "feature",
+          "desired_dispatch_shape" => "single_package",
+          "human_description" => "Retry after a validation error.",
+          "allowed_paths" => "form/allowed",
+          "forbidden_paths" => "",
+          "compatibility_stance" => "form stance",
+          "validation_expectations" => "",
+          "dependencies_notes" => "",
+          "stop_conditions" => "",
+          "constraints_json" => ~s({"allowed_paths":["json/allowed"],"compatibility_stance":"json stance","stop_conditions":{"needs_human":true},"extra_flag":true})
+        }
+      })
+
+    document = Floki.parse_document!(html)
+
+    assert textarea_value(document, "allowed_paths") == "form/allowed"
+    assert input_value(document, "compatibility_stance") == "form stance"
+
+    assert textarea_json_value(document, "constraints_json") == %{
+             "stop_conditions" => %{"needs_human" => true},
+             "extra_flag" => true
+           }
+  end
+
+  test "validation rerender removes empty structured list keys from advanced JSON" do
+    anchor = create_anchor_package!()
+    secret = create_architect_grant_secret(Repo, anchor.id)
+    {:ok, view, _html} = live(board_session_conn(secret), "/sympp/work-requests/new")
+
+    html =
+      render_submit(view, "create_work_request", %{
+        "work_request" => %{
+          "title" => "",
+          "work_type" => "feature",
+          "desired_dispatch_shape" => "single_package",
+          "human_description" => "Retry after a validation error.",
+          "allowed_paths" => "",
+          "forbidden_paths" => "",
+          "compatibility_stance" => "",
+          "validation_expectations" => "",
+          "dependencies_notes" => "",
+          "stop_conditions" => "",
+          "constraints_json" => ~s({"allowed_paths":[],"forbidden_paths":[],"extra_flag":true})
+        }
+      })
+
+    document = Floki.parse_document!(html)
+
+    assert textarea_value(document, "allowed_paths") == ""
+    assert textarea_value(document, "forbidden_paths") == ""
+    assert textarea_json_value(document, "constraints_json") == %{"extra_flag" => true}
   end
 
   test "intake submit preserves script-name prefix in redirect" do
@@ -1173,6 +1360,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
     |> Path.dirname()
     |> Path.join("..")
     |> Path.expand()
+  end
+
+  defp textarea_value(document, field) do
+    document
+    |> Floki.find(~s(textarea[name="work_request[#{field}]"]))
+    |> Floki.text()
+  end
+
+  defp textarea_json_value(document, field) do
+    document
+    |> textarea_value(field)
+    |> String.replace("&quot;", "\"")
+    |> Jason.decode!()
+  end
+
+  defp input_value(document, field) do
+    document
+    |> Floki.find(~s(input[name="work_request[#{field}]"]))
+    |> Floki.attribute("value")
+    |> List.first()
   end
 
   defp appears_before?(html, left, right), do: :binary.match(html, left) < :binary.match(html, right)

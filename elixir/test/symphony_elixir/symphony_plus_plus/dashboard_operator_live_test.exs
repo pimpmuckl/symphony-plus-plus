@@ -330,6 +330,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert created.constraints == %{"allowed_paths" => ["elixir/lib"], "requires_secret" => false}
   end
 
+  test "local operator creates a WorkRequest from structured constraints" do
+    enable_operator_mode()
+
+    {:ok, view, _html} = live(local_conn(), "/sympp/work-requests/new")
+
+    render_submit(view, "create_work_request", %{
+      "work_request" => %{
+        "title" => "Local structured intake",
+        "repo" => "nextide/local-dogfood",
+        "base_branch" => "dogfood/base",
+        "work_type" => "feature",
+        "desired_dispatch_shape" => "single_package",
+        "human_description" => "Create from local operator mode with structured constraints.",
+        "allowed_paths" => "elixir/lib/symphony_elixir_web\nelixir/test/symphony_elixir",
+        "forbidden_paths" => "",
+        "compatibility_stance" => "Clean break is acceptable before production.",
+        "validation_expectations" => "Focused dashboard tests and review-suite.",
+        "dependencies_notes" => "Depends on current WorkRequest ledger shape.",
+        "stop_conditions" => "Stop if constraints need a schema change.",
+        "constraints_json" => "{}"
+      }
+    })
+
+    assert {redirected_path, _flash} = assert_redirect(view)
+    created_id = redirected_path |> String.split("/") |> List.last()
+
+    assert {:ok, created} = WorkRequestRepository.get(Repo, created_id)
+
+    assert created.constraints == %{
+             "allowed_paths" => ["elixir/lib/symphony_elixir_web", "elixir/test/symphony_elixir"],
+             "compatibility_stance" => "Clean break is acceptable before production.",
+             "validation_expectations" => "Focused dashboard tests and review-suite.",
+             "dependencies_notes" => "Depends on current WorkRequest ledger shape.",
+             "stop_conditions" => ["Stop if constraints need a schema change."]
+           }
+
+    refute Map.has_key?(created.constraints, "forbidden_paths")
+  end
+
   test "local operator initializes a missing configured ledger as an empty cockpit" do
     enable_operator_mode()
 

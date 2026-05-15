@@ -1614,6 +1614,43 @@ pre,
   grid-column: 1 / -1;
 }
 
+.sympp-form-section {
+  display: grid;
+  gap: 0.62rem;
+  min-width: 0;
+  padding: 0.78rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card-muted);
+}
+
+.sympp-form-section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.sympp-form-section-heading h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.92rem;
+  line-height: 1.2;
+}
+
+.sympp-form-section-heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.sympp-form-grid-constraints {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .sympp-form-grid input,
 .sympp-form-grid select,
 .sympp-form-grid textarea {
@@ -1854,6 +1891,7 @@ pre,
   .sympp-work-request-row,
   .sympp-form-grid,
   .sympp-form-grid-compact,
+  .sympp-form-grid-constraints,
   .sympp-form-grid-slice,
   .sympp-inline-answer-form,
   .sympp-locked-scope,
@@ -1865,6 +1903,16 @@ pre,
 
   .sympp-detail-status-rail {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .sympp-form-section-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .sympp-form-section-heading p {
+    text-align: left;
   }
 
   .sympp-operator-priority div {

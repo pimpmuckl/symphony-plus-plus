@@ -146,6 +146,12 @@ mode it remains filtered by the grant's board scope.
 - board-grant mode displays the locked repo/base branch and server-side creation
   uses only the frozen grant scope.
 
+The intake form captures common constraints through structured fields for
+allowed paths, forbidden paths, compatibility stance, validation expectations,
+dependencies or notes, and stop conditions. Those values are stored in the
+existing WorkRequest constraints map. Advanced JSON remains available for
+uncommon constraint keys and complex shapes.
+
 `/sympp/work-requests/:id` exposes existing safe WorkRequest controls when the
 viewer is the local operator or a scoped board grant holder:
 

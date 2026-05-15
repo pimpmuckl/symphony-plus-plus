@@ -60,8 +60,12 @@ Symphony++ ledger and can be read through the dashboard API or dashboard UI.
 The dashboard create path is intentionally scoped: it is available only to
 board-authenticated grants with frozen repo and base-branch scope. The create
 form accepts title, work type, desired dispatch shape, human description, and
-constraints JSON. Repo and base branch are visible locked values, and submitted
-repo/base fields are ignored in favor of the grant scope.
+structured constraint fields for allowed paths, forbidden paths, compatibility
+stance, validation expectations, dependencies or notes, and stop conditions.
+Those fields persist into the existing constraints map, and Advanced JSON
+remains available for uncommon keys or complex values. Repo and base branch are
+visible locked values, and submitted repo/base fields are ignored in favor of
+the grant scope.
 
 The dashboard detail path is also scoped to board-visible WorkRequests. It can
 move a `draft` request to `ready_for_clarification`, ask clarification

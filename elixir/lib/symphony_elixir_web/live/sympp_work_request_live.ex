@@ -35,6 +35,16 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     "review_lanes",
     "stop_conditions"
   ]
+  @work_request_constraint_list_fields [
+    "allowed_paths",
+    "forbidden_paths",
+    "stop_conditions"
+  ]
+  @work_request_constraint_text_fields [
+    "compatibility_stance",
+    "validation_expectations",
+    "dependencies_notes"
+  ]
   @local_operator_actor "local-operator"
   @local_operator_worker "local-operator-worker"
   @dispatch_handoff_display_fields [
@@ -282,10 +292,56 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
               <textarea name={f[:human_description].name} required rows="6"><%= input_value(f, :human_description) %></textarea>
             </label>
 
-            <label class="sympp-form-wide">
-              <span>Constraints JSON</span>
-              <textarea name={f[:constraints_json].name} rows="7" spellcheck="false"><%= input_value(f, :constraints_json) %></textarea>
-            </label>
+            <section class="sympp-form-section sympp-form-wide" aria-label="Constraints">
+              <div class="sympp-form-section-heading">
+                <h2>Constraints</h2>
+                <p>Common fields are stored in the existing constraints map.</p>
+              </div>
+
+              <div class="sympp-form-grid sympp-form-grid-constraints">
+                <label>
+                  <span>Allowed paths</span>
+                  <textarea name={f[:allowed_paths].name} rows="4" spellcheck="false"><%= input_value(f, :allowed_paths) %></textarea>
+                </label>
+
+                <label>
+                  <span>Forbidden paths</span>
+                  <textarea name={f[:forbidden_paths].name} rows="4" spellcheck="false"><%= input_value(f, :forbidden_paths) %></textarea>
+                </label>
+
+                <label>
+                  <span>Stop conditions</span>
+                  <textarea name={f[:stop_conditions].name} rows="4"><%= input_value(f, :stop_conditions) %></textarea>
+                </label>
+
+                <label>
+                  <span>Compatibility stance</span>
+                  <input name={f[:compatibility_stance].name} value={input_value(f, :compatibility_stance)} maxlength="320" />
+                </label>
+
+                <label>
+                  <span>Validation expectations</span>
+                  <textarea name={f[:validation_expectations].name} rows="4"><%= input_value(f, :validation_expectations) %></textarea>
+                </label>
+
+                <label>
+                  <span>Dependencies / notes</span>
+                  <textarea name={f[:dependencies_notes].name} rows="4"><%= input_value(f, :dependencies_notes) %></textarea>
+                </label>
+              </div>
+            </section>
+
+            <section class="sympp-form-section sympp-form-wide" aria-label="Advanced constraints">
+              <div class="sympp-form-section-heading">
+                <h2>Advanced JSON</h2>
+                <p>Optional extra keys. Structured fields above win for matching keys.</p>
+              </div>
+
+              <label>
+                <span>Constraints JSON</span>
+                <textarea name={f[:constraints_json].name} rows="5" spellcheck="false"><%= input_value(f, :constraints_json) %></textarea>
+              </label>
+            </section>
           </div>
 
           <div class="sympp-form-actions">
@@ -1271,7 +1327,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     form = work_request_form(params)
 
     with {:ok, scope} <- intake_scope(grant),
-         {:ok, constraints} <- decode_constraints(form["constraints_json"]) do
+         {:ok, constraints} <- constraints_from_form(form) do
       attrs =
         form
         |> Map.take(["title", "work_type", "human_description", "desired_dispatch_shape"])
@@ -1293,7 +1349,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
     with {:ok, repo} <- filled_form_value(form["repo"], :repo_required),
          {:ok, base_branch} <- filled_form_value(form["base_branch"], :base_branch_required),
-         {:ok, constraints} <- decode_constraints(form["constraints_json"]) do
+         {:ok, constraints} <- constraints_from_form(form) do
       attrs =
         form
         |> Map.take(["title", "work_type", "human_description", "desired_dispatch_shape"])
@@ -1793,17 +1849,90 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp work_request_form(attrs \\ %{}) do
     attrs = normalize_keys(attrs)
+    constraints_json = Map.get(attrs, "constraints_json", "{}")
 
-    %{
+    form = %{
       "title" => Map.get(attrs, "title", ""),
       "repo" => Map.get(attrs, "repo", ""),
       "base_branch" => Map.get(attrs, "base_branch", ""),
       "work_type" => Map.get(attrs, "work_type", "feature"),
       "desired_dispatch_shape" => Map.get(attrs, "desired_dispatch_shape", "single_package"),
       "human_description" => Map.get(attrs, "human_description", ""),
-      "constraints_json" => Map.get(attrs, "constraints_json", "{\n  \"allowed_paths\": []\n}")
+      "allowed_paths" => multiline_form_value(Map.get(attrs, "allowed_paths", "")),
+      "forbidden_paths" => multiline_form_value(Map.get(attrs, "forbidden_paths", "")),
+      "compatibility_stance" => Map.get(attrs, "compatibility_stance", ""),
+      "validation_expectations" => Map.get(attrs, "validation_expectations", ""),
+      "dependencies_notes" => Map.get(attrs, "dependencies_notes", ""),
+      "stop_conditions" => multiline_form_value(Map.get(attrs, "stop_conditions", "")),
+      "constraints_json" => constraints_json
     }
+
+    hydrate_structured_constraint_defaults(form)
   end
+
+  defp hydrate_structured_constraint_defaults(%{"constraints_json" => constraints_json} = form) do
+    case decode_constraints(constraints_json) do
+      {:ok, constraints} ->
+        {form, promoted_fields} =
+          form
+          |> hydrate_list_constraint_defaults(constraints)
+          |> hydrate_text_constraint_defaults(constraints)
+
+        if promoted_fields == [] do
+          form
+        else
+          Map.put(form, "constraints_json", Jason.encode!(Map.drop(constraints, promoted_fields), pretty: true))
+        end
+
+      {:error, _reason} ->
+        form
+    end
+  end
+
+  defp hydrate_list_constraint_defaults(form, constraints) do
+    Enum.reduce(@work_request_constraint_list_fields, {form, []}, fn field, {form, promoted_fields} ->
+      hydrate_list_constraint_default(form, promoted_fields, field, Map.get(constraints, field))
+    end)
+  end
+
+  defp hydrate_list_constraint_default(form, promoted_fields, field, values) when is_list(values) do
+    if Enum.all?(values, &is_binary/1) do
+      form =
+        if values != [] and blank_form_value?(Map.get(form, field)) do
+          Map.put(form, field, Enum.join(values, "\n"))
+        else
+          form
+        end
+
+      {form, [field | promoted_fields]}
+    else
+      {form, promoted_fields}
+    end
+  end
+
+  defp hydrate_list_constraint_default(form, promoted_fields, _field, _value), do: {form, promoted_fields}
+
+  defp hydrate_text_constraint_defaults({form, promoted_fields}, constraints) do
+    Enum.reduce(@work_request_constraint_text_fields, {form, promoted_fields}, fn field, {form, promoted_fields} ->
+      case Map.get(constraints, field) do
+        value when is_binary(value) ->
+          {put_form_value_if_blank(form, field, value), [field | promoted_fields]}
+
+        _other ->
+          {form, promoted_fields}
+      end
+    end)
+  end
+
+  defp put_form_value_if_blank(form, field, value) do
+    if blank_form_value?(Map.get(form, field)) do
+      Map.put(form, field, value)
+    else
+      form
+    end
+  end
+
+  defp blank_form_value?(value), do: value |> string_or_empty() |> String.trim() == ""
 
   defp planned_slice_form(attrs \\ %{}, work_request \\ %{}) do
     attrs = normalize_keys(attrs)
@@ -1874,6 +2003,35 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
       pair -> pair
     end)
   end
+
+  defp constraints_from_form(form) do
+    with {:ok, advanced_constraints} <- decode_constraints(form["constraints_json"]) do
+      {:ok, Map.merge(advanced_constraints, structured_constraints(form))}
+    end
+  end
+
+  defp structured_constraints(form) do
+    form
+    |> structured_list_constraints()
+    |> Map.merge(structured_text_constraints(form))
+  end
+
+  defp structured_list_constraints(form) do
+    @work_request_constraint_list_fields
+    |> Enum.map(fn field -> {field, newline_list(Map.get(form, field, ""))} end)
+    |> Enum.reject(fn {_field, values} -> values == [] end)
+    |> Map.new()
+  end
+
+  defp structured_text_constraints(form) do
+    @work_request_constraint_text_fields
+    |> Enum.map(fn field -> {field, form |> Map.get(field, "") |> string_or_empty() |> String.trim()} end)
+    |> Enum.reject(fn {_field, value} -> value == "" end)
+    |> Map.new()
+  end
+
+  defp string_or_empty(value) when is_binary(value), do: value
+  defp string_or_empty(_value), do: ""
 
   defp decode_constraints(value) when is_binary(value) do
     case String.trim(value) do
