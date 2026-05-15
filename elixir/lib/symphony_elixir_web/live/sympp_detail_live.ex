@@ -749,7 +749,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
         brief_line("Handoff path", map_value(handoff, :path)),
         brief_line("Handoff key", map_value(handoff, :display_key)),
         "Required skill: symphony-plus-plus:symphony-work-package (repo-local symphony-work-package is acceptable)",
-        "Bootstrap: start from the private-store MCP bootstrap metadata shown in this Worker Handoff panel.",
+        "Bootstrap: start from the displayed Mode, Target, Handoff path, and Run MCP handoff metadata in this Worker Handoff panel.",
         "Safety: do not paste raw work-key secrets, bearer tokens, hashes, full secret-bearing commands, or private payloads."
       ]
       |> Enum.reject(&blank_value?/1)

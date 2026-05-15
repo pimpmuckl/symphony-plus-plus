@@ -175,7 +175,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert html =~ "Handoff mode: local-private-file"
     assert html =~ "Handoff target: #{handoff.target}"
     assert html =~ "Required skill: symphony-plus-plus:symphony-work-package"
-    assert html =~ "private-store MCP bootstrap metadata"
+    assert html =~ "displayed Mode, Target, Handoff path, and Run MCP handoff metadata"
     refute html =~ worker_secret
     refute html =~ "secret_hash"
     refute html =~ "private_payload"
