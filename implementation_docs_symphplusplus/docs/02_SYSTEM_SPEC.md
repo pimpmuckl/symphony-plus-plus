@@ -44,6 +44,38 @@ created_at
 updated_at
 ```
 
+### SoloSession
+
+A future local/private planning ledger for one caller, stable local session
+key, and canonical workspace path. A SoloSession records task plan, finding, progress,
+blocker, decision, and validation-note entries for normal single-agent Codex
+work without creating WorkRequests, WorkPackages, grants, Linear state, worker
+dispatch, architect handoff, or cockpit UI.
+
+Important fields:
+
+```text
+id
+repo
+base_branch
+workspace_path
+caller_id
+session_key
+title
+status
+last_activity_at
+archived_at
+created_at
+updated_at
+```
+
+SoloSession statuses are `active`, `paused`, `completed`, and `archived`.
+Active and paused sessions may later be archived as stale after about 30 days
+through an explicit helper; this specification does not require a scheduler.
+See `14_SOLO_SESSION_CONTRACT.md` for the product boundary, data model
+direction, follow-up MCP/skill/cockpit affordances, and runtime rebuild
+constraints.
+
 ### AccessGrant
 
 A scoped authority object. Every agent action against Symphony++ must be backed by an AccessGrant.

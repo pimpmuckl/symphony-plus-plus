@@ -17,6 +17,8 @@ readiness surfaces without replacing the base Linear-oriented runtime docs.
   `implementation_docs_symphplusplus/docs/01_IMPLEMENTATION_GUIDE.md`
 - Current product and architecture contract:
   `implementation_docs_symphplusplus/docs/02_SYSTEM_SPEC.md`
+- Solo Session local ledger contract:
+  `implementation_docs_symphplusplus/docs/14_SOLO_SESSION_CONTRACT.md`
 - Operator flow: `implementation_docs_symphplusplus/docs/12_OPERATOR_TRAINING.md`
 - Short operational runbook:
   `implementation_docs_symphplusplus/docs/09_OPERATIONAL_RUNBOOK.md`
