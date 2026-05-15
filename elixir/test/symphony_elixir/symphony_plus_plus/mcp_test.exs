@@ -19,6 +19,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Finding
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
@@ -235,6 +237,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   setup %{repo: repo} do
     reset_handle_state_store()
     File.rm_rf(test_handoff_store_dir())
+    repo.delete_all(Artifact)
+    repo.delete_all(ProgressEvent)
+    repo.delete_all(Finding)
+    repo.delete_all(PlanNode)
     repo.delete_all(AccessGrant)
     repo.delete_all(WorkRequest)
     repo.delete_all(WorkPackage)
