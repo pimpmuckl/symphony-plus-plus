@@ -487,13 +487,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessionsTest do
     assert {:ok, completed_after_replay} = Service.get(repo, session.id)
     assert completed_after_replay.last_activity_at == completed.last_activity_at
 
+    Process.delete(:sympp_solo_stale_entry_idempotency_read)
+    Process.sleep(5)
+
+    assert {:ok, stale_completed_replay} =
+             Service.append_entry(StaleEntryIdempotencyReadRepo, session.id, %{
+               entry_kind: "validation_note",
+               title: "Stale retry after complete",
+               idempotency_key: "lifecycle-entry-key"
+             })
+
+    assert stale_completed_replay.id == entry.id
+    assert {:ok, completed_after_stale_replay} = Service.get(repo, session.id)
+    assert completed_after_stale_replay.last_activity_at == completed.last_activity_at
+
     assert {:ok, archived} = Service.archive(repo, session.id, "completed")
+    Process.delete(:sympp_solo_stale_entry_idempotency_read)
     Process.sleep(5)
 
     assert {:ok, archived_replay} =
-             Service.append_entry(repo, session.id, %{
+             Service.append_entry(StaleEntryIdempotencyReadRepo, session.id, %{
                entry_kind: "validation_note",
-               title: "Retry after archive",
+               title: "Stale retry after archive",
                idempotency_key: "lifecycle-entry-key"
              })
 

@@ -195,6 +195,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository do
     replay_entry_after_idempotency_conflict(repo, solo_session_id, attrs, attempts_left)
   end
 
+  defp handle_append_entry_result({:error, :session_not_mutable}, repo, solo_session_id, attrs, attempts_left) do
+    replay_entry_after_session_not_mutable(repo, solo_session_id, attrs, attempts_left)
+  end
+
   defp handle_append_entry_result({:error, reason}, repo, solo_session_id, attrs, attempts_left)
        when reason in [:database_busy, :sequence_conflict] do
     retry_append_entry_or_error(repo, solo_session_id, attrs, attempts_left, reason)
@@ -212,6 +216,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository do
 
       _result ->
         retry_append_entry_or_error(repo, solo_session_id, attrs, attempts_left, :idempotency_key_conflict)
+    end
+  end
+
+  defp replay_entry_after_session_not_mutable(repo, solo_session_id, attrs, attempts_left) do
+    case existing_entry_by_idempotency_key(repo, solo_session_id, attrs) do
+      {:ok, entry} ->
+        {:ok, entry}
+
+      {:error, :database_busy} ->
+        retry_append_entry_or_error(repo, solo_session_id, attrs, attempts_left, :database_busy)
+
+      _result ->
+        {:error, :session_not_mutable}
     end
   end
 
