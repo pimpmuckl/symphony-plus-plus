@@ -1,0 +1,286 @@
+defmodule Mix.Tasks.Sympp.DemoLedgerTest do
+  use ExUnit.Case, async: false
+
+  import Ecto.Query, only: [from: 2]
+
+  alias Ecto.Adapters.SQL
+  alias Mix.Tasks.Sympp.DemoLedger, as: DemoLedgerTask
+  alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository, as: SoloSessionsRepository
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
+  alias SymphonyElixir.WorkPackageFactory
+
+  setup do
+    Mix.Task.reenable("sympp.demo_ledger")
+    previous_shell = Mix.shell()
+    Mix.shell(Mix.Shell.Process)
+
+    on_exit(fn ->
+      Mix.shell(previous_shell)
+    end)
+
+    :ok
+  end
+
+  test "prints help" do
+    DemoLedgerTask.run(["--help"])
+
+    assert_received {:mix_shell, :info, [message]}
+    assert message =~ "mix sympp.demo_ledger --database <sqlite-path>"
+    assert message =~ "--force"
+  end
+
+  test "requires an explicit durable database path before creating a database" do
+    database_path = WorkPackageFactory.database_path()
+
+    assert_raise Mix.Error, ~r/Usage: mix sympp.demo_ledger/, fn ->
+      DemoLedgerTask.run([])
+    end
+
+    refute File.exists?(database_path)
+
+    assert_raise Mix.Error, ~r/durable local SQLite filesystem path/, fn ->
+      DemoLedgerTask.run(["--database", ":memory:"])
+    end
+  end
+
+  test "creates deterministic synthetic cockpit data and prints operator JSON" do
+    database_path = WorkPackageFactory.database_path()
+
+    try do
+      DemoLedgerTask.run(["--database", database_path])
+
+      assert_received {:mix_shell, :info, [json]}
+      payload = Jason.decode!(json)
+
+      assert payload["database"] == Path.expand(database_path)
+      assert payload["cockpit_hint"] == "mix sympp.cockpit --database '#{Path.expand(database_path)}'"
+      assert payload["cockpit_path"] == "/sympp/board"
+
+      assert payload["seed"]["work_requests"] == [
+               "SYMPP-DEMO-WR-CLARIFY",
+               "SYMPP-DEMO-WR-HUMAN",
+               "SYMPP-DEMO-WR-SLICING",
+               "SYMPP-DEMO-WR-SLICED"
+             ]
+
+      with_repo(database_path, fn repo ->
+        assert_statuses(repo, WorkRequest, %{
+          "SYMPP-DEMO-WR-CLARIFY" => "clarifying",
+          "SYMPP-DEMO-WR-HUMAN" => "human_info_needed",
+          "SYMPP-DEMO-WR-SLICING" => "ready_for_slicing",
+          "SYMPP-DEMO-WR-SLICED" => "sliced"
+        })
+
+        assert_statuses(repo, WorkPackage, %{
+          "SYMPP-DEMO-WP-ACTIVE" => "implementing",
+          "SYMPP-DEMO-WP-REVIEW" => "reviewing",
+          "SYMPP-DEMO-WP-READY" => "ready_for_human_merge",
+          "SYMPP-DEMO-WP-BLOCKED" => "blocked",
+          "SYMPP-DEMO-WP-MERGED" => "merged"
+        })
+
+        assert_statuses(repo, PlannedSlice, %{
+          "SYMPP-DEMO-SLICE-APPROVED" => "approved",
+          "SYMPP-DEMO-SLICE-SKIPPED" => "skipped",
+          "SYMPP-DEMO-SLICE-DISPATCHED" => "dispatched"
+        })
+
+        dispatched = repo.get!(PlannedSlice, "SYMPP-DEMO-SLICE-DISPATCHED")
+        assert dispatched.work_package_id == "SYMPP-DEMO-WP-ACTIVE"
+        assert dispatched.dispatched_at
+
+        assert {:ok, board} = Dashboard.board(repo)
+        cards = board.groups |> Map.values() |> List.flatten()
+        blocked = Enum.find(cards, &(&1.id == "SYMPP-DEMO-WP-BLOCKED"))
+        assert blocked.active_blocker_count == 1
+
+        ready = Enum.find(cards, &(&1.id == "SYMPP-DEMO-WP-READY"))
+        assert ready.artifact_count == 1
+        assert ready.finding_count == 1
+        assert ready.latest_progress_at
+      end)
+    after
+      File.rm(database_path)
+    end
+  end
+
+  test "seeds Solo Sessions across lifecycle states with representative entries" do
+    database_path = WorkPackageFactory.database_path()
+
+    try do
+      DemoLedgerTask.run(["--database", database_path])
+
+      with_repo(database_path, fn repo ->
+        sessions = repo.all(from(session in SoloSession, order_by: [asc: session.id]))
+
+        assert Enum.map(sessions, &{&1.id, &1.status}) == [
+                 {"SYMPP-DEMO-SOLO-ACTIVE", "active"},
+                 {"SYMPP-DEMO-SOLO-ARCHIVED", "archived"},
+                 {"SYMPP-DEMO-SOLO-COMPLETED", "completed"},
+                 {"SYMPP-DEMO-SOLO-PAUSED", "paused"}
+               ]
+
+        entries =
+          repo.all(
+            from(entry in SoloSessionEntry,
+              where: entry.solo_session_id == "SYMPP-DEMO-SOLO-ACTIVE",
+              order_by: [asc: entry.sequence]
+            )
+          )
+
+        assert Enum.map(entries, & &1.entry_kind) == [
+                 "task_plan",
+                 "finding",
+                 "progress",
+                 "decision",
+                 "validation_note"
+               ]
+
+        assert Enum.all?(entries, &(&1.status in SoloSessionEntry.statuses()))
+
+        active = Enum.find(sessions, &(&1.id == "SYMPP-DEMO-SOLO-ACTIVE"))
+        assert {:ok, [^active]} = SoloSessionsRepository.list(repo, %{workspace_path: Path.join(active.workspace_path, ".")})
+      end)
+    after
+      File.rm(database_path)
+    end
+  end
+
+  test "fails when the target database exists unless force is explicit" do
+    database_path = WorkPackageFactory.database_path()
+
+    try do
+      DemoLedgerTask.run(["--database", database_path])
+      first_stable_rows = demo_stable_rows(database_path)
+
+      assert_raise Mix.Error, ~r/Demo ledger already exists/, fn ->
+        DemoLedgerTask.run(["--database", database_path])
+      end
+
+      DemoLedgerTask.run(["--database", database_path, "--force"])
+      assert demo_stable_rows(database_path) == first_stable_rows
+
+      with_repo(database_path, fn repo ->
+        assert repo.aggregate(WorkPackage, :count) == 5
+        assert repo.aggregate(WorkRequest, :count) == 4
+      end)
+    after
+      File.rm(database_path)
+    end
+  end
+
+  test "does not seed obvious secret or token markers" do
+    database_path = WorkPackageFactory.database_path()
+
+    try do
+      DemoLedgerTask.run(["--database", database_path])
+      assert_received {:mix_shell, :info, [json]}
+
+      refute_secret_marker(json)
+
+      with_repo(database_path, fn _repo ->
+        for table <- [
+              "sympp_work_requests",
+              "sympp_work_packages",
+              "sympp_progress_events",
+              "sympp_findings",
+              "sympp_artifacts",
+              "sympp_solo_sessions",
+              "sympp_solo_session_entries"
+            ] do
+          %{rows: rows} = SQL.query!(Repo.get_dynamic_repo(), "SELECT * FROM #{table}", [])
+          rows |> inspect() |> refute_secret_marker()
+        end
+      end)
+    after
+      File.rm(database_path)
+    end
+  end
+
+  defp assert_statuses(repo, schema, expected) do
+    statuses =
+      schema
+      |> repo.all()
+      |> Map.new(&{&1.id, &1.status})
+
+    assert Map.take(statuses, Map.keys(expected)) == expected
+  end
+
+  defp refute_secret_marker(text) do
+    refute text =~ "ghp_"
+    refute text =~ "bearer "
+    refute text =~ "Bearer "
+    refute text =~ "api_key"
+    refute text =~ "access_token"
+    refute text =~ "secret_hash"
+  end
+
+  defp demo_stable_rows(database_path) do
+    with_repo(database_path, fn _repo ->
+      for table <- [
+            "sympp_work_requests",
+            "sympp_work_packages",
+            "sympp_work_request_planned_slices",
+            "sympp_solo_sessions"
+          ],
+          into: %{} do
+        %{rows: rows} =
+          SQL.query!(
+            Repo.get_dynamic_repo(),
+            "SELECT id, inserted_at, updated_at FROM #{table} ORDER BY id",
+            []
+          )
+
+        {table, rows}
+      end
+      |> Map.merge(
+        for table <- [
+              "sympp_plan_nodes",
+              "sympp_progress_events",
+              "sympp_findings",
+              "sympp_artifacts"
+            ],
+            into: %{} do
+          %{rows: rows} =
+            SQL.query!(
+              Repo.get_dynamic_repo(),
+              "SELECT id, created_at, inserted_at, updated_at FROM #{table} ORDER BY id",
+              []
+            )
+
+          {table, rows}
+        end
+      )
+      |> Map.put(
+        "sympp_solo_session_entries",
+        SQL.query!(
+          Repo.get_dynamic_repo(),
+          "SELECT id, created_at, updated_at FROM sympp_solo_session_entries ORDER BY id",
+          []
+        ).rows
+      )
+    end)
+  end
+
+  defp with_repo(database_path, fun) do
+    original_repo = Repo.get_dynamic_repo()
+
+    {:ok, pid} =
+      Repo.start_link(database: Path.expand(database_path), name: Repo.process_name(Path.expand(database_path)), pool_size: 1, log: false)
+
+    Repo.put_dynamic_repo(pid)
+
+    try do
+      fun.(Repo)
+    after
+      GenServer.stop(pid)
+      Repo.put_dynamic_repo(original_repo)
+    end
+  end
+end
