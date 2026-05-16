@@ -10,10 +10,10 @@ This document is the product contract for the Solo Session runtime foundation.
 Current surfaces are `mix sympp.solo` in `elixir/`, the plugin-installed
 `symphony-plus-plus:symphony-solo-session` skill, the plugin
 `scripts/sympp-solo.ps1` wrapper, unbound generic MCP tools
-(`solo_attach`, `solo_append`, `solo_show`, `solo_list`), and local operator
-cockpit list/detail views. MCP Solo Session resources, lifecycle MCP tools,
-schedulers, promotion workflows, and richer write controls remain follow-up
-scope.
+(`solo_attach`, `solo_append`, `solo_show`, `solo_list`,
+`solo_update_status`), and local operator cockpit list/detail views. MCP Solo
+Session resources, schedulers, promotion workflows, and richer write controls
+remain follow-up scope.
 
 ## Purpose
 
@@ -248,17 +248,19 @@ Current first-slice MCP Solo Session tools are small and local:
   truncation metadata.
 - Append task plan, finding, progress, blocker, decision, and validation-note
   entries.
+- Pause, resume, complete, or archive the current session through the lifecycle
+  status transition service.
 
-The current MCP tool names are `solo_attach`, `solo_append`, `solo_show`, and
-`solo_list`. They are advertised only for unbound/generic MCP sessions and call
-the existing Solo Session service/repository through the MCP server's configured
-repo/database. Bound worker or architect WorkPackage sessions do not advertise
-them, and direct calls from those sessions fail with
+The current MCP tool names are `solo_attach`, `solo_append`, `solo_show`,
+`solo_list`, and `solo_update_status`. They are advertised only for
+unbound/generic MCP sessions and call the existing Solo Session
+service/repository through the MCP server's configured repo/database. Bound
+worker or architect WorkPackage sessions do not advertise them, and direct calls
+from those sessions fail with
 `solo_tools_require_unbound_session` before mutating state.
 
 Future MCP Solo Session resources/tools may add:
 
-- Pause, resume, complete, or archive the current session.
 - Render planning-file-like views from the ledger.
 
 Current and future affordances must not claim WorkKeys, mint grants, create

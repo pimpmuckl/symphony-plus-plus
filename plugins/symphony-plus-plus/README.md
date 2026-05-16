@@ -135,12 +135,14 @@ append `task_plan`, `finding`, `progress`, `blocker`, `decision`, and
 archive the session.
 
 The generic `symphony_plus_plus` MCP server also advertises first-slice Solo
-tools for unbound sessions: `solo_attach`, `solo_append`, `solo_show`, and
-`solo_list`. Bound worker or architect WorkPackage sessions do not advertise
-those tools, and direct calls from bound sessions are rejected before mutation.
-`solo_show` returns the latest 50 entries plus count/truncation metadata. Use
-the CLI wrapper when the host has not loaded the MCP entry, lifecycle commands
-are needed, or full ledger history is required.
+tools for unbound sessions: `solo_attach`, `solo_append`, `solo_show`,
+`solo_list`, and `solo_update_status`. Bound worker or architect WorkPackage
+sessions do not advertise those tools, and direct calls from bound sessions are
+rejected before mutation. `solo_show` returns the latest 50 entries plus
+count/truncation metadata, while `solo_update_status` reuses the Solo lifecycle
+service for pause, resume, complete, and archive transitions. Use the CLI
+wrapper when the host has not loaded the MCP entry or full ledger history is
+required.
 
 When neither `--database` nor `SYMPP_DATABASE` is supplied, the wrapper derives
 the caller workspace from the original current directory and passes

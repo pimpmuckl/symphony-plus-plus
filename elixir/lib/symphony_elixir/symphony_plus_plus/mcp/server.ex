@@ -43,7 +43,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   @protocol_version "2025-03-26"
   @health_tool "sympp.health"
-  @solo_tools ["solo_attach", "solo_append", "solo_show", "solo_list"]
+  @solo_tools ["solo_attach", "solo_append", "solo_show", "solo_list", "solo_update_status"]
   @solo_show_entry_limit 50
   @worker_tools [
     "claim_work_key",
@@ -969,6 +969,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "List local Solo Sessions using optional repo, base branch, workspace path, caller id, and status filters."
   end
 
+  defp solo_tool_description("solo_update_status") do
+    "Move a local Solo Session between valid lifecycle statuses with optimistic current-status checking."
+  end
+
   defp architect_tool_spec(name) do
     %{
       "name" => name,
@@ -1114,6 +1118,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "status" => string_schema()
       },
       []
+    )
+  end
+
+  defp solo_tool_input_schema("solo_update_status") do
+    schema(
+      %{
+        "session_id" => string_schema(),
+        "current_status" => string_schema(),
+        "next_status" => string_schema()
+      },
+      ["session_id", "current_status", "next_status"]
     )
   end
 
@@ -4527,6 +4542,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "solo_list", "reason" => reason}}
       {:error, reason} -> solo_error(reason, "solo_list")
+    end
+  end
+
+  defp solo_tool("solo_update_status", arguments, %__MODULE__{config: config}) do
+    with :ok <- prepare_solo_repository(config.repo),
+         {:ok, session_id} <- required_argument(arguments, "session_id"),
+         {:ok, current_status} <- required_argument(arguments, "current_status"),
+         {:ok, next_status} <- required_argument(arguments, "next_status"),
+         {:ok, session} <- SoloSessionService.update_status(config.repo, session_id, current_status, next_status) do
+      {:ok, tool_result(%{"action" => "solo_update_status", "solo_session" => solo_session_payload(session)})}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "solo_update_status", "reason" => reason}}
+      {:error, reason} -> solo_error(reason, "solo_update_status")
     end
   end
 
