@@ -51,19 +51,23 @@ original current directory and uses
 ## MCP Tools
 
 If the generic `symphony_plus_plus` MCP server is loaded and the session is
-unbound, prefer the first-slice Solo tools for attach, append, show, and list:
+unbound, prefer the Solo MCP tools for attach, append, show, list, and lifecycle
+status updates:
 
 ```text
 solo_attach
 solo_append
 solo_show
 solo_list
+solo_update_status
 ```
 
 Those tools use the MCP server's configured repo/database and are intentionally
-not advertised to bound worker or architect WorkPackage sessions. Lifecycle
-commands and full-history reads still use the wrapper in this slice; `solo_show`
-returns the latest 50 entries plus count/truncation metadata.
+not advertised to bound worker or architect WorkPackage sessions.
+`solo_update_status(session_id, current_status, next_status)` reuses the Solo
+lifecycle service for pause, resume, complete, and archive transitions with
+optimistic current-status checking. Full-history reads still use the wrapper;
+`solo_show` returns the latest 50 entries plus count/truncation metadata.
 
 ## Start Or Attach
 
@@ -172,6 +176,12 @@ pwsh <plugin-root>/scripts/sympp-solo.ps1 pause --session-id <solo-session-id>
 pwsh <plugin-root>/scripts/sympp-solo.ps1 resume --session-id <solo-session-id>
 pwsh <plugin-root>/scripts/sympp-solo.ps1 complete --session-id <solo-session-id>
 pwsh <plugin-root>/scripts/sympp-solo.ps1 archive --session-id <solo-session-id>
+```
+
+When using MCP instead of the wrapper, pass the explicit status transition:
+
+```text
+solo_update_status(session_id, current_status, next_status)
 ```
 
 Before final response, append validation/review status and any remaining risk.

@@ -48,6 +48,7 @@ solo_attach(repo, base_branch, workspace_path, caller_id, title?)
 solo_append(session_id, entry_kind, title, body?, status?, idempotency_key?, payload?)
 solo_show(session_id) -> latest 50 entries plus entry_count/entries_returned/entries_truncated
 solo_list(repo?, base_branch?, workspace_path?, caller_id?, status?)
+solo_update_status(session_id, current_status, next_status)
 ```
 
 These tools are for lightweight local planning memory only. They call the
@@ -58,6 +59,9 @@ merge-readiness gates. Returned structured content is redacted with the
 existing planning redactor. `solo_show` intentionally returns only the latest
 50 entries in this first slice; callers can use `entry_count`,
 `entries_returned`, and `entries_truncated` to detect when history was bounded.
+`solo_update_status` reuses the Solo Session lifecycle service contract for
+pause, resume, complete, and archive transitions, including optimistic
+`current_status` checking.
 
 Solo MCP tools are deliberately not advertised to bound worker or architect
 WorkPackage sessions. Direct calls from a bound session fail with
