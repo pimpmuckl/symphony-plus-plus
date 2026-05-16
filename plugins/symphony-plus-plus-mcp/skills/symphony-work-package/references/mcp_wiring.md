@@ -44,15 +44,14 @@ mcp_servers...` overrides, but not nested
 `[profiles."sympp-agent".mcp_servers.symphony_plus_plus]` profile entries. Until
 Codex supports profile-scoped MCP, S++ MCP opt-in should use a one-session
 top-level MCP config, a dedicated alternate Codex config selected before
-launch, the sibling `plugins/symphony-plus-plus-mcp` opt-in plugin, or a
-dedicated S++ agent config file. Do not add S++ MCP to generic worker,
-reviewer, or review-suite configs.
+launch, or a dedicated S++ agent config file. Do not add S++ MCP to generic
+worker, reviewer, or review-suite configs.
 
 The Windows desktop app has no proven per-visible-thread S++ profile picker.
 App cockpit threads should use the default skill-only plugin plus Solo Session
 CLI planning. When the cockpit needs heavy S++ orchestration, launch a managed
 architect or worker subprocess/app-server session with explicit top-level MCP
-configuration or the sibling opt-in MCP plugin before that session starts.
+configuration before that session starts.
 That managed subprocess is the supported replacement for app-visible
 WorkPackage and architect execution until the desktop host can attach MCP tools
 to one already-open thread. Do not invoke this MCP-dependent skill from a

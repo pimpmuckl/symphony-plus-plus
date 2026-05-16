@@ -1454,7 +1454,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert detail_html =~ "Worker Launch Brief"
     assert detail_html =~ "Package: #{work_package.id}"
     assert detail_html =~ "Worker branch: agent/SYMPP-V2-E2E-001/operator-golden-path-smoke"
-    assert detail_html =~ "Required skill: symphony-plus-plus:symphony-work-package"
+    assert detail_html =~ "Launch requirement: start this worker in a Codex session that has the opt-in Symphony++ MCP plugin/config loaded"
+    assert detail_html =~ "Required skill: symphony-plus-plus-mcp:symphony-work-package"
+    assert detail_html =~ "Repo-local fallback: .codex/skills/symphony-work-package/ only when present in the target checkout."
     assert detail_html =~ "Safety: do not paste raw work-key secrets"
     assert detail_html =~ handoff["target"]
     assert detail_html =~ "Run MCP"
@@ -2121,7 +2123,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "ledger_database"
     assert html =~ "nextide/symphony-plus-plus"
     assert html =~ "main"
-    assert html =~ "Required skill: `symphony-plus-plus:symphony-architect`"
+    assert html =~ "Launch requirement: start this in a Codex session that has the opt-in Symphony++ MCP plugin/config loaded"
+    assert html =~ "Required skill: `symphony-plus-plus-mcp:symphony-architect`"
     assert html =~ "First MCP reads: `read_work_request`, `list_guidance_requests`"
     assert html =~ "Display key"
     assert html =~ "Before planning, call `read_work_request` using `work_request_id` from the reference identifiers."
@@ -2137,7 +2140,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "copy prompt"
     assert html =~ "phase-wr-architect-"
     assert html =~ "SYMPP-WR-ARCH-"
-    assert html =~ "symphony-plus-plus:symphony-architect"
+    assert html =~ "symphony-plus-plus-mcp:symphony-architect"
     assert html =~ "read_work_request"
     assert html =~ "list_guidance_requests"
     assert html =~ "record_work_request_decision"
@@ -2164,7 +2167,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert Floki.attribute(copy_button, "aria-label") == ["Copy architect launch prompt"]
     assert Floki.attribute(copy_button, "onclick") |> List.first() =~ ".then(() => reset('Copied'), () => reset('Copy failed'))"
     assert [prompt_block] = Floki.find(document, ".sympp-launch-brief pre.sympp-copyable-block")
-    assert Floki.text(prompt_block) =~ "Required skill: `symphony-plus-plus:symphony-architect`"
+    assert Floki.text(prompt_block) =~ "Launch requirement: start this in a Codex session that has the opt-in Symphony++ MCP plugin/config loaded"
+    assert Floki.text(prompt_block) =~ "Required skill: `symphony-plus-plus-mcp:symphony-architect`"
 
     anchor_id = regex_capture(html, ~r/SYMPP-WR-ARCH-[A-Za-z0-9_-]+/)
     assert {:ok, anchor} = WorkPackageRepository.get(Repo, anchor_id)
@@ -2195,7 +2199,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute reload_html =~ "Safe architect prompt"
     assert reload_html =~ "copy prompt"
     assert reload_html =~ grant.id
-    assert reload_html =~ "symphony-plus-plus:symphony-architect"
+    assert reload_html =~ "symphony-plus-plus-mcp:symphony-architect"
     assert reload_html =~ "read_work_request"
     assert reload_html =~ "list_guidance_requests"
     assert reload_html =~ "Secret in stdout"
@@ -2239,7 +2243,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert clarifying_html =~ "Clarification has no open questions and can move to slicing."
     assert clarifying_html =~ "Private architect handoff stored"
     assert clarifying_html =~ "Stored architect launch prompt"
-    assert clarifying_html =~ "Required skill: `symphony-plus-plus:symphony-architect`"
+    assert clarifying_html =~ "Required skill: `symphony-plus-plus-mcp:symphony-architect`"
     assert clarifying_html =~ "prepared"
     refute clarifying_html =~ "copy prompt"
     refute clarifying_html =~ "Next action: copy architect launch prompt"
@@ -2253,7 +2257,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert waiting_html =~ "Answer the human guidance question before slicing continues."
     assert waiting_html =~ "Private architect handoff stored"
     assert waiting_html =~ "Stored architect launch prompt"
-    assert waiting_html =~ "Required skill: `symphony-plus-plus:symphony-architect`"
+    assert waiting_html =~ "Required skill: `symphony-plus-plus-mcp:symphony-architect`"
     assert waiting_html =~ "prepared"
     refute waiting_html =~ "copy prompt"
     refute waiting_html =~ "Next action: copy architect launch prompt"
@@ -2268,7 +2272,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert slicing_html =~ "Slicing is ready but no planned slice has been authored."
     assert slicing_html =~ "Private architect handoff stored"
     assert slicing_html =~ "Stored architect launch prompt"
-    assert slicing_html =~ "Required skill: `symphony-plus-plus:symphony-architect`"
+    assert slicing_html =~ "Required skill: `symphony-plus-plus-mcp:symphony-architect`"
     assert slicing_html =~ "prepared"
     refute slicing_html =~ "copy prompt"
     refute slicing_html =~ "Next action: copy architect launch prompt"
@@ -2279,7 +2283,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert replay_html =~ "replayed"
     assert replay_html =~ "Private architect handoff stored"
     assert replay_html =~ "Stored architect launch prompt"
-    assert replay_html =~ "Required skill: `symphony-plus-plus:symphony-architect`"
+    assert replay_html =~ "Required skill: `symphony-plus-plus-mcp:symphony-architect`"
     assert replay_html =~ "prepared"
     assert replay_html =~ grant.id
     refute replay_html =~ "copy prompt"

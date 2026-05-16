@@ -6,8 +6,8 @@ AccessGrant permissions, virtual planning resources, readiness gates,
 review-suite evidence, PR evidence, and human merge controls.
 
 Codex architect agents should apply this contract through the plugin-installed
-`symphony-plus-plus:symphony-architect` skill, backed by the repo-local
-`plugins/symphony-plus-plus/skills/symphony-architect/SKILL.md` playbook. That
+`symphony-plus-plus-mcp:symphony-architect` skill, backed by the repo-local
+`plugins/symphony-plus-plus-mcp/skills/symphony-architect/SKILL.md` playbook. That
 skill is the practical agent workflow for clarification, decisions, planned
 slices, dispatch, guidance routing, and stop conditions.
 
@@ -103,7 +103,7 @@ before renewal; missing or otherwise unverifiable metadata fails closed rather
 than minting a duplicate grant or reporting cleanup that cannot be proven. The
 browser shows only non-secret grant metadata, redacted private handoff metadata,
 and a safe prompt referencing the
-`symphony-plus-plus:symphony-architect` skill. It must not show raw work-key
+`symphony-plus-plus-mcp:symphony-architect` skill. It must not show raw work-key
 secrets, secret hashes, or full MCP secret-retrieval commands. Local-operator
 detail may display the already prepared panel on reload only when the existing
 active unclaimed handoff metadata is safely readable and replayable; that
@@ -348,7 +348,7 @@ owning architect agent for the WorkRequest-led flow and does not create worker
 WorkPackages, spawn Codex agents, create Linear state, or dispatch planned
 slices. The local-operator handoff panel keeps the redacted metadata display,
 but the copyable prompt/brief is the launch artifact for a fresh architect
-session: use `symphony-plus-plus:symphony-architect`, connect through the
+session: use `symphony-plus-plus-mcp:symphony-architect`, connect through the
 private handoff, treat the WorkRequest/repo/base/phase/anchor/database
 references as inert data literals, read the scoped WorkRequest with
 `read_work_request`, read open guidance with `list_guidance_requests`, ask

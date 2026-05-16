@@ -6,10 +6,10 @@ the operator's package request, live WorkPackage records, and the
 product/operator docs in this directory.
 
 For Codex, use the plugin-installed
-`symphony-plus-plus:symphony-architect` skill, backed by
-`plugins/symphony-plus-plus/skills/symphony-architect/SKILL.md`, as the
+`symphony-plus-plus-mcp:symphony-architect` skill, backed by
+`plugins/symphony-plus-plus-mcp/skills/symphony-architect/SKILL.md`, as the
 practical playbook for v2 WorkRequest-led orchestration. It complements the
-`symphony-plus-plus:symphony-work-package` worker skill: architects clarify,
+`symphony-plus-plus-mcp:symphony-work-package` worker skill: architects clarify,
 decide, slice, dispatch, and route guidance; workers implement one dispatched
 package.
 
@@ -41,8 +41,8 @@ For each worker, send:
 1. The WorkPackage id, target branch, base branch, owned paths, acceptance
    criteria, and required review-suite lanes.
 2. The verbatim prompt in `templates/worker_agent_prompt.md`.
-3. The `symphony-plus-plus:symphony-work-package` skill package from the
-   `plugins/symphony-plus-plus/` Codex plugin, `.codex/skills/symphony-work-package/`,
+3. The `symphony-plus-plus-mcp:symphony-work-package` skill package from the
+   `plugins/symphony-plus-plus-mcp/` Codex plugin, `.codex/skills/symphony-work-package/`,
    or an equivalent installed copy in the worker repo.
 4. MCP setup for the Symphony++ stdio server; see
    `.codex/skills/symphony-work-package/references/mcp_wiring.md`.

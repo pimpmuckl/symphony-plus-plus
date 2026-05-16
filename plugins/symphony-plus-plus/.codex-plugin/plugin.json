@@ -1,13 +1,12 @@
 {
   "name": "symphony-plus-plus",
-  "version": "0.1.0",
-  "description": "Symphony++ WorkPackage orchestration skills plus Solo Session planning memory for Codex.",
-  "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
+  "version": "0.1.2",
+  "description": "Symphony++ lightweight Solo Session planning memory for Codex.",
+  "skills": "./skills-default/",
   "interface": {
     "displayName": "Symphony++",
-    "shortDescription": "Symphony++ WorkPackage and Solo Session workflows for Codex",
-    "longDescription": "Use Symphony++ to claim scoped WorkPackages through MCP, keep virtual planning evidence current, run architect workflows, or maintain lightweight local Solo Session planning memory without WorkRequest or WorkPackage orchestration.",
+    "shortDescription": "Symphony++ Solo Session planning for Codex",
+    "longDescription": "Use Symphony++ to maintain lightweight local Solo Session planning memory without starting MCP. Dedicated WorkPackage and architect orchestration should use the opt-in Symphony++ MCP plugin or explicit MCP startup config.",
     "developerName": "Jonathan",
     "category": "Coding",
     "capabilities": ["Read", "Write"]
