@@ -2689,3 +2689,27 @@ pre,
     grid-template-columns: 1fr;
   }
 }
+
+@media (max-width: 380px) {
+  .sympp-surface-nav {
+    flex-wrap: wrap;
+    overflow-x: auto;
+  }
+
+  .sympp-surface-nav a {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
+  .sympp-detail-status-rail {
+    grid-template-columns: 1fr;
+  }
+
+  .sympp-solo-ledger-entry header {
+    grid-template-columns: 1fr;
+  }
+
+  .sympp-solo-ledger-entry time {
+    justify-self: start;
+  }
+}
