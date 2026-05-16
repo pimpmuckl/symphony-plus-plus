@@ -98,7 +98,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert wiring =~ "open a new session before treating missing `symphony_plus_plus`"
     assert wiring =~ "ValidateOnly checks the wrapper and launcher"
     assert wiring =~ "scripts/refresh-local-plugin.ps1 -ValidateInstalledCache"
-    assert wiring =~ "Skill visibility, MCP server registration, and current-session tool"
+    assert wiring =~ "Skill visibility, plugin-bundled MCP registration, global MCP settings"
+    assert wiring =~ "may not appear as a global MCP settings entry"
     assert plugin_wiring == wiring
     assert template_wiring == wiring
     refute wiring =~ "sympp_live_"
@@ -140,7 +141,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@plugin_readme_path) =~ ~s("path": "./plugins/symphony-plus-plus")
     assert File.read!(@plugin_readme_path) =~ "manifest-version directory"
     assert File.read!(@plugin_readme_path) =~ "refresh-local-plugin.ps1 -ValidateInstalledCache"
-    assert File.read!(@plugin_readme_path) =~ "Plugin skill visibility, MCP server registration, and current-session tool"
+    assert File.read!(@plugin_readme_path) =~ "Plugin skill visibility, plugin-bundled MCP registration, global MCP settings"
+    assert File.read!(@plugin_readme_path) =~ "bundled server may not appear as a global MCP settings"
     assert File.read!(@plugin_readme_path) =~ "start a new session after reload"
     assert File.read!(@plugin_readme_path) =~ "already-running Codex host"
     assert File.read!(@plugin_readme_path) =~ "symphony-plus-plus:symphony-solo-session"
@@ -185,7 +187,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
                "args" => args,
                "cwd" => "."
              }
-           } = mcp_config["mcpServers"]
+           } = documented_mcp_server_map(mcp_config)
+
+    refute Map.has_key?(mcp_config, "mcpServers")
 
     assert "-NoProfile" in args
     assert Enum.any?(args, &String.contains?(&1, "scripts/start-sympp-mcp.ps1"))
@@ -229,7 +233,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           assert refreshed_manifest["name"] == "symphony-plus-plus"
           assert refreshed_manifest["version"] == "0.1.0"
           assert refreshed_manifest["mcpServers"] == "./.mcp.json"
-          assert refreshed_mcp_path |> File.read!() |> Jason.decode!() |> get_in(["mcpServers", "symphony_plus_plus", "command"]) == "pwsh"
+
+          refreshed_mcp = refreshed_mcp_path |> File.read!() |> Jason.decode!()
+          refute Map.has_key?(refreshed_mcp, "mcpServers")
+          assert get_in(documented_mcp_server_map(refreshed_mcp), ["symphony_plus_plus", "command"]) == "pwsh"
           assert same_path?(String.trim(File.read!(source_hint_path)), @repo_root)
         end
       after
@@ -326,7 +333,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
             |> plugin_cache_path([cache_name, ".mcp.json"])
             |> File.read!()
             |> Jason.decode!()
-            |> get_in(["mcpServers", "symphony_plus_plus", "command"])
+            |> documented_mcp_server_map()
+            |> get_in(["symphony_plus_plus", "command"])
 
           assert manifest["version"] == "0.1.0"
           assert manifest["mcpServers"] == "./.mcp.json"
@@ -536,6 +544,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   defp same_path?(left, right) do
     Path.expand(left) |> String.downcase() == Path.expand(right) |> String.downcase()
   end
+
+  defp documented_mcp_server_map(%{"mcpServers" => _}) do
+    flunk("plugin .mcp.json must use a documented direct server map or wrapped mcp_servers shape")
+  end
+
+  defp documented_mcp_server_map(%{"mcp_servers" => server_map}), do: server_map
+  defp documented_mcp_server_map(server_map), do: server_map
 
   defp plugin_cache_path(codex_home, suffix) do
     Path.join([codex_home, "plugins", "cache", "jonat-local", "symphony-plus-plus"] ++ suffix)
