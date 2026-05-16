@@ -462,7 +462,30 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
       {"SYMPP-DEMO-WP-REVIEW",
        %{
          plan: [{"Review prompt copy", "done"}, {"Run local signoff", "pending"}],
-         progress: [{"Review lane opened", "reviewing", %{"review_lanes" => ["T1", "T2"]}}],
+         progress: [
+           {"Review lane opened", "reviewing", %{"review_lanes" => ["T1", "T2"]}},
+           {"Review branch attached", "branch_attached",
+            %{
+              "type" => "branch",
+              "source_tool" => "attach_branch",
+              "branch" => "agent/sympp-demo-wp-review/demo",
+              "head_sha" => "2222222222222222222222222222222222222222"
+            }},
+           {"Review package submitted", "review_package_submitted",
+            %{
+              "type" => "review_package",
+              "source_tool" => "submit_review_package",
+              "summary" => "Synthetic demo review package.",
+              "tests" => ["mix test test/mix/tasks/sympp_demo_ledger_test.exs"],
+              "artifacts" => ["implementation_docs_symphplusplus/runbooks/LOCAL_OPERATOR_GOLDEN_PATH.md"],
+              "head_sha" => "2222222222222222222222222222222222222222",
+              "acceptance_criteria_met" => true,
+              "reviews" => [
+                %{"lane" => "review_t1", "verdict" => "green"},
+                %{"lane" => "review_t2", "verdict" => "green"}
+              ]
+            }}
+         ],
          findings: [{"Copy needs operator confirmation", "medium"}],
          artifacts: [{"Review notes", "implementation_docs_symphplusplus/runbooks/LOCAL_OPERATOR_GOLDEN_PATH.md"}]
        }},
