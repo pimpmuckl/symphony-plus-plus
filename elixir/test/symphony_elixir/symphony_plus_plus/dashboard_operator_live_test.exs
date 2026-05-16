@@ -1177,8 +1177,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     {:ok, view, html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
 
-    assert html =~ "Ready for agent questions"
     assert html =~ "Start agent questions"
+    assert html =~ "Start agent questions to move this draft into the agent-question phase."
     assert html =~ ~s(phx-click="mark_ready_for_clarification")
     refute html =~ "Mark ready for clarification"
     refute html =~ "Ask question"
@@ -2095,7 +2095,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "Private architect handoff stored"
     assert html =~ "created"
     assert html =~ request.id
-    assert html =~ "Paste-ready architect prompt"
+    assert html =~ "Copy architect launch prompt"
+    assert html =~ "Architect handoff is prepared; copy the launch prompt and paste it into the architect agent."
+    assert html =~ "Next action: copy architect launch prompt"
     assert html =~ "owning Symphony++ v2 architect"
     assert html =~ "Reference identifiers"
     assert html =~ "inert data literals"
@@ -2121,7 +2123,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "record/report a blocker and stop"
     assert html =~ "Do not ask the human for raw work-key secrets"
     refute html =~ "Safe architect prompt"
-    assert html =~ "prepared"
+    assert html =~ "copy prompt"
     assert html =~ "phase-wr-architect-"
     assert html =~ "SYMPP-WR-ARCH-"
     assert html =~ "symphony-plus-plus:symphony-architect"
@@ -2148,7 +2150,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     document = Floki.parse_document!(html)
     assert [copy_button] = Floki.find(document, ".sympp-launch-brief .sympp-copy-button")
     assert Floki.text(copy_button) =~ "Copy"
-    assert Floki.attribute(copy_button, "aria-label") == ["Copy paste-ready architect prompt"]
+    assert Floki.attribute(copy_button, "aria-label") == ["Copy architect launch prompt"]
     assert Floki.attribute(copy_button, "onclick") |> List.first() =~ ".then(() => reset('Copied'), () => reset('Copy failed'))"
     assert [prompt_block] = Floki.find(document, ".sympp-launch-brief pre.sympp-copyable-block")
     assert Floki.text(prompt_block) =~ "Required skill: `symphony-plus-plus:symphony-architect`"
@@ -2178,9 +2180,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     assert reload_html =~ "Private architect handoff stored"
     assert reload_html =~ "replayed"
-    assert reload_html =~ "Paste-ready architect prompt"
+    assert reload_html =~ "Copy architect launch prompt"
     refute reload_html =~ "Safe architect prompt"
-    assert reload_html =~ "prepared"
+    assert reload_html =~ "copy prompt"
     assert reload_html =~ grant.id
     assert reload_html =~ "symphony-plus-plus:symphony-architect"
     assert reload_html =~ "read_work_request"
@@ -2196,11 +2198,81 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert [_copy_button] = Floki.find(reload_document, ".sympp-launch-brief .sympp-copy-button")
     assert [_prompt_block] = Floki.find(reload_document, ".sympp-launch-brief pre.sympp-copyable-block")
 
+    assert {:ok, open_question} =
+             WorkRequestRepository.ask_question(Repo, request.id, %{
+               category: "product",
+               question: "Which architect handoff detail should be clarified?",
+               why_needed: "Open questions should remain the next action before relaunch."
+             })
+
+    {:ok, _question_view, question_html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
+
+    assert question_html =~ "Answer open questions"
+    assert question_html =~ "Stored architect launch prompt"
+    assert question_html =~ "prepared"
+    refute question_html =~ "copy prompt"
+    refute question_html =~ "Next action: copy architect launch prompt"
+
+    assert {:ok, _answered_question} =
+             WorkRequestRepository.answer_question(Repo, open_question.id, "open", %{
+               answer: "Clarify the handoff after the architect reads the request.",
+               answered_by: "local-operator"
+             })
+
+    assert {:ok, _clarifying} =
+             WorkRequestRepository.update_status(Repo, request.id, "ready_for_clarification", "clarifying")
+
+    {:ok, _clarifying_view, clarifying_html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
+
+    assert clarifying_html =~ "Mark ready for slicing"
+    assert clarifying_html =~ "Clarification has no open questions and can move to slicing."
+    assert clarifying_html =~ "Private architect handoff stored"
+    assert clarifying_html =~ "Stored architect launch prompt"
+    assert clarifying_html =~ "Required skill: `symphony-plus-plus:symphony-architect`"
+    assert clarifying_html =~ "prepared"
+    refute clarifying_html =~ "copy prompt"
+    refute clarifying_html =~ "Next action: copy architect launch prompt"
+    refute clarifying_html =~ ~r/<h2>\s*Copy architect launch prompt\s*<\/h2>/
+
+    assert {:ok, _waiting} = WorkRequestRepository.update_status(Repo, request.id, "clarifying", "human_info_needed")
+
+    {:ok, _waiting_view, waiting_html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
+
+    assert waiting_html =~ "Human guidance needed"
+    assert waiting_html =~ "Answer the human guidance question before slicing continues."
+    assert waiting_html =~ "Private architect handoff stored"
+    assert waiting_html =~ "Stored architect launch prompt"
+    assert waiting_html =~ "Required skill: `symphony-plus-plus:symphony-architect`"
+    assert waiting_html =~ "prepared"
+    refute waiting_html =~ "copy prompt"
+    refute waiting_html =~ "Next action: copy architect launch prompt"
+    refute waiting_html =~ ~r/<h2>\s*Copy architect launch prompt\s*<\/h2>/
+
+    assert {:ok, _ready_for_slicing} =
+             WorkRequestRepository.update_status(Repo, request.id, "human_info_needed", "ready_for_slicing")
+
+    {:ok, _slicing_view, slicing_html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
+
+    assert slicing_html =~ "Author planned slices"
+    assert slicing_html =~ "Slicing is ready but no planned slice has been authored."
+    assert slicing_html =~ "Private architect handoff stored"
+    assert slicing_html =~ "Stored architect launch prompt"
+    assert slicing_html =~ "Required skill: `symphony-plus-plus:symphony-architect`"
+    assert slicing_html =~ "prepared"
+    refute slicing_html =~ "copy prompt"
+    refute slicing_html =~ "Next action: copy architect launch prompt"
+    refute slicing_html =~ ~r/<h2>\s*Copy architect launch prompt\s*<\/h2>/
+
     replay_html = render_click(view, "create_architect_handoff", %{})
 
     assert replay_html =~ "replayed"
-    assert replay_html =~ "Paste-ready architect prompt"
+    assert replay_html =~ "Private architect handoff stored"
+    assert replay_html =~ "Stored architect launch prompt"
+    assert replay_html =~ "Required skill: `symphony-plus-plus:symphony-architect`"
+    assert replay_html =~ "prepared"
     assert replay_html =~ grant.id
+    refute replay_html =~ "copy prompt"
+    refute replay_html =~ "Next action: copy architect launch prompt"
     refute replay_html =~ "wk_"
     refute replay_html =~ "secret_hash"
     refute replay_html =~ "Run MCP"

@@ -394,11 +394,11 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
               </div>
               <dl class="sympp-detail-status-rail">
                 <div class={detail_guidance_class(@page)}>
-                  <dt>Guidance</dt>
+                  <dt><%= detail_guidance_heading(@page, @operator_mode?) %></dt>
                   <dd><%= detail_guidance_label(@page) %></dd>
                 </div>
                 <div>
-                  <dt>Slicing</dt>
+                  <dt>Slices</dt>
                   <dd><%= detail_slicing_label(@page) %></dd>
                 </div>
                 <div>
@@ -569,11 +569,11 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
             </dl>
             <div :if={architect_launch_brief(@page, @operator_mode?)} class="sympp-launch-brief">
               <div class="sympp-launch-brief-header">
-                <label>Paste-ready architect prompt</label>
+                <label><%= architect_launch_brief_label(@page, @operator_mode?) %></label>
                 <button
                   type="button"
                   class="subtle-button sympp-copy-button"
-                  aria-label="Copy paste-ready architect prompt"
+                  aria-label="Copy architect launch prompt"
                   data-label="Copy"
                   onclick="const button = this; const label = button.dataset.label; const reset = (text) => { button.textContent = text; clearTimeout(button._copyTimer); button._copyTimer = setTimeout(() => { button.textContent = label }, 1200); }; const pre = button.closest('.sympp-launch-brief').querySelector('pre'); if (!navigator.clipboard || !navigator.clipboard.writeText) { reset('Copy failed'); return; } navigator.clipboard.writeText(pre.textContent).then(() => reset('Copied'), () => reset('Copy failed'));"
                 >
@@ -2684,6 +2684,16 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp architect_launch_brief(_page, _operator_mode?), do: nil
 
+  defp architect_launch_brief_label(%{work_request: work_request} = page, true) do
+    if handoff_next_action_status?(value(work_request, :status)) and detail_open_question_count(page) == 0 do
+      "Next action: copy architect launch prompt"
+    else
+      "Stored architect launch prompt"
+    end
+  end
+
+  defp architect_launch_brief_label(_page, _operator_mode?), do: "Stored architect launch prompt"
+
   defp safe_architect_prompt(%{architect_handoff: handoff}, false)
        when is_map(handoff) do
     case value(handoff, :prompt) do
@@ -2806,36 +2816,46 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   end
 
   defp detail_next_action(%{work_request: work_request} = page, operator_mode?) do
-    detail_next_action_for(
-      value(work_request, :status),
-      operator_mode?,
-      detail_open_question_count(page),
-      value(page.summary, :planned_slice_count, 0),
-      value(page.summary, :approved_slice_count, 0),
-      value(page.summary, :dispatched_slice_count, 0)
-    )
+    detail_next_action_for_handoff(page, operator_mode?) ||
+      detail_next_action_for(
+        value(work_request, :status),
+        operator_mode?,
+        detail_open_question_count(page),
+        value(page.summary, :planned_slice_count, 0),
+        value(page.summary, :approved_slice_count, 0),
+        value(page.summary, :dispatched_slice_count, 0)
+      )
   end
 
   defp detail_next_action(_page, _operator_mode?), do: "Review WorkRequest state"
 
   defp detail_state_summary(%{work_request: work_request} = page, operator_mode?) do
-    detail_state_summary_for(
-      value(work_request, :status),
-      operator_mode?,
-      detail_open_question_count(page),
-      value(page.summary, :planned_slice_count, 0),
-      value(page.summary, :approved_slice_count, 0),
-      value(page.summary, :dispatched_slice_count, 0)
-    )
+    detail_state_summary_for_handoff(page, operator_mode?) ||
+      detail_state_summary_for(
+        value(work_request, :status),
+        operator_mode?,
+        detail_open_question_count(page),
+        value(page.summary, :planned_slice_count, 0),
+        value(page.summary, :approved_slice_count, 0),
+        value(page.summary, :dispatched_slice_count, 0)
+      )
   end
 
   defp detail_state_summary(_page, _operator_mode?), do: "Check the current status, questions, and planned slices."
 
-  defp detail_next_action_for("draft", true, _open_questions, _planned, _approved, _dispatched),
-    do: "Ready for agent questions"
+  defp detail_next_action_for_handoff(%{architect_handoff: handoff, work_request: work_request} = page, true)
+       when is_map(handoff) do
+    if handoff_next_action_status?(value(work_request, :status)) and detail_open_question_count(page) == 0 do
+      "Copy architect launch prompt"
+    else
+      nil
+    end
+  end
+
+  defp detail_next_action_for_handoff(_page, _operator_mode?), do: nil
 
   defp detail_next_action_for("draft", _operator_mode?, _open_questions, _planned, _approved, _dispatched),
-    do: "Start clarification"
+    do: "Start agent questions"
 
   defp detail_next_action_for(
          "ready_for_clarification",
@@ -2915,11 +2935,22 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp detail_next_action_for(_status, _operator_mode?, _open_questions, _planned, _approved, _dispatched),
     do: "Review WorkRequest state"
 
+  defp detail_state_summary_for_handoff(%{architect_handoff: handoff, work_request: work_request} = page, true)
+       when is_map(handoff) do
+    if handoff_next_action_status?(value(work_request, :status)) and detail_open_question_count(page) == 0 do
+      "Architect handoff is prepared; copy the launch prompt and paste it into the architect agent."
+    else
+      nil
+    end
+  end
+
+  defp detail_state_summary_for_handoff(_page, _operator_mode?), do: nil
+
   defp detail_state_summary_for("draft", true, _open_questions, _planned, _approved, _dispatched),
-    do: "Draft request is waiting for the human to start agent questions."
+    do: "Start agent questions to move this draft into the agent-question phase."
 
   defp detail_state_summary_for("draft", _operator_mode?, _open_questions, _planned, _approved, _dispatched),
-    do: "Draft request is waiting for the clarification path to open."
+    do: "The next step is to start agent questions so clarification can begin."
 
   defp detail_state_summary_for(
          "ready_for_clarification",
@@ -2930,7 +2961,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
          _dispatched
        )
        when open_questions > 0,
-       do: "Clarification is open and needs answers before slicing."
+       do: "Agent questions are open and need answers before slicing."
 
   defp detail_state_summary_for(
          "ready_for_clarification",
@@ -2940,7 +2971,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
          _approved,
          _dispatched
        ),
-       do: "Agent questions are ready; prepare the architect handoff so the agent can clarify and plan."
+       do: "Agent questions are ready; prepare the paste-ready architect handoff."
 
   defp detail_state_summary_for(
          "ready_for_clarification",
@@ -2950,7 +2981,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
          _approved,
          _dispatched
        ),
-       do: "Clarification is ready; capture questions or decisions before slicing."
+       do: "Agent questions are ready; the architect can ask questions or record decisions before slicing."
 
   defp detail_state_summary_for("clarifying", _operator_mode?, open_questions, _planned, _approved, _dispatched)
        when open_questions > 0,
@@ -2967,7 +2998,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
          _approved,
          _dispatched
        ),
-       do: "The architect path is paused until the human supplies guidance."
+       do: "Answer the human guidance question before slicing continues."
 
   defp detail_state_summary_for("ready_for_slicing", true, _open_questions, _planned, approved, _dispatched)
        when approved > 0,
@@ -3006,9 +3037,18 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp detail_state_summary_for(_status, _operator_mode?, _open_questions, _planned, _approved, _dispatched),
     do: "Check the current status, questions, and planned slices."
 
+  defp handoff_next_action_status?("ready_for_clarification"), do: true
+  defp handoff_next_action_status?(_status), do: false
+
   defp detail_guidance_class(page) do
     if detail_guidance_attention?(page), do: "sympp-detail-status-hot", else: ""
   end
+
+  defp detail_guidance_heading(%{work_request: work_request}, true) do
+    if value(work_request, :status) == "human_info_needed", do: "Questions for you", else: "Questions"
+  end
+
+  defp detail_guidance_heading(_page, _operator_mode?), do: "Questions"
 
   defp detail_guidance_attention?(%{work_request: work_request} = page) do
     value(work_request, :status) in ["clarifying", "human_info_needed"] and
@@ -3060,6 +3100,15 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   end
 
   defp detail_slicing_label(_page), do: "n/a"
+
+  defp detail_handoff_label(%{architect_handoff: handoff, work_request: work_request} = page, true)
+       when is_map(handoff) do
+    if handoff_next_action_status?(value(work_request, :status)) and detail_open_question_count(page) == 0 do
+      "copy prompt"
+    else
+      "prepared"
+    end
+  end
 
   defp detail_handoff_label(%{architect_handoff: handoff}, _operator_mode?) when is_map(handoff),
     do: "prepared"
