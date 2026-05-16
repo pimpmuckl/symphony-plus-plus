@@ -565,11 +565,24 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
               </div>
             </dl>
             <div :if={architect_launch_brief(@page, @operator_mode?)} class="sympp-launch-brief">
-              <label>Paste-ready architect prompt</label>
+              <div class="sympp-launch-brief-header">
+                <label>Paste-ready architect prompt</label>
+                <button
+                  type="button"
+                  class="subtle-button sympp-copy-button"
+                  aria-label="Copy paste-ready architect prompt"
+                  data-label="Copy"
+                  onclick="const button = this; const label = button.dataset.label; const reset = (text) => { button.textContent = text; clearTimeout(button._copyTimer); button._copyTimer = setTimeout(() => { button.textContent = label }, 1200); }; const pre = button.closest('.sympp-launch-brief').querySelector('pre'); if (!navigator.clipboard || !navigator.clipboard.writeText) { reset('Copy failed'); return; } navigator.clipboard.writeText(pre.textContent).then(() => reset('Copied'), () => reset('Copy failed'));"
+                >
+                  Copy
+                </button>
+              </div>
               <pre class="sympp-copyable-block mono"><%= architect_launch_brief(@page, @operator_mode?) %></pre>
             </div>
-            <h2>Safe architect prompt</h2>
-            <pre class="sympp-json-block sympp-copyable-block"><%= value(@page.architect_handoff, :prompt) %></pre>
+            <div :if={safe_architect_prompt(@page, @operator_mode?)} class="sympp-launch-brief">
+              <label>Safe architect prompt</label>
+              <pre class="sympp-json-block sympp-copyable-block"><%= safe_architect_prompt(@page, @operator_mode?) %></pre>
+            </div>
           </article>
         </section>
 
@@ -2580,6 +2593,20 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   end
 
   defp architect_launch_brief(_page, _operator_mode?), do: nil
+
+  defp safe_architect_prompt(%{architect_handoff: handoff}, false)
+       when is_map(handoff) do
+    case value(handoff, :prompt) do
+      prompt when is_binary(prompt) ->
+        prompt = String.trim(prompt)
+        if prompt != "", do: prompt
+
+      _prompt ->
+        nil
+    end
+  end
+
+  defp safe_architect_prompt(_page, _operator_mode?), do: nil
 
   defp handoff_status_label(:replayed), do: "replayed"
   defp handoff_status_label(:renewed), do: "renewed"

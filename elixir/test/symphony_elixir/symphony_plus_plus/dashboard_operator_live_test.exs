@@ -1922,7 +1922,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "Dispatch only slices explicitly approved in the architect workflow"
     assert html =~ "record/report a blocker and stop"
     assert html =~ "Do not ask the human for raw work-key secrets"
-    assert html =~ "Safe architect prompt"
+    refute html =~ "Safe architect prompt"
     assert html =~ "prepared"
     assert html =~ "phase-wr-architect-"
     assert html =~ "SYMPP-WR-ARCH-"
@@ -1946,6 +1946,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute html =~ "secret_returned_once"
     refute html =~ "run_mcp_command"
     refute html =~ "Run MCP"
+
+    document = Floki.parse_document!(html)
+    assert [copy_button] = Floki.find(document, ".sympp-launch-brief .sympp-copy-button")
+    assert Floki.text(copy_button) =~ "Copy"
+    assert Floki.attribute(copy_button, "aria-label") == ["Copy paste-ready architect prompt"]
+    assert Floki.attribute(copy_button, "onclick") |> List.first() =~ ".then(() => reset('Copied'), () => reset('Copy failed'))"
+    assert [prompt_block] = Floki.find(document, ".sympp-launch-brief pre.sympp-copyable-block")
+    assert Floki.text(prompt_block) =~ "Required skill: `symphony-plus-plus:symphony-architect`"
 
     anchor_id = regex_capture(html, ~r/SYMPP-WR-ARCH-[A-Za-z0-9_-]+/)
     assert {:ok, anchor} = WorkPackageRepository.get(Repo, anchor_id)
@@ -1973,7 +1981,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert reload_html =~ "Private architect handoff stored"
     assert reload_html =~ "replayed"
     assert reload_html =~ "Paste-ready architect prompt"
-    assert reload_html =~ "Safe architect prompt"
+    refute reload_html =~ "Safe architect prompt"
     assert reload_html =~ "prepared"
     assert reload_html =~ grant.id
     assert reload_html =~ "symphony-plus-plus:symphony-architect"
@@ -1985,6 +1993,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute reload_html =~ "secret_hash"
     refute reload_html =~ "secret_returned_once"
     refute reload_html =~ "Run MCP"
+
+    reload_document = Floki.parse_document!(reload_html)
+    assert [_copy_button] = Floki.find(reload_document, ".sympp-launch-brief .sympp-copy-button")
+    assert [_prompt_block] = Floki.find(reload_document, ".sympp-launch-brief pre.sympp-copyable-block")
 
     replay_html = render_click(view, "create_architect_handoff", %{})
 
