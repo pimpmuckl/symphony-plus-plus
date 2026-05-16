@@ -37,6 +37,30 @@ $ledger = "C:\path\to\sympp-local.sqlite3"
 Use the same explicit ledger path for the cockpit, planned-slice dispatch, MCP
 handoffs, and Solo Session commands that should see the same local state.
 
+## Optional Demo Ledger
+
+For cockpit exploration, screenshots, or visual QA, create a deterministic
+synthetic ledger instead of relying on an untracked local database artifact:
+
+```powershell
+Set-Location elixir
+$demoLedger = "C:\path\to\sympp-demo.sqlite3"
+mix sympp.demo_ledger --database $demoLedger
+```
+
+The task creates and migrates the SQLite ledger, then seeds non-secret demo
+WorkRequests, planned slices, WorkPackages with planning evidence and a blocker,
+and Solo Sessions with representative entries. It fails if the target database
+already exists. Use a demo-only path; do not point `--force` at a ledger that
+contains real local operator state. To intentionally replace a local demo
+ledger, pass `--force`:
+
+```powershell
+mix sympp.demo_ledger --database $demoLedger --force
+```
+
+Start the cockpit with the same `$demoLedger` path printed by the generator.
+
 ## Start The Cockpit
 
 From the repository root, start the local operator cockpit:
