@@ -177,6 +177,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     refute html =~ "secret_hash"
     refute html =~ "private_payload"
     refute html =~ "Bearer "
+
+    document = Floki.parse_document!(html)
+    assert [copy_button] = Floki.find(document, ".sympp-launch-brief .sympp-copy-button")
+    assert Floki.text(copy_button) =~ "Copy"
+    assert Floki.attribute(copy_button, "aria-label") == ["Copy worker launch brief"]
+    assert Floki.attribute(copy_button, "onclick") |> List.first() =~ ".then(() => reset('Copied'), () => reset('Copy failed'))"
+    assert [brief_block] = Floki.find(document, ".sympp-launch-brief pre.sympp-copyable-block")
+    assert Floki.text(brief_block) =~ "Required skill: symphony-plus-plus:symphony-work-package"
   end
 
   test "worker launch brief preserves suggested worker label for unclaimed handoff" do

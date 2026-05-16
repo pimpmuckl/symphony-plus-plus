@@ -1538,12 +1538,25 @@ pre,
   min-width: 0;
 }
 
+.sympp-launch-brief-header {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+}
+
 .sympp-launch-brief label {
   color: var(--muted);
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
+}
+
+.sympp-copy-button {
+  flex: 0 0 auto;
+  min-height: 2rem;
 }
 
 .sympp-launch-brief pre {
@@ -2665,6 +2678,11 @@ pre,
   .sympp-mini-row,
   .sympp-timeline li {
     grid-template-columns: 1fr;
+  }
+
+  .sympp-launch-brief-header {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .sympp-count-grid {

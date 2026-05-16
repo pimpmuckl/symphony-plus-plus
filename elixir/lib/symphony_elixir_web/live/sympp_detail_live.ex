@@ -391,7 +391,18 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
                   </div>
                 </dl>
                 <div :if={worker_launch_brief(@detail.work_package, handoff)} class="sympp-launch-brief">
-                  <label>Worker Launch Brief</label>
+                  <div class="sympp-launch-brief-header">
+                    <label>Worker Launch Brief</label>
+                    <button
+                      type="button"
+                      class="subtle-button sympp-copy-button"
+                      aria-label="Copy worker launch brief"
+                      data-label="Copy"
+                      onclick="const button = this; const label = button.dataset.label; const reset = (text) => { button.textContent = text; clearTimeout(button._copyTimer); button._copyTimer = setTimeout(() => { button.textContent = label }, 1200); }; const pre = button.closest('.sympp-launch-brief').querySelector('pre'); if (!navigator.clipboard || !navigator.clipboard.writeText) { reset('Copy failed'); return; } navigator.clipboard.writeText(pre.textContent).then(() => reset('Copied'), () => reset('Copy failed'));"
+                    >
+                      Copy
+                    </button>
+                  </div>
                   <pre class="sympp-copyable-block mono"><%= worker_launch_brief(@detail.work_package, handoff) %></pre>
                 </div>
               </div>
