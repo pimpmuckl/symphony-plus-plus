@@ -955,7 +955,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       operation_total_count: view.total_count + length(all_requests) + solo_session_total_count,
       operation_visible_count: view.visible_count + length(visible_requests) + solo_session_shown_count,
       work_request_visible_count: length(visible_requests),
-      work_request_lanes: work_request_lanes(visible_requests),
+      work_request_lanes: work_request_lanes(visible_requests, :local_operator),
       guidance_items: guidance_items(visible_requests) ++ package_guidance_items(visible_guidance_requests),
       blocker_items: blocker_items(visible_cards),
       review_ready_count: review_ready_count(visible_cards),
@@ -1004,7 +1004,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     Enum.reduce(lanes, 0, fn lane, count -> count + length(Map.get(lane, :items, [])) end)
   end
 
-  defp work_request_lanes(work_requests) when is_list(work_requests) do
+  defp work_request_lanes(work_requests, mode) when is_list(work_requests) do
     grouped = Enum.group_by(work_requests, &work_request_lane_key/1)
 
     work_request_lane_order()
@@ -1012,7 +1012,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       %{
         label: label,
         count: grouped |> Map.get(key, []) |> length(),
-        items: grouped |> Map.get(key, []) |> work_request_items()
+        items: grouped |> Map.get(key, []) |> work_request_items(mode)
       }
     end)
     |> Enum.reject(&(&1.items == []))
@@ -1035,23 +1035,24 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   defp work_request_lane_key(%{status: "sliced"}), do: :sliced
   defp work_request_lane_key(_request), do: :draft
 
-  defp work_request_items(work_requests) when is_list(work_requests) do
-    Enum.map(work_requests, &work_request_item/1)
+  defp work_request_items(work_requests, mode) when is_list(work_requests) do
+    Enum.map(work_requests, &work_request_item(&1, mode))
   end
 
-  defp work_request_item(request) do
+  defp work_request_item(request, mode) do
     %{
       href: "work-requests/#{path_segment(Map.get(request, :id))}",
       title: Map.get(request, :title) || Map.get(request, :id) || "Untitled WorkRequest",
       state: status_label(Map.get(request, :status)),
       repo_base: repo_base(request),
       questions: "#{Map.get(request, :open_question_count) || 0} Q",
-      action_hint: work_request_action_hint(request),
+      action_hint: work_request_action_hint(request, mode),
       slice_signal: slice_signal(request)
     }
   end
 
-  defp work_request_action_hint(%{status: status} = request) when status in ["ready_for_clarification", "clarifying"] do
+  defp work_request_action_hint(%{status: status} = request, _mode)
+       when status in ["ready_for_clarification", "clarifying"] do
     if (Map.get(request, :open_question_count) || 0) > 0 do
       "Answer open questions"
     else
@@ -1059,10 +1060,11 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     end
   end
 
-  defp work_request_action_hint(%{status: "draft"}), do: "Prepare clarification"
-  defp work_request_action_hint(%{status: "human_info_needed"}), do: "Provide product guidance"
+  defp work_request_action_hint(%{status: "draft"}, :local_operator), do: "Start agent questions"
+  defp work_request_action_hint(%{status: "draft"}, _mode), do: "Prepare clarification"
+  defp work_request_action_hint(%{status: "human_info_needed"}, _mode), do: "Provide product guidance"
 
-  defp work_request_action_hint(%{status: "ready_for_slicing"} = request) do
+  defp work_request_action_hint(%{status: "ready_for_slicing"} = request, _mode) do
     cond do
       (Map.get(request, :approved_slice_count) || 0) > 0 -> "Dispatch approved slices"
       (Map.get(request, :planned_slice_count) || 0) > 0 -> "Approve or refine slices"
@@ -1071,7 +1073,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     end
   end
 
-  defp work_request_action_hint(%{status: "sliced"} = request) do
+  defp work_request_action_hint(%{status: "sliced"} = request, _mode) do
     cond do
       (Map.get(request, :approved_slice_count) || 0) > 0 -> "Dispatch approved slices"
       (Map.get(request, :dispatched_slice_count) || 0) > 0 -> "Monitor dispatched packages"
@@ -1079,7 +1081,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     end
   end
 
-  defp work_request_action_hint(_request), do: "Prepare clarification"
+  defp work_request_action_hint(_request, _mode), do: "Prepare clarification"
 
   defp guidance_items(work_requests) when is_list(work_requests) do
     work_requests

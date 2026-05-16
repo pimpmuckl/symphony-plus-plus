@@ -30,9 +30,9 @@ Local operator mode:
 - rejects forwarded/proxy headers for operator entry;
 - renders redacted dashboard projections only;
 - shows `/sympp/work-requests/new` with explicit repo and base branch fields;
-- lets the local operator create draft WorkRequests and use the existing safe
-  clarification, decision, readiness, and planned-slice controls from the
-  WorkRequest detail page;
+- lets the local operator create draft WorkRequests and use a human-owned
+  `Start agent questions` action to move draft requests to
+  `ready_for_clarification`;
 - lets the local operator dispatch approved, undispatched planned slices into
   WorkPackages through the existing private worker handoff flow;
 - lets the local operator prepare/replay a WorkRequest architect handoff with a
@@ -41,8 +41,8 @@ Local operator mode:
 - shows package guidance requests that need human input in the operator
   priority watchlist and lets the local operator answer only
   `human_info_needed` guidance from the WorkPackage detail page;
-- records local operator clarification and decision attribution with the stable
-  actor label `local-operator`;
+- records local operator WorkRequest answers with the stable actor label
+  `local-operator`;
 - records local browser planned-slice dispatch grants with the stable worker
   identity `local-operator-worker`;
 - keeps board-grant WorkRequest intake locked to the grant's frozen repo/base
@@ -154,9 +154,10 @@ uncommon constraint keys and complex shapes.
 
 `/sympp/work-requests/:id` exposes WorkRequest controls based on product
 ownership. In local operator mode, the page stays human-owned: the operator can
-answer product questions, prepare/replay an architect handoff, inspect
-architect-owned context, and dispatch approved slices. It does not expose
-architect authoring controls for questions, decisions, or planned slices.
+start agent questions for a draft request, answer product questions,
+prepare/replay an architect handoff, inspect architect-owned context, and
+dispatch approved slices. It does not expose architect authoring controls for
+questions, decisions, or planned slices.
 
 Scoped board-grant detail remains the architect/planning surface:
 
@@ -173,6 +174,7 @@ Mark sliced
 Local operator detail keeps this smaller action set:
 
 ```text
+Start agent questions
 Answer open human questions
 Prepare architect handoff
 Dispatch approved planned slices

@@ -396,7 +396,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert lane_contains?(html, "Human Info Needed", "Human answer intake")
     assert lane_contains?(html, "Ready For Slicing", "Ready slicing intake")
     assert lane_contains?(html, "Sliced/Dispatching", "Sliced dispatch intake")
-    assert html =~ "Prepare clarification"
+    assert html =~ "Start agent questions"
     assert html =~ "Prepare architect handoff"
     assert html =~ "Provide product guidance"
     assert html =~ "Dispatch approved slices"
@@ -971,6 +971,66 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert created.constraints == %{"allowed_paths" => ["elixir/lib"], "requires_secret" => false}
   end
 
+  test "local operator marks a draft WorkRequest ready for agent questions" do
+    enable_operator_mode()
+
+    request =
+      create_work_request!(
+        id: "WR-OPERATOR-START-QUESTIONS",
+        title: "Start agent questions",
+        status: "draft",
+        constraints: %{"allowed_paths" => ["elixir/lib"], "requires_secret" => false}
+      )
+
+    {:ok, view, html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
+
+    assert html =~ "Ready for agent questions"
+    assert html =~ "Start agent questions"
+    assert html =~ ~s(phx-click="mark_ready_for_clarification")
+    refute html =~ "Mark ready for clarification"
+    refute html =~ "Ask question"
+    refute html =~ "Record decision"
+    refute html =~ "Add planned slice"
+
+    html = render_click(view, "mark_ready_for_clarification", %{})
+
+    assert html =~ "ready for clarification"
+    assert html =~ "Prepare architect handoff"
+    assert html =~ ~s(phx-click="create_architect_handoff")
+    refute html =~ ~s(phx-click="mark_ready_for_clarification")
+    refute html =~ "Ask question"
+    refute html =~ "Record decision"
+    refute html =~ "Add planned slice"
+
+    assert {:ok, updated} = WorkRequestRepository.get(Repo, request.id)
+    assert updated.status == "ready_for_clarification"
+  end
+
+  test "local operator ready-for-agent-questions action fails safely on stale status" do
+    enable_operator_mode()
+
+    request =
+      create_work_request!(
+        id: "WR-OPERATOR-STALE-QUESTIONS",
+        title: "Stale agent questions",
+        status: "draft"
+      )
+
+    {:ok, view, html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
+
+    assert html =~ "Start agent questions"
+    assert {:ok, _updated} = WorkRequestRepository.update_status(Repo, request.id, "draft", "clarifying")
+
+    html = render_click(view, "mark_ready_for_clarification", %{})
+
+    assert html =~ "The WorkRequest status changed. Refresh and try again."
+    assert html =~ "clarifying"
+    refute html =~ "WorkRequest ready for agent questions."
+
+    assert {:ok, unchanged} = WorkRequestRepository.get(Repo, request.id)
+    assert unchanged.status == "clarifying"
+  end
+
   test "local operator creates a WorkRequest from structured constraints" do
     enable_operator_mode()
 
@@ -1065,16 +1125,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
            }
 
     {:ok, view, html} = live(local_conn(), "/sympp/work-requests/#{work_request_id}")
+    assert html =~ "Start agent questions"
     refute html =~ "Mark ready for clarification"
     refute html =~ raw_secret
 
     html = render_click(view, "mark_ready_for_clarification", %{})
-    assert html =~ "That action belongs in the architect workflow."
-    assert {:ok, still_draft} = WorkRequestRepository.get(Repo, work_request_id)
-    assert still_draft.status == "draft"
-
-    assert {:ok, _ready} =
-             WorkRequestRepository.update_status(Repo, work_request_id, "draft", "ready_for_clarification")
+    assert html =~ "Prepare architect handoff"
+    assert {:ok, ready} = WorkRequestRepository.get(Repo, work_request_id)
+    assert ready.status == "ready_for_clarification"
 
     assert {:ok, _question} =
              WorkRequestRepository.ask_question(Repo, work_request_id, %{
@@ -1555,7 +1613,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute html =~ "Close unanswered"
   end
 
-  test "local operator answers human questions but architect-owned WorkRequest events stay gated" do
+  test "local operator answers human questions but architect authoring events stay gated" do
     enable_operator_mode()
 
     request =
@@ -1581,11 +1639,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute html =~ "Add planned slice"
     assert html =~ "Which repo docs should be updated?"
     assert html =~ "Send answer"
-
-    html = render_click(view, "mark_ready_for_clarification", %{})
-    assert html =~ "That action belongs in the architect workflow."
-    assert {:ok, unchanged_request} = WorkRequestRepository.get(Repo, request.id)
-    assert unchanged_request.status == "human_info_needed"
 
     html =
       render_submit(view, "ask_question", %{
