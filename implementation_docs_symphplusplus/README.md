@@ -25,6 +25,7 @@ resources, and the docs below.
 
 ## Start Here
 
+- Local operator golden path: `runbooks/LOCAL_OPERATOR_GOLDEN_PATH.md`
 - Product/operator guide: `docs/01_IMPLEMENTATION_GUIDE.md`
 - v2 intake product contract: `docs/13_WORKREQUEST_CONTRACT.md`
 - Solo Session product contract: `docs/14_SOLO_SESSION_CONTRACT.md`
