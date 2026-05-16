@@ -37,6 +37,10 @@ record decisions, author/approve planned slices, and dispatch approved slices,
 then let workers handle their assigned WorkPackages. Workers route product or
 architecture ambiguity back to the architect first; unresolved human intent is
 recorded as `human_info_needed` for the operator instead of being guessed.
+Simple missing facts can stay as plain clarification questions. Higher-impact
+human decisions should use the structured `decision_prompt` shape so the
+operator sees a TL;DR, details, concrete options with pros/cons, and the always
+available freeform redirect path.
 
 Use a standalone package for one bounded quick fix, hotfix, investigation, or
 review-only task. Standalone packages do not need a phase branch or architect.
