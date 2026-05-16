@@ -16,10 +16,11 @@ WorkRequest capabilities can read, clarify, record decisions, author planned
 slices, and dispatch approved planned slices through the existing private worker
 handoff flow.
 
-This is still a manual architect-led flow. MCP WorkRequest intake tools,
-automatic question generation, automatic slicing/planning, live Linear state
-creation, richer plugin packaging, and automatic Codex spawning remain future
-work.
+This is still a manual architect-led flow. The installable Codex plugin now
+exposes Symphony++ skills and a generic `symphony_plus_plus` MCP wrapper, but
+MCP WorkRequest intake tools, automatic question generation, automatic
+slicing/planning, live Linear state creation, richer planner/intake plugin
+surfaces, and automatic Codex spawning remain future work.
 
 ### WorkPackage
 
@@ -46,11 +47,11 @@ updated_at
 
 ### SoloSession
 
-A future local/private planning ledger for one caller, stable local session
-key, and canonical workspace path. A SoloSession records task plan, finding, progress,
+A local/private planning ledger for one caller, stable local session key, and
+canonical workspace path. A SoloSession records task plan, finding, progress,
 blocker, decision, and validation-note entries for normal single-agent Codex
 work without creating WorkRequests, WorkPackages, grants, Linear state, worker
-dispatch, architect handoff, or cockpit UI.
+dispatch, or architect handoff.
 
 Important fields:
 
@@ -72,9 +73,11 @@ updated_at
 SoloSession statuses are `active`, `paused`, `completed`, and `archived`.
 Active and paused sessions may later be archived as stale after about 30 days
 through an explicit helper; this specification does not require a scheduler.
-See `14_SOLO_SESSION_CONTRACT.md` for the product boundary, data model
-direction, follow-up MCP/skill/cockpit affordances, and runtime rebuild
-constraints.
+Current surfaces include `mix sympp.solo`, the plugin-installed
+`symphony-plus-plus:symphony-solo-session` skill and `sympp-solo.ps1` wrapper,
+and a local operator cockpit list/detail view. See
+`14_SOLO_SESSION_CONTRACT.md` for the product boundary, data model direction,
+current surfaces, remaining future MCP affordances, and runtime constraints.
 
 ### AccessGrant
 

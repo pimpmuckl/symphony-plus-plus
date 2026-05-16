@@ -48,10 +48,12 @@ questions and slices the work.
    optional for high-risk business logic or live smoke-test ownership.
 
 This flow preserves existing WorkPackage grants, virtual planning resources,
-readiness gates, review evidence, PR evidence, and human merge controls. It is
-not a claim that MCP intake tooling, automatic slicing/planning, automatic
-question generation, Linear state creation, or richer plugin packaging already
-exists.
+readiness gates, review evidence, PR evidence, and human merge controls. The
+installable Codex plugin exposes current Symphony++ skills and a generic MCP
+wrapper, but this flow is not a claim that MCP intake tooling, automatic
+slicing/planning, automatic question generation, Linear state creation, or
+richer planner/intake plugin surfaces or automatic Codex spawning already
+exist.
 
 Runtime WorkRequest persistence, the read API, the dashboard list/detail view,
 scoped dashboard intake, architect MCP WorkRequest reads, clarification and
@@ -162,12 +164,13 @@ segment shape and do not authorize recursive owned globs such as `**/foo` or
 bare `**`.
 
 MCP intake, automatic question generation, automatic slicing/planning, MCP
-planner tools, Linear state creation, and richer plugin packaging remain future
-work. Until those exist, keep questions, answers, decisions, assumptions, and
-slice-plan sections in runtime WorkRequest records where available, or in one
-operator-approved Markdown artifact when the runtime surface is not available
-for a lane. Give the architect package a durable reference plus a bounded
-handoff summary before dispatch.
+planner tools, Linear state creation, richer planner/intake plugin surfaces,
+and automatic Codex spawning remain future work. Until those exist, keep
+questions, answers, decisions, assumptions, and slice-plan sections in runtime
+WorkRequest records where available, or in one operator-approved Markdown
+artifact when the runtime surface is not available for a lane. Give the
+architect package a durable reference plus a bounded handoff summary before
+dispatch.
 
 ## Planned-Slice Dispatch CLI
 

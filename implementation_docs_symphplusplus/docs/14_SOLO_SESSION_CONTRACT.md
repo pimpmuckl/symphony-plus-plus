@@ -7,15 +7,17 @@ creating a WorkRequest, WorkPackage, Linear record, architect handoff, or worker
 dispatch.
 
 This document is the product contract for the Solo Session runtime foundation.
-The current CLI surface is `mix sympp.solo` in `elixir/`; MCP tools, plugin or
-skill commands, cockpit UI, schedulers, and promotion workflows are follow-up
-scope.
+Current surfaces are `mix sympp.solo` in `elixir/`, the plugin-installed
+`symphony-plus-plus:symphony-solo-session` skill, the plugin
+`scripts/sympp-solo.ps1` wrapper, and local operator cockpit list/detail views.
+MCP Solo Session resources/tools, schedulers, promotion workflows, and richer
+write controls remain follow-up scope.
 
 ## Purpose
 
 A Solo Session records one local caller's planning memory for one repo and
 worktree/workspace. It is intended to replace ad hoc `planning-with-files` usage
-for ordinary single-agent sessions once the runtime and tooling exist.
+for ordinary single-agent sessions where the local ledger is preferred.
 
 Use Solo Session Mode when the caller needs durable local memory for:
 
@@ -41,8 +43,7 @@ Solo Session v1 does not include:
 - Access grants, worker secrets, private handoff payloads, or WorkKeys.
 - WorkRequest or WorkPackage semantic changes.
 - MCP Solo Session tools or resources.
-- Plugin or skill command wiring.
-- Local cockpit UI implementation.
+- Automatic promotion into WorkRequests or WorkPackages.
 - Background schedulers.
 
 Solo Sessions must stay separate from WorkRequest and WorkPackage
@@ -194,9 +195,9 @@ Session entries.
 ## Stale And Archive Behavior
 
 Solo Session v1 should include a minimal archive helper direction, not an
-immediate scheduler requirement. The helper archives `active` or `paused`
-sessions whose `last_activity_at` is older than a configured threshold. The
-default product expectation is roughly 30 days.
+immediate scheduler requirement. The repository/service helper can archive
+`active` or `paused` sessions whose `last_activity_at` is older than a
+configured threshold. The default product expectation is roughly 30 days.
 
 `last_activity_at` advances only when the session is created, an active or
 paused session is attached as current, an entry append succeeds, or a lifecycle
@@ -214,14 +215,15 @@ updated_at = current time
 ```
 
 Archived sessions remain readable, cannot be reattached as current sessions,
-and cannot receive new entries. Future cockpit, CLI, MCP, or maintenance
-packages may call the helper explicitly.
+and cannot receive new entries. Current CLI surfaces can archive an explicit
+session by id; stale-archive cockpit, MCP, CLI, or maintenance surfaces remain
+future work unless they explicitly wire this helper.
 
-## Cockpit Direction
+## Cockpit Surface
 
-Future cockpit support should expose a small Solo/Local Sessions surface:
+The local operator cockpit exposes a small Solo/Local Sessions surface:
 
-- Per-repo visibility by default.
+- Repo filtering when needed.
 - List active, paused, completed, and archived local sessions.
 - Show session details and ordered ledger entries.
 - Keep Solo Sessions visually separate from WorkRequests and WorkPackages.
@@ -230,9 +232,14 @@ Future cockpit support should expose a small Solo/Local Sessions surface:
 Solo Session records may be useful operator context, but they must not appear
 as merge-readiness records, dispatched packages, or architect boards.
 
-## MCP And Skill Direction
+## Plugin, Skill, And MCP Direction
 
-Follow-up MCP/plugin/skill affordances should be small and local:
+The plugin-installed Solo Session skill and `sympp-solo.ps1` wrapper provide
+agent-facing access to the `mix sympp.solo` CLI from source or installed
+plugin cache. They are convenience surfaces over the local Solo Session ledger,
+not orchestration.
+
+Future MCP Solo Session resources/tools should be small and local:
 
 - Create or attach the current Solo Session for the local repo/worktree scope.
 - Read the current Solo Session and recent entries.
@@ -241,12 +248,12 @@ Follow-up MCP/plugin/skill affordances should be small and local:
 - Pause, resume, complete, or archive the current session.
 - Render planning-file-like views from the ledger.
 
-These affordances must not claim WorkKeys, mint grants, create WorkRequests,
-create WorkPackages, dispatch agents, or write Linear state.
+Current and future affordances must not claim WorkKeys, mint grants, create
+WorkRequests, create WorkPackages, dispatch agents, or write Linear state.
 
 ## Mix CLI Surface
 
-The first agent-facing surface is the `mix sympp.solo` task. Successful command
+The base agent-facing CLI surface is the `mix sympp.solo` task. Successful command
 output is JSON; failures exit non-zero with normal `Mix.Error` messages. It is
 a local operator tool over the existing Solo Session repository and service; it
 does not add orchestration semantics.
