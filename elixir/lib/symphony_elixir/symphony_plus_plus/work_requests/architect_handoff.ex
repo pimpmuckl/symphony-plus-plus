@@ -43,6 +43,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   @local_lock_owner_timeout_ms 1_000
   @local_lock_retry_delay_ms 10
   @local_lock_table :symphony_plus_plus_architect_handoff_locks
+  @prompt_database_display_safe_pattern ~r/\A[A-Za-z0-9._\/\\:@+-][A-Za-z0-9 ._\/\\:@+-]{0,511}\z/u
   @prompt_display_safe_pattern ~r/\A[A-Za-z0-9][A-Za-z0-9._\/\\:@+-]{0,239}\z/u
 
   @type handoff_status :: :created | :replayed | :renewed
@@ -1175,10 +1176,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   defp maybe_add_database_prompt_line(lines, nil), do: lines
 
   defp maybe_add_database_prompt_line(lines, database) do
-    lines ++ ["Use ledger database `#{prompt_display_value(database)}` when starting the Symphony++ MCP session."]
+    lines ++ ["Use ledger database `#{prompt_database_display_value(database)}` when starting the Symphony++ MCP session."]
   end
 
-  defp prompt_display_value(value) when is_binary(value) do
+  defp prompt_database_display_value(value), do: prompt_display_value(value, @prompt_database_display_safe_pattern)
+  defp prompt_display_value(value), do: prompt_display_value(value, @prompt_display_safe_pattern)
+
+  defp prompt_display_value(value, safe_pattern) when is_binary(value) do
     value = String.trim(value)
 
     cond do
@@ -1191,7 +1195,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
       true ->
         redacted = value |> Redactor.redact_text() |> String.trim()
 
-        if redacted == value and Regex.match?(@prompt_display_safe_pattern, redacted) do
+        if redacted == value and Regex.match?(safe_pattern, redacted) do
           redacted
         else
           "n/a"
@@ -1199,11 +1203,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
     end
   end
 
-  defp prompt_display_value(_value), do: "n/a"
+  defp prompt_display_value(_value, _safe_pattern), do: "n/a"
 
   defp unsafe_prompt_display_text?(value) do
     Regex.match?(~r/[\r\n\t\f\v\x{00}-\x{1F}\x{7F}\x{85}\x{2028}\x{2029}]/u, value) or
-      String.contains?(value, "`") or String.contains?(value, "~~~")
+      Regex.match?(~r/\[redacted\]/i, value) or
+      String.contains?(value, ["`", "~~~", "\"", "'", ";", "&", "|", "<", ">", "$", "!", "%", "^"])
   end
 
   defp redact_handoff(handoff) when is_map(handoff) do
