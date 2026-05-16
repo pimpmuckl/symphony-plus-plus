@@ -133,7 +133,7 @@ revoke_child_worker_key(grant_id, reason)
 list_work_requests(status?)
 read_work_request(work_request_id)
 set_work_request_status(work_request_id, current_status, next_status)
-ask_work_request_question(work_request_id, category, question, why_needed, asked_by_agent_run_id?)
+ask_work_request_question(work_request_id, category, question, why_needed, asked_by_agent_run_id?, decision_prompt?)
 answer_work_request_question(work_request_id, question_id, current_status, answer, answered_by?)
 close_work_request_question(work_request_id, question_id, current_status)
 record_work_request_decision(work_request_id, source_type, decision, rationale, scope_impact, created_by, source_id?)
@@ -200,6 +200,17 @@ existing WorkRequest service primitives: status movement is explicit through
 `set_work_request_status`, and question/decision tools do not mirror
 dashboard-only helper guards, auto-transition the parent request, or introduce
 a new lifecycle/status transition matrix.
+
+`ask_work_request_question` may include an optional `decision_prompt` object for
+human-facing answer cards. The object contains redacted strings only:
+`tl_dr`, `details`, one to four `options` with `id`, `label`, `answer`, and
+optional `description`, `pros`, and `cons`, plus optional
+`custom_redirect_label`. Plain-text `question` and `why_needed` remain required
+and remain the fallback rendering when `decision_prompt` is absent.
+`custom_redirect_label` is a label override only: local operator UIs always
+offer a freeform redirect path, use the default redirect label when the field is
+omitted, and persist only the operator's replacement guidance note for that
+path.
 
 `add_work_request_planned_slice`, `approve_work_request_planned_slice`,
 `skip_work_request_planned_slice`, and `mark_work_request_sliced` are architect

@@ -1144,6 +1144,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       answered_at: timestamp(guidance_request.answered_at),
       human_info_reason: redacted_text(guidance_request.human_info_reason),
       recommended_language: redacted_text(guidance_request.recommended_language),
+      decision_prompt: redacted_json(guidance_request.decision_prompt),
       blocker_id: guidance_request.blocker_id,
       inserted_at: timestamp(guidance_request.inserted_at),
       updated_at: timestamp(guidance_request.updated_at)
@@ -1158,6 +1159,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       category: redacted_text(question.category),
       question: redacted_text(question.question),
       why_needed: redacted_text(question.why_needed),
+      decision_prompt: redacted_json(question.decision_prompt),
       status: question.status,
       asked_by_agent_run_id: question.asked_by_agent_run_id,
       answer: redacted_text(question.answer),

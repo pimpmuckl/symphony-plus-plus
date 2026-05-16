@@ -6,11 +6,13 @@ defmodule Mix.Tasks.Sympp.DemoLedgerTest do
   alias Ecto.Adapters.SQL
   alias Mix.Tasks.Sympp.DemoLedger, as: DemoLedgerTask
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository, as: SoloSessionsRepository
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
   alias SymphonyElixir.WorkPackageFactory
@@ -106,6 +108,13 @@ defmodule Mix.Tasks.Sympp.DemoLedgerTest do
           "SYMPP-DEMO-SLICE-SKIPPED" => "skipped",
           "SYMPP-DEMO-SLICE-DISPATCHED" => "dispatched"
         })
+
+        question = repo.get!(ClarificationQuestion, "SYMPP-DEMO-WRQ-STRUCTURED")
+        assert question.decision_prompt["tl_dr"] == "Choose who owns the first cockpit guidance slice."
+
+        guidance = repo.get!(GuidanceRequest, "SYMPP-DEMO-GUIDANCE-HUMAN")
+        assert guidance.status == "human_info_needed"
+        assert guidance.decision_prompt["tl_dr"] == "Pick the operator triage grouping."
 
         dispatched = repo.get!(PlannedSlice, "SYMPP-DEMO-SLICE-DISPATCHED")
         assert dispatched.work_package_id == "SYMPP-DEMO-WP-ACTIVE"
@@ -241,6 +250,7 @@ defmodule Mix.Tasks.Sympp.DemoLedgerTest do
     with_repo(database_path, fn _repo ->
       for table <- [
             "sympp_work_requests",
+            "sympp_work_request_clarification_questions",
             "sympp_work_packages",
             "sympp_work_request_planned_slices",
             "sympp_solo_sessions"

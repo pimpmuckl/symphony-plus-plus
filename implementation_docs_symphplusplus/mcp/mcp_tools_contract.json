@@ -124,9 +124,9 @@
       "purpose": "Add a clarification question to a scoped WorkRequest.",
       "required_capabilities": ["write:work_request"],
       "required_arguments": ["work_request_id", "category", "question", "why_needed"],
-      "optional_arguments": ["asked_by_agent_run_id"],
+      "optional_arguments": ["asked_by_agent_run_id", "decision_prompt"],
       "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope and verifies the target WorkRequest is in scope before creating the question. This tool does not auto-transition the parent WorkRequest; architects use set_work_request_status for explicit status movement.",
-      "response_policy": "Returns safe JSON with the redacted created clarification question, a minimal parent WorkRequest status projection, scope, and status metadata. It excludes read_work_request detail fields, work-key secrets, API tokens, private handoff payloads, and worker secret material."
+      "response_policy": "Returns safe JSON with the redacted created clarification question, including the optional structured decision_prompt when present, a minimal parent WorkRequest status projection, scope, and status metadata. It excludes read_work_request detail fields, work-key secrets, API tokens, private handoff payloads, and worker secret material."
     },
     {
       "name": "answer_work_request_question",

@@ -50,10 +50,11 @@ mix sympp.demo_ledger --database $demoLedger
 
 The task creates and migrates the SQLite ledger, then seeds non-secret demo
 WorkRequests, planned slices, WorkPackages with planning evidence and a blocker,
-and Solo Sessions with representative entries. It fails if the target database
-already exists. Use a demo-only path; do not point `--force` at a ledger that
-contains real local operator state. To intentionally replace a local demo
-ledger, pass `--force`:
+structured WorkRequest and package-guidance decision prompts, and Solo Sessions
+with representative entries. It fails if the target database already exists.
+Use a demo-only path; do not point `--force` at a ledger that contains real
+local operator state. To intentionally replace a local demo ledger, pass
+`--force`:
 
 ```powershell
 mix sympp.demo_ledger --database $demoLedger --force
@@ -168,6 +169,9 @@ When a worker raises guidance:
 - `human_info_needed` means the architect escalated an item that needs human
   input. Answer it from the local cockpit; the answer records
   `local-operator` attribution and resolves the matching readiness blocker.
+- If the architect provided a structured decision prompt, pick one option or
+  use the freeform redirect path. The saved answer uses the selected option's
+  durable answer text plus any note you add.
 
 Merge only after the PR and WorkPackage evidence are current for the final
 head:

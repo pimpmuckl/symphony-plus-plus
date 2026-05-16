@@ -8,6 +8,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service, as: GuidanceRequestService
+  alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
   alias SymphonyElixirWeb.SymppBoardLive
   alias SymphonyElixirWeb.SymppDashboardApiController
 
@@ -230,21 +231,29 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
                   <section class="sympp-human-decision-card">
                     <p class="sympp-human-kicker">Human answer needed</p>
                     <h3><%= human_guidance_summary(guidance) %></h3>
-                    <p class="sympp-human-question"><%= present(guidance.question) %></p>
+                    <p class="sympp-human-question"><%= human_guidance_details(guidance) %></p>
                     <dl class="sympp-human-decision-details">
-                      <div>
-                        <dt>Context</dt>
-                        <dd><%= present(guidance.context) %></dd>
-                      </div>
-                      <div :if={guidance.recommended_language}>
-                        <dt>Suggested path</dt>
-                        <dd><%= guidance.recommended_language %></dd>
-                      </div>
-                      <div :if={guidance.human_info_reason}>
-                        <dt>Why it is blocked</dt>
-                        <dd><%= guidance.human_info_reason %></dd>
+                      <div :for={{label, detail} <- human_guidance_detail_rows(guidance)}>
+                        <dt><%= label %></dt>
+                        <dd><%= detail %></dd>
                       </div>
                     </dl>
+                    <div :if={decision_prompt_options(map_value(guidance, :decision_prompt)) != []} class="sympp-decision-option-list">
+                      <article :for={option <- decision_prompt_options(map_value(guidance, :decision_prompt))} class="sympp-decision-option-card">
+                        <h4><%= decision_option_label(option) %></h4>
+                        <p :if={decision_option_description(option)}><%= decision_option_description(option) %></p>
+                        <dl>
+                          <div :if={decision_option_pros(option) != []}>
+                            <dt>Pros</dt>
+                            <dd><%= list_text(decision_option_pros(option)) %></dd>
+                          </div>
+                          <div :if={decision_option_cons(option) != []}>
+                            <dt>Cons</dt>
+                            <dd><%= list_text(decision_option_cons(option)) %></dd>
+                          </div>
+                        </dl>
+                      </article>
+                    </div>
                   </section>
                 <% else %>
                   <h3><%= present(guidance.summary) %></h3>
@@ -283,8 +292,8 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
                   <input type="hidden" name={f[:id].name} value={guidance.id} />
                   <input type="hidden" name={f[:work_package_id].name} value={@detail.work_package.id || @work_package_id} />
                   <div class="sympp-choice-grid" role="radiogroup" aria-label="Answer direction">
-                    <label :for={choice <- human_answer_choices()} class="sympp-choice-option">
-                      <input type="radio" name={f[:answer_choice].name} value={choice.value} checked={choice.value == "continue"} />
+                    <label :for={choice <- human_answer_choices(guidance)} class="sympp-choice-option">
+                      <input type="radio" name={f[:answer_choice].name} value={choice.value} checked={choice.checked} />
                       <span>
                         <strong><%= choice.label %></strong>
                         <small><%= choice.help %></small>
@@ -428,7 +437,6 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     with {:ok, guidance_request_id} <- required_param(params, "id"),
          answer_params <-
            params
-           |> Map.put("answer", human_answer_text(params))
            |> Map.put("work_package_id", socket.assigns.work_package_id),
          {:ok, _result} <-
            SymppBoardLive.with_dashboard_repo(fn repo ->
@@ -903,6 +911,16 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
 
   defp human_guidance_summary(guidance) do
     guidance
+    |> map_value(:decision_prompt)
+    |> prompt_text(:tl_dr)
+    |> case do
+      summary when is_binary(summary) and summary != "" -> summary
+      _summary -> fallback_human_guidance_summary(guidance)
+    end
+  end
+
+  defp fallback_human_guidance_summary(guidance) do
+    guidance
     |> map_value(:summary)
     |> case do
       summary when is_binary(summary) and summary != "" -> summary
@@ -910,41 +928,119 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
     end
   end
 
-  defp human_answer_choices do
-    [
-      %{value: "continue", label: "Continue", help: "Use the suggested path."},
-      %{value: "narrow", label: "Narrow scope", help: "Keep the work smaller or safer."},
-      %{value: "redirect", label: "No, redirect", help: "Tell the agent what to do differently."}
-    ]
-  end
-
-  defp human_answer_text(params) when is_map(params) do
-    answer = map_value(params, :answer)
-
-    if is_binary(answer) and String.trim(answer) != "" do
-      String.trim(answer)
-    else
-      answer_choice_text(map_value(params, :answer_choice), map_value(params, :answer_note))
+  defp human_guidance_details(guidance) do
+    guidance
+    |> map_value(:decision_prompt)
+    |> prompt_text(:details)
+    |> case do
+      details when is_binary(details) -> details
+      _details -> present(map_value(guidance, :question))
     end
   end
 
-  defp answer_choice_text(choice, note) do
-    base =
-      case choice do
-        "narrow" -> "Narrow the scope before continuing."
-        "redirect" -> "No. Change direction before continuing."
-        _choice -> "Continue with the proposed direction."
+  defp human_guidance_detail_rows(guidance) do
+    rows =
+      if structured_prompt?(map_value(guidance, :decision_prompt)) do
+        [
+          {"Question", present(map_value(guidance, :question))},
+          {"Context", present(map_value(guidance, :context))},
+          {"Suggested path", map_value(guidance, :recommended_language)},
+          {"Why it is blocked", map_value(guidance, :human_info_reason)},
+          {"Freeform redirect", custom_redirect_label(map_value(guidance, :decision_prompt))}
+        ]
+      else
+        [
+          {"Context", present(map_value(guidance, :context))},
+          {"Suggested path", map_value(guidance, :recommended_language)},
+          {"Why it is blocked", map_value(guidance, :human_info_reason)}
+        ]
       end
 
-    case note do
-      note when is_binary(note) ->
-        note = String.trim(note)
-        if note == "", do: base, else: "#{base} #{note}"
+    Enum.reject(rows, fn {_label, detail} -> detail in [nil, ""] end)
+  end
 
-      _note ->
-        base
+  defp human_answer_choices(record) do
+    case decision_prompt_options(map_value(record, :decision_prompt)) do
+      [] ->
+        [
+          %{value: "continue", label: "Continue", help: "Use the suggested path.", checked: true},
+          %{value: "narrow", label: "Narrow scope", help: "Keep the work smaller or safer.", checked: false},
+          %{value: "redirect", label: "No, redirect", help: "Tell the agent what to do differently.", checked: false}
+        ]
+
+      options ->
+        options
+        |> Enum.map(&decision_prompt_choice/1)
+        |> maybe_append_custom_redirect_choice(map_value(record, :decision_prompt))
+        |> mark_first_choice_checked()
     end
   end
+
+  defp structured_prompt?(prompt), do: is_map(prompt) and decision_prompt_options(prompt) != []
+
+  defp prompt_text(prompt, key) when is_map(prompt) do
+    case map_value(prompt, key) do
+      text when is_binary(text) and text != "" -> text
+      _text -> nil
+    end
+  end
+
+  defp prompt_text(_prompt, _key), do: nil
+
+  defp decision_prompt_options(prompt) when is_map(prompt) do
+    case map_value(prompt, :options) do
+      options when is_list(options) -> Enum.filter(options, &is_map/1)
+      _options -> []
+    end
+  end
+
+  defp decision_prompt_options(_prompt), do: []
+
+  defp decision_prompt_choice(option) do
+    %{
+      value: present(map_value(option, :id)),
+      label: decision_option_label(option),
+      help: decision_option_description(option) || "Use this answer.",
+      checked: false
+    }
+  end
+
+  defp maybe_append_custom_redirect_choice(choices, prompt) do
+    label = custom_redirect_label(prompt)
+
+    if label == "" do
+      choices
+    else
+      choices ++ [%{value: HumanDecisionPrompt.custom_redirect_choice_id(), label: label, help: "Write a different direction below.", checked: false}]
+    end
+  end
+
+  defp mark_first_choice_checked([]), do: []
+
+  defp mark_first_choice_checked([first | rest]) do
+    [Map.put(first, :checked, true) | rest]
+  end
+
+  defp decision_option_label(option), do: present(map_value(option, :label))
+
+  defp decision_option_description(option) do
+    case map_value(option, :description) do
+      description when is_binary(description) and description != "" -> description
+      _description -> nil
+    end
+  end
+
+  defp decision_option_pros(option), do: option_list(option, :pros)
+  defp decision_option_cons(option), do: option_list(option, :cons)
+
+  defp option_list(option, key) do
+    case map_value(option, key) do
+      values when is_list(values) -> values
+      _values -> []
+    end
+  end
+
+  defp custom_redirect_label(prompt), do: prompt_text(prompt, :custom_redirect_label) || "No, and tell the agent what to do differently"
 
   defp guidance_request_dom_id(id) do
     encoded = id |> to_string() |> Base.url_encode64(padding: false)
@@ -966,7 +1062,9 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
 
   defp guidance_answer_error_message(:forbidden), do: "Only the local operator cockpit can answer human info guidance."
   defp guidance_answer_error_message(:invalid_status), do: "Only human-info-needed guidance can be answered here."
+  defp guidance_answer_error_message(:invalid_answer_choice), do: "Select one of the listed answer choices."
   defp guidance_answer_error_message(:missing_answer), do: "Enter an answer before submitting."
+  defp guidance_answer_error_message(:missing_custom_redirect_note), do: "Add replacement guidance before redirecting."
   defp guidance_answer_error_message(:missing_guidance_request), do: "The selected guidance request could not be found."
   defp guidance_answer_error_message(:not_found), do: "The selected guidance request could not be found."
   defp guidance_answer_error_message(:work_package_scope_mismatch), do: "The selected guidance request is outside this package."

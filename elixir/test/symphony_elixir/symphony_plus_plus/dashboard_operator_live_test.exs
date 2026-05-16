@@ -12,6 +12,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository, as: GuidanceRequestRepository
+  alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
@@ -771,6 +772,58 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert updated_detail.summary.active_blocker_count == 0
   end
 
+  test "local operator package guidance renders structured prompt choices and answers with selected option text" do
+    enable_operator_mode()
+
+    package =
+      create_package!(
+        id: "SYMPP-V2-GUIDANCE-STRUCTURED",
+        title: "Structured guidance package",
+        status: "blocked"
+      )
+
+    guidance =
+      create_human_guidance_request!(
+        package,
+        id: "guidance-answer-structured",
+        summary: "Fallback guidance summary",
+        question: "Which behavior should lead?",
+        context: "Two choices are valid.",
+        decision_prompt: decision_prompt("Pick the guidance path.", "Choose one durable answer for the worker.")
+      )
+
+    {:ok, view, html} = live(local_conn(), "/sympp/work-packages/#{package.id}")
+
+    assert html =~ "Pick the guidance path."
+    assert html =~ "Choose one durable answer for the worker."
+    assert html =~ "Continue safely"
+    assert html =~ "Fastest path"
+    assert html =~ "No, and tell the agent what to do differently"
+
+    html =
+      render_submit(view, "answer_guidance_request", %{
+        "guidance_request" => %{
+          "id" => guidance.id,
+          "answer_choice" => HumanDecisionPrompt.custom_redirect_choice_id()
+        }
+      })
+
+    assert html =~ "Add replacement guidance before redirecting."
+    assert Repo.get!(GuidanceRequest, guidance.id).status == "human_info_needed"
+
+    render_submit(view, "answer_guidance_request", %{
+      "guidance_request" => %{
+        "id" => guidance.id,
+        "answer_choice" => "narrow_scope",
+        "answer_note" => "Keep docs out of scope."
+      }
+    })
+
+    answered = Repo.get!(GuidanceRequest, guidance.id)
+    assert answered.status == "answered"
+    assert answered.answer == "Narrow to the smallest safe implementation. Keep docs out of scope."
+  end
+
   test "package-grant sessions cannot answer human-info guidance from package detail" do
     enable_operator_mode()
 
@@ -800,6 +853,89 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     assert html =~ "Only the local operator cockpit can answer human info guidance."
     assert Repo.get!(GuidanceRequest, guidance.id).status == "human_info_needed"
+  end
+
+  test "local operator WorkRequest questions render structured prompt choices and answer selected option text" do
+    enable_operator_mode()
+
+    request =
+      create_work_request!(
+        id: "WR-OPERATOR-STRUCTURED-PROMPT",
+        title: "Structured WorkRequest prompt",
+        status: "human_info_needed"
+      )
+
+    assert {:ok, question} =
+             WorkRequestRepository.ask_question(Repo, request.id, %{
+               category: "scope",
+               question: "Which implementation direction should lead?",
+               why_needed: "The architect needs a human call.",
+               decision_prompt: decision_prompt("Pick the WorkRequest path.", "Choose the next bounded WorkRequest direction.")
+             })
+
+    {:ok, view, html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
+
+    assert html =~ "Pick the WorkRequest path."
+    assert html =~ "Choose the next bounded WorkRequest direction."
+    assert html =~ "Continue safely"
+    assert html =~ "Narrow scope"
+    assert html =~ "No, and tell the agent what to do differently"
+
+    html =
+      render_submit(view, "answer_question", %{
+        "question" => %{
+          "id" => question.id,
+          "current_status" => "open",
+          "answer_choice" => HumanDecisionPrompt.custom_redirect_choice_id()
+        }
+      })
+
+    assert html =~ "Add replacement guidance before redirecting."
+    assert {:ok, [still_open]} = WorkRequestRepository.list_questions(Repo, request.id)
+    assert still_open.status == "open"
+    refute still_open.answer
+
+    html =
+      render_submit(view, "answer_question", %{
+        "question" => %{
+          "id" => question.id,
+          "current_status" => "open",
+          "answer_choice" => "unknown_choice",
+          "answer_note" => "This should not be persisted."
+        }
+      })
+
+    assert html =~ "Select one of the listed answer choices."
+    assert {:ok, [still_open]} = WorkRequestRepository.list_questions(Repo, request.id)
+    assert still_open.status == "open"
+    refute still_open.answer
+
+    html =
+      render_submit(view, "answer_question", %{
+        "question" => %{
+          "id" => question.id,
+          "current_status" => "open"
+        }
+      })
+
+    assert html =~ "Select an answer before submitting."
+    assert {:ok, [still_open]} = WorkRequestRepository.list_questions(Repo, request.id)
+    assert still_open.status == "open"
+    refute still_open.answer
+
+    render_submit(view, "answer_question", %{
+      "question" => %{
+        "id" => question.id,
+        "current_status" => "open",
+        "answer_choice" => "continue",
+        "answer_note" => "Use the existing dashboard helpers."
+      }
+    })
+
+    assert {:ok, [answered]} = WorkRequestRepository.list_questions(Repo, request.id)
+    assert answered.status == "answered"
+    assert answered.answer == "Continue with the proposed safe implementation. Use the existing dashboard helpers."
+    assert answered.answered_by == "local-operator"
   end
 
   test "local operator creates a WorkRequest with explicit repo and base branch" do
@@ -2373,6 +2509,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
                status: "human_info_needed",
                human_info_reason: Keyword.get(overrides, :human_info_reason, "Product input is required before work can continue."),
                recommended_language: Keyword.get(overrides, :recommended_language, "Choose the package behavior before implementation continues."),
+               decision_prompt: Keyword.get(overrides, :decision_prompt),
                blocker_id: blocker_id
              })
 
@@ -2392,6 +2529,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
              })
 
     guidance_request
+  end
+
+  defp decision_prompt(tl_dr, details) do
+    %{
+      "tl_dr" => tl_dr,
+      "details" => details,
+      "options" => [
+        %{
+          "id" => "continue",
+          "label" => "Continue safely",
+          "description" => "Use the proposed implementation path.",
+          "pros" => ["Fastest path"],
+          "cons" => ["May leave polish for later"],
+          "answer" => "Continue with the proposed safe implementation."
+        },
+        %{
+          "id" => "narrow_scope",
+          "label" => "Narrow scope",
+          "description" => "Keep the work smaller before continuing.",
+          "pros" => ["Lower risk"],
+          "cons" => ["May need a follow-up"],
+          "answer" => "Narrow to the smallest safe implementation."
+        }
+      ]
+    }
   end
 
   defp create_architect_grant!(work_package_id) do
