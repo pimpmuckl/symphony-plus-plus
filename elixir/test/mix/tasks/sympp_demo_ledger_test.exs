@@ -35,6 +35,22 @@ defmodule Mix.Tasks.Sympp.DemoLedgerTest do
     assert message =~ "--force"
   end
 
+  test "Mix discovers and runs the task by documented CLI name" do
+    database_path = WorkPackageFactory.database_path()
+
+    try do
+      assert Mix.Task.get("sympp.demo_ledger") == DemoLedgerTask
+
+      Mix.Task.run("sympp.demo_ledger", ["--database", database_path])
+
+      assert_received {:mix_shell, :info, [json]}
+      assert %{"database" => database} = Jason.decode!(json)
+      assert database == Path.expand(database_path)
+    after
+      File.rm(database_path)
+    end
+  end
+
   test "requires an explicit durable database path before creating a database" do
     database_path = WorkPackageFactory.database_path()
 
