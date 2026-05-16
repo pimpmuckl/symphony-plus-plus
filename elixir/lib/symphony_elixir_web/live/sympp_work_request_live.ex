@@ -2255,7 +2255,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
         [
           %{value: "continue", label: "Continue", help: "Use the suggested path.", checked: true},
           %{value: "narrow", label: "Narrow scope", help: "Keep the work smaller or safer.", checked: false},
-          %{value: "redirect", label: "No, redirect", help: "Tell the agent what to do differently.", checked: false}
+          %{value: "redirect", label: default_custom_redirect_label(), help: "Tell the agent what to do differently.", checked: false}
         ]
 
       options ->
@@ -2570,7 +2570,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
         "1. Use the required skill to read and update this WorkRequest from the Symphony++ MCP/session context.",
         "2. Clarify or escalate open questions and product decisions before slicing.",
         "3. Plan the smallest coherent slices and record the rationale on the WorkRequest.",
-        "4. Dispatch only slices explicitly approved by the local operator.",
+        "4. Dispatch only slices explicitly approved in the architect workflow.",
         "Safety: do not paste raw work-key secrets, bearer/API tokens, hashes, full secret-bearing commands, or private payloads."
       ]
       |> Enum.reject(&blank_brief_value?/1)

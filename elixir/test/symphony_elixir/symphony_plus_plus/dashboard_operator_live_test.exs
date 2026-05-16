@@ -741,7 +741,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "Human answer needed"
     assert html =~ "Continue"
     assert html =~ "Narrow scope"
-    assert html =~ "No, redirect"
+    assert html =~ "No, and tell the agent what to do differently"
     assert html =~ "Send answer"
 
     html =
@@ -1541,7 +1541,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "First operator slice"
     assert html =~ "Human answer needed"
     assert html =~ "Send answer"
-    assert html =~ "No, redirect"
+    assert html =~ "No, and tell the agent what to do differently"
     assert Regex.scan(~r/\[REDACTED\]/, html) |> length() >= 5
     assert html =~ ~s(href="../board?auth=work_key")
     refute html =~ "Board access"
@@ -1625,11 +1625,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
           "branch_pattern" => "agent/SYMPP-V2-UX-004/local-operator-workrequest-intake",
           "owned_file_globs" => "elixir/lib/symphony_elixir_web/live/sympp_work_request_live.ex",
           "forbidden_file_globs" => "elixir/lib/symphony_elixir/symphony_plus_plus/secret_handoff.ex",
-          "acceptance_criteria" => "Local operator can approve a slice.",
+          "acceptance_criteria" => "Architect can approve a slice.",
           "validation_steps" => "mix test",
           "review_lanes" => "review_t1\nreview_t2",
           "stop_conditions" => "Stop before dispatch."
         }
+      })
+
+    assert html =~ "That action belongs in the architect workflow."
+    assert {:ok, []} = WorkRequestRepository.list_planned_slices(Repo, request.id)
+
+    html =
+      render_submit(view, "approve_planned_slice", %{
+        "slice" => %{"id" => "forged-slice", "current_status" => "planned"}
+      })
+
+    assert html =~ "That action belongs in the architect workflow."
+    assert {:ok, []} = WorkRequestRepository.list_planned_slices(Repo, request.id)
+
+    html =
+      render_submit(view, "skip_planned_slice", %{
+        "slice" => %{"id" => "forged-slice", "current_status" => "approved"}
       })
 
     assert html =~ "That action belongs in the architect workflow."
@@ -1839,7 +1855,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "compatibility=pre-production; do not assume backwards compatibility"
     assert html =~ "allowed paths=elixir/lib"
     assert html =~ "Clarify or escalate open questions and product decisions before slicing."
-    assert html =~ "Dispatch only slices explicitly approved by the local operator."
+    assert html =~ "Dispatch only slices explicitly approved in the architect workflow."
     assert html =~ "Safe architect prompt"
     assert html =~ "prepared"
     assert html =~ "phase-wr-architect-"
