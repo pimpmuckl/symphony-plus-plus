@@ -104,8 +104,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     assert html =~ "nextide/symphony-plus-plus / symphony-plus-plus/beta"
     assert html =~ "Blockers"
     assert html =~ ~s(href="https://github.com/example/symphony-plus-plus/pull/22")
-    assert html =~ "Plan 1/2"
+    assert html =~ "Implementation"
     assert html =~ "Review attached"
+    assert html =~ "Merge"
     assert html =~ "active run"
     assert html =~ "Blockers"
   end
@@ -706,13 +707,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
                   title: "String metadata package",
                   repo: "nextide/symphony-plus-plus",
                   base_branch: "symphony-plus-plus/beta",
+                  status: "implementing",
                   latest_progress_at: ~U[2026-05-05 00:00:00Z],
                   updated_at: ~U[2026-05-04 00:00:00Z],
                   active_blocker_count: 0,
                   plan: %{total_count: 1, completed_count: 1, open_count: 0},
                   metadata: %{
                     "pr" => %{"url" => "https://github.com/example/symphony-plus-plus/pull/26"},
-                    "review_package" => %{"head_sha" => "abc123"}
+                    "review_package" => %{
+                      "head_sha" => "abc123",
+                      "reviews" => [
+                        %{"lane" => "review_t1", "verdict" => "green"},
+                        %{"lane" => "review_t2", "verdict" => "green"}
+                      ]
+                    }
                   },
                   active_agent_run: nil
                 }
@@ -725,10 +733,157 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
       |> Safe.to_iodata()
       |> IO.iodata_to_binary()
 
+    pipeline_steps = pipeline_step_texts(html)
+
     assert html =~ "String metadata package"
-    assert html =~ "Review attached"
+    assert "Implementationactive" in pipeline_steps
+    assert html =~ "Review-T2"
+    assert "ReviewReview-T2" in pipeline_steps
     assert html =~ ~s(href="https://github.com/example/symphony-plus-plus/pull/26")
+    refute "Implementationdone" in pipeline_steps
     refute html =~ "n/a"
+  end
+
+  test "pipeline surfaces failed or pending review lanes without marking them ready" do
+    html =
+      %{
+        empty_filter: "all",
+        filters: %{kind: "all", repo: "all", phase: "all"},
+        board: %{
+          error: nil,
+          total_count: 5,
+          visible_count: 5,
+          column_count: 1,
+          filter_options: %{kinds: [], repos: [], phases: []},
+          columns: [
+            %{
+              status: "implementing",
+              cards: [
+                %{
+                  id: "SYMPP-P5-012",
+                  kind: "dashboard",
+                  title: "Failed review package",
+                  repo: "nextide/symphony-plus-plus",
+                  base_branch: "main",
+                  latest_progress_at: ~U[2026-05-05 00:00:00Z],
+                  updated_at: ~U[2026-05-04 00:00:00Z],
+                  active_blocker_count: 0,
+                  plan: %{total_count: 1, completed_count: 1, open_count: 0},
+                  metadata: %{
+                    review_package: %{
+                      reviews: [
+                        %{lane: "review_t1", verdict: "green"},
+                        %{lane: "review_t2", verdict: "red"}
+                      ]
+                    }
+                  },
+                  active_agent_run: nil
+                },
+                %{
+                  id: "SYMPP-P5-016",
+                  kind: "dashboard",
+                  title: "Latest lower-lane package rerun",
+                  repo: "nextide/symphony-plus-plus",
+                  base_branch: "main",
+                  latest_progress_at: ~U[2026-05-05 00:00:00Z],
+                  updated_at: ~U[2026-05-04 00:00:00Z],
+                  active_blocker_count: 0,
+                  plan: %{total_count: 1, completed_count: 1, open_count: 0},
+                  metadata: %{
+                    review_package: %{
+                      reviews: [
+                        %{lane: "review_t2", verdict: "green"},
+                        %{lane: "review_t1", verdict: "red"}
+                      ]
+                    }
+                  },
+                  active_agent_run: nil
+                },
+                %{
+                  id: "SYMPP-P5-013",
+                  kind: "dashboard",
+                  title: "Pending review package",
+                  repo: "nextide/symphony-plus-plus",
+                  base_branch: "main",
+                  latest_progress_at: ~U[2026-05-05 00:00:00Z],
+                  updated_at: ~U[2026-05-04 00:00:00Z],
+                  active_blocker_count: 0,
+                  plan: %{total_count: 1, completed_count: 1, open_count: 0},
+                  metadata: %{
+                    review_suite_result: %{
+                      suite: "review_t3",
+                      status: "signoff_pending",
+                      verdict: "pending"
+                    }
+                  },
+                  active_agent_run: nil
+                },
+                %{
+                  id: "SYMPP-P5-014",
+                  kind: "dashboard",
+                  title: "Combined review metadata",
+                  repo: "nextide/symphony-plus-plus",
+                  base_branch: "main",
+                  latest_progress_at: ~U[2026-05-05 00:00:00Z],
+                  updated_at: ~U[2026-05-04 00:00:00Z],
+                  active_blocker_count: 0,
+                  plan: %{total_count: 1, completed_count: 1, open_count: 0},
+                  metadata: %{
+                    review_suite_result: %{
+                      lane: "review_t1",
+                      verdict: "red"
+                    },
+                    review_package: %{
+                      reviews: [
+                        %{lane: "review_t1", verdict: "red"},
+                        %{lane: "review_t2", verdict: "green"}
+                      ]
+                    }
+                  },
+                  active_agent_run: nil
+                },
+                %{
+                  id: "SYMPP-P5-015",
+                  kind: "dashboard",
+                  title: "Suite result overrides package same lane",
+                  repo: "nextide/symphony-plus-plus",
+                  base_branch: "main",
+                  latest_progress_at: ~U[2026-05-05 00:00:00Z],
+                  updated_at: ~U[2026-05-04 00:00:00Z],
+                  active_blocker_count: 0,
+                  plan: %{total_count: 1, completed_count: 1, open_count: 0},
+                  metadata: %{
+                    review_suite_result: %{
+                      suite: "review_t4",
+                      verdict: "red"
+                    },
+                    review_package: %{
+                      reviews: [
+                        %{lane: "review_t4", verdict: "green"}
+                      ]
+                    }
+                  },
+                  active_agent_run: nil
+                }
+              ]
+            }
+          ]
+        }
+      }
+      |> SymppBoardLive.render()
+      |> Safe.to_iodata()
+      |> IO.iodata_to_binary()
+
+    assert html =~ "Review-T2 failed"
+    assert html =~ "Review-T3 pending"
+    assert html =~ "Combined review metadata"
+    assert "ReviewReview-T1 failed" in pipeline_step_texts_for_card(html, "Latest lower-lane package rerun")
+    assert html =~ "Review-T1 failed"
+    assert html =~ "Suite result overrides package same lane"
+    assert html =~ "Review-T4 failed"
+    refute html =~ "Review-T2</strong>"
+    refute html =~ "Review-T3</strong>"
+    refute html =~ "Review-T4</strong>"
   end
 
   test "runtime pill labels the selected run instead of aggregate stale count" do
@@ -771,6 +926,172 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
 
     assert html =~ "queued run"
     refute html =~ "stale run"
+  end
+
+  test "pipeline keeps implementation done for review status with active run" do
+    html =
+      %{
+        empty_filter: "all",
+        filters: %{kind: "all", repo: "all", phase: "all"},
+        board: %{
+          error: nil,
+          total_count: 1,
+          visible_count: 1,
+          column_count: 1,
+          filter_options: %{kinds: [], repos: [], phases: []},
+          columns: [
+            %{
+              status: "reviewing",
+              cards: [
+                %{
+                  id: "SYMPP-P5-018",
+                  kind: "dashboard",
+                  title: "Reviewing selected run",
+                  repo: "nextide/symphony-plus-plus",
+                  base_branch: "symphony-plus-plus/beta",
+                  status: "reviewing",
+                  latest_progress_at: ~U[2026-05-05 00:00:00Z],
+                  updated_at: ~U[2026-05-04 00:00:00Z],
+                  active_blocker_count: 0,
+                  plan: %{total_count: 1, completed_count: 1, open_count: 0},
+                  metadata: %{review_suite_result: %{lane: "review_t2", verdict: "pending"}},
+                  active_agent_run: %{runtime_state: "queued", stale: false}
+                }
+              ]
+            }
+          ]
+        }
+      }
+      |> SymppBoardLive.render()
+      |> Safe.to_iodata()
+      |> IO.iodata_to_binary()
+
+    pipeline_steps = pipeline_step_texts(html)
+
+    assert "Implementationdone" in pipeline_steps
+    assert "ReviewReview-T2 pending" in pipeline_steps
+    refute "Implementationqueued run" in pipeline_steps
+    assert html =~ "queued run"
+  end
+
+  test "pipeline keeps implementation done for review status with blocker count" do
+    html =
+      %{
+        empty_filter: "all",
+        filters: %{kind: "all", repo: "all", phase: "all"},
+        board: %{
+          error: nil,
+          total_count: 1,
+          visible_count: 1,
+          column_count: 1,
+          filter_options: %{kinds: [], repos: [], phases: []},
+          columns: [
+            %{
+              status: "reviewing",
+              cards: [
+                %{
+                  id: "SYMPP-P5-019",
+                  kind: "dashboard",
+                  title: "Reviewing blocked package",
+                  repo: "nextide/symphony-plus-plus",
+                  base_branch: "symphony-plus-plus/beta",
+                  status: "reviewing",
+                  latest_progress_at: ~U[2026-05-05 00:00:00Z],
+                  updated_at: ~U[2026-05-04 00:00:00Z],
+                  active_blocker_count: 1,
+                  plan: %{total_count: 1, completed_count: 1, open_count: 0},
+                  metadata: %{review_suite_result: %{lane: "review_t2", verdict: "red"}},
+                  active_agent_run: nil
+                }
+              ]
+            }
+          ]
+        }
+      }
+      |> SymppBoardLive.render()
+      |> Safe.to_iodata()
+      |> IO.iodata_to_binary()
+
+    pipeline_steps = pipeline_step_texts(html)
+
+    assert "Implementationdone" in pipeline_steps
+    assert "ReviewReview-T2 failed" in pipeline_steps
+    refute "Implementationblocked" in pipeline_steps
+  end
+
+  test "pipeline marks standalone merged packages complete" do
+    html =
+      %{
+        empty_filter: "all",
+        filters: %{kind: "all", repo: "all", phase: "all"},
+        board: %{
+          error: nil,
+          total_count: 1,
+          visible_count: 1,
+          column_count: 1,
+          filter_options: %{kinds: [], repos: [], phases: []},
+          columns: [
+            %{
+              status: "merged",
+              cards: [
+                %{
+                  id: "SYMPP-P5-020",
+                  kind: "quick_fix",
+                  title: "Standalone merged package",
+                  repo: "nextide/symphony-plus-plus",
+                  base_branch: "main",
+                  status: "merged",
+                  latest_progress_at: ~U[2026-05-05 00:00:00Z],
+                  updated_at: ~U[2026-05-04 00:00:00Z],
+                  active_blocker_count: 0,
+                  plan: %{total_count: 1, completed_count: 1, open_count: 0},
+                  metadata: %{review_suite_result: %{lane: "review_t2", verdict: "green"}},
+                  active_agent_run: nil
+                }
+              ]
+            }
+          ]
+        }
+      }
+      |> SymppBoardLive.render()
+      |> Safe.to_iodata()
+      |> IO.iodata_to_binary()
+
+    pipeline_steps = pipeline_step_texts(html)
+
+    assert "Implementationdone" in pipeline_steps
+    assert "ReviewReview-T2" in pipeline_steps
+    assert "Mergemerged" in pipeline_steps
+    refute "Mergenot ready" in pipeline_steps
+  end
+
+  defp pipeline_step_texts(html) do
+    html
+    |> Floki.parse_document!()
+    |> pipeline_step_texts_from_node()
+  end
+
+  defp pipeline_step_texts_for_card(html, title) do
+    card =
+      html
+      |> Floki.parse_document!()
+      |> Floki.find("article")
+      |> Enum.find(fn card -> card |> Floki.find(".sympp-card-title") |> Floki.text() |> String.contains?(title) end)
+
+    assert card
+
+    pipeline_step_texts_from_node(card)
+  end
+
+  defp pipeline_step_texts_from_node(node) do
+    node
+    |> Floki.find(".sympp-progress-step")
+    |> Enum.map(fn step ->
+      step
+      |> Floki.text()
+      |> String.replace(~r/\s+/, " ")
+      |> String.trim()
+    end)
   end
 
   defp create_board_package(attrs) do

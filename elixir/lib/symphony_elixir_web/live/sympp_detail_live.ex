@@ -219,14 +219,36 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
           </article>
 
           <article id="guidance-requests" class="sympp-panel sympp-panel-wide">
-            <h2>Guidance Requests</h2>
+            <h2><%= if @operator_mode?, do: "Questions for you", else: "Guidance Requests" %></h2>
             <div :if={guidance_requests(@detail) != []} class="sympp-stack-list">
               <div :for={guidance <- guidance_requests(@detail)} id={guidance_request_dom_id(guidance.id)} class="sympp-stack-item">
                 <div class="sympp-work-request-row-heading">
                   <span class={guidance_status_class(guidance.status)}><%= status_label(guidance.status) %></span>
                   <span class="sympp-card-id"><%= guidance.id %></span>
                 </div>
-                <h3><%= present(guidance.summary) %></h3>
+                <%= if @operator_mode? and guidance.status == "human_info_needed" do %>
+                  <section class="sympp-human-decision-card">
+                    <p class="sympp-human-kicker">Human answer needed</p>
+                    <h3><%= human_guidance_summary(guidance) %></h3>
+                    <p class="sympp-human-question"><%= present(guidance.question) %></p>
+                    <dl class="sympp-human-decision-details">
+                      <div>
+                        <dt>Context</dt>
+                        <dd><%= present(guidance.context) %></dd>
+                      </div>
+                      <div :if={guidance.recommended_language}>
+                        <dt>Suggested path</dt>
+                        <dd><%= guidance.recommended_language %></dd>
+                      </div>
+                      <div :if={guidance.human_info_reason}>
+                        <dt>Why it is blocked</dt>
+                        <dd><%= guidance.human_info_reason %></dd>
+                      </div>
+                    </dl>
+                  </section>
+                <% else %>
+                  <h3><%= present(guidance.summary) %></h3>
+                <% end %>
                 <dl class="sympp-detail-list">
                   <div>
                     <dt>Requested by</dt>
@@ -241,10 +263,14 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
                     <dd><%= present(guidance.answered_by) %></dd>
                   </div>
                 </dl>
-                <p><strong>Question:</strong> <%= present(guidance.question) %></p>
-                <p><strong>Context:</strong> <%= present(guidance.context) %></p>
-                <p :if={guidance.human_info_reason}><strong>Escalation:</strong> <%= guidance.human_info_reason %></p>
-                <p :if={guidance.recommended_language}><strong>Recommended language:</strong> <%= guidance.recommended_language %></p>
+                <p :if={!(@operator_mode? and guidance.status == "human_info_needed")}><strong>Question:</strong> <%= present(guidance.question) %></p>
+                <p :if={!(@operator_mode? and guidance.status == "human_info_needed")}><strong>Context:</strong> <%= present(guidance.context) %></p>
+                <p :if={!(@operator_mode? and guidance.status == "human_info_needed") and guidance.human_info_reason}>
+                  <strong>Escalation:</strong> <%= guidance.human_info_reason %>
+                </p>
+                <p :if={!(@operator_mode? and guidance.status == "human_info_needed") and guidance.recommended_language}>
+                  <strong>Recommended language:</strong> <%= guidance.recommended_language %>
+                </p>
                 <p :if={guidance.answer}><strong>Answer:</strong> <%= guidance.answer %></p>
                 <.form
                   :if={can_answer_guidance?(@operator_mode?, guidance)}
@@ -252,16 +278,25 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
                   for={%{}}
                   as={:guidance_request}
                   phx-submit="answer_guidance_request"
-                  class="sympp-inline-answer-form sympp-guidance-answer-form"
+                  class="sympp-human-answer-form sympp-guidance-answer-form"
                 >
                   <input type="hidden" name={f[:id].name} value={guidance.id} />
                   <input type="hidden" name={f[:work_package_id].name} value={@detail.work_package.id || @work_package_id} />
+                  <div class="sympp-choice-grid" role="radiogroup" aria-label="Answer direction">
+                    <label :for={choice <- human_answer_choices()} class="sympp-choice-option">
+                      <input type="radio" name={f[:answer_choice].name} value={choice.value} checked={choice.value == "continue"} />
+                      <span>
+                        <strong><%= choice.label %></strong>
+                        <small><%= choice.help %></small>
+                      </span>
+                    </label>
+                  </div>
                   <label>
-                    <span>Answer</span>
-                    <textarea name={f[:answer].name} required rows="3"></textarea>
+                    <span>Notes for the agent</span>
+                    <textarea name={f[:answer_note].name} rows="3" placeholder="Add specifics, boundaries, or the replacement direction."></textarea>
                   </label>
                   <div class="sympp-form-actions">
-                    <button type="submit">Answer guidance</button>
+                    <button type="submit">Send answer</button>
                   </div>
                 </.form>
               </div>
@@ -391,7 +426,10 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
 
   defp answer_guidance_request(socket, params) when is_map(params) do
     with {:ok, guidance_request_id} <- required_param(params, "id"),
-         answer_params <- Map.put(params, "work_package_id", socket.assigns.work_package_id),
+         answer_params <-
+           params
+           |> Map.put("answer", human_answer_text(params))
+           |> Map.put("work_package_id", socket.assigns.work_package_id),
          {:ok, _result} <-
            SymppBoardLive.with_dashboard_repo(fn repo ->
              GuidanceRequestService.answer_human_info_needed_for_local_operator(
@@ -862,6 +900,51 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
 
   defp can_answer_guidance?(true, %{status: "human_info_needed"}), do: true
   defp can_answer_guidance?(_operator_mode?, _guidance), do: false
+
+  defp human_guidance_summary(guidance) do
+    guidance
+    |> map_value(:summary)
+    |> case do
+      summary when is_binary(summary) and summary != "" -> summary
+      _summary -> "The agent needs your call before it can continue."
+    end
+  end
+
+  defp human_answer_choices do
+    [
+      %{value: "continue", label: "Continue", help: "Use the suggested path."},
+      %{value: "narrow", label: "Narrow scope", help: "Keep the work smaller or safer."},
+      %{value: "redirect", label: "No, redirect", help: "Tell the agent what to do differently."}
+    ]
+  end
+
+  defp human_answer_text(params) when is_map(params) do
+    answer = map_value(params, :answer)
+
+    if is_binary(answer) and String.trim(answer) != "" do
+      String.trim(answer)
+    else
+      answer_choice_text(map_value(params, :answer_choice), map_value(params, :answer_note))
+    end
+  end
+
+  defp answer_choice_text(choice, note) do
+    base =
+      case choice do
+        "narrow" -> "Narrow the scope before continuing."
+        "redirect" -> "No. Change direction before continuing."
+        _choice -> "Continue with the proposed direction."
+      end
+
+    case note do
+      note when is_binary(note) ->
+        note = String.trim(note)
+        if note == "", do: base, else: "#{base} #{note}"
+
+      _note ->
+        base
+    end
+  end
 
   defp guidance_request_dom_id(id) do
     encoded = id |> to_string() |> Base.url_encode64(padding: false)
