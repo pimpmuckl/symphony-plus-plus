@@ -1196,7 +1196,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   defp unsafe_prompt_literal_text?(value) do
     Regex.match?(~r/[\r\n\t\f\v\x{00}-\x{1F}\x{7F}\x{85}\x{2028}\x{2029}]/u, value) or
       Regex.match?(~r/\[redacted\]/i, value) or
-      String.contains?(value, ["`", "~~~", "\"", "'"])
+      String.contains?(value, ["`", "~~~"])
   end
 
   defp redact_handoff(handoff) when is_map(handoff) do
