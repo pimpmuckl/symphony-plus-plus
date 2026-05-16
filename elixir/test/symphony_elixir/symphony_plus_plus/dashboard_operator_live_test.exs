@@ -329,6 +329,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
                planned_mix_package.id
              )
 
+    create_work_request!(
+      id: "WR-LANE-READY-WAITING",
+      title: "Ready waiting intake",
+      status: "ready_for_slicing"
+    )
+
     dispatched_only_request =
       create_work_request!(
         id: "WR-LANE-DISPATCHED-ONLY",
@@ -399,14 +405,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "Start agent questions"
     assert html =~ "Prepare architect handoff"
     assert html =~ "Provide product guidance"
-    assert html =~ "Dispatch approved slices"
-    assert html =~ "Monitor dispatched packages"
+    assert request_row_contains?(html, "Ready slicing intake", "Dispatch approved slices")
+    assert request_row_contains?(html, "Planned mixed intake", "Review architect plan")
+    assert request_row_contains?(html, "Ready waiting intake", "Waiting for architect slices")
+    assert request_row_contains?(html, "Dispatched only intake", "Monitor dispatched packages")
     assert html =~ "No dispatchable slices"
     assert html =~ "1 approved / 2 slices"
     assert html =~ "Planned mixed intake"
     assert html =~ "1 planned / 2 slices"
+    assert html =~ "Ready waiting intake"
     assert html =~ ~s(href="work-requests/WR-LANE-READY")
     assert html =~ ~s(href="work-requests")
+    refute request_row_contains?(html, "Planned mixed intake", "Approve or refine slices")
+    refute request_row_contains?(html, "Ready waiting intake", "Add planned slices")
   end
 
   test "local operator WorkRequest lanes follow active board filters" do
@@ -2825,6 +2836,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
       ~r/<section class="(?:sympp-board-request-lane|sympp-solo-session-lane)">.*?<h3>\s*#{Regex.escape(lane_label)}\s*<\/h3>.*?#{Regex.escape(title)}/s,
       html
     )
+  end
+
+  defp request_row_contains?(html, title, text) do
+    html
+    |> Floki.parse_document!()
+    |> Floki.find(".sympp-board-request-row")
+    |> Enum.any?(fn row ->
+      row_text = Floki.text(row)
+      String.contains?(row_text, title) and String.contains?(row_text, text)
+    end)
   end
 
   defp create_solo_session!(overrides) do
