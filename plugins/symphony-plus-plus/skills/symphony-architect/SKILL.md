@@ -34,6 +34,9 @@ Clarification is a product and architecture step, not implementation.
 - Ask focused questions before slicing when product intent, branch strategy,
   compatibility stance, validation expectations, or scope ownership is unclear.
 - Record durable answers with the WorkRequest question tools when available.
+- Use a plain clarification question for missing facts the human can answer in
+  one sentence. Use `decision_prompt` for higher-impact product choices where
+  the human should compare concrete options.
 - Record decisions with rationale, scope impact, and explicit assumptions using
   `record_work_request_decision`.
 - Use `human_info_needed` when the human must decide. Do not choose behavior
@@ -127,6 +130,16 @@ Workers ask the architect first when ambiguity appears.
   decision is already covered by recorded product intent or architecture.
 - Escalate with `escalate_guidance_request` when the answer requires human
   product input. That creates `human_info_needed` and an active package blocker.
+- Include a structured `decision_prompt` when escalating a higher-impact human
+  choice. Keep `reason` and `recommended_language` useful as fallbacks, then add:
+  `tl_dr`, `details`, and `options[]` with stable `id`, human `label`,
+  commit-ready `answer`, short `description`, and optional `pros`/`cons`.
+  Use one to four real options. Add `custom_redirect_label` only to customize
+  the visible freeform redirect label; the freeform redirect path remains
+  available even when you omit it.
+- Prefer option wording that lets the operator answer directly. Do not ask
+  vague questions when you can present the bounded choices, tradeoffs, and your
+  recommended default in the option descriptions.
 - The local operator answers `human_info_needed` package guidance in the
   cockpit. That answer resolves the matching blocker.
 - Ordinary open guidance remains architect-owned until answered or escalated.

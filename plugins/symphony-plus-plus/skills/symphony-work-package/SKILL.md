@@ -52,6 +52,14 @@ process aids when the operator explicitly asks for them.
   otherwise force you to invent behavior. Read the result with
   `read_guidance_request(guidance_request_id)` and continue only when the answer
   is clear or the package is explicitly blocked.
+- Make guidance requests human-answerable. State the blocked decision, the
+  package impact, evidence checked, and the smallest answer that would unblock
+  you instead of asking "what should I do?".
+- When you can identify candidate answers, include them in `context` for
+  architect escalation: option labels, exact answer text, short descriptions,
+  pros/cons, and any recommended default. The architect can convert that into a
+  structured `decision_prompt` for the operator when human product input is
+  required.
 - Worker guidance creation is available only with a valid claimed worker grant
   while the WorkPackage is in `ready_for_worker`, `claimed`, `planning`,
   `implementing`, `reviewing`, `ci_waiting`, or `blocked`.

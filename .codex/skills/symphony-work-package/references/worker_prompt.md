@@ -24,6 +24,9 @@ Before coding:
 4. Update the virtual task plan with `update_task_plan(patch, expected_version)`.
 5. Stop and ask the architecture agent if dependency evidence, permission
    grants, or source context are missing.
+6. If you need guidance, make the request human-answerable: state the blocked
+   decision, evidence checked, impact, and candidate options with pros/cons when
+   you can supply them.
 
 During coding:
 1. Keep changes tightly scoped to this package.

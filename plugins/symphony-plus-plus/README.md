@@ -182,6 +182,10 @@ is for WorkRequest-led orchestration: read current WorkRequest or architect
 package context, ask and record product clarification, record decisions and
 assumptions, author/approve planned slices, dispatch approved slices, route
 package guidance, and stop instead of inventing product behavior.
+For higher-impact human choices, architects should include the existing
+`decision_prompt` structure so the cockpit can show a TL;DR, details, bounded
+options, tradeoffs, and the freeform redirect path. Plain questions remain
+appropriate for simple missing facts.
 
 Use `symphony-plus-plus:symphony-architect` when assigned a Symphony++
 WorkRequest, an architect WorkPackage, phase or feature orchestration, or v2
