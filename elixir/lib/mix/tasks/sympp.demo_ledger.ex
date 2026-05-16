@@ -1,5 +1,9 @@
 defmodule Mix.Tasks.Sympp.DemoLedger do
-  @moduledoc false
+  @moduledoc """
+  Creates a deterministic local Symphony++ operator demo ledger.
+
+      mix sympp.demo_ledger --database <sqlite-path> [--force]
+  """
 
   use Mix.Task
 
