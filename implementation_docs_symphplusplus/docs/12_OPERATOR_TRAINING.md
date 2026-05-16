@@ -68,7 +68,11 @@ creates or reuses the WorkRequest-scoped phase and architect anchor package,
 mints an unclaimed architect grant for WorkRequest/guidance MCP capabilities,
 stores the secret through private handoff, and shows only non-secret/redacted
 bootstrap metadata plus a prompt for the
-`symphony-plus-plus:symphony-architect` skill.
+`symphony-plus-plus:symphony-architect` skill. The prompt is intended to be the
+first message for a fresh owning architect session: it names the WorkRequest,
+repo/base, phase, anchor WorkPackage, required first MCP reads, clarification
+and decision-prompt expectations, approved-slice dispatch boundary, and the
+stop condition for missing MCP/session/handoff without asking for raw secrets.
 Package-scoped guidance requests can be escalated by architects to
 `human_info_needed`; the local operator cockpit shows those package guidance
 items in the product guidance watchlist and can answer only that escalated state

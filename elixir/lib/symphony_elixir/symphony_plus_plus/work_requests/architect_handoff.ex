@@ -6,6 +6,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.Repo, as: SymppRepo
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
@@ -42,6 +43,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   @local_lock_owner_timeout_ms 1_000
   @local_lock_retry_delay_ms 10
   @local_lock_table :symphony_plus_plus_architect_handoff_locks
+  @prompt_display_safe_pattern ~r/\A[A-Za-z0-9][A-Za-z0-9._\/\\:@+-]{0,239}\z/u
 
   @type handoff_status :: :created | :replayed | :renewed
   @type error ::
@@ -1129,13 +1131,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
 
   defp prompt(%WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, handoff_opts) do
     database = handoff_database(handoff_opts)
+    work_request_id = prompt_display_value(work_request.id)
+    repo = prompt_display_value(work_request.repo)
+    base_branch = prompt_display_value(work_request.base_branch)
+    phase_id = prompt_display_value(phase.id)
+    anchor_id = prompt_display_value(anchor.id)
 
     base_lines = [
-      "Use the plugin-installed `symphony-plus-plus:symphony-architect` skill.",
-      "Start from WorkRequest `#{work_request.id}` in repo `#{work_request.repo}` on base branch `#{work_request.base_branch}`.",
-      "Use the redacted private handoff metadata shown here to start the Symphony++ MCP session; do not paste raw work-key secrets.",
-      "After MCP is connected, call `read_work_request` for `#{work_request.id}` and `list_guidance_requests` before planning.",
-      "Stay scoped to phase `#{phase.id}` and architect anchor WorkPackage `#{anchor.id}`."
+      "You are taking over as the owning Symphony++ v2 architect for WorkRequest `#{work_request_id}`.",
+      "",
+      "Required skill: `symphony-plus-plus:symphony-architect`.",
+      "First MCP reads: `read_work_request`, `list_guidance_requests`.",
+      "",
+      "Scope:",
+      "- WorkRequest: `#{work_request_id}`",
+      "- Repo/base: `#{repo}` / `#{base_branch}`",
+      "- Phase: `#{phase_id}`",
+      "- Architect anchor WorkPackage: `#{anchor_id}`",
+      "",
+      "Startup:",
+      "1. Connect through the Symphony++ MCP/session using the redacted private handoff metadata from the local operator panel.",
+      "2. Before planning, call `read_work_request` for `#{work_request_id}`.",
+      "3. Call `list_guidance_requests` and account for any open guidance before slicing.",
+      "",
+      "Architect flow:",
+      "1. Ask human-answerable clarification questions through WorkRequest tools before slicing when product, scope, dependency, compatibility, validation, or acceptance is unclear.",
+      "2. For material choices, use `ask_work_request_question` with structured `decision_prompt` options: TL;DR, details, options, pros/cons, exact answer text, and a freeform redirect option.",
+      "3. Record decisions with `record_work_request_decision` before relying on them.",
+      "4. Add the smallest coherent slices with `add_work_request_planned_slice` only after the needed answers and decisions are captured.",
+      "5. Dispatch only slices explicitly approved in the architect workflow, using `dispatch_work_request_planned_slice` when dispatch is required.",
+      "",
+      "Stop conditions:",
+      "1. If the MCP session, private handoff, scoped WorkRequest, or guidance list is unavailable, record/report a blocker and stop.",
+      "2. Do not ask the human for raw work-key secrets, secret hashes, bearer/API/MCP tokens, private-store payloads, or full secret-bearing commands.",
+      "3. Do not invent state, broaden scope, create Linear state, spawn agents, or change runtime behavior outside this WorkRequest-led flow."
     ]
 
     base_lines
@@ -1146,7 +1175,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   defp maybe_add_database_prompt_line(lines, nil), do: lines
 
   defp maybe_add_database_prompt_line(lines, database) do
-    lines ++ ["Use ledger database `#{database}` when starting the Symphony++ MCP session."]
+    lines ++ ["Use ledger database `#{prompt_display_value(database)}` when starting the Symphony++ MCP session."]
+  end
+
+  defp prompt_display_value(value) when is_binary(value) do
+    value = String.trim(value)
+
+    cond do
+      value == "" ->
+        "n/a"
+
+      unsafe_prompt_display_text?(value) ->
+        "n/a"
+
+      true ->
+        redacted = value |> Redactor.redact_text() |> String.trim()
+
+        if redacted == value and Regex.match?(@prompt_display_safe_pattern, redacted) do
+          redacted
+        else
+          "n/a"
+        end
+    end
+  end
+
+  defp prompt_display_value(_value), do: "n/a"
+
+  defp unsafe_prompt_display_text?(value) do
+    Regex.match?(~r/[\r\n\t\f\v\x{00}-\x{1F}\x{7F}\x{85}\x{2028}\x{2029}]/u, value) or
+      String.contains?(value, "`") or String.contains?(value, "~~~")
   end
 
   defp redact_handoff(handoff) when is_map(handoff) do
