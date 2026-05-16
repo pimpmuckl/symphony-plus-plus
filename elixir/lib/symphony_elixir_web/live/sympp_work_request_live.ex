@@ -631,9 +631,17 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                 </div>
                 <%= if @operator_mode? and value(question, :status) == "open" do %>
                   <section class="sympp-human-decision-card">
-                    <p class="sympp-human-kicker">Human answer needed</p>
-                    <h3><%= human_question_summary(question) %></h3>
-                    <p class="sympp-human-question"><%= human_question_details(question) %></p>
+                    <header class="sympp-human-decision-header">
+                      <p class="sympp-human-kicker">Human answer needed</p>
+                      <div>
+                        <span class="sympp-human-section-label">TL;DR</span>
+                        <h3><%= human_question_summary(question) %></h3>
+                      </div>
+                    </header>
+                    <section class="sympp-human-section sympp-human-question-section">
+                      <span class="sympp-human-section-label">Question</span>
+                      <p class="sympp-human-question"><%= human_question_text(question) %></p>
+                    </section>
                     <dl class="sympp-human-decision-details">
                       <div :for={{label, detail} <- human_question_detail_rows(question)}>
                         <dt><%= label %></dt>
@@ -644,34 +652,48 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                       <article :for={option <- decision_prompt_options(value(question, :decision_prompt))} class="sympp-decision-option-card">
                         <h4><%= decision_option_label(option) %></h4>
                         <p :if={decision_option_description(option)}><%= decision_option_description(option) %></p>
-                        <dl>
-                          <div :if={decision_option_pros(option) != []}>
-                            <dt>Pros</dt>
-                            <dd><%= list_label(decision_option_pros(option)) %></dd>
-                          </div>
-                          <div :if={decision_option_cons(option) != []}>
-                            <dt>Cons</dt>
-                            <dd><%= list_label(decision_option_cons(option)) %></dd>
-                          </div>
-                        </dl>
+                        <div class="sympp-decision-option-rationale">
+                          <section :if={decision_option_pros(option) != []}>
+                            <h5>Pros</h5>
+                            <ul>
+                              <li :for={pro <- decision_option_pros(option)}><%= pro %></li>
+                            </ul>
+                          </section>
+                          <section :if={decision_option_cons(option) != []}>
+                            <h5>Cons</h5>
+                            <ul>
+                              <li :for={con <- decision_option_cons(option)}><%= con %></li>
+                            </ul>
+                          </section>
+                        </div>
                       </article>
                     </div>
                     <.form :let={f} for={%{}} as={:question} phx-submit="answer_question" class="sympp-human-answer-form">
                       <input type="hidden" name={f[:id].name} value={value(question, :id)} />
                       <input type="hidden" name={f[:current_status].name} value={value(question, :status)} />
-                      <div class="sympp-choice-grid" role="radiogroup" aria-label="Answer direction">
-                        <label :for={choice <- human_answer_choices(question)} class="sympp-choice-option">
-                          <input type="radio" name={f[:answer_choice].name} value={choice.value} checked={choice.checked} />
-                          <span>
-                            <strong><%= choice.label %></strong>
-                            <small><%= choice.help %></small>
-                          </span>
-                        </label>
+                      <div class="sympp-choice-list" role="radiogroup" aria-label="Answer direction">
+                        <div :for={choice <- human_answer_choices(question)} class="sympp-choice-option">
+                          <% choice_input_id = question_choice_input_id(value(question, :id), choice.note_key) %>
+                          <label>
+                            <input id={choice_input_id} type="radio" name={f[:answer_choice].name} value={choice.value} checked={choice.checked} />
+                            <span>
+                              <strong><%= choice.label %></strong>
+                              <small><%= choice.help %></small>
+                            </span>
+                          </label>
+                          <input type="hidden" name={"#{f[:answer_note_choices].name}[#{choice.note_key}]"} value={choice.value} />
+                          <textarea
+                            name={"#{f[:answer_notes].name}[#{choice.note_key}]"}
+                            rows="2"
+                            placeholder={choice_note_placeholder(choice)}
+                            aria-label={"Note for #{choice.label}"}
+                            data-choice-input={choice_input_id}
+                            onfocus="document.getElementById(this.dataset.choiceInput)?.click()"
+                            onclick="document.getElementById(this.dataset.choiceInput)?.click()"
+                            oninput="document.getElementById(this.dataset.choiceInput)?.click()"
+                          ></textarea>
+                        </div>
                       </div>
-                      <label>
-                        <span>Notes for the agent</span>
-                        <textarea name={f[:answer_note].name} rows="3" placeholder="Add specifics, boundaries, or the replacement direction."></textarea>
-                      </label>
                       <div class="sympp-form-actions">
                         <button type="submit">Send answer</button>
                       </div>
@@ -2223,6 +2245,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp answer_attrs(params, :local_operator, question) do
     params
+    |> put_selected_choice_answer_note()
     |> normalize_keys()
     |> local_operator_answer_attrs(value(question, :decision_prompt))
   end
@@ -2276,20 +2299,29 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   end
 
   defp human_answer_choices(record) do
-    case decision_prompt_options(value(record, :decision_prompt)) do
-      [] ->
-        [
-          %{value: "continue", label: "Continue", help: "Use the suggested path.", checked: true},
-          %{value: "narrow", label: "Narrow scope", help: "Keep the work smaller or safer.", checked: false},
-          %{value: "redirect", label: default_custom_redirect_label(), help: "Tell the agent what to do differently.", checked: false}
-        ]
+    choices =
+      case decision_prompt_options(value(record, :decision_prompt)) do
+        [] ->
+          [
+            %{value: "continue", label: "Continue", help: "Use the suggested path.", checked: true},
+            %{value: "narrow", label: "Narrow scope", help: "Keep the work smaller or safer.", checked: false},
+            %{
+              value: "redirect",
+              label: default_custom_redirect_label(),
+              help: "Tell the agent what to do differently.",
+              checked: false,
+              note_required: true
+            }
+          ]
 
-      options ->
-        options
-        |> Enum.map(&decision_prompt_choice/1)
-        |> maybe_append_custom_redirect_choice(value(record, :decision_prompt))
-        |> mark_first_choice_checked()
-    end
+        options ->
+          options
+          |> Enum.map(&decision_prompt_choice/1)
+          |> maybe_append_custom_redirect_choice(value(record, :decision_prompt))
+          |> mark_first_choice_checked()
+      end
+
+    with_note_keys(choices)
   end
 
   defp human_question_summary(question) do
@@ -2308,19 +2340,23 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     end
   end
 
-  defp human_question_details(question) do
+  defp human_question_text(question) do
+    value(question, :question)
+  end
+
+  defp human_question_context(question) do
     value(question, :decision_prompt)
     |> prompt_text(:details)
     |> case do
       details when is_binary(details) -> details
-      _details -> value(question, :question)
+      _details -> value(question, :why_needed)
     end
   end
 
   defp human_question_detail_rows(question) do
     if structured_prompt?(value(question, :decision_prompt)) do
       [
-        {"Question", exact_value(value(question, :question))},
+        {"Context", human_question_context(question)},
         {"Why it matters", exact_value(value(question, :why_needed))},
         {"Freeform redirect", custom_redirect_label(value(question, :decision_prompt))}
       ]
@@ -2358,7 +2394,8 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
       value: exact_value(value(option, :id)),
       label: decision_option_label(option),
       help: decision_option_description(option) || "Use this answer.",
-      checked: false
+      checked: false,
+      note_required: false
     }
   end
 
@@ -2368,7 +2405,16 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     if label == "" do
       choices
     else
-      choices ++ [%{value: HumanDecisionPrompt.custom_redirect_choice_id(), label: label, help: "Write a different direction below.", checked: false}]
+      choices ++
+        [
+          %{
+            value: HumanDecisionPrompt.custom_redirect_choice_id(),
+            label: label,
+            help: "Write a different direction below.",
+            checked: false,
+            note_required: true
+          }
+        ]
     end
   end
 
@@ -2376,6 +2422,12 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp mark_first_choice_checked([first | rest]) do
     [Map.put(first, :checked, true) | rest]
+  end
+
+  defp with_note_keys(choices) do
+    choices
+    |> Enum.with_index()
+    |> Enum.map(fn {choice, index} -> Map.put(choice, :note_key, "choice_#{index}") end)
   end
 
   defp decision_option_label(option), do: exact_value(value(option, :label))
@@ -2399,6 +2451,41 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp custom_redirect_label(prompt), do: prompt_text(prompt, :custom_redirect_label) || default_custom_redirect_label()
   defp default_custom_redirect_label, do: "No, and tell the agent what to do differently"
+
+  defp choice_note_placeholder(%{note_required: true}), do: "Required: tell the agent what to do differently."
+  defp choice_note_placeholder(_choice), do: "Optional: add specifics or boundaries for this choice."
+
+  defp put_selected_choice_answer_note(params) when is_map(params) do
+    choice = value(params, :answer_choice)
+    notes = value(params, :answer_notes)
+    note_choices = value(params, :answer_note_choices)
+
+    case selected_choice_note(notes, note_choices, choice) do
+      nil -> params
+      note -> Map.put(params, "answer_note", note)
+    end
+  end
+
+  defp selected_choice_note(notes, note_choices, choice)
+       when is_map(notes) and is_map(note_choices) and is_binary(choice) do
+    note_key =
+      Enum.find_value(note_choices, fn
+        {key, ^choice} -> key
+        _mapping -> nil
+      end)
+
+    case note_key && Map.get(notes, note_key) do
+      note when is_binary(note) -> note
+      _note -> nil
+    end
+  end
+
+  defp selected_choice_note(_notes, _note_choices, _choice), do: nil
+
+  defp question_choice_input_id(question_id, note_key) do
+    encoded = question_id |> to_string() |> Base.url_encode64(padding: false)
+    "question-choice-#{encoded}-#{note_key}"
+  end
 
   defp can_clarify?(work_request),
     do:

@@ -2113,12 +2113,18 @@ pre,
 
 .sympp-human-decision-card {
   display: grid;
-  gap: 0.62rem;
+  gap: 0.82rem;
   min-width: 0;
-  padding: 0.78rem;
+  width: min(100%, 48rem);
+  padding: clamp(0.9rem, 2.4vw, 1.35rem);
   border: 1px solid #d7e4ff;
   border-radius: 8px;
   background: #f7faff;
+}
+
+.sympp-human-decision-header {
+  display: grid;
+  gap: 0.35rem;
 }
 
 .sympp-human-kicker {
@@ -2132,14 +2138,30 @@ pre,
 
 .sympp-human-decision-card h3 {
   margin: 0;
-  font-size: 1rem;
-  line-height: 1.3;
+  font-size: clamp(1.08rem, 2.2vw, 1.35rem);
+  line-height: 1.28;
+}
+
+.sympp-human-section {
+  display: grid;
+  gap: 0.28rem;
+  min-width: 0;
+}
+
+.sympp-human-section-label {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
 }
 
 .sympp-human-question {
   margin: 0;
   color: var(--ink);
-  font-size: 0.94rem;
+  font-size: clamp(1rem, 1.7vw, 1.12rem);
+  line-height: 1.58;
+  overflow-wrap: anywhere;
 }
 
 .sympp-human-decision-details {
@@ -2169,47 +2191,56 @@ pre,
 
 .sympp-decision-option-list {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.5rem;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.62rem;
   min-width: 0;
 }
 
 .sympp-decision-option-card {
   display: grid;
-  gap: 0.38rem;
+  gap: 0.5rem;
   min-width: 0;
-  padding: 0.62rem;
+  padding: 0.78rem;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fff;
 }
 
 .sympp-decision-option-card h4,
-.sympp-decision-option-card p,
-.sympp-decision-option-card dl {
+.sympp-decision-option-card h5,
+.sympp-decision-option-card p {
   margin: 0;
 }
 
 .sympp-decision-option-card h4 {
-  font-size: 0.86rem;
+  font-size: 0.95rem;
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
 
 .sympp-decision-option-card p,
-.sympp-decision-option-card dd {
+.sympp-decision-option-card li {
   color: var(--ink);
-  font-size: 0.8rem;
-  line-height: 1.35;
+  font-size: 0.86rem;
+  line-height: 1.45;
   overflow-wrap: anywhere;
 }
 
-.sympp-decision-option-card dl {
+.sympp-decision-option-rationale {
   display: grid;
-  gap: 0.28rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+  min-width: 0;
 }
 
-.sympp-decision-option-card dt {
+.sympp-decision-option-rationale section {
+  display: grid;
+  align-content: start;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.sympp-decision-option-rationale h5 {
   color: var(--muted);
   font-size: 0.68rem;
   font-weight: 800;
@@ -2217,8 +2248,9 @@ pre,
   text-transform: uppercase;
 }
 
-.sympp-decision-option-card dd {
+.sympp-decision-option-rationale ul {
   margin: 0;
+  padding-left: 1.05rem;
 }
 
 .sympp-human-answer-form {
@@ -2231,22 +2263,37 @@ pre,
   background: #fff;
 }
 
-.sympp-choice-grid {
+.sympp-choice-list {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.5rem;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.62rem;
 }
 
 .sympp-choice-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card-muted);
+}
+
+.sympp-choice-option label {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: start;
   gap: 0.42rem;
   min-width: 0;
-  padding: 0.58rem;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--card-muted);
+}
+
+.sympp-choice-option label > span {
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .sympp-choice-option input {
@@ -2275,6 +2322,20 @@ pre,
   color: var(--muted);
   font-size: 0.76rem;
   line-height: 1.25;
+}
+
+.sympp-choice-option textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  padding: 0.52rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.84rem;
+  line-height: 1.35;
 }
 
 .sympp-human-answer-form label {
@@ -2322,6 +2383,16 @@ pre,
   font-weight: 800;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.sympp-human-answer-form .sympp-choice-option label > span,
+.sympp-human-answer-form .sympp-choice-option strong,
+.sympp-human-answer-form .sympp-choice-option small {
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .sympp-inline-answer-form input,
@@ -2470,8 +2541,8 @@ pre,
   .sympp-form-grid-constraints,
   .sympp-form-grid-slice,
   .sympp-inline-answer-form,
-  .sympp-choice-grid,
   .sympp-decision-option-list,
+  .sympp-decision-option-rationale,
   .sympp-locked-scope,
   .sympp-slice-row,
   .sympp-slice-detail-grid,

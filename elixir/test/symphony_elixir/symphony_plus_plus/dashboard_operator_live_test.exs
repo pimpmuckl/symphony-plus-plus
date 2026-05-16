@@ -744,6 +744,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "No, and tell the agent what to do differently"
     assert html =~ "Send answer"
 
+    document = Floki.parse_document!(html)
+
+    assert Floki.find(document, ~s(textarea[name="guidance_request[answer_notes][choice_2]"]))
+           |> Floki.attribute("placeholder") == ["Required: tell the agent what to do differently."]
+
     html =
       render_submit(view, "answer_guidance_request", %{
         "guidance_request" => %{
@@ -796,15 +801,67 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     assert html =~ "Pick the guidance path."
     assert html =~ "Choose one durable answer for the worker."
+    assert html =~ "Two choices are valid."
     assert html =~ "Continue safely"
     assert html =~ "Fastest path"
     assert html =~ "No, and tell the agent what to do differently"
+
+    document = Floki.parse_document!(html)
+    assert [_question_section] = Floki.find(document, ".sympp-human-question-section .sympp-human-question")
+
+    option_cards = Floki.find(document, ".sympp-decision-option-card")
+    assert length(option_cards) == 2
+    assert Floki.find(document, ".sympp-decision-option-rationale h5") |> Floki.text() =~ "Pros"
+    assert Floki.find(document, ".sympp-decision-option-rationale li") |> Floki.text() =~ "Fastest path"
+    assert Floki.find(document, ".sympp-decision-option-rationale li") |> Floki.text() =~ "May need a follow-up"
+
+    assert Floki.find(document, ".sympp-choice-option textarea")
+           |> Enum.map(&Floki.attribute(&1, "name"))
+           |> List.flatten() == [
+             "guidance_request[answer_notes][choice_0]",
+             "guidance_request[answer_notes][choice_1]",
+             "guidance_request[answer_notes][choice_2]"
+           ]
+
+    assert Floki.find(document, ~s(input[name="guidance_request[answer_note_choices][choice_1]"]))
+           |> Floki.attribute("value") == ["narrow_scope"]
+
+    assert Floki.find(document, ~s(input[name="guidance_request[answer_note_choices][choice_2]"]))
+           |> Floki.attribute("value") == [HumanDecisionPrompt.custom_redirect_choice_id()]
+
+    assert Floki.find(document, ~s(textarea[name="guidance_request[answer_notes][choice_2]"]))
+           |> Floki.attribute("placeholder") == ["Required: tell the agent what to do differently."]
+
+    narrow_radio_id =
+      Floki.find(document, ~s(input[name="guidance_request[answer_choice]"][value="narrow_scope"]))
+      |> Floki.attribute("id")
+      |> List.first()
+
+    assert narrow_radio_id
+
+    narrow_note =
+      Floki.find(document, ~s(textarea[name="guidance_request[answer_notes][choice_1]"]))
+
+    assert Floki.attribute(narrow_note, "data-choice-input") == [narrow_radio_id]
+    assert Floki.attribute(narrow_note, "onfocus") == ["document.getElementById(this.dataset.choiceInput)?.click()"]
+    assert Floki.attribute(narrow_note, "onclick") == ["document.getElementById(this.dataset.choiceInput)?.click()"]
+    assert Floki.attribute(narrow_note, "oninput") == ["document.getElementById(this.dataset.choiceInput)?.click()"]
 
     html =
       render_submit(view, "answer_guidance_request", %{
         "guidance_request" => %{
           "id" => guidance.id,
-          "answer_choice" => HumanDecisionPrompt.custom_redirect_choice_id()
+          "answer_choice" => HumanDecisionPrompt.custom_redirect_choice_id(),
+          "answer_note_choices" => %{
+            "choice_0" => "continue",
+            "choice_1" => "narrow_scope",
+            "choice_2" => HumanDecisionPrompt.custom_redirect_choice_id()
+          },
+          "answer_notes" => %{
+            "choice_0" => "Ignore this note.",
+            "choice_1" => "Ignore this note too.",
+            "choice_2" => ""
+          }
         }
       })
 
@@ -815,7 +872,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
       "guidance_request" => %{
         "id" => guidance.id,
         "answer_choice" => "narrow_scope",
-        "answer_note" => "Keep docs out of scope."
+        "answer_note_choices" => %{
+          "choice_0" => "continue",
+          "choice_1" => "narrow_scope",
+          "choice_2" => HumanDecisionPrompt.custom_redirect_choice_id()
+        },
+        "answer_notes" => %{
+          "choice_0" => "This unselected note should not persist.",
+          "choice_1" => "Keep docs out of scope.",
+          "choice_2" => "This redirect note is unselected."
+        }
       }
     })
 
@@ -881,12 +947,61 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "Narrow scope"
     assert html =~ "No, and tell the agent what to do differently"
 
+    document = Floki.parse_document!(html)
+    assert [_question_section] = Floki.find(document, ".sympp-human-question-section .sympp-human-question")
+
+    option_cards = Floki.find(document, ".sympp-decision-option-card")
+    assert length(option_cards) == 2
+    assert Floki.find(document, ".sympp-decision-option-rationale h5") |> Floki.text() =~ "Cons"
+    assert Floki.find(document, ".sympp-decision-option-rationale li") |> Floki.text() =~ "Fastest path"
+    assert Floki.find(document, ".sympp-decision-option-rationale li") |> Floki.text() =~ "May leave polish for later"
+
+    assert Floki.find(document, ".sympp-choice-option textarea")
+           |> Enum.map(&Floki.attribute(&1, "name"))
+           |> List.flatten() == [
+             "question[answer_notes][choice_0]",
+             "question[answer_notes][choice_1]",
+             "question[answer_notes][choice_2]"
+           ]
+
+    assert Floki.find(document, ~s(input[name="question[answer_note_choices][choice_0]"]))
+           |> Floki.attribute("value") == ["continue"]
+
+    assert Floki.find(document, ~s(input[name="question[answer_note_choices][choice_2]"]))
+           |> Floki.attribute("value") == [HumanDecisionPrompt.custom_redirect_choice_id()]
+
+    assert Floki.find(document, ~s(textarea[name="question[answer_notes][choice_2]"]))
+           |> Floki.attribute("placeholder") == ["Required: tell the agent what to do differently."]
+
+    continue_radio_id =
+      Floki.find(document, ~s(input[name="question[answer_choice]"][value="continue"]))
+      |> Floki.attribute("id")
+      |> List.first()
+
+    assert continue_radio_id
+
+    continue_note = Floki.find(document, ~s(textarea[name="question[answer_notes][choice_0]"]))
+    assert Floki.attribute(continue_note, "data-choice-input") == [continue_radio_id]
+    assert Floki.attribute(continue_note, "onfocus") == ["document.getElementById(this.dataset.choiceInput)?.click()"]
+    assert Floki.attribute(continue_note, "onclick") == ["document.getElementById(this.dataset.choiceInput)?.click()"]
+    assert Floki.attribute(continue_note, "oninput") == ["document.getElementById(this.dataset.choiceInput)?.click()"]
+
     html =
       render_submit(view, "answer_question", %{
         "question" => %{
           "id" => question.id,
           "current_status" => "open",
-          "answer_choice" => HumanDecisionPrompt.custom_redirect_choice_id()
+          "answer_choice" => HumanDecisionPrompt.custom_redirect_choice_id(),
+          "answer_note_choices" => %{
+            "choice_0" => "continue",
+            "choice_1" => "narrow_scope",
+            "choice_2" => HumanDecisionPrompt.custom_redirect_choice_id()
+          },
+          "answer_notes" => %{
+            "choice_0" => "Ignore this note.",
+            "choice_1" => "Ignore this note too.",
+            "choice_2" => ""
+          }
         }
       })
 
@@ -901,7 +1016,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
           "id" => question.id,
           "current_status" => "open",
           "answer_choice" => "unknown_choice",
-          "answer_note" => "This should not be persisted."
+          "answer_note_choices" => %{"choice_0" => "continue"},
+          "answer_notes" => %{
+            "choice_0" => "This should not be persisted."
+          }
         }
       })
 
@@ -928,7 +1046,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
         "id" => question.id,
         "current_status" => "open",
         "answer_choice" => "continue",
-        "answer_note" => "Use the existing dashboard helpers."
+        "answer_note_choices" => %{
+          "choice_0" => "continue",
+          "choice_1" => "narrow_scope",
+          "choice_2" => HumanDecisionPrompt.custom_redirect_choice_id()
+        },
+        "answer_notes" => %{
+          "choice_0" => "Use the existing dashboard helpers.",
+          "choice_1" => "This unselected note should not persist.",
+          "choice_2" => "This redirect note is unselected."
+        }
       }
     })
 
@@ -936,6 +1063,72 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert answered.status == "answered"
     assert answered.answer == "Continue with the proposed safe implementation. Use the existing dashboard helpers."
     assert answered.answered_by == "local-operator"
+  end
+
+  test "structured option ids use safe note keys and do not inherit custom redirect note requirement" do
+    enable_operator_mode()
+
+    request =
+      create_work_request!(
+        id: "WR-OPERATOR-REDIRECT-OPTION",
+        title: "Redirect option prompt",
+        status: "human_info_needed"
+      )
+
+    structured_choice_id = "redirect][branch"
+
+    assert {:ok, question} =
+             WorkRequestRepository.ask_question(Repo, request.id, %{
+               category: "scope",
+               question: "Which redirect behavior is acceptable?",
+               why_needed: "The architect needs the operator's product call.",
+               decision_prompt: %{
+                 "tl_dr" => "Pick the redirect behavior.",
+                 "details" => "The structured option id happens to be redirect.",
+                 "options" => [
+                   %{
+                     "id" => structured_choice_id,
+                     "label" => "Use redirect behavior",
+                     "description" => "Use the canned redirect option.",
+                     "answer" => "Use the canned redirect behavior."
+                   }
+                 ]
+               }
+             })
+
+    {:ok, view, html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
+    document = Floki.parse_document!(html)
+
+    assert Floki.find(document, ~s(textarea[name="question[answer_notes][choice_0]"]))
+           |> Floki.attribute("placeholder") == ["Optional: add specifics or boundaries for this choice."]
+
+    assert Floki.find(document, ~s(input[name="question[answer_note_choices][choice_0]"]))
+           |> Floki.attribute("value") == [structured_choice_id]
+
+    assert Floki.find(document, ~s(textarea[name="question[answer_notes][choice_1]"]))
+           |> Floki.attribute("placeholder") == ["Required: tell the agent what to do differently."]
+
+    refute html =~ ~s(question[answer_notes][#{structured_choice_id}])
+
+    render_submit(view, "answer_question", %{
+      "question" => %{
+        "id" => question.id,
+        "current_status" => "open",
+        "answer_choice" => structured_choice_id,
+        "answer_note_choices" => %{
+          "choice_0" => structured_choice_id,
+          "choice_1" => HumanDecisionPrompt.custom_redirect_choice_id()
+        },
+        "answer_notes" => %{
+          "choice_0" => "Keep this redirect behavior explicit.",
+          "choice_1" => "This redirect note is unselected."
+        }
+      }
+    })
+
+    assert {:ok, [answered]} = WorkRequestRepository.list_questions(Repo, request.id)
+    assert answered.status == "answered"
+    assert answered.answer == "Use the canned redirect behavior. Keep this redirect behavior explicit."
   end
 
   test "local operator creates a WorkRequest with explicit repo and base branch" do
@@ -1145,6 +1338,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     {:ok, view, html} = live(local_conn(), "/sympp/work-requests/#{work_request_id}")
 
     assert html =~ "Should this remain a focused dashboard regression?"
+    document = Floki.parse_document!(html)
+
+    assert Floki.find(document, ~s(textarea[name="question[answer_notes][choice_2]"]))
+           |> Floki.attribute("placeholder") == ["Required: tell the agent what to do differently."]
+
     assert {:ok, [question]} = WorkRequestRepository.list_questions(Repo, work_request_id)
     assert question.asked_by_agent_run_id == "architect-agent"
 
