@@ -965,7 +965,7 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
         [
           %{value: "continue", label: "Continue", help: "Use the suggested path.", checked: true},
           %{value: "narrow", label: "Narrow scope", help: "Keep the work smaller or safer.", checked: false},
-          %{value: "redirect", label: "No, redirect", help: "Tell the agent what to do differently.", checked: false}
+          %{value: "redirect", label: custom_redirect_label(nil), help: "Tell the agent what to do differently.", checked: false}
         ]
 
       options ->

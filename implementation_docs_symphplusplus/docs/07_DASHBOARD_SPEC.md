@@ -152,8 +152,13 @@ dependencies or notes, and stop conditions. Those values are stored in the
 existing WorkRequest constraints map. Advanced JSON remains available for
 uncommon constraint keys and complex shapes.
 
-`/sympp/work-requests/:id` exposes existing safe WorkRequest controls when the
-viewer is the local operator or a scoped board grant holder:
+`/sympp/work-requests/:id` exposes WorkRequest controls based on product
+ownership. In local operator mode, the page stays human-owned: the operator can
+answer product questions, prepare/replay an architect handoff, inspect
+architect-owned context, and dispatch approved slices. It does not expose
+architect authoring controls for questions, decisions, or planned slices.
+
+Scoped board-grant detail remains the architect/planning surface:
 
 ```text
 Mark ready for clarification
@@ -162,9 +167,15 @@ Record decisions
 Mark human info needed
 Mark ready for slicing
 Add / approve / skip planned slices
+Mark sliced
+```
+
+Local operator detail keeps this smaller action set:
+
+```text
+Answer open human questions
 Prepare architect handoff
 Dispatch approved planned slices
-Mark sliced
 ```
 
 Architect handoff is local-operator-only and appears for WorkRequests in
@@ -187,14 +198,16 @@ plugin skill prompt. It must not show raw work-key secrets, secret hashes, or
 full MCP secret-retrieval commands. Board-grant WorkRequest detail does not show
 or run this control.
 
-Planned-slice dispatch is local-operator-only. It reuses the existing
+Planned-slice dispatch is local-operator-only. Approval and slice authoring stay
+in the architect workflow; dispatch is the explicit operator action that turns
+an already approved slice into a WorkPackage. It reuses the existing
 `PlannedSliceDispatch` flow to create a WorkPackage, mint a worker grant, store
 the worker secret through private handoff, link the planned slice, and refresh
 the page with the WorkPackage id/status. The browser may show only non-secret
 handoff metadata such as mode, target, path, and run command. It must not show a
 raw worker secret. Dispatch does not spawn Codex agents and does not call Linear.
 Board-grant WorkRequest detail remains scoped to planning controls and does not
-show the dispatch control.
+show the local dispatch control.
 
 The WorkPackage detail handoff panel reads durable handoff metadata only from
 the dashboard's configured/default local secret store. If a CLI or MCP dispatch

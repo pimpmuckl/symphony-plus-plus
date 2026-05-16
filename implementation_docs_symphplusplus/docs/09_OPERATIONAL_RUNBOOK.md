@@ -20,17 +20,18 @@ the preferred front door for this flow.
    complex shapes. The created request is a draft WorkRequest in the local
    ledger.
 4. Human marks the request ready for clarification.
-5. Ask product questions, record human answers, and close stale unanswered
-   questions from the WorkRequest detail page.
-6. Record durable decisions and explicit assumptions before slicing.
-7. Mark the request ready for slicing, add planned slices, approve or skip the
-   slices, then dispatch approved slices that should become WorkPackages.
-8. Browser dispatch creates the WorkPackage, worker grant, and private worker
+5. Architect asks product questions and records decisions or explicit
+   assumptions before slicing.
+6. Human answers open product questions from the local WorkRequest detail page.
+7. Architect marks the request ready for slicing, adds planned slices, and
+   approves or skips slices.
+8. Human dispatches approved slices that should become WorkPackages.
+9. Browser dispatch creates the WorkPackage, worker grant, and private worker
    secret handoff through the existing `PlannedSliceDispatch` flow. Use the
    visible WorkPackage id/status and non-secret handoff metadata to continue the
    normal worker setup.
-9. Mark the request sliced when at least one slice is approved or dispatched.
-10. Dispatched slices become normal WorkPackages with existing readiness,
+10. Mark the request sliced when at least one slice is approved or dispatched.
+11. Dispatched slices become normal WorkPackages with existing readiness,
     review-suite, PR, and human merge machinery.
 
 Board-grant mode keeps its locked-scope behavior: the WorkRequest intake form
