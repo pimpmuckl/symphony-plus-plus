@@ -642,14 +642,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
     assert html =~ "Base branch"
     assert html =~ anchor.repo
     assert html =~ anchor.base_branch
+    assert html =~ "Work type"
+    assert html =~ "Bug fix"
+    assert html =~ "Hotfix"
+    assert html =~ "Investigation"
+    assert html =~ "Agent workflow"
+    assert html =~ "One focused package"
+    assert html =~ "Feature branch with slices"
+    assert html =~ "Description"
+    assert html =~ "Optional boundaries and advanced details"
+    assert html =~ "Add path limits, stop conditions, or raw JSON only when the request needs them."
     assert html =~ "Allowed paths"
     assert html =~ "Forbidden paths"
     assert html =~ "Compatibility stance"
     assert html =~ "Validation expectations"
     assert html =~ "Dependencies / notes"
     assert html =~ "Stop conditions"
-    assert html =~ "Advanced JSON"
-    assert html =~ "Constraints JSON"
+    assert html =~ "Advanced constraints JSON"
+    refute html =~ "Dispatch shape"
+    refute html =~ "Common fields are stored in the existing constraints map."
     refute html =~ ~s(name="work_request[repo]")
     refute html =~ ~s(name="work_request[base_branch]")
   end
@@ -893,6 +904,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
 
     assert html =~ "Constraints must be valid JSON."
     assert html =~ "Broken constraints"
+    document = Floki.parse_document!(html)
+    assert [_details] = Floki.find(document, ~s(details[aria-label="Optional boundaries and advanced details"][open]))
 
     html =
       render_submit(view, "create_work_request", %{

@@ -266,26 +266,31 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
               <input name={f[:base_branch].name} value={input_value(f, :base_branch)} required maxlength="240" />
             </label>
 
-            <label>
-              <span>Work type</span>
-              <select name={f[:work_type].name} required>
-                <option :for={work_type <- WorkRequest.work_types()} value={work_type} selected={input_value(f, :work_type) == work_type}>
-                  <%= label_value(work_type) %>
-                </option>
-              </select>
-            </label>
+            <fieldset class="sympp-work-type-options sympp-form-wide">
+              <legend>Work type</legend>
+              <div class="sympp-choice-grid">
+                <label :for={work_type <- WorkRequest.work_types()} class="sympp-choice-card">
+                  <input type="radio" name={f[:work_type].name} value={work_type} checked={input_value(f, :work_type) == work_type} required />
+                  <span>
+                    <strong><%= work_type_label(work_type) %></strong>
+                    <small><%= work_type_help(work_type) %></small>
+                  </span>
+                </label>
+              </div>
+            </fieldset>
 
             <label>
-              <span>Dispatch shape</span>
+              <span>Agent workflow</span>
               <select name={f[:desired_dispatch_shape].name} required>
                 <option
                   :for={shape <- WorkRequest.dispatch_shapes()}
                   value={shape}
                   selected={input_value(f, :desired_dispatch_shape) == shape}
                 >
-                  <%= label_value(shape) %>
+                  <%= dispatch_shape_label(shape) %>
                 </option>
               </select>
+              <small class="sympp-field-help">Choose one package, a feature branch with slices, an investigation-first pass, or review-only work.</small>
             </label>
 
             <label class="sympp-form-wide">
@@ -293,11 +298,15 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
               <textarea name={f[:human_description].name} required rows="6"><%= input_value(f, :human_description) %></textarea>
             </label>
 
-            <section class="sympp-form-section sympp-form-wide" aria-label="Constraints">
-              <div class="sympp-form-section-heading">
-                <h2>Constraints</h2>
-                <p>Common fields are stored in the existing constraints map.</p>
-              </div>
+            <details
+              class="sympp-form-section sympp-form-wide sympp-advanced-intake"
+              aria-label="Optional boundaries and advanced details"
+              open={advanced_intake_open?(f, @page.form_error)}
+            >
+              <summary>
+                <span>Optional boundaries and advanced details</span>
+                <small>Add path limits, stop conditions, or raw JSON only when the request needs them.</small>
+              </summary>
 
               <div class="sympp-form-grid sympp-form-grid-constraints">
                 <label>
@@ -329,20 +338,14 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                   <span>Dependencies / notes</span>
                   <textarea name={f[:dependencies_notes].name} rows="4"><%= input_value(f, :dependencies_notes) %></textarea>
                 </label>
-              </div>
-            </section>
 
-            <section class="sympp-form-section sympp-form-wide" aria-label="Advanced constraints">
-              <div class="sympp-form-section-heading">
-                <h2>Advanced JSON</h2>
-                <p>Optional extra keys. Structured fields above win for matching keys.</p>
+                <label class="sympp-form-wide">
+                  <span>Advanced constraints JSON</span>
+                  <textarea name={f[:constraints_json].name} rows="5" spellcheck="false"><%= input_value(f, :constraints_json) %></textarea>
+                  <small class="sympp-field-help">Optional extra keys. The fields above win when both set the same key.</small>
+                </label>
               </div>
-
-              <label>
-                <span>Constraints JSON</span>
-                <textarea name={f[:constraints_json].name} rows="5" spellcheck="false"><%= input_value(f, :constraints_json) %></textarea>
-              </label>
-            </section>
+            </details>
           </div>
 
           <div class="sympp-form-actions">
@@ -3074,6 +3077,57 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp status_label(value) when is_binary(value), do: String.replace(value, "_", " ")
   defp status_label(value), do: label_value(value)
+
+  defp work_type_label("bugfix"), do: "Bug fix"
+  defp work_type_label("docs"), do: "Docs"
+  defp work_type_label("hotfix"), do: "Hotfix"
+  defp work_type_label("investigation"), do: "Investigation"
+  defp work_type_label("refactor"), do: "Refactor"
+  defp work_type_label("review"), do: "Review"
+  defp work_type_label(value), do: label_value(value)
+
+  defp work_type_help("feature"), do: "Build or change user-visible behavior."
+  defp work_type_help("bugfix"), do: "Fix something that is not working correctly."
+  defp work_type_help("hotfix"), do: "Urgent, narrow fix for a production-style issue."
+  defp work_type_help("refactor"), do: "Improve structure without changing behavior."
+  defp work_type_help("investigation"), do: "Research, reproduce, and report before changing code."
+  defp work_type_help("docs"), do: "Update docs, prompts, or operator guidance."
+  defp work_type_help("review"), do: "Review existing work and return findings."
+  defp work_type_help(_value), do: "Tell agents what kind of work this is."
+
+  defp dispatch_shape_label("single_package"), do: "One focused package"
+  defp dispatch_shape_label("architect_led_feature_branch"), do: "Feature branch with slices"
+  defp dispatch_shape_label("direct_main_fix"), do: "Direct fix on the target branch"
+  defp dispatch_shape_label("investigation_first"), do: "Investigate before implementation"
+  defp dispatch_shape_label("review_only"), do: "Review only"
+  defp dispatch_shape_label(value), do: label_value(value)
+
+  defp advanced_intake_open?(form, form_error) do
+    constraints_form_error?(form_error) or
+      Enum.any?(
+        [
+          :allowed_paths,
+          :forbidden_paths,
+          :compatibility_stance,
+          :validation_expectations,
+          :stop_conditions,
+          :dependencies_notes,
+          :constraints_json
+        ],
+        fn field -> advanced_value_present?(field, input_value(form, field)) end
+      )
+  end
+
+  defp constraints_form_error?("Constraints must be valid JSON."), do: true
+  defp constraints_form_error?("Constraints JSON must be an object."), do: true
+  defp constraints_form_error?(_form_error), do: false
+
+  defp advanced_value_present?(:constraints_json, value) when is_binary(value) do
+    String.trim(value) not in ["", "{}"]
+  end
+
+  defp advanced_value_present?(_field, value) when is_binary(value), do: String.trim(value) != ""
+  defp advanced_value_present?(_field, _value), do: false
 
   defp status_class("open"), do: "state-badge state-badge-warning"
   defp status_class("human_info_needed"), do: "state-badge state-badge-warning"
