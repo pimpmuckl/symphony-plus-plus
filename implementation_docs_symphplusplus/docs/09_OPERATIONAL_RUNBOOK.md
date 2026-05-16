@@ -19,7 +19,8 @@ the preferred front door for this flow.
    stop conditions. Use Advanced JSON only for uncommon constraint keys or
    complex shapes. The created request is a draft WorkRequest in the local
    ledger.
-4. Human marks the request ready for clarification.
+4. Human chooses `Start agent questions`, which marks the request
+   `ready_for_clarification`.
 5. Architect asks product questions and records decisions or explicit
    assumptions before slicing.
 6. Human answers open product questions from the local WorkRequest detail page.

@@ -69,17 +69,25 @@ remains available for uncommon keys or complex values. Repo and base branch are
 visible locked values, and submitted repo/base fields are ignored in favor of
 the grant scope.
 
-The dashboard detail path is also scoped to board-visible WorkRequests. It can
-move a `draft` request to `ready_for_clarification`, ask clarification
-questions, answer or close open questions, record decision log entries, mark
-`human_info_needed`, and mark `ready_for_slicing`. The ready-for-slicing action
-is blocked while any clarification question remains open. For
+The dashboard detail path is also scoped to board-visible WorkRequests. In
+board-grant mode, it can move a `draft` request to
+`ready_for_clarification`, ask clarification questions, answer or close open
+questions, record decision log entries, mark `human_info_needed`, and mark
+`ready_for_slicing`. The ready-for-slicing action is blocked while any
+clarification question remains open. For
 `ready_for_slicing` or `sliced` requests, the same detail page can manually add
 planned slices, approve or skip existing mutable slices, and mark a
 `ready_for_slicing` request `sliced` only after at least one planned slice is
 approved. In local operator mode, the same detail page can also dispatch
 approved, undispatched planned slices. Board-grant WorkRequest detail remains
 scoped to planning controls and does not expose planned-slice dispatch.
+
+In local operator mode, the human-owned draft action is `Start agent questions`.
+It moves the WorkRequest from `draft` to `ready_for_clarification` using the
+same stale-status-safe status update contract as the board-grant action, then
+reloads the detail page so eligible requests can show the architect handoff
+action. Local operator detail still does not expose architect-owned question
+authoring, decision recording, or planned-slice add/approve/skip controls.
 
 In local operator mode, eligible WorkRequests in `ready_for_clarification`,
 `clarifying`, `human_info_needed`, `ready_for_slicing`, or `sliced` can prepare
@@ -226,7 +234,8 @@ sliced
 
 ## Clarification Flow
 
-1. Human records the WorkRequest and marks it ready for clarification.
+1. Human records the WorkRequest and starts agent questions, which marks it
+   `ready_for_clarification`.
 2. Architect reads the request and asks product questions before slicing.
 3. Human answers are recorded as durable request context.
 4. Architect records decisions and explicit assumptions before creating the
@@ -238,9 +247,11 @@ Clarification is about product and architecture intent. It is not a place for
 workers to broaden scope after dispatch.
 
 The dashboard detail view can move a `draft` WorkRequest to
-`ready_for_clarification` with a stale-status-safe action. If another process
-has already changed the status, the UI reports a safe retry message instead of
-overwriting the newer state.
+`ready_for_clarification` with a stale-status-safe action. In local operator
+mode, the visible action is labeled `Start agent questions`; in board-grant
+mode, the architect/planning action remains `Mark ready for clarification`.
+If another process has already changed the status, the UI reports a safe retry
+message instead of overwriting the newer state.
 
 When the architect asks the first question from
 `ready_for_clarification`, the dashboard uses a stale-status-safe transition to

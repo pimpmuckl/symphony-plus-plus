@@ -32,7 +32,8 @@ questions and slices the work.
 
 ## WorkRequest Flow
 
-1. Human records a WorkRequest and marks it ready for clarification.
+1. Human records a WorkRequest and starts agent questions, which marks it
+   `ready_for_clarification`.
 2. Architect asks product questions, records human answers, and writes durable
    decisions or assumptions before slicing.
 3. Architect produces an architect plan and a slice plan. Feature work defaults
@@ -60,13 +61,14 @@ scoped dashboard intake, architect MCP WorkRequest reads, clarification and
 decision mutations, planned-slice mutations, the manual clarification loop, and
 manual planned-slice authoring now exist. Architect MCP planned-slice dispatch
 also exists for explicit phase-scoped grants with `dispatch:work_request`.
-Local-operator dashboard dispatch also exists for approved, undispatched
-planned slices. Local-operator WorkRequest detail can also prepare an architect
-handoff for ready/active WorkRequest planning states. That handoff creates or
-reuses the WorkRequest-scoped phase and architect anchor package, mints an
-unclaimed architect grant for WorkRequest/guidance MCP capabilities, stores the
-secret through private handoff, and shows only non-secret/redacted bootstrap
-metadata plus a prompt for the `symphony-plus-plus:symphony-architect` skill.
+Local-operator dashboard detail can start agent questions for a draft
+WorkRequest, dispatch approved undispatched planned slices, and prepare an
+architect handoff for ready/active WorkRequest planning states. That handoff
+creates or reuses the WorkRequest-scoped phase and architect anchor package,
+mints an unclaimed architect grant for WorkRequest/guidance MCP capabilities,
+stores the secret through private handoff, and shows only non-secret/redacted
+bootstrap metadata plus a prompt for the
+`symphony-plus-plus:symphony-architect` skill.
 Package-scoped guidance requests can be escalated by architects to
 `human_info_needed`; the local operator cockpit shows those package guidance
 items in the product guidance watchlist and can answer only that escalated state
@@ -76,11 +78,13 @@ guidance request. Ordinary open guidance remains architect-owned.
 Dashboard intake is board-authenticated and only appears for board grants with
 frozen repo and base-branch scope. The repo and base branch are displayed as
 locked values and are enforced by the server when creating the draft. Humans
-can mark a draft
-WorkRequest `ready_for_clarification` from the detail view. For board-visible, in-scope
-WorkRequests, the detail view can also ask clarification questions, answer or
-close open questions, record durable decisions, mark `human_info_needed`, and
-mark `ready_for_slicing` only after no open clarification questions remain.
+can mark a draft WorkRequest `ready_for_clarification` from the detail view.
+In local operator mode, that human-owned action is labeled `Start agent
+questions` and does not expose architect-owned question, decision, or
+planned-slice authoring controls. For board-visible, in-scope WorkRequests,
+the detail view can also ask clarification questions, answer or close open
+questions, record durable decisions, mark `human_info_needed`, and mark
+`ready_for_slicing` only after no open clarification questions remain.
 Once a request is `ready_for_slicing` or `sliced`, the detail view can add
 planned slices, approve or skip mutable slices, and mark a request `sliced`
 only after at least one planned slice has been approved. In local operator mode,

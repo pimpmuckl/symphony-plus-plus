@@ -430,6 +430,11 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                 </div>
               </dl>
             </div>
+            <div :if={can_start_agent_questions?(@operator_mode?, @board_grant, @page.work_request)} class="sympp-action-row">
+              <button type="button" phx-click="mark_ready_for_clarification">
+                Start agent questions
+              </button>
+            </div>
             <div :if={show_architect_work_request_controls?(@operator_mode?, @board_grant)} class="sympp-action-row">
               <button
                 :if={value(@page.work_request, :status) == "draft"}
@@ -460,8 +465,9 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
               >
                 Mark sliced
               </button>
+            </div>
+            <div :if={can_create_architect_handoff?(@operator_mode?, @board_grant, @page.work_request)} class="sympp-action-row">
               <button
-                :if={can_create_architect_handoff?(@operator_mode?, @board_grant, @page.work_request)}
                 type="button"
                 class="secondary"
                 phx-click="create_architect_handoff"
@@ -959,7 +965,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
           {:ok, _work_request} ->
             {:noreply,
              socket
-             |> put_flash(:info, "WorkRequest marked ready for clarification.")
+             |> put_flash(:info, mark_ready_for_clarification_flash(actor))
              |> assign(:page, load_page(:show, actor, socket.assigns.work_request_id))}
 
           {:error, reason} ->
@@ -1403,6 +1409,9 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp architect_handoff_error_message(reason), do: ArchitectHandoff.error_message(reason)
 
+  defp mark_ready_for_clarification_flash(:local_operator), do: "WorkRequest ready for agent questions."
+  defp mark_ready_for_clarification_flash(_actor), do: "WorkRequest marked ready for clarification."
+
   defp architect_handoff_flash(:replayed), do: "Existing architect handoff replayed."
   defp architect_handoff_flash(:renewed), do: "Architect handoff renewed."
   defp architect_handoff_flash(_status), do: "Architect handoff ready."
@@ -1456,8 +1465,9 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   end
 
   defp mark_ready_for_clarification(:local_operator, work_request_id)
-       when is_binary(work_request_id),
-       do: {:error, :architect_control}
+       when is_binary(work_request_id) do
+    SymppBoardLive.with_dashboard_repo(&mark_ready_in_repo(&1, :local_operator, work_request_id))
+  end
 
   defp mark_ready_for_clarification(_grant, _work_request_id), do: {:error, :not_found}
 
@@ -1601,6 +1611,10 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
          :ok <- visible_work_request?(repo, work_request, grant) do
       WorkRequestService.update_status(repo, work_request_id, "draft", "ready_for_clarification")
     end
+  end
+
+  defp mark_ready_in_repo(repo, :local_operator, work_request_id) do
+    WorkRequestService.update_status(repo, work_request_id, "draft", "ready_for_clarification")
   end
 
   defp ask_question_in_repo(repo, actor, work_request_id, params) do
@@ -2386,6 +2400,9 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     not operator_mode? and can_manage_work_request?(operator_mode?, board_grant)
   end
 
+  defp can_start_agent_questions?(true, nil, work_request), do: value(work_request, :status) == "draft"
+  defp can_start_agent_questions?(_operator_mode?, _board_grant, _work_request), do: false
+
   defp can_mark_human_info_needed?(work_request),
     do: value(work_request, :status) in ["ready_for_clarification", "clarifying"]
 
@@ -2797,6 +2814,9 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp detail_state_summary(_page, _operator_mode?), do: "Check the current status, questions, and planned slices."
 
+  defp detail_next_action_for("draft", true, _open_questions, _planned, _approved, _dispatched),
+    do: "Ready for agent questions"
+
   defp detail_next_action_for("draft", _operator_mode?, _open_questions, _planned, _approved, _dispatched),
     do: "Start clarification"
 
@@ -2813,7 +2833,17 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp detail_next_action_for(
          "ready_for_clarification",
-         _operator_mode?,
+         true,
+         _open_questions,
+         _planned,
+         _approved,
+         _dispatched
+       ),
+       do: "Prepare architect handoff"
+
+  defp detail_next_action_for(
+         "ready_for_clarification",
+         false,
          _open_questions,
          _planned,
          _approved,
@@ -2868,6 +2898,9 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp detail_next_action_for(_status, _operator_mode?, _open_questions, _planned, _approved, _dispatched),
     do: "Review WorkRequest state"
 
+  defp detail_state_summary_for("draft", true, _open_questions, _planned, _approved, _dispatched),
+    do: "Draft request is waiting for the human to start agent questions."
+
   defp detail_state_summary_for("draft", _operator_mode?, _open_questions, _planned, _approved, _dispatched),
     do: "Draft request is waiting for the clarification path to open."
 
@@ -2884,7 +2917,17 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp detail_state_summary_for(
          "ready_for_clarification",
-         _operator_mode?,
+         true,
+         _open_questions,
+         _planned,
+         _approved,
+         _dispatched
+       ),
+       do: "Agent questions are ready; prepare the architect handoff so the agent can clarify and plan."
+
+  defp detail_state_summary_for(
+         "ready_for_clarification",
+         false,
          _open_questions,
          _planned,
          _approved,
