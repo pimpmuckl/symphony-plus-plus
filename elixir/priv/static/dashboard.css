@@ -964,10 +964,11 @@ pre,
 
 .sympp-watch-row strong,
 .sympp-watch-row span {
+  display: block;
+  max-width: 100%;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .sympp-board-filters {
@@ -1101,6 +1102,7 @@ pre,
 .sympp-card-header,
 .sympp-card-footer,
 .sympp-readiness-row,
+.sympp-progress-pipeline,
 .sympp-alert-row {
   display: flex;
   align-items: center;
@@ -1194,6 +1196,74 @@ pre,
 }
 
 .sympp-readiness-muted {
+  color: var(--muted);
+}
+
+.sympp-progress-pipeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  align-items: stretch;
+}
+
+.sympp-progress-step {
+  position: relative;
+  flex: 1 1 5.8rem;
+  min-width: 0;
+  padding: 0.48rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.sympp-progress-step span,
+.sympp-progress-step strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sympp-progress-step span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.sympp-progress-step strong {
+  margin-top: 0.12rem;
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.sympp-progress-step-ready {
+  border-color: rgba(16, 163, 127, 0.24);
+  background: var(--accent-soft);
+}
+
+.sympp-progress-step-ready strong {
+  color: var(--accent-ink);
+}
+
+.sympp-progress-step-active {
+  border-color: #b7c8ff;
+  background: #f2f6ff;
+}
+
+.sympp-progress-step-danger {
+  border-color: #fecdca;
+  background: var(--danger-soft);
+}
+
+.sympp-progress-step-danger strong {
+  color: var(--danger);
+}
+
+.sympp-progress-step-muted strong {
   color: var(--muted);
 }
 
@@ -1983,6 +2053,12 @@ pre,
   flex-wrap: wrap;
 }
 
+.sympp-panel-intro {
+  margin: -0.15rem 0 0.35rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
 .sympp-action-row {
   display: flex;
   align-items: center;
@@ -2020,6 +2096,146 @@ pre,
   display: grid;
   gap: 0.55rem;
   min-width: 0;
+}
+
+.sympp-human-decision-card {
+  display: grid;
+  gap: 0.62rem;
+  min-width: 0;
+  padding: 0.78rem;
+  border: 1px solid #d7e4ff;
+  border-radius: 8px;
+  background: #f7faff;
+}
+
+.sympp-human-kicker {
+  margin: 0;
+  color: #315799;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.sympp-human-decision-card h3 {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.3;
+}
+
+.sympp-human-question {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.94rem;
+}
+
+.sympp-human-decision-details {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.sympp-human-decision-details div {
+  display: grid;
+  gap: 0.16rem;
+}
+
+.sympp-human-decision-details dt {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.sympp-human-decision-details dd {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.sympp-human-answer-form {
+  display: grid;
+  gap: 0.72rem;
+  min-width: 0;
+  padding: 0.78rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.sympp-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.sympp-choice-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0.42rem;
+  min-width: 0;
+  padding: 0.58rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card-muted);
+}
+
+.sympp-choice-option input {
+  margin-top: 0.14rem;
+}
+
+.sympp-choice-option span,
+.sympp-choice-option strong,
+.sympp-choice-option small {
+  min-width: 0;
+}
+
+.sympp-choice-option strong,
+.sympp-choice-option small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.sympp-choice-option strong {
+  color: var(--ink);
+  font-size: 0.84rem;
+}
+
+.sympp-choice-option small {
+  margin-top: 0.08rem;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.25;
+}
+
+.sympp-human-answer-form label {
+  display: grid;
+  gap: 0.24rem;
+  min-width: 0;
+}
+
+.sympp-human-answer-form label > span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.sympp-human-answer-form textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  padding: 0.52rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.86rem;
+  line-height: 1.35;
 }
 
 .sympp-inline-answer-form {
@@ -2187,6 +2403,7 @@ pre,
   .sympp-form-grid-constraints,
   .sympp-form-grid-slice,
   .sympp-inline-answer-form,
+  .sympp-choice-grid,
   .sympp-locked-scope,
   .sympp-slice-row,
   .sympp-slice-detail-grid,
@@ -2235,6 +2452,7 @@ pre,
   }
 
   .sympp-inline-answer-form .sympp-form-actions,
+  .sympp-human-answer-form .sympp-form-actions,
   .sympp-close-form {
     justify-items: start;
     justify-content: flex-start;
@@ -2328,10 +2546,15 @@ pre,
   .sympp-card-title,
   .sympp-card-meta,
   .sympp-readiness-row,
+  .sympp-progress-pipeline,
   .sympp-card-footer {
     min-width: 0;
     max-width: 100%;
     overflow: hidden;
+  }
+
+  .sympp-progress-step {
+    flex-basis: 100%;
   }
 
   .sympp-board-summary {

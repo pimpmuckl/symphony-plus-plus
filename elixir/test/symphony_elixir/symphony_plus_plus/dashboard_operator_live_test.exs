@@ -732,12 +732,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     {:ok, view, html} = live(local_conn(), "/sympp/work-packages/#{package.id}")
 
-    assert html =~ "Guidance Requests"
+    assert html =~ "Questions for you"
     assert html =~ "Need package behavior"
     assert html =~ "Which behavior should this package implement?"
     assert html =~ "worker-operator"
     assert html =~ "guidance_request:#{guidance.id}"
-    assert html =~ "Answer guidance"
+    assert html =~ "Human answer needed"
+    assert html =~ "Continue"
+    assert html =~ "Narrow scope"
+    assert html =~ "No, redirect"
+    assert html =~ "Send answer"
 
     html =
       render_submit(view, "answer_guidance_request", %{
@@ -750,7 +754,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
 
     assert html =~ "Implement the explicit product behavior."
     assert html =~ "local-operator"
-    refute html =~ "Answer guidance"
+    refute html =~ "Send answer"
 
     answered = Repo.get!(GuidanceRequest, guidance.id)
     assert answered.status == "answered"
@@ -925,25 +929,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
            }
 
     {:ok, view, html} = live(local_conn(), "/sympp/work-requests/#{work_request_id}")
-    assert html =~ "Mark ready for clarification"
+    refute html =~ "Mark ready for clarification"
     refute html =~ raw_secret
 
     html = render_click(view, "mark_ready_for_clarification", %{})
-    assert html =~ "ready for clarification"
+    assert html =~ "That action belongs in the architect workflow."
+    assert {:ok, still_draft} = WorkRequestRepository.get(Repo, work_request_id)
+    assert still_draft.status == "draft"
 
-    html =
-      render_submit(view, "ask_question", %{
-        "question" => %{
-          "category" => "scope",
-          "question" => "Should this remain a focused dashboard regression?",
-          "why_needed" => "The operator must confirm no product-design change is needed.",
-          "asked_by_agent_run_id" => "forged"
-        }
-      })
+    assert {:ok, _ready} =
+             WorkRequestRepository.update_status(Repo, work_request_id, "draft", "ready_for_clarification")
+
+    assert {:ok, _question} =
+             WorkRequestRepository.ask_question(Repo, work_request_id, %{
+               category: "scope",
+               question: "Should this remain a focused dashboard regression?",
+               why_needed: "The operator must confirm no product-design change is needed.",
+               asked_by_agent_run_id: "architect-agent"
+             })
+
+    {:ok, view, html} = live(local_conn(), "/sympp/work-requests/#{work_request_id}")
 
     assert html =~ "Should this remain a focused dashboard regression?"
     assert {:ok, [question]} = WorkRequestRepository.list_questions(Repo, work_request_id)
-    assert question.asked_by_agent_run_id == "local-operator"
+    assert question.asked_by_agent_run_id == "architect-agent"
 
     html =
       render_submit(view, "answer_question", %{
@@ -960,50 +969,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert answered_question.status == "answered"
     assert answered_question.answered_by == "local-operator"
 
-    html =
-      render_submit(view, "record_decision", %{
-        "decision" => %{
-          "source_type" => "operator",
-          "decision" => "Dispatch one focused dashboard validation package.",
-          "rationale" => "The UI can perform the path without product-design changes.",
-          "scope_impact" => "No permission or plugin packaging changes.",
-          "created_by" => "forged-decision"
-        }
-      })
+    assert {:ok, decision} =
+             WorkRequestRepository.record_decision(Repo, work_request_id, %{
+               source_type: "operator",
+               decision: "Dispatch one focused dashboard validation package.",
+               rationale: "The UI can perform the path without product-design changes.",
+               scope_impact: "No permission or plugin packaging changes.",
+               created_by: "architect-agent"
+             })
 
-    assert html =~ "Dispatch one focused dashboard validation package."
-    assert {:ok, [decision]} = WorkRequestRepository.list_decisions(Repo, work_request_id)
-    assert decision.created_by == "local-operator"
+    assert decision.created_by == "architect-agent"
 
-    html = render_click(view, "mark_ready_for_slicing", %{})
-    assert html =~ "ready for slicing"
+    assert {:ok, current_request} = WorkRequestRepository.get(Repo, work_request_id)
 
-    html =
-      render_submit(view, "add_planned_slice", %{
-        "planned_slice" => %{
-          "title" => "Validate operator golden path",
-          "goal" => "Prove local structured intake can become a worker-ready package.",
-          "work_package_kind" => "mcp",
-          "target_base_branch" => "main",
-          "branch_pattern" => "agent/SYMPP-V2-E2E-001/operator-golden-path-smoke",
-          "owned_file_globs" => "elixir/test/symphony_elixir/symphony_plus_plus/dashboard_operator_live_test.exs",
-          "forbidden_file_globs" => "plugins/**\nelixir/lib/symphony_elixir/symphony_plus_plus/secret_handoff.ex",
-          "acceptance_criteria" => "WorkPackage detail shows safe worker handoff metadata and Worker Launch Brief.",
-          "validation_steps" => "mix test test/symphony_elixir/symphony_plus_plus/dashboard_operator_live_test.exs",
-          "review_lanes" => "review_t1\nreview_t2\nreview_github",
-          "stop_conditions" => "Stop before automatic Codex spawning."
-        }
-      })
+    assert {:ok, _ready_for_slicing} =
+             WorkRequestRepository.update_status(Repo, work_request_id, current_request.status, "ready_for_slicing")
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(Repo, work_request_id, %{
+               title: "Validate operator golden path",
+               goal: "Prove local structured intake can become a worker-ready package.",
+               work_package_kind: "mcp",
+               target_base_branch: "main",
+               branch_pattern: "agent/SYMPP-V2-E2E-001/operator-golden-path-smoke",
+               owned_file_globs: ["elixir/test/symphony_elixir/symphony_plus_plus/dashboard_operator_live_test.exs"],
+               forbidden_file_globs: ["plugins/**", "elixir/lib/symphony_elixir/symphony_plus_plus/secret_handoff.ex"],
+               acceptance_criteria: ["WorkPackage detail shows safe worker handoff metadata and Worker Launch Brief."],
+               validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/dashboard_operator_live_test.exs"],
+               review_lanes: ["review_t1", "review_t2", "review_github"],
+               stop_conditions: ["Stop before automatic Codex spawning."]
+             })
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.approve_planned_slice(Repo, work_request_id, planned_slice.id, "planned")
+
+    {:ok, view, html} = live(local_conn(), "/sympp/work-requests/#{work_request_id}")
 
     assert html =~ "Validate operator golden path"
-    assert {:ok, [planned_slice]} = WorkRequestRepository.list_planned_slices(Repo, work_request_id)
-
-    html =
-      render_submit(view, "approve_planned_slice", %{
-        "slice" => %{"id" => planned_slice.id, "current_status" => "planned"}
-      })
-
-    assert html =~ "approved"
+    assert html =~ "Dispatch</button>"
 
     html =
       render_submit(view, "dispatch_planned_slice", %{
@@ -1393,13 +1396,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     {:ok, _view, html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
 
     assert html =~ "Operator WorkRequest detail"
-    assert html =~ "Clarification questions"
+    assert html =~ "Questions for you"
     assert html =~ question.id
-    assert html =~ "Decision log"
+    assert html =~ "Decision history"
     assert html =~ decision.id
     assert html =~ "Planned slices"
     assert html =~ slice.id
     assert html =~ "First operator slice"
+    assert html =~ "Human answer needed"
+    assert html =~ "Send answer"
+    assert html =~ "No, redirect"
     assert Regex.scan(~r/\[REDACTED\]/, html) |> length() >= 5
     assert html =~ ~s(href="../board?auth=work_key")
     refute html =~ "Board access"
@@ -1407,25 +1413,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute html =~ "ghp_raw_secret_value"
     refute html =~ "sk-rawsecretvalue"
     refute html =~ ~s(name="work_key")
-    assert html =~ "Answer</button>"
-    assert html =~ "Close unanswered"
+    refute html =~ "Ask question"
+    refute html =~ "Record decision"
+    refute html =~ "Add planned slice"
+    refute html =~ "Close unanswered"
   end
 
-  test "local operator can manage the safe WorkRequest lifecycle without a scoped board grant" do
+  test "local operator answers human questions but architect-owned WorkRequest events stay gated" do
     enable_operator_mode()
 
     request =
       create_work_request!(
         id: "WR-OPERATOR-MANAGE",
-        title: "Operator managed request"
+        title: "Operator managed request",
+        status: "human_info_needed"
       )
+
+    assert {:ok, question} =
+             WorkRequestRepository.ask_question(Repo, request.id, %{
+               category: "product",
+               question: "Which repo docs should be updated?",
+               why_needed: "The runbook needs to match the UI.",
+               asked_by_agent_run_id: "architect-agent"
+             })
 
     {:ok, view, html} = live(local_conn(), "/sympp/work-requests/#{request.id}")
 
-    assert html =~ "Mark ready for clarification"
+    refute html =~ "Mark ready for clarification"
+    refute html =~ "Ask question"
+    refute html =~ "Record decision"
+    refute html =~ "Add planned slice"
+    assert html =~ "Which repo docs should be updated?"
+    assert html =~ "Send answer"
 
     html = render_click(view, "mark_ready_for_clarification", %{})
-    assert html =~ "ready for clarification"
+    assert html =~ "That action belongs in the architect workflow."
+    assert {:ok, unchanged_request} = WorkRequestRepository.get(Repo, request.id)
+    assert unchanged_request.status == "human_info_needed"
 
     html =
       render_submit(view, "ask_question", %{
@@ -1437,59 +1461,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
         }
       })
 
-    assert html =~ "What should the first slice own?"
-    assert {:ok, clarified} = WorkRequestRepository.get(Repo, request.id)
-    assert clarified.status == "clarifying"
-    assert {:ok, [first_question]} = WorkRequestRepository.list_questions(Repo, request.id)
-    assert first_question.asked_by_agent_run_id == "local-operator"
-
-    html =
-      render_submit(view, "close_question", %{
-        "question" => %{"id" => first_question.id, "current_status" => "open"}
-      })
-
-    assert html =~ "closed"
-    assert {:ok, [closed_question]} = WorkRequestRepository.list_questions(Repo, request.id)
-    assert closed_question.status == "closed"
-
-    html =
-      render_submit(view, "ask_question", %{
-        "question" => %{
-          "category" => "product",
-          "question" => "Which repo docs should be updated?",
-          "why_needed" => "The runbook needs to match the UI."
-        }
-      })
-
-    assert html =~ "Which repo docs should be updated?"
-    assert {:ok, [_closed_question, second_question]} = WorkRequestRepository.list_questions(Repo, request.id)
-
-    html =
-      render_submit(view, "answer_question", %{
-        "question" => %{
-          "id" => second_question.id,
-          "current_status" => "open",
-          "answer" => "Update the dashboard spec and operational runbook.",
-          "answered_by" => "forged-answer"
-        }
-      })
-
-    assert html =~ "Update the dashboard spec and operational runbook."
-    assert {:ok, [_closed_question, answered_question]} = WorkRequestRepository.list_questions(Repo, request.id)
-    assert answered_question.status == "answered"
-    assert answered_question.answered_by == "local-operator"
-
-    render_submit(view, "answer_question", %{
-      "question" => %{
-        "id" => second_question.id,
-        "current_status" => "open",
-        "answer" => "Too late.",
-        "answered_by" => "local-operator"
-      }
-    })
-
-    assert {:ok, [_closed_question, still_answered]} = WorkRequestRepository.list_questions(Repo, request.id)
-    assert still_answered.answer == "Update the dashboard spec and operational runbook."
+    assert html =~ "That action belongs in the architect workflow."
+    assert {:ok, [only_question]} = WorkRequestRepository.list_questions(Repo, request.id)
+    assert only_question.id == question.id
 
     html =
       render_submit(view, "record_decision", %{
@@ -1502,15 +1476,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
         }
       })
 
-    assert html =~ "Keep the local operator intake browser-only."
-    assert {:ok, [decision]} = WorkRequestRepository.list_decisions(Repo, request.id)
-    assert decision.created_by == "local-operator"
-
-    html = render_click(view, "mark_human_info_needed", %{})
-    assert html =~ "human info needed"
-
-    html = render_click(view, "mark_ready_for_slicing", %{})
-    assert html =~ "ready for slicing"
+    assert html =~ "That action belongs in the architect workflow."
+    assert {:ok, []} = WorkRequestRepository.list_decisions(Repo, request.id)
 
     html =
       render_submit(view, "add_planned_slice", %{
@@ -1529,47 +1496,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
         }
       })
 
-    assert html =~ "Add local operator WorkRequest controls"
-    assert {:ok, [first_slice]} = WorkRequestRepository.list_planned_slices(Repo, request.id)
+    assert html =~ "That action belongs in the architect workflow."
+    assert {:ok, []} = WorkRequestRepository.list_planned_slices(Repo, request.id)
 
     html =
-      render_submit(view, "approve_planned_slice", %{
-        "slice" => %{"id" => first_slice.id, "current_status" => "planned"}
-      })
-
-    assert html =~ "approved"
-
-    html =
-      render_submit(view, "add_planned_slice", %{
-        "planned_slice" => %{
-          "title" => "Optional follow-up",
-          "goal" => "Capture a deferrable follow-up.",
-          "work_package_kind" => "docs",
-          "target_base_branch" => "main",
-          "branch_pattern" => "agent/SYMPP-V2-UX-004/docs-followup",
-          "owned_file_globs" => "implementation_docs_symphplusplus/docs/**",
-          "forbidden_file_globs" => "elixir/lib/symphony_elixir/symphony_plus_plus/secret_handoff.ex",
-          "acceptance_criteria" => "Follow-up can be skipped.",
-          "validation_steps" => "mix test",
-          "review_lanes" => "review_t1",
-          "stop_conditions" => "Stop before dispatch."
+      render_submit(view, "answer_question", %{
+        "question" => %{
+          "id" => question.id,
+          "current_status" => "open",
+          "answer_choice" => "redirect",
+          "answer_note" => "Update the dashboard spec and operational runbook.",
+          "answered_by" => "forged-answer"
         }
       })
 
-    assert html =~ "Optional follow-up"
-    assert {:ok, [_approved_slice, second_slice]} = WorkRequestRepository.list_planned_slices(Repo, request.id)
+    assert html =~ "No. Change direction before continuing. Update the dashboard spec and operational runbook."
+    assert {:ok, [answered_question]} = WorkRequestRepository.list_questions(Repo, request.id)
+    assert answered_question.status == "answered"
+    assert answered_question.answered_by == "local-operator"
+    assert answered_question.answer == "No. Change direction before continuing. Update the dashboard spec and operational runbook."
 
     html =
-      render_submit(view, "skip_planned_slice", %{
-        "slice" => %{"id" => second_slice.id, "current_status" => "planned"}
+      render_submit(view, "answer_question", %{
+        "question" => %{
+          "id" => question.id,
+          "current_status" => "open",
+          "answer" => "Too late.",
+          "answered_by" => "local-operator"
+        }
       })
 
-    assert html =~ "skipped"
+    assert html =~ "That question is already answered."
+    assert {:ok, [still_answered]} = WorkRequestRepository.list_questions(Repo, request.id)
 
-    html = render_click(view, "mark_sliced", %{})
-    assert html =~ "sliced"
-    assert {:ok, sliced} = WorkRequestRepository.get(Repo, request.id)
-    assert sliced.status == "sliced"
+    assert still_answered.answer ==
+             "No. Change direction before continuing. Update the dashboard spec and operational runbook."
   end
 
   test "local operator dispatches approved planned slices through private handoff" do
@@ -1895,9 +1856,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
       |> live("/sympp/work-requests/#{request.id}")
 
     assert html =~ "Stale grant WorkRequest"
-    assert html =~ "Answer</button>"
-    assert html =~ "Close unanswered"
-    assert html =~ ~s(value="local-operator")
+    assert html =~ "Send answer"
+    assert html =~ "Human answer needed"
+    refute html =~ "Close unanswered"
     refute html =~ ~s(value="architect-operator")
 
     remote_conn =

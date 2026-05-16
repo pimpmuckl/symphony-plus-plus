@@ -429,7 +429,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                 </div>
               </dl>
             </div>
-            <div :if={can_manage_work_request?(@operator_mode?, @board_grant)} class="sympp-action-row">
+            <div :if={show_architect_work_request_controls?(@operator_mode?, @board_grant)} class="sympp-action-row">
               <button
                 :if={value(@page.work_request, :status) == "draft"}
                 type="button"
@@ -574,9 +574,12 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
           </article>
 
           <article class="sympp-panel">
-            <h2>Clarification questions</h2>
+            <h2><%= if @operator_mode?, do: "Questions for you", else: "Clarification questions" %></h2>
+            <p :if={@operator_mode?} class="sympp-panel-intro">
+              Answer the items that need a human call. Architect authoring controls stay out of the local cockpit.
+            </p>
             <.form
-              :if={can_manage_work_request?(@operator_mode?, @board_grant) && can_clarify?(@page.work_request)}
+              :if={show_architect_work_request_controls?(@operator_mode?, @board_grant) && can_clarify?(@page.work_request)}
               :let={f}
               for={%{}}
               as={:question}
@@ -607,11 +610,49 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                   <span class="sympp-card-id"><%= sequence_label(question) %></span>
                   <span class={status_class(value(question, :status))}><%= status_label(value(question, :status)) %></span>
                 </div>
-                <p class="mono"><%= value(question, :id) %></p>
-                <h3><%= value(question, :question) %></h3>
-                <p><%= value(question, :why_needed) %></p>
+                <%= if @operator_mode? and value(question, :status) == "open" do %>
+                  <section class="sympp-human-decision-card">
+                    <p class="sympp-human-kicker">Human answer needed</p>
+                    <h3><%= human_question_summary(question) %></h3>
+                    <p class="sympp-human-question"><%= value(question, :question) %></p>
+                    <dl class="sympp-human-decision-details">
+                      <div>
+                        <dt>Why it matters</dt>
+                        <dd><%= exact_value(value(question, :why_needed)) %></dd>
+                      </div>
+                      <div>
+                        <dt>Useful answer shape</dt>
+                        <dd>Pick a direction, narrow the scope, or say no and tell the agent what to do differently.</dd>
+                      </div>
+                    </dl>
+                    <.form :let={f} for={%{}} as={:question} phx-submit="answer_question" class="sympp-human-answer-form">
+                      <input type="hidden" name={f[:id].name} value={value(question, :id)} />
+                      <input type="hidden" name={f[:current_status].name} value={value(question, :status)} />
+                      <div class="sympp-choice-grid" role="radiogroup" aria-label="Answer direction">
+                        <label :for={choice <- human_answer_choices()} class="sympp-choice-option">
+                          <input type="radio" name={f[:answer_choice].name} value={choice.value} checked={choice.value == "continue"} />
+                          <span>
+                            <strong><%= choice.label %></strong>
+                            <small><%= choice.help %></small>
+                          </span>
+                        </label>
+                      </div>
+                      <label>
+                        <span>Notes for the agent</span>
+                        <textarea name={f[:answer_note].name} rows="3" placeholder="Add specifics, boundaries, or the replacement direction."></textarea>
+                      </label>
+                      <div class="sympp-form-actions">
+                        <button type="submit">Send answer</button>
+                      </div>
+                    </.form>
+                  </section>
+                <% else %>
+                  <p class="mono"><%= value(question, :id) %></p>
+                  <h3><%= value(question, :question) %></h3>
+                  <p><%= value(question, :why_needed) %></p>
+                <% end %>
                 <p :if={value(question, :answer)}><strong>Answer:</strong> <%= value(question, :answer) %></p>
-                <div :if={can_manage_work_request?(@operator_mode?, @board_grant) && value(question, :status) == "open"} class="sympp-question-actions">
+                <div :if={show_architect_work_request_controls?(@operator_mode?, @board_grant) && value(question, :status) == "open"} class="sympp-question-actions">
                   <.form :let={f} for={%{}} as={:question} phx-submit="answer_question" class="sympp-inline-answer-form">
                     <input type="hidden" name={f[:id].name} value={value(question, :id)} />
                     <input type="hidden" name={f[:current_status].name} value={value(question, :status)} />
@@ -639,9 +680,12 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
           </article>
 
           <article class="sympp-panel">
-            <h2>Decision log</h2>
+            <h2><%= if @operator_mode?, do: "Decision history", else: "Decision log" %></h2>
+            <p :if={@operator_mode?} class="sympp-panel-intro">
+              Past calls stay visible for context. New architecture decisions are recorded through the architect flow.
+            </p>
             <.form
-              :if={can_manage_work_request?(@operator_mode?, @board_grant) && can_clarify?(@page.work_request)}
+              :if={show_architect_work_request_controls?(@operator_mode?, @board_grant) && can_clarify?(@page.work_request)}
               :let={f}
               for={%{}}
               as={:decision}
@@ -693,8 +737,11 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
           <article class="sympp-panel sympp-panel-wide">
             <h2>Planned slices</h2>
+            <p :if={@operator_mode?} class="sympp-panel-intro">
+              Read-only architecture plan. Approval and slice authoring stay in the architect workflow; approved slices can be dispatched here.
+            </p>
             <.form
-              :if={can_manage_work_request?(@operator_mode?, @board_grant) && can_author_planned_slice?(@page.work_request)}
+              :if={show_architect_work_request_controls?(@operator_mode?, @board_grant) && can_author_planned_slice?(@page.work_request)}
               :let={f}
               for={@page.planned_slice_form}
               as={:planned_slice}
@@ -772,7 +819,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                   <p><%= value(slice, :goal) %></p>
                   <div class="sympp-slice-actions">
                     <.form
-                      :if={can_manage_work_request?(@operator_mode?, @board_grant) && can_approve_slice?(@page.work_request, slice)}
+                      :if={show_architect_work_request_controls?(@operator_mode?, @board_grant) && can_approve_slice?(@page.work_request, slice)}
                       :let={f}
                       for={%{}}
                       as={:slice}
@@ -784,7 +831,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                       <button type="submit">Approve</button>
                     </.form>
                     <.form
-                      :if={can_manage_work_request?(@operator_mode?, @board_grant) && can_skip_slice?(@page.work_request, slice)}
+                      :if={show_architect_work_request_controls?(@operator_mode?, @board_grant) && can_skip_slice?(@page.work_request, slice)}
                       :let={f}
                       for={%{}}
                       as={:slice}
@@ -956,6 +1003,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
               |> load_page(actor, socket.assigns.work_request_id)
               |> Map.put(:planned_slice_form, form)
               |> Map.put(:planned_slice_form_error, planned_slice_form_error_message(reason))
+              |> maybe_put_architect_control_error(reason)
 
             {:noreply, assign(socket, :page, page)}
         end
@@ -1269,6 +1317,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp form_error_message(_reason), do: "The WorkRequest could not be created."
 
   defp planned_slice_form_error_message(:forbidden), do: error_message(:forbidden)
+  defp planned_slice_form_error_message(:architect_control), do: action_error_message(:architect_control)
   defp planned_slice_form_error_message(:database_busy), do: "The Symphony++ ledger is busy. Try again shortly."
   defp planned_slice_form_error_message(:not_found), do: action_error_message(:not_found)
   defp planned_slice_form_error_message(:invalid_status), do: action_error_message(:invalid_status)
@@ -1280,6 +1329,11 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     do: "Check the required fields and selected values."
 
   defp planned_slice_form_error_message(_reason), do: "The planned slice could not be created."
+
+  defp maybe_put_architect_control_error(page, :architect_control),
+    do: Map.put(page, :action_error, action_error_message(:architect_control))
+
+  defp maybe_put_architect_control_error(page, _reason), do: page
 
   defp action_error_message(:stale_status),
     do: "The WorkRequest status changed. Refresh and try again."
@@ -1300,6 +1354,9 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     do: "That action is not available from the current status."
 
   defp action_error_message(:not_found), do: "The WorkRequest was not found in this board scope."
+
+  defp action_error_message(:architect_control),
+    do: "That action belongs in the architect workflow."
 
   defp action_error_message(:database_busy),
     do: "The Symphony++ ledger is busy. Try again shortly."
@@ -1377,11 +1434,14 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   end
 
   defp mark_ready_for_clarification(:local_operator, work_request_id)
-       when is_binary(work_request_id) do
-    SymppBoardLive.with_dashboard_repo(&mark_ready_in_repo(&1, :local_operator, work_request_id))
-  end
+       when is_binary(work_request_id),
+       do: {:error, :architect_control}
 
   defp mark_ready_for_clarification(_grant, _work_request_id), do: {:error, :not_found}
+
+  defp ask_question(:local_operator, work_request_id, params)
+       when is_binary(work_request_id) and is_map(params),
+       do: {:error, :architect_control}
 
   defp ask_question(actor, work_request_id, params)
        when is_binary(work_request_id) and is_map(params) do
@@ -1397,12 +1457,20 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp answer_question(_grant, _work_request_id, _params), do: {:error, :not_found}
 
+  defp close_question(:local_operator, work_request_id, params)
+       when is_binary(work_request_id) and is_map(params),
+       do: {:error, :architect_control}
+
   defp close_question(actor, work_request_id, params)
        when is_binary(work_request_id) and is_map(params) do
     SymppBoardLive.with_dashboard_repo(&close_question_in_repo(&1, actor, work_request_id, params))
   end
 
   defp close_question(_grant, _work_request_id, _params), do: {:error, :not_found}
+
+  defp record_decision(:local_operator, work_request_id, params)
+       when is_binary(work_request_id) and is_map(params),
+       do: {:error, :architect_control}
 
   defp record_decision(actor, work_request_id, params)
        when is_binary(work_request_id) and is_map(params) do
@@ -1411,12 +1479,20 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp record_decision(_grant, _work_request_id, _params), do: {:error, :not_found}
 
+  defp mark_human_info_needed(:local_operator, work_request_id)
+       when is_binary(work_request_id),
+       do: {:error, :architect_control}
+
   defp mark_human_info_needed(actor, work_request_id)
        when is_binary(work_request_id) do
     SymppBoardLive.with_dashboard_repo(&mark_human_info_needed_in_repo(&1, actor, work_request_id))
   end
 
   defp mark_human_info_needed(_grant, _work_request_id), do: {:error, :not_found}
+
+  defp mark_ready_for_slicing(:local_operator, work_request_id)
+       when is_binary(work_request_id),
+       do: {:error, :architect_control}
 
   defp mark_ready_for_slicing(actor, work_request_id)
        when is_binary(work_request_id) do
@@ -1437,17 +1513,14 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   end
 
   defp add_planned_slice(:local_operator, work_request_id, params)
-       when is_binary(work_request_id) and is_map(params) do
-    form = planned_slice_form(params)
-    attrs = planned_slice_attrs(form)
-
-    case SymppBoardLive.with_dashboard_repo(&add_planned_slice_in_repo(&1, :local_operator, work_request_id, attrs)) do
-      {:ok, planned_slice} -> {:ok, planned_slice}
-      {:error, reason} -> {:error, reason, form}
-    end
-  end
+       when is_binary(work_request_id) and is_map(params),
+       do: {:error, :architect_control, planned_slice_form(params)}
 
   defp add_planned_slice(_grant, _work_request_id, _params), do: {:error, :not_found, planned_slice_form()}
+
+  defp approve_planned_slice(:local_operator, work_request_id, params)
+       when is_binary(work_request_id) and is_map(params),
+       do: {:error, :architect_control}
 
   defp approve_planned_slice(actor, work_request_id, params)
        when is_binary(work_request_id) and is_map(params) do
@@ -1455,6 +1528,10 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   end
 
   defp approve_planned_slice(_grant, _work_request_id, _params), do: {:error, :not_found}
+
+  defp skip_planned_slice(:local_operator, work_request_id, params)
+       when is_binary(work_request_id) and is_map(params),
+       do: {:error, :architect_control}
 
   defp skip_planned_slice(actor, work_request_id, params)
        when is_binary(work_request_id) and is_map(params) do
@@ -1484,6 +1561,10 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp create_architect_handoff(_actor, _work_request_id), do: {:error, :forbidden}
 
+  defp mark_sliced(:local_operator, work_request_id)
+       when is_binary(work_request_id),
+       do: {:error, :architect_control}
+
   defp mark_sliced(actor, work_request_id)
        when is_binary(work_request_id) do
     SymppBoardLive.with_dashboard_repo(&mark_sliced_in_repo(&1, actor, work_request_id))
@@ -1500,12 +1581,6 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     end
   end
 
-  defp mark_ready_in_repo(repo, :local_operator, work_request_id) do
-    with {:ok, _work_request} <- WorkRequestService.get(repo, work_request_id) do
-      WorkRequestService.update_status(repo, work_request_id, "draft", "ready_for_clarification")
-    end
-  end
-
   defp ask_question_in_repo(repo, actor, work_request_id, params) do
     with {:ok, work_request} <- scoped_work_request(repo, actor, work_request_id),
          :ok <- require_clarification_status(work_request.status),
@@ -1517,7 +1592,8 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp answer_question_in_repo(repo, actor, work_request_id, params) do
     with {:ok, work_request} <- scoped_work_request(repo, actor, work_request_id),
          :ok <- require_clarification_status(work_request.status),
-         {:ok, question} <- scoped_question(repo, work_request.id, Map.get(params, "id")) do
+         {:ok, question} <- scoped_question(repo, work_request.id, Map.get(params, "id")),
+         :ok <- require_open_question(question) do
       WorkRequestService.answer_question(
         repo,
         question.id,
@@ -1730,6 +1806,11 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp require_status(status, allowed_statuses) do
     if status in allowed_statuses, do: :ok, else: {:error, :invalid_status}
   end
+
+  defp require_open_question(%{status: "open"}), do: :ok
+  defp require_open_question(%{status: "answered"}), do: {:error, :already_answered}
+  defp require_open_question(%{status: "closed"}), do: {:error, :already_closed}
+  defp require_open_question(_question), do: {:error, :invalid_status}
 
   defp open_questions?(repo, work_request_id) do
     case WorkRequestService.list_questions(repo, work_request_id) do
@@ -2091,8 +2172,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp answer_attrs(params, :local_operator) do
     params
     |> normalize_keys()
-    |> Map.take(["answer"])
-    |> Map.put("answered_by", @local_operator_actor)
+    |> then(fn params -> %{"answer" => human_answer_text(params), "answered_by" => @local_operator_actor} end)
   end
 
   defp decision_attrs(params, %AccessGrant{} = grant) do
@@ -2130,6 +2210,49 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     end
   end
 
+  defp human_answer_text(params) when is_map(params) do
+    answer = Map.get(params, "answer")
+
+    if is_binary(answer) and filled_string?(answer) do
+      String.trim(answer)
+    else
+      answer_choice_text(Map.get(params, "answer_choice"), Map.get(params, "answer_note"))
+    end
+  end
+
+  defp answer_choice_text(choice, note) do
+    base =
+      case choice do
+        "narrow" -> "Narrow the scope before continuing."
+        "redirect" -> "No. Change direction before continuing."
+        _choice -> "Continue with the proposed direction."
+      end
+
+    case note do
+      note when is_binary(note) ->
+        note = String.trim(note)
+        if note == "", do: base, else: "#{base} #{note}"
+
+      _note ->
+        base
+    end
+  end
+
+  defp human_answer_choices do
+    [
+      %{value: "continue", label: "Continue", help: "Use the suggested path."},
+      %{value: "narrow", label: "Narrow scope", help: "Keep the work smaller or safer."},
+      %{value: "redirect", label: "No, redirect", help: "Tell the agent what to do differently."}
+    ]
+  end
+
+  defp human_question_summary(question) do
+    case value(question, :category) do
+      category when is_binary(category) and category != "" -> "The agent needs your #{label_value(category)} call."
+      _category -> "The agent needs your call before it can continue."
+    end
+  end
+
   defp can_clarify?(work_request),
     do:
       value(work_request, :status) in [
@@ -2137,6 +2260,10 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
         "clarifying",
         "human_info_needed"
       ]
+
+  defp show_architect_work_request_controls?(operator_mode?, board_grant) do
+    not operator_mode? and can_manage_work_request?(operator_mode?, board_grant)
+  end
 
   defp can_mark_human_info_needed?(work_request),
     do: value(work_request, :status) in ["ready_for_clarification", "clarifying"]

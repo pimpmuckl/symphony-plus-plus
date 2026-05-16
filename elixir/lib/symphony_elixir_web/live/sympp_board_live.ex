@@ -15,6 +15,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   @empty_filter "all"
   @migrated_databases_key :sympp_board_live_migrated_databases
+  @review_lane_order ["review_deslop", "review_t1", "review_t2", "review_t3", "review_t4", "review_github"]
 
   @impl true
   def mount(params, session, socket) do
@@ -297,14 +298,12 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
                     </div>
                   </dl>
 
-                  <div class="sympp-readiness-row">
-                    <span class={readiness_class(card, :plan)}>
-                      Plan <%= plan_progress(card) %>
-                    </span>
-                    <span class={readiness_class(card, :review)}>
-                      Review <%= review_state(card) %>
-                    </span>
-                  </div>
+                  <ol class="sympp-progress-pipeline" aria-label="Package progress">
+                    <li :for={step <- progress_pipeline(card)} class={step.class}>
+                      <span><%= step.label %></span>
+                      <strong><%= step.value %></strong>
+                    </li>
+                  </ol>
 
                   <div :if={active_alerts(card) != []} class="sympp-alert-row">
                     <span :for={alert <- active_alerts(card)} class={alert_class(alert)}>
@@ -1325,32 +1324,180 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     end
   end
 
-  defp plan_progress(%{plan: %{total_count: total, completed_count: completed}})
-       when is_integer(total) and is_integer(completed) and total > 0 do
-    "#{completed}/#{total}"
+  defp progress_pipeline(card) do
+    [implementation_pipeline_step(card), review_pipeline_step(card), merge_pipeline_step(card)]
   end
 
-  defp plan_progress(_card), do: "n/a"
+  defp implementation_pipeline_step(card) do
+    cond do
+      implementation_done?(card) ->
+        pipeline_step("Implementation", "done", :ready)
 
-  defp readiness_class(card, :plan) do
-    case card.plan do
-      %{total_count: total, open_count: 0} when is_integer(total) and total > 0 -> "sympp-readiness sympp-readiness-ready"
-      %{total_count: total} when is_integer(total) and total > 0 -> "sympp-readiness"
-      _plan -> "sympp-readiness sympp-readiness-muted"
+      (Map.get(card, :active_blocker_count) || 0) > 0 ->
+        pipeline_step("Implementation", "blocked", :danger)
+
+      active_agent_run?(card) ->
+        pipeline_step("Implementation", runtime_label(card), :active)
+
+      Map.get(card, :status) == "implementing" ->
+        pipeline_step("Implementation", "active", :active)
+
+      true ->
+        pipeline_step("Implementation", status_label(Map.get(card, :status)), :muted)
     end
   end
 
-  defp readiness_class(card, :review) do
-    if review_present?(card) do
-      "sympp-readiness sympp-readiness-ready"
-    else
-      "sympp-readiness sympp-readiness-muted"
+  defp implementation_done?(card) do
+    Map.get(card, :status) in [
+      "reviewing",
+      "ci_waiting",
+      "ready_for_human_merge",
+      "ready_for_architect_merge",
+      "merging_into_phase",
+      "merged",
+      "merged_into_phase"
+    ]
+  end
+
+  defp review_pipeline_step(card) do
+    case current_review_evidence(card) do
+      {:green, lane} ->
+        pipeline_step("Review", review_lane_label(lane), :ready)
+
+      {:failed, lane} ->
+        pipeline_step("Review", "#{review_lane_label(lane)} failed", :danger)
+
+      {:pending, lane} ->
+        pipeline_step("Review", "#{review_lane_label(lane)} pending", :active)
+
+      nil ->
+        cond do
+          review_present?(card) ->
+            pipeline_step("Review", "Review attached", :active)
+
+          Map.get(card, :status) == "reviewing" ->
+            pipeline_step("Review", "Reviewing", :active)
+
+          true ->
+            pipeline_step("Review", "not started", :muted)
+        end
     end
   end
 
-  defp review_state(card), do: if(review_present?(card), do: "attached", else: "none")
+  defp merge_pipeline_step(card) do
+    case Map.get(card, :status) do
+      "merged" -> pipeline_step("Merge", "merged", :ready)
+      "merged_into_phase" -> pipeline_step("Merge", "merged", :ready)
+      "merging_into_phase" -> pipeline_step("Merge", "merging", :active)
+      "ready_for_human_merge" -> pipeline_step("Merge", "ready", :ready)
+      "ready_for_architect_merge" -> pipeline_step("Merge", "ready", :ready)
+      "ci_waiting" -> pipeline_step("Merge", "CI waiting", :active)
+      "blocked" -> pipeline_step("Merge", "blocked", :danger)
+      _status -> pipeline_step("Merge", "not ready", :muted)
+    end
+  end
 
-  defp review_present?(card), do: not is_nil(metadata_value(card, :review_package, "review_package"))
+  defp pipeline_step(label, value, state) do
+    %{label: label, value: value, class: "sympp-progress-step sympp-progress-step-#{state}"}
+  end
+
+  defp current_review_evidence(card) do
+    review_suite_result_evidence(card) || review_package_evidence(card)
+  end
+
+  defp review_suite_result_evidence(card) do
+    card
+    |> metadata_value(:review_suite_result, "review_suite_result")
+    |> review_evidence_from_payload()
+  end
+
+  defp review_package_evidence(card) do
+    case metadata_value(card, :review_package, "review_package") do
+      %{} = review_package ->
+        review_package
+        |> review_entries()
+        |> best_review_lane()
+
+      _review_package ->
+        nil
+    end
+  end
+
+  defp review_evidence_from_payload(%{} = payload) do
+    lane = review_lane_from_payload(payload)
+
+    if review_lane_known?(lane) do
+      {review_state_from_payload(payload), lane}
+    end
+  end
+
+  defp review_evidence_from_payload(_payload), do: nil
+
+  defp review_lane_from_payload(%{} = payload) do
+    Map.get(payload, :lane) || Map.get(payload, "lane") || Map.get(payload, :review_lane) || Map.get(payload, "review_lane") ||
+      Map.get(payload, :suite) || Map.get(payload, "suite")
+  end
+
+  defp review_entries(%{} = review_package) do
+    case Map.get(review_package, :reviews) || Map.get(review_package, "reviews") do
+      reviews when is_list(reviews) -> reviews
+      _reviews -> []
+    end
+  end
+
+  defp best_review_lane(reviews) when is_list(reviews) do
+    reviews
+    |> Enum.map(&review_evidence_from_payload/1)
+    |> Enum.reject(&is_nil/1)
+    |> latest_review_evidence()
+  end
+
+  defp latest_review_evidence([]), do: nil
+
+  defp latest_review_evidence(evidence) do
+    evidence
+    |> Enum.with_index()
+    |> Enum.max_by(fn {{_state, lane}, index} -> {index, review_lane_rank(lane)} end)
+    |> elem(0)
+  end
+
+  defp review_state_from_payload(%{} = payload) do
+    verdict = normalized_review_value(Map.get(payload, :verdict) || Map.get(payload, "verdict"))
+    status = normalized_review_value(Map.get(payload, :status) || Map.get(payload, "status"))
+
+    cond do
+      verdict in ["green", "clean", "passed", "pass"] or status in ["green", "clean", "passed", "pass"] -> :green
+      verdict in ["red", "failed", "fail", "findings"] or status in ["red", "failed", "fail", "findings"] -> :failed
+      true -> :pending
+    end
+  end
+
+  defp normalized_review_value(value) when is_binary(value), do: value |> String.trim() |> String.downcase()
+  defp normalized_review_value(_value), do: nil
+
+  defp review_lane_known?(lane) when is_binary(lane), do: normalized_review_lane(lane) in @review_lane_order
+  defp review_lane_known?(_lane), do: false
+
+  defp review_lane_rank(lane), do: Enum.find_index(@review_lane_order, &(&1 == normalized_review_lane(lane))) || -1
+
+  defp normalized_review_lane(lane) when is_binary(lane), do: lane |> String.trim() |> String.downcase()
+
+  defp review_lane_label(lane) do
+    case normalized_review_lane(lane) do
+      "review_deslop" -> "Review-Deslop"
+      "review_t1" -> "Review-T1"
+      "review_t2" -> "Review-T2"
+      "review_t3" -> "Review-T3"
+      "review_t4" -> "Review-T4"
+      "review_github" -> "Review-GitHub"
+      _lane -> "Review attached"
+    end
+  end
+
+  defp review_present?(card) do
+    not is_nil(metadata_value(card, :review_package, "review_package")) or
+      not is_nil(metadata_value(card, :review_suite_result, "review_suite_result"))
+  end
 
   defp pr_url(card) do
     case metadata_value(card, :pr, "pr") do
