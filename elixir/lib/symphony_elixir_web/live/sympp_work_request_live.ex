@@ -10,6 +10,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
@@ -614,23 +615,35 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                   <section class="sympp-human-decision-card">
                     <p class="sympp-human-kicker">Human answer needed</p>
                     <h3><%= human_question_summary(question) %></h3>
-                    <p class="sympp-human-question"><%= value(question, :question) %></p>
+                    <p class="sympp-human-question"><%= human_question_details(question) %></p>
                     <dl class="sympp-human-decision-details">
-                      <div>
-                        <dt>Why it matters</dt>
-                        <dd><%= exact_value(value(question, :why_needed)) %></dd>
-                      </div>
-                      <div>
-                        <dt>Useful answer shape</dt>
-                        <dd>Pick a direction, narrow the scope, or say no and tell the agent what to do differently.</dd>
+                      <div :for={{label, detail} <- human_question_detail_rows(question)}>
+                        <dt><%= label %></dt>
+                        <dd><%= detail %></dd>
                       </div>
                     </dl>
+                    <div :if={decision_prompt_options(value(question, :decision_prompt)) != []} class="sympp-decision-option-list">
+                      <article :for={option <- decision_prompt_options(value(question, :decision_prompt))} class="sympp-decision-option-card">
+                        <h4><%= decision_option_label(option) %></h4>
+                        <p :if={decision_option_description(option)}><%= decision_option_description(option) %></p>
+                        <dl>
+                          <div :if={decision_option_pros(option) != []}>
+                            <dt>Pros</dt>
+                            <dd><%= list_label(decision_option_pros(option)) %></dd>
+                          </div>
+                          <div :if={decision_option_cons(option) != []}>
+                            <dt>Cons</dt>
+                            <dd><%= list_label(decision_option_cons(option)) %></dd>
+                          </div>
+                        </dl>
+                      </article>
+                    </div>
                     <.form :let={f} for={%{}} as={:question} phx-submit="answer_question" class="sympp-human-answer-form">
                       <input type="hidden" name={f[:id].name} value={value(question, :id)} />
                       <input type="hidden" name={f[:current_status].name} value={value(question, :status)} />
                       <div class="sympp-choice-grid" role="radiogroup" aria-label="Answer direction">
-                        <label :for={choice <- human_answer_choices()} class="sympp-choice-option">
-                          <input type="radio" name={f[:answer_choice].name} value={choice.value} checked={choice.value == "continue"} />
+                        <label :for={choice <- human_answer_choices(question)} class="sympp-choice-option">
+                          <input type="radio" name={f[:answer_choice].name} value={choice.value} checked={choice.checked} />
                           <span>
                             <strong><%= choice.label %></strong>
                             <small><%= choice.help %></small>
@@ -1353,6 +1366,15 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp action_error_message(:invalid_status),
     do: "That action is not available from the current status."
 
+  defp action_error_message(:invalid_answer_choice),
+    do: "Select one of the listed answer choices."
+
+  defp action_error_message(:missing_answer),
+    do: "Select an answer before submitting."
+
+  defp action_error_message(:missing_custom_redirect_note),
+    do: "Add replacement guidance before redirecting."
+
   defp action_error_message(:not_found), do: "The WorkRequest was not found in this board scope."
 
   defp action_error_message(:architect_control),
@@ -1593,12 +1615,13 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     with {:ok, work_request} <- scoped_work_request(repo, actor, work_request_id),
          :ok <- require_clarification_status(work_request.status),
          {:ok, question} <- scoped_question(repo, work_request.id, Map.get(params, "id")),
-         :ok <- require_open_question(question) do
+         :ok <- require_open_question(question),
+         {:ok, attrs} <- answer_attrs(params, actor, question) do
       WorkRequestService.answer_question(
         repo,
         question.id,
         Map.get(params, "current_status", ""),
-        answer_attrs(params, actor)
+        attrs
       )
     end
   end
@@ -2162,17 +2185,33 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     |> put_if_filled("asked_by_agent_run_id", @local_operator_actor)
   end
 
-  defp answer_attrs(params, %AccessGrant{} = grant) do
-    params
-    |> normalize_keys()
-    |> Map.take(["answer", "answered_by"])
-    |> put_if_filled("answered_by", default_actor(grant))
+  defp answer_attrs(params, %AccessGrant{} = grant, _question) do
+    attrs =
+      params
+      |> normalize_keys()
+      |> Map.take(["answer", "answered_by"])
+      |> put_if_filled("answered_by", default_actor(grant))
+
+    {:ok, attrs}
   end
 
-  defp answer_attrs(params, :local_operator) do
+  defp answer_attrs(params, :local_operator, question) do
     params
     |> normalize_keys()
-    |> then(fn params -> %{"answer" => human_answer_text(params), "answered_by" => @local_operator_actor} end)
+    |> local_operator_answer_attrs(value(question, :decision_prompt))
+  end
+
+  defp local_operator_answer_attrs(params, decision_prompt) do
+    case HumanDecisionPrompt.answer_text_result(decision_prompt, params) do
+      {:ok, answer} ->
+        case String.trim(answer) do
+          "" -> {:error, :missing_answer}
+          answer -> {:ok, %{"answer" => answer, "answered_by" => @local_operator_actor}}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp decision_attrs(params, %AccessGrant{} = grant) do
@@ -2210,48 +2249,130 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
     end
   end
 
-  defp human_answer_text(params) when is_map(params) do
-    answer = Map.get(params, "answer")
+  defp human_answer_choices(record) do
+    case decision_prompt_options(value(record, :decision_prompt)) do
+      [] ->
+        [
+          %{value: "continue", label: "Continue", help: "Use the suggested path.", checked: true},
+          %{value: "narrow", label: "Narrow scope", help: "Keep the work smaller or safer.", checked: false},
+          %{value: "redirect", label: "No, redirect", help: "Tell the agent what to do differently.", checked: false}
+        ]
 
-    if is_binary(answer) and filled_string?(answer) do
-      String.trim(answer)
-    else
-      answer_choice_text(Map.get(params, "answer_choice"), Map.get(params, "answer_note"))
+      options ->
+        options
+        |> Enum.map(&decision_prompt_choice/1)
+        |> maybe_append_custom_redirect_choice(value(record, :decision_prompt))
+        |> mark_first_choice_checked()
     end
-  end
-
-  defp answer_choice_text(choice, note) do
-    base =
-      case choice do
-        "narrow" -> "Narrow the scope before continuing."
-        "redirect" -> "No. Change direction before continuing."
-        _choice -> "Continue with the proposed direction."
-      end
-
-    case note do
-      note when is_binary(note) ->
-        note = String.trim(note)
-        if note == "", do: base, else: "#{base} #{note}"
-
-      _note ->
-        base
-    end
-  end
-
-  defp human_answer_choices do
-    [
-      %{value: "continue", label: "Continue", help: "Use the suggested path."},
-      %{value: "narrow", label: "Narrow scope", help: "Keep the work smaller or safer."},
-      %{value: "redirect", label: "No, redirect", help: "Tell the agent what to do differently."}
-    ]
   end
 
   defp human_question_summary(question) do
+    value(question, :decision_prompt)
+    |> prompt_text(:tl_dr)
+    |> case do
+      summary when is_binary(summary) -> summary
+      _summary -> fallback_human_question_summary(question)
+    end
+  end
+
+  defp fallback_human_question_summary(question) do
     case value(question, :category) do
       category when is_binary(category) and category != "" -> "The agent needs your #{label_value(category)} call."
       _category -> "The agent needs your call before it can continue."
     end
   end
+
+  defp human_question_details(question) do
+    value(question, :decision_prompt)
+    |> prompt_text(:details)
+    |> case do
+      details when is_binary(details) -> details
+      _details -> value(question, :question)
+    end
+  end
+
+  defp human_question_detail_rows(question) do
+    if structured_prompt?(value(question, :decision_prompt)) do
+      [
+        {"Question", exact_value(value(question, :question))},
+        {"Why it matters", exact_value(value(question, :why_needed))},
+        {"Freeform redirect", custom_redirect_label(value(question, :decision_prompt))}
+      ]
+    else
+      [
+        {"Why it matters", exact_value(value(question, :why_needed))},
+        {"Useful answer shape", default_custom_redirect_label()}
+      ]
+    end
+    |> Enum.reject(fn {_label, detail} -> detail in [nil, ""] end)
+  end
+
+  defp structured_prompt?(prompt), do: is_map(prompt) and decision_prompt_options(prompt) != []
+
+  defp prompt_text(prompt, key) when is_map(prompt) do
+    case value(prompt, key) do
+      text when is_binary(text) and text != "" -> text
+      _text -> nil
+    end
+  end
+
+  defp prompt_text(_prompt, _key), do: nil
+
+  defp decision_prompt_options(prompt) when is_map(prompt) do
+    case value(prompt, :options, []) do
+      options when is_list(options) -> Enum.filter(options, &is_map/1)
+      _options -> []
+    end
+  end
+
+  defp decision_prompt_options(_prompt), do: []
+
+  defp decision_prompt_choice(option) do
+    %{
+      value: exact_value(value(option, :id)),
+      label: decision_option_label(option),
+      help: decision_option_description(option) || "Use this answer.",
+      checked: false
+    }
+  end
+
+  defp maybe_append_custom_redirect_choice(choices, prompt) do
+    label = custom_redirect_label(prompt)
+
+    if label == "" do
+      choices
+    else
+      choices ++ [%{value: HumanDecisionPrompt.custom_redirect_choice_id(), label: label, help: "Write a different direction below.", checked: false}]
+    end
+  end
+
+  defp mark_first_choice_checked([]), do: []
+
+  defp mark_first_choice_checked([first | rest]) do
+    [Map.put(first, :checked, true) | rest]
+  end
+
+  defp decision_option_label(option), do: exact_value(value(option, :label))
+
+  defp decision_option_description(option) do
+    case value(option, :description) do
+      description when is_binary(description) and description != "" -> description
+      _description -> nil
+    end
+  end
+
+  defp decision_option_pros(option), do: option_list(option, :pros)
+  defp decision_option_cons(option), do: option_list(option, :cons)
+
+  defp option_list(option, key) do
+    case value(option, key, []) do
+      values when is_list(values) -> values
+      _values -> []
+    end
+  end
+
+  defp custom_redirect_label(prompt), do: prompt_text(prompt, :custom_redirect_label) || default_custom_redirect_label()
+  defp default_custom_redirect_label, do: "No, and tell the agent what to do differently"
 
   defp can_clarify?(work_request),
     do:

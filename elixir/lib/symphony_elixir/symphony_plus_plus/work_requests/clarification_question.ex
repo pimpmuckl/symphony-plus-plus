@@ -5,6 +5,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion do
 
   import Ecto.Changeset
 
+  alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
+
   @primary_key {:id, :string, autogenerate: false}
   @foreign_key_type :string
 
@@ -17,6 +19,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion do
           category: String.t() | nil,
           question: String.t() | nil,
           why_needed: String.t() | nil,
+          decision_prompt: map() | nil,
           status: String.t() | nil,
           asked_by_agent_run_id: String.t() | nil,
           answer: String.t() | nil,
@@ -32,6 +35,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion do
     field(:category, :string)
     field(:question, :string)
     field(:why_needed, :string)
+    field(:decision_prompt, :map)
     field(:status, :string)
     field(:asked_by_agent_run_id, :string)
     field(:answer, :string)
@@ -74,6 +78,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion do
       :category,
       :question,
       :why_needed,
+      :decision_prompt,
       :status,
       :asked_by_agent_run_id,
       :answer,
@@ -91,6 +96,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion do
     ])
     |> validate_number(:sequence, greater_than: 0)
     |> validate_inclusion(:status, @statuses)
+    |> normalize_decision_prompt()
+    |> validate_decision_prompt()
+  end
+
+  defp normalize_decision_prompt(changeset) do
+    case get_change(changeset, :decision_prompt) do
+      nil ->
+        changeset
+
+      prompt ->
+        case HumanDecisionPrompt.normalize(prompt) do
+          {:ok, normalized} -> put_change(changeset, :decision_prompt, normalized)
+          {:error, _reason} -> changeset
+        end
+    end
+  end
+
+  defp validate_decision_prompt(changeset) do
+    validate_change(changeset, :decision_prompt, fn :decision_prompt, prompt ->
+      case HumanDecisionPrompt.normalize(prompt) do
+        {:ok, _normalized} -> []
+        {:error, reason} -> [decision_prompt: HumanDecisionPrompt.error_message(reason)]
+      end
+    end)
   end
 
   defp normalize_keys(attrs) when is_map(attrs) do

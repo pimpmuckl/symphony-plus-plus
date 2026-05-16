@@ -6,6 +6,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository
+  alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
@@ -22,8 +23,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service do
           | :expired
           | :forbidden
           | :idempotency_conflict
+          | :invalid_answer_choice
           | :invalid_status
           | :missing_answer
+          | :missing_custom_redirect_note
           | :missing_idempotency_key
           | :unauthenticated
           | :work_package_scope_mismatch
@@ -83,11 +86,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service do
 
     repo
     |> run_local_operator_transaction(fn ->
-      with {:ok, answer} <- required_trimmed(attrs, "answer", :missing_answer),
-           {:ok, work_package_id} <- required_trimmed(attrs, "work_package_id", :work_package_scope_mismatch),
+      with {:ok, work_package_id} <- required_trimmed(attrs, "work_package_id", :work_package_scope_mismatch),
            {:ok, guidance_request} <- Repository.get(repo, id),
            :ok <- require_local_operator_scope(guidance_request, work_package_id),
            :ok <- require_human_info_needed(guidance_request),
+           {:ok, answer} <- local_operator_answer(guidance_request, attrs),
            :ok <- lock_work_package(repo, guidance_request.work_package_id),
            {:ok, answered} <-
              Repository.answer_human_info_needed(repo, id, %{
@@ -214,16 +217,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service do
   end
 
   defp replay_or_conflict(%GuidanceRequest{} = guidance_request, attrs) do
-    expected = Map.take(attrs, ["work_package_id", "requester_grant_id", "idempotency_key", "summary", "question", "context"])
+    expected =
+      Map.take(attrs, [
+        "work_package_id",
+        "requester_grant_id",
+        "idempotency_key",
+        "summary",
+        "question",
+        "context",
+        "decision_prompt"
+      ])
 
-    actual = %{
-      "work_package_id" => guidance_request.work_package_id,
-      "requester_grant_id" => guidance_request.requester_grant_id,
-      "idempotency_key" => guidance_request.idempotency_key,
-      "summary" => guidance_request.summary,
-      "question" => guidance_request.question,
-      "context" => guidance_request.context
-    }
+    actual =
+      %{
+        "work_package_id" => guidance_request.work_package_id,
+        "requester_grant_id" => guidance_request.requester_grant_id,
+        "idempotency_key" => guidance_request.idempotency_key,
+        "summary" => guidance_request.summary,
+        "question" => guidance_request.question,
+        "context" => guidance_request.context,
+        "decision_prompt" => guidance_request.decision_prompt
+      }
+      |> Map.reject(fn {_key, value} -> is_nil(value) end)
 
     if expected == actual, do: {:ok, guidance_request}, else: {:error, :idempotency_conflict}
   end
@@ -236,8 +251,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service do
       "idempotency_key" => idempotency_key,
       "summary" => Map.get(attrs, "summary"),
       "question" => Map.get(attrs, "question"),
-      "context" => Map.get(attrs, "context")
+      "context" => Map.get(attrs, "context"),
+      "decision_prompt" => request_decision_prompt(Map.get(attrs, "decision_prompt"))
     }
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp request_decision_prompt(nil), do: nil
+
+  defp request_decision_prompt(prompt) do
+    case HumanDecisionPrompt.normalize(prompt) do
+      {:ok, normalized} -> normalized
+      {:error, _reason} -> prompt
+    end
+  end
+
+  defp local_operator_answer(%GuidanceRequest{} = guidance_request, attrs) do
+    case HumanDecisionPrompt.answer_text_result(guidance_request.decision_prompt, attrs) do
+      {:ok, answer} ->
+        case String.trim(answer) do
+          "" -> {:error, :missing_answer}
+          answer -> {:ok, answer}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp require_worker_scope(%GuidanceRequest{} = guidance_request, %Assignment{} = assignment) do

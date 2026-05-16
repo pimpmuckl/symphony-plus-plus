@@ -872,6 +872,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "read:child_findings",
         "read:work_request",
         "write:work_request",
+        "write:guidance_request",
         "mint:child_worker_key",
         "read:phase",
         "dispatch:work_request",
@@ -898,8 +899,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["read_work_request", "inputSchema", "properties", "work_request_id", "type"]) == "string"
     assert get_in(tools_by_name, ["set_work_request_status", "inputSchema", "required"]) == ["work_request_id", "current_status", "next_status"]
     assert get_in(tools_by_name, ["ask_work_request_question", "inputSchema", "required"]) == ["work_request_id", "category", "question", "why_needed"]
+    assert get_in(tools_by_name, ["ask_work_request_question", "inputSchema", "properties", "decision_prompt", "required"]) == ["tl_dr", "details", "options"]
     assert get_in(tools_by_name, ["answer_work_request_question", "inputSchema", "required"]) == ["work_request_id", "question_id", "current_status", "answer"]
     assert get_in(tools_by_name, ["answer_work_request_question", "inputSchema", "properties", "answered_by", "type"]) == "string"
+    assert get_in(tools_by_name, ["escalate_guidance_request", "inputSchema", "properties", "decision_prompt", "required"]) == ["tl_dr", "details", "options"]
     assert get_in(tools_by_name, ["close_work_request_question", "inputSchema", "required"]) == ["work_request_id", "question_id", "current_status"]
 
     assert get_in(tools_by_name, ["record_work_request_decision", "inputSchema", "required"]) == [
@@ -3741,6 +3744,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "category" => "scope",
         "question" => "Can the implementation use Bearer raw_secret_value?",
         "why_needed" => "The architect needs to avoid raw_secret_value leakage.",
+        "decision_prompt" => %{
+          "tl_dr" => "Choose whether to continue.",
+          "details" => "The architect needs a human-readable option picker.",
+          "options" => [
+            %{
+              "id" => "continue",
+              "label" => "Continue",
+              "description" => "Proceed with the safe path.",
+              "pros" => ["Fastest path"],
+              "cons" => ["Leaves polish for later"],
+              "answer" => "Continue without raw_secret_value."
+            }
+          ],
+          "custom_redirect_label" => "No, and tell the agent what to do differently"
+        },
         "asked_by_agent_run_id" => "raw_secret_value"
       })
 
@@ -3749,6 +3767,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert is_binary(question_id)
     assert get_in(ask_payload, ["clarification_question", "status"]) == "open"
     assert get_in(ask_payload, ["clarification_question", "asked_by_agent_run_id"]) == "[REDACTED]"
+    assert get_in(ask_payload, ["clarification_question", "decision_prompt", "tl_dr"]) == "Choose whether to continue."
+    assert get_in(ask_payload, ["clarification_question", "decision_prompt", "options", Access.at(0), "answer"]) == "Continue without [REDACTED]."
     assert MapSet.new(Map.keys(ask_payload["work_request"])) == MapSet.new(["id", "status", "updated_at"])
     refute inspect(ask_response) =~ "raw_secret_value"
 
@@ -3804,6 +3824,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Enum.map(questions, & &1.status) == ["answered", "closed"]
     assert {:ok, decisions} = WorkRequestRepository.list_decisions(repo, work_request.id)
     assert Enum.map(decisions, & &1.source_id) == ["comment-1"]
+  end
+
+  test "ask_work_request_question rejects malformed decision prompts without echoing nested input", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-BAD-PROMPT", [
+        "write:work_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-BAD-DECISION-PROMPT",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "clarifying"
+      )
+
+    response =
+      mcp_tool(repo, session, "ask_work_request_question", %{
+        "work_request_id" => work_request.id,
+        "category" => "scope",
+        "question" => "Can the implementation continue?",
+        "why_needed" => "The architect needs a human answer.",
+        "decision_prompt" => %{
+          "tl_dr" => "Do not leak raw_secret_value.",
+          "details" => "This malformed prompt is missing options."
+        }
+      })
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "reason"]) == "decision_prompt must contain 1 to 4 options"
+    refute inspect(response) =~ "raw_secret_value"
   end
 
   test "WorkRequest MCP question mutations leave parent status explicit", %{repo: repo} do

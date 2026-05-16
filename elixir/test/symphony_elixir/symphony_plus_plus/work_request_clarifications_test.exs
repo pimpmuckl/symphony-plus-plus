@@ -126,6 +126,92 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestClarificationsTest do
     assert question.answered_at == nil
   end
 
+  test "optional decision prompts persist normalized structured choices", %{repo: repo} do
+    work_request = create_work_request!(repo)
+
+    assert {:ok, question} =
+             Repository.ask_question(
+               repo,
+               work_request.id,
+               question_attrs(
+                 id: "WRQ-DECISION-PROMPT",
+                 decision_prompt: %{
+                   tl_dr: "Pick the bounded path.",
+                   details: "The architect needs a simple product call before slicing.",
+                   options: [
+                     %{
+                       id: "continue",
+                       label: "Continue",
+                       description: "Proceed with the proposed path.",
+                       pros: ["Fastest"],
+                       cons: ["Less polish"],
+                       answer: "Continue with the proposed path."
+                     }
+                   ],
+                   custom_redirect_label: "No, and tell the agent what to do differently"
+                 }
+               )
+             )
+
+    assert question.decision_prompt == %{
+             "tl_dr" => "Pick the bounded path.",
+             "details" => "The architect needs a simple product call before slicing.",
+             "options" => [
+               %{
+                 "id" => "continue",
+                 "label" => "Continue",
+                 "description" => "Proceed with the proposed path.",
+                 "pros" => ["Fastest"],
+                 "cons" => ["Less polish"],
+                 "answer" => "Continue with the proposed path."
+               }
+             ],
+             "custom_redirect_label" => "No, and tell the agent what to do differently"
+           }
+  end
+
+  test "malformed decision prompts are rejected when present", %{repo: repo} do
+    work_request = create_work_request!(repo)
+
+    assert {:error, changeset} =
+             Repository.ask_question(
+               repo,
+               work_request.id,
+               question_attrs(
+                 id: "WRQ-BAD-DECISION-PROMPT",
+                 decision_prompt: %{"tl_dr" => "Missing options", "details" => "No choices."}
+               )
+             )
+
+    assert %{decision_prompt: ["must contain 1 to 4 options"]} = errors_on(changeset)
+  end
+
+  test "decision prompt option ids cannot use the custom redirect sentinel", %{repo: repo} do
+    work_request = create_work_request!(repo)
+
+    assert {:error, changeset} =
+             Repository.ask_question(
+               repo,
+               work_request.id,
+               question_attrs(
+                 id: "WRQ-RESERVED-DECISION-PROMPT",
+                 decision_prompt: %{
+                   "tl_dr" => "Pick one.",
+                   "details" => "Avoid colliding with the freeform redirect option.",
+                   "options" => [
+                     %{
+                       "id" => "__custom_redirect__",
+                       "label" => "Use a custom path",
+                       "answer" => "Use the custom path."
+                     }
+                   ]
+                 }
+               )
+             )
+
+    assert %{decision_prompt: ["contains a reserved option id"]} = errors_on(changeset)
+  end
+
   test "answers questions optimistically without mutating WorkRequest status", %{repo: repo} do
     work_request = create_work_request!(repo, status: "clarifying")
     assert {:ok, question} = Repository.ask_question(repo, work_request.id, question_attrs(id: "WRQ-ANSWER"))

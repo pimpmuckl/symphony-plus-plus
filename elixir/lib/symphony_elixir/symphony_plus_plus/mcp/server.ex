@@ -12,6 +12,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.GitHub.{Client, DryClient, PullRequest}
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service, as: GuidanceRequestService
+  alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Session}
@@ -1243,7 +1244,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       %{
         "guidance_request_id" => string_schema(),
         "reason" => string_schema(),
-        "recommended_language" => string_schema()
+        "recommended_language" => string_schema(),
+        "decision_prompt" => decision_prompt_schema()
       },
       ["guidance_request_id", "reason", "recommended_language"]
     )
@@ -1267,6 +1269,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "category" => string_schema(),
         "question" => string_schema(),
         "why_needed" => string_schema(),
+        "decision_prompt" => decision_prompt_schema(),
         "asked_by_agent_run_id" => string_schema()
       },
       ["work_request_id", "category", "question", "why_needed"]
@@ -1522,6 +1525,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp nullable_string_schema, do: %{"type" => ["string", "null"]}
   defp object_schema, do: %{"type" => "object", "additionalProperties" => true}
+
+  defp decision_prompt_schema do
+    %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "properties" => %{
+        "tl_dr" => nonblank_string_schema(),
+        "details" => nonblank_string_schema(),
+        "options" => %{
+          "type" => "array",
+          "minItems" => 1,
+          "maxItems" => 4,
+          "items" => %{
+            "type" => "object",
+            "additionalProperties" => false,
+            "properties" => %{
+              "id" => nonblank_string_schema(),
+              "label" => nonblank_string_schema(),
+              "description" => nonblank_string_schema(),
+              "pros" => string_array_schema(),
+              "cons" => string_array_schema(),
+              "answer" => nonblank_string_schema()
+            },
+            "required" => ["id", "label", "answer"]
+          }
+        },
+        "custom_redirect_label" => nonblank_string_schema()
+      },
+      "required" => ["tl_dr", "details", "options"]
+    }
+  end
 
   defp metadata_head_schema do
     %{
@@ -1964,7 +1998,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, guidance_request_id} <- required_argument(arguments, "guidance_request_id"),
          {:ok, reason} <- required_argument(arguments, "reason"),
          {:ok, recommended_language} <- required_argument(arguments, "recommended_language"),
-         {:ok, result} <- escalate_guidance_request_transaction(config.repo, session, guidance_request_id, reason, recommended_language) do
+         {:ok, decision_prompt} <- optional_decision_prompt_argument(arguments, "decision_prompt"),
+         {:ok, result} <-
+           escalate_guidance_request_transaction(
+             config.repo,
+             session,
+             guidance_request_id,
+             reason,
+             recommended_language,
+             decision_prompt
+           ) do
       {:ok, tool_result(result)}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "escalate_guidance_request", "reason" => reason}}
@@ -2003,6 +2046,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, category} <- required_argument(arguments, "category"),
          {:ok, question} <- required_argument(arguments, "question"),
          {:ok, why_needed} <- required_argument(arguments, "why_needed"),
+         {:ok, decision_prompt} <- optional_decision_prompt_argument(arguments, "decision_prompt"),
          {:ok, asked_by_agent_run_id} <- optional_string_argument(arguments, "asked_by_agent_run_id"),
          {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
          {:ok, _work_request} <- scoped_work_request(config.repo, work_request_id, filters),
@@ -2016,6 +2060,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
                  "question" => question,
                  "why_needed" => why_needed
                },
+               "decision_prompt",
+               decision_prompt
+             )
+             |> optional_put(
                "asked_by_agent_run_id",
                asked_by_agent_run_id
              )
@@ -4932,7 +4980,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end)
   end
 
-  defp escalate_guidance_request_transaction(repo, %Session{} = session, guidance_request_id, reason, recommended_language) do
+  defp escalate_guidance_request_transaction(
+         repo,
+         %Session{} = session,
+         guidance_request_id,
+         reason,
+         recommended_language,
+         decision_prompt
+       ) do
     repo
     |> run_architect_transaction(fn ->
       with {:ok, filters, scope} <- scoped_guidance_request_filters(repo, session),
@@ -4944,6 +4999,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
              GuidanceRequestService.escalate_human_info_needed(repo, guidance_request.id, %{
                "human_info_reason" => reason,
                "recommended_language" => recommended_language,
+               "decision_prompt" => decision_prompt,
                "blocker_id" => blocker_id
              }),
            {:ok, blocker_event} <-
@@ -7549,6 +7605,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp optional_object_argument(arguments, key) do
+    case Map.fetch(arguments, key) do
+      :error -> {:ok, nil}
+      {:ok, nil} -> {:ok, nil}
+      {:ok, value} when is_map(value) -> {:ok, value}
+      {:ok, _value} -> {:tool_error, "invalid_#{key}"}
+    end
+  end
+
+  defp optional_decision_prompt_argument(arguments, key) do
+    with {:ok, prompt} <- optional_object_argument(arguments, key) do
+      case HumanDecisionPrompt.normalize(prompt) do
+        {:ok, normalized} -> {:ok, normalized}
+        {:error, reason} -> {:tool_error, "#{key} #{HumanDecisionPrompt.error_message(reason)}"}
+      end
+    end
+  end
+
   defp required_integer(arguments, key) do
     case Map.get(arguments, key) do
       value when is_integer(value) -> {:ok, value}
@@ -7759,6 +7833,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "answered_at" => timestamp(guidance_request.answered_at),
       "human_info_reason" => Redactor.redact_text(guidance_request.human_info_reason),
       "recommended_language" => Redactor.redact_text(guidance_request.recommended_language),
+      "decision_prompt" => Redactor.redact_output(guidance_request.decision_prompt),
       "blocker_id" => guidance_request.blocker_id,
       "inserted_at" => timestamp(guidance_request.inserted_at),
       "updated_at" => timestamp(guidance_request.updated_at)
@@ -7812,6 +7887,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "category" => Redactor.redact_text(question.category),
       "question" => Redactor.redact_text(question.question),
       "why_needed" => Redactor.redact_text(question.why_needed),
+      "decision_prompt" => Redactor.redact_output(question.decision_prompt),
       "status" => question.status,
       "asked_by_agent_run_id" => Redactor.redact_text(question.asked_by_agent_run_id),
       "answer" => Redactor.redact_text(question.answer),

@@ -140,6 +140,37 @@ service primitives: status movement is explicit through
 approved-slice requirement, and the question/decision tools do not apply
 dashboard-only auto-transition or lifecycle helper policy.
 
+`ask_work_request_question` accepts an optional `decision_prompt` JSON object so
+architects can persist human-readable answer cards without replacing the
+plain-text `question` and `why_needed` fields. The shape is:
+
+```json
+{
+  "tl_dr": "Short human-readable summary.",
+  "details": "Full question/context.",
+  "options": [
+    {
+      "id": "continue",
+      "label": "Continue",
+      "description": "Let the agent proceed with the proposed path.",
+      "pros": ["Fastest path"],
+      "cons": ["May leave one detail less polished"],
+      "answer": "Continue with the proposed path."
+    }
+  ],
+  "custom_redirect_label": "No, and tell the agent what to do differently"
+}
+```
+
+The persisted object is optional, limited to one to four options, redacted in
+MCP and dashboard projections, and rejected if malformed. Local operator
+answers use the selected option's `answer` text plus any operator note; the
+custom redirect path is always available as a human override. The
+`custom_redirect_label` field only overrides that path's visible label; when it
+is omitted, the cockpit uses the default "No, and tell the agent what to do
+differently" label. Custom redirect answers persist only the operator's
+replacement guidance note, not the UI label.
+
 Explicit phase-scoped architect MCP sessions with `dispatch:work_request` can
 dispatch one approved planned slice through
 `dispatch_work_request_planned_slice`. The tool is separate from
@@ -369,10 +400,14 @@ scope. Requests from unrelated sibling packages fail closed as not found.
 Architect sessions with `write:guidance_request` can answer open requests with
 `answer_guidance_request(guidance_request_id, answer, answered_by?)` or escalate
 them with `escalate_guidance_request(guidance_request_id, reason,
-recommended_language)`. Escalation marks the guidance request
+recommended_language, decision_prompt?)`. Escalation marks the guidance request
 `human_info_needed` and records an active package blocker with the recommended
 human-facing language, so the existing `mark_ready` readiness gate blocks until
-the local operator answers the request from the cockpit.
+the local operator answers the request from the cockpit. The optional
+`decision_prompt` shape is the same structured human answer-card object used by
+WorkRequest clarification questions; when present, the cockpit renders TL;DR,
+details, options, pros/cons, and the always-available custom redirect path. The
+optional `custom_redirect_label` customizes only that path's visible label.
 
 The local operator board includes `human_info_needed` package guidance in the
 Product Guidance Needed watchlist. The WorkPackage detail page shows safe

@@ -5,6 +5,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest do
 
   import Ecto.Changeset
 
+  alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
+
   @primary_key {:id, :string, autogenerate: false}
   @foreign_key_type :string
 
@@ -36,6 +38,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest do
           answered_at: DateTime.t() | nil,
           human_info_reason: String.t() | nil,
           recommended_language: String.t() | nil,
+          decision_prompt: map() | nil,
           blocker_id: String.t() | nil,
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
@@ -55,6 +58,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest do
     field(:answered_at, :utc_datetime_usec)
     field(:human_info_reason, :string)
     field(:recommended_language, :string)
+    field(:decision_prompt, :map)
     field(:blocker_id, :string)
 
     timestamps(type: :utc_datetime_usec)
@@ -87,11 +91,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest do
       :answered_at,
       :human_info_reason,
       :recommended_language,
+      :decision_prompt,
       :blocker_id
     ])
     |> validate_required(@create_required_fields)
     |> validate_nonblank(@create_required_fields)
     |> validate_inclusion(:status, @statuses)
+    |> normalize_decision_prompt()
+    |> validate_decision_prompt()
     |> unique_constraint(:id, name: :sympp_guidance_requests_id_unique_index)
     |> unique_constraint(:idempotency_key, name: :sympp_guidance_requests_worker_idempotency_key_unique_index)
     |> foreign_key_constraint(:work_package_id)
@@ -110,10 +117,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest do
   @spec escalate_changeset(t(), map()) :: Ecto.Changeset.t()
   def escalate_changeset(%__MODULE__{} = guidance_request, attrs) do
     guidance_request
-    |> cast(normalize_keys(attrs), [:status, :human_info_reason, :recommended_language, :blocker_id])
+    |> cast(normalize_keys(attrs), [:status, :human_info_reason, :recommended_language, :decision_prompt, :blocker_id])
     |> validate_required([:status, :human_info_reason, :recommended_language, :blocker_id])
     |> validate_nonblank([:human_info_reason, :recommended_language, :blocker_id])
     |> validate_inclusion(:status, @statuses)
+    |> normalize_decision_prompt()
+    |> validate_decision_prompt()
+  end
+
+  defp normalize_decision_prompt(changeset) do
+    case get_change(changeset, :decision_prompt) do
+      nil ->
+        changeset
+
+      prompt ->
+        case HumanDecisionPrompt.normalize(prompt) do
+          {:ok, normalized} -> put_change(changeset, :decision_prompt, normalized)
+          {:error, _reason} -> changeset
+        end
+    end
+  end
+
+  defp validate_decision_prompt(changeset) do
+    validate_change(changeset, :decision_prompt, fn :decision_prompt, prompt ->
+      case HumanDecisionPrompt.normalize(prompt) do
+        {:ok, _normalized} -> []
+        {:error, reason} -> [decision_prompt: HumanDecisionPrompt.error_message(reason)]
+      end
+    end)
   end
 
   defp validate_nonblank(changeset, fields) do

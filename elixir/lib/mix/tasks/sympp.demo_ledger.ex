@@ -9,6 +9,10 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
 
   import Ecto.Query, only: [from: 2]
 
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
+  alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
+  alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository, as: GuidanceRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Finding
   alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
@@ -20,6 +24,7 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
@@ -198,6 +203,7 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
     Repo.transaction(fn ->
       with {:ok, work_requests} <- seed_work_requests(),
            {:ok, work_packages} <- seed_work_packages(),
+           {:ok, guidance_requests} <- seed_human_decision_prompts(),
            {:ok, planned_slices} <- seed_planned_slices(),
            {:ok, _evidence} <- seed_work_package_evidence(),
            {:ok, solo_sessions} <- seed_solo_sessions(),
@@ -208,6 +214,7 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
           "cockpit_path" => @board_path,
           "seed" => %{
             "work_requests" => Enum.map(work_requests, & &1.id),
+            "guidance_requests" => Enum.map(guidance_requests, & &1.id),
             "planned_slices" => Enum.map(planned_slices, & &1.id),
             "work_packages" => Enum.map(work_packages, & &1.id),
             "solo_sessions" => Enum.map(solo_sessions, & &1.id)
@@ -284,6 +291,103 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
   defp allowed_file_globs(_id), do: ["elixir/lib/**", "implementation_docs_symphplusplus/**"]
 
   defp acceptance_criteria(title), do: ["Cockpit displays #{title}.", "Evidence remains synthetic and redacted."]
+
+  defp seed_human_decision_prompts do
+    with {:ok, _question} <-
+           WorkRequestRepository.ask_question(Repo, "SYMPP-DEMO-WR-HUMAN", %{
+             id: "SYMPP-DEMO-WRQ-STRUCTURED",
+             category: "ownership",
+             question: "Which package should own the cockpit guidance rendering?",
+             why_needed: "The architect needs a bounded ownership call before slicing.",
+             decision_prompt: demo_work_request_decision_prompt()
+           }),
+         {:ok, grant} <- AccessGrantRepository.create(Repo, demo_guidance_grant_attrs()),
+         {:ok, guidance} <- GuidanceRequestRepository.create(Repo, demo_guidance_request_attrs(grant.id)) do
+      {:ok, [guidance]}
+    end
+  end
+
+  defp demo_guidance_grant_attrs do
+    %{
+      id: "SYMPP-DEMO-GRANT-GUIDANCE",
+      work_package_id: "SYMPP-DEMO-WP-BLOCKED",
+      display_key: "DEMO",
+      secret_hash: String.duplicate("a", 64),
+      grant_role: "worker",
+      capabilities: [],
+      expires_at: DateTime.add(@demo_now, 7, :day)
+    }
+  end
+
+  defp demo_guidance_request_attrs(grant_id) do
+    %{
+      id: "SYMPP-DEMO-GUIDANCE-HUMAN",
+      work_package_id: "SYMPP-DEMO-WP-BLOCKED",
+      requester_grant_id: grant_id,
+      requested_by: "demo-worker",
+      idempotency_key: "demo-guidance-human",
+      summary: "Choose the cockpit default grouping",
+      question: "Should blocked package guidance be grouped by priority or package?",
+      context: "The worker has two valid UI paths and should not choose product behavior alone.",
+      status: "human_info_needed",
+      human_info_reason: "Default grouping changes operator triage behavior.",
+      recommended_language: "Choose priority-first grouping unless the operator wants package-first scanning.",
+      decision_prompt: demo_guidance_decision_prompt(),
+      blocker_id: "demo-product-guidance"
+    }
+  end
+
+  defp demo_work_request_decision_prompt do
+    %{
+      "tl_dr" => "Choose who owns the first cockpit guidance slice.",
+      "details" => "The WorkRequest is blocked on whether the next package should make a narrow dashboard rendering change or pause for a broader contract pass.",
+      "options" => [
+        %{
+          "id" => "dashboard_first",
+          "label" => "Dashboard first",
+          "description" => "Ship the visible structured prompt rendering before broader contract cleanup.",
+          "pros" => ["Fast operator feedback", "Keeps scope narrow"],
+          "cons" => ["Contract wording may need a follow-up"],
+          "answer" => "Proceed with the dashboard-first structured prompt rendering slice."
+        },
+        %{
+          "id" => "contract_first",
+          "label" => "Contract first",
+          "description" => "Update the durable contract before changing cockpit rendering.",
+          "pros" => ["Clearer implementation target"],
+          "cons" => ["Delays visible validation"],
+          "answer" => "Update the durable prompt contract before dashboard rendering work continues."
+        }
+      ],
+      "custom_redirect_label" => "No, and tell the agent what to do differently"
+    }
+  end
+
+  defp demo_guidance_decision_prompt do
+    %{
+      "tl_dr" => "Pick the operator triage grouping.",
+      "details" => "The package is blocked because priority-first and package-first grouping are both plausible for the local cockpit.",
+      "options" => [
+        %{
+          "id" => "priority_first",
+          "label" => "Priority first",
+          "description" => "Put human-info-needed and blocked items at the top.",
+          "pros" => ["Fastest triage"],
+          "cons" => ["Less package-by-package continuity"],
+          "answer" => "Use priority-first grouping for the local operator cockpit."
+        },
+        %{
+          "id" => "package_first",
+          "label" => "Package first",
+          "description" => "Keep every package's state grouped together.",
+          "pros" => ["Easier package scanning"],
+          "cons" => ["Urgent prompts may be lower on the page"],
+          "answer" => "Use package-first grouping for the local operator cockpit."
+        }
+      ],
+      "custom_redirect_label" => "No, and tell the agent what to do differently"
+    }
+  end
 
   defp seed_planned_slices do
     with {:ok, planned} <- add_slice("SYMPP-DEMO-WR-SLICING", planned_slice_attrs("SYMPP-DEMO-SLICE-APPROVED", 1, "Approved cockpit filter slice")),
@@ -501,7 +605,7 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
   end
 
   defp normalize_demo_timestamps do
-    Enum.each([WorkRequest, WorkPackage, PlannedSlice, SoloSession], fn schema ->
+    Enum.each([AccessGrant, GuidanceRequest, WorkRequest, WorkPackage, ClarificationQuestion, PlannedSlice, SoloSession], fn schema ->
       Repo.update_all(schema, set: [inserted_at: @demo_now, updated_at: @demo_now])
     end)
 

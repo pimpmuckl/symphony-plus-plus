@@ -2154,6 +2154,60 @@ pre,
   overflow-wrap: anywhere;
 }
 
+.sympp-decision-option-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.sympp-decision-option-card {
+  display: grid;
+  gap: 0.38rem;
+  min-width: 0;
+  padding: 0.62rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.sympp-decision-option-card h4,
+.sympp-decision-option-card p,
+.sympp-decision-option-card dl {
+  margin: 0;
+}
+
+.sympp-decision-option-card h4 {
+  font-size: 0.86rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.sympp-decision-option-card p,
+.sympp-decision-option-card dd {
+  color: var(--ink);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.sympp-decision-option-card dl {
+  display: grid;
+  gap: 0.28rem;
+}
+
+.sympp-decision-option-card dt {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.sympp-decision-option-card dd {
+  margin: 0;
+}
+
 .sympp-human-answer-form {
   display: grid;
   gap: 0.72rem;
@@ -2404,6 +2458,7 @@ pre,
   .sympp-form-grid-slice,
   .sympp-inline-answer-form,
   .sympp-choice-grid,
+  .sympp-decision-option-list,
   .sympp-locked-scope,
   .sympp-slice-row,
   .sympp-slice-detail-grid,
