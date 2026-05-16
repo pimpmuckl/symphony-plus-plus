@@ -190,8 +190,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
     {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{draft.id}")
 
     assert html =~ "WorkRequest state"
-    assert html =~ "Start clarification"
-    assert html =~ "Draft request is waiting for the clarification path to open."
+    assert html =~ "Start agent questions"
+    assert html =~ "The next step is to start agent questions so clarification can begin."
     assert html =~ "Handoff"
     assert html =~ "local only"
 
@@ -206,6 +206,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
     {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{ready.id}")
 
     assert html =~ "Ask clarification questions"
+    assert html =~ "Agent questions are ready; the architect can ask questions or record decisions before slicing."
     assert html =~ "none open"
 
     human_needed =
@@ -226,7 +227,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
     {:ok, _view, html} = live(board_session_conn(secret), "/sympp/work-requests/#{human_needed.id}")
 
     assert html =~ "Human guidance needed"
-    assert html =~ "The architect path is paused until the human supplies guidance."
+    assert html =~ "Answer the human guidance question before slicing continues."
+    assert html =~ "Questions"
     assert html =~ "1 open, human needed"
     assert html =~ "sympp-detail-status-attention"
 
@@ -1171,6 +1173,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardWorkRequestLiveTest do
 
     assert html =~ "Board cannot mint handoff"
     refute html =~ "Prepare architect handoff"
+    refute html =~ "copy prompt"
     refute html =~ "Private architect handoff stored"
     refute html =~ "Architect Launch Brief"
     refute html =~ handoff.grant.id
