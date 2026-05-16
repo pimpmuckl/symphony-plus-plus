@@ -129,6 +129,13 @@ defmodule Mix.Tasks.Sympp.DemoLedgerTest do
         assert ready.artifact_count == 1
         assert ready.finding_count == 1
         assert ready.latest_progress_at
+
+        review = Enum.find(cards, &(&1.id == "SYMPP-DEMO-WP-REVIEW"))
+
+        assert get_in(review.metadata, [:review_package, "reviews"]) == [
+                 %{"lane" => "review_t1", "verdict" => "green"},
+                 %{"lane" => "review_t2", "verdict" => "green"}
+               ]
       end)
     after
       File.rm(database_path)
