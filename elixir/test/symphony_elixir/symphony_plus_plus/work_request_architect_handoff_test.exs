@@ -249,6 +249,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestArchitectHandoffTest do
     cleanup_handoff(anchor, grant, handoff_opts)
   end
 
+  test "preserves token-shaped branch names as inert literals", %{repo: repo, handoff_opts: handoff_opts} do
+    work_request =
+      create_work_request!(repo,
+        base_branch: "sk-feature123",
+        status: "ready_for_clarification"
+      )
+
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: handoff_opts
+             )
+
+    assert prompt_reference_identifiers(handoff.prompt)["base_branch"] == "sk-feature123"
+    assert prompt_reference_json(handoff.prompt) =~ ~S|"base_branch": "sk-feature123"|
+
+    assert {:ok, anchor} = WorkPackageRepository.get(repo, handoff.anchor_package.id)
+    assert {:ok, [grant]} = AccessGrantRepository.list_for_work_package(repo, anchor.id)
+    cleanup_handoff(anchor, grant, handoff_opts)
+  end
+
   test "treats missing ledger database as optional setup data in the paste-ready prompt", %{
     repo: repo,
     handoff_opts: handoff_opts

@@ -6,7 +6,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
-  alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.Repo, as: SymppRepo
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
@@ -1192,13 +1191,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
         nil
 
       true ->
-        redacted = Redactor.redact_text(value)
-
-        if redacted == value do
-          redacted
-        else
-          nil
-        end
+        value
     end
   end
 
