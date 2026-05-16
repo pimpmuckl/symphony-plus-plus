@@ -118,6 +118,19 @@ function Assert-RequiredJsonValue($Value, [string]$Message) {
   }
 }
 
+function Resolve-DocumentedMcpServerMap($McpConfig, [string]$McpConfigPath) {
+  $propertyNames = @($McpConfig.PSObject.Properties.Name)
+  if ($propertyNames -contains "mcpServers") {
+    throw "Plugin .mcp.json must use a documented shape: direct server map or wrapped mcp_servers, not mcpServers: $McpConfigPath"
+  }
+
+  if ($propertyNames -contains "mcp_servers") {
+    return $McpConfig.mcp_servers
+  }
+
+  return $McpConfig
+}
+
 function Assert-CacheMcpConfig([string]$TargetRoot, [string]$ExpectedVersion) {
   $targetManifestPath = Join-Path $TargetRoot ".codex-plugin/plugin.json"
   $targetManifest = Get-Content -LiteralPath $targetManifestPath -Raw | ConvertFrom-Json
@@ -136,9 +149,10 @@ function Assert-CacheMcpConfig([string]$TargetRoot, [string]$ExpectedVersion) {
   }
 
   $mcpConfig = Get-Content -LiteralPath $mcpConfigPath -Raw | ConvertFrom-Json
-  $server = $mcpConfig.mcpServers.symphony_plus_plus
+  $serverMap = Resolve-DocumentedMcpServerMap $mcpConfig $mcpConfigPath
+  $server = $serverMap.symphony_plus_plus
   if ($null -eq $server) {
-    throw "Installed MCP config does not define mcpServers.symphony_plus_plus: $mcpConfigPath"
+    throw "Installed MCP config does not define symphony_plus_plus in a documented MCP config shape: $mcpConfigPath"
   }
   if ($server.type -ne "stdio") {
     throw "Installed MCP server type must be stdio: $mcpConfigPath"

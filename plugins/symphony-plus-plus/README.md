@@ -67,14 +67,15 @@ deleting or copying through the link.
 
 ## Plugin MCP Entry
 
-The plugin manifest declares `mcpServers: "./.mcp.json"`. That file registers a
-generic installable `symphony_plus_plus` stdio MCP entry for Codex plugin UI and
-capability discovery.
+The plugin manifest declares `mcpServers: "./.mcp.json"`. That file uses the
+documented direct server-map shape to register a generic installable
+`symphony_plus_plus` stdio MCP entry for Codex plugin sessions.
 
 Repo validation proves only the plugin package contract:
 
 - `.codex-plugin/plugin.json` points `mcpServers` at `./.mcp.json`.
-- `.mcp.json` defines a generic `symphony_plus_plus` stdio server.
+- `.mcp.json` defines a generic `symphony_plus_plus` stdio server using a
+  documented direct server map, not a nested `mcpServers` object.
 - `scripts/refresh-local-plugin.ps1` copies `.mcp.json` into the installed
   `local` and manifest-version caches, and writes a non-secret
   `.sympp-source-root` hint.
@@ -88,11 +89,13 @@ Repo validation proves only the plugin package contract:
 - `scripts/sympp-solo.ps1 -ValidateOnly` can resolve the checkout and validate
   the launcher without writing ledger state or requiring a source build.
 
-Plugin skill visibility, MCP server registration, and current-session tool
-availability are separate states. Skill visibility proves Codex loaded the skill
-directory. MCP server registration proves the plugin manifest and installed
-`.mcp.json` advertise a startable server. Current-session tool availability
-requires the Codex host to load that MCP registration for the active session.
+Plugin skill visibility, plugin-bundled MCP registration, global MCP settings
+visibility, and current-session tool availability are separate states. Skill
+visibility proves Codex loaded the skill directory. Plugin-bundled MCP
+registration proves the plugin manifest and installed `.mcp.json` advertise a
+startable server. The bundled server may not appear as a global MCP settings
+entry; current-session tool availability requires the Codex host to load that
+plugin registration for the active session.
 The installed-cache validation proves the package and wrapper; it does not prove
 that an already-running Codex host has hot-loaded plugin MCP discovery. If the
 installed-cache validation passes but the plugin detail UI still lists only

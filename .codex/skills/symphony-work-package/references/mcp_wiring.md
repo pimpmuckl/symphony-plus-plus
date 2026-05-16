@@ -7,8 +7,8 @@ from this repository's Elixir implementation.
 
 The installable Codex plugin exposes a generic `symphony_plus_plus` MCP server
 entry through `plugins/symphony-plus-plus/.codex-plugin/plugin.json` and
-`plugins/symphony-plus-plus/.mcp.json`. This makes the plugin UI show an MCP
-capability in addition to the WorkPackage skill.
+`plugins/symphony-plus-plus/.mcp.json`. The `.mcp.json` uses the documented
+direct server-map shape for plugin-bundled MCP loading.
 
 Plugin MCP discovery is loaded by the Codex host, not by the skill text in an
 already-running thread. After refreshing the local plugin cache, restart or
@@ -24,11 +24,12 @@ cache so a refreshed install has both the manifest `mcpServers` pointer and the
 referenced `.mcp.json`. Older cache directories are ignored; reload Codex and
 open a new session after refresh.
 
-Skill visibility, MCP server registration, and current-session tool
-availability are distinct. A visible skill proves Codex loaded the skill
-directory. MCP registration proves the plugin manifest and installed `.mcp.json`
-advertise the server. Current-session tools appear only after the host loads
-that registration for the session.
+Skill visibility, plugin-bundled MCP registration, global MCP settings
+visibility, and current-session tool availability are distinct. A visible skill
+proves Codex loaded the skill directory. Plugin-bundled MCP registration proves
+the plugin manifest and installed `.mcp.json` advertise the server. The bundled
+server may not appear as a global MCP settings entry. Current-session tools
+appear only after the host loads that plugin registration for the session.
 
 The static plugin MCP entry is intentionally generic. It must not embed raw
 work-key secrets, bearer tokens, private-store handoff targets, or
