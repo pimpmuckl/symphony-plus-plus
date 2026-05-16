@@ -7,7 +7,7 @@ description: Use when Codex needs lightweight local planning memory for one norm
 
 Use Solo Sessions for ordinary single-agent Codex work that needs durable local
 planning memory. Do not use this skill for assigned WorkPackages, WorkKeys,
-WorkRequests, architect orchestration, worker dispatch, Linear state, MCP
+WorkRequests, architect orchestration, worker dispatch, Linear state, bound MCP
 planning resources, or merge-readiness gates.
 
 Use `symphony-work-package` instead when assigned a WorkPackage or WorkKey. Use
@@ -47,6 +47,23 @@ original current directory and uses
 `<caller-workspace>/.sympp/solo-sessions.sqlite3`. Relative `--database` and
 `SYMPP_DATABASE` paths resolve against the caller workspace. Treat
 `SYMPP_DATABASE` as a path only; do not echo secret-bearing environment values.
+
+## MCP Tools
+
+If the generic `symphony_plus_plus` MCP server is loaded and the session is
+unbound, prefer the first-slice Solo tools for attach, append, show, and list:
+
+```text
+solo_attach
+solo_append
+solo_show
+solo_list
+```
+
+Those tools use the MCP server's configured repo/database and are intentionally
+not advertised to bound worker or architect WorkPackage sessions. Lifecycle
+commands and full-history reads still use the wrapper in this slice; `solo_show`
+returns the latest 50 entries plus count/truncation metadata.
 
 ## Start Or Attach
 

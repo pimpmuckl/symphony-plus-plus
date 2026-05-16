@@ -9,9 +9,11 @@ dispatch.
 This document is the product contract for the Solo Session runtime foundation.
 Current surfaces are `mix sympp.solo` in `elixir/`, the plugin-installed
 `symphony-plus-plus:symphony-solo-session` skill, the plugin
-`scripts/sympp-solo.ps1` wrapper, and local operator cockpit list/detail views.
-MCP Solo Session resources/tools, schedulers, promotion workflows, and richer
-write controls remain follow-up scope.
+`scripts/sympp-solo.ps1` wrapper, unbound generic MCP tools
+(`solo_attach`, `solo_append`, `solo_show`, `solo_list`), and local operator
+cockpit list/detail views. MCP Solo Session resources, lifecycle MCP tools,
+schedulers, promotion workflows, and richer write controls remain follow-up
+scope.
 
 ## Purpose
 
@@ -42,7 +44,7 @@ Solo Session v1 does not include:
 - Linear state creation, mutation, or mirroring.
 - Access grants, worker secrets, private handoff payloads, or WorkKeys.
 - WorkRequest or WorkPackage semantic changes.
-- MCP Solo Session tools or resources.
+- Bound worker/architect MCP Solo Session tools or Solo Session resources.
 - Automatic promotion into WorkRequests or WorkPackages.
 - Background schedulers.
 
@@ -239,12 +241,23 @@ agent-facing access to the `mix sympp.solo` CLI from source or installed
 plugin cache. They are convenience surfaces over the local Solo Session ledger,
 not orchestration.
 
-Future MCP Solo Session resources/tools should be small and local:
+Current first-slice MCP Solo Session tools are small and local:
 
 - Create or attach the current Solo Session for the local repo/worktree scope.
-- Read the current Solo Session and recent entries.
+- Read the current Solo Session and the latest 50 entries, with count and
+  truncation metadata.
 - Append task plan, finding, progress, blocker, decision, and validation-note
   entries.
+
+The current MCP tool names are `solo_attach`, `solo_append`, `solo_show`, and
+`solo_list`. They are advertised only for unbound/generic MCP sessions and call
+the existing Solo Session service/repository through the MCP server's configured
+repo/database. Bound worker or architect WorkPackage sessions do not advertise
+them, and direct calls from those sessions fail with
+`solo_tools_require_unbound_session` before mutating state.
+
+Future MCP Solo Session resources/tools may add:
+
 - Pause, resume, complete, or archive the current session.
 - Render planning-file-like views from the ledger.
 

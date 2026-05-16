@@ -38,6 +38,32 @@ submit_review_package(summary, tests, artifacts, head_sha)
 mark_ready()
 ```
 
+## Generic Solo Session MCP tools
+
+Unbound/generic MCP sessions advertise a small Solo Session tool family using
+the `solo_*` naming style:
+
+```text
+solo_attach(repo, base_branch, workspace_path, caller_id, title?)
+solo_append(session_id, entry_kind, title, body?, status?, idempotency_key?, payload?)
+solo_show(session_id) -> latest 50 entries plus entry_count/entries_returned/entries_truncated
+solo_list(repo?, base_branch?, workspace_path?, caller_id?, status?)
+```
+
+These tools are for lightweight local planning memory only. They call the
+existing Solo Session service/repository and use the MCP server's configured
+repo/database; they do not claim WorkKeys, mint grants, create WorkRequests,
+create WorkPackages, dispatch agents, write Linear state, or participate in
+merge-readiness gates. Returned structured content is redacted with the
+existing planning redactor. `solo_show` intentionally returns only the latest
+50 entries in this first slice; callers can use `entry_count`,
+`entries_returned`, and `entries_truncated` to detect when history was bounded.
+
+Solo MCP tools are deliberately not advertised to bound worker or architect
+WorkPackage sessions. Direct calls from a bound session fail with
+`solo_tools_require_unbound_session` before mutation so Solo planning cannot be
+confused with WorkPackage orchestration.
+
 `claim_work_key` intentionally requires both the one-time secret and a stable
 `claimed_by` owner identity. Symphony++ uses that identity as part of the MCP
 ownership contract. The call binds the session to an existing worker or

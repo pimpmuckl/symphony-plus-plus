@@ -27,6 +27,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository, as: SoloSessionRepository
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service, as: SoloSessionService
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
@@ -39,6 +43,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   @protocol_version "2025-03-26"
   @health_tool "sympp.health"
+  @solo_tools ["solo_attach", "solo_append", "solo_show", "solo_list"]
+  @solo_show_entry_limit 50
   @worker_tools [
     "claim_work_key",
     "get_current_assignment",
@@ -776,6 +782,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp dispatch("tools/call", %{"name" => name} = params, %__MODULE__{} = server) when name in @solo_tools do
+    with :ok <- authorize_solo_tool_call(server, name),
+         {:ok, arguments} <- solo_tool_arguments(params, name) do
+      solo_tool(name, arguments, server)
+    else
+      {:error, code, message, data} -> {:error, code, message, data}
+    end
+  end
+
   defp dispatch("tools/call", %{"name" => "claim_work_key"} = params, %__MODULE__{} = server) do
     with {:ok, _arguments} <- worker_tool_arguments(params, "claim_work_key"),
          {:ok, result, _session} <- claim_work_key(params, server) do
@@ -929,6 +944,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
+  defp solo_tool_spec(name) do
+    %{
+      "name" => name,
+      "title" => name,
+      "description" => solo_tool_description(name),
+      "inputSchema" => solo_tool_input_schema(name)
+    }
+  end
+
+  defp solo_tool_description("solo_attach") do
+    "Create or attach a local Solo Session for a repo, base branch, absolute workspace path, and caller id."
+  end
+
+  defp solo_tool_description("solo_append") do
+    "Append one redacted entry to a local Solo Session using the existing Solo Session service."
+  end
+
+  defp solo_tool_description("solo_show") do
+    "Read a local Solo Session and its latest 50 ordered entries."
+  end
+
+  defp solo_tool_description("solo_list") do
+    "List local Solo Sessions using optional repo, base branch, workspace path, caller id, and status filters."
+  end
+
   defp architect_tool_spec(name) do
     %{
       "name" => name,
@@ -1032,6 +1072,49 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp architect_tool_description(name) when name in @phase7_stub_architect_tools do
     "Phase 7 architect tool #{name}; authorization is enforced, but behavior is not implemented yet."
+  end
+
+  defp solo_tool_input_schema("solo_attach") do
+    schema(
+      %{
+        "repo" => string_schema(),
+        "base_branch" => string_schema(),
+        "workspace_path" => string_schema(),
+        "caller_id" => string_schema(),
+        "title" => nullable_string_schema()
+      },
+      ["repo", "base_branch", "workspace_path", "caller_id"]
+    )
+  end
+
+  defp solo_tool_input_schema("solo_append") do
+    schema(
+      %{
+        "session_id" => string_schema(),
+        "entry_kind" => string_schema(),
+        "title" => string_schema(),
+        "body" => nullable_string_schema(),
+        "status" => nullable_string_schema(),
+        "idempotency_key" => nullable_string_schema(),
+        "payload" => object_schema()
+      },
+      ["session_id", "entry_kind", "title"]
+    )
+  end
+
+  defp solo_tool_input_schema("solo_show"), do: schema(%{"session_id" => string_schema()}, ["session_id"])
+
+  defp solo_tool_input_schema("solo_list") do
+    schema(
+      %{
+        "repo" => string_schema(),
+        "base_branch" => string_schema(),
+        "workspace_path" => string_schema(),
+        "caller_id" => string_schema(),
+        "status" => string_schema()
+      },
+      []
+    )
   end
 
   defp worker_tool_input_schema("claim_work_key") do
@@ -1420,7 +1503,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp tool_specs_for_session(_config, nil) do
-    {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
+    {:ok, [health_tool_spec() | Enum.map(@solo_tools, &solo_tool_spec/1) ++ Enum.map(@worker_tools, &worker_tool_spec/1)]}
   end
 
   defp tool_specs_for_session(%Config{repo: repo} = config, session) do
@@ -4371,6 +4454,106 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       DateTime.compare(expires_at, DateTime.utc_now(:microsecond)) != :gt -> {:tool_error, "invalid_expires_at"}
       true -> :ok
     end
+  end
+
+  defp solo_tool("solo_attach", arguments, %__MODULE__{config: config}) do
+    with :ok <- prepare_solo_repository(config.repo),
+         {:ok, repo_name} <- required_argument(arguments, "repo"),
+         {:ok, base_branch} <- required_argument(arguments, "base_branch"),
+         {:ok, workspace_path} <- required_argument(arguments, "workspace_path"),
+         {:ok, caller_id} <- required_argument(arguments, "caller_id"),
+         {:ok, session} <-
+           SoloSessionService.create_or_attach_current(config.repo, %{
+             "repo" => repo_name,
+             "base_branch" => base_branch,
+             "workspace_path" => workspace_path,
+             "caller_id" => caller_id,
+             "title" => Map.get(arguments, "title")
+           }) do
+      {:ok, tool_result(%{"action" => "solo_attach", "solo_session" => solo_session_payload(session)})}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "solo_attach", "reason" => reason}}
+      {:error, reason} -> solo_error(reason, "solo_attach")
+    end
+  end
+
+  defp solo_tool("solo_append", arguments, %__MODULE__{config: config}) do
+    with :ok <- prepare_solo_repository(config.repo),
+         {:ok, session_id} <- required_argument(arguments, "session_id"),
+         {:ok, entry_kind} <- required_argument(arguments, "entry_kind"),
+         {:ok, title} <- required_argument(arguments, "title"),
+         {:ok, payload} <- optional_object_argument(arguments, "payload"),
+         attrs <-
+           %{"entry_kind" => entry_kind, "title" => title}
+           |> put_optional_solo_attr(arguments, "body")
+           |> put_optional_solo_attr(arguments, "status")
+           |> put_optional_solo_attr(arguments, "idempotency_key")
+           |> put_optional_solo_payload(payload),
+         {:ok, entry} <- SoloSessionService.append_entry(config.repo, session_id, attrs) do
+      {:ok, tool_result(%{"action" => "solo_append", "entry" => solo_entry_payload(entry)})}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "solo_append", "reason" => reason}}
+      {:error, reason} -> solo_error(reason, "solo_append")
+    end
+  end
+
+  defp solo_tool("solo_show", arguments, %__MODULE__{config: config}) do
+    with :ok <- prepare_solo_repository(config.repo),
+         {:ok, session_id} <- required_argument(arguments, "session_id"),
+         {:ok, session} <- SoloSessionService.get(config.repo, session_id),
+         {:ok, entries} <- SoloSessionService.list_entries(config.repo, session_id) do
+      recent_entries = recent_solo_entries(entries)
+
+      {:ok,
+       tool_result(%{
+         "action" => "solo_show",
+         "solo_session" => solo_session_payload(session),
+         "entries" => Enum.map(recent_entries, &solo_entry_payload/1),
+         "entry_count" => length(entries),
+         "entries_returned" => length(recent_entries),
+         "entries_truncated" => length(entries) > length(recent_entries)
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "solo_show", "reason" => reason}}
+      {:error, reason} -> solo_error(reason, "solo_show")
+    end
+  end
+
+  defp solo_tool("solo_list", arguments, %__MODULE__{config: config}) do
+    with :ok <- prepare_solo_repository(config.repo),
+         {:ok, filters} <- solo_list_filters(arguments),
+         {:ok, sessions} <- SoloSessionService.list(config.repo, filters) do
+      {:ok, tool_result(%{"action" => "solo_list", "solo_sessions" => Enum.map(sessions, &solo_session_payload/1)})}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "solo_list", "reason" => reason}}
+      {:error, reason} -> solo_error(reason, "solo_list")
+    end
+  end
+
+  defp prepare_solo_repository(repo), do: SoloSessionRepository.migrate(repo)
+
+  defp put_optional_solo_attr(attrs, arguments, key) do
+    case Map.fetch(arguments, key) do
+      {:ok, nil} -> attrs
+      {:ok, value} -> Map.put(attrs, key, value)
+      :error -> attrs
+    end
+  end
+
+  defp put_optional_solo_payload(attrs, nil), do: attrs
+  defp put_optional_solo_payload(attrs, payload), do: Map.put(attrs, "payload", payload)
+
+  defp recent_solo_entries(entries), do: Enum.take(entries, -@solo_show_entry_limit)
+
+  defp solo_list_filters(arguments) do
+    Enum.reduce_while(["repo", "base_branch", "workspace_path", "caller_id", "status"], {:ok, %{}}, fn key, {:ok, filters} ->
+      case Map.fetch(arguments, key) do
+        :error -> {:cont, {:ok, filters}}
+        {:ok, nil} -> {:cont, {:ok, filters}}
+        {:ok, value} when is_binary(value) -> {:cont, {:ok, Map.put(filters, key, value)}}
+        {:ok, _value} -> {:halt, {:tool_error, "invalid_#{key}"}}
+      end
+    end)
   end
 
   defp worker_tool("get_current_assignment", _arguments, %__MODULE__{config: config, session: session}) do
@@ -7415,6 +7598,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp terminal_ready_status(%WorkPackage{kind: "phase_child"}), do: "ready_for_architect_merge"
   defp terminal_ready_status(%WorkPackage{}), do: "ready_for_human_merge"
 
+  defp solo_error(:not_found, tool), do: {:error, -32_004, "Not found", %{"tool" => tool, "reason" => "not_found"}}
+  defp solo_error(reason, tool), do: worker_error(reason, tool)
+
   defp worker_error(:unauthorized, resource), do: auth_error(:unauthorized, resource)
   defp worker_error({:unauthorized, _reason} = reason, resource), do: auth_error(reason, resource)
   defp worker_error(:expired, resource), do: auth_error({:unauthorized, :expired}, resource)
@@ -7458,6 +7644,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_argument_scope(session, work_package_id) when work_package_id == session.assignment.work_package_id, do: {:ok, session}
   defp require_argument_scope(_session, _work_package_id), do: {:error, :forbidden}
 
+  defp authorize_solo_tool_call(%__MODULE__{session: nil}, _tool), do: :ok
+
+  defp authorize_solo_tool_call(%__MODULE__{}, tool) do
+    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "solo_tools_require_unbound_session"}}
+  end
+
+  defp solo_tool_arguments(params, name) do
+    case Map.get(params, "arguments", %{}) do
+      arguments when is_map(arguments) ->
+        validate_solo_arguments(name, arguments)
+
+      _arguments ->
+        {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "invalid_tool_arguments"}}
+    end
+  end
+
   defp worker_tool_arguments(params, name) do
     case Map.get(params, "arguments", %{}) do
       arguments when is_map(arguments) ->
@@ -7497,6 +7699,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp validate_solo_arguments(name, arguments) do
+    allowed = MapSet.new(allowed_solo_argument_keys(name))
+    unexpected = arguments |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1))
+
+    if unexpected == [] do
+      {:ok, arguments}
+    else
+      {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "unexpected_argument", "arguments" => unexpected}}
+    end
+  end
+
   defp validate_architect_arguments(name, arguments) do
     allowed = MapSet.new(allowed_architect_argument_keys(name))
     unexpected = arguments |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1))
@@ -7509,6 +7722,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         {:error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => reason}}
       end
     end
+  end
+
+  defp allowed_solo_argument_keys(name) do
+    name
+    |> solo_tool_input_schema()
+    |> Map.get("properties", %{})
+    |> Map.keys()
   end
 
   defp allowed_worker_argument_keys(name) do
@@ -8065,6 +8285,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     payload
     |> Jason.encode!()
     |> Jason.decode!()
+  end
+
+  defp solo_session_payload(%SoloSession{} = session) do
+    %{
+      "id" => Redactor.redact_text(session.id),
+      "repo" => Redactor.redact_text(session.repo),
+      "base_branch" => Redactor.redact_text(session.base_branch),
+      "workspace_path" => Redactor.redact_text(session.workspace_path),
+      "caller_id" => Redactor.redact_text(session.caller_id),
+      "session_key" => Redactor.redact_text(session.session_key),
+      "title" => Redactor.redact_text(session.title),
+      "status" => Redactor.redact_text(session.status),
+      "last_activity_at" => timestamp(session.last_activity_at),
+      "archived_at" => timestamp(session.archived_at),
+      "created_at" => timestamp(session.inserted_at),
+      "updated_at" => timestamp(session.updated_at)
+    }
+  end
+
+  defp solo_entry_payload(%SoloSessionEntry{} = entry) do
+    %{
+      "id" => Redactor.redact_text(entry.id),
+      "solo_session_id" => Redactor.redact_text(entry.solo_session_id),
+      "entry_kind" => Redactor.redact_text(entry.entry_kind),
+      "title" => Redactor.redact_text(entry.title),
+      "body" => Redactor.redact_text(entry.body),
+      "status" => Redactor.redact_text(entry.status),
+      "sequence" => entry.sequence,
+      "idempotency_key" => Redactor.redact_text(entry.idempotency_key),
+      "payload" => Redactor.redact_output(entry.payload || %{}),
+      "created_at" => timestamp(entry.created_at),
+      "updated_at" => timestamp(entry.updated_at)
+    }
   end
 
   defp plan_node_payload(%PlanNode{} = plan_node) do

@@ -26,6 +26,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository, as: SoloSessionRepository
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
@@ -228,6 +231,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     start_supervised!({Repo, database: database_path, pool_size: 1})
     assert :ok = WorkPackageRepository.migrate(Repo)
+    assert :ok = SoloSessionRepository.migrate(Repo)
 
     on_exit(fn -> File.rm(database_path) end)
 
@@ -241,6 +245,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     repo.delete_all(ProgressEvent)
     repo.delete_all(Finding)
     repo.delete_all(PlanNode)
+    repo.delete_all(SoloSessionEntry)
+    repo.delete_all(SoloSession)
     repo.delete_all(AccessGrant)
     repo.delete_all(WorkRequest)
     repo.delete_all(WorkPackage)
@@ -863,6 +869,211 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Map.has_key?(worker_tools_by_name, "claim_work_key")
     refute Map.has_key?(worker_tools_by_name, "read_child_status")
     refute Map.has_key?(worker_tools_by_name, "mint_child_worker_key")
+  end
+
+  test "tools list advertises Solo tools only for unbound sessions", %{repo: repo} do
+    unbound_server = Server.new(Config.default(repo: repo), initialized: true)
+
+    unbound_response =
+      Server.handle(%{"jsonrpc" => "2.0", "id" => "solo-tools", "method" => "tools/list", "params" => %{}}, unbound_server)
+
+    unbound_tools_by_name =
+      unbound_response
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
+
+    assert get_in(unbound_tools_by_name, ["solo_attach", "inputSchema", "required"]) == ["repo", "base_branch", "workspace_path", "caller_id"]
+    assert get_in(unbound_tools_by_name, ["solo_append", "inputSchema", "required"]) == ["session_id", "entry_kind", "title"]
+    assert get_in(unbound_tools_by_name, ["solo_append", "inputSchema", "properties", "payload", "type"]) == "object"
+    assert get_in(unbound_tools_by_name, ["solo_show", "inputSchema", "required"]) == ["session_id"]
+    assert get_in(unbound_tools_by_name, ["solo_list", "inputSchema", "required"]) == []
+
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SOLO-WORKER-TOOLS", kind: "mcp"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    worker_session = MCPHarness.session(worker_assignment, proof_hash: minted.grant.secret_hash)
+
+    worker_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "solo-worker-tools", "method" => "tools/list", "params" => %{}},
+        Server.new(Config.default(repo: repo), initialized: true, session: worker_session)
+      )
+
+    worker_tools_by_name =
+      worker_response
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
+
+    refute Map.has_key?(worker_tools_by_name, "solo_attach")
+    refute Map.has_key?(worker_tools_by_name, "solo_append")
+    refute Map.has_key?(worker_tools_by_name, "solo_show")
+    refute Map.has_key?(worker_tools_by_name, "solo_list")
+
+    {_anchor, architect_session, _grant} = create_phase_architect_session(repo, "SYMPP-SOLO-ARCH-TOOLS", ["read:phase"])
+
+    architect_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "solo-architect-tools", "method" => "tools/list", "params" => %{}},
+        Server.new(test_mcp_config(repo), initialized: true, session: architect_session)
+      )
+
+    architect_tools_by_name =
+      architect_response
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
+
+    refute Map.has_key?(architect_tools_by_name, "solo_attach")
+    refute Map.has_key?(architect_tools_by_name, "solo_append")
+    refute Map.has_key?(architect_tools_by_name, "solo_show")
+    refute Map.has_key?(architect_tools_by_name, "solo_list")
+  end
+
+  test "Solo MCP tools attach append show list redact and replay idempotent appends", %{repo: repo} do
+    workspace_path = solo_workspace_path("happy")
+
+    attach_response =
+      mcp_tool(repo, nil, "solo_attach", %{
+        "repo" => "nextide/example",
+        "base_branch" => "main",
+        "workspace_path" => workspace_path,
+        "caller_id" => "codex-local",
+        "title" => "Plan bearer abcdefghijkl"
+      })
+
+    assert get_in(attach_response, ["result", "structuredContent", "action"]) == "solo_attach"
+    session = get_in(attach_response, ["result", "structuredContent", "solo_session"])
+    assert session["id"] =~ "solo_"
+    assert session["session_key"] =~ "solo_key_"
+    assert session["title"] == "Plan [REDACTED]"
+
+    append_args = %{
+      "session_id" => session["id"],
+      "entry_kind" => "progress",
+      "title" => "Use ghp_abcdefgh",
+      "body" => "Body bearer abcdefghijkl",
+      "status" => "recorded",
+      "idempotency_key" => "solo-entry-1",
+      "payload" => %{"token" => "ghp_abcdefgh", "nested" => %{"url" => "https://example.test/?token=ghp_abcdefgh"}}
+    }
+
+    append_response = mcp_tool(repo, nil, "solo_append", append_args)
+    entry = get_in(append_response, ["result", "structuredContent", "entry"])
+    assert entry["entry_kind"] == "progress"
+    assert entry["title"] == "Use [REDACTED]"
+    assert entry["body"] == "Body [REDACTED]"
+    assert entry["payload"]["token"] == "[REDACTED]"
+    assert entry["payload"]["nested"]["url"] == "https://example.test/?token=[REDACTED]"
+
+    replay_response = mcp_tool(repo, nil, "solo_append", %{append_args | "title" => "Changed retry"})
+    replay_entry = get_in(replay_response, ["result", "structuredContent", "entry"])
+    assert replay_entry["id"] == entry["id"]
+    assert replay_entry["title"] == entry["title"]
+
+    show_response = mcp_tool(repo, nil, "solo_show", %{"session_id" => session["id"]})
+    assert get_in(show_response, ["result", "structuredContent", "solo_session", "id"]) == session["id"]
+    assert [shown_entry] = get_in(show_response, ["result", "structuredContent", "entries"])
+    assert shown_entry["id"] == entry["id"]
+
+    list_response =
+      mcp_tool(repo, nil, "solo_list", %{
+        "repo" => " nextide/example ",
+        "base_branch" => "main",
+        "workspace_path" => workspace_path,
+        "caller_id" => "codex-local",
+        "status" => "active"
+      })
+
+    assert get_in(list_response, ["result", "structuredContent", "solo_sessions"]) |> Enum.map(& &1["id"]) == [session["id"]]
+  end
+
+  test "Solo MCP show returns a bounded recent entry window", %{repo: repo} do
+    attach_response =
+      mcp_tool(repo, nil, "solo_attach", %{
+        "repo" => "nextide/example",
+        "base_branch" => "main",
+        "workspace_path" => solo_workspace_path("recent-window"),
+        "caller_id" => "codex-local"
+      })
+
+    session_id = get_in(attach_response, ["result", "structuredContent", "solo_session", "id"])
+
+    for index <- 1..55 do
+      response =
+        mcp_tool(repo, nil, "solo_append", %{
+          "session_id" => session_id,
+          "entry_kind" => "progress",
+          "title" => "Entry #{index}",
+          "idempotency_key" => "recent-window-#{index}"
+        })
+
+      assert get_in(response, ["result", "structuredContent", "entry", "sequence"]) == index
+    end
+
+    show_response = mcp_tool(repo, nil, "solo_show", %{"session_id" => session_id})
+    show = get_in(show_response, ["result", "structuredContent"])
+
+    assert show["entry_count"] == 55
+    assert show["entries_returned"] == 50
+    assert show["entries_truncated"] == true
+    assert Enum.map(show["entries"], & &1["sequence"]) == Enum.to_list(6..55)
+  end
+
+  test "Solo MCP tools surface validation errors without mutating state", %{repo: repo} do
+    invalid_attach_response =
+      mcp_tool(repo, nil, "solo_attach", %{
+        "repo" => "nextide/example",
+        "base_branch" => "main",
+        "workspace_path" => "relative/workspace",
+        "caller_id" => "codex-local"
+      })
+
+    assert get_in(invalid_attach_response, ["error", "data", "reason"]) == "invalid_workspace_path"
+    assert repo.aggregate(SoloSession, :count, :id) == 0
+
+    attach_response =
+      mcp_tool(repo, nil, "solo_attach", %{
+        "repo" => "nextide/example",
+        "base_branch" => "main",
+        "workspace_path" => solo_workspace_path("validation"),
+        "caller_id" => "codex-local"
+      })
+
+    session_id = get_in(attach_response, ["result", "structuredContent", "solo_session", "id"])
+
+    invalid_append_response =
+      mcp_tool(repo, nil, "solo_append", %{
+        "session_id" => session_id,
+        "entry_kind" => "progress",
+        "title" => "Reject secret key",
+        "idempotency_key" => "wk_" <> String.duplicate("A", 43)
+      })
+
+    assert get_in(invalid_append_response, ["error", "data", "reason"]) == "invalid_entry_idempotency_key"
+    assert repo.aggregate(SoloSessionEntry, :count, :id) == 0
+  end
+
+  test "Solo MCP calls from bound sessions fail before mutation", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-SOLO-BOUND-DENY", kind: "mcp"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    worker_session = MCPHarness.session(worker_assignment, proof_hash: minted.grant.secret_hash)
+
+    response =
+      mcp_tool(
+        repo,
+        worker_session,
+        "solo_attach",
+        %{
+          "repo" => "nextide/example",
+          "base_branch" => "main",
+          "workspace_path" => solo_workspace_path("bound"),
+          "caller_id" => "codex-local"
+        }
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_001
+    assert get_in(response, ["error", "data", "reason"]) == "solo_tools_require_unbound_session"
+    assert repo.aggregate(SoloSession, :count, :id) == 0
   end
 
   test "tools list advertises architect schemas only for architect sessions", %{repo: repo} do
@@ -12380,6 +12591,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     System.tmp_dir!()
     |> Path.join("sympp-mcp-test-worker-secrets")
     |> Path.expand()
+  end
+
+  defp solo_workspace_path(name) do
+    path = Path.join(System.tmp_dir!(), "sympp-mcp-solo-#{name}-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(path)
+    path
   end
 
   defp test_dispatch_handoff_store_dir do

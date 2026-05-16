@@ -124,8 +124,8 @@ targets, bearer tokens, or one-off operator-local secret material.
 
 Normal single-agent Codex work can use the plugin-installed
 `symphony-plus-plus:symphony-solo-session` skill for lightweight local planning
-memory without WorkRequest, WorkPackage, MCP, Linear, architect handoff, or
-worker dispatch semantics.
+memory without WorkRequest, WorkPackage, Linear, architect handoff, or worker
+dispatch semantics.
 
 That skill uses `scripts/sympp-solo.ps1`, which resolves the Symphony++ checkout
 from source or installed cache and passes commands through to `mix sympp.solo`
@@ -133,6 +133,14 @@ from the resolved `elixir/` directory. Use it to attach a local Solo Session,
 append `task_plan`, `finding`, `progress`, `blocker`, `decision`, and
 `validation_note` entries, read the ledger, and pause, resume, complete, or
 archive the session.
+
+The generic `symphony_plus_plus` MCP server also advertises first-slice Solo
+tools for unbound sessions: `solo_attach`, `solo_append`, `solo_show`, and
+`solo_list`. Bound worker or architect WorkPackage sessions do not advertise
+those tools, and direct calls from bound sessions are rejected before mutation.
+`solo_show` returns the latest 50 entries plus count/truncation metadata. Use
+the CLI wrapper when the host has not loaded the MCP entry, lifecycle commands
+are needed, or full ledger history is required.
 
 When neither `--database` nor `SYMPP_DATABASE` is supplied, the wrapper derives
 the caller workspace from the original current directory and passes
