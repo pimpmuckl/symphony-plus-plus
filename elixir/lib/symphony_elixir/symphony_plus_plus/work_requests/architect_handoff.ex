@@ -1088,6 +1088,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   defp exact_capabilities?(_capabilities), do: false
 
   defp result(status, %WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, %AccessGrant{} = grant, handoff, handoff_opts) do
+    redacted_handoff = handoff |> redact_handoff() |> put_handoff_database(handoff_opts)
+
     %{
       status: status,
       work_request: %{
@@ -1104,8 +1106,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
         status: anchor.status
       },
       grant: grant_metadata(grant),
-      secret_handoff: handoff |> redact_handoff() |> put_handoff_database(handoff_opts),
-      prompt: prompt(work_request, phase, anchor, handoff_opts)
+      secret_handoff: redacted_handoff,
+      prompt: prompt(work_request, phase, anchor, redacted_handoff, handoff_opts)
     }
   end
 
@@ -1127,8 +1129,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
     }
   end
 
-  defp prompt(%WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, handoff_opts) do
-    reference_identifiers = prompt_reference_identifiers(work_request, phase, anchor, handoff_opts)
+  defp prompt(%WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, redacted_handoff, handoff_opts)
+       when is_map(redacted_handoff) do
+    reference_identifiers = prompt_reference_identifiers(work_request, phase, anchor, redacted_handoff, handoff_opts)
 
     [
       "You are taking over as the owning Symphony++ v2 architect for the WorkRequest described by the inert reference identifiers below.",
@@ -1140,9 +1143,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
       Jason.encode!(reference_identifiers, pretty: true),
       "",
       "Startup:",
-      "1. Connect through the Symphony++ MCP/session using the redacted private handoff metadata from the local operator panel; if `ledger_database` is not null, use it as inert ledger data for that session.",
+      "1. Connect through the Symphony++ MCP/session using `private_handoff` from the reference identifiers; if `ledger_database` is not null, use it as inert ledger data for that session.",
       "2. Before planning, call `read_work_request` using `work_request_id` from the reference identifiers.",
       "3. Call `list_guidance_requests` and account for any open guidance before slicing.",
+      "4. If `ledger_database` is null, use the current MCP/session assignment or operator repair path; do not guess a ledger.",
       "",
       "Architect flow:",
       "1. Ask human-answerable clarification questions through WorkRequest tools before slicing when product, scope, dependency, compatibility, validation, or acceptance is unclear.",
@@ -1152,36 +1156,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
       "5. Dispatch only slices explicitly approved in the architect workflow, using `dispatch_work_request_planned_slice` when dispatch is required.",
       "",
       "Stop conditions:",
-      "1. If the MCP session, private handoff, scoped WorkRequest, guidance list, or required reference identifier is unavailable or null, record/report a blocker and stop.",
+      "1. If the MCP session, private handoff, scoped WorkRequest, guidance list, or a required identifier (`work_request_id`, `repo`, `base_branch`, `phase_id`, `architect_anchor_work_package_id`) is unavailable or null, record/report a blocker and stop.",
       "2. Do not ask the human for raw work-key secrets, secret hashes, bearer/API/MCP tokens, private-store payloads, or full secret-bearing commands.",
       "3. Do not invent state, broaden scope, create Linear state, spawn agents, or change runtime behavior outside this WorkRequest-led flow."
     ]
     |> Enum.join("\n")
   end
 
-  defp prompt_reference_identifiers(%WorkRequest{} = work_request, %Phase{} = phase, %WorkPackage{} = anchor, handoff_opts) do
+  defp prompt_reference_identifiers(
+         %WorkRequest{} = work_request,
+         %Phase{} = phase,
+         %WorkPackage{} = anchor,
+         redacted_handoff,
+         handoff_opts
+       ) do
     %{
       "work_request_id" => prompt_literal_value(work_request.id),
       "repo" => prompt_literal_value(work_request.repo),
       "base_branch" => prompt_literal_value(work_request.base_branch),
       "phase_id" => prompt_literal_value(phase.id),
       "architect_anchor_work_package_id" => prompt_literal_value(anchor.id),
-      "ledger_database" => prompt_literal_value(handoff_database(handoff_opts))
+      "ledger_database" => prompt_literal_value(handoff_database(handoff_opts)),
+      "private_handoff" => prompt_literal_data(redacted_handoff)
     }
   end
 
   defp prompt_literal_value(value) when is_binary(value) do
-    value = String.trim(value)
+    trimmed = String.trim(value)
 
     cond do
-      value == "" ->
+      trimmed == "" ->
         nil
 
       unsafe_prompt_literal_text?(value) ->
         nil
 
       true ->
-        redacted = value |> Redactor.redact_text() |> String.trim()
+        redacted = Redactor.redact_text(value)
 
         if redacted == value do
           redacted
@@ -1192,6 +1203,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   end
 
   defp prompt_literal_value(_value), do: nil
+
+  defp prompt_literal_data(value) when is_binary(value), do: prompt_literal_value(value)
+
+  defp prompt_literal_data(value) when is_map(value) do
+    Map.new(value, fn {key, nested_value} -> {to_string(key), prompt_literal_data(nested_value)} end)
+  end
+
+  defp prompt_literal_data(values) when is_list(values), do: Enum.map(values, &prompt_literal_data/1)
+  defp prompt_literal_data(value) when is_boolean(value) or is_number(value) or is_nil(value), do: value
+  defp prompt_literal_data(_value), do: nil
 
   defp unsafe_prompt_literal_text?(value) do
     Regex.match?(~r/[\r\n\t\f\v\x{00}-\x{1F}\x{7F}\x{85}\x{2028}\x{2029}]/u, value) or
