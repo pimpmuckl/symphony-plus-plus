@@ -90,6 +90,16 @@ Scope guard status
 Plan completion
 ```
 
+Deferred cockpit UX follow-up:
+
+- Add a lightweight Projects or work-stream side list for local operator mode.
+- Let the operator pin important projects or repo/base streams for fast access.
+- Clicking a project filters the cockpit surfaces to that stream.
+- Provide a clear `Show All` control that removes the filter and restores the
+  full cockpit.
+- Keep the first version simple; this is navigation polish, not the full
+  next-generation dashboard redesign.
+
 ### Work package detail
 
 Sections:
