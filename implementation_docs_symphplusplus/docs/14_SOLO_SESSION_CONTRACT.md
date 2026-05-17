@@ -241,6 +241,19 @@ agent-facing access to the `mix sympp.solo` CLI from source or installed
 plugin cache. They are convenience surfaces over the local Solo Session ledger,
 not orchestration.
 
+Target MCP access for Solo Sessions is through the shared Symphony++ HTTP MCP
+endpoint described in `04_MCP_AND_SKILL_CONTRACT.md`. In local mode, that
+endpoint is backed by the single local Symphony++ daemon/cockpit process for the
+machine. In company mode, the same tool contract may point to a remote
+Symphony++ service with server-side authentication and repository/project
+authorization.
+
+Solo Session tools are expected to be cheap enough for normal real agents to
+keep enabled. They should not require each Codex thread, `codex exec`, or
+`codex review` invocation to spawn a separate PowerShell/Mix/Erlang stdio MCP
+process. The CLI wrapper remains the fallback when the shared MCP endpoint is
+not configured or when a caller needs explicit local-file operation.
+
 Current first-slice MCP Solo Session tools are small and local:
 
 - Create or attach the current Solo Session for the local repo/worktree scope.

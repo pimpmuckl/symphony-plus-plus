@@ -4,6 +4,49 @@
 
 Codex workers should interact with Symphony++ through a narrow MCP interface and a repeatable Codex Skill.
 
+## Target MCP topology
+
+The target installation shape is a single HTTP MCP endpoint rather than a
+per-session stdio Elixir process.
+
+Default local mode should run one local Symphony++ daemon on loopback. That
+daemon owns the cockpit, Solo Session planning memory, and MCP endpoint for the
+machine. Codex clients then connect to the daemon by URL, for example:
+
+```toml
+[mcp_servers.symphony_plus_plus]
+url = "http://127.0.0.1:<port>/mcp"
+```
+
+This keeps normal Codex app threads, implementation agents, and review-adjacent
+tools from spawning a new PowerShell/Mix/Erlang process tree per session while
+still making the lightweight Solo planning tools available wherever the plugin
+is enabled.
+
+The same client contract should support a company-hosted Symphony++ service for
+shared repositories by changing only the endpoint and authentication settings,
+for example:
+
+```toml
+[mcp_servers.symphony_plus_plus]
+url = "https://sympp.example.com/mcp"
+bearer_token_env_var = "SYMPP_TOKEN"
+```
+
+Remote/company mode centralizes the ledger, cockpit, WorkRequests, WorkPackages,
+and planning history in a server-backed datastore. Codex agents still edit code
+inside their local or cloud workspaces; Symphony++ remains the coordination,
+planning, permission, and observability layer. Remote mode must enforce
+repository, branch, project, WorkRequest, WorkPackage, and grant scope on the
+server side before returning any board, planning, or orchestration data.
+
+The current stdio MCP wrapper remains a development and private-store bootstrap
+fallback. It should not be the long-term default for ordinary plugin install
+because Codex hosts may eagerly start configured stdio MCP servers for generic
+or review sessions. Heavy WorkPackage and architect orchestration may still
+require explicit claim/bootstrap context; the local/remote HTTP server is the
+transport target, not a shortcut around grant authorization.
+
 ## MCP resources
 
 ```text
