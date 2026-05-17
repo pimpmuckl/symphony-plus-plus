@@ -11,13 +11,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
   @type default_fun :: (-> Server.t())
   @type update_fun :: (Server.t() -> {term(), Server.t()})
 
-  @spec child_spec(keyword()) :: Supervisor.child_spec()
-  def child_spec(opts), do: %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}}
-
   @spec start_link(keyword()) :: GenServer.on_start()
-  def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
-  end
+  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
   @spec get(Config.t(), String.t(), String.t()) :: Server.t() | nil
   def get(%Config{} = config, client_key, state_key) when is_binary(client_key) and is_binary(state_key) do
@@ -28,15 +23,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
   def put(%Config{} = config, client_key, state_key, %Server{} = server)
       when is_binary(client_key) and is_binary(state_key) do
     key = store_key(config, client_key, state_key)
-    with_lock(key, fn -> GenServer.call(__MODULE__, {:put, key, server}) end)
-  end
-
-  @spec update(Config.t(), String.t(), String.t(), default_fun(), update_fun()) :: term()
-  def update(%Config{} = config, client_key, state_key, default_fun, update_fun)
-      when is_binary(client_key) and is_binary(state_key) and is_function(default_fun, 0) and
-             is_function(update_fun, 1) do
-    {reply, _status} = update_with_status(config, client_key, state_key, default_fun, update_fun)
-    reply
+    generation = key_generation(key)
+    with_lock(key, fn -> GenServer.call(__MODULE__, {:put, key, generation, server}) end)
   end
 
   @spec update_with_status(Config.t(), String.t(), String.t(), default_fun(), update_fun()) :: {term(), update_status()}
@@ -90,9 +78,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
   end
 
   @spec reset!() :: :ok
-  def reset! do
-    GenServer.call(__MODULE__, :reset)
-  end
+  def reset!, do: GenServer.call(__MODULE__, :reset)
 
   @impl true
   def init(opts) do
@@ -122,14 +108,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
     end
   end
 
-  def handle_call({:put, key, %Server{} = server}, _from, state) do
+  def handle_call({:put, key, generation, %Server{} = server}, _from, state) do
     state = cleanup(state)
 
-    if persistable?(server) do
-      {:reply, :ok, put_entry(state, key, server)}
-    else
-      {:reply, :ok, state}
-    end
+    state =
+      if Map.get(state.key_versions, key, 0) == generation and persistable?(server),
+        do: put_entry(state, key, server),
+        else: state
+
+    {:reply, :ok, state}
   end
 
   def handle_call({:put_if_current, key, generation, %Server{} = server}, _from, state) do
@@ -211,6 +198,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
   end
 
   def handle_call(:reset, _from, state) do
+    reset_lock_waiters(state)
+
     {:reply, :ok,
      %{
        state
@@ -219,7 +208,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
          key_versions: %{},
          key_version_touched_at: %{},
          locks: %{},
-         lock_refs: %{}
+         lock_refs: %{},
+         ttl_ms: @ttl_ms
      }}
   end
 
@@ -299,9 +289,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
     %{state | locks: Map.put(state.locks, key, %{lock | queue: queue})}
   end
 
-  defp store_key(%Config{} = config, client_key, state_key) do
-    {config.mode, LedgerNamespace.key(config), client_key, state_key}
+  defp reset_lock_waiters(state) do
+    Enum.each(state.locks, fn {_key, lock} ->
+      Process.demonitor(lock.owner_ref, [:flush])
+      lock.queue |> :queue.to_list() |> Enum.each(&GenServer.reply(&1, {:error, :reset}))
+    end)
   end
+
+  defp store_key(%Config{} = config, client_key, state_key), do: {config.mode, LedgerNamespace.key(config), client_key, state_key}
 
   defp put_entry(state, key, %Server{} = server) do
     %{state | entries: Map.put(state.entries, key, {server, now_ms()}), aliases: Map.delete(state.aliases, key)}
@@ -386,10 +381,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
 
   defp cleanup(%{entries: entries, ttl_ms: ttl_ms} = state) do
     cutoff = now_ms() - ttl_ms
-    entries = Map.reject(entries, fn {_key, {_server, touched_at}} -> touched_at < cutoff end)
+    expired_keys = for {key, {_server, touched_at}} <- entries, touched_at < cutoff, do: key
 
-    %{state | entries: entries}
-    |> prune_aliases()
+    {state, orphan_alias_keys} =
+      %{state | entries: Map.drop(entries, expired_keys)}
+      |> prune_aliases()
+
+    state
+    |> bump_versions(expired_keys ++ orphan_alias_keys)
     |> prune_versions()
   end
 
@@ -401,7 +400,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
         MapSet.member?(active_keys, alias_key) and MapSet.member?(active_keys, source_key)
       end)
 
-    %{state | entries: Map.drop(state.entries, Enum.map(orphan_aliases, &elem(&1, 0))), aliases: Map.new(active_aliases)}
+    orphan_alias_keys = Enum.map(orphan_aliases, &elem(&1, 0))
+    {%{state | entries: Map.drop(state.entries, orphan_alias_keys), aliases: Map.new(active_aliases)}, orphan_alias_keys}
   end
 
   defp prune_versions(%{entries: entries, locks: locks, ttl_ms: ttl_ms} = state) do

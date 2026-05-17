@@ -16,7 +16,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPStateStoreTest do
   end
 
   setup_all do
-    start_supervised!(HTTPStateStore)
+    if Process.whereis(HTTPStateStore) == nil, do: start_supervised!(HTTPStateStore)
     :ok
   end
 
@@ -330,6 +330,89 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPStateStoreTest do
     assert Task.await(delete) == :ok
     assert_receive {:entered_second_update, false}
     assert Task.await(second) == {:second, :dropped}
+    assert HTTPStateStore.get(config, "client", "state") == nil
+  end
+
+  test "queued direct puts started before invalidation cannot resurrect state" do
+    config = config("queued-put-invalidate")
+    parent = self()
+
+    assert :ok = HTTPStateStore.put(config, "client", "state", initialized_server(config, "state"))
+
+    holder =
+      Task.async(fn ->
+        HTTPStateStore.update_with_status(config, "client", "state", default_server_fun(config, "state"), fn server ->
+          send(parent, {:holding_update, self()})
+
+          receive do
+            :release_update -> :ok
+          after
+            1_000 -> raise "timed out waiting to release update"
+          end
+
+          {:held, %{server | initialized: true}}
+        end)
+      end)
+
+    assert_receive {:holding_update, holder_pid}
+
+    stale_put =
+      Task.async(fn ->
+        HTTPStateStore.put(config, "client", "state", initialized_server(config, "stale-put"))
+      end)
+
+    wait_for_queued_lock(config, "client", "state", 1)
+    assert :ok = HTTPStateStore.invalidate(config, "client", "state")
+    send(holder_pid, :release_update)
+
+    assert Task.await(holder) == {:held, :dropped}
+    assert Task.await(stale_put) == :ok
+    assert HTTPStateStore.get(config, "client", "state") == nil
+  end
+
+  test "ttl cleanup prevents queued updates from resurrecting expired state" do
+    config = config("queued-ttl-expire")
+    parent = self()
+    key = store_key(config, "client", "state")
+
+    assert :ok = HTTPStateStore.put(config, "client", "state", initialized_server(config, "state"))
+
+    holder =
+      Task.async(fn ->
+        HTTPStateStore.update_with_status(config, "client", "state", default_server_fun(config, "state"), fn server ->
+          send(parent, {:holding_update, self()})
+
+          receive do
+            :release_update -> :ok
+          after
+            1_000 -> raise "timed out waiting to release update"
+          end
+
+          {:held, %{server | initialized: true}}
+        end)
+      end)
+
+    assert_receive {:holding_update, holder_pid}
+
+    queued =
+      Task.async(fn ->
+        HTTPStateStore.update_with_status(config, "client", "state", default_server_fun(config, "state"), fn server ->
+          {:queued, %{server | initialized: true}}
+        end)
+      end)
+
+    wait_for_queued_lock(config, "client", "state", 1)
+
+    :sys.replace_state(HTTPStateStore, fn state ->
+      entries = Map.update!(state.entries, key, fn {server, _touched_at} -> {server, System.monotonic_time(:millisecond) - 10} end)
+      %{state | entries: entries, ttl_ms: 1}
+    end)
+
+    assert HTTPStateStore.get(config, "client", "state") == nil
+    send(holder_pid, :release_update)
+
+    assert Task.await(holder) == {:held, :dropped}
+    assert Task.await(queued) == {:queued, :dropped}
     assert HTTPStateStore.get(config, "client", "state") == nil
   end
 
