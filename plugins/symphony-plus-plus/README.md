@@ -1,9 +1,10 @@
 # Symphony++ Codex Plugin
 
 This plugin exposes Symphony++ Codex skills and Solo Session planning helpers
-as a local Codex plugin. Explicit `symphony_plus_plus` MCP reference assets
-remain in the package for dedicated S++ workflows, but the default plugin
-manifest is skill-only. The canonical source for the runtime remains this
+as a local Codex plugin. The default plugin package is physically MCP-free: it
+must not ship a root `.mcp.json` and its manifest is skill-only. The sibling
+`symphony-plus-plus-mcp` package owns the bundled MCP startup file for
+dedicated S++ workflows. The canonical source for the runtime remains this
 repository; the plugin cache under `~/.codex/plugins/cache/...` is generated
 install state.
 
@@ -51,8 +52,8 @@ marketplace, including the default `symphony-plus-plus` plugin and the opt-in
 `-PluginName symphony-plus-plus-mcp` only when intentionally refreshing one
 package.
 
-To prove the installed cache entry is package-complete, skill-only by default,
-and still carries valid explicit MCP wrapper assets, run:
+To prove the installed cache entries are package-complete, MCP-free by default,
+and MCP-enabled only for the opt-in companion, run:
 
 ```powershell
 .\scripts\refresh-local-plugin.ps1 -ValidateInstalledCache
@@ -66,10 +67,14 @@ The refresh script overlays both install cache shapes Codex may consult:
 `~/.codex/plugins/cache/<marketplace>/symphony-plus-plus/local` and the
 manifest-version directory, for example
 `~/.codex/plugins/cache/<marketplace>/symphony-plus-plus/0.1.2`. It overwrites
-the known plugin package entries in place instead of deleting active cache roots,
-so unrelated stale files may remain. Older cache directories are ignored; the
-fix for stale cache state is current-version cache parity plus a Codex
-reload/new session, not cache garbage collection.
+the known plugin package entries in place instead of deleting active cache
+roots, so unrelated stale files may remain. Because the default package must be
+MCP-inert even if a host scans cache-root `.mcp.json` files directly, refresh
+also repairs generated default-cache entries in place by removing stale root
+`.mcp.json` files and stripping stale manifest `mcpServers` declarations. It
+does not delete superseded cache roots. Cleanup is scoped to generated
+`~/.codex/plugins/cache/<marketplace>/symphony-plus-plus/*` cache entries;
+manual scratch directories without generated-entry markers are left alone.
 If an existing cache parent, cache directory, or child path is a junction or
 symlink, refresh stops with a manual cleanup message instead of recursively
 deleting or copying through the link.
@@ -86,29 +91,30 @@ The default manifest points at `skills-default/`, which exposes only the
 MCP-free Solo Session skill. MCP-dependent WorkPackage and architect skills
 ship in the sibling opt-in MCP plugin.
 
-The repo keeps `.mcp.json` and `scripts/start-sympp-mcp.ps1` as explicit MCP
-reference assets for dedicated S++ workflows, but they are not advertised by
-the default skill plugin. WorkPackage workers should use the scoped `run-mcp`
-command emitted by Symphony++ dispatch. Dedicated plugin-based S++ MCP sessions
-can install the sibling `plugins/symphony-plus-plus-mcp` package in an explicit
-Codex config or alternate Codex home. Do not enable that opt-in MCP plugin in a
-generic/global config unless every session on that config should start S++ MCP.
+The default plugin source and refreshed default cache must not contain root
+`.mcp.json`. WorkPackage workers should use the scoped `run-mcp` command emitted
+by Symphony++ dispatch. Dedicated plugin-based S++ MCP sessions can install the
+sibling `plugins/symphony-plus-plus-mcp` package in an explicit Codex config or
+alternate Codex home. Do not enable that opt-in MCP plugin in a generic/global
+config unless every session on that config should start S++ MCP.
 
 Repo validation proves only the plugin package contract:
 
-- `.codex-plugin/plugin.json` does not declare `mcpServers`, so enabling the
-  default plugin does not ask Codex to start S++ MCP in generic/review sessions.
-- `.mcp.json` defines a generic `symphony_plus_plus` stdio server using a
-  documented direct server map, not a nested `mcpServers` object, for explicit
-  opt-in use.
-- `scripts/refresh-local-plugin.ps1` copies `.mcp.json` into the installed
-  `local` and manifest-version caches, and writes a non-secret
-  `.sympp-source-root` hint.
+- `.codex-plugin/plugin.json` does not declare `mcpServers`, and root
+  `.mcp.json` is absent, so enabling the default plugin does not ask Codex to
+  start S++ MCP in generic/review sessions.
+- `plugins/symphony-plus-plus-mcp/.mcp.json` defines a generic
+  `symphony_plus_plus` stdio server using a documented direct server map, not a
+  nested `mcpServers` object, for explicit opt-in use.
+- `scripts/refresh-local-plugin.ps1` removes stale managed default-cache
+  `.mcp.json` files, strips stale manifest `mcpServers` from generated default
+  cache entries, and writes a non-secret `.sympp-source-root` hint.
 - `scripts/refresh-local-plugin.ps1 -ValidateInstalledCache` validates the
   installed cache copies, confirms the default manifest remains skill-only,
-  checks the reference `symphony_plus_plus` entry, and runs the wrapper with
-  `-ValidateOnly` from each cache root. It also validates the Solo Session
-  wrapper from each cache root.
+  confirms default cache roots do not contain `.mcp.json`, checks the opt-in
+  `symphony_plus_plus` entry, and runs the opt-in wrapper with `-ValidateOnly`
+  from each opt-in cache root. It also validates the Solo Session wrapper from
+  each cache root.
 - `scripts/start-sympp-mcp.ps1 -ValidateOnly` can resolve the checkout and
   launcher.
 - `scripts/sympp-solo.ps1 -ValidateOnly` can resolve the checkout and validate
@@ -150,14 +156,16 @@ plugin root:
 ```
 
 The diagnostic reports installed cache versions, manifest lifecycle status,
-`.mcp.json` shape, source-root hints, whether the plugin is enabled in Codex
-config, whether a global `[mcp_servers.symphony_plus_plus]` entry exists,
-whether cache `.mcp.json` defines the expected `symphony_plus_plus` stdio
-server, and focused live process counts for `start-sympp-mcp.ps1`,
+root `.mcp.json` presence/shape, source-root hints, whether the plugin is
+enabled in Codex config, whether a global `[mcp_servers.symphony_plus_plus]`
+entry exists, whether opt-in cache `.mcp.json` defines the expected
+`symphony_plus_plus` stdio server, and focused live process counts for
+`start-sympp-mcp.ps1`,
 `mix.bat sympp.mcp`, and `erl.exe sympp.mcp`.
 By default it scans every `symphony-plus-plus` marketplace cache under the
 Codex home; pass `-MarketplaceName` to narrow cache and config checks to one
-marketplace. Cache manifests that still declare `mcpServers` are reported as
+marketplace. Default cache entries that still declare `mcpServers` or still
+contain a root `.mcp.json` are reported as
 `incompatible_default_plugin_bundles_mcp`, and missing manifests are reported as
 `missing_manifest`.
 Use it to distinguish stale installed caches, explicit MCP sessions, and
@@ -168,13 +176,14 @@ MCP startup with the diagnostic JSON attached as evidence.
 Live process counts are scoped to `-RepoRoot` when supplied. Without
 `-RepoRoot`, the diagnostic uses installed-cache `.sympp-source-root` hints only
 from current usable cache entries: `local` and the source manifest-version
-directory. Those current entries may be skill-only or stale bundled-MCP caches,
-but their reference `.mcp.json` server must be valid, and they must point at one
-checkout. Superseded version directories, missing manifests, malformed
-manifests, and broken reference MCP entries are reported but do not provide
-implicit process scope. If no valid scope is available, or if usable current
-caches point at multiple checkouts, the scoped process scan is skipped instead
-of reporting machine-wide processes for the selected Codex home.
+directory. Those current entries may be opt-in MCP caches or stale default
+bundled-MCP caches, but any cache used for process scope must have a valid
+`symphony_plus_plus` entry and point at one checkout. Fresh MCP-free default
+caches do not provide implicit process scope. Superseded version directories,
+missing manifests, malformed manifests, and broken MCP entries are reported but
+do not provide implicit process scope. If no valid scope is available, or if
+usable current caches point at multiple checkouts, the scoped process scan is
+skipped instead of reporting machine-wide processes for the selected Codex home.
 When `-RepoRoot` supplies an explicit checkout scope, unmatched
 `start-sympp-mcp.ps1` launchers are reported separately as unattributed so a
 wrapper stuck before `mix` starts is visible without assigning it to another
@@ -189,12 +198,13 @@ the Windows process scan as unsupported.
 The diagnostic truncates and redacts common secret-bearing command-line forms,
 including bearer headers and `--token` or `--api-key` flag values; run
 `-SelfTest` after editing that sanitizer.
-The installed-cache validation proves the skill-only default package, explicit
-MCP reference file, and wrappers. It does not prove that an already-running
-Codex host has reloaded plugin metadata. After refreshing the cache, reload
-Codex and open a new session before treating old generic S++ MCP startup as a
-current package failure. Do not work around missing explicit MCP tools by adding
-a global `[mcp_servers]` entry to generic worker config.
+The installed-cache validation proves the skill-only default package is
+physically MCP-free and the opt-in MCP package still carries the explicit MCP
+file and wrappers. It does not prove that an already-running Codex host has
+reloaded plugin metadata. After refreshing the cache, reload Codex and open a
+new session before treating old generic S++ MCP startup as a current package
+failure. Do not work around missing explicit MCP tools by adding a global
+`[mcp_servers]` entry to generic worker config.
 
 ### Default Planning And Opt-In MCP
 

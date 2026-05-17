@@ -10,11 +10,11 @@ The installable Codex plugin is skill-only by default. Its
 `mcpServers`; generic Codex sessions, review-suite lanes, and `codex review`
 calls should not start Symphony++ MCP merely because the plugin is enabled.
 
-The package still includes `plugins/symphony-plus-plus/.mcp.json` and
-`scripts/start-sympp-mcp.ps1` as explicit MCP reference assets. The `.mcp.json`
-uses the documented direct server-map shape so dedicated S++ workflows can copy
-or reference the generic `symphony_plus_plus` stdio server when they explicitly
-need it.
+The default package must not include `plugins/symphony-plus-plus/.mcp.json` at
+all. The sibling `plugins/symphony-plus-plus-mcp` opt-in package owns the
+bundled root `.mcp.json` that uses the documented direct server-map shape.
+Dedicated S++ workflows can copy or reference that package's generic
+`symphony_plus_plus` stdio server when they explicitly need it.
 
 MCP discovery is loaded by the Codex host, not by the skill text in an
 already-running thread. After refreshing the local plugin cache, restart or
@@ -22,13 +22,15 @@ reload Codex and open a new session before treating stale skill metadata as a
 repo packaging failure. ValidateOnly checks the wrapper and launcher only; it
 does not prove that the current session has hot-loaded new MCP tools. Use
 `scripts/refresh-local-plugin.ps1 -ValidateInstalledCache` to prove the
-installed cache copies keep the default manifest skill-only, contain the
-reference `symphony_plus_plus` server entry, and start the wrapper with
-`-ValidateOnly` from the cache root.
+installed default cache copies keep the manifest skill-only and physically omit
+root `.mcp.json`, while the opt-in MCP package contains the
+`symphony_plus_plus` server entry and starts the wrapper with `-ValidateOnly`
+from the cache root.
 The repo refresh script updates both the `local` cache and the manifest-version
-cache so a refreshed install has a skill-only manifest plus the reference
-`.mcp.json`. Older cache directories are ignored; reload Codex and open a new
-session after refresh.
+cache so a refreshed default install has a skill-only manifest and no root
+`.mcp.json`. It also repairs generated stale default cache entries in place by
+removing root `.mcp.json` and stale manifest `mcpServers` startup artifacts;
+reload Codex and open a new session after refresh.
 
 Skill visibility, explicit MCP configuration, global MCP settings visibility,
 and current-session tool availability are distinct. A visible skill proves
@@ -58,14 +60,14 @@ to one already-open thread. Do not invoke this MCP-dependent skill from a
 generic visible app thread that does not already show S++ MCP tools; use the
 Solo/cockpit handoff path instead.
 
-The generic MCP reference is intentionally generic. It must not embed raw
+The opt-in MCP package reference is intentionally generic. It must not embed raw
 work-key secrets, bearer tokens, private-store handoff targets, or
 operator-local secret material. It may use non-secret environment variables
 such as `SYMPP_REPO_ROOT` and `SYMPP_DATABASE` so the wrapper can find the
 runtime checkout and optional ledger. The repo-local refresh script also writes
-a non-secret source-root hint into the installed cache so explicit MCP use can
-start from generated local install state. The reference wrapper uses `pwsh`, so
-hosts that enable it need PowerShell 7 on `PATH`. Its wrapper runs `mix`
+a non-secret source-root hint into the installed opt-in cache so explicit MCP
+use can start from generated local install state. The reference wrapper uses
+`pwsh`, so hosts that enable it need PowerShell 7 on `PATH`. Its wrapper runs `mix`
 directly by default and rejects mise shims in direct mode; `mise` is opt-in
 with `SYMPP_LAUNCHER=mise`.
 
