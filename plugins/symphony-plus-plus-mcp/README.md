@@ -18,10 +18,12 @@ plugin session.
 
 This plugin intentionally bundles:
 
-- `mcpServers: "./.mcp.json"` for the generic `symphony_plus_plus` stdio server.
+- `mcpServers: "./.mcp.json"` for the generic `symphony_plus_plus` HTTP server at `http://127.0.0.1:4057/mcp`.
 - The WorkPackage, architect, and Solo Session skills.
-- The MCP and Solo wrapper scripts needed after marketplace/cache packaging.
+- The legacy stdio MCP wrapper for explicit fallback/dev bootstrap, plus the Solo wrapper script needed after marketplace/cache packaging.
 
 The default `symphony-plus-plus` plugin must remain skill-only and should stay
 enabled broadly. This opt-in plugin is the concrete install path for sessions
-that need MCP tools registered before the model starts.
+that need MCP tools registered before the model starts. If the cockpit/local
+daemon is not already running, MCP tools may be unavailable, but this bundled
+plugin target should not spawn a per-session Elixir process.

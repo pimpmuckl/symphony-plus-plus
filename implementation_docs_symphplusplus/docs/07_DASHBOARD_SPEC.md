@@ -12,10 +12,12 @@ Start the local operator cockpit from `elixir/` with:
 mix sympp.cockpit --database <ledger.sqlite3>
 ```
 
-The launcher binds to `127.0.0.1` and an OS-assigned port by default, prints
-the exact `/sympp/board` URL, enables `sympp_local_operator: true`, and keeps
-the process running until interrupted. Omit `--database` to use the default
-Symphony++ ledger for the current workflow.
+The launcher binds to `127.0.0.1:4057` by default, prints
+`http://127.0.0.1:4057/sympp/board`, enables `sympp_local_operator: true`, and
+serves Streamable HTTP MCP at `http://127.0.0.1:4057/mcp`. Pass `--port 0` for
+an OS-assigned port during manual or test runs, or `--port <n>` for a different
+stable port. Omit `--database` to use the default Symphony++ ledger for the
+current workflow.
 
 When the Phoenix endpoint is configured with `sympp_local_operator: true`, the
 local browser dashboard can open `/sympp/board` as the operator cockpit without

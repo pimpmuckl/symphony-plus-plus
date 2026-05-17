@@ -75,9 +75,11 @@ Set-Location elixir
 mix sympp.cockpit --database $ledger
 ```
 
-The task binds to loopback, chooses a port when you do not pass one, prints the
-local `/sympp/board` URL, and runs until interrupted. Open the printed URL in
-your browser.
+The task binds to `127.0.0.1:4057` by default, prints
+`http://127.0.0.1:4057/sympp/board`, serves MCP at
+`http://127.0.0.1:4057/mcp`, and runs until interrupted. Open the printed URL
+in your browser. Use `--port 0` only when you intentionally want a dynamic port
+for manual testing.
 
 ## Create A WorkRequest
 

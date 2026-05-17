@@ -1,12 +1,5 @@
 {
   "symphony_plus_plus": {
-    "type": "stdio",
-    "command": "pwsh",
-    "args": [
-      "-NoProfile",
-      "-Command",
-      "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
-    ],
-    "cwd": "."
+    "url": "http://127.0.0.1:4057/mcp"
   }
 }

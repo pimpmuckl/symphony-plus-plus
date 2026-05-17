@@ -9,7 +9,7 @@ defmodule Mix.Tasks.Sympp.Cockpit do
 
   @shortdoc "Starts the local Symphony++ operator cockpit"
   @default_host "127.0.0.1"
-  @default_port 0
+  @default_port 4057
   @board_path "/sympp/board"
   @switches [
     database: :string,
@@ -111,7 +111,7 @@ defmodule Mix.Tasks.Sympp.Cockpit do
     try do
       configure_cockpit(opts, original_endpoint_config)
       {:ok, _started} = ensure_runtime_started()
-      {:ok, _pid} = start_http_server(opts)
+      :ok = start_http_server_or_raise(opts)
       port = wait_for_bound_port()
 
       Mix.shell().info("Symphony++ local operator cockpit: #{cockpit_url(opts, port)}")
@@ -126,15 +126,43 @@ defmodule Mix.Tasks.Sympp.Cockpit do
     end
   end
 
-  defp start_http_server(opts) do
-    case HttpServer.start_link(host: server_host(Keyword.fetch!(opts, :host)), port: Keyword.fetch!(opts, :port)) do
-      {:ok, pid} = result ->
-        Process.put(:sympp_cockpit_endpoint_pid, pid)
-        result
+  defp start_http_server_or_raise(opts) do
+    previous_trap_exit = Process.flag(:trap_exit, true)
 
-      {:error, reason} ->
-        {:error, reason}
+    try do
+      case HttpServer.start_link(host: server_host(Keyword.fetch!(opts, :host)), port: Keyword.fetch!(opts, :port)) do
+        {:ok, pid} ->
+          Process.put(:sympp_cockpit_endpoint_pid, pid)
+          :ok
+
+        {:error, reason} ->
+          flush_exit_messages()
+          Mix.raise(cockpit_bind_error(opts, reason))
+      end
+    catch
+      :exit, reason ->
+        flush_exit_messages()
+        Mix.raise(cockpit_bind_error(opts, reason))
+    after
+      Process.flag(:trap_exit, previous_trap_exit)
     end
+  end
+
+  defp flush_exit_messages do
+    receive do
+      {:EXIT, _pid, _reason} -> flush_exit_messages()
+    after
+      0 -> :ok
+    end
+  end
+
+  defp cockpit_bind_error(opts, reason) do
+    host = opts |> Keyword.fetch!(:host) |> url_host()
+    port = Keyword.fetch!(opts, :port)
+
+    "Symphony++ cockpit could not bind http://#{host}:#{port}. " <>
+      "Stop the existing local daemon or pass --port 0 / --port <port>. " <>
+      "Reason: #{inspect(reason)}"
   end
 
   defp configure_cockpit(opts, original_endpoint_config) do

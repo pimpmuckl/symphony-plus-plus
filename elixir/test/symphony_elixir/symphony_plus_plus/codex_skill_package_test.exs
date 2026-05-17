@@ -93,22 +93,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
-  test "MCP wiring docs explain the stdio dependency without embedding secrets" do
+  test "MCP wiring docs explain the local HTTP dependency without embedding secrets" do
     wiring = File.read!(@wiring_path)
     plugin_wiring = File.read!(@plugin_wiring_path)
     template_wiring = File.read!(Path.join(@template_references_dir, "mcp_wiring.md"))
 
-    assert wiring =~ "mix sympp.mcp --mode stdio"
-    assert wiring =~ "rejects mise shims in direct mode"
-    assert wiring =~ "`mise` is opt-in"
+    assert wiring =~ "http://127.0.0.1:4057/mcp"
+    assert wiring =~ "mix sympp.cockpit --database <ledger-path>"
+    assert wiring =~ "--port 0"
     assert wiring =~ "[mcp_servers.symphony_plus_plus]"
+    assert wiring =~ "url = \"http://127.0.0.1:4057/mcp\""
     assert wiring =~ "sympp-worker-secret.ps1"
     assert wiring =~ "sympp-worker-secret.sh"
     assert wiring =~ "--work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by <stable-worker-id>"
     assert wiring =~ "should not embed raw work-key secrets or bearer tokens"
     assert wiring =~ "generic Codex sessions, review-suite lanes, and `codex review`"
     assert wiring =~ "open a new session before treating stale skill metadata"
-    assert wiring =~ "ValidateOnly checks the wrapper and launcher"
+    assert wiring =~ "ValidateInstalledCache checks the packaged HTTP URL"
     assert wiring =~ "scripts/refresh-local-plugin.ps1 -ValidateInstalledCache"
     assert wiring =~ "Skill visibility, explicit MCP configuration, global MCP settings"
     assert wiring =~ "must not declare\n`mcpServers`"
@@ -171,7 +172,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@plugin_readme_path) =~ "`codex review`"
     assert File.read!(@plugin_readme_path) =~ "plugins/symphony-plus-plus-mcp"
     assert File.read!(@plugin_readme_path) =~ "diagnose-mcp-lifecycle.ps1"
-    assert File.read!(@plugin_readme_path) =~ "per-session startup is host-managed"
+    assert File.read!(@plugin_readme_path) =~ "local HTTP daemon"
     assert File.read!(@plugin_readme_path) =~ "taskkill"
     assert File.read!(@plugin_readme_path) =~ "diagnostic truncates and redacts"
     assert File.read!(@plugin_readme_path) =~ "Live process counts are scoped to `-RepoRoot`"
@@ -188,12 +189,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@plugin_readme_path) =~ "incompatible_default_plugin_bundles_mcp"
     assert File.read!(@plugin_readme_path) =~ "missing_manifest"
     assert File.read!(@plugin_readme_path) =~ "reporting machine-wide processes"
-    assert File.read!(@plugin_readme_path) =~ "defines the expected\n`symphony_plus_plus`"
+    assert File.read!(@plugin_readme_path) =~ "defines the expected\n`symphony_plus_plus` HTTP server"
     assert File.read!(@plugin_readme_path) =~ "process scan as unsupported"
     assert File.read!(@plugin_readme_path) =~ "Default Planning And Opt-In MCP"
     assert File.read!(@plugin_readme_path) =~ "symphony-plus-plus:symphony-solo-session"
     assert File.read!(@plugin_readme_path) =~ "sympp-solo.ps1 -ValidateOnly"
-    assert File.read!(@plugin_readme_path) =~ "profile-scoped MCP"
+    assert File.read!(@plugin_readme_path) =~ "http://127.0.0.1:4057/mcp"
     assert File.read!(@plugin_readme_path) =~ "codex --profile sympp-agent app <path>"
     assert File.read!(@plugin_readme_path) =~ "subprocess/app-server session"
     assert File.read!(@plugin_readme_path) =~ "supported replacement for app-visible"
@@ -213,6 +214,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@refresh_script_path) =~ "skills-default"
     assert File.read!(@refresh_script_path) =~ "Repair-IncompatibleDefaultPluginCacheEntries"
     assert File.read!(@refresh_script_path) =~ "Sync-ManagedDirectoryChildren"
+    assert File.read!(@refresh_script_path) =~ "Installed plugin MCP fallback wrapper validation failed"
     assert File.read!(@refresh_script_path) =~ "Default installed plugin cache must not contain root .mcp.json"
     assert File.exists?(@plugin_lifecycle_diagnostic_path)
     assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "start-sympp-mcp.ps1"
@@ -239,6 +241,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "$($package.marketplace_name)/$($package.package_name)/$($package.label)"
     assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "opt_in_mcp_plugin_bundles_mcp"
     assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "reference_mcp_server_status"
+    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "invalid_url"
+    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "invalid_mixed_http_stdio"
+    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "non_default_http_url"
+    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "http_mcp_reachability_status"
+    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "mcp_endpoint_available"
+    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "unexpected_http_status_"
+    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "unreachable"
     assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "invalid_cwd"
     assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "invalid_args"
     assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "Test-CachePackageIsCurrentForProcessScope"
@@ -315,15 +324,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
     assert %{
              "symphony_plus_plus" => %{
-               "type" => "stdio",
-               "command" => "pwsh",
-               "args" => args,
-               "cwd" => "."
+               "url" => "http://127.0.0.1:4057/mcp"
              }
            } = documented_mcp_server_map(mcp_config)
 
-    assert "-NoProfile" in args
-    assert Enum.any?(args, &String.contains?(&1, "scripts/start-sympp-mcp.ps1"))
+    refute get_in(documented_mcp_server_map(mcp_config), ["symphony_plus_plus", "command"])
+    refute get_in(documented_mcp_server_map(mcp_config), ["symphony_plus_plus", "args"])
 
     serialized = Jason.encode!(manifest) <> Jason.encode!(mcp_config)
     refute serialized =~ "SYMPP_WORK_KEY_SECRET"
@@ -1407,7 +1413,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           mcp_config = mcp_config_path |> File.read!() |> Jason.decode!()
           assert mcp_manifest["name"] == "symphony-plus-plus-mcp"
           assert mcp_manifest["mcpServers"] == "./.mcp.json"
-          assert get_in(documented_mcp_server_map(mcp_config), ["symphony_plus_plus", "command"]) == "pwsh"
+
+          assert get_in(documented_mcp_server_map(mcp_config), ["symphony_plus_plus", "url"]) ==
+                   "http://127.0.0.1:4057/mcp"
         end
       after
         File.rm_rf!(temp_codex_home)
