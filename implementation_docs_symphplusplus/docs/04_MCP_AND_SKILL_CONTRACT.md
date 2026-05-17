@@ -15,7 +15,7 @@ machine. Codex clients then connect to the daemon by URL, for example:
 
 ```toml
 [mcp_servers.symphony_plus_plus]
-url = "http://127.0.0.1:<port>/mcp"
+url = "http://127.0.0.1:4057/mcp"
 ```
 
 The current minimal HTTP slice exposes only the local Streamable HTTP MCP

@@ -290,29 +290,13 @@ function Assert-CachePluginConfig([string]$TargetRoot, [string]$ExpectedVersion)
   if ($null -eq $server) {
     throw "Installed MCP config does not define symphony_plus_plus in a documented MCP config shape: $mcpConfigPath"
   }
-  if ($server.type -ne "stdio") {
-    throw "Installed MCP server type must be stdio: $mcpConfigPath"
-  }
-  if ($server.command -ne "pwsh") {
-    throw "Installed MCP server command must be pwsh: $mcpConfigPath"
-  }
-  if ($server.cwd -ne ".") {
-    throw "Installed MCP server cwd must remain cache-relative '.': $mcpConfigPath"
+  if ($server.url -ne "http://127.0.0.1:4057/mcp") {
+    throw "Installed MCP server URL must be http://127.0.0.1:4057/mcp: $mcpConfigPath"
   }
 
-  $args = @($server.args | ForEach-Object { [string]$_ })
-  $expectedArgs = @(
-    "-NoProfile",
-    "-Command",
-    '$env:PSExecutionPolicyPreference=''Bypass''; & ''scripts/start-sympp-mcp.ps1'''
-  )
-  if ($args.Count -ne $expectedArgs.Count) {
-    throw "Installed MCP server args must have $($expectedArgs.Count) tokens: $mcpConfigPath"
-  }
-
-  for ($index = 0; $index -lt $expectedArgs.Count; $index++) {
-    if ($args[$index] -ne $expectedArgs[$index]) {
-      throw "Installed MCP server arg[$index] mismatch in $mcpConfigPath."
+  foreach ($stdioProperty in @("type", "command", "args", "cwd")) {
+    if (@($server.PSObject.Properties.Name) -contains $stdioProperty) {
+      throw "Installed opt-in MCP server must use the local HTTP daemon URL, not stdio property '$stdioProperty': $mcpConfigPath"
     }
   }
 }
@@ -329,7 +313,7 @@ function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [s
         "`$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1' -ValidateOnly"
       )
       if ($LASTEXITCODE -ne 0) {
-        throw "Installed plugin MCP wrapper validation failed for $Label cache with exit code $LASTEXITCODE."
+        throw "Installed plugin MCP fallback wrapper validation failed for $Label cache with exit code $LASTEXITCODE."
       }
     }
 

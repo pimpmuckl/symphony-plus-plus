@@ -152,6 +152,44 @@ function Get-McpServerMap($McpConfig) {
 
   return $McpConfig
 }
+function Test-LoopbackMcpUri([System.Uri]$Uri) {
+  return $Uri.Scheme -eq "http" -and
+    $Uri.AbsolutePath -eq "/mcp" -and
+    ($Uri.Host -eq "127.0.0.1" -or $Uri.Host -eq "localhost" -or $Uri.Host -eq "::1" -or $Uri.Host -eq "[::1]")
+}
+
+function Get-HttpMcpReachabilityStatus($Server) {
+  if ($null -eq $Server -or -not (@($Server.PSObject.Properties.Name) -contains "url")) {
+    return "not_applicable"
+  }
+
+  try {
+    $uri = [System.Uri]::new([string]$Server.url)
+  } catch {
+    return "invalid_url"
+  }
+
+  if (-not (Test-LoopbackMcpUri $uri)) {
+    return "non_loopback_or_non_mcp_url"
+  }
+
+  try {
+    $response = Invoke-WebRequest -Uri $uri.AbsoluteUri -Method Get -TimeoutSec 1 -UseBasicParsing -ErrorAction Stop
+    return "unexpected_http_status_$([int]$response.StatusCode)"
+  } catch {
+    $response = $_.Exception.Response
+    if ($null -ne $response) {
+      $statusCode = [int]$response.StatusCode
+      if ($statusCode -eq 405) {
+        return "mcp_endpoint_available"
+      }
+
+      return "unexpected_http_status_$statusCode"
+    }
+
+    return "unreachable"
+  }
+}
 
 function Get-SymppMcpServerStatus($McpConfig) {
   $serverMap = Get-McpServerMap $McpConfig
@@ -162,6 +200,29 @@ function Get-SymppMcpServerStatus($McpConfig) {
   $server = $serverMap.symphony_plus_plus
   if ($null -eq $server) {
     return "missing"
+  }
+  if (@($server.PSObject.Properties.Name) -contains "url") {
+    foreach ($stdioProperty in @("type", "command", "args", "cwd")) {
+      if (@($server.PSObject.Properties.Name) -contains $stdioProperty) {
+        return "invalid_mixed_http_stdio"
+      }
+    }
+
+    try {
+      $uri = [System.Uri]::new([string]$server.url)
+    } catch {
+      return "invalid_url"
+    }
+
+    if (-not (Test-LoopbackMcpUri $uri)) {
+      return "invalid_url"
+    }
+
+    if ($server.url -eq "http://127.0.0.1:4057/mcp") {
+      return "ok"
+    }
+
+    return "non_default_http_url"
   }
   if ($server.type -ne "stdio") {
     return "invalid_type"
@@ -199,6 +260,8 @@ function Get-PluginPackageSummary([string]$Root, [string]$Label, [string]$Packag
   $rootMcpExists = Test-Path -LiteralPath (Join-Path $Root ".mcp.json")
   $mcp = Get-JsonFile $mcpPath
   $mcpParseError = Get-JsonParseError $mcp
+  $serverMap = Get-McpServerMap $mcp
+  $server = if ($null -ne $serverMap) { $serverMap.symphony_plus_plus } else { $null }
   $sourceHintPath = Join-Path $Root ".sympp-source-root"
   $sourceHint = if (Test-Path -LiteralPath $sourceHintPath) {
     (Get-Content -LiteralPath $sourceHintPath -Raw).Trim().TrimStart([char]0xFEFF)
@@ -238,6 +301,7 @@ function Get-PluginPackageSummary([string]$Root, [string]$Label, [string]$Packag
     mcp_shape = Get-McpShape $mcp
     mcp_parse_error = $mcpParseError
     reference_mcp_server_status = $mcpServerStatus
+    http_mcp_reachability_status = Get-HttpMcpReachabilityStatus $server
     symphony_plus_plus_server = if (-not $manifestExists) { "missing_manifest" } elseif ($manifestParseError) { "manifest_parse_error" } elseif ($manifestHasMcpServers -and $isOptInMcpPackage) { $mcpServerStatus } elseif ($defaultPackageBundlesMcp) { "incompatible_default_plugin_bundles_mcp" } else { $mcpServerStatus }
     has_start_script = Test-Path -LiteralPath (Join-Path $Root "scripts/start-sympp-mcp.ps1")
     source_root_hint = $sourceHint
@@ -818,7 +882,7 @@ Write-Host "  live erl sympp.mcp: $($summary.live_process_counts.erl_sympp_mcp)"
 Write-Host ""
 Write-Host "Installed cache:"
 foreach ($package in $summary.installed_cache) {
-  Write-Host "  $($package.marketplace_name)/$($package.package_name)/$($package.label): version=$($package.manifest_version) lifecycle=$($package.default_plugin_lifecycle_status) shape=$($package.mcp_shape) server=$($package.symphony_plus_plus_server) source=$($package.source_root_hint)"
+  Write-Host "  $($package.marketplace_name)/$($package.package_name)/$($package.label): version=$($package.manifest_version) lifecycle=$($package.default_plugin_lifecycle_status) shape=$($package.mcp_shape) server=$($package.symphony_plus_plus_server) http=$($package.http_mcp_reachability_status) source=$($package.source_root_hint)"
 }
 Write-Host ""
 Write-Host "Live repo roots:"

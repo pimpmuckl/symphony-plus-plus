@@ -7,7 +7,7 @@
   "interface": {
     "displayName": "Symphony++ MCP",
     "shortDescription": "Opt-in Symphony++ MCP orchestration for dedicated Codex sessions",
-    "longDescription": "Use this opt-in plugin only for dedicated Symphony++ architect or worker sessions that should start the bundled symphony_plus_plus MCP server. Generic, review, and desktop cockpit sessions should use the default skill-only Symphony++ plugin instead.",
+    "longDescription": "Use this opt-in plugin only for dedicated Symphony++ architect or worker sessions that should connect to the local symphony_plus_plus HTTP MCP daemon. Start mix sympp.cockpit first; generic, review, and desktop cockpit sessions should use the default skill-only Symphony++ plugin instead.",
     "developerName": "Jonathan",
     "category": "Coding",
     "capabilities": ["Read", "Write"]

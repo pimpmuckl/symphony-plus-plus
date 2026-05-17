@@ -44,7 +44,7 @@ For each worker, send:
 3. The `symphony-plus-plus-mcp:symphony-work-package` skill package from the
    `plugins/symphony-plus-plus-mcp/` Codex plugin, `.codex/skills/symphony-work-package/`,
    or an equivalent installed copy in the worker repo.
-4. MCP setup for the Symphony++ stdio server; see
+4. MCP setup for the Symphony++ local HTTP server; see
    `.codex/skills/symphony-work-package/references/mcp_wiring.md`.
 5. Any dependency summaries or operator decisions needed to avoid scope drift.
 

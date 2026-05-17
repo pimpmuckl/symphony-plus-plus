@@ -68,11 +68,12 @@ start the local operator cockpit from `elixir/`:
 mix sympp.cockpit --database <ledger.sqlite3>
 ```
 
-The command binds to `127.0.0.1` with an OS-assigned port, prints the exact
-`/sympp/board` URL, initializes an empty configured SQLite ledger through the
-existing dashboard path, and blocks until interrupted. Use `--host localhost`
-or `--port <port>` only when you need a stable local URL; public bind hosts are
-rejected.
+The command binds to `127.0.0.1:4057` by default, prints
+`http://127.0.0.1:4057/sympp/board`, serves MCP at
+`http://127.0.0.1:4057/mcp`, initializes an empty configured SQLite ledger
+through the existing dashboard path, and blocks until interrupted. Use
+`--port 0` only when you intentionally need a dynamic local URL; public bind
+hosts are rejected.
 
 1. Choose `quick_fix`, `hotfix`, `investigation`, or another package policy
    that matches the work. Keep repo, base branch, owned paths, acceptance

@@ -35,6 +35,11 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
     relative_database = Path.join("tmp", "sympp-cockpit-#{System.unique_integer([:positive])}.sqlite3")
 
     try do
+      assert {:ok, default_opts} = CockpitTask.parse_args_for_test([])
+      assert Keyword.fetch!(default_opts, :host) == "127.0.0.1"
+      assert Keyword.fetch!(default_opts, :port) == 4057
+      assert CockpitTask.cockpit_url_for_test(default_opts, 4057) == "http://127.0.0.1:4057/sympp/board"
+
       assert {:ok, opts} = CockpitTask.parse_args_for_test(["--database", relative_database, "--host", "localhost", "--port", "0"])
       assert Keyword.fetch!(opts, :host) == "localhost"
       assert Keyword.fetch!(opts, :port) == 0
@@ -107,6 +112,23 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
       assert html =~ "No work packages match the current board filters."
       assert File.exists?(database_path)
     after
+      File.rm(database_path)
+    end
+  end
+
+  test "reports an actionable error when the configured port is already occupied" do
+    {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
+    {:ok, port} = :inet.port(socket)
+    database_path = WorkPackageFactory.database_path()
+
+    try do
+      assert {:ok, opts} = CockpitTask.parse_args_for_test(["--database", database_path, "--port", Integer.to_string(port)])
+
+      assert_raise Mix.Error, ~r/could not bind http:\/\/127\.0\.0\.1:#{port}/, fn ->
+        CockpitTask.run_cockpit_for_test(opts, fn -> :ok end)
+      end
+    after
+      :gen_tcp.close(socket)
       File.rm(database_path)
     end
   end
