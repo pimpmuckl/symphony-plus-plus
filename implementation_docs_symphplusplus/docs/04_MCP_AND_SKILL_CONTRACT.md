@@ -18,6 +18,31 @@ machine. Codex clients then connect to the daemon by URL, for example:
 url = "http://127.0.0.1:<port>/mcp"
 ```
 
+The current minimal HTTP slice exposes only the local Streamable HTTP MCP
+endpoint contract:
+
+- `POST /mcp` accepts one JSON-RPC MCP message body, rejects JSON-RPC arrays
+  or batches, and returns JSON responses from the existing route-free
+  `HTTPTransport`.
+- A successful initialize response includes `Mcp-Session-Id`; subsequent
+  requests must send that same header. Missing follow-up sessions fail with
+  HTTP 400, and unknown sessions fail with HTTP 404.
+- Dispatch uses the existing dashboard lazy-repo access path so the configured
+  local ledger is live and migrated before MCP tools run. Ledger startup or
+  migration failures fail closed with a JSON-RPC server error.
+- Notifications that do not produce JSON-RPC responses return HTTP 202 with no
+  body.
+- `GET /mcp` returns HTTP 405 because this slice does not implement SSE.
+- The endpoint is local-only: requests must arrive from loopback, use a
+  localhost/loopback host, avoid forwarded headers, and any browser `Origin`
+  must exactly match the local scheme, host, and port. It does not emit CORS
+  headers.
+
+This slice intentionally does not add browser CORS/preflight support, cookies,
+Phoenix-session client binding, reconnect semantics, SSE streaming,
+remote/company authentication, daemon startup/plugin install configuration, or
+claimed-worker persistence over HTTP.
+
 This keeps normal Codex app threads, implementation agents, and review-adjacent
 tools from spawning a new PowerShell/Mix/Erlang process tree per session while
 still making the lightweight Solo planning tools available wherever the plugin

@@ -23,6 +23,8 @@ defmodule SymphonyElixirWeb.Endpoint do
   plug(Plug.RequestId)
   plug(Plug.Telemetry, event_prefix: [:phoenix, :endpoint])
 
+  plug(SymphonyElixirWeb.MCPHTTPPlug)
+
   plug(Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],

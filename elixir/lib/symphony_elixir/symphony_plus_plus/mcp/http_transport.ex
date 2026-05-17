@@ -37,6 +37,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPTransport do
     |> Base.url_encode64(padding: false)
   end
 
+  @doc false
+  @spec reserved_state_key?(term()) :: boolean()
+  def reserved_state_key?(state_key) when is_binary(state_key) do
+    state_key in [@client_lock_key, @current_state_key, @unbound_client_key]
+  end
+
+  def reserved_state_key?(_state_key), do: false
+
   @spec handle(Config.t(), term(), keyword()) :: {:ok, Result.t()} | {:error, :invalid_client_key}
   def handle(%Config{} = config, payload, opts \\ []) when is_list(opts) do
     with {:ok, client_key} <- normalize_client_key(Keyword.get(opts, :client_key)),
@@ -150,7 +158,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPTransport do
     cond do
       String.trim(state_key) == "" -> {:error, :invalid_state_key}
       byte_size(state_key) > @max_state_key_size -> {:error, :invalid_state_key}
-      state_key in [@client_lock_key, @current_state_key, @unbound_client_key] -> {:error, :reserved_state_key}
+      reserved_state_key?(state_key) -> {:error, :reserved_state_key}
       true -> {:ok, state_key}
     end
   end
