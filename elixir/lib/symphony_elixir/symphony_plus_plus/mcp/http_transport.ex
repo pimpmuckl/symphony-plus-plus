@@ -1,0 +1,193 @@
+defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPTransport do
+  @moduledoc """
+  Route-free HTTP MCP transport core for decoded JSON-RPC payloads.
+
+  This module only preserves initialized unbound MCP state. It does not own
+  Plug, CORS, cookie, current-alias, explicit reconnect, or bound worker
+  session semantics.
+  """
+
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, HTTPStateStore, Server}
+
+  @client_lock_key "__sympp_mcp_client_lock__"
+  @current_state_key "__sympp_mcp_current_state__"
+  @unbound_client_key "__sympp_mcp_unbound__"
+  @state_key_bytes 32
+  @max_state_key_size 256
+  @max_client_key_size 512
+
+  defmodule Result do
+    @moduledoc false
+
+    @enforce_keys [:response, :state_key, :status]
+    defstruct [:response, :state_key, :status]
+
+    @type status :: :ok | :no_response | :error
+    @type t :: %__MODULE__{
+            response: map() | [map()] | nil,
+            state_key: String.t() | nil,
+            status: status()
+          }
+  end
+
+  @spec new_state_key() :: String.t()
+  def new_state_key do
+    @state_key_bytes
+    |> :crypto.strong_rand_bytes()
+    |> Base.url_encode64(padding: false)
+  end
+
+  @spec handle(Config.t(), term(), keyword()) :: {:ok, Result.t()} | {:error, :invalid_client_key}
+  def handle(%Config{} = config, payload, opts \\ []) when is_list(opts) do
+    with {:ok, client_key} <- normalize_client_key(Keyword.get(opts, :client_key)),
+         {:ok, state_key} <- normalize_state_key(Keyword.get(opts, :state_key)) do
+      handle_payload(config, payload, client_key, state_key)
+    else
+      {:error, :invalid_client_key} ->
+        {:error, :invalid_client_key}
+
+      {:error, reason} ->
+        {:ok, result(json_rpc_error(payload, -32_600, "Invalid Request", %{"reason" => Atom.to_string(reason)}), nil)}
+    end
+  end
+
+  defp handle_payload(%Config{} = config, payload, client_key, nil) do
+    if initialize_request?(payload) do
+      process_new_initialize(config, payload, client_key)
+    else
+      {:ok, result(transient_response(config, payload), nil)}
+    end
+  end
+
+  defp handle_payload(%Config{} = config, payload, client_key, state_key) do
+    case HTTPStateStore.get(config, client_key, state_key) do
+      %Server{} ->
+        process_existing_state(config, payload, client_key, state_key)
+
+      nil ->
+        {:ok, result(unknown_state_key_error(payload), nil)}
+    end
+  end
+
+  defp process_new_initialize(%Config{} = config, payload, client_key) do
+    state_key = new_state_key()
+    process_state(config, payload, client_key, state_key, true, fn -> Server.new(config, state_key: state_key) end)
+  end
+
+  defp process_existing_state(%Config{} = config, payload, client_key, state_key) do
+    process_state(config, payload, client_key, state_key, false, fn -> Server.new(config, state_key: state_key) end)
+  end
+
+  defp process_state(%Config{} = config, payload, client_key, state_key, allow_new_state?, default_fun) do
+    {{response, _stored_server}, status} =
+      HTTPStateStore.update_with_status(config, client_key, state_key, default_fun, fn %Server{} = server ->
+        if missing_state?(server) and not allow_new_state? do
+          # Keep the fallback server non-persistable so raced missing state keys stay absent.
+          {{state_update_lost_error(payload), server}, server}
+        else
+          {response, %Server{} = updated_server} = Server.handle_response_state(payload, server)
+          stored_server = unbound_server(updated_server)
+          {{response, stored_server}, stored_server}
+        end
+      end)
+
+    case status do
+      :stored ->
+        {:ok, result(response, state_key)}
+
+      :skipped ->
+        {:ok, result(response, nil)}
+
+      :dropped ->
+        {:ok, result(state_update_lost_error(payload), nil)}
+    end
+  end
+
+  defp transient_response(%Config{} = config, payload) do
+    {response, _server} = Server.handle_response_state(payload, Server.new(config))
+    response
+  end
+
+  defp unbound_server(%Server{} = server), do: %{server | session: nil}
+
+  defp missing_state?(%Server{initialized: false, session: nil}), do: true
+  defp missing_state?(%Server{}), do: false
+
+  defp result(response, state_key) do
+    %Result{response: response, state_key: state_key, status: response_status(response)}
+  end
+
+  defp response_status(nil), do: :no_response
+  defp response_status([]), do: :no_response
+  defp response_status(%{"error" => _error}), do: :error
+
+  defp response_status(responses) when is_list(responses) do
+    if Enum.all?(responses, &match?(%{"error" => _error}, &1)), do: :error, else: :ok
+  end
+
+  defp response_status(_response), do: :ok
+
+  defp initialize_request?(%{"jsonrpc" => "2.0", "method" => "initialize"}), do: true
+  defp initialize_request?(payloads) when is_list(payloads), do: Enum.any?(payloads, &initialize_request?/1)
+  defp initialize_request?(_payload), do: false
+
+  defp normalize_client_key(client_key) when is_binary(client_key) do
+    cond do
+      client_key == "" -> {:error, :invalid_client_key}
+      String.trim(client_key) == "" -> {:error, :invalid_client_key}
+      byte_size(client_key) > @max_client_key_size -> {:error, :invalid_client_key}
+      client_key in [@client_lock_key, @current_state_key, @unbound_client_key] -> {:error, :invalid_client_key}
+      true -> {:ok, client_key}
+    end
+  end
+
+  defp normalize_client_key(_client_key), do: {:error, :invalid_client_key}
+
+  defp normalize_state_key(nil), do: {:ok, nil}
+  defp normalize_state_key(""), do: {:ok, nil}
+
+  defp normalize_state_key(state_key) when is_binary(state_key) do
+    cond do
+      String.trim(state_key) == "" -> {:error, :invalid_state_key}
+      byte_size(state_key) > @max_state_key_size -> {:error, :invalid_state_key}
+      state_key in [@client_lock_key, @current_state_key, @unbound_client_key] -> {:error, :reserved_state_key}
+      true -> {:ok, state_key}
+    end
+  end
+
+  defp normalize_state_key(_state_key), do: {:error, :invalid_state_key}
+
+  defp unknown_state_key_error(payload) do
+    json_rpc_error(payload, -32_600, "Invalid Request", %{"reason" => "unknown_state_key"})
+  end
+
+  defp state_update_lost_error(payload) do
+    json_rpc_error(payload, -32_000, "Server error", %{"reason" => "state_update_lost"})
+  end
+
+  defp json_rpc_error([], code, message, data), do: error_response(nil, code, message, data)
+
+  defp json_rpc_error(payloads, code, message, data) when is_list(payloads) do
+    payloads
+    |> Enum.map(&json_rpc_error(&1, code, message, data))
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> nil
+      errors -> errors
+    end
+  end
+
+  defp json_rpc_error(%{"jsonrpc" => "2.0", "method" => method} = payload, code, message, data)
+       when is_binary(method) do
+    if Map.has_key?(payload, "id"), do: error_response(request_id(payload), code, message, data)
+  end
+
+  defp json_rpc_error(payload, code, message, data), do: error_response(request_id(payload), code, message, data)
+
+  defp error_response(id, code, message, data) do
+    %{"jsonrpc" => "2.0", "id" => id, "error" => %{"code" => code, "message" => message, "data" => data}}
+  end
+
+  defp request_id(%{"id" => id}) when is_binary(id) or is_number(id) or is_nil(id), do: id
+  defp request_id(_payload), do: nil
+end
