@@ -99,6 +99,21 @@ function Remove-ManagedCachePath([string]$Target, [string]$TargetRoot, [string]$
   Write-Host "$Reason`: $resolvedTarget"
 }
 
+function Sync-ManagedDirectoryChildren([string]$Source, [string]$Target, [string]$TargetRoot) {
+  if (-not (Test-Path -LiteralPath $Source -PathType Container) -or -not (Test-Path -LiteralPath $Target -PathType Container)) {
+    return
+  }
+
+  foreach ($targetChild in @(Get-ChildItem -LiteralPath $Target -Force)) {
+    $sourceChild = Join-Path $Source $targetChild.Name
+    if (Test-Path -LiteralPath $sourceChild) {
+      continue
+    }
+
+    Remove-ManagedCachePath $targetChild.FullName $TargetRoot "Removed stale managed Symphony++ plugin cache item"
+  }
+}
+
 function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [string]$RepoRoot) {
   Assert-SafeCacheTarget $TargetRoot $pluginCacheRoot
   Assert-NotReparsePoint $TargetRoot
@@ -113,6 +128,7 @@ function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [strin
       Assert-NotReparsePoint $target
       Assert-NoReparsePointDescendants $target
       Copy-Item -LiteralPath $source -Destination $TargetRoot -Recurse -Force
+      Sync-ManagedDirectoryChildren $source $target $TargetRoot
     } elseif (Test-Path -LiteralPath $target) {
       Remove-ManagedCachePath $target $TargetRoot "Removed stale managed Symphony++ plugin cache item"
     }

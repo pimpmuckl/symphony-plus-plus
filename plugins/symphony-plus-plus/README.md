@@ -72,7 +72,9 @@ roots, so unrelated stale files may remain. Because the default package must be
 MCP-inert even if a host scans cache-root `.mcp.json` files directly, refresh
 also repairs generated default-cache entries in place by removing stale root
 `.mcp.json` files and stripping stale manifest `mcpServers` declarations. It
-does not delete superseded cache roots. Cleanup is scoped to generated
+also prunes removed managed package entries, including stale skill directories
+inside refreshed default cache roots. It does not delete superseded cache roots.
+Cleanup is scoped to generated
 `~/.codex/plugins/cache/<marketplace>/symphony-plus-plus/*` cache entries;
 manual scratch directories without generated-entry markers are left alone.
 If an existing cache parent, cache directory, or child path is a junction or
@@ -108,7 +110,8 @@ Repo validation proves only the plugin package contract:
   nested `mcpServers` object, for explicit opt-in use.
 - `scripts/refresh-local-plugin.ps1` removes stale managed default-cache
   `.mcp.json` files, strips stale manifest `mcpServers` from generated default
-  cache entries, and writes a non-secret `.sympp-source-root` hint.
+  cache entries, prunes removed managed skill directories, and writes a
+  non-secret `.sympp-source-root` hint.
 - `scripts/refresh-local-plugin.ps1 -ValidateInstalledCache` validates the
   installed cache copies, confirms the default manifest remains skill-only,
   confirms default cache roots do not contain `.mcp.json`, checks the opt-in
