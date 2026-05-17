@@ -740,17 +740,65 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert is_list(get_in(post_init_response, ["result", "tools"]))
   end
 
-  test "tools list advertises worker argument schemas and hides architect tools without architect session", %{repo: repo} do
-    server = Server.new(Config.default(repo: repo), initialized: true)
+  test "tools list keeps unbound sessions narrow and advertises worker schemas only after binding", %{repo: repo} do
+    unbound_server = Server.new(Config.default(repo: repo), initialized: true)
 
-    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "tools", "method" => "tools/list", "params" => %{}}, server)
-    tools = get_in(response, ["result", "tools"])
-    tools_by_name = Map.new(tools, &{&1["name"], &1})
+    unbound_response =
+      Server.handle(%{"jsonrpc" => "2.0", "id" => "unbound-tools", "method" => "tools/list", "params" => %{}}, unbound_server)
+
+    unbound_tools_by_name =
+      unbound_response
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
+
+    assert Map.keys(unbound_tools_by_name) |> Enum.sort() == [
+             "claim_work_key",
+             "solo_append",
+             "solo_attach",
+             "solo_list",
+             "solo_show",
+             "solo_update_status",
+             "sympp.health"
+           ]
+
+    assert get_in(unbound_tools_by_name, ["claim_work_key", "inputSchema", "required"]) == ["secret", "claimed_by"]
+    assert get_in(unbound_tools_by_name, ["claim_work_key", "inputSchema", "properties", "secret", "type"]) == "string"
+    refute Map.has_key?(unbound_tools_by_name, "get_current_assignment")
+    refute Map.has_key?(unbound_tools_by_name, "append_progress")
+    refute Map.has_key?(unbound_tools_by_name, "set_status")
+    refute Map.has_key?(unbound_tools_by_name, "read_child_status")
+    refute Map.has_key?(unbound_tools_by_name, "mint_child_worker_key")
+
+    assert {:ok, claim_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-UNBOUND-CLAIM-CALL", kind: "mcp"))
+    assert {:ok, claim_minted} = AccessGrantService.mint_worker_grant(repo, claim_package.id)
+
+    claim_response =
+      mcp_tool(repo, nil, "claim_work_key", %{
+        "secret" => claim_minted.work_key.secret,
+        "claimed_by" => "worker-1"
+      })
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-UNBOUND-CLAIM-CALL"
+
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-TOOLS-LIST", kind: "mcp"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    worker_session = MCPHarness.session(worker_assignment, proof_hash: minted.grant.secret_hash)
+    worker_server = Server.new(Config.default(repo: repo), initialized: true, session: worker_session)
+
+    worker_response =
+      Server.handle(%{"jsonrpc" => "2.0", "id" => "worker-tools", "method" => "tools/list", "params" => %{}}, worker_server)
+
+    tools_by_name =
+      worker_response
+      |> get_in(["result", "tools"])
+      |> Map.new(&{&1["name"], &1})
 
     assert get_in(tools_by_name, ["claim_work_key", "inputSchema", "required"]) == ["secret", "claimed_by"]
     assert get_in(tools_by_name, ["claim_work_key", "inputSchema", "properties", "secret", "type"]) == "string"
     assert get_in(tools_by_name, ["append_progress", "inputSchema", "required"]) == ["summary", "idempotency_key"]
     assert get_in(tools_by_name, ["append_finding", "inputSchema", "required"]) == ["title", "body", "idempotency_key"]
+    assert get_in(tools_by_name, ["read_guidance_request", "inputSchema", "required"]) == ["guidance_request_id"]
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "required"]) == ["expected_version"]
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "expected_version", "type"]) == "integer"
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "patch", "required"]) == ["nodes"]
@@ -852,23 +900,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute Map.has_key?(tools_by_name, "read_child_status")
     refute Map.has_key?(tools_by_name, "mint_child_worker_key")
 
-    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-TOOLS-LIST", kind: "mcp"))
-    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
-    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
-    worker_session = MCPHarness.session(worker_assignment, proof_hash: minted.grant.secret_hash)
-    worker_server = Server.new(Config.default(repo: repo), initialized: true, session: worker_session)
-
-    worker_response =
-      Server.handle(%{"jsonrpc" => "2.0", "id" => "worker-tools", "method" => "tools/list", "params" => %{}}, worker_server)
-
-    worker_tools_by_name =
-      worker_response
-      |> get_in(["result", "tools"])
-      |> Map.new(&{&1["name"], &1})
-
-    assert Map.has_key?(worker_tools_by_name, "claim_work_key")
-    refute Map.has_key?(worker_tools_by_name, "read_child_status")
-    refute Map.has_key?(worker_tools_by_name, "mint_child_worker_key")
+    assert Map.has_key?(tools_by_name, "claim_work_key")
   end
 
   test "tools list advertises Solo tools only for unbound sessions", %{repo: repo} do
@@ -1605,6 +1637,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(response, ["error", "data", "reason"]) == "unexpected_argument"
     assert get_in(response, ["error", "data", "arguments"]) == ["work_package_id"]
+  end
+
+  test "direct calls fail closed for tools outside the session surface before argument validation", %{repo: repo} do
+    unbound_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "unbound-worker-call",
+          "method" => "tools/call",
+          "params" => %{"name" => "append_progress", "arguments" => %{"unexpected" => "value"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(unbound_response, ["error", "code"]) == -32_001
+    assert get_in(unbound_response, ["error", "data", "resource"]) == "append_progress"
+    assert get_in(unbound_response, ["error", "data", "reason"]) == "missing_session"
+
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-WORKER-CALL", kind: "mcp"))
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    architect_session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+
+    architect_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "architect-worker-call",
+          "method" => "tools/call",
+          "params" => %{"name" => "append_progress", "arguments" => %{"unexpected" => "value"}}
+        },
+        repo: repo,
+        session: architect_session
+      )
+
+    assert get_in(architect_response, ["error", "code"]) == -32_001
+    assert get_in(architect_response, ["error", "data", "resource"]) == "append_progress"
+    assert get_in(architect_response, ["error", "data", "reason"]) == "worker_grant_required"
+
+    hidden_shared_tool_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "architect-hidden-shared-tool-call",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_guidance_request", "arguments" => %{"unexpected" => "value"}}
+        },
+        repo: repo,
+        session: architect_session
+      )
+
+    assert get_in(hidden_shared_tool_response, ["error", "code"]) == -32_001
+    assert get_in(hidden_shared_tool_response, ["error", "data", "resource"]) == "read_guidance_request"
+    assert get_in(hidden_shared_tool_response, ["error", "data", "reason"]) == "insufficient_capability"
   end
 
   test "server rejects re-initialize after handshake", %{repo: repo} do

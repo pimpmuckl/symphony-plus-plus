@@ -271,6 +271,8 @@ service/repository through the MCP server's configured repo/database. Bound
 worker or architect WorkPackage sessions do not advertise them, and direct calls
 from those sessions fail with
 `solo_tools_require_unbound_session` before mutating state.
+Unbound/generic MCP discovery remains limited to health, these Solo Session
+tools, and the temporary `claim_work_key` bootstrap/recovery tool.
 
 Future MCP Solo Session resources/tools may add:
 

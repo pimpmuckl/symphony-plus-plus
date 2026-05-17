@@ -800,23 +800,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp dispatch("tools/call", %{"name" => "read_guidance_request"} = params, %__MODULE__{} = server) do
-    case read_guidance_request_arguments(params, server) do
-      {:ok, arguments} ->
-        read_guidance_request_tool(arguments, server)
+  defp dispatch(
+         "tools/call",
+         %{"name" => "read_guidance_request"} = params,
+         %__MODULE__{session: %Session{assignment: %{grant_role: "architect"}}} = server
+       ) do
+    with :ok <- authorize_architect_tool_call(server, "read_guidance_request"),
+         {:ok, arguments} <- architect_tool_arguments(params, "read_guidance_request") do
+      read_guidance_request_tool(arguments, server)
+    else
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:error, reason} -> architect_error(reason, "read_guidance_request")
+    end
+  end
 
-      {:error, code, message, data} ->
-        {:error, code, message, data}
+  defp dispatch("tools/call", %{"name" => "read_guidance_request"} = params, %__MODULE__{} = server) do
+    with :ok <- authorize_worker_tool_call(server, "read_guidance_request"),
+         {:ok, arguments} <- worker_tool_arguments(params, "read_guidance_request") do
+      read_guidance_request_tool(arguments, server)
+    else
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:error, reason} -> worker_error(reason, "read_guidance_request")
     end
   end
 
   defp dispatch("tools/call", %{"name" => name} = params, %__MODULE__{} = server) when name in @worker_tools do
-    case worker_tool_arguments(params, name) do
-      {:ok, arguments} ->
-        worker_tool(name, arguments, server)
-
-      {:error, code, message, data} ->
-        {:error, code, message, data}
+    with :ok <- authorize_worker_tool_call(server, name),
+         {:ok, arguments} <- worker_tool_arguments(params, name) do
+      worker_tool(name, arguments, server)
+    else
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:error, reason} -> worker_error(reason, name)
     end
   end
 
@@ -1518,7 +1532,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp tool_specs_for_session(_config, nil) do
-    {:ok, [health_tool_spec() | Enum.map(@solo_tools, &solo_tool_spec/1) ++ Enum.map(@worker_tools, &worker_tool_spec/1)]}
+    {:ok, unbound_tool_specs()}
   end
 
   defp tool_specs_for_session(%Config{repo: repo} = config, session) do
@@ -1541,6 +1555,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp claimable_tool_specs, do: [health_tool_spec(), worker_tool_spec("claim_work_key")]
+
+  defp unbound_tool_specs do
+    [health_tool_spec() | Enum.map(@solo_tools, &solo_tool_spec/1) ++ [worker_tool_spec("claim_work_key")]]
+  end
 
   defp architect_tool_specs_for_session(%Config{} = config, %Session{assignment: %{capabilities: capabilities}} = session)
        when is_list(capabilities) do
@@ -7678,6 +7696,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "solo_tools_require_unbound_session"}}
   end
 
+  defp authorize_worker_tool_call(%__MODULE__{config: config, session: session}, "get_current_assignment") do
+    case Auth.require_session(session, config.repo) do
+      {:ok, session} -> require_assignment_introspection(session.assignment)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp authorize_worker_tool_call(%__MODULE__{config: config, session: session}, _tool) do
+    case Auth.require_session(session, config.repo) do
+      {:ok, session} -> require_worker_assignment(session.assignment)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp solo_tool_arguments(params, name) do
     case Map.get(params, "arguments", %{}) do
       arguments when is_map(arguments) ->
@@ -7696,14 +7728,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       _arguments ->
         {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "invalid_tool_arguments"}}
     end
-  end
-
-  defp read_guidance_request_arguments(params, %__MODULE__{session: %Session{assignment: %{grant_role: "architect"}}}) do
-    architect_tool_arguments(params, "read_guidance_request")
-  end
-
-  defp read_guidance_request_arguments(params, %__MODULE__{}) do
-    worker_tool_arguments(params, "read_guidance_request")
   end
 
   defp architect_tool_arguments(params, name) do
