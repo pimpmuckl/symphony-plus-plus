@@ -6,7 +6,7 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 
 | Tool | Purpose |
 |---|---|
-| claim_work_key | Claim a one-time work key/secret with required `claimed_by` owner identity and bind the current MCP session to the grant role. |
+| claim_work_key | Claim a one-time work key/secret with required `claimed_by` owner identity and bind the current MCP session to the grant role for temporary bootstrap/recovery. |
 | get_current_assignment | Return the scoped assignment for the bound grant. |
 | read_context | Read context.md for the current work package. |
 | read_task_plan | Read task_plan.md for the current work package. |
@@ -56,9 +56,12 @@ grants without the required capability are denied. Worker grants cannot be
 minted with architect-only MCP capabilities such as `read:phase`,
 `read:child_progress`, or `mint:child_worker_key`. `tools/list` advertises
 architect tools only for an already-bound architect session and filters them to
-the live grant's capabilities; stale sessions expose only health and
-`claim_work_key` for refresh. Anonymous and worker sessions see the
-worker-facing discovery surface. Architect sessions may call
+the live grant's capabilities. Unbound generic sessions expose only health,
+Solo Session tools, and `claim_work_key` as the temporary bootstrap/recovery
+tool for explicit stdio WorkPackage flows; they do not see the worker mutation
+surface. Stale bound sessions expose only health and `claim_work_key` for
+refresh. Worker sessions see the bound worker-facing discovery surface without
+Solo tools. Architect sessions may call
 `get_current_assignment` and read `sympp://assignment/current` to recover their
 scoped `work_package_id` after reconnect, but architect sessions still cannot
 use worker package read/write tools. Phase-board readers are limited to the
@@ -226,8 +229,9 @@ sympp://work-packages/{id}/handoff.md
 ```
 
 `claim_work_key` requires `secret` and `claimed_by`. It can bind an existing
-worker or architect grant; it does not mint new grants. Reconnects are accepted
-only when the same owner identity presents the same secret proof.
+worker or architect grant during explicit bootstrap/recovery; it does not mint
+new grants and is not the normal generic planning surface. Reconnects are
+accepted only when the same owner identity presents the same secret proof.
 
 Explicit `state_key` values retain initialized handshake continuity for
 stateless transports, but they do not restore claimed worker sessions. A

@@ -111,11 +111,18 @@ WorkPackage sessions. Direct calls from a bound session fail with
 `solo_tools_require_unbound_session` before mutation so Solo planning cannot be
 confused with WorkPackage orchestration.
 
+Unbound/generic MCP sessions also advertise `sympp.health` and the temporary
+`claim_work_key` bootstrap/recovery tool for explicit stdio WorkPackage flows.
+They do not advertise any other worker mutation tools or architect tools until
+a valid grant is bound.
+
 `claim_work_key` intentionally requires both the one-time secret and a stable
 `claimed_by` owner identity. Symphony++ uses that identity as part of the MCP
 ownership contract. The call binds the session to an existing worker or
-architect grant and does not mint new grants. Reconnects are accepted only when
-the same secret proof is presented by the same `claimed_by` owner.
+architect grant and does not mint new grants. It remains available to unbound
+sessions only as a bootstrap/recovery bridge, not as a generic planning
+surface. Reconnects are accepted only when the same secret proof is presented
+by the same `claimed_by` owner.
 
 For Codex first-use worker dispatch, the preferred path is private-store MCP
 bootstrap rather than an explicit worker tool call containing the raw secret.
@@ -230,9 +237,12 @@ grants cannot be minted with architect-only MCP capabilities, including
 unprefixed P3/P7 capability strings such as `read:phase` or
 `mint:child_worker_key`. `tools/list` advertises architect tools only when an
 architect session is already bound and filters them to the live grant's
-capabilities. Stale sessions expose only health and `claim_work_key` for
-refresh, while worker and anonymous sessions keep the worker-facing discovery
-surface. Architect sessions may call `get_current_assignment()` and read
+capabilities. Unbound generic sessions expose only health, Solo Session tools,
+and `claim_work_key` as the temporary bootstrap/recovery tool for explicit
+stdio WorkPackage flows. Stale bound sessions expose only health and
+`claim_work_key` for refresh, while worker sessions keep the bound
+worker-facing discovery surface without Solo tools. Architect sessions may call
+`get_current_assignment()` and read
 `sympp://assignment/current` to recover their scoped `work_package_id` after
 reconnect, but they still cannot use worker package read/write tools.
 Lifecycle capabilities such as `architect:lifecycle.transition` do not imply
