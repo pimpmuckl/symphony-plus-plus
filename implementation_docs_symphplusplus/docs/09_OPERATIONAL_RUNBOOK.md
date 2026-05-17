@@ -85,8 +85,8 @@ rejected.
 4. Confirm normal command output contains only non-secret handoff metadata. The
    worker grant secret must be stored in the private local handoff store, not
    printed into stdout, prompts, PR text, or logs.
-5. Make sure the worker has the `symphony-plus-plus` Codex plugin from
-   `plugins/symphony-plus-plus/` or the repo-local
+5. Make sure the worker has the opt-in `symphony-plus-plus-mcp` Codex plugin from
+   `plugins/symphony-plus-plus-mcp/` or the repo-local
    `.codex/skills/symphony-work-package/` copy, plus the MCP stdio dependency
    configured through the private-store bootstrap documented in
    `../../.codex/skills/symphony-work-package/references/mcp_wiring.md`.

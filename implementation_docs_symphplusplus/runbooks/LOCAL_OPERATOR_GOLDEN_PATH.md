@@ -15,8 +15,12 @@ For a first local checkout, do the setup once:
 - Follow `../../elixir/README.md` for Elixir runtime prerequisites before
   running `mix sympp.cockpit`.
 - Follow `../../plugins/symphony-plus-plus/README.md` to install and enable the
-  `symphony-plus-plus` Codex plugin before assigning architect or worker
-  sessions to the plugin skills.
+  default `symphony-plus-plus` Codex plugin for Solo Session planning.
+- For WorkRequest architect or WorkPackage worker sessions, also make the
+  opt-in `symphony-plus-plus-mcp` plugin/config available in that dedicated
+  MCP-enabled session before launch. Do not rely on the default plugin alone
+  for the `symphony-plus-plus-mcp:*` skills, and do not enable the MCP plugin
+  for generic review or unrelated Codex sessions.
 
 If you are developing the local plugin or skills, refresh the installed plugin
 cache from the repository root:
@@ -110,10 +114,11 @@ private handoff. The browser shows non-secret grant metadata, redacted private
 handoff metadata, and a safe prompt for the architect skill. It must not show
 raw work-key secrets, secret hashes, or full secret-retrieval commands.
 
-Start a Codex architect agent and tell it to use:
+Start a Codex architect agent in an opt-in Symphony++ MCP-enabled session and
+tell it to use:
 
 ```text
-symphony-plus-plus:symphony-architect
+symphony-plus-plus-mcp:symphony-architect
 ```
 
 Also provide the redacted architect handoff/bootstrap metadata emitted by the
@@ -149,7 +154,9 @@ Give each worker:
 - The non-secret private-store handoff metadata or generated MCP bootstrap
   shape.
 - The stable `claimed_by` identity for that package.
-- The instruction to use `symphony-plus-plus:symphony-work-package`.
+- The instruction to use `symphony-plus-plus-mcp:symphony-work-package`.
+- The explicit requirement to launch the worker in an opt-in Symphony++
+  MCP-enabled session before using that skill.
 - The instruction to ask the architect first for product, architecture,
   dependency, or slice-boundary ambiguity.
 
@@ -222,8 +229,8 @@ PRs, create WorkRequests, create WorkPackages, or write Linear state.
 
 | Situation | Skill |
 | --- | --- |
-| WorkRequest-led planning, clarification, decisions, slicing, dispatch, or package guidance routing | `symphony-plus-plus:symphony-architect` |
-| One assigned WorkPackage or WorkKey with MCP-backed planning and readiness evidence | `symphony-plus-plus:symphony-work-package` |
+| WorkRequest-led planning, clarification, decisions, slicing, dispatch, or package guidance routing | `symphony-plus-plus-mcp:symphony-architect` |
+| One assigned WorkPackage or WorkKey with MCP-backed planning and readiness evidence | `symphony-plus-plus-mcp:symphony-work-package` |
 | One normal local agent session that only needs durable planning memory | `symphony-plus-plus:symphony-solo-session` |
 
 ## Handoff Defaults

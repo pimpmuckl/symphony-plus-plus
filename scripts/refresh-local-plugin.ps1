@@ -1,11 +1,12 @@
 param(
   [string]$MarketplacePath,
   [string]$CodexHome = $(if ($env:CODEX_HOME) { $env:CODEX_HOME } else { "$HOME/.codex" }),
-  [string]$PluginName = "symphony-plus-plus",
+  [string]$PluginName = "all",
   [switch]$ValidateInstalledCache
 )
 
 $ErrorActionPreference = "Stop"
+$SymppPluginPackageNames = @("symphony-plus-plus", "symphony-plus-plus-mcp")
 
 function Resolve-StrictPath([string]$Path) {
   return [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Path).Path)
@@ -86,7 +87,7 @@ function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [strin
 
   New-Item -ItemType Directory -Path $TargetRoot -Force | Out-Null
 
-  foreach ($item in @(".codex-plugin", ".mcp.json", "skills", "scripts", "README.md")) {
+  foreach ($item in @(".codex-plugin", ".mcp.json", "skills", "skills-default", "scripts", "README.md")) {
     $source = Join-Path $SourceRoot $item
     if (Test-Path -LiteralPath $source) {
       $target = Join-Path $TargetRoot $item
@@ -131,7 +132,7 @@ function Resolve-DocumentedMcpServerMap($McpConfig, [string]$McpConfigPath) {
   return $McpConfig
 }
 
-function Assert-CacheMcpConfig([string]$TargetRoot, [string]$ExpectedVersion) {
+function Assert-CachePluginConfig([string]$TargetRoot, [string]$ExpectedVersion) {
   $targetManifestPath = Join-Path $TargetRoot ".codex-plugin/plugin.json"
   $targetManifest = Get-Content -LiteralPath $targetManifestPath -Raw | ConvertFrom-Json
   if ($targetManifest.name -ne $PluginName) {
@@ -140,12 +141,18 @@ function Assert-CacheMcpConfig([string]$TargetRoot, [string]$ExpectedVersion) {
   if ($targetManifest.version -ne $ExpectedVersion) {
     throw "Installed plugin manifest version mismatch in $targetManifestPath."
   }
+  $manifestHasMcpServers = @($targetManifest.PSObject.Properties.Name) -contains "mcpServers"
+  if ($PluginName -eq "symphony-plus-plus" -and $manifestHasMcpServers) {
+    throw "Default installed plugin manifest must not declare mcpServers; keep generic S++ MCP opt-in instead: $targetManifestPath"
+  }
+  if ($PluginName -eq "symphony-plus-plus-mcp" -and (-not $manifestHasMcpServers -or $targetManifest.mcpServers -ne "./.mcp.json")) {
+    throw "Opt-in MCP plugin manifest must declare mcpServers './.mcp.json': $targetManifestPath"
+  }
 
-  Assert-RequiredJsonValue $targetManifest.mcpServers "Installed plugin manifest is missing mcpServers in $targetManifestPath."
-  $mcpConfigPath = [System.IO.Path]::GetFullPath((Join-Path $TargetRoot ([string]$targetManifest.mcpServers)))
-  Assert-PathInside $mcpConfigPath $TargetRoot "Installed plugin mcpServers path resolves outside this cache"
+  $mcpConfigPath = [System.IO.Path]::GetFullPath((Join-Path $TargetRoot ".mcp.json"))
+  Assert-PathInside $mcpConfigPath $TargetRoot "Installed plugin reference .mcp.json path resolves outside this cache"
   if (-not (Test-Path -LiteralPath $mcpConfigPath)) {
-    throw "Installed plugin mcpServers path does not exist: $mcpConfigPath"
+    throw "Installed plugin reference .mcp.json path does not exist: $mcpConfigPath"
   }
 
   $mcpConfig = Get-Content -LiteralPath $mcpConfigPath -Raw | ConvertFrom-Json
@@ -182,7 +189,7 @@ function Assert-CacheMcpConfig([string]$TargetRoot, [string]$ExpectedVersion) {
 }
 
 function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [string]$ExpectedVersion) {
-  Assert-CacheMcpConfig $TargetRoot $ExpectedVersion
+  Assert-CachePluginConfig $TargetRoot $ExpectedVersion
 
   Push-Location -LiteralPath $TargetRoot
   try {
@@ -217,7 +224,6 @@ if ([string]::IsNullOrWhiteSpace($MarketplacePath)) {
   $MarketplacePath = Join-Path $repoRoot ".agents\plugins\marketplace.json"
 }
 
-$sourceRoot = Resolve-StrictPath (Join-Path $repoRoot "plugins\$PluginName")
 $marketplaceFile = Resolve-StrictPath $MarketplacePath
 $marketplace = Get-Content -LiteralPath $marketplaceFile -Raw | ConvertFrom-Json
 $marketplaceName = [string]$marketplace.name
@@ -225,6 +231,29 @@ if ([string]::IsNullOrWhiteSpace($marketplaceName)) {
   throw "Marketplace file must include a top-level name."
 }
 
+if ($PluginName -in @("all", "*")) {
+  $selectedPluginNames = @(
+    @($marketplace.plugins) |
+      Where-Object { $SymppPluginPackageNames -contains $_.name } |
+      ForEach-Object { [string]$_.name } |
+      Sort-Object -Unique
+  )
+  if ($selectedPluginNames.Count -eq 0) {
+    throw "No Symphony++ plugins were found in $marketplaceFile."
+  }
+
+  foreach ($selectedPluginName in $selectedPluginNames) {
+    if ($ValidateInstalledCache) {
+      & $PSCommandPath -MarketplacePath $marketplaceFile -CodexHome $CodexHome -PluginName $selectedPluginName -ValidateInstalledCache
+    } else {
+      & $PSCommandPath -MarketplacePath $marketplaceFile -CodexHome $CodexHome -PluginName $selectedPluginName
+    }
+  }
+
+  exit 0
+}
+
+$sourceRoot = Resolve-StrictPath (Join-Path $repoRoot "plugins\$PluginName")
 $plugin = @($marketplace.plugins) | Where-Object { $_.name -eq $PluginName } | Select-Object -First 1
 if (-not $plugin) {
   throw "Plugin '$PluginName' was not found in $marketplaceFile."

@@ -828,7 +828,9 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
         brief_line("Handoff target", map_value(handoff, :target)),
         brief_line("Handoff path", map_value(handoff, :path)),
         brief_line("Handoff key", map_value(handoff, :display_key)),
-        "Required skill: symphony-plus-plus:symphony-work-package (repo-local symphony-work-package is acceptable)",
+        "Launch requirement: start this worker in a Codex session that has the opt-in Symphony++ MCP plugin/config loaded; the default Symphony++ plugin only provides Solo planning.",
+        "Required skill: symphony-plus-plus-mcp:symphony-work-package.",
+        "Repo-local fallback: .codex/skills/symphony-work-package/ only when present in the target checkout.",
         "Bootstrap: start from the displayed Mode, Target, Handoff path, and Run MCP handoff metadata in this Worker Handoff panel.",
         "Safety: do not paste raw work-key secrets, bearer tokens, hashes, full secret-bearing commands, or private payloads."
       ]

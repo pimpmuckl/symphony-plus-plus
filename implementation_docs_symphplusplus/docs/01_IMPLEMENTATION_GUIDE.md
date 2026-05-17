@@ -32,7 +32,7 @@ pre-WorkPackage runtime intake object backed by the Symphony++ ledger; see
 The normal human flow is: create the WorkRequest in the local operator cockpit,
 choose `Start agent questions` on the WorkRequest detail page, prepare the
 architect handoff from the detail page, let the architect use the
-`symphony-plus-plus:symphony-architect` skill and scoped MCP tools to clarify,
+`symphony-plus-plus-mcp:symphony-architect` skill and scoped MCP tools to clarify,
 record decisions, author/approve planned slices, and dispatch approved slices,
 then let workers handle their assigned WorkPackages. Workers route product or
 architecture ambiguity back to the architect first; unresolved human intent is

@@ -13,7 +13,7 @@ The architect sequences multi-package work, creates child packages inside the
 operator-approved scope, mints narrower child worker grants, handles approved
 scope decisions, and reports aggregate readiness.
 Codex architect agents should use the plugin-installed
-`symphony-plus-plus:symphony-architect` skill as their operating playbook for
+`symphony-plus-plus-mcp:symphony-architect` skill as their operating playbook for
 WorkRequest clarification, decision recording, planned-slice authoring,
 dispatch, and package guidance routing.
 
@@ -68,7 +68,7 @@ creates or reuses the WorkRequest-scoped phase and architect anchor package,
 mints an unclaimed architect grant for WorkRequest/guidance MCP capabilities,
 stores the secret through private handoff, and shows only non-secret/redacted
 bootstrap metadata plus a prompt for the
-`symphony-plus-plus:symphony-architect` skill. The prompt is intended to be the
+`symphony-plus-plus-mcp:symphony-architect` skill. The prompt is intended to be the
 first message for a fresh owning architect session: it includes WorkRequest,
 repo/base, phase, anchor WorkPackage, and ledger references as inert data
 literals, names the required first MCP reads, states clarification and
@@ -239,8 +239,8 @@ identifiers and handoff coordinates for operator recovery.
 
 1. Read `00_ARCHITECT_AGENT_HANDOFF.md`.
    Codex architect agents should also load the
-   `symphony-plus-plus:symphony-architect` skill or the repo-local
-   `plugins/symphony-plus-plus/skills/symphony-architect/SKILL.md` path.
+   `symphony-plus-plus-mcp:symphony-architect` skill or the repo-local
+   `plugins/symphony-plus-plus-mcp/skills/symphony-architect/SKILL.md` path.
 2. Confirm the operator-approved scope, base branch, child package boundary,
    dependency order, and review policy.
 3. Mint an architect grant for that explicit scope, not a broad worker grant.

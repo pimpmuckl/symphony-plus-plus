@@ -171,7 +171,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert html =~ "Claimed by: worker-1"
     assert html =~ "Handoff mode: local-private-file"
     assert html =~ "Handoff target: #{handoff.target}"
-    assert html =~ "Required skill: symphony-plus-plus:symphony-work-package"
+    assert html =~ "Launch requirement: start this worker in a Codex session that has the opt-in Symphony++ MCP plugin/config loaded"
+    assert html =~ "Required skill: symphony-plus-plus-mcp:symphony-work-package"
+    assert html =~ "Repo-local fallback: .codex/skills/symphony-work-package/ only when present in the target checkout."
     assert html =~ "displayed Mode, Target, Handoff path, and Run MCP handoff metadata"
     refute html =~ worker_secret
     refute html =~ "secret_hash"
@@ -184,7 +186,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
     assert Floki.attribute(copy_button, "aria-label") == ["Copy worker launch brief"]
     assert Floki.attribute(copy_button, "onclick") |> List.first() =~ ".then(() => reset('Copied'), () => reset('Copy failed'))"
     assert [brief_block] = Floki.find(document, ".sympp-launch-brief pre.sympp-copyable-block")
-    assert Floki.text(brief_block) =~ "Required skill: symphony-plus-plus:symphony-work-package"
+    assert Floki.text(brief_block) =~ "Launch requirement: start this worker in a Codex session that has the opt-in Symphony++ MCP plugin/config loaded"
+    assert Floki.text(brief_block) =~ "Required skill: symphony-plus-plus-mcp:symphony-work-package"
   end
 
   test "worker launch brief preserves suggested worker label for unclaimed handoff" do
@@ -285,7 +288,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardDetailLiveTest do
 
     refute html =~ "Worker Launch Brief"
     refute html =~ "Worker launch brief"
-    refute html =~ "Required skill: symphony-plus-plus:symphony-work-package"
+    refute html =~ "Required skill: symphony-plus-plus-mcp:symphony-work-package"
   end
 
   test "dashboard detail ignores revoked worker handoff metadata" do
