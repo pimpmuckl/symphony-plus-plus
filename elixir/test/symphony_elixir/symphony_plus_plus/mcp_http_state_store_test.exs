@@ -416,6 +416,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPStateStoreTest do
     assert HTTPStateStore.get(config, "client", "state") == nil
   end
 
+  test "first write after ttl cleanup can recreate expired state" do
+    config = config("post-ttl-recreate")
+    key = store_key(config, "client", "state")
+
+    assert :ok = HTTPStateStore.put(config, "client", "state", initialized_server(config, "expired"))
+    expire_entry(key)
+
+    assert :ok = HTTPStateStore.put(config, "client", "state", initialized_server(config, "fresh-put"))
+    assert %Server{state_key: "fresh-put"} = HTTPStateStore.get(config, "client", "state")
+
+    expire_entry(key)
+
+    assert {:fresh_update, :stored} =
+             HTTPStateStore.update_with_status(config, "client", "state", default_server_fun(config, "state"), fn server ->
+               {:fresh_update, %{server | state_key: "fresh-update", initialized: true}}
+             end)
+
+    assert %Server{state_key: "fresh-update"} = HTTPStateStore.get(config, "client", "state")
+  end
+
   test "state entries are scoped by active dynamic ledger" do
     first_database = WorkPackageFactory.database_path()
     second_database = WorkPackageFactory.database_path()
@@ -495,5 +515,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPStateStoreTest do
 
   defp store_key(%Config{} = config, client_key, state_key) do
     {config.mode, LedgerNamespace.key(config), client_key, state_key}
+  end
+
+  defp expire_entry(key) do
+    :sys.replace_state(HTTPStateStore, fn state ->
+      entries =
+        Map.update!(state.entries, key, fn {server, _touched_at} ->
+          {server, System.monotonic_time(:millisecond) - 86_400_001}
+        end)
+
+      %{state | entries: entries}
+    end)
   end
 end

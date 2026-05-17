@@ -179,6 +179,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
   end
 
   def handle_call({:key_generation, key}, _from, state) do
+    state = cleanup(state)
+
     {:reply, Map.get(state.key_versions, key, 0), state}
   end
 
