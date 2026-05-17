@@ -66,6 +66,11 @@ function Assert-NoReparsePointDescendants([string]$Target) {
     return
   }
 
+  $item = Get-Item -LiteralPath $Target -Force
+  if (-not $item.PSIsContainer) {
+    return
+  }
+
   $reparsePoint = Get-ChildItem -LiteralPath $Target -Force -Recurse -ErrorAction Stop |
     Where-Object { ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 } |
     Select-Object -First 1
@@ -80,6 +85,20 @@ function Assert-ExistingCachePathNotReparsePoint([string[]]$Paths) {
   }
 }
 
+function Remove-ManagedCachePath([string]$Target, [string]$TargetRoot, [string]$Reason) {
+  $resolvedTarget = [System.IO.Path]::GetFullPath($Target)
+  $resolvedRoot = [System.IO.Path]::GetFullPath($TargetRoot)
+  Assert-PathInside $resolvedTarget $resolvedRoot "Managed cache path resolves outside target root"
+  if (-not (Test-Path -LiteralPath $resolvedTarget)) {
+    return
+  }
+
+  Assert-NotReparsePoint $resolvedTarget
+  Assert-NoReparsePointDescendants $resolvedTarget
+  Remove-Item -LiteralPath $resolvedTarget -Recurse -Force
+  Write-Host "$Reason`: $resolvedTarget"
+}
+
 function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [string]$RepoRoot) {
   Assert-SafeCacheTarget $TargetRoot $pluginCacheRoot
   Assert-NotReparsePoint $TargetRoot
@@ -89,11 +108,13 @@ function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [strin
 
   foreach ($item in @(".codex-plugin", ".mcp.json", "skills", "skills-default", "scripts", "README.md")) {
     $source = Join-Path $SourceRoot $item
+    $target = Join-Path $TargetRoot $item
     if (Test-Path -LiteralPath $source) {
-      $target = Join-Path $TargetRoot $item
       Assert-NotReparsePoint $target
       Assert-NoReparsePointDescendants $target
       Copy-Item -LiteralPath $source -Destination $TargetRoot -Recurse -Force
+    } elseif (Test-Path -LiteralPath $target) {
+      Remove-ManagedCachePath $target $TargetRoot "Removed stale managed Symphony++ plugin cache item"
     }
   }
 
@@ -132,6 +153,90 @@ function Resolve-DocumentedMcpServerMap($McpConfig, [string]$McpConfigPath) {
   return $McpConfig
 }
 
+function Get-ParsedJsonOrNull([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return $null
+  }
+
+  try {
+    return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+  } catch {
+    return $null
+  }
+}
+
+function Write-JsonFileNoBom([string]$Path, $Value) {
+  $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+  $json = $Value | ConvertTo-Json -Depth 16
+  [System.IO.File]::WriteAllText($Path, "$json`n", $utf8NoBom)
+}
+
+function Test-GeneratedDefaultPluginCache([string]$CacheEntryRoot) {
+  return Test-Path -LiteralPath (Join-Path $CacheEntryRoot ".sympp-source-root")
+}
+
+function Test-IncompatibleDefaultPluginCache([string]$CacheEntryRoot) {
+  if (-not (Test-GeneratedDefaultPluginCache $CacheEntryRoot)) {
+    return $false
+  }
+
+  $rootMcpPath = Join-Path $CacheEntryRoot ".mcp.json"
+  if (Test-Path -LiteralPath $rootMcpPath) {
+    return $true
+  }
+
+  $manifestPath = Join-Path $CacheEntryRoot ".codex-plugin/plugin.json"
+  $manifest = Get-ParsedJsonOrNull $manifestPath
+  if ($null -eq $manifest -or [string]$manifest.name -ne "symphony-plus-plus") {
+    return $false
+  }
+
+  $manifestHasMcpServers = @($manifest.PSObject.Properties.Name) -contains "mcpServers"
+  return $manifestHasMcpServers
+}
+
+function Repair-IncompatibleDefaultPluginCache([string]$CacheEntryRoot) {
+  $changed = $false
+  $rootMcpPath = Join-Path $CacheEntryRoot ".mcp.json"
+  if (Test-Path -LiteralPath $rootMcpPath) {
+    Remove-ManagedCachePath $rootMcpPath $CacheEntryRoot "Removed stale default Symphony++ plugin MCP startup file"
+    $changed = $true
+  }
+
+  $manifestPath = Join-Path $CacheEntryRoot ".codex-plugin/plugin.json"
+  $manifest = Get-ParsedJsonOrNull $manifestPath
+  if ($null -ne $manifest -and @($manifest.PSObject.Properties.Name) -contains "mcpServers") {
+    $manifest.PSObject.Properties.Remove("mcpServers")
+    Write-JsonFileNoBom $manifestPath $manifest
+    $changed = $true
+  }
+
+  if ($changed) {
+    Write-Host "Repaired incompatible default Symphony++ plugin cache: $CacheEntryRoot"
+  }
+}
+
+function Repair-IncompatibleDefaultPluginCacheEntries([string]$PluginCacheRoot) {
+  if (-not (Test-Path -LiteralPath $PluginCacheRoot)) {
+    return
+  }
+  if ((Get-Item -LiteralPath $PluginCacheRoot -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+    Write-Host "Skipped stale default Symphony++ plugin cache repair for reparse-point root: $PluginCacheRoot"
+    return
+  }
+
+  foreach ($cacheEntry in @(Get-ChildItem -LiteralPath $PluginCacheRoot -Directory -Force)) {
+    if (-not (Test-IncompatibleDefaultPluginCache $cacheEntry.FullName)) {
+      continue
+    }
+
+    Assert-SafeCacheTarget $cacheEntry.FullName $PluginCacheRoot
+    Assert-NotReparsePoint $cacheEntry.FullName
+    Assert-NoReparsePointDescendants $cacheEntry.FullName
+    Repair-IncompatibleDefaultPluginCache $cacheEntry.FullName
+  }
+}
+
 function Assert-CachePluginConfig([string]$TargetRoot, [string]$ExpectedVersion) {
   $targetManifestPath = Join-Path $TargetRoot ".codex-plugin/plugin.json"
   $targetManifest = Get-Content -LiteralPath $targetManifestPath -Raw | ConvertFrom-Json
@@ -151,6 +256,14 @@ function Assert-CachePluginConfig([string]$TargetRoot, [string]$ExpectedVersion)
 
   $mcpConfigPath = [System.IO.Path]::GetFullPath((Join-Path $TargetRoot ".mcp.json"))
   Assert-PathInside $mcpConfigPath $TargetRoot "Installed plugin reference .mcp.json path resolves outside this cache"
+  if ($PluginName -eq "symphony-plus-plus") {
+    if (Test-Path -LiteralPath $mcpConfigPath) {
+      throw "Default installed plugin cache must not contain root .mcp.json; use symphony-plus-plus-mcp for bundled MCP startup: $mcpConfigPath"
+    }
+
+    return
+  }
+
   if (-not (Test-Path -LiteralPath $mcpConfigPath)) {
     throw "Installed plugin reference .mcp.json path does not exist: $mcpConfigPath"
   }
@@ -193,13 +306,15 @@ function Invoke-InstalledCacheValidation([string]$TargetRoot, [string]$Label, [s
 
   Push-Location -LiteralPath $TargetRoot
   try {
-    & pwsh @(
-      "-NoProfile",
-      "-Command",
-      "`$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1' -ValidateOnly"
-    )
-    if ($LASTEXITCODE -ne 0) {
-      throw "Installed plugin MCP wrapper validation failed for $Label cache with exit code $LASTEXITCODE."
+    if ($PluginName -eq "symphony-plus-plus-mcp") {
+      & pwsh @(
+        "-NoProfile",
+        "-Command",
+        "`$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1' -ValidateOnly"
+      )
+      if ($LASTEXITCODE -ne 0) {
+        throw "Installed plugin MCP wrapper validation failed for $Label cache with exit code $LASTEXITCODE."
+      }
     }
 
     & pwsh @(
@@ -284,13 +399,16 @@ $pluginsRoot = Join-And-Normalize $codexHomePath @("plugins")
 $cacheRoot = Join-And-Normalize $codexHomePath @("plugins", "cache")
 $marketplaceCacheRoot = Join-And-Normalize $cacheRoot @($marketplaceName)
 $pluginCacheRoot = Join-And-Normalize $cacheRoot @($marketplaceName, $PluginName)
+$defaultPluginCacheRoot = Join-And-Normalize $cacheRoot @($marketplaceName, "symphony-plus-plus")
 Assert-PathInside $pluginCacheRoot $cacheRoot "Resolved plugin cache path is outside Codex plugin cache"
+Assert-PathInside $defaultPluginCacheRoot $cacheRoot "Resolved default plugin cache path is outside Codex plugin cache"
 Assert-ExistingCachePathNotReparsePoint @($codexHomePath, $pluginsRoot, $cacheRoot, $marketplaceCacheRoot, $pluginCacheRoot)
 
 $localTargetRoot = Join-And-Normalize $pluginCacheRoot @("local")
 $versionTargetRoot = Join-And-Normalize $pluginCacheRoot @($manifestVersion)
 
 New-Item -ItemType Directory -Path $pluginCacheRoot -Force | Out-Null
+Repair-IncompatibleDefaultPluginCacheEntries $defaultPluginCacheRoot
 
 Copy-PluginCacheTarget $localTargetRoot $sourceRoot $repoRoot
 Copy-PluginCacheTarget $versionTargetRoot $sourceRoot $repoRoot

@@ -156,7 +156,7 @@ function Get-McpServerMap($McpConfig) {
 function Get-SymppMcpServerStatus($McpConfig) {
   $serverMap = Get-McpServerMap $McpConfig
   if ($null -eq $serverMap) {
-    return "unknown"
+    return "not_configured"
   }
 
   $server = $serverMap.symphony_plus_plus
@@ -196,6 +196,7 @@ function Get-PluginPackageSummary([string]$Root, [string]$Label, [string]$Packag
   } else {
     Join-Path $Root ".mcp.json"
   }
+  $rootMcpExists = Test-Path -LiteralPath (Join-Path $Root ".mcp.json")
   $mcp = Get-JsonFile $mcpPath
   $mcpParseError = Get-JsonParseError $mcp
   $sourceHintPath = Join-Path $Root ".sympp-source-root"
@@ -206,13 +207,16 @@ function Get-PluginPackageSummary([string]$Root, [string]$Label, [string]$Packag
   }
   $mcpServerStatus = Get-SymppMcpServerStatus $mcp
   $isOptInMcpPackage = $manifestName -eq "symphony-plus-plus-mcp"
+  $packageNameFromRoot = Split-Path (Split-Path $Root -Parent) -Leaf
+  $isDefaultPackage = $manifestName -eq "symphony-plus-plus" -or $packageNameFromRoot -eq "symphony-plus-plus"
+  $defaultPackageBundlesMcp = $isDefaultPackage -and (-not $isOptInMcpPackage) -and ($manifestHasMcpServers -or $rootMcpExists)
   $defaultPluginLifecycleStatus = if (-not $manifestExists) {
     "missing_manifest"
   } elseif ($manifestParseError) {
     "manifest_parse_error"
   } elseif ($manifestHasMcpServers -and $isOptInMcpPackage) {
     "opt_in_mcp_plugin_bundles_mcp"
-  } elseif ($manifestHasMcpServers) {
+  } elseif ($defaultPackageBundlesMcp) {
     "incompatible_default_plugin_bundles_mcp"
   } else {
     "skill_only"
@@ -234,19 +238,210 @@ function Get-PluginPackageSummary([string]$Root, [string]$Label, [string]$Packag
     mcp_shape = Get-McpShape $mcp
     mcp_parse_error = $mcpParseError
     reference_mcp_server_status = $mcpServerStatus
-    symphony_plus_plus_server = if (-not $manifestExists) { "missing_manifest" } elseif ($manifestParseError) { "manifest_parse_error" } elseif ($manifestHasMcpServers -and $isOptInMcpPackage) { $mcpServerStatus } elseif ($manifestHasMcpServers) { "incompatible_default_plugin_bundles_mcp" } else { $mcpServerStatus }
+    symphony_plus_plus_server = if (-not $manifestExists) { "missing_manifest" } elseif ($manifestParseError) { "manifest_parse_error" } elseif ($manifestHasMcpServers -and $isOptInMcpPackage) { $mcpServerStatus } elseif ($defaultPackageBundlesMcp) { "incompatible_default_plugin_bundles_mcp" } else { $mcpServerStatus }
     has_start_script = Test-Path -LiteralPath (Join-Path $Root "scripts/start-sympp-mcp.ps1")
     source_root_hint = $sourceHint
   }
 }
 
-function Test-CachePackageIsCurrentForProcessScope($Package, [string]$CurrentManifestVersion) {
-  if ($Package.label -eq "local") {
+function Get-CompanionMcpSourcePackages([string]$DefaultPluginRoot) {
+  $sourceSibling = Join-Path (Split-Path $DefaultPluginRoot -Parent) "symphony-plus-plus-mcp"
+  if (Test-Path -LiteralPath (Join-Path $sourceSibling ".codex-plugin/plugin.json")) {
+    $sourceSiblingPackage = Get-PluginPackageSummary $sourceSibling "source" "source"
+    if ($sourceSiblingPackage.package_name -eq "symphony-plus-plus-mcp" -and -not [string]::IsNullOrWhiteSpace([string]$sourceSiblingPackage.manifest_version)) {
+      return @($sourceSiblingPackage)
+    }
+  }
+
+  $defaultCacheRoot = Split-Path $DefaultPluginRoot -Parent
+  if ((Split-Path $defaultCacheRoot -Leaf) -ne "symphony-plus-plus") {
+    return @()
+  }
+
+  $marketplaceRoot = Split-Path $defaultCacheRoot -Parent
+  $companionCacheRoot = Join-Path $marketplaceRoot "symphony-plus-plus-mcp"
+  $sameLabel = Split-Path $DefaultPluginRoot -Leaf
+  $localManifestPath = Join-Path (Join-Path $companionCacheRoot "local") ".codex-plugin/plugin.json"
+  $sameLabelManifestPath = Join-Path (Join-Path $companionCacheRoot $sameLabel) ".codex-plugin/plugin.json"
+  $defaultSourceHintPath = Join-Path $DefaultPluginRoot ".sympp-source-root"
+  $hasSameLabelCompanion = Test-Path -LiteralPath $sameLabelManifestPath
+  $hasGeneratedDefaultHint = Test-Path -LiteralPath $defaultSourceHintPath
+  $hasLocalCompanion = Test-Path -LiteralPath $localManifestPath
+  $localPackage = if ($hasLocalCompanion) {
+    $candidatePackage = Get-PluginPackageSummary (Join-Path $companionCacheRoot "local") "source" "source"
+    if ($candidatePackage.package_name -eq "symphony-plus-plus-mcp" -and -not [string]::IsNullOrWhiteSpace([string]$candidatePackage.manifest_version)) {
+      $candidatePackage
+    } else {
+      $null
+    }
+  } else {
+    $null
+  }
+  $sameLabelPackage = if ($hasSameLabelCompanion) {
+    $candidatePackage = Get-PluginPackageSummary (Join-Path $companionCacheRoot $sameLabel) "source" "source"
+    if ($candidatePackage.package_name -eq "symphony-plus-plus-mcp" -and -not [string]::IsNullOrWhiteSpace([string]$candidatePackage.manifest_version)) {
+      $candidatePackage
+    } else {
+      $null
+    }
+  } else {
+    $null
+  }
+
+  if ($null -eq $sameLabelPackage -and -not ($hasGeneratedDefaultHint -and $null -ne $localPackage)) {
+    return @()
+  }
+
+  $packages = @()
+  if ($null -ne $localPackage -and (Test-LocalCompanionCanOverrideSameLabel $localPackage $sameLabelPackage)) {
+    $packages += $localPackage
+  }
+  if ($null -ne $sameLabelPackage) {
+    $packages += $sameLabelPackage
+  }
+
+  return $packages
+}
+
+function Get-InstalledDefaultPluginMarketplaceName([string]$DefaultPluginRoot) {
+  $defaultCacheRoot = Split-Path $DefaultPluginRoot -Parent
+  if ((Split-Path $defaultCacheRoot -Leaf) -ne "symphony-plus-plus") {
+    return $null
+  }
+
+  return Split-Path (Split-Path $defaultCacheRoot -Parent) -Leaf
+}
+
+function Get-CurrentManifestVersionsByPackageName($SourcePackages) {
+  $versions = @{}
+  foreach ($package in @($SourcePackages)) {
+    if (
+      $null -ne $package -and
+      -not [string]::IsNullOrWhiteSpace([string]$package.package_name) -and
+      -not [string]::IsNullOrWhiteSpace([string]$package.manifest_version)
+    ) {
+      $packageName = [string]$package.package_name
+      if (-not $versions.ContainsKey($packageName)) {
+        $versions[$packageName] = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+      }
+
+      [void]$versions[$packageName].Add([string]$package.manifest_version)
+    }
+  }
+
+  return $versions
+}
+
+function Compare-ManifestVersionStrings([string]$Left, [string]$Right) {
+  if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) {
+    return $null
+  }
+
+  $leftVersion = $null
+  $rightVersion = $null
+  if ([System.Version]::TryParse($Left, [ref]$leftVersion) -and [System.Version]::TryParse($Right, [ref]$rightVersion)) {
+    return $leftVersion.CompareTo($rightVersion)
+  }
+
+  if ($Left.Equals($Right, [System.StringComparison]::OrdinalIgnoreCase)) {
+    return 0
+  }
+
+  return $null
+}
+
+function Test-LocalCompanionCanOverrideSameLabel($LocalPackage, $SameLabelPackage) {
+  if ($null -eq $SameLabelPackage) {
     return $true
   }
 
-  if (-not [string]::IsNullOrWhiteSpace($CurrentManifestVersion) -and $Package.label -eq $CurrentManifestVersion) {
+  $comparison = Compare-ManifestVersionStrings ([string]$LocalPackage.manifest_version) ([string]$SameLabelPackage.manifest_version)
+  return $null -ne $comparison -and $comparison -ge 0
+}
+
+function Get-InstalledCompanionMcpVersionCandidatePackages($CachePackages, [string[]]$AllowedMarketplaces) {
+  $packages = @(
+    $CachePackages |
+      Where-Object {
+        $_.package_name -eq "symphony-plus-plus-mcp" -and
+        $_.label -ne "local" -and
+        -not [string]::IsNullOrWhiteSpace([string]$_.manifest_version) -and
+        ($AllowedMarketplaces.Count -eq 0 -or $AllowedMarketplaces -contains $_.marketplace_name)
+      }
+  )
+  if ($AllowedMarketplaces.Count -eq 0) {
+    $distinctMarketplaces = @($packages | ForEach-Object { [string]$_.marketplace_name } | Sort-Object -Unique)
+    if ($distinctMarketplaces.Count -gt 1) {
+      return @()
+    }
+  }
+
+  $distinctVersions = @($packages | ForEach-Object { [string]$_.manifest_version } | Sort-Object -Unique)
+  if ($distinctVersions.Count -eq 1) {
+    return $packages
+  }
+
+  return @()
+}
+
+function Test-CachePackageCanScopeProcesses($Package) {
+  if ($Package.package_name -eq "symphony-plus-plus" -and $Package.default_plugin_lifecycle_status -eq "skill_only") {
+    return $false
+  }
+
+  if ($Package.default_plugin_lifecycle_status -eq "incompatible_default_plugin_bundles_mcp") {
+    return $Package.reference_mcp_server_status -eq "ok"
+  }
+
+  if ($Package.default_plugin_lifecycle_status -eq "opt_in_mcp_plugin_bundles_mcp") {
+    return $Package.reference_mcp_server_status -eq "ok"
+  }
+
+  return $false
+}
+
+function Test-CachePackageIsCurrentForProcessScope($Package, $CurrentManifestVersionsByPackageName) {
+  $currentManifestVersions = if ($null -ne $CurrentManifestVersionsByPackageName) {
+    $CurrentManifestVersionsByPackageName[[string]$Package.package_name]
+  } else {
+    $null
+  }
+
+  if ($Package.label -eq "local") {
+    if ($Package.package_name -ne "symphony-plus-plus-mcp") {
+      return $true
+    }
+
+    return $null -ne $currentManifestVersions -and $currentManifestVersions.Contains([string]$Package.manifest_version)
+  }
+
+  if ($null -ne $currentManifestVersions -and $currentManifestVersions.Contains([string]$Package.label)) {
     return $true
+  }
+
+  return $false
+}
+
+function Test-VersionedOptInSuppressedByLocal($Package, $LocalPackagesByMarketplace) {
+  if ($Package.package_name -ne "symphony-plus-plus-mcp" -or $Package.label -eq "local") {
+    return $false
+  }
+
+  $marketplaceName = [string]$Package.marketplace_name
+  if (-not $LocalPackagesByMarketplace.ContainsKey($marketplaceName)) {
+    return $false
+  }
+
+  $localPackage = $LocalPackagesByMarketplace[$marketplaceName]
+  $comparison = Compare-ManifestVersionStrings ([string]$localPackage.manifest_version) ([string]$Package.manifest_version)
+  if ($null -ne $comparison -and $comparison -gt 0) {
+    return $true
+  }
+
+  if ($null -ne $comparison -and $comparison -eq 0) {
+    $localRoot = Normalize-ComparablePath $localPackage.source_root_hint
+    $packageRoot = Normalize-ComparablePath $Package.source_root_hint
+    return -not [string]::IsNullOrWhiteSpace($localRoot) -and $localRoot -eq $packageRoot
   }
 
   return $false
@@ -419,12 +614,49 @@ foreach ($cacheRoot in $cacheRoots) {
   }
 }
 
-$cacheRepoRootFilters = @(
+$sourcePackages = @($sourcePackage)
+$companionMcpSourcePackages = @(Get-CompanionMcpSourcePackages $pluginRoot)
+$sourcePackages += $companionMcpSourcePackages
+if ($companionMcpSourcePackages.Count -eq 0) {
+  $installedSourceMarketplaceName = Get-InstalledDefaultPluginMarketplaceName $pluginRoot
+  $allowedFallbackMarketplaces = if ($MarketplaceName -ne "*") {
+    @($MarketplaceName)
+  } elseif (-not [string]::IsNullOrWhiteSpace($installedSourceMarketplaceName)) {
+    @($installedSourceMarketplaceName)
+  } else {
+    @()
+  }
+  $sourcePackages += @(Get-InstalledCompanionMcpVersionCandidatePackages $cachePackages $allowedFallbackMarketplaces)
+}
+$currentManifestVersionsByPackageName = Get-CurrentManifestVersionsByPackageName $sourcePackages
+
+$processScopeCachePackages = @(
   $cachePackages |
+    Where-Object {
+    (Test-CachePackageIsCurrentForProcessScope $_ $currentManifestVersionsByPackageName) -and
+    (Test-CachePackageCanScopeProcesses $_)
+    }
+)
+$hasOptInMcpProcessScopePackage = @(
+  $processScopeCachePackages |
+    Where-Object { $_.package_name -eq "symphony-plus-plus-mcp" }
+).Count -gt 0
+$localOptInMcpProcessScopePackages = @{}
+foreach ($package in @($processScopeCachePackages | Where-Object { $_.package_name -eq "symphony-plus-plus-mcp" -and $_.label -eq "local" })) {
+  $localOptInMcpProcessScopePackages[[string]$package.marketplace_name] = $package
+}
+
+$cacheRepoRootFilters = @(
+  $processScopeCachePackages |
   Where-Object {
-    (Test-CachePackageIsCurrentForProcessScope $_ $sourcePackage.manifest_version) -and
-    $_.default_plugin_lifecycle_status -in @("skill_only", "incompatible_default_plugin_bundles_mcp", "opt_in_mcp_plugin_bundles_mcp") -and
-    $_.reference_mcp_server_status -eq "ok"
+    -not (
+      $hasOptInMcpProcessScopePackage -and
+      $_.package_name -eq "symphony-plus-plus" -and
+      $_.default_plugin_lifecycle_status -eq "skill_only" -and
+      $_.reference_mcp_server_status -eq "not_configured"
+    ) -and -not (
+      Test-VersionedOptInSuppressedByLocal $_ $localOptInMcpProcessScopePackages
+    )
   } |
   ForEach-Object { Normalize-ComparablePath $_.source_root_hint } |
   Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |

@@ -139,6 +139,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert manifest["interface"]["shortDescription"] =~ "Solo Session"
     refute manifest["description"] =~ "WorkPackage"
     refute manifest["interface"]["shortDescription"] =~ "WorkPackage"
+    refute File.exists?(@plugin_mcp_path)
     assert File.read!(@plugin_skill_path) == File.read!(@skill_path)
     assert File.read!(@plugin_default_solo_skill_path) == File.read!(@plugin_solo_skill_path)
     assert File.read!(@plugin_solo_skill_path) =~ "name: symphony-solo-session"
@@ -177,7 +178,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@plugin_readme_path) =~ "current usable cache entries"
     assert File.read!(@plugin_readme_path) =~ "Superseded version directories"
     assert File.read!(@plugin_readme_path) =~ "The diagnostic rejects `-RepoRoot`"
-    assert File.read!(@plugin_readme_path) =~ "usable current\ncaches point at multiple"
+    assert File.read!(@plugin_readme_path) =~ "usable current caches point at multiple"
     assert File.read!(@plugin_readme_path) =~ "reported separately as unattributed"
     assert File.read!(@plugin_readme_path) =~ "opt-in\n`mise exec -- mix` launcher path"
     assert File.read!(@plugin_readme_path) =~ "Malformed installed cache JSON is reported"
@@ -186,7 +187,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@plugin_readme_path) =~ "incompatible_default_plugin_bundles_mcp"
     assert File.read!(@plugin_readme_path) =~ "missing_manifest"
     assert File.read!(@plugin_readme_path) =~ "reporting machine-wide processes"
-    assert File.read!(@plugin_readme_path) =~ "defines the expected `symphony_plus_plus`"
+    assert File.read!(@plugin_readme_path) =~ "defines the expected\n`symphony_plus_plus`"
     assert File.read!(@plugin_readme_path) =~ "process scan as unsupported"
     assert File.read!(@plugin_readme_path) =~ "Default Planning And Opt-In MCP"
     assert File.read!(@plugin_readme_path) =~ "symphony-plus-plus:symphony-solo-session"
@@ -209,6 +210,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@refresh_script_path) =~ "PSObject.Properties.Name) -contains \"mcpServers\""
     assert File.read!(@refresh_script_path) =~ "scripts/sympp-solo.ps1"
     assert File.read!(@refresh_script_path) =~ "skills-default"
+    assert File.read!(@refresh_script_path) =~ "Repair-IncompatibleDefaultPluginCacheEntries"
+    assert File.read!(@refresh_script_path) =~ "Default installed plugin cache must not contain root .mcp.json"
     assert File.exists?(@plugin_lifecycle_diagnostic_path)
     assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "start-sympp-mcp.ps1"
     assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "sympp\\.mcp --mode stdio"
@@ -237,7 +240,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "invalid_cwd"
     assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "invalid_args"
     assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "Test-CachePackageIsCurrentForProcessScope"
-    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "default_plugin_lifecycle_status -in"
+    assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "Test-CachePackageCanScopeProcesses"
     assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "missing_manifest"
     assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "incompatible_default_plugin_bundles_mcp"
     assert File.read!(@plugin_lifecycle_diagnostic_path) =~ "symphony_plus_plus_server"
@@ -266,38 +269,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     refute File.read!(@worker_secret_script_path) =~ "CRED_PERSIST_SESSION"
   end
 
-  test "Codex plugin package remains skill-only while keeping explicit MCP reference" do
+  test "Codex plugin package is physically MCP-free by default" do
     manifest =
       @plugin_manifest_path
       |> File.read!()
       |> Jason.decode!()
 
-    mcp_config =
-      @plugin_mcp_path
-      |> File.read!()
-      |> Jason.decode!()
-
+    assert manifest["name"] == "symphony-plus-plus"
     refute Map.has_key?(manifest, "mcpServers")
-
-    assert %{
-             "symphony_plus_plus" => %{
-               "type" => "stdio",
-               "command" => "pwsh",
-               "args" => args,
-               "cwd" => "."
-             }
-           } = documented_mcp_server_map(mcp_config)
-
-    refute Map.has_key?(mcp_config, "mcpServers")
-
-    assert "-NoProfile" in args
-    assert Enum.any?(args, &String.contains?(&1, "scripts/start-sympp-mcp.ps1"))
-
-    serialized = Jason.encode!(mcp_config)
-    refute serialized =~ "SYMPP_WORK_KEY_SECRET"
-    refute serialized =~ "bearer"
-    refute serialized =~ "token"
-    refute serialized =~ "worker-secret"
+    refute File.exists?(@plugin_mcp_path)
   end
 
   test "opt-in MCP plugin package carries bundled server wiring and full skills" do
@@ -322,7 +302,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@mcp_plugin_readme_path) =~ "Do not enable this plugin in the normal global Codex config"
     assert File.read!(@mcp_plugin_readme_path) =~ "concrete install path"
 
-    assert File.read!(@mcp_plugin_mcp_path) == File.read!(@plugin_mcp_path)
     assert File.read!(@mcp_plugin_skill_path) == File.read!(@plugin_skill_path)
     assert File.read!(@mcp_plugin_solo_skill_path) == File.read!(@plugin_solo_skill_path)
 
@@ -524,9 +503,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         assert malformed_cache["reference_mcp_server_status"] == "invalid_cwd"
         assert malformed_cache["symphony_plus_plus_server"] == "manifest_parse_error"
 
-        assert bad_reference_cache["default_plugin_lifecycle_status"] == "skill_only"
+        assert bad_reference_cache["default_plugin_lifecycle_status"] == "incompatible_default_plugin_bundles_mcp"
         assert bad_reference_cache["reference_mcp_server_status"] == "invalid_args"
-        assert bad_reference_cache["symphony_plus_plus_server"] == "invalid_args"
+        assert bad_reference_cache["symphony_plus_plus_server"] == "incompatible_default_plugin_bundles_mcp"
 
         assert report["codex_config"]["symphony_plugin_enabled"] == true
         assert Enum.any?(config_entries, &(&1["plugin_name"] == "symphony-plus-plus" and &1["enabled"] == false))
@@ -537,6 +516,839 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         assert String.replace(repo_filter, "\\", "/") == "c:/sympp/repo-one"
         assert report["live_process_counts"]["erl_sympp_mcp"] == 0
         assert report["live_process_counts"]["start_sympp_mcp_pwsh_unattributed"] == 0
+      after
+        File.rm_rf(temp_codex_home)
+      end
+    end
+  end
+
+  test "lifecycle diagnostic infers process scope from installed opt-in cache when package versions differ" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_root = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-drift-#{System.unique_integer([:positive])}")
+
+    if powershell do
+      default_version = "1.0.0"
+      opt_in_version = "2.0.0"
+      temp_codex_home = Path.join(temp_root, "codex-home")
+      default_cache_manifest_path = plugin_cache_path(temp_codex_home, [default_version, ".codex-plugin", "plugin.json"])
+      default_cache_hint_path = plugin_cache_path(temp_codex_home, [default_version, ".sympp-source-root"])
+      diagnostic_path = plugin_cache_path(temp_codex_home, [default_version, "scripts", "diagnose-mcp-lifecycle.ps1"])
+
+      opt_in_cache_manifest_path =
+        plugin_cache_path(temp_codex_home, [opt_in_version, ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
+
+      opt_in_cache_mcp_path = plugin_cache_path(temp_codex_home, [opt_in_version, ".mcp.json"], "symphony-plus-plus-mcp")
+      opt_in_cache_hint_path = plugin_cache_path(temp_codex_home, [opt_in_version, ".sympp-source-root"], "symphony-plus-plus-mcp")
+      opt_in_local_manifest_path = plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
+      opt_in_local_mcp_path = plugin_cache_path(temp_codex_home, ["local", ".mcp.json"], "symphony-plus-plus-mcp")
+      opt_in_local_hint_path = plugin_cache_path(temp_codex_home, ["local", ".sympp-source-root"], "symphony-plus-plus-mcp")
+
+      mcp_config =
+        Jason.encode!(%{
+          "symphony_plus_plus" => %{
+            "type" => "stdio",
+            "command" => "pwsh",
+            "args" => [
+              "-NoProfile",
+              "-Command",
+              "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
+            ],
+            "cwd" => "."
+          }
+        })
+
+      try do
+        File.mkdir_p!(Path.dirname(default_cache_manifest_path))
+        File.mkdir_p!(Path.dirname(diagnostic_path))
+        File.cp!(@plugin_lifecycle_diagnostic_path, diagnostic_path)
+        File.write!(default_cache_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => default_version}))
+        File.write!(default_cache_hint_path, "C:/sympp/repo-one\n")
+
+        File.mkdir_p!(Path.dirname(opt_in_cache_manifest_path))
+
+        File.write!(
+          opt_in_cache_manifest_path,
+          Jason.encode!(%{"name" => "symphony-plus-plus-mcp", "version" => opt_in_version, "mcpServers" => "./.mcp.json"})
+        )
+
+        File.write!(opt_in_cache_mcp_path, mcp_config)
+        File.write!(opt_in_cache_hint_path, "C:/sympp/repo-one\n")
+        File.mkdir_p!(Path.dirname(opt_in_local_manifest_path))
+        File.write!(opt_in_local_manifest_path, "{")
+        File.write!(opt_in_local_mcp_path, mcp_config)
+        File.write!(opt_in_local_hint_path, "C:/sympp/broken-local\n")
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              diagnostic_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              "jonat-local",
+              "-Json"
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+
+        report = Jason.decode!(output)
+        caches = Map.fetch!(report, "installed_cache")
+        assert report["process_scan_scope"] == "installed_cache_source_root_hints"
+        assert [repo_filter] = report["process_repo_root_filters"]
+        assert String.replace(repo_filter, "\\", "/") == "c:/sympp/repo-one"
+
+        assert Enum.any?(
+                 caches,
+                 &(&1["package_name"] == "symphony-plus-plus" and
+                     &1["label"] == default_version and
+                     &1["reference_mcp_server_status"] == "not_configured")
+               )
+
+        assert Enum.any?(
+                 caches,
+                 &(&1["package_name"] == "symphony-plus-plus-mcp" and
+                     &1["label"] == opt_in_version and
+                     &1["reference_mcp_server_status"] == "ok")
+               )
+      after
+        File.rm_rf(temp_root)
+      end
+    end
+  end
+
+  test "lifecycle diagnostic does not scope source runs from stale installed opt-in cache versions" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-source-drift-#{System.unique_integer([:positive])}")
+
+    if powershell do
+      opt_in_version = "2.0.0"
+
+      opt_in_cache_manifest_path =
+        plugin_cache_path(temp_codex_home, [opt_in_version, ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
+
+      opt_in_cache_mcp_path = plugin_cache_path(temp_codex_home, [opt_in_version, ".mcp.json"], "symphony-plus-plus-mcp")
+      opt_in_cache_hint_path = plugin_cache_path(temp_codex_home, [opt_in_version, ".sympp-source-root"], "symphony-plus-plus-mcp")
+
+      try do
+        File.mkdir_p!(Path.dirname(opt_in_cache_manifest_path))
+
+        File.write!(
+          opt_in_cache_manifest_path,
+          Jason.encode!(%{"name" => "symphony-plus-plus-mcp", "version" => opt_in_version, "mcpServers" => "./.mcp.json"})
+        )
+
+        File.write!(
+          opt_in_cache_mcp_path,
+          Jason.encode!(%{
+            "symphony_plus_plus" => %{
+              "type" => "stdio",
+              "command" => "pwsh",
+              "args" => [
+                "-NoProfile",
+                "-Command",
+                "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
+              ],
+              "cwd" => "."
+            }
+          })
+        )
+
+        File.write!(opt_in_cache_hint_path, "C:/sympp/repo-one\n")
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              @plugin_lifecycle_diagnostic_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              "jonat-local",
+              "-Json"
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+
+        report = Jason.decode!(output)
+        assert report["process_scan_scope"] == "skipped_no_repo_root_scope"
+        assert report["process_repo_root_filters"] == []
+      after
+        File.rm_rf(temp_codex_home)
+      end
+    end
+  end
+
+  test "lifecycle diagnostic ignores stale opt-in local cache when source version differs" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-stale-local-#{System.unique_integer([:positive])}")
+
+    if powershell do
+      opt_in_manifest_path = plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
+      opt_in_mcp_path = plugin_cache_path(temp_codex_home, ["local", ".mcp.json"], "symphony-plus-plus-mcp")
+      opt_in_hint_path = plugin_cache_path(temp_codex_home, ["local", ".sympp-source-root"], "symphony-plus-plus-mcp")
+
+      try do
+        File.mkdir_p!(Path.dirname(opt_in_manifest_path))
+
+        File.write!(
+          opt_in_manifest_path,
+          Jason.encode!(%{"name" => "symphony-plus-plus-mcp", "version" => "0.0.1", "mcpServers" => "./.mcp.json"})
+        )
+
+        File.write!(
+          opt_in_mcp_path,
+          Jason.encode!(%{
+            "symphony_plus_plus" => %{
+              "type" => "stdio",
+              "command" => "pwsh",
+              "args" => [
+                "-NoProfile",
+                "-Command",
+                "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
+              ],
+              "cwd" => "."
+            }
+          })
+        )
+
+        File.write!(opt_in_hint_path, "C:/sympp/stale-local\n")
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              @plugin_lifecycle_diagnostic_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              "jonat-local",
+              "-Json"
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+
+        report = Jason.decode!(output)
+        assert report["process_scan_scope"] == "skipped_no_repo_root_scope"
+        assert report["process_repo_root_filters"] == []
+      after
+        File.rm_rf(temp_codex_home)
+      end
+    end
+  end
+
+  test "lifecycle diagnostic ignores opt-in local cache when no current opt-in version is known" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-local-unknown-current-#{System.unique_integer([:positive])}")
+
+    if powershell do
+      default_manifest_path = plugin_cache_path(temp_codex_home, ["1.0.0", ".codex-plugin", "plugin.json"])
+      diagnostic_path = plugin_cache_path(temp_codex_home, ["1.0.0", "scripts", "diagnose-mcp-lifecycle.ps1"])
+
+      opt_in_manifest_path = plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
+      opt_in_mcp_path = plugin_cache_path(temp_codex_home, ["local", ".mcp.json"], "symphony-plus-plus-mcp")
+      opt_in_hint_path = plugin_cache_path(temp_codex_home, ["local", ".sympp-source-root"], "symphony-plus-plus-mcp")
+
+      try do
+        File.mkdir_p!(Path.dirname(diagnostic_path))
+        File.cp!(@plugin_lifecycle_diagnostic_path, diagnostic_path)
+        File.mkdir_p!(Path.dirname(default_manifest_path))
+        File.write!(default_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "1.0.0"}))
+        File.mkdir_p!(Path.dirname(opt_in_manifest_path))
+
+        File.write!(
+          opt_in_manifest_path,
+          Jason.encode!(%{"name" => "symphony-plus-plus-mcp", "version" => "0.0.1", "mcpServers" => "./.mcp.json"})
+        )
+
+        File.write!(
+          opt_in_mcp_path,
+          Jason.encode!(%{
+            "symphony_plus_plus" => %{
+              "type" => "stdio",
+              "command" => "pwsh",
+              "args" => [
+                "-NoProfile",
+                "-Command",
+                "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
+              ],
+              "cwd" => "."
+            }
+          })
+        )
+
+        File.write!(opt_in_hint_path, "C:/sympp/stale-local\n")
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              diagnostic_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              "jonat-local",
+              "-Json"
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+
+        report = Jason.decode!(output)
+        assert report["process_scan_scope"] == "skipped_no_repo_root_scope"
+        assert report["process_repo_root_filters"] == []
+      after
+        File.rm_rf(temp_codex_home)
+      end
+    end
+  end
+
+  test "lifecycle diagnostic scopes hinted installed default cache from opt-in local cache" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-local-only-#{System.unique_integer([:positive])}")
+
+    if powershell do
+      default_manifest_path = plugin_cache_path(temp_codex_home, ["1.0.0", ".codex-plugin", "plugin.json"])
+      default_hint_path = plugin_cache_path(temp_codex_home, ["1.0.0", ".sympp-source-root"])
+      diagnostic_path = plugin_cache_path(temp_codex_home, ["1.0.0", "scripts", "diagnose-mcp-lifecycle.ps1"])
+
+      opt_in_manifest_path = plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
+      opt_in_mcp_path = plugin_cache_path(temp_codex_home, ["local", ".mcp.json"], "symphony-plus-plus-mcp")
+      opt_in_hint_path = plugin_cache_path(temp_codex_home, ["local", ".sympp-source-root"], "symphony-plus-plus-mcp")
+
+      try do
+        File.mkdir_p!(Path.dirname(diagnostic_path))
+        File.cp!(@plugin_lifecycle_diagnostic_path, diagnostic_path)
+        File.mkdir_p!(Path.dirname(default_manifest_path))
+        File.write!(default_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "1.0.0"}))
+        File.write!(default_hint_path, "C:/sympp/default\n")
+        File.mkdir_p!(Path.dirname(opt_in_manifest_path))
+
+        File.write!(
+          opt_in_manifest_path,
+          Jason.encode!(%{"name" => "symphony-plus-plus-mcp", "version" => "2.0.0", "mcpServers" => "./.mcp.json"})
+        )
+
+        File.write!(
+          opt_in_mcp_path,
+          Jason.encode!(%{
+            "symphony_plus_plus" => %{
+              "type" => "stdio",
+              "command" => "pwsh",
+              "args" => [
+                "-NoProfile",
+                "-Command",
+                "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
+              ],
+              "cwd" => "."
+            }
+          })
+        )
+
+        File.write!(opt_in_hint_path, "C:/sympp/local\n")
+        refute File.exists?(plugin_cache_path(temp_codex_home, ["1.0.0", ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp"))
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              diagnostic_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              "jonat-local",
+              "-Json"
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+
+        report = Jason.decode!(output)
+        assert report["process_scan_scope"] == "installed_cache_source_root_hints"
+        assert [repo_filter] = report["process_repo_root_filters"]
+        assert String.replace(repo_filter, "\\", "/") == "c:/sympp/local"
+      after
+        File.rm_rf(temp_codex_home)
+      end
+    end
+  end
+
+  test "lifecycle diagnostic prefers current versioned opt-in cache over stale local cache" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-stale-local-versioned-#{System.unique_integer([:positive])}")
+
+    if powershell do
+      default_manifest_path = plugin_cache_path(temp_codex_home, ["1.0.0", ".codex-plugin", "plugin.json"])
+      default_hint_path = plugin_cache_path(temp_codex_home, ["1.0.0", ".sympp-source-root"])
+      diagnostic_path = plugin_cache_path(temp_codex_home, ["1.0.0", "scripts", "diagnose-mcp-lifecycle.ps1"])
+
+      local_manifest_path = plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
+      local_mcp_path = plugin_cache_path(temp_codex_home, ["local", ".mcp.json"], "symphony-plus-plus-mcp")
+      local_hint_path = plugin_cache_path(temp_codex_home, ["local", ".sympp-source-root"], "symphony-plus-plus-mcp")
+      versioned_manifest_path = plugin_cache_path(temp_codex_home, ["1.0.0", ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
+      versioned_mcp_path = plugin_cache_path(temp_codex_home, ["1.0.0", ".mcp.json"], "symphony-plus-plus-mcp")
+      versioned_hint_path = plugin_cache_path(temp_codex_home, ["1.0.0", ".sympp-source-root"], "symphony-plus-plus-mcp")
+
+      mcp_config =
+        Jason.encode!(%{
+          "symphony_plus_plus" => %{
+            "type" => "stdio",
+            "command" => "pwsh",
+            "args" => [
+              "-NoProfile",
+              "-Command",
+              "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
+            ],
+            "cwd" => "."
+          }
+        })
+
+      try do
+        File.mkdir_p!(Path.dirname(diagnostic_path))
+        File.cp!(@plugin_lifecycle_diagnostic_path, diagnostic_path)
+        File.mkdir_p!(Path.dirname(default_manifest_path))
+        File.write!(default_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "1.0.0"}))
+        File.write!(default_hint_path, "C:/sympp/default\n")
+
+        for {manifest_path, mcp_path, hint_path, version, repo_root} <- [
+              {local_manifest_path, local_mcp_path, local_hint_path, "0.0.1", "C:/sympp/stale-local"},
+              {versioned_manifest_path, versioned_mcp_path, versioned_hint_path, "1.0.0", "C:/sympp/current-versioned"}
+            ] do
+          File.mkdir_p!(Path.dirname(manifest_path))
+
+          File.write!(
+            manifest_path,
+            Jason.encode!(%{"name" => "symphony-plus-plus-mcp", "version" => version, "mcpServers" => "./.mcp.json"})
+          )
+
+          File.write!(mcp_path, mcp_config)
+          File.write!(hint_path, "#{repo_root}\n")
+        end
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              diagnostic_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              "jonat-local",
+              "-Json"
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+
+        report = Jason.decode!(output)
+        assert report["process_scan_scope"] == "installed_cache_source_root_hints"
+        assert [repo_filter] = report["process_repo_root_filters"]
+        assert String.replace(repo_filter, "\\", "/") == "c:/sympp/current-versioned"
+      after
+        File.rm_rf(temp_codex_home)
+      end
+    end
+  end
+
+  test "lifecycle diagnostic preserves ambiguity when current opt-in local and versioned hints differ" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-local-versioned-ambiguous-#{System.unique_integer([:positive])}")
+
+    if powershell do
+      mcp_config =
+        Jason.encode!(%{
+          "symphony_plus_plus" => %{
+            "type" => "stdio",
+            "command" => "pwsh",
+            "args" => [
+              "-NoProfile",
+              "-Command",
+              "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
+            ],
+            "cwd" => "."
+          }
+        })
+
+      try do
+        for {label, repo_root} <- [{"local", "C:/sympp/local"}, {@plugin_version, "C:/sympp/versioned"}] do
+          manifest_path = plugin_cache_path(temp_codex_home, [label, ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
+          mcp_path = plugin_cache_path(temp_codex_home, [label, ".mcp.json"], "symphony-plus-plus-mcp")
+          hint_path = plugin_cache_path(temp_codex_home, [label, ".sympp-source-root"], "symphony-plus-plus-mcp")
+          File.mkdir_p!(Path.dirname(manifest_path))
+
+          File.write!(
+            manifest_path,
+            Jason.encode!(%{"name" => "symphony-plus-plus-mcp", "version" => @plugin_version, "mcpServers" => "./.mcp.json"})
+          )
+
+          File.write!(mcp_path, mcp_config)
+          File.write!(hint_path, "#{repo_root}\n")
+        end
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              @plugin_lifecycle_diagnostic_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              "jonat-local",
+              "-Json"
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+
+        report = Jason.decode!(output)
+        assert report["process_scan_scope"] == "skipped_ambiguous_cache_source_root_hints"
+        assert report["process_repo_root_filters"] == []
+      after
+        File.rm_rf(temp_codex_home)
+      end
+    end
+  end
+
+  test "lifecycle diagnostic keeps opt-in local precedence marketplace scoped" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-marketplace-scope-#{System.unique_integer([:positive])}")
+
+    if powershell do
+      mcp_config =
+        Jason.encode!(%{
+          "symphony_plus_plus" => %{
+            "type" => "stdio",
+            "command" => "pwsh",
+            "args" => [
+              "-NoProfile",
+              "-Command",
+              "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
+            ],
+            "cwd" => "."
+          }
+        })
+
+      try do
+        for {marketplace, label, repo_root} <- [
+              {"market-a", "local", "C:/sympp/market-a"},
+              {"market-b", @plugin_version, "C:/sympp/market-b"}
+            ] do
+          manifest_path = plugin_cache_path(temp_codex_home, [label, ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp", marketplace)
+          mcp_path = plugin_cache_path(temp_codex_home, [label, ".mcp.json"], "symphony-plus-plus-mcp", marketplace)
+          hint_path = plugin_cache_path(temp_codex_home, [label, ".sympp-source-root"], "symphony-plus-plus-mcp", marketplace)
+          File.mkdir_p!(Path.dirname(manifest_path))
+
+          File.write!(
+            manifest_path,
+            Jason.encode!(%{"name" => "symphony-plus-plus-mcp", "version" => @plugin_version, "mcpServers" => "./.mcp.json"})
+          )
+
+          File.write!(mcp_path, mcp_config)
+          File.write!(hint_path, "#{repo_root}\n")
+        end
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              @plugin_lifecycle_diagnostic_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              "*",
+              "-Json"
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+
+        report = Jason.decode!(output)
+        assert report["process_scan_scope"] == "skipped_ambiguous_cache_source_root_hints"
+        assert report["process_repo_root_filters"] == []
+      after
+        File.rm_rf(temp_codex_home)
+      end
+    end
+  end
+
+  test "lifecycle diagnostic prefers refreshed opt-in local cache over same-version companion" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-local-precedence-#{System.unique_integer([:positive])}")
+
+    if powershell do
+      default_manifest_path = plugin_cache_path(temp_codex_home, ["1.0.0", ".codex-plugin", "plugin.json"])
+      diagnostic_path = plugin_cache_path(temp_codex_home, ["1.0.0", "scripts", "diagnose-mcp-lifecycle.ps1"])
+
+      versioned_manifest_path = plugin_cache_path(temp_codex_home, ["1.0.0", ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
+      versioned_mcp_path = plugin_cache_path(temp_codex_home, ["1.0.0", ".mcp.json"], "symphony-plus-plus-mcp")
+      versioned_hint_path = plugin_cache_path(temp_codex_home, ["1.0.0", ".sympp-source-root"], "symphony-plus-plus-mcp")
+      local_manifest_path = plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
+      local_mcp_path = plugin_cache_path(temp_codex_home, ["local", ".mcp.json"], "symphony-plus-plus-mcp")
+      local_hint_path = plugin_cache_path(temp_codex_home, ["local", ".sympp-source-root"], "symphony-plus-plus-mcp")
+
+      mcp_config =
+        Jason.encode!(%{
+          "symphony_plus_plus" => %{
+            "type" => "stdio",
+            "command" => "pwsh",
+            "args" => [
+              "-NoProfile",
+              "-Command",
+              "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
+            ],
+            "cwd" => "."
+          }
+        })
+
+      try do
+        File.mkdir_p!(Path.dirname(diagnostic_path))
+        File.cp!(@plugin_lifecycle_diagnostic_path, diagnostic_path)
+        File.mkdir_p!(Path.dirname(default_manifest_path))
+        File.write!(default_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "1.0.0"}))
+
+        for {manifest_path, mcp_path, hint_path, version, repo_root} <- [
+              {versioned_manifest_path, versioned_mcp_path, versioned_hint_path, "1.0.0", "C:/sympp/versioned"},
+              {local_manifest_path, local_mcp_path, local_hint_path, "2.0.0", "C:/sympp/local"}
+            ] do
+          File.mkdir_p!(Path.dirname(manifest_path))
+
+          File.write!(
+            manifest_path,
+            Jason.encode!(%{"name" => "symphony-plus-plus-mcp", "version" => version, "mcpServers" => "./.mcp.json"})
+          )
+
+          File.write!(mcp_path, mcp_config)
+          File.write!(hint_path, "#{repo_root}\n")
+        end
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              diagnostic_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              "jonat-local",
+              "-Json"
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+
+        report = Jason.decode!(output)
+        assert report["process_scan_scope"] == "installed_cache_source_root_hints"
+        assert [repo_filter] = report["process_repo_root_filters"]
+        assert String.replace(repo_filter, "\\", "/") == "c:/sympp/local"
+      after
+        File.rm_rf(temp_codex_home)
+      end
+    end
+  end
+
+  test "lifecycle diagnostic ignores superseded opt-in cache versions when source version is installed" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-superseded-#{System.unique_integer([:positive])}")
+
+    if powershell do
+      current_version = @plugin_version
+      stale_version = "0.0.1"
+
+      try do
+        for {version, repo_root} <- [{current_version, "C:/sympp/repo-one"}, {stale_version, "C:/sympp/old-repo"}] do
+          manifest_path = plugin_cache_path(temp_codex_home, [version, ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
+          mcp_path = plugin_cache_path(temp_codex_home, [version, ".mcp.json"], "symphony-plus-plus-mcp")
+          hint_path = plugin_cache_path(temp_codex_home, [version, ".sympp-source-root"], "symphony-plus-plus-mcp")
+          File.mkdir_p!(Path.dirname(manifest_path))
+
+          File.write!(
+            manifest_path,
+            Jason.encode!(%{"name" => "symphony-plus-plus-mcp", "version" => version, "mcpServers" => "./.mcp.json"})
+          )
+
+          File.write!(
+            mcp_path,
+            Jason.encode!(%{
+              "symphony_plus_plus" => %{
+                "type" => "stdio",
+                "command" => "pwsh",
+                "args" => [
+                  "-NoProfile",
+                  "-Command",
+                  "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
+                ],
+                "cwd" => "."
+              }
+            })
+          )
+
+          File.write!(hint_path, "#{repo_root}\n")
+        end
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              @plugin_lifecycle_diagnostic_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              "jonat-local",
+              "-Json"
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+
+        report = Jason.decode!(output)
+        assert report["process_scan_scope"] == "installed_cache_source_root_hints"
+        assert [repo_filter] = report["process_repo_root_filters"]
+        assert String.replace(repo_filter, "\\", "/") == "c:/sympp/repo-one"
+      after
+        File.rm_rf(temp_codex_home)
+      end
+    end
+  end
+
+  test "lifecycle diagnostic does not scope live process scan from default-only cache hint" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-default-only-#{System.unique_integer([:positive])}")
+
+    if powershell do
+      default_manifest_path = plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"])
+      default_hint_path = plugin_cache_path(temp_codex_home, ["local", ".sympp-source-root"])
+
+      try do
+        File.mkdir_p!(Path.dirname(default_manifest_path))
+        File.write!(default_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => @plugin_version}))
+        File.write!(default_hint_path, "C:/sympp/repo-one\n")
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              @plugin_lifecycle_diagnostic_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              "jonat-local",
+              "-Json"
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+
+        report = Jason.decode!(output)
+        assert report["process_scan_scope"] == "skipped_no_repo_root_scope"
+        assert report["process_repo_root_filters"] == []
+      after
+        File.rm_rf(temp_codex_home)
+      end
+    end
+  end
+
+  test "lifecycle diagnostic prefers opt-in MCP cache hints over MCP-free default hints" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-diagnostic-opt-in-precedence-#{System.unique_integer([:positive])}")
+
+    if powershell do
+      default_manifest_path = plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"])
+      default_hint_path = plugin_cache_path(temp_codex_home, ["local", ".sympp-source-root"])
+
+      opt_in_manifest_path =
+        plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
+
+      opt_in_mcp_path = plugin_cache_path(temp_codex_home, ["local", ".mcp.json"], "symphony-plus-plus-mcp")
+      opt_in_hint_path = plugin_cache_path(temp_codex_home, ["local", ".sympp-source-root"], "symphony-plus-plus-mcp")
+
+      try do
+        File.mkdir_p!(Path.dirname(default_manifest_path))
+        File.write!(default_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => @plugin_version}))
+        File.write!(default_hint_path, "C:/sympp/repo-one\n")
+
+        File.mkdir_p!(Path.dirname(opt_in_manifest_path))
+
+        File.write!(
+          opt_in_manifest_path,
+          Jason.encode!(%{"name" => "symphony-plus-plus-mcp", "version" => @plugin_version, "mcpServers" => "./.mcp.json"})
+        )
+
+        File.write!(
+          opt_in_mcp_path,
+          Jason.encode!(%{
+            "symphony_plus_plus" => %{
+              "type" => "stdio",
+              "command" => "pwsh",
+              "args" => [
+                "-NoProfile",
+                "-Command",
+                "$env:PSExecutionPolicyPreference='Bypass'; & 'scripts/start-sympp-mcp.ps1'"
+              ],
+              "cwd" => "."
+            }
+          })
+        )
+
+        File.write!(opt_in_hint_path, "C:/sympp/repo-two\n")
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              @plugin_lifecycle_diagnostic_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              "jonat-local",
+              "-Json"
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+
+        report = Jason.decode!(output)
+        assert report["process_scan_scope"] == "installed_cache_source_root_hints"
+        assert [repo_filter] = report["process_repo_root_filters"]
+        assert String.replace(repo_filter, "\\", "/") == "c:/sympp/repo-two"
       after
         File.rm_rf(temp_codex_home)
       end
@@ -578,10 +1390,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           assert refreshed_manifest["skills"] == "./skills-default/"
           refute Map.has_key?(refreshed_manifest, "mcpServers")
           assert File.read!(default_skill_path) == File.read!(@plugin_default_solo_skill_path)
-
-          refreshed_mcp = refreshed_mcp_path |> File.read!() |> Jason.decode!()
-          refute Map.has_key?(refreshed_mcp, "mcpServers")
-          assert get_in(documented_mcp_server_map(refreshed_mcp), ["symphony_plus_plus", "command"]) == "pwsh"
+          refute File.exists?(refreshed_mcp_path)
           assert same_path?(String.trim(File.read!(source_hint_path)), @repo_root)
         end
 
@@ -589,9 +1398,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           mcp_manifest_path =
             plugin_cache_path(temp_codex_home, [cache_name, ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
 
+          mcp_config_path = plugin_cache_path(temp_codex_home, [cache_name, ".mcp.json"], "symphony-plus-plus-mcp")
           mcp_manifest = mcp_manifest_path |> File.read!() |> Jason.decode!()
+          mcp_config = mcp_config_path |> File.read!() |> Jason.decode!()
           assert mcp_manifest["name"] == "symphony-plus-plus-mcp"
           assert mcp_manifest["mcpServers"] == "./.mcp.json"
+          assert get_in(documented_mcp_server_map(mcp_config), ["symphony_plus_plus", "command"]) == "pwsh"
         end
       after
         File.rm_rf!(temp_codex_home)
@@ -727,17 +1539,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
             |> File.read!()
             |> Jason.decode!()
 
-          mcp_command =
-            temp_codex_home
-            |> plugin_cache_path([cache_name, ".mcp.json"])
-            |> File.read!()
-            |> Jason.decode!()
-            |> documented_mcp_server_map()
-            |> get_in(["symphony_plus_plus", "command"])
-
           assert manifest["version"] == @plugin_version
           refute Map.has_key?(manifest, "mcpServers")
-          assert mcp_command == "pwsh"
+          refute File.exists?(plugin_cache_path(temp_codex_home, [cache_name, ".mcp.json"]))
 
           assert File.read!(plugin_cache_path(temp_codex_home, [cache_name, "operator-marker", "keep.txt"])) ==
                    "preserve #{cache_name}"
@@ -842,7 +1646,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         refreshed_mcp_path = plugin_cache_path(temp_codex_home, ["local", ".mcp.json"])
 
         assert refreshed_manifest_path |> File.read!() |> Jason.decode!() |> Map.fetch!("name") == "symphony-plus-plus"
-        assert File.exists?(refreshed_mcp_path)
+        refute File.exists?(refreshed_mcp_path)
       after
         File.rm(marketplace_path)
         File.rm_rf(temp_codex_home)
@@ -850,19 +1654,94 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
-  test "refresh script updates only local and manifest-version caches" do
+  test "refresh script repairs incompatible generated default caches only" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-refresh-#{System.unique_integer([:positive])}")
 
     if powershell do
       stale_manifest_path = plugin_cache_path(temp_codex_home, ["0.0.9", ".codex-plugin", "plugin.json"])
       sentinel_path = plugin_cache_path(temp_codex_home, ["0.0.9", "already-open.txt"])
+      incompatible_manifest_path = plugin_cache_path(temp_codex_home, ["0.1.1", ".codex-plugin", "plugin.json"])
+      incompatible_mcp_path = plugin_cache_path(temp_codex_home, ["0.1.1", ".mcp.json"])
+      incompatible_hint_path = plugin_cache_path(temp_codex_home, ["0.1.1", ".sympp-source-root"])
+      malformed_manifest_path = plugin_cache_path(temp_codex_home, ["malformed-old", ".codex-plugin", "plugin.json"])
+      malformed_mcp_path = plugin_cache_path(temp_codex_home, ["malformed-old", ".mcp.json"])
+      malformed_hint_path = plugin_cache_path(temp_codex_home, ["malformed-old", ".sympp-source-root"])
+      missing_manifest_mcp_path = plugin_cache_path(temp_codex_home, ["missing-manifest", ".mcp.json"])
+      missing_manifest_hint_path = plugin_cache_path(temp_codex_home, ["missing-manifest", ".sympp-source-root"])
+      manual_semver_mcp_path = plugin_cache_path(temp_codex_home, ["1.2.3", ".mcp.json"])
+      manual_manifest_path = plugin_cache_path(temp_codex_home, ["manual-default", ".codex-plugin", "plugin.json"])
+      manual_manifest_mcp_path = plugin_cache_path(temp_codex_home, ["manual-default", ".mcp.json"])
       scratch_path = plugin_cache_path(temp_codex_home, ["scratch", "note.txt"])
+      scratch_mcp_path = plugin_cache_path(temp_codex_home, ["scratch", ".mcp.json"])
       File.mkdir_p!(Path.dirname(stale_manifest_path))
       File.write!(stale_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "0.0.9"}))
       File.write!(sentinel_path, "preserve")
+      File.mkdir_p!(Path.dirname(incompatible_manifest_path))
+
+      File.write!(
+        incompatible_manifest_path,
+        Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "0.1.1", "mcpServers" => "./.mcp.json"})
+      )
+
+      File.write!(incompatible_hint_path, "C:/sympp/generated\n")
+
+      File.write!(
+        incompatible_mcp_path,
+        Jason.encode!(%{
+          "symphony_plus_plus" => %{
+            "type" => "stdio",
+            "command" => "pwsh",
+            "args" => ["-NoProfile"],
+            "cwd" => "."
+          }
+        })
+      )
+
+      File.mkdir_p!(Path.dirname(malformed_manifest_path))
+      File.write!(malformed_manifest_path, "{")
+      File.write!(malformed_hint_path, "C:/sympp/generated\n")
+
+      File.write!(
+        malformed_mcp_path,
+        Jason.encode!(%{
+          "symphony_plus_plus" => %{
+            "type" => "stdio",
+            "command" => "pwsh",
+            "args" => ["-NoProfile"],
+            "cwd" => "."
+          }
+        })
+      )
+
+      File.mkdir_p!(Path.dirname(missing_manifest_mcp_path))
+      File.write!(missing_manifest_hint_path, "C:/sympp/generated\n")
+
+      File.write!(
+        missing_manifest_mcp_path,
+        Jason.encode!(%{
+          "symphony_plus_plus" => %{
+            "type" => "stdio",
+            "command" => "pwsh",
+            "args" => ["-NoProfile"],
+            "cwd" => "."
+          }
+        })
+      )
+
+      File.mkdir_p!(Path.dirname(manual_semver_mcp_path))
+      File.write!(manual_semver_mcp_path, Jason.encode!(%{"manual" => true}))
+      File.mkdir_p!(Path.dirname(manual_manifest_path))
+
+      File.write!(
+        manual_manifest_path,
+        Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "manual", "mcpServers" => "./.mcp.json"})
+      )
+
+      File.write!(manual_manifest_mcp_path, Jason.encode!(%{"manual" => true}))
       File.mkdir_p!(Path.dirname(scratch_path))
       File.write!(scratch_path, "do not touch")
+      File.write!(scratch_mcp_path, Jason.encode!(%{"manual" => true}))
 
       try do
         {output, status} =
@@ -881,7 +1760,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           )
 
         assert status == 0, output
-        refute output =~ "Repaired stale MCP-incomplete Codex plugin cache"
+        assert output =~ "Repaired incompatible default Symphony++ plugin cache"
 
         versioned_manifest =
           plugin_cache_path(temp_codex_home, [@plugin_version, ".codex-plugin", "plugin.json"])
@@ -889,11 +1768,78 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           |> Jason.decode!()
 
         refute Map.has_key?(versioned_manifest, "mcpServers")
-        assert File.exists?(plugin_cache_path(temp_codex_home, [@plugin_version, ".mcp.json"]))
+        refute File.exists?(plugin_cache_path(temp_codex_home, [@plugin_version, ".mcp.json"]))
         assert plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"]) |> File.exists?()
+
+        repaired_manifest =
+          plugin_cache_path(temp_codex_home, ["0.1.1", ".codex-plugin", "plugin.json"])
+          |> File.read!()
+          |> Jason.decode!()
+
+        refute Map.has_key?(repaired_manifest, "mcpServers")
+        refute File.exists?(plugin_cache_path(temp_codex_home, ["0.1.1", ".mcp.json"]))
+        assert File.exists?(plugin_cache_path(temp_codex_home, ["malformed-old"]))
+        refute File.exists?(plugin_cache_path(temp_codex_home, ["malformed-old", ".mcp.json"]))
+        assert File.exists?(plugin_cache_path(temp_codex_home, ["missing-manifest"]))
+        refute File.exists?(plugin_cache_path(temp_codex_home, ["missing-manifest", ".mcp.json"]))
         refute File.exists?(plugin_cache_path(temp_codex_home, ["0.0.9", ".mcp.json"]))
+        assert File.exists?(manual_semver_mcp_path)
+        manual_manifest = manual_manifest_path |> File.read!() |> Jason.decode!()
+        assert Map.has_key?(manual_manifest, "mcpServers")
+        assert File.exists?(manual_manifest_mcp_path)
         assert File.read!(sentinel_path) == "preserve"
         assert File.read!(scratch_path) == "do not touch"
+        assert File.exists?(scratch_mcp_path)
+      after
+        File.rm_rf(temp_codex_home)
+      end
+    end
+  end
+
+  test "refresh script repairs stale default MCP artifacts during MCP-only refresh" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-refresh-mcp-only-#{System.unique_integer([:positive])}")
+
+    if powershell do
+      stale_manifest_path = plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"])
+      stale_mcp_path = plugin_cache_path(temp_codex_home, ["local", ".mcp.json"])
+      stale_hint_path = plugin_cache_path(temp_codex_home, ["local", ".sympp-source-root"])
+
+      try do
+        File.mkdir_p!(Path.dirname(stale_manifest_path))
+
+        File.write!(
+          stale_manifest_path,
+          Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "0.1.1", "mcpServers" => "./.mcp.json"})
+        )
+
+        File.write!(stale_mcp_path, Jason.encode!(%{"symphony_plus_plus" => %{"type" => "stdio", "command" => "pwsh", "args" => ["-NoProfile"], "cwd" => "."}}))
+        File.write!(stale_hint_path, "C:/sympp/generated\n")
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-ExecutionPolicy",
+              "Bypass",
+              "-File",
+              @refresh_script_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-PluginName",
+              "symphony-plus-plus-mcp"
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+        assert output =~ "Repaired incompatible default Symphony++ plugin cache"
+
+        repaired_manifest = stale_manifest_path |> File.read!() |> Jason.decode!()
+        refute Map.has_key?(repaired_manifest, "mcpServers")
+        refute File.exists?(stale_mcp_path)
+        assert File.exists?(plugin_cache_path(temp_codex_home, ["local", ".mcp.json"], "symphony-plus-plus-mcp"))
       after
         File.rm_rf(temp_codex_home)
       end
@@ -951,7 +1897,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   defp documented_mcp_server_map(%{"mcp_servers" => server_map}), do: server_map
   defp documented_mcp_server_map(server_map), do: server_map
 
-  defp plugin_cache_path(codex_home, suffix, plugin_name \\ "symphony-plus-plus") do
-    Path.join([codex_home, "plugins", "cache", "jonat-local", plugin_name] ++ suffix)
+  defp plugin_cache_path(codex_home, suffix, plugin_name \\ "symphony-plus-plus", marketplace_name \\ "jonat-local") do
+    Path.join([codex_home, "plugins", "cache", marketplace_name, plugin_name] ++ suffix)
   end
 end
