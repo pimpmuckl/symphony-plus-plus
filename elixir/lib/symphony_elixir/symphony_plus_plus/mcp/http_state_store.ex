@@ -1,0 +1,424 @@
+defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
+  @moduledoc false
+
+  use GenServer
+
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, LedgerNamespace, Server}
+
+  @ttl_ms 86_400_000
+
+  @type update_status :: :stored | :dropped | :skipped
+
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
+  def child_spec(opts), do: %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}}
+
+  @spec start_link(keyword()) :: GenServer.on_start()
+  def start_link(opts \\ []) do
+    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  @spec get(Config.t(), String.t(), String.t()) :: Server.t() | nil
+  def get(%Config{} = config, client_key, state_key) when is_binary(client_key) and is_binary(state_key) do
+    GenServer.call(__MODULE__, {:get, store_key(config, client_key, state_key)})
+  end
+
+  @spec put(Config.t(), String.t(), String.t(), Server.t()) :: :ok
+  def put(%Config{} = config, client_key, state_key, %Server{} = server)
+      when is_binary(client_key) and is_binary(state_key) do
+    GenServer.call(__MODULE__, {:put, store_key(config, client_key, state_key), server})
+  end
+
+  @spec update(
+          Config.t(),
+          String.t(),
+          String.t(),
+          (-> Server.t()),
+          (Server.t() -> {term(), Server.t()})
+        ) :: term()
+  def update(%Config{} = config, client_key, state_key, default_fun, update_fun)
+      when is_binary(client_key) and is_binary(state_key) and is_function(default_fun, 0) and
+             is_function(update_fun, 1) do
+    {reply, _status} = update_with_status(config, client_key, state_key, default_fun, update_fun)
+    reply
+  end
+
+  @spec update_with_status(
+          Config.t(),
+          String.t(),
+          String.t(),
+          (-> Server.t()),
+          (Server.t() -> {term(), Server.t()})
+        ) :: {term(), update_status()}
+  def update_with_status(%Config{} = config, client_key, state_key, default_fun, update_fun)
+      when is_binary(client_key) and is_binary(state_key) and is_function(default_fun, 0) and
+             is_function(update_fun, 1) do
+    key = store_key(config, client_key, state_key)
+    generation = key_generation(key)
+
+    :ok = acquire_lock(key)
+
+    try do
+      server = get_by_key(key) || default_fun.()
+      {reply, %Server{} = updated_server} = update_fun.(server)
+      {reply, put_by_key_if_current(key, generation, updated_server)}
+    after
+      :ok = release_lock_call(key)
+    end
+  end
+
+  @spec invalidate(Config.t(), String.t(), String.t()) :: :ok
+  def invalidate(%Config{} = config, client_key, state_key) when is_binary(client_key) and is_binary(state_key) do
+    GenServer.call(__MODULE__, {:invalidate, store_key(config, client_key, state_key)})
+  end
+
+  @spec delete(Config.t(), String.t(), String.t()) :: :ok
+  def delete(%Config{} = config, client_key, state_key) when is_binary(client_key) and is_binary(state_key) do
+    key = store_key(config, client_key, state_key)
+    :ok = acquire_lock(key)
+
+    try do
+      GenServer.call(__MODULE__, {:delete, key})
+    after
+      :ok = release_lock_call(key)
+    end
+  end
+
+  @spec publish_alias(Config.t(), String.t(), String.t(), String.t(), String.t(), Server.t()) :: boolean()
+  def publish_alias(%Config{} = config, source_client_key, source_state_key, alias_client_key, alias_state_key, %Server{} = alias_server)
+      when is_binary(source_client_key) and is_binary(source_state_key) and is_binary(alias_client_key) and
+             is_binary(alias_state_key) do
+    source_key = store_key(config, source_client_key, source_state_key)
+    alias_key = store_key(config, alias_client_key, alias_state_key)
+
+    GenServer.call(__MODULE__, {:publish_alias, source_key, alias_key, alias_server})
+  end
+
+  @spec supersede_alias(Config.t(), String.t(), String.t(), String.t(), String.t(), Server.t()) :: boolean()
+  def supersede_alias(
+        %Config{} = config,
+        source_client_key,
+        source_state_key,
+        alias_client_key,
+        alias_state_key,
+        %Server{} = alias_server
+      )
+      when is_binary(source_client_key) and is_binary(source_state_key) and is_binary(alias_client_key) and
+             is_binary(alias_state_key) do
+    source_key = store_key(config, source_client_key, source_state_key)
+    alias_key = store_key(config, alias_client_key, alias_state_key)
+
+    GenServer.call(__MODULE__, {:supersede_alias, source_key, alias_key, alias_server})
+  end
+
+  @spec reset!() :: :ok
+  def reset! do
+    GenServer.call(__MODULE__, :reset)
+  end
+
+  @impl true
+  def init(opts) do
+    {:ok,
+     %{
+       entries: %{},
+       aliases: %{},
+       key_versions: %{},
+       key_version_touched_at: %{},
+       locks: %{},
+       lock_refs: %{},
+       ttl_ms: Keyword.get(opts, :ttl_ms, @ttl_ms)
+     }}
+  end
+
+  @impl true
+  def handle_call({:get, key}, _from, state) do
+    state = cleanup(state)
+
+    case Map.fetch(state.entries, key) do
+      {:ok, {server, _touched_at}} ->
+        entries = Map.put(state.entries, key, {server, now_ms()})
+        {:reply, server, %{state | entries: entries}}
+
+      :error ->
+        {:reply, nil, state}
+    end
+  end
+
+  def handle_call({:put, key, %Server{} = server}, _from, state) do
+    state = cleanup(state)
+
+    if persistable?(server) do
+      {:reply, :ok, put_entry(state, key, server)}
+    else
+      {:reply, :ok, state}
+    end
+  end
+
+  def handle_call({:put_if_current, key, generation, %Server{} = server}, _from, state) do
+    state = cleanup(state)
+
+    cond do
+      Map.get(state.key_versions, key, 0) != generation ->
+        {:reply, :dropped, state}
+
+      not persistable?(server) ->
+        {:reply, :skipped, state}
+
+      true ->
+        {:reply, :stored, put_entry(state, key, server)}
+    end
+  end
+
+  def handle_call({:invalidate, key}, _from, state) do
+    state = state |> cleanup() |> invalidate_key(key)
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:delete, key}, _from, state) do
+    state = state |> cleanup() |> invalidate_key(key)
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:publish_alias, source_key, alias_key, %Server{} = alias_server}, _from, state) do
+    state = cleanup(state)
+
+    cond do
+      not persistable?(alias_server) ->
+        {:reply, false, state}
+
+      not Map.has_key?(state.entries, source_key) ->
+        {:reply, false, state}
+
+      stale_alias?(state, alias_key, source_key) ->
+        {:reply, false, state}
+
+      true ->
+        {:reply, true, put_alias(state, source_key, alias_key, alias_server)}
+    end
+  end
+
+  def handle_call({:supersede_alias, source_key, alias_key, %Server{} = alias_server}, _from, state) do
+    state = cleanup(state)
+
+    cond do
+      not persistable?(alias_server) ->
+        {:reply, false, state}
+
+      not Map.has_key?(state.entries, source_key) ->
+        {:reply, false, state}
+
+      true ->
+        state =
+          state
+          |> invalidate_superseded_source(alias_key, source_key)
+          |> bump_versions([alias_key])
+          |> put_alias(source_key, alias_key, alias_server)
+
+        {:reply, true, state}
+    end
+  end
+
+  def handle_call({:key_generation, key}, _from, state) do
+    {:reply, Map.get(state.key_versions, key, 0), state}
+  end
+
+  def handle_call({:acquire_lock, key}, from, state) do
+    case Map.fetch(state.locks, key) do
+      {:ok, lock} ->
+        lock = %{lock | queue: :queue.in(from, lock.queue)}
+        {:noreply, %{state | locks: Map.put(state.locks, key, lock)}}
+
+      :error ->
+        {:reply, :ok, grant_lock(state, key, from, false)}
+    end
+  end
+
+  def handle_call({:release_lock, key}, {owner_pid, _tag}, state) do
+    {:reply, :ok, release_lock_owner(state, key, owner_pid)}
+  end
+
+  def handle_call(:reset, _from, state) do
+    {:reply, :ok,
+     %{
+       state
+       | entries: %{},
+         aliases: %{},
+         key_versions: %{},
+         key_version_touched_at: %{},
+         locks: %{},
+         lock_refs: %{}
+     }}
+  end
+
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+    {:noreply, release_lock_ref(state, ref)}
+  end
+
+  defp get_by_key(key), do: GenServer.call(__MODULE__, {:get, key})
+
+  defp put_by_key_if_current(key, generation, %Server{} = server) do
+    GenServer.call(__MODULE__, {:put_if_current, key, generation, server})
+  end
+
+  defp key_generation(key), do: GenServer.call(__MODULE__, {:key_generation, key})
+  defp acquire_lock(key), do: GenServer.call(__MODULE__, {:acquire_lock, key}, :infinity)
+  defp release_lock_call(key), do: GenServer.call(__MODULE__, {:release_lock, key}, :infinity)
+
+  defp grant_lock(state, key, {pid, _tag} = from, reply?) do
+    ref = Process.monitor(pid)
+    if reply?, do: GenServer.reply(from, :ok)
+
+    lock = %{owner_pid: pid, owner_ref: ref, queue: :queue.new()}
+
+    %{state | locks: Map.put(state.locks, key, lock), lock_refs: Map.put(state.lock_refs, ref, key)}
+  end
+
+  defp release_lock_owner(state, key, owner_pid) do
+    case Map.fetch(state.locks, key) do
+      {:ok, %{owner_pid: ^owner_pid} = lock} -> release_lock_state(state, key, lock)
+      _missing_or_not_owner -> state
+    end
+  end
+
+  defp release_lock_ref(state, ref) do
+    case Map.fetch(state.lock_refs, ref) do
+      {:ok, key} ->
+        case Map.fetch(state.locks, key) do
+          {:ok, %{owner_ref: ^ref} = lock} -> release_lock_state(state, key, lock)
+          _missing_or_replaced -> %{state | lock_refs: Map.delete(state.lock_refs, ref)}
+        end
+
+      :error ->
+        state
+    end
+  end
+
+  defp release_lock_state(state, key, lock) do
+    Process.demonitor(lock.owner_ref, [:flush])
+    state = %{state | lock_refs: Map.delete(state.lock_refs, lock.owner_ref)}
+
+    case :queue.out(lock.queue) do
+      {{:value, next_from}, queue} ->
+        state
+        |> grant_lock(key, next_from, true)
+        |> put_lock_queue(key, queue)
+
+      {:empty, _queue} ->
+        state
+        |> Map.update!(:locks, &Map.delete(&1, key))
+        |> prune_versions()
+    end
+  end
+
+  defp put_lock_queue(state, key, queue) do
+    lock = Map.fetch!(state.locks, key)
+    %{state | locks: Map.put(state.locks, key, %{lock | queue: queue})}
+  end
+
+  defp store_key(%Config{} = config, client_key, state_key) do
+    {config.mode, LedgerNamespace.key(config), client_key, state_key}
+  end
+
+  defp put_entry(state, key, %Server{} = server) do
+    %{state | entries: Map.put(state.entries, key, {server, now_ms()})}
+  end
+
+  defp put_alias(state, source_key, alias_key, %Server{} = alias_server) do
+    state
+    |> put_entry(alias_key, alias_server)
+    |> Map.update!(:aliases, &Map.put(&1, alias_key, source_key))
+  end
+
+  defp stale_alias?(state, alias_key, source_key) do
+    case Map.get(state.aliases, alias_key) do
+      nil -> false
+      ^source_key -> false
+      _other_source_key -> true
+    end
+  end
+
+  defp invalidate_superseded_source(state, alias_key, source_key) do
+    case Map.get(state.aliases, alias_key) do
+      nil ->
+        state
+
+      ^source_key ->
+        state
+
+      previous_source_key ->
+        invalidate_key(state, previous_source_key)
+    end
+  end
+
+  defp invalidate_key(state, key) do
+    {state, removed_keys} = remove_key_and_aliases(state, key)
+    bump_versions(state, removed_keys)
+  end
+
+  defp remove_key_and_aliases(state, key) do
+    alias_keys =
+      state.aliases
+      |> Enum.filter(fn {alias_key, source_key} -> alias_key == key or source_key == key end)
+      |> Enum.map(fn {alias_key, _source_key} -> alias_key end)
+
+    removed_keys = Enum.uniq([key | alias_keys])
+    removed_key_set = MapSet.new(removed_keys)
+
+    aliases =
+      state.aliases
+      |> Map.drop(alias_keys)
+      |> Map.reject(fn {_alias_key, source_key} -> MapSet.member?(removed_key_set, source_key) end)
+
+    {%{state | entries: Map.drop(state.entries, removed_keys), aliases: aliases}, removed_keys}
+  end
+
+  defp bump_versions(state, keys) do
+    touched_at = now_ms()
+
+    Enum.reduce(keys, state, fn key, state ->
+      %{
+        state
+        | key_versions: Map.update(state.key_versions, key, 1, &(&1 + 1)),
+          key_version_touched_at: Map.put(state.key_version_touched_at, key, touched_at)
+      }
+    end)
+  end
+
+  defp persistable?(%Server{initialized: true}), do: true
+  defp persistable?(%Server{session: session}) when not is_nil(session), do: true
+  defp persistable?(%Server{}), do: false
+
+  defp cleanup(%{entries: entries, ttl_ms: ttl_ms} = state) do
+    cutoff = now_ms() - ttl_ms
+    entries = Map.reject(entries, fn {_key, {_server, touched_at}} -> touched_at < cutoff end)
+
+    %{state | entries: entries}
+    |> prune_aliases()
+    |> prune_versions()
+  end
+
+  defp prune_aliases(state) do
+    active_keys = state.entries |> Map.keys() |> MapSet.new()
+
+    aliases =
+      Map.filter(state.aliases, fn {alias_key, source_key} ->
+        MapSet.member?(active_keys, alias_key) and MapSet.member?(active_keys, source_key)
+      end)
+
+    %{state | aliases: aliases}
+  end
+
+  defp prune_versions(%{entries: entries, locks: locks, ttl_ms: ttl_ms} = state) do
+    cutoff = now_ms() - ttl_ms
+    active_keys = MapSet.new(Map.keys(entries) ++ Map.keys(locks))
+
+    key_versions =
+      Map.filter(state.key_versions, fn {key, _version} ->
+        MapSet.member?(active_keys, key) or Map.get(state.key_version_touched_at, key, 0) >= cutoff
+      end)
+
+    %{state | key_versions: key_versions, key_version_touched_at: Map.take(state.key_version_touched_at, Map.keys(key_versions))}
+  end
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
+end
