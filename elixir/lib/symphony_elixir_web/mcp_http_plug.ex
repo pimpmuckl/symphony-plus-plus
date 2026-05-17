@@ -161,13 +161,17 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
         HTTPTransport.handle(config, payload, client_key: @client_key, state_key: state_key)
 
       %Server{} = server ->
-        if repo_backed_followup?(payload, server) do
-          with_live_repo(payload, fn repo ->
-            HTTPTransport.handle(mcp_config(repo), payload, client_key: @client_key, state_key: state_key)
-          end)
-        else
-          HTTPTransport.handle(config, payload, client_key: @client_key, state_key: state_key)
-        end
+        handle_stored_server_payload(config, payload, state_key, server)
+    end
+  end
+
+  defp handle_stored_server_payload(config, payload, state_key, %Server{} = server) do
+    if repo_backed_followup?(payload, server) do
+      with_live_repo(payload, fn repo ->
+        HTTPTransport.handle(mcp_config(repo), payload, client_key: @client_key, state_key: state_key)
+      end)
+    else
+      HTTPTransport.handle(config, payload, client_key: @client_key, state_key: state_key)
     end
   end
 
@@ -374,12 +378,10 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
   defp configured_database(repo) do
     repo_database = repo_configured_database(repo)
 
-    cond do
-      custom_repo?(repo) and not is_nil(repo_database) ->
-        repo_database
-
-      true ->
-        Application.get_env(:symphony_elixir, :sympp_repo_database) || repo_database || default_repo_database()
+    if custom_repo?(repo) and not is_nil(repo_database) do
+      repo_database
+    else
+      Application.get_env(:symphony_elixir, :sympp_repo_database) || repo_database || default_repo_database()
     end
   end
 
