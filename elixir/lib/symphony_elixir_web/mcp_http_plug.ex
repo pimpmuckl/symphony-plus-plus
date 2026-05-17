@@ -137,8 +137,6 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
     end
   end
 
-  defp normalize_session_id(_state_key, payload), do: {:error, :invalid_session_id, payload}
-
   defp visible_ascii?(<<>>), do: true
   defp visible_ascii?(<<byte, rest::binary>>) when byte >= 0x21 and byte <= 0x7E, do: visible_ascii?(rest)
   defp visible_ascii?(_value), do: false
@@ -316,7 +314,6 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
   defp origin_port(%URI{port: nil, scheme: scheme}), do: default_port(normalize_scheme(scheme))
   defp origin_port(%URI{port: port}), do: port
 
-  defp request_port(%Conn{port: nil, scheme: scheme}), do: default_port(Atom.to_string(scheme))
   defp request_port(%Conn{port: port}), do: port
 
   defp default_port("https"), do: 443
