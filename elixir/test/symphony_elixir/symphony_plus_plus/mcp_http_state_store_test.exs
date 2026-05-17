@@ -8,6 +8,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPStateStoreTest do
 
   @current_state_key "__sympp_mcp_current_state__"
   @unbound_client_key "__sympp_mcp_unbound__"
+  @failing_dynamic_repo_key :sympp_mcp_http_state_store_test_dynamic_repo
+
+  defmodule FailingDynamicRepo do
+    def get_dynamic_repo, do: Process.get(:sympp_mcp_http_state_store_test_dynamic_repo)
+    def database_key(database), do: database
+  end
 
   setup_all do
     start_supervised!(HTTPStateStore)
@@ -49,6 +55,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPStateStoreTest do
       Repo.put_dynamic_repo(original_repo)
       if Process.alive?(pid), do: GenServer.stop(pid)
       File.rm(database)
+    end
+  end
+
+  test "unconfigured ledger fallback preserves dynamic repo isolation" do
+    config = Config.default(mode: :http, repo: FailingDynamicRepo)
+
+    try do
+      Process.put(@failing_dynamic_repo_key, :ledger_a)
+      assert :ok = HTTPStateStore.put(config, "client", "same-state", initialized_server(config, "same-state"))
+
+      Process.put(@failing_dynamic_repo_key, :ledger_b)
+      assert HTTPStateStore.get(config, "client", "same-state") == nil
+    after
+      Process.delete(@failing_dynamic_repo_key)
     end
   end
 
@@ -117,6 +137,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPStateStoreTest do
     assert :ok = HTTPStateStore.delete(config, "client", "deleted-state")
     assert HTTPStateStore.get(config, "client", "deleted-state") == nil
     assert HTTPStateStore.get(config, "client", @current_state_key) == nil
+  end
+
+  test "alias reads refresh the backing source entry" do
+    config = config("alias-refresh")
+    source_server = initialized_server(config, "source-state")
+    source_key = store_key(config, "client", "source-state")
+
+    assert :ok = HTTPStateStore.put(config, "client", "source-state", source_server)
+    assert HTTPStateStore.publish_alias(config, "client", "source-state", "client", @current_state_key, source_server)
+
+    old_touched_at = System.monotonic_time(:millisecond) - 100
+
+    :sys.replace_state(HTTPStateStore, fn state ->
+      entries = Map.update!(state.entries, source_key, fn {server, _touched_at} -> {server, old_touched_at} end)
+      %{state | entries: entries}
+    end)
+
+    assert %Server{state_key: "source-state"} = HTTPStateStore.get(config, "client", @current_state_key)
+
+    %{entries: entries} = :sys.get_state(HTTPStateStore)
+    assert {_server, refreshed_touched_at} = Map.fetch!(entries, source_key)
+    assert refreshed_touched_at > old_touched_at
+  end
+
+  test "direct writes to an alias key detach stale alias metadata" do
+    config = config("direct-alias-detach")
+    source_server = initialized_server(config, "source-state")
+    direct_server = initialized_server(config, "direct-current")
+
+    assert :ok = HTTPStateStore.put(config, "client", "source-state", source_server)
+    assert HTTPStateStore.publish_alias(config, "client", "source-state", "client", @current_state_key, source_server)
+    assert :ok = HTTPStateStore.put(config, "client", @current_state_key, direct_server)
+
+    assert :ok = HTTPStateStore.invalidate(config, "client", "source-state")
+    assert %Server{state_key: "direct-current"} = HTTPStateStore.get(config, "client", @current_state_key)
   end
 
   test "queued updates started before invalidation cannot resurrect state" do
@@ -223,11 +278,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPStateStoreTest do
     assert_receive {:holding_alias_update, update_pid}
 
     fresh_alias_server = initialized_server(config, "fresh-current")
-    assert HTTPStateStore.publish_alias(config, "client", "source-state", "client", @current_state_key, fresh_alias_server)
+    publish = Task.async(fn -> HTTPStateStore.publish_alias(config, "client", "source-state", "client", @current_state_key, fresh_alias_server) end)
+
+    wait_for_queued_lock(config, "client", @current_state_key, 1)
 
     send(update_pid, :release_alias_update)
 
-    assert Task.await(update) == {:stale_alias_update, :dropped}
+    assert Task.await(update) == {:stale_alias_update, :stored}
+    assert Task.await(publish)
     assert %Server{state_key: "fresh-current"} = HTTPStateStore.get(config, "client", @current_state_key)
   end
 
@@ -336,7 +394,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPStateStoreTest do
 
   defp wait_for_queued_lock(%Config{} = config, client_key, state_key, expected_len, attempts) do
     store = :sys.get_state(HTTPStateStore)
-    key = {config.mode, LedgerNamespace.key(config), client_key, state_key}
+    key = store_key(config, client_key, state_key)
 
     queued? =
       case Map.get(store.locks, key) do
@@ -350,5 +408,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPStateStoreTest do
       Process.sleep(10)
       wait_for_queued_lock(config, client_key, state_key, expected_len, attempts - 1)
     end
+  end
+
+  defp store_key(%Config{} = config, client_key, state_key) do
+    {config.mode, LedgerNamespace.key(config), client_key, state_key}
   end
 end

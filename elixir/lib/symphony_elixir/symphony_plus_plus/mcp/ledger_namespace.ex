@@ -16,7 +16,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.LedgerNamespace do
   defp live_or_configured_key(repo, database) do
     case current_ledger_identity(repo, database) do
       {:ok, identity} -> identity
-      :error -> {:configured_database, repo_database_key(repo, database)}
+      :error -> blank_database_identity(repo)
     end
   end
 
