@@ -23,8 +23,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
   def put(%Config{} = config, client_key, state_key, %Server{} = server)
       when is_binary(client_key) and is_binary(state_key) do
     key = store_key(config, client_key, state_key)
-    generation = key_generation(key)
-    with_lock(key, fn -> GenServer.call(__MODULE__, {:put, key, generation, server}) end)
+    write_ref = begin_write(key)
+    with_lock(key, fn -> GenServer.call(__MODULE__, {:put, key, write_ref, server}) end)
   end
 
   @spec update_with_status(Config.t(), String.t(), String.t(), default_fun(), update_fun()) :: {term(), update_status()}
@@ -32,12 +32,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
       when is_binary(client_key) and is_binary(state_key) and is_function(default_fun, 0) and
              is_function(update_fun, 1) do
     key = store_key(config, client_key, state_key)
-    generation = key_generation(key)
+    write_ref = begin_write(key)
 
     with_lock(key, fn ->
       server = get_by_key(key) || default_fun.()
       {reply, %Server{} = updated_server} = update_fun.(server)
-      {reply, put_by_key_if_current(key, generation, updated_server)}
+      {reply, put_by_key_if_current(key, write_ref, updated_server)}
     end)
   end
 
@@ -58,10 +58,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
              is_binary(alias_state_key) do
     source_key = store_key(config, source_client_key, source_state_key)
     alias_key = store_key(config, alias_client_key, alias_state_key)
-    alias_generation = key_generation(alias_key)
+    write_ref = begin_write(alias_key)
 
     with_lock(alias_key, fn ->
-      GenServer.call(__MODULE__, {:publish_alias, source_key, alias_key, alias_generation, alias_server})
+      GenServer.call(__MODULE__, {:publish_alias, source_key, alias_key, write_ref, alias_server})
     end)
   end
 
@@ -78,10 +78,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
              is_binary(alias_state_key) do
     source_key = store_key(config, source_client_key, source_state_key)
     alias_key = store_key(config, alias_client_key, alias_state_key)
-    alias_generation = key_generation(alias_key)
+    write_ref = begin_write(alias_key)
 
     with_lock(alias_key, fn ->
-      GenServer.call(__MODULE__, {:supersede_alias, source_key, alias_key, alias_generation, alias_server})
+      GenServer.call(__MODULE__, {:supersede_alias, source_key, alias_key, write_ref, alias_server})
     end)
   end
 
@@ -96,6 +96,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
        aliases: %{},
        key_versions: %{},
        key_version_touched_at: %{},
+       next_write_tokens: %{},
+       successful_write_tokens: %{},
        locks: %{},
        lock_refs: %{},
        ttl_ms: Keyword.get(opts, :ttl_ms, @ttl_ms)
@@ -116,29 +118,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
     end
   end
 
-  def handle_call({:put, key, generation, %Server{} = server}, _from, state) do
+  def handle_call({:put, key, write_ref, %Server{} = server}, _from, state) do
     state = cleanup(state)
 
     state =
-      if Map.get(state.key_versions, key, 0) == generation and persistable?(server),
-        do: put_entry(state, key, server),
+      if current_write?(state, key, write_ref) and persistable?(server),
+        do: put_entry(state, key, server, write_ref),
         else: state
 
     {:reply, :ok, state}
   end
 
-  def handle_call({:put_if_current, key, generation, %Server{} = server}, _from, state) do
+  def handle_call({:put_if_current, key, write_ref, %Server{} = server}, _from, state) do
     state = cleanup(state)
 
     cond do
-      Map.get(state.key_versions, key, 0) != generation ->
+      not current_write?(state, key, write_ref) ->
         {:reply, :dropped, state}
 
       not persistable?(server) ->
         {:reply, :skipped, state}
 
       true ->
-        {:reply, :stored, put_entry(state, key, server)}
+        {:reply, :stored, put_entry(state, key, server, write_ref)}
     end
   end
 
@@ -147,11 +149,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
     {:reply, :ok, state}
   end
 
-  def handle_call({:publish_alias, source_key, alias_key, generation, %Server{} = alias_server}, _from, state) do
+  def handle_call({:publish_alias, source_key, alias_key, write_ref, %Server{} = alias_server}, _from, state) do
     state = cleanup(state)
 
     cond do
-      Map.get(state.key_versions, alias_key, 0) != generation ->
+      not current_write?(state, alias_key, write_ref) ->
         {:reply, false, state}
 
       not persistable?(alias_server) ->
@@ -164,15 +166,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
         {:reply, false, state}
 
       true ->
-        {:reply, true, put_alias(state, source_key, alias_key, alias_server)}
+        {:reply, true, put_alias(state, source_key, alias_key, alias_server, write_ref)}
     end
   end
 
-  def handle_call({:supersede_alias, source_key, alias_key, generation, %Server{} = alias_server}, _from, state) do
+  def handle_call({:supersede_alias, source_key, alias_key, write_ref, %Server{} = alias_server}, _from, state) do
     state = cleanup(state)
 
     cond do
-      Map.get(state.key_versions, alias_key, 0) != generation ->
+      not current_write?(state, alias_key, write_ref) ->
         {:reply, false, state}
 
       not persistable?(alias_server) ->
@@ -185,17 +187,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
         state =
           state
           |> invalidate_superseded_source(alias_key, source_key)
-          |> bump_versions([alias_key])
-          |> put_alias(source_key, alias_key, alias_server)
+          |> put_alias(source_key, alias_key, alias_server, write_ref)
 
         {:reply, true, state}
     end
   end
 
-  def handle_call({:key_generation, key}, _from, state) do
+  def handle_call({:begin_write, key}, _from, state) do
     state = cleanup(state)
+    token = Map.get(state.next_write_tokens, key, 0) + 1
+    state = %{state | next_write_tokens: Map.put(state.next_write_tokens, key, token)}
 
-    {:reply, Map.get(state.key_versions, key, 0), state}
+    {:reply, {Map.get(state.key_versions, key, 0), token}, state}
   end
 
   def handle_call({:acquire_lock, key}, from, state) do
@@ -223,6 +226,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
          aliases: %{},
          key_versions: %{},
          key_version_touched_at: %{},
+         next_write_tokens: %{},
+         successful_write_tokens: %{},
          locks: %{},
          lock_refs: %{},
          ttl_ms: @ttl_ms
@@ -236,11 +241,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
 
   defp get_by_key(key), do: GenServer.call(__MODULE__, {:get, key})
 
-  defp put_by_key_if_current(key, generation, %Server{} = server) do
-    GenServer.call(__MODULE__, {:put_if_current, key, generation, server})
+  defp put_by_key_if_current(key, write_ref, %Server{} = server) do
+    GenServer.call(__MODULE__, {:put_if_current, key, write_ref, server})
   end
 
-  defp key_generation(key), do: GenServer.call(__MODULE__, {:key_generation, key})
+  defp begin_write(key), do: GenServer.call(__MODULE__, {:begin_write, key})
   defp acquire_lock(key), do: GenServer.call(__MODULE__, {:acquire_lock, key}, :infinity)
   defp release_lock_call(key), do: GenServer.call(__MODULE__, {:release_lock, key}, :infinity)
 
@@ -314,8 +319,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
 
   defp store_key(%Config{} = config, client_key, state_key), do: {config.mode, LedgerNamespace.key(config), client_key, state_key}
 
-  defp put_entry(state, key, %Server{} = server) do
-    %{state | entries: Map.put(state.entries, key, {server, now_ms()}), aliases: Map.delete(state.aliases, key)}
+  defp put_entry(state, key, %Server{} = server, write_ref) do
+    state
+    |> mark_successful_write(key, write_ref)
+    |> then(fn state ->
+      %{state | entries: Map.put(state.entries, key, {server, now_ms()}), aliases: Map.delete(state.aliases, key)}
+    end)
   end
 
   defp touch_entry_and_alias_source(state, key, %Server{} = server) do
@@ -330,9 +339,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
     end
   end
 
-  defp put_alias(state, source_key, alias_key, %Server{} = alias_server) do
+  defp put_alias(state, source_key, alias_key, %Server{} = alias_server, write_ref) do
     state
-    |> put_entry(alias_key, alias_server)
+    |> put_entry(alias_key, alias_server, write_ref)
     |> Map.update!(:aliases, &Map.put(&1, alias_key, source_key))
   end
 
@@ -391,6 +400,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
     end)
   end
 
+  defp current_write?(state, key, {generation, token}) do
+    Map.get(state.key_versions, key, 0) == generation and Map.get(state.successful_write_tokens, key, 0) < token
+  end
+
+  defp mark_successful_write(state, key, {_generation, token}) do
+    %{state | successful_write_tokens: Map.put(state.successful_write_tokens, key, token)}
+  end
+
   defp persistable?(%Server{initialized: true}), do: true
   defp persistable?(%Server{session: session}) when not is_nil(session), do: true
   defp persistable?(%Server{}), do: false
@@ -429,7 +446,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
         MapSet.member?(active_keys, key) or Map.get(state.key_version_touched_at, key, 0) >= cutoff
       end)
 
-    %{state | key_versions: key_versions, key_version_touched_at: Map.take(state.key_version_touched_at, Map.keys(key_versions))}
+    retained_keys =
+      active_keys
+      |> MapSet.union(MapSet.new(Map.keys(key_versions)))
+      |> MapSet.to_list()
+
+    %{
+      state
+      | key_versions: key_versions,
+        key_version_touched_at: Map.take(state.key_version_touched_at, Map.keys(key_versions)),
+        next_write_tokens: Map.take(state.next_write_tokens, retained_keys),
+        successful_write_tokens: Map.take(state.successful_write_tokens, retained_keys)
+    }
   end
 
   defp now_ms, do: System.monotonic_time(:millisecond)

@@ -249,6 +249,51 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPStateStoreTest do
     assert %Server{state_key: "fresh-put"} = HTTPStateStore.get(config, "client", "state")
   end
 
+  test "newer successful writes prevent older queued puts from overwriting state" do
+    config = config("queued-write-order")
+    parent = self()
+
+    assert :ok = HTTPStateStore.put(config, "client", "state", initialized_server(config, "initial"))
+
+    holder =
+      Task.async(fn ->
+        HTTPStateStore.update_with_status(config, "client", "state", default_server_fun(config, "state"), fn server ->
+          send(parent, {:holding_write_order_update, self()})
+
+          receive do
+            :release_write_order_update -> :ok
+          after
+            1_000 -> raise "timed out waiting to release write-order update"
+          end
+
+          {:held, %{server | state_key: "held-update", initialized: true}}
+        end)
+      end)
+
+    assert_receive {:holding_write_order_update, holder_pid}
+
+    stale_put =
+      Task.async(fn ->
+        HTTPStateStore.put(config, "client", "state", initialized_server(config, "stale-put"))
+      end)
+
+    wait_for_queued_lock(config, "client", "state", 1)
+
+    fresh_put =
+      Task.async(fn ->
+        HTTPStateStore.put(config, "client", "state", initialized_server(config, "fresh-put"))
+      end)
+
+    wait_for_queued_lock(config, "client", "state", 2)
+    reverse_queued_lock(config, "client", "state")
+    send(holder_pid, :release_write_order_update)
+
+    assert Task.await(holder) == {:held, :stored}
+    assert Task.await(fresh_put) == :ok
+    assert Task.await(stale_put) == :ok
+    assert %Server{state_key: "fresh-put"} = HTTPStateStore.get(config, "client", "state")
+  end
+
   test "alias publication cannot be overwritten by an in-flight stale alias update" do
     config = config("alias-publish-race")
     parent = self()
@@ -564,6 +609,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPStateStoreTest do
       Process.sleep(10)
       wait_for_queued_lock(config, client_key, state_key, expected_len, attempts - 1)
     end
+  end
+
+  defp reverse_queued_lock(%Config{} = config, client_key, state_key) do
+    key = store_key(config, client_key, state_key)
+
+    :sys.replace_state(HTTPStateStore, fn state ->
+      locks =
+        Map.update!(state.locks, key, fn lock ->
+          queue =
+            lock.queue
+            |> :queue.to_list()
+            |> Enum.reverse()
+            |> :queue.from_list()
+
+          %{lock | queue: queue}
+        end)
+
+      %{state | locks: locks}
+    end)
+
+    :ok
   end
 
   defp store_key(%Config{} = config, client_key, state_key) do
