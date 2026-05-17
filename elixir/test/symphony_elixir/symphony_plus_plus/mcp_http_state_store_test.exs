@@ -289,6 +289,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPStateStoreTest do
     assert %Server{state_key: "fresh-current"} = HTTPStateStore.get(config, "client", @current_state_key)
   end
 
+  test "queued alias writes started before invalidation cannot resurrect aliases" do
+    publish_config = config("queued-alias-publish")
+
+    assert_queued_alias_write_dropped_after_invalidation(publish_config, fn alias_server ->
+      HTTPStateStore.publish_alias(publish_config, "client", "source-state", "client", @current_state_key, alias_server)
+    end)
+
+    HTTPStateStore.reset!()
+    supersede_config = config("queued-alias-supersede")
+
+    assert_queued_alias_write_dropped_after_invalidation(supersede_config, fn alias_server ->
+      HTTPStateStore.supersede_alias(supersede_config, "client", "source-state", "client", @current_state_key, alias_server)
+    end)
+  end
+
   test "delete prevents queued updates from resurrecting deleted state" do
     config = config("queued-delete")
     parent = self()
@@ -436,6 +451,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPStateStoreTest do
     assert %Server{state_key: "fresh-update"} = HTTPStateStore.get(config, "client", "state")
   end
 
+  test "first write after ttl cleanup can recreate expired state while queued" do
+    config = config("post-ttl-queued-recreate")
+    parent = self()
+    key = store_key(config, "client", "state")
+
+    assert :ok = HTTPStateStore.put(config, "client", "state", initialized_server(config, "expired"))
+
+    holder =
+      Task.async(fn ->
+        HTTPStateStore.update_with_status(config, "client", "state", default_server_fun(config, "state"), fn server ->
+          send(parent, {:holding_update, self()})
+
+          receive do
+            :release_update -> :ok
+          after
+            1_000 -> raise "timed out waiting to release update"
+          end
+
+          {:held, %{server | initialized: true}}
+        end)
+      end)
+
+    assert_receive {:holding_update, holder_pid}
+    expire_entry(key)
+
+    fresh_put =
+      Task.async(fn ->
+        HTTPStateStore.put(config, "client", "state", initialized_server(config, "fresh-put"))
+      end)
+
+    wait_for_queued_lock(config, "client", "state", 1)
+    send(holder_pid, :release_update)
+
+    assert Task.await(holder) == {:held, :dropped}
+    assert Task.await(fresh_put) == :ok
+    assert %Server{state_key: "fresh-put"} = HTTPStateStore.get(config, "client", "state")
+  end
+
   test "state entries are scoped by active dynamic ledger" do
     first_database = WorkPackageFactory.database_path()
     second_database = WorkPackageFactory.database_path()
@@ -515,6 +568,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPStateStoreTest do
 
   defp store_key(%Config{} = config, client_key, state_key) do
     {config.mode, LedgerNamespace.key(config), client_key, state_key}
+  end
+
+  defp assert_queued_alias_write_dropped_after_invalidation(%Config{} = config, alias_fun) do
+    parent = self()
+    source_server = initialized_server(config, "source-state")
+
+    assert :ok = HTTPStateStore.put(config, "client", "source-state", source_server)
+    assert HTTPStateStore.publish_alias(config, "client", "source-state", "client", @current_state_key, source_server)
+    alias_default = default_server_fun(config, @current_state_key)
+
+    holder =
+      Task.async(fn ->
+        HTTPStateStore.update_with_status(config, "client", @current_state_key, alias_default, fn server ->
+          send(parent, {:holding_alias_update, self()})
+
+          receive do
+            :release_alias_update -> :ok
+          after
+            1_000 -> raise "timed out waiting to release alias update"
+          end
+
+          {:held_alias, %{server | initialized: true}}
+        end)
+      end)
+
+    assert_receive {:holding_alias_update, holder_pid}
+
+    alias_write =
+      Task.async(fn ->
+        alias_fun.(initialized_server(config, "queued-current"))
+      end)
+
+    wait_for_queued_lock(config, "client", @current_state_key, 1)
+    assert :ok = HTTPStateStore.invalidate(config, "client", @current_state_key)
+    send(holder_pid, :release_alias_update)
+
+    assert Task.await(holder) == {:held_alias, :dropped}
+    refute Task.await(alias_write)
+    assert HTTPStateStore.get(config, "client", @current_state_key) == nil
   end
 
   defp expire_entry(key) do

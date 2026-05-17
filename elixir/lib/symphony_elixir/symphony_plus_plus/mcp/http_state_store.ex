@@ -58,7 +58,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
              is_binary(alias_state_key) do
     source_key = store_key(config, source_client_key, source_state_key)
     alias_key = store_key(config, alias_client_key, alias_state_key)
-    with_lock(alias_key, fn -> GenServer.call(__MODULE__, {:publish_alias, source_key, alias_key, alias_server}) end)
+    alias_generation = key_generation(alias_key)
+
+    with_lock(alias_key, fn ->
+      GenServer.call(__MODULE__, {:publish_alias, source_key, alias_key, alias_generation, alias_server})
+    end)
   end
 
   @spec supersede_alias(Config.t(), String.t(), String.t(), String.t(), String.t(), Server.t()) :: boolean()
@@ -74,7 +78,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
              is_binary(alias_state_key) do
     source_key = store_key(config, source_client_key, source_state_key)
     alias_key = store_key(config, alias_client_key, alias_state_key)
-    with_lock(alias_key, fn -> GenServer.call(__MODULE__, {:supersede_alias, source_key, alias_key, alias_server}) end)
+    alias_generation = key_generation(alias_key)
+
+    with_lock(alias_key, fn ->
+      GenServer.call(__MODULE__, {:supersede_alias, source_key, alias_key, alias_generation, alias_server})
+    end)
   end
 
   @spec reset!() :: :ok
@@ -139,10 +147,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
     {:reply, :ok, state}
   end
 
-  def handle_call({:publish_alias, source_key, alias_key, %Server{} = alias_server}, _from, state) do
+  def handle_call({:publish_alias, source_key, alias_key, generation, %Server{} = alias_server}, _from, state) do
     state = cleanup(state)
 
     cond do
+      Map.get(state.key_versions, alias_key, 0) != generation ->
+        {:reply, false, state}
+
       not persistable?(alias_server) ->
         {:reply, false, state}
 
@@ -157,10 +168,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
     end
   end
 
-  def handle_call({:supersede_alias, source_key, alias_key, %Server{} = alias_server}, _from, state) do
+  def handle_call({:supersede_alias, source_key, alias_key, generation, %Server{} = alias_server}, _from, state) do
     state = cleanup(state)
 
     cond do
+      Map.get(state.key_versions, alias_key, 0) != generation ->
+        {:reply, false, state}
+
       not persistable?(alias_server) ->
         {:reply, false, state}
 
