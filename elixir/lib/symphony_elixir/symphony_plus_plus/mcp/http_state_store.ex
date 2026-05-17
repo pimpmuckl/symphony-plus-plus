@@ -8,6 +8,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
   @ttl_ms 86_400_000
 
   @type update_status :: :stored | :dropped | :skipped
+  @type default_fun :: (-> Server.t())
+  @type update_fun :: (Server.t() -> {term(), Server.t()})
 
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts), do: %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}}
@@ -25,16 +27,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
   @spec put(Config.t(), String.t(), String.t(), Server.t()) :: :ok
   def put(%Config{} = config, client_key, state_key, %Server{} = server)
       when is_binary(client_key) and is_binary(state_key) do
-    GenServer.call(__MODULE__, {:put, store_key(config, client_key, state_key), server})
+    key = store_key(config, client_key, state_key)
+    :ok = acquire_lock(key)
+
+    try do
+      GenServer.call(__MODULE__, {:put, key, server})
+    after
+      :ok = release_lock_call(key)
+    end
   end
 
-  @spec update(
-          Config.t(),
-          String.t(),
-          String.t(),
-          (-> Server.t()),
-          (Server.t() -> {term(), Server.t()})
-        ) :: term()
+  @spec update(Config.t(), String.t(), String.t(), default_fun(), update_fun()) :: term()
   def update(%Config{} = config, client_key, state_key, default_fun, update_fun)
       when is_binary(client_key) and is_binary(state_key) and is_function(default_fun, 0) and
              is_function(update_fun, 1) do
@@ -42,13 +45,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
     reply
   end
 
-  @spec update_with_status(
-          Config.t(),
-          String.t(),
-          String.t(),
-          (-> Server.t()),
-          (Server.t() -> {term(), Server.t()})
-        ) :: {term(), update_status()}
+  @spec update_with_status(Config.t(), String.t(), String.t(), default_fun(), update_fun()) :: {term(), update_status()}
   def update_with_status(%Config{} = config, client_key, state_key, default_fun, update_fun)
       when is_binary(client_key) and is_binary(state_key) and is_function(default_fun, 0) and
              is_function(update_fun, 1) do
@@ -147,7 +144,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
     state = cleanup(state)
 
     if persistable?(server) do
-      {:reply, :ok, put_entry(state, key, server)}
+      {:reply, :ok, state |> bump_versions([key]) |> put_entry(key, server)}
     else
       {:reply, :ok, state}
     end
@@ -168,12 +165,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
     end
   end
 
-  def handle_call({:invalidate, key}, _from, state) do
-    state = state |> cleanup() |> invalidate_key(key)
-    {:reply, :ok, state}
-  end
-
-  def handle_call({:delete, key}, _from, state) do
+  def handle_call({operation, key}, _from, state) when operation in [:invalidate, :delete] do
     state = state |> cleanup() |> invalidate_key(key)
     {:reply, :ok, state}
   end
@@ -192,7 +184,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPStateStore do
         {:reply, false, state}
 
       true ->
-        {:reply, true, put_alias(state, source_key, alias_key, alias_server)}
+        {:reply, true, state |> bump_versions([alias_key]) |> put_alias(source_key, alias_key, alias_server)}
     end
   end
 

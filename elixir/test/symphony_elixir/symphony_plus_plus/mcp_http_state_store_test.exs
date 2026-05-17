@@ -31,6 +31,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPStateStoreTest do
     assert HTTPStateStore.get(other_ledger_config, "client-a", "shared-state") == nil
   end
 
+  test "configured ledger scopes state even when the repo has a live database path" do
+    database = WorkPackageFactory.database_path()
+    original_repo = Repo.get_dynamic_repo()
+
+    {:ok, pid} =
+      Repo.start_link(database: database, name: Repo.process_name(database), pool_size: 1, log: false)
+
+    try do
+      Repo.put_dynamic_repo(pid)
+      config = config("configured-ledger-a")
+      other_config = config("configured-ledger-b")
+
+      assert :ok = HTTPStateStore.put(config, "client", "same-state", initialized_server(config, "same-state"))
+      assert HTTPStateStore.get(other_config, "client", "same-state") == nil
+    after
+      Repo.put_dynamic_repo(original_repo)
+      if Process.alive?(pid), do: GenServer.stop(pid)
+      File.rm(database)
+    end
+  end
+
   test "state key continuity does not recover claimed state for another client" do
     config = config("non-bearer-state-key")
     claimed_server = initialized_server(config, "shared-state", session: worker_session())
@@ -138,6 +159,76 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPStateStoreTest do
     assert_receive {:entered_second_update, false}
     assert Task.await(second) == {:second, :dropped}
     assert HTTPStateStore.get(config, "client", "state") == nil
+  end
+
+  test "direct put cannot be overwritten by an in-flight stale update" do
+    config = config("put-race")
+    parent = self()
+
+    assert :ok = HTTPStateStore.put(config, "client", "state", initialized_server(config, "initial"))
+
+    update =
+      Task.async(fn ->
+        HTTPStateStore.update_with_status(config, "client", "state", default_server_fun(config, "state"), fn server ->
+          send(parent, {:holding_update, self()})
+
+          receive do
+            :release_update -> :ok
+          after
+            1_000 -> raise "timed out waiting to release update"
+          end
+
+          {:stale_update, %{server | state_key: "stale-update", initialized: true}}
+        end)
+      end)
+
+    assert_receive {:holding_update, update_pid}
+
+    put = Task.async(fn -> HTTPStateStore.put(config, "client", "state", initialized_server(config, "fresh-put")) end)
+    refute Task.yield(put, 50)
+
+    send(update_pid, :release_update)
+
+    assert Task.await(update) == {:stale_update, :stored}
+    assert Task.await(put) == :ok
+    assert %Server{state_key: "fresh-put"} = HTTPStateStore.get(config, "client", "state")
+  end
+
+  test "alias publication cannot be overwritten by an in-flight stale alias update" do
+    config = config("alias-publish-race")
+    parent = self()
+    source_server = initialized_server(config, "source-state")
+
+    assert :ok = HTTPStateStore.put(config, "client", "source-state", source_server)
+    assert HTTPStateStore.publish_alias(config, "client", "source-state", "client", @current_state_key, source_server)
+
+    alias_default = default_server_fun(config, @current_state_key)
+
+    update =
+      Task.async(fn ->
+        HTTPStateStore.update_with_status(config, "client", @current_state_key, alias_default, fn
+          server ->
+            send(parent, {:holding_alias_update, self()})
+
+            receive do
+              :release_alias_update -> :ok
+            after
+              1_000 -> raise "timed out waiting to release alias update"
+            end
+
+            {:stale_alias_update, %{server | state_key: "stale-current", initialized: true}}
+        end)
+      end)
+
+    assert_receive {:holding_alias_update, update_pid}
+
+    fresh_alias_server = initialized_server(config, "fresh-current")
+    assert HTTPStateStore.publish_alias(config, "client", "source-state", "client", @current_state_key, fresh_alias_server)
+
+    send(update_pid, :release_alias_update)
+
+    assert Task.await(update) == {:stale_alias_update, :dropped}
+    assert %Server{state_key: "fresh-current"} = HTTPStateStore.get(config, "client", @current_state_key)
   end
 
   test "delete prevents queued updates from resurrecting deleted state" do

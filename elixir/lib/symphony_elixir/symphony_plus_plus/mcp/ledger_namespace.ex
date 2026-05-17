@@ -6,6 +6,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.LedgerNamespace do
 
   @spec key(Config.t()) :: term()
   def key(%Config{repo: repo, database: database}) do
+    if configured_database?(database),
+      do: {:configured_database, repo_database_key(repo, database)},
+      else: live_or_configured_key(repo, database)
+  end
+
+  defp configured_database?(database), do: is_binary(database) and String.trim(database) != ""
+
+  defp live_or_configured_key(repo, database) do
     case current_ledger_identity(repo, database) do
       {:ok, identity} -> identity
       :error -> {:configured_database, repo_database_key(repo, database)}
