@@ -254,8 +254,8 @@ default response-state TTL. They remain continuity metadata until overwritten,
 cleared by a failed explicit reconnect initialize, or expired by the explicit
 state-key retention window. A newer explicit initialize for the same state key
 invalidates stale live sessions claimed before that initialize.
-Duplicate initialize on the same active explicit-state connection is still
-rejected as already initialized and does not clear the live session.
+Duplicate initialize on the same active or stale explicit-state connection is
+still rejected as already initialized and does not clear the live session.
 Implicit response-state continuity is for a single logical connection; a fresh
 implicit `initialize` clears stored session state before any new worker claim.
 
@@ -347,22 +347,29 @@ Architect tools require a live architect grant and the matching architect
 capability; worker grants and insufficient architect grants are denied. Worker
 grants cannot be minted with architect-only MCP capabilities, including
 unprefixed P3/P7 capability strings such as `read:phase` or
-`mint:child_worker_key`. `tools/list` advertises architect tools only when an
-architect session is already bound and filters them to the live grant's
-capabilities. Unbound generic sessions expose only health, Solo Session tools,
-and `claim_work_key` as the temporary bootstrap/recovery tool for explicit
-stdio WorkPackage flows. Stale bound sessions expose only health and
-`claim_work_key` for refresh, while worker sessions keep the bound
-worker-facing discovery surface without Solo tools. Architect sessions may call
+`mint:child_worker_key`. `tools/list` uses static architect schema discovery:
+healthy unbound generic sessions advertise health, Solo Session tools,
+`claim_work_key`, and architect tool schemas so fresh Codex sessions can
+discover WorkRequest and architect flows before claim. Schema visibility is not
+authorization; calls still require a live claimed architect grant with the
+required capability and scope, and unclaimed architect calls return a
+claim-required denial. Stale bound sessions expose only health and
+`claim_work_key` for refresh; duplicate `initialize` on that same stale
+explicit MCP session does not downgrade it into generic unbound discovery.
+Worker sessions keep the bound worker-facing discovery surface without Solo
+tools or architect-only schemas.
+Bound architect sessions advertise the static architect schema set and may call
 `get_current_assignment()` and read
 `sympp://assignment/current` to recover their scoped `work_package_id` after
 reconnect, but they still cannot use worker package read/write tools.
-Lifecycle capabilities such as `architect:lifecycle.transition` do not imply
-MCP architect tool capabilities; the explicit MCP capability strings listed in
-the permission model are required. WorkRequest read, mutation, and dispatch tools are
-advertised only for explicit phase-scoped architect grants with usable frozen
-repo/base-branch scope and the specific WorkRequest capability; legacy null
-`phase_id` architect grants do not discover those tools.
+Lifecycle capabilities such as `architect:lifecycle.transition` do not authorize
+MCP architect tool calls; the explicit MCP capability strings listed in the
+permission model are required at call time. WorkRequest read, mutation, and
+dispatch schemas are discoverable before claim and for bound architect sessions
+even when the current grant lacks capability or usable frozen scope; direct
+calls fail closed until an explicit phase-scoped architect grant with the
+required frozen repo/base-branch scope and specific WorkRequest capability is
+live. Legacy null `phase_id` architect grants do not authorize those tools.
 
 `list_work_requests(status?)` and `read_work_request(work_request_id)` are
 read-only architect tools gated by `read:work_request`. They require an
@@ -426,10 +433,10 @@ change dashboard behavior.
 explicit phase-scoped frozen repo/base-branch scope, requires `work_request_id`,
 `planned_slice_id`, and `claimed_by`, accepts optional `secret_handoff` and
 `secret_store_dir`, and calls the existing `PlannedSliceDispatch.dispatch`
-orchestration. MCP dispatch is advertised only when the MCP server is started
-with `repo_root`/`--repo-root` pointing at a repository that contains the worker
-secret handoff script, and direct calls fail closed if that root is missing or
-invalid. MCP dispatch requires a file-backed live ledger so the returned worker
+orchestration. MCP dispatch has a statically discoverable schema, and direct
+calls fail closed if `repo_root`/`--repo-root` is missing, invalid, or does not
+point at a repository that contains the worker secret handoff script. MCP
+dispatch requires a file-backed live ledger so the returned worker
 bootstrap command reconnects to the same ledger; in-memory database
 configuration fails closed before dispatch side effects. Blank database
 configuration is treated as absent and uses the live ledger. Matching configured

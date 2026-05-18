@@ -57,18 +57,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
 
     assert tools.state_key == init.state_key
 
-    assert tool_names(tools.response) == [
-             "claim_work_key",
-             "solo_append",
-             "solo_attach",
-             "solo_list",
-             "solo_show",
-             "solo_update_status",
-             "sympp.health"
-           ]
+    names = tool_names(tools.response)
 
-    refute "get_current_assignment" in tool_names(tools.response)
-    refute "append_progress" in tool_names(tools.response)
+    for tool <- [
+          "claim_work_key",
+          "solo_append",
+          "solo_attach",
+          "solo_list",
+          "solo_show",
+          "solo_update_status",
+          "sympp.health",
+          "read_work_request",
+          "list_guidance_requests",
+          "record_work_request_decision",
+          "add_work_request_planned_slice"
+        ] do
+      assert tool in names
+    end
+
+    refute "get_current_assignment" in names
+    refute "append_progress" in names
   end
 
   test "sympp.health works after initialize", %{config: config} do

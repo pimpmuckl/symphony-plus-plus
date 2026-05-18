@@ -84,9 +84,9 @@ $ArchitectTools = @(
 $ArchitectOnlyTools = @($ArchitectTools | Where-Object { $ExpectedBoundWorkerTools -notcontains $_ })
 $UnboundAllowedBoundTools = @("sympp.health", "claim_work_key")
 $ForbiddenUnboundTools =
-  @($ExpectedBoundWorkerTools | Where-Object { $UnboundAllowedBoundTools -notcontains $_ }) +
-  $ArchitectOnlyTools
+  @($ExpectedBoundWorkerTools | Where-Object { $UnboundAllowedBoundTools -notcontains $_ -and $ArchitectTools -notcontains $_ })
 $ForbiddenBoundWorkerTools = $SoloTools + $ArchitectOnlyTools
+$ExpectedUnboundTools = $ExpectedTools + $ArchitectTools
 
 $ExpectedWorkerResourceFiles = @(
   "context.md",
@@ -662,7 +662,7 @@ function Invoke-McpSmoke {
   }
 
   $toolNames = Get-ToolNames $toolsPayload
-  $missingTools = @($ExpectedTools | Where-Object { $toolNames -notcontains $_ })
+  $missingTools = @($ExpectedUnboundTools | Where-Object { $toolNames -notcontains $_ })
   if ($missingTools.Count -gt 0) {
     return New-SmokeResult "missing_expected_tools" "MCP tools/list is missing expected unbound tools: $($missingTools -join ', ')." @{
       tools = $toolNames
@@ -690,7 +690,7 @@ function Invoke-BoundMcpSmoke {
   $sessionId = $init.sessionId
   $unboundTools = @()
   if (-not $SkipUnboundTools) {
-    $unbound = Invoke-ToolsListSmoke $sessionId $ExpectedTools "unbound pre-claim" $ForbiddenUnboundTools
+    $unbound = Invoke-ToolsListSmoke $sessionId $ExpectedUnboundTools "unbound pre-claim" $ForbiddenUnboundTools
     if (-not $unbound.ok) {
       return $unbound.result
     }
@@ -882,6 +882,10 @@ function Invoke-SelfTest {
 
   if ($ForbiddenUnboundTools -contains "claim_work_key" -or $ForbiddenUnboundTools -contains "sympp.health") {
     throw "Expected unbound forbidden tools to keep health and claim_work_key allowed."
+  }
+
+  if ($ForbiddenUnboundTools -contains "read_work_request" -or $ExpectedUnboundTools -notcontains "read_work_request") {
+    throw "Expected unbound discovery to allow architect schemas."
   }
 
   if ($ForbiddenBoundWorkerTools -notcontains "list_work_requests" -or $ForbiddenBoundWorkerTools -notcontains "dispatch_work_request_planned_slice") {
