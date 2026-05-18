@@ -90,29 +90,42 @@ function Resolve-ComparableFileSystemPath([string]$Path) {
   }
 
   $visited = [System.Collections.Generic.HashSet[string]]::new((Get-ComparablePathStringComparer))
+  $root = [System.IO.Path]::GetPathRoot($resolvedPath)
+  if ([string]::IsNullOrWhiteSpace($root)) {
+    return Normalize-ComparablePath $resolvedPath
+  }
 
-  while ($true) {
-    $currentKey = Normalize-ComparablePath $resolvedPath
-    if (-not $currentKey -or -not $visited.Add($currentKey)) {
-      break
+  $segments = @(
+    $resolvedPath.Substring($root.Length).Split(
+      [char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar),
+      [System.StringSplitOptions]::RemoveEmptyEntries
+    )
+  )
+  $currentPath = $root
+
+  foreach ($segment in $segments) {
+    $candidatePath = Join-Path $currentPath $segment
+    $candidateKey = Normalize-ComparablePath $candidatePath
+    if (-not $candidateKey -or -not $visited.Add($candidateKey)) {
+      return Normalize-ComparablePath $candidatePath
     }
-
     try {
-      $item = Get-Item -LiteralPath $resolvedPath -Force -ErrorAction Stop
+      $item = Get-Item -LiteralPath $candidatePath -Force -ErrorAction Stop
     } catch {
-      break
+      $currentPath = $candidatePath
+      continue
     }
 
     $targetPath = Get-FileSystemLinkTargetPath $item
     if (-not $targetPath) {
-      $resolvedPath = $item.FullName
-      break
+      $currentPath = $item.FullName
+      continue
     }
 
-    $resolvedPath = $targetPath
+    $currentPath = $targetPath
   }
 
-  return Normalize-ComparablePath $resolvedPath
+  return Normalize-ComparablePath $currentPath
 }
 
 function Test-DefaultCodexHome([string]$Path) {
@@ -353,8 +366,12 @@ function Invoke-SelfTest {
     throw "Quote-PowerShellLiteral did not emit a valid single-quoted literal."
   }
 
-  $sourceCommand = New-SourceScriptCommand "C:\Symphony Roots\Repo" "scripts/smoke-sympp-mcp-http.ps1" "-Json"
-  if ($sourceCommand -ne "& 'C:\Symphony Roots\Repo\scripts\smoke-sympp-mcp-http.ps1' -Json") {
+  $sourceCommandRoot = Join-Path ([System.IO.Path]::GetTempPath()) "Symphony Roots"
+  $sourceCommandRoot = Join-Path $sourceCommandRoot "O'Hara Repo"
+  $sourceCommand = New-SourceScriptCommand $sourceCommandRoot "scripts/smoke-sympp-mcp-http.ps1" "-Json"
+  $expectedSourceCommandPath = Resolve-OptionalFullPath (Join-Path $sourceCommandRoot "scripts/smoke-sympp-mcp-http.ps1")
+  $expectedSourceCommand = "& $(Quote-PowerShellLiteral $expectedSourceCommandPath) -Json"
+  if ($sourceCommand -ne $expectedSourceCommand) {
     throw "New-SourceScriptCommand did not emit an absolute PowerShell invocation."
   }
 
@@ -428,10 +445,13 @@ function Invoke-SelfTest {
 
   $linkTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("sympp-diagnose-path-selftest-" + [guid]::NewGuid().ToString("N"))
   $targetPath = Join-Path $linkTestRoot "target"
+  $targetChildPath = Join-Path $targetPath ".codex"
   $linkPath = Join-Path $linkTestRoot "link"
+  $linkChildPath = Join-Path $linkPath ".codex"
 
   try {
     New-Item -ItemType Directory -Path $targetPath -Force | Out-Null
+    New-Item -ItemType Directory -Path $targetChildPath -Force | Out-Null
     $linkCreated = $false
 
     try {
@@ -451,8 +471,18 @@ function Invoke-SelfTest {
     if ($linkCreated -and -not (Test-ComparablePathEqual $resolvedLinkPath $resolvedTargetPath)) {
       throw "Resolve-ComparableFileSystemPath did not canonicalize a filesystem link target."
     }
+    $resolvedLinkChildPath = Resolve-ComparableFileSystemPath $linkChildPath
+    $resolvedTargetChildPath = Resolve-ComparableFileSystemPath $targetChildPath
+    if ($linkCreated -and -not (Test-ComparablePathEqual $resolvedLinkChildPath $resolvedTargetChildPath)) {
+      throw "Resolve-ComparableFileSystemPath did not canonicalize a filesystem link parent target."
+    }
   } finally {
-    Remove-Item -LiteralPath $linkPath -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $linkPath) {
+      try {
+        [System.IO.Directory]::Delete((Resolve-OptionalFullPath $linkPath), $false)
+      } catch {
+      }
+    }
     Remove-Item -LiteralPath $linkTestRoot -Recurse -Force -ErrorAction SilentlyContinue
   }
 
@@ -1975,6 +2005,13 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
   } else {
     $defaultMarketplace
   }
+  $crossMarketplacePairingAmbiguous = $MarketplaceName -eq "*" -and
+    -not $defaultMarketplaceAmbiguous -and
+    -not $companionMarketplaceAmbiguous -and
+    $null -ne $defaultPackage -and
+    $null -ne $companionPackage -and
+    [string]$defaultMarketplace -ne [string]$companionMarketplace
+  $companionSelectionBlocked = $companionMarketplaceAmbiguous -or $crossMarketplacePairingAmbiguous
 
   $configExists = $Config.exists -eq $true
   $defaultEnabled = if ($configExists) { Get-PluginEnabledFromEntries $Config.symphony_plugin_entries "symphony-plus-plus" $defaultMarketplace } else { $null }
@@ -2016,9 +2053,9 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
   $warnings = @()
 
   if (-not $configExists) {
-    $createConfigMessage = if (-not $companionMarketplaceAmbiguous -and $companionReady -and $defaultCodexHomeSelected) {
+    $createConfigMessage = if (-not $companionSelectionBlocked -and $companionReady -and $defaultCodexHomeSelected) {
       "No Codex config exists at $($Config.path). Choose a dedicated Symphony++ MCP Codex home before enabling the companion; the default Codex home is intentionally refused."
-    } elseif (-not $companionMarketplaceAmbiguous -and $companionReady) {
+    } elseif (-not $companionSelectionBlocked -and $companionReady) {
       "No Codex config exists at $($Config.path). Run the explicit MCP companion enable command below to create it, or restore the config before diagnosing unrelated plugin enablement."
     } else {
       "Create or restore the Codex config at $($Config.path) before plugin enablement can be diagnosed."
@@ -2027,6 +2064,8 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
   }
   if ($companionMarketplaceAmbiguous) {
     $actions += New-ReadinessAction "rerun_with_marketplace" "config" "Multiple symphony-plus-plus-mcp marketplaces are installed; rerun this doctor with -MarketplaceName <marketplace> before using MCP companion repair actions."
+  } elseif ($crossMarketplacePairingAmbiguous) {
+    $actions += New-ReadinessAction "rerun_with_marketplace" "config" "The skill-only and MCP companion packages resolve to different marketplaces in wildcard mode; rerun with -MarketplaceName <marketplace> before using package-specific repair actions."
   } elseif ($defaultMarketplaceAmbiguous) {
     $actions += New-ReadinessAction "select_default_plugin_marketplace" "solo_session" "Multiple skill-only symphony-plus-plus marketplaces are installed; rerun with -MarketplaceName <marketplace> before using default plugin repair actions."
   }
@@ -2045,9 +2084,9 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     "ready"
   }
 
-  if (-not $defaultMarketplaceAmbiguous -and -not $defaultReady -and -not $companionProvidesSoloSkills) {
+  if (-not $defaultMarketplaceAmbiguous -and -not $crossMarketplacePairingAmbiguous -and -not $defaultReady -and -not $companionProvidesSoloSkills) {
     $actions += New-SourceCheckoutAction "refresh_default_plugin_cache" "solo_session" "Refresh the skill-only Symphony++ plugin cache." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($defaultRefreshMarketplaceArg)-PluginName symphony-plus-plus -ValidateInstalledCache")
-  } elseif (-not $defaultMarketplaceAmbiguous -and $configExists -and $defaultEnabled -ne $true -and -not $companionProvidesSoloSkills) {
+  } elseif (-not $defaultMarketplaceAmbiguous -and -not $crossMarketplacePairingAmbiguous -and $configExists -and $defaultEnabled -ne $true -and -not $companionProvidesSoloSkills) {
     $defaultConfigKey = Get-ActivationConfigKey "symphony-plus-plus" $defaultMarketplace
     $actions += New-ReadinessAction "enable_default_plugin" "solo_session" "Enable the default skill-only plugin for Solo Session planning: [plugins.`"$defaultConfigKey`"] enabled = true."
   }
@@ -2074,20 +2113,20 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     [string]$companionPackage.http_mcp_reachability_status
   }
 
-  if (-not $companionMarketplaceAmbiguous -and -not $companionReady) {
+  if (-not $companionSelectionBlocked -and -not $companionReady) {
     $actions += New-SourceCheckoutAction "refresh_mcp_companion_cache" "workrequest_mcp" "Refresh the opt-in MCP companion cache and validate its HTTP .mcp.json." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($companionRefreshMarketplaceArg)-PluginName symphony-plus-plus-mcp -ValidateInstalledCache")
-  } elseif (-not $companionMarketplaceAmbiguous -and $companionReady -and $companionEnabled -ne $true -and $otherMarketplaceMcpCompanionEnabled) {
+  } elseif (-not $companionSelectionBlocked -and $companionReady -and $companionEnabled -ne $true -and $otherMarketplaceMcpCompanionEnabled) {
     $actions += New-ReadinessAction "resolve_mcp_companion_marketplace_conflict" "config" "Another symphony-plus-plus-mcp marketplace is already enabled in this Codex config; disable or relocate that entry before enabling $companionMarketplace."
-  } elseif (-not $companionMarketplaceAmbiguous -and $companionReady -and $companionEnabled -ne $true -and $defaultCodexHomeSelected) {
+  } elseif (-not $companionSelectionBlocked -and $companionReady -and $companionEnabled -ne $true -and $defaultCodexHomeSelected) {
     $actions += New-ReadinessAction "choose_dedicated_codex_home" "workrequest_mcp" "Rerun the doctor and enable command with -CodexHome <dedicated-symphony-plus-plus-codex-home>; refusing to enable symphony-plus-plus-mcp in the default Codex home keeps generic worker/review configs MCP-clean."
-  } elseif (-not $companionMarketplaceAmbiguous -and $companionReady -and $unsupportedTargetCompanionConfigEntry) {
+  } elseif (-not $companionSelectionBlocked -and $companionReady -and $unsupportedTargetCompanionConfigEntry) {
     $companionConfigKey = Get-ActivationConfigKey "symphony-plus-plus-mcp" $companionMarketplace
     $rewriteMessage = @(
       "A $companionConfigKey config entry exists, but its enabled value is missing, duplicate, or unsupported."
       "Rewrite it as a supported boolean plugin entry before using -EnableMcpCompanion, for example [plugins.`"$companionConfigKey`"] enabled = false."
     ) -join " "
     $actions += New-ReadinessAction "rewrite_mcp_companion_config_entry" "config" $rewriteMessage
-  } elseif (-not $companionMarketplaceAmbiguous -and $companionReady -and $companionEnabled -ne $true -and $Config.global_sympp_mcp_entry -ne $true) {
+  } elseif (-not $companionSelectionBlocked -and $companionReady -and $companionEnabled -ne $true -and $Config.global_sympp_mcp_entry -ne $true) {
     $companionConfigKey = Get-ActivationConfigKey "symphony-plus-plus-mcp" $companionMarketplace
     $enableArgs = "$($refreshCodexHomeArg)$($companionRefreshMarketplaceArg)-EnableMcpCompanion"
     $enableCommand = New-CurrentDiagnosticCommand $enableArgs
@@ -2098,10 +2137,10 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
       $actions += New-ReadinessAction "enable_mcp_companion" "workrequest_mcp" "Enable the opt-in MCP companion only in a dedicated S++ config/session: [plugins.`"$companionConfigKey`"] enabled = true." $enableCommand
     }
     $actions += New-ReadinessAction "restart_codex_session" "workrequest_mcp" "Restart or reload that dedicated Codex session so plugin MCP servers register before the model starts."
-  } elseif (-not $companionMarketplaceAmbiguous -and $companionStatus -eq "endpoint_unreachable") {
+  } elseif (-not $companionSelectionBlocked -and $companionStatus -eq "endpoint_unreachable") {
     $actions += New-SourceCheckoutAction "start_cockpit" "workrequest_mcp" "Start the local Symphony++ cockpit/HTTP MCP daemon." $SourceCheckout (New-CockpitCommand $sourceRoot)
     $actions += New-SourceCheckoutAction "verify_http_mcp" "workrequest_mcp" "Verify the local HTTP MCP daemon independently of Codex plugin loading." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/smoke-sympp-mcp-http.ps1")
-  } elseif (-not $companionMarketplaceAmbiguous -and $companionStatus -eq "ready") {
+  } elseif (-not $companionSelectionBlocked -and $companionStatus -eq "ready") {
     $actions += New-ReadinessAction "verify_codex_session" "workrequest_mcp" "If the current Codex session still lacks symphony_plus_plus tools, restart or reload the dedicated MCP-enabled session; this doctor verifies config, cache, and daemon readiness, not the already-open model tool list."
   }
 
@@ -2123,6 +2162,8 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
   $overallStatus = if (-not $configExists) {
     "config_missing"
   } elseif ($companionMarketplaceAmbiguous) {
+    "multiple_marketplaces_need_selection"
+  } elseif ($crossMarketplacePairingAmbiguous) {
     "multiple_marketplaces_need_selection"
   } elseif ($Config.global_sympp_mcp_entry -eq $true) {
     "global_footgun_present"

@@ -1486,6 +1486,51 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  test "diagnostic requires marketplace selection for split default and companion caches" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-split-marketplace-#{System.unique_integer([:positive])}")
+
+    if powershell do
+      try do
+        write_activation_cache(temp_codex_home, "jonat-local")
+        write_activation_cache(temp_codex_home, "other-market")
+        File.rm_rf!(plugin_cache_path(temp_codex_home, [], "symphony-plus-plus-mcp", "jonat-local"))
+        File.rm_rf!(plugin_cache_path(temp_codex_home, [], "symphony-plus-plus", "other-market"))
+        File.mkdir_p!(temp_codex_home)
+
+        File.write!(
+          Path.join(temp_codex_home, "config.toml"),
+          """
+          [plugins."symphony-plus-plus@jonat-local"]
+          enabled = true
+          """
+        )
+
+        {json_output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              @plugin_lifecycle_diagnostic_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-Json"
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, json_output
+        readiness = json_output |> Jason.decode!() |> Map.fetch!("readiness")
+        assert readiness["overall_status"] == "multiple_marketplaces_need_selection"
+        assert Enum.any?(readiness["next_actions"], &(&1["code"] == "rerun_with_marketplace"))
+        refute Enum.any?(readiness["next_actions"], &(&1["code"] == "enable_mcp_companion"))
+      after
+        File.rm_rf(temp_codex_home)
+      end
+    end
+  end
+
   test "diagnostic scopes aggregate plugin enablement to selected marketplace" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-marketplace-summary-#{System.unique_integer([:positive])}")
