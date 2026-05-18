@@ -539,19 +539,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     conn = board_session_conn(secret)
 
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+    original_default_database_root = Application.get_env(:symphony_elixir, :sympp_repo_default_database_root)
     original_workflow_path = Application.get_env(:symphony_elixir, :workflow_file_path)
     workflow_id = "sympp-dashboard-stale-db-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
     workflow_path = Path.join([System.tmp_dir!(), workflow_id, "WORKFLOW.md"])
+    default_database_root = Path.join([System.tmp_dir!(), workflow_id, ".symphony_plus_plus"])
 
     on_exit(fn ->
       restore_database_env(original_database)
+      restore_default_database_root_env(original_default_database_root)
       restore_workflow_path(original_workflow_path)
     end)
 
     Application.delete_env(:symphony_elixir, :sympp_repo_database)
+    Application.put_env(:symphony_elixir, :sympp_repo_default_database_root, default_database_root)
     Workflow.set_workflow_file_path(workflow_path)
+    assert Repo.database_path_if_present() == nil
     stale_database_path = Repo.database_path()
 
+    assert File.dir?(default_database_root)
     refute File.exists?(stale_database_path)
 
     on_exit(fn -> File.rm(stale_database_path) end)
@@ -1850,6 +1856,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
 
   defp restore_database_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_repo_database)
   defp restore_database_env(database), do: Application.put_env(:symphony_elixir, :sympp_repo_database, database)
+
+  defp restore_default_database_root_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_repo_default_database_root)
+
+  defp restore_default_database_root_env(database_root) do
+    Application.put_env(:symphony_elixir, :sympp_repo_default_database_root, database_root)
+  end
 
   defp restore_workflow_path(nil), do: Workflow.clear_workflow_file_path()
   defp restore_workflow_path(path), do: Workflow.set_workflow_file_path(path)
