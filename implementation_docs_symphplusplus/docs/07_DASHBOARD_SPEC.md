@@ -100,10 +100,15 @@ Local operator cockpit stream rail:
 - Streams are repo/base-branch pairs derived from local WorkPackages,
   WorkRequests, and Solo Sessions. Each stream shows compact counts for those
   three surfaces.
-- Selecting a stream applies repo and base-branch query filters to the whole
-  cockpit: package columns, WorkRequests, guidance/blocker watchlists, and Solo
-  Sessions.
-- `Show All` clears stream filtering and restores the full cockpit.
+- Selecting a stream is stream-first navigation: it sets the repo and
+  base-branch query filters for the whole cockpit and clears package-only
+  `kind` and `phase` filters. This prevents request-only or solo-only streams
+  from looking empty because of stale package filters.
+- After a stream is selected, the toolbar remains available for explicit
+  intersections such as selecting a package kind, phase, or editing the visible
+  base-branch filter.
+- `Show All` clears all cockpit filters and restores the complete local
+  cockpit.
 - Pin and unpin controls store pinned stream ids in browser `localStorage`.
   Pins only affect local visual priority/highlight; they are not persisted to
   the Symphony++ ledger, MCP state, or any backend schema.

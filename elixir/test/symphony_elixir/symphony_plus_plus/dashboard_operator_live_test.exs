@@ -469,6 +469,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
       blocker?: true
     )
 
+    create_package!(
+      id: "SYMPP-V2-UX-033-PACKAGE-ONLY",
+      title: "Package-only docs stream",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "package-only-branch",
+      kind: "docs"
+    )
+
     create_human_guidance_request!(visible_package,
       id: "guidance-project-rail-visible",
       summary: "Visible package guidance"
@@ -541,11 +549,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     {:ok, _view, filtered_html} =
       live(local_conn(), "/sympp/board?kind=dashboard&repo=nextide/symphony-plus-plus&base_branch=feature/project-rail")
 
-    assert filtered_html =~ ~s(href="board?kind=dashboard")
+    assert filtered_html =~ ~s(href="board")
     assert filtered_html =~ ~s(name="base_branch")
     assert filtered_html =~ "request-only-branch"
     assert filtered_html =~ "0 pkg / 1 req / 0 solo"
     assert filtered_html =~ ~s(href="board?repo=nextide%2Fsymphony-plus-plus&amp;base_branch=request-only-branch")
+    assert filtered_html =~ "package-only-branch"
+    assert filtered_html =~ "1 pkg / 0 req / 0 solo"
+    assert filtered_html =~ ~s(href="board?repo=nextide%2Fsymphony-plus-plus&amp;base_branch=package-only-branch")
   end
 
   test "local operator board shows compact Solo Sessions grouped by lifecycle" do

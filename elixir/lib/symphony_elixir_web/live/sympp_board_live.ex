@@ -158,11 +158,11 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
           <header>
             <div>
               <h2>Projects</h2>
-              <p>Filter the cockpit by repo and base branch.</p>
+              <p>Focus a repo/base stream. Kind and phase reset; use toolbar filters after selecting for intersections.</p>
             </div>
             <a
-              class={["sympp-stream-show-all", if(not stream_filter_active?(@filters), do: "active")]}
-              href={board_path(clear_stream_filters(@filters))}
+              class={["sympp-stream-show-all", if(all_filters_clear?(@filters), do: "active")]}
+              href="board"
             >
               Show All
             </a>
@@ -1222,20 +1222,21 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp stream_option_filters(filters) do
-    %{filters | repo: @empty_filter, base_branch: @empty_filter}
+    filters
+    |> Map.put(:kind, @empty_filter)
+    |> Map.put(:repo, @empty_filter)
+    |> Map.put(:base_branch, @empty_filter)
+    |> Map.put(:phase, @empty_filter)
   end
 
-  defp stream_filter_active?(filters) do
-    Map.get(filters, :repo, @empty_filter) != @empty_filter or stream_base_branch(filters) != @empty_filter
+  defp all_filters_clear?(filters) do
+    Map.get(filters, :kind, @empty_filter) == @empty_filter and
+      Map.get(filters, :repo, @empty_filter) == @empty_filter and
+      stream_base_branch(filters) == @empty_filter and
+      Map.get(filters, :phase, @empty_filter) == @empty_filter
   end
 
   defp stream_base_branch(filters), do: Map.get(filters, :base_branch, @empty_filter)
-
-  defp clear_stream_filters(filters) do
-    filters
-    |> Map.put(:repo, @empty_filter)
-    |> Map.put(:base_branch, @empty_filter)
-  end
 
   defp stream_counts(item, repo, base_branch) do
     %{
