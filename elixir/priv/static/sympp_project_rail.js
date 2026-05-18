@@ -36,9 +36,11 @@
       item.classList.toggle("pinned", pinned);
 
       if (pin) {
+        var label = pinned ? "Unpin" : "Pin";
+
         pin.setAttribute("aria-pressed", pinned ? "true" : "false");
         pin.setAttribute("title", pinned ? "Unpin stream" : "Pin stream");
-        pin.textContent = pinned ? "Unpin" : "Pin";
+        if (pin.textContent !== label) pin.textContent = label;
       }
     });
 
