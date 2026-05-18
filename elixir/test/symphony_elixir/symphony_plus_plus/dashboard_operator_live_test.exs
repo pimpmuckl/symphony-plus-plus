@@ -504,6 +504,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
       base_branch: "main"
     )
 
+    create_solo_session!(
+      caller_id: "project-rail-solo-only",
+      title: "Solo-only hidden stream",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "solo-only-branch"
+    )
+
     {:ok, _view, html} =
       live(local_conn(), "/sympp/board?repo=nextide/symphony-plus-plus&base_branch=feature/project-rail")
 
@@ -513,12 +520,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "Visible package guidance"
     assert html =~ "Visible stream solo"
     assert html =~ "1 pkg / 1 req / 1 solo"
+    assert html =~ "solo-only-branch"
+    assert html =~ "0 pkg / 0 req / 1 solo"
     assert html =~ ~s(href="board")
     assert html =~ ~s(base_branch=feature%2Fproject-rail)
     assert html =~ ~r/<span class="sympp-board-count numeric">\s*3\s*<\/span>\s*<span class="muted">operation shown<\/span>/
     refute html =~ "Hidden stream package"
     refute html =~ "Hidden stream request"
     refute html =~ "Hidden stream solo"
+    refute html =~ "Solo-only hidden stream"
+
+    {:ok, _view, filtered_html} =
+      live(local_conn(), "/sympp/board?kind=dashboard&repo=nextide/symphony-plus-plus&base_branch=feature/project-rail")
+
+    assert filtered_html =~ ~s(href="board?kind=dashboard")
   end
 
   test "local operator board shows compact Solo Sessions grouped by lifecycle" do

@@ -160,6 +160,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end)
   end
 
+  @spec solo_session_streams(repo()) :: {:ok, [map()]} | {:error, dashboard_error()}
+  def solo_session_streams(repo) when is_atom(repo) do
+    safe_read(fn ->
+      streams =
+        repo.all(
+          from(session in SoloSession,
+            where: not is_nil(session.repo) and session.repo != "",
+            where: not is_nil(session.base_branch) and session.base_branch != "",
+            group_by: [session.repo, session.base_branch],
+            order_by: [asc: session.repo, asc: session.base_branch],
+            select: %{
+              repo: session.repo,
+              base_branch: session.base_branch,
+              solo_session_count: count(session.id)
+            }
+          )
+        )
+
+      {:ok, streams}
+    end)
+  end
+
   @spec solo_session_count(repo()) :: {:ok, non_neg_integer()} | {:error, dashboard_error()}
   def solo_session_count(repo) when is_atom(repo) do
     safe_read(fn ->

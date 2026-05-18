@@ -155,7 +155,10 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
               <h2>Projects</h2>
               <p>Filter the cockpit by repo and base branch.</p>
             </div>
-            <a class={["sympp-stream-show-all", if(@filters.repo == @empty_filter and @filters.base_branch == @empty_filter, do: "active")]} href="board">
+            <a
+              class={["sympp-stream-show-all", if(@filters.repo == @empty_filter and @filters.base_branch == @empty_filter, do: "active")]}
+              href={board_path(%{@filters | repo: @empty_filter, base_branch: @empty_filter})}
+            >
               Show All
             </a>
           </header>
@@ -409,6 +412,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
              {:ok, guidance_requests} <- Dashboard.human_guidance_requests(repo),
              {:ok, solo_sessions} <- Dashboard.solo_sessions(repo, solo_session_dashboard_filters(filters)),
              {:ok, solo_session_repos} <- Dashboard.solo_session_repos(repo),
+             {:ok, solo_session_streams} <- Dashboard.solo_session_streams(repo),
              {:ok, solo_session_total_count} <- Dashboard.solo_session_count(repo) do
           {:ok,
            %{
@@ -417,6 +421,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
              guidance_requests: guidance_requests,
              solo_sessions: solo_sessions,
              solo_session_repos: solo_session_repos,
+             solo_session_streams: solo_session_streams,
              solo_session_total_count: solo_session_total_count
            }}
         end
@@ -985,6 +990,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     all_requests = Map.get(work_requests, :work_requests, [])
     all_solo_sessions = payload |> Map.get(:solo_sessions, %{}) |> Map.get(:solo_sessions, [])
     solo_session_repos = Map.get(payload, :solo_session_repos, [])
+    solo_session_streams = Map.get(payload, :solo_session_streams, [])
     solo_session_total_count = Map.get(payload, :solo_session_total_count, length(all_solo_sessions))
     view = board |> board_view(filters) |> operator_filter_options(all_requests, solo_session_repos)
     visible_cards = visible_cards(view)
@@ -1004,7 +1010,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       guidance_items: guidance_items(visible_requests) ++ package_guidance_items(visible_guidance_requests),
       blocker_items: blocker_items(visible_cards),
       review_ready_count: review_ready_count(visible_cards),
-      work_streams: work_streams(board, all_requests, all_solo_sessions, filters),
+      work_streams: work_streams(board, all_requests, solo_session_streams, filters),
       work_stream_count: work_stream_count(visible_cards, stream_work_requests, visible_solo_sessions),
       solo_session_total_count: solo_session_total_count,
       solo_session_visible_count: solo_session_shown_count,
@@ -1232,6 +1238,9 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   defp merge_stream_counts(stream, item) do
     cond do
+      Map.has_key?(item, :solo_session_count) ->
+        Map.update!(stream, :solo_session_count, &(&1 + Map.get(item, :solo_session_count, 0)))
+
       Map.has_key?(item, :caller_id) ->
         Map.update!(stream, :solo_session_count, &(&1 + 1))
 
