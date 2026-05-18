@@ -20,6 +20,9 @@ defmodule SymphonyElixirWeb.StaticAssetController do
   @spec phoenix_live_view_js(Conn.t(), map()) :: Conn.t()
   def phoenix_live_view_js(conn, _params), do: serve(conn, "/vendor/phoenix_live_view/phoenix_live_view.js")
 
+  @spec sympp_project_rail_js(Conn.t(), map()) :: Conn.t()
+  def sympp_project_rail_js(conn, _params), do: serve(conn, "/sympp_project_rail.js")
+
   defp serve(conn, path) do
     case StaticAssets.fetch(path) do
       {:ok, content_type, body} ->

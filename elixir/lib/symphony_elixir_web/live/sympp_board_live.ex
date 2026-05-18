@@ -130,6 +130,11 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
             </label>
 
             <label>
+              <span>Base Branch</span>
+              <input name="base_branch" value={filter_input_value(stream_base_branch(@filters))} placeholder="All" />
+            </label>
+
+            <label>
               <span>Phase</span>
               <select name="phase">
                 <option value={@empty_filter} selected={@filters.phase == @empty_filter}>All</option>
@@ -142,6 +147,54 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
             <button class="subtle-button" type="submit">Apply</button>
             <a class="sympp-clear-link" href="board">Clear</a>
           </form>
+        </section>
+
+        <section
+          :if={@operator_mode? and Map.get(@board, :work_streams, []) != []}
+          class="sympp-project-rail"
+          data-sympp-project-rail
+          aria-label="Projects and Work Streams"
+        >
+          <header>
+            <div>
+              <h2>Projects</h2>
+              <p>Focus a repo/base stream. Kind and phase reset; use toolbar filters after selecting for intersections.</p>
+            </div>
+            <a
+              class={["sympp-stream-show-all", if(all_filters_clear?(@filters), do: "active")]}
+              href="board"
+            >
+              Show All
+            </a>
+          </header>
+
+          <div class="sympp-stream-list">
+            <article
+              :for={stream <- @board.work_streams}
+              id={"sympp-stream-#{stream.id}"}
+              class={["sympp-stream-item", if(stream.selected?, do: "selected")]}
+              data-sympp-stream-id={stream.id}
+              data-sympp-stream-order={stream.order}
+              data-sympp-pinned="false"
+            >
+              <a href={stream.href}>
+                <strong><%= stream.repo %></strong>
+                <span><%= stream.base_branch %></span>
+                <small>
+                  <%= stream.package_count %> pkg / <%= stream.work_request_count %> req / <%= stream.solo_session_count %> solo
+                </small>
+              </a>
+              <button
+                class="sympp-stream-pin"
+                type="button"
+                data-sympp-stream-pin
+                aria-pressed="false"
+                title="Pin stream"
+              >
+                Pin
+              </button>
+            </article>
+          </div>
         </section>
 
         <section :if={@operator_mode?} class="sympp-operator-priority" aria-label="Operator priorities">
@@ -366,6 +419,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
              {:ok, guidance_requests} <- Dashboard.human_guidance_requests(repo),
              {:ok, solo_sessions} <- Dashboard.solo_sessions(repo, solo_session_dashboard_filters(filters)),
              {:ok, solo_session_repos} <- Dashboard.solo_session_repos(repo),
+             {:ok, solo_session_streams} <- Dashboard.solo_session_streams(repo),
              {:ok, solo_session_total_count} <- Dashboard.solo_session_count(repo) do
           {:ok,
            %{
@@ -374,6 +428,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
              guidance_requests: guidance_requests,
              solo_sessions: solo_sessions,
              solo_session_repos: solo_session_repos,
+             solo_session_streams: solo_session_streams,
              solo_session_total_count: solo_session_total_count
            }}
         end
@@ -388,11 +443,12 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   defp load_board(_filters, _grant), do: empty_board("Board access expired. Reload and enter a current board work key.")
 
-  defp solo_session_dashboard_filters(%{repo: repo}) when is_binary(repo) and repo != @empty_filter do
-    %{"repo" => repo}
+  defp solo_session_dashboard_filters(filters) do
+    filters
+    |> Map.take([:repo, :base_branch])
+    |> Enum.reject(fn {_key, value} -> value == @empty_filter end)
+    |> Map.new(fn {key, value} -> {to_string(key), value} end)
   end
-
-  defp solo_session_dashboard_filters(_filters), do: %{}
 
   defp phase_board_for_grant(repo, %AccessGrant{} = grant) do
     with {:ok, phase_id} <- phase_scope(repo, grant) do
@@ -941,15 +997,18 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     all_requests = Map.get(work_requests, :work_requests, [])
     all_solo_sessions = payload |> Map.get(:solo_sessions, %{}) |> Map.get(:solo_sessions, [])
     solo_session_repos = Map.get(payload, :solo_session_repos, [])
+    solo_session_streams = Map.get(payload, :solo_session_streams, [])
     solo_session_total_count = Map.get(payload, :solo_session_total_count, length(all_solo_sessions))
     view = board |> board_view(filters) |> operator_filter_options(all_requests, solo_session_repos)
     visible_cards = visible_cards(view)
     visible_streams = visible_cards |> Enum.map(&stream_key/1) |> Enum.reject(&is_nil/1) |> MapSet.new()
     visible_requests = filter_work_requests(all_requests, filters, visible_streams)
-    visible_guidance_requests = guidance_requests |> Map.get(:guidance_requests, []) |> filter_guidance_requests(visible_cards)
+    all_guidance_requests = Map.get(guidance_requests, :guidance_requests, [])
+    visible_guidance_requests = filter_guidance_requests(all_guidance_requests, visible_cards)
     visible_solo_sessions = filter_solo_sessions(all_solo_sessions, filters)
     solo_session_lanes = solo_session_lanes(visible_solo_sessions)
     solo_session_shown_count = solo_session_shown_count(solo_session_lanes)
+    stream_work_requests = visible_requests ++ visible_guidance_requests
 
     Map.merge(view, %{
       operation_total_count: view.total_count + length(all_requests) + solo_session_total_count,
@@ -959,7 +1018,8 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       guidance_items: guidance_items(visible_requests) ++ package_guidance_items(visible_guidance_requests),
       blocker_items: blocker_items(visible_cards),
       review_ready_count: review_ready_count(visible_cards),
-      work_stream_count: work_stream_count(visible_cards, visible_requests ++ visible_guidance_requests),
+      work_streams: work_streams(board, all_requests ++ all_guidance_requests, solo_session_streams, filters),
+      work_stream_count: work_stream_count(visible_cards, stream_work_requests, visible_solo_sessions),
       solo_session_total_count: solo_session_total_count,
       solo_session_visible_count: solo_session_shown_count,
       solo_session_lanes: solo_session_lanes
@@ -1146,11 +1206,118 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     end)
   end
 
-  defp work_stream_count(cards, work_requests) when is_list(cards) and is_list(work_requests) do
+  defp work_streams(board, work_requests, solo_sessions, filters) do
+    cards = board |> board_view(stream_option_filters(filters)) |> visible_cards()
+
+    (cards ++ work_requests ++ solo_sessions)
+    |> Enum.reduce(%{}, fn item, streams ->
+      case stream_key(item) do
+        nil ->
+          streams
+
+        {repo, base_branch} = key ->
+          Map.update(streams, key, stream_counts(item, repo, base_branch), &merge_stream_counts(&1, item))
+      end
+    end)
+    |> Map.values()
+    |> Enum.sort_by(&{&1.repo, &1.base_branch})
+    |> Enum.with_index()
+    |> Enum.map(fn {stream, index} -> stream_item(stream, filters, index) end)
+  end
+
+  defp stream_option_filters(filters) do
+    filters
+    |> Map.put(:kind, @empty_filter)
+    |> Map.put(:repo, @empty_filter)
+    |> Map.put(:base_branch, @empty_filter)
+    |> Map.put(:phase, @empty_filter)
+  end
+
+  defp all_filters_clear?(filters) do
+    Map.get(filters, :kind, @empty_filter) == @empty_filter and
+      Map.get(filters, :repo, @empty_filter) == @empty_filter and
+      stream_base_branch(filters) == @empty_filter and
+      Map.get(filters, :phase, @empty_filter) == @empty_filter
+  end
+
+  defp stream_base_branch(filters), do: Map.get(filters, :base_branch, @empty_filter)
+
+  defp stream_counts(item, repo, base_branch) do
+    %{
+      id: stream_id(repo, base_branch),
+      repo: repo,
+      base_branch: base_branch,
+      package_count: 0,
+      work_request_count: 0,
+      solo_session_count: 0
+    }
+    |> merge_stream_counts(item)
+  end
+
+  defp merge_stream_counts(stream, item) do
+    cond do
+      Map.has_key?(item, :solo_session_count) ->
+        Map.update!(stream, :solo_session_count, &(&1 + Map.get(item, :solo_session_count, 0)))
+
+      Map.has_key?(item, :caller_id) ->
+        Map.update!(stream, :solo_session_count, &(&1 + 1))
+
+      stream_request_item?(item) ->
+        Map.update!(stream, :work_request_count, &(&1 + 1))
+
+      true ->
+        Map.update!(stream, :package_count, &(&1 + 1))
+    end
+  end
+
+  defp stream_request_item?(item) do
+    Map.has_key?(item, :work_type) or Map.has_key?(item, :desired_dispatch_shape) or
+      (Map.has_key?(item, :work_package_id) and Map.has_key?(item, :requested_by))
+  end
+
+  defp stream_item(stream, filters, order) do
+    %{
+      id: stream.id,
+      repo: stream.repo,
+      base_branch: stream.base_branch,
+      order: order,
+      package_count: stream.package_count,
+      work_request_count: stream.work_request_count,
+      solo_session_count: stream.solo_session_count,
+      href: stream_filter_path(stream, filters),
+      selected?: filters.repo == stream.repo and filters.base_branch == stream.base_branch
+    }
+  end
+
+  defp stream_filter_path(stream, filters) do
+    filters
+    |> Map.put(:kind, @empty_filter)
+    |> Map.put(:repo, stream.repo)
+    |> Map.put(:base_branch, stream.base_branch)
+    |> Map.put(:phase, @empty_filter)
+    |> board_path()
+  end
+
+  defp board_path(filters) do
+    params =
+      [:kind, :repo, :base_branch, :phase]
+      |> Enum.map(&{to_string(&1), Map.get(filters, &1)})
+      |> Enum.reject(fn {_key, value} -> value == @empty_filter end)
+
+    case URI.encode_query(params) do
+      "" -> "board"
+      query -> "board?#{query}"
+    end
+  end
+
+  defp stream_id(repo, base_branch), do: Base.url_encode64("#{repo}\0#{base_branch}", padding: false)
+
+  defp work_stream_count(cards, work_requests, solo_sessions) when is_list(cards) and is_list(work_requests) and is_list(solo_sessions) do
     package_streams = Enum.map(cards, &stream_key/1)
     request_streams = Enum.map(work_requests, &stream_key/1)
+    solo_session_streams = Enum.map(solo_sessions, &stream_key/1)
 
-    (package_streams ++ request_streams)
+    (package_streams ++ request_streams ++ solo_session_streams)
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
     |> length()
@@ -1163,11 +1330,13 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   defp filter_work_requests(_work_requests, _filters, _visible_streams), do: []
 
   defp filter_solo_sessions(solo_sessions, filters) when is_list(solo_sessions) do
-    Enum.filter(solo_sessions, &matches_filter?(Map.get(&1, :repo), filters.repo))
+    Enum.filter(solo_sessions, &(matches_filter?(Map.get(&1, :repo), filters.repo) and matches_filter?(Map.get(&1, :base_branch), filters.base_branch)))
   end
 
   defp matches_work_request_filters?(request, filters, visible_streams) do
-    matches_filter?(Map.get(request, :repo), filters.repo) and matches_package_scope?(request, filters, visible_streams)
+    matches_filter?(Map.get(request, :repo), filters.repo) and
+      matches_filter?(Map.get(request, :base_branch), filters.base_branch) and
+      matches_package_scope?(request, filters, visible_streams)
   end
 
   defp matches_package_scope?(request, %{kind: @empty_filter, phase: @empty_filter}, _visible_streams) do
@@ -1227,6 +1396,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       guidance_items: [],
       blocker_items: [],
       review_ready_count: 0,
+      work_streams: [],
       work_stream_count: 0,
       solo_session_total_count: 0,
       solo_session_visible_count: 0,
@@ -1252,6 +1422,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     %{
       kind: filter_value(params["kind"]),
       repo: filter_value(params["repo"]),
+      base_branch: filter_value(params["base_branch"]),
       phase: filter_value(params["phase"])
     }
   end
@@ -1263,9 +1434,13 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   defp filter_value(_value), do: @empty_filter
 
+  defp filter_input_value(@empty_filter), do: ""
+  defp filter_input_value(value), do: value
+
   defp matches_filters?(card, filters) do
     matches_filter?(card.kind, filters.kind) and
       matches_filter?(card.repo, filters.repo) and
+      matches_filter?(card.base_branch, filters.base_branch) and
       matches_filter?(phase(card), filters.phase)
   end
 

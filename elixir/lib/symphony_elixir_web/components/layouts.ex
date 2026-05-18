@@ -24,6 +24,7 @@ defmodule SymphonyElixirWeb.Layouts do
         <script defer src={@phoenix_html_path}></script>
         <script defer src={@phoenix_path}></script>
         <script defer src={@phoenix_live_view_path}></script>
+        <script defer src={@sympp_project_rail_path}></script>
         <script>
           window.addEventListener("DOMContentLoaded", function () {
             var csrfToken = document
@@ -60,6 +61,7 @@ defmodule SymphonyElixirWeb.Layouts do
     |> assign(:phoenix_html_path, prefixed_path(prefix, "/vendor/phoenix_html/phoenix_html.js"))
     |> assign(:phoenix_path, prefixed_path(prefix, "/vendor/phoenix/phoenix.js"))
     |> assign(:phoenix_live_view_path, prefixed_path(prefix, "/vendor/phoenix_live_view/phoenix_live_view.js"))
+    |> assign(:sympp_project_rail_path, prefixed_path(prefix, "/sympp_project_rail.js"))
     |> assign(:live_socket_path, prefixed_path(prefix, "/live"))
   end
 
