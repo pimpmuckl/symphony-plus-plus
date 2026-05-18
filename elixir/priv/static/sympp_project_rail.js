@@ -23,6 +23,7 @@
     var pins = readPins();
     var list = rail.querySelector(".sympp-stream-list");
     if (!list) return;
+    var pinnedItems = [];
 
     Array.prototype.forEach.call(list.querySelectorAll("[data-sympp-stream-id]"), function (item) {
       var id = item.getAttribute("data-sympp-stream-id");
@@ -31,6 +32,7 @@
 
       item.dataset.symppPinned = pinned ? "true" : "false";
       item.classList.toggle("pinned", pinned);
+      if (pinned) pinnedItems.push(item);
 
       if (pin) {
         pin.setAttribute("aria-pressed", pinned ? "true" : "false");
@@ -39,12 +41,27 @@
       }
     });
 
-    pins.slice().reverse().forEach(function (id) {
-      var item = Array.prototype.find.call(list.querySelectorAll("[data-sympp-stream-id]"), function (stream) {
+    var orderedPinnedItems = pins.map(function (id) {
+      return Array.prototype.find.call(pinnedItems, function (stream) {
         return stream.getAttribute("data-sympp-stream-id") === id;
       });
+    }).filter(Boolean);
 
-      if (item && item !== list.firstChild) list.insertBefore(item, list.firstChild);
+    var currentPinnedIds = [];
+    Array.prototype.some.call(list.children, function (stream) {
+      if (stream.getAttribute("data-sympp-pinned") !== "true") return true;
+      currentPinnedIds.push(stream.getAttribute("data-sympp-stream-id"));
+      return false;
+    });
+
+    var orderedPinnedIds = orderedPinnedItems.map(function (stream) {
+      return stream.getAttribute("data-sympp-stream-id");
+    });
+
+    if (currentPinnedIds.join("\n") === orderedPinnedIds.join("\n")) return;
+
+    orderedPinnedItems.slice().reverse().forEach(function (item) {
+      list.insertBefore(item, list.firstChild);
     });
   }
 

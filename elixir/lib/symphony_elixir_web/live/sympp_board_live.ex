@@ -109,8 +109,6 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       <% else %>
         <section class="sympp-board-toolbar" aria-label="Board filters">
           <form class="sympp-board-filters" method="get">
-            <input :if={stream_base_branch(@filters) != @empty_filter} type="hidden" name="base_branch" value={stream_base_branch(@filters)} />
-
             <label>
               <span>Kind</span>
               <select name="kind">
@@ -129,6 +127,11 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
                   <%= repo %>
                 </option>
               </select>
+            </label>
+
+            <label>
+              <span>Base Branch</span>
+              <input name="base_branch" value={filter_input_value(stream_base_branch(@filters))} placeholder="All" />
             </label>
 
             <label>
@@ -1277,8 +1280,10 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   defp stream_filter_path(stream, filters) do
     filters
+    |> Map.put(:kind, @empty_filter)
     |> Map.put(:repo, stream.repo)
     |> Map.put(:base_branch, stream.base_branch)
+    |> Map.put(:phase, @empty_filter)
     |> board_path()
   end
 
@@ -1417,6 +1422,9 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp filter_value(_value), do: @empty_filter
+
+  defp filter_input_value(@empty_filter), do: ""
+  defp filter_input_value(value), do: value
 
   defp matches_filters?(card, filters) do
     matches_filter?(card.kind, filters.kind) and

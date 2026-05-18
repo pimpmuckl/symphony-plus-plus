@@ -1111,7 +1111,7 @@ pre,
 
 .sympp-board-filters {
   display: grid;
-  grid-template-columns: repeat(3, minmax(9rem, 1fr)) auto auto;
+  grid-template-columns: repeat(4, minmax(8rem, 1fr)) auto auto;
   align-items: end;
   gap: 0.55rem;
 }
@@ -1130,6 +1130,7 @@ pre,
   letter-spacing: 0.05em;
 }
 
+.sympp-board-filters input,
 .sympp-board-filters select {
   width: 100%;
   min-height: 2.1rem;
@@ -2926,7 +2927,6 @@ pre,
     width: 100%;
   }
 
-  .sympp-board-filters label:nth-child(3),
   .sympp-board-filters button,
   .sympp-clear-link {
     grid-column: span 2;

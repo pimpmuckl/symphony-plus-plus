@@ -545,6 +545,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert filtered_html =~ ~s(name="base_branch")
     assert filtered_html =~ "request-only-branch"
     assert filtered_html =~ "0 pkg / 1 req / 0 solo"
+    assert filtered_html =~ ~s(href="board?repo=nextide%2Fsymphony-plus-plus&amp;base_branch=request-only-branch")
   end
 
   test "local operator board shows compact Solo Sessions grouped by lifecycle" do
