@@ -98,8 +98,9 @@ Local operator cockpit stream rail:
 - Local operator mode renders a compact Projects / Work Streams rail above the
   operator priority summary.
 - Streams are repo/base-branch pairs derived from local WorkPackages,
-  WorkRequests, and Solo Sessions. Each stream shows compact counts for those
-  three surfaces.
+  WorkRequests, package guidance requests, and Solo Sessions. Each stream shows
+  compact counts for package, request-side work, and solo-session surfaces;
+  package guidance requests count with request-side work.
 - Selecting a stream is stream-first navigation: it sets the repo and
   base-branch query filters for the whole cockpit and clears package-only
   `kind` and `phase` filters. This prevents request-only or solo-only streams

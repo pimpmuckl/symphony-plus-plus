@@ -1001,7 +1001,8 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     visible_cards = visible_cards(view)
     visible_streams = visible_cards |> Enum.map(&stream_key/1) |> Enum.reject(&is_nil/1) |> MapSet.new()
     visible_requests = filter_work_requests(all_requests, filters, visible_streams)
-    visible_guidance_requests = guidance_requests |> Map.get(:guidance_requests, []) |> filter_guidance_requests(visible_cards)
+    all_guidance_requests = Map.get(guidance_requests, :guidance_requests, [])
+    visible_guidance_requests = filter_guidance_requests(all_guidance_requests, visible_cards)
     visible_solo_sessions = filter_solo_sessions(all_solo_sessions, filters)
     solo_session_lanes = solo_session_lanes(visible_solo_sessions)
     solo_session_shown_count = solo_session_shown_count(solo_session_lanes)
@@ -1015,7 +1016,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       guidance_items: guidance_items(visible_requests) ++ package_guidance_items(visible_guidance_requests),
       blocker_items: blocker_items(visible_cards),
       review_ready_count: review_ready_count(visible_cards),
-      work_streams: work_streams(board, all_requests, solo_session_streams, filters),
+      work_streams: work_streams(board, all_requests ++ all_guidance_requests, solo_session_streams, filters),
       work_stream_count: work_stream_count(visible_cards, stream_work_requests, visible_solo_sessions),
       solo_session_total_count: solo_session_total_count,
       solo_session_visible_count: solo_session_shown_count,
@@ -1258,12 +1259,17 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       Map.has_key?(item, :caller_id) ->
         Map.update!(stream, :solo_session_count, &(&1 + 1))
 
-      Map.has_key?(item, :work_type) or Map.has_key?(item, :desired_dispatch_shape) ->
+      stream_request_item?(item) ->
         Map.update!(stream, :work_request_count, &(&1 + 1))
 
       true ->
         Map.update!(stream, :package_count, &(&1 + 1))
     end
+  end
+
+  defp stream_request_item?(item) do
+    Map.has_key?(item, :work_type) or Map.has_key?(item, :desired_dispatch_shape) or
+      (Map.has_key?(item, :work_package_id) and Map.has_key?(item, :requested_by))
   end
 
   defp stream_item(stream, filters) do

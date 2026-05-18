@@ -469,17 +469,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
       blocker?: true
     )
 
-    create_package!(
-      id: "SYMPP-V2-UX-033-PACKAGE-ONLY",
-      title: "Package-only docs stream",
-      repo: "nextide/symphony-plus-plus",
-      base_branch: "package-only-branch",
-      kind: "docs"
-    )
+    package_only =
+      create_package!(
+        id: "SYMPP-V2-UX-033-PACKAGE-ONLY",
+        title: "Package-only docs stream",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "package-only-branch",
+        kind: "docs"
+      )
 
     create_human_guidance_request!(visible_package,
       id: "guidance-project-rail-visible",
       summary: "Visible package guidance"
+    )
+
+    create_human_guidance_request!(package_only,
+      id: "guidance-project-rail-package-only",
+      summary: "Package-only stream guidance"
     )
 
     create_work_request!(
@@ -535,7 +541,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "Visible stream request"
     assert html =~ "Visible package guidance"
     assert html =~ "Visible stream solo"
-    assert html =~ "1 pkg / 1 req / 1 solo"
+    assert html =~ "1 pkg / 2 req / 1 solo"
     assert html =~ "solo-only-branch"
     assert html =~ "0 pkg / 0 req / 1 solo"
     assert html =~ ~s(href="board")
@@ -555,7 +561,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert filtered_html =~ "0 pkg / 1 req / 0 solo"
     assert filtered_html =~ ~s(href="board?repo=nextide%2Fsymphony-plus-plus&amp;base_branch=request-only-branch")
     assert filtered_html =~ "package-only-branch"
-    assert filtered_html =~ "1 pkg / 0 req / 0 solo"
+    assert filtered_html =~ "1 pkg / 1 req / 0 solo"
     assert filtered_html =~ ~s(href="board?repo=nextide%2Fsymphony-plus-plus&amp;base_branch=package-only-branch")
   end
 
