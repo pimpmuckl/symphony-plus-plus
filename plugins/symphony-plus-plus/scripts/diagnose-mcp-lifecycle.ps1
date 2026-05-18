@@ -78,6 +78,33 @@ function Get-ExistingCaseProbePath([string]$Path) {
   return $null
 }
 
+function Get-FileIdentityKey([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return $null
+  }
+
+  $statCommand = Get-Command stat -ErrorAction SilentlyContinue
+  if (-not $statCommand) {
+    return $null
+  }
+
+  $statArguments = if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)) {
+    @("-f", "%d:%i", $Path)
+  } else {
+    @("-c", "%d:%i", "--", $Path)
+  }
+
+  try {
+    $output = @(& $statCommand.Source @statArguments 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $output.Count -gt 0) {
+      return ([string]$output[0]).Trim()
+    }
+  } catch {
+  }
+
+  return $null
+}
+
 function Test-PathComparisonCaseInsensitive([string]$Path = $null) {
   if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
     return $true
@@ -103,7 +130,15 @@ function Test-PathComparisonCaseInsensitive([string]$Path = $null) {
     return $false
   }
 
-  return Test-Path -LiteralPath (Join-Path $parentPath $variantName)
+  $variantPath = Join-Path $parentPath $variantName
+  if (-not (Test-Path -LiteralPath $variantPath)) {
+    return $false
+  }
+
+  $probeIdentity = Get-FileIdentityKey $probePath
+  $variantIdentity = Get-FileIdentityKey $variantPath
+  return -not [string]::IsNullOrWhiteSpace($probeIdentity) -and
+    [System.StringComparer]::Ordinal.Equals($probeIdentity, $variantIdentity)
 }
 
 function Get-ComparablePathStringComparer([string]$Path = $null) {
