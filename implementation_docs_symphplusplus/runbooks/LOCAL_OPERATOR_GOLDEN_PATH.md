@@ -40,8 +40,16 @@ tools are missing, run the activation doctor from the repository root:
 ```
 
 The normal repair for `solo_ready_mcp_companion_not_enabled` is to enable
-`[plugins."symphony-plus-plus-mcp@jonat-local"] enabled = true` only in the
-dedicated S++ MCP config/Codex home, then restart or reload that dedicated
+the companion only in the dedicated S++ MCP config/Codex home:
+
+```powershell
+.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName jonat-local -EnableMcpCompanion
+```
+
+The enable command validates the installed companion cache and manifest, writes
+only `[plugins."symphony-plus-plus-mcp@jonat-local"] enabled = true`, and keeps
+a timestamped `config.toml.sympp-backup-*` before changing an existing config.
+It refuses the default `~/.codex` home. Then restart or reload that dedicated
 session. Do not add the MCP companion to generic worker, `worker_smart`,
 review-suite, or `codex review` configs.
 The doctor checks cache, config, and the local HTTP daemon; it cannot inspect
