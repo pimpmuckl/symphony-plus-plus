@@ -122,6 +122,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ ~s(href="board?auth=work_key")
     assert html =~ "Product Guidance Needed"
     assert html =~ "Blockers"
+    assert html =~ ~s(data-sympp-project-rail)
+    assert html =~ "Projects"
+    assert html =~ "Show All"
+    assert html =~ ~s(data-sympp-stream-pin)
+    assert html =~ "1 pkg / 1 req / 0 solo"
     assert html =~ "WorkRequests"
     assert html =~ "operation total"
     assert html =~ "operation shown"
@@ -442,6 +447,78 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert lane_contains?(html, "Human Info Needed", "Visible lane request")
     refute html =~ "Hidden lane request"
     assert html =~ ~r/<span class="sympp-board-count numeric">\s*1\s*<\/span>\s*<span class="muted">requests shown<\/span>/
+  end
+
+  test "local operator project rail filters packages requests guidance blockers and solo sessions by stream" do
+    enable_operator_mode()
+
+    visible_package =
+      create_package!(
+        id: "SYMPP-V2-UX-033-VISIBLE",
+        title: "Visible stream package",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "feature/project-rail",
+        blocker?: true
+      )
+
+    create_package!(
+      id: "SYMPP-V2-UX-033-HIDDEN",
+      title: "Hidden stream package",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "main",
+      blocker?: true
+    )
+
+    create_human_guidance_request!(visible_package,
+      id: "guidance-project-rail-visible",
+      summary: "Visible package guidance"
+    )
+
+    create_work_request!(
+      id: "WR-PROJECT-RAIL-VISIBLE",
+      title: "Visible stream request",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "feature/project-rail",
+      status: "human_info_needed"
+    )
+
+    create_work_request!(
+      id: "WR-PROJECT-RAIL-HIDDEN",
+      title: "Hidden stream request",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "main",
+      status: "human_info_needed"
+    )
+
+    create_solo_session!(
+      caller_id: "project-rail-visible",
+      title: "Visible stream solo",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "feature/project-rail"
+    )
+
+    create_solo_session!(
+      caller_id: "project-rail-hidden",
+      title: "Hidden stream solo",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "main"
+    )
+
+    {:ok, _view, html} =
+      live(local_conn(), "/sympp/board?repo=nextide/symphony-plus-plus&base_branch=feature/project-rail")
+
+    assert html =~ "Projects"
+    assert html =~ "Visible stream package"
+    assert html =~ "Visible stream request"
+    assert html =~ "Visible package guidance"
+    assert html =~ "Visible stream solo"
+    assert html =~ "1 pkg / 1 req / 1 solo"
+    assert html =~ ~s(href="board")
+    assert html =~ ~s(base_branch=feature%2Fproject-rail)
+    assert html =~ ~r/<span class="sympp-board-count numeric">\s*3\s*<\/span>\s*<span class="muted">operation shown<\/span>/
+    refute html =~ "Hidden stream package"
+    refute html =~ "Hidden stream request"
+    refute html =~ "Hidden stream solo"
   end
 
   test "local operator board shows compact Solo Sessions grouped by lifecycle" do

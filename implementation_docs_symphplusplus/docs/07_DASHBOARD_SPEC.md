@@ -93,15 +93,22 @@ Scope guard status
 Plan completion
 ```
 
-Deferred cockpit UX follow-up:
+Local operator cockpit stream rail:
 
-- Add a lightweight Projects or work-stream side list for local operator mode.
-- Let the operator pin important projects or repo/base streams for fast access.
-- Clicking a project filters the cockpit surfaces to that stream.
-- Provide a clear `Show All` control that removes the filter and restores the
-  full cockpit.
-- Keep the first version simple; this is navigation polish, not the full
-  next-generation dashboard redesign.
+- Local operator mode renders a compact Projects / Work Streams rail above the
+  operator priority summary.
+- Streams are repo/base-branch pairs derived from local WorkPackages,
+  WorkRequests, and Solo Sessions. Each stream shows compact counts for those
+  three surfaces.
+- Selecting a stream applies repo and base-branch query filters to the whole
+  cockpit: package columns, WorkRequests, guidance/blocker watchlists, and Solo
+  Sessions.
+- `Show All` clears stream filtering and restores the full cockpit.
+- Pin and unpin controls store pinned stream ids in browser `localStorage`.
+  Pins only affect local visual priority/highlight; they are not persisted to
+  the Symphony++ ledger, MCP state, or any backend schema.
+- Board-grant mode does not render the stream rail or depend on browser-local
+  pins.
 
 ### Work package detail
 

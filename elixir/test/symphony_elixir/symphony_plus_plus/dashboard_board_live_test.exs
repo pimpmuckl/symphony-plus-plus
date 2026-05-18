@@ -95,6 +95,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     {:ok, _view, html} = live(auth_conn(secret), "/sympp/board")
 
     assert html =~ "Work package board"
+    refute html =~ ~s(data-sympp-project-rail)
+    refute html =~ ~s(data-sympp-stream-pin)
     assert html =~ "Implementing"
     assert html =~ "Ready for worker"
     assert html =~ "SYMPP-P5-002"
