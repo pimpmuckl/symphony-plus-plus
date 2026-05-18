@@ -171,6 +171,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
           <div class="sympp-stream-list">
             <article
               :for={stream <- @board.work_streams}
+              id={"sympp-stream-#{stream.id}"}
               class={["sympp-stream-item", if(stream.selected?, do: "selected")]}
               data-sympp-stream-id={stream.id}
               data-sympp-pinned="false"
