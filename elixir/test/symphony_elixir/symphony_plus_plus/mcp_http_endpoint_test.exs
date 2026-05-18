@@ -300,6 +300,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
       init = post_json(initialize_request("init"))
       [session_id] = get_resp_header(init, "mcp-session-id")
 
+      health = post_json(tool_call_request("health", "sympp.health", %{}), [{"mcp-session-id", session_id}])
       tool_notification = post_json(tool_call_notification("solo_list", %{}), [{"mcp-session-id", session_id}])
 
       conn =
@@ -313,6 +314,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
           [{"mcp-session-id", session_id}]
         )
 
+      assert get_in(json_response(health, 200), ["result", "structuredContent", "status"]) == "ok"
+      assert get_in(json_response(health, 200), ["result", "structuredContent", "ledger", "reachable"]) == true
       assert response(tool_notification, 202) == ""
       assert get_in(json_response(conn, 200), ["result", "structuredContent", "action"]) == "solo_attach"
       assert File.exists?(database_path)

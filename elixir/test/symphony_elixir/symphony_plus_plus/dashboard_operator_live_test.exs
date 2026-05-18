@@ -2246,8 +2246,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     assert html =~ "main"
     assert html =~ "Launch requirement: start this in a Codex session that has the opt-in Symphony++ MCP plugin/config loaded"
     assert html =~ "Required skill: `symphony-plus-plus-mcp:symphony-architect`"
-    assert html =~ "First MCP reads: `read_work_request`, `list_guidance_requests`"
+    assert html =~ "First MCP step: bind this session through the private handoff"
+    assert html =~ "First scoped MCP reads after binding: `read_work_request`, `list_guidance_requests`"
     assert html =~ "Display key"
+    assert html =~ "If the WorkRequest tools are not visible yet, do not fall back to Solo planning"
     assert html =~ "Before planning, call `read_work_request` using `work_request_id` from the reference identifiers."
     assert html =~ "Call `list_guidance_requests` and account for any open guidance before slicing."
     assert html =~ "Ask human-answerable clarification questions through WorkRequest tools before slicing"
@@ -2660,7 +2662,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
     refute Plug.Conn.get_session(trusted_proxy_conn, "sympp_local_operator")
   end
 
-  test "local operator mode requires browser provenance and accepts IPv6 loopback hosts" do
+  test "local operator mode accepts direct loopback browser access and IPv6 hosts" do
     enable_operator_mode()
     create_package!(id: "SYMPP-V2-UX-FETCH-SITE", title: "Fetch metadata package")
 
@@ -2670,8 +2672,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
       |> Map.put(:host, "127.0.0.1")
       |> get("/sympp/board")
 
-    assert response(headerless_conn, 401) =~ "Board access"
-    refute Plug.Conn.get_session(headerless_conn, "sympp_local_operator")
+    assert response(headerless_conn, 200) =~ "Local operator cockpit"
+    assert response(headerless_conn, 200) =~ "Fetch metadata package"
+    assert Plug.Conn.get_session(headerless_conn, "sympp_local_operator") == true
 
     cross_site_conn =
       local_conn()
