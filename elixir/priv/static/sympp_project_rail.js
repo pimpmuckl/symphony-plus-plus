@@ -26,12 +26,11 @@
     if (!list) return;
     var items = Array.prototype.slice.call(list.querySelectorAll("[data-sympp-stream-id]"));
 
-    items.forEach(function (item, index) {
+    items.forEach(function (item) {
       var id = item.getAttribute("data-sympp-stream-id");
       var pinned = pins.indexOf(id) !== -1;
       var pin = item.querySelector("[data-sympp-stream-pin]");
 
-      if (!item.dataset.symppOriginalIndex) item.dataset.symppOriginalIndex = String(index);
       item.dataset.symppPinned = pinned ? "true" : "false";
       item.classList.toggle("pinned", pinned);
 
@@ -54,7 +53,7 @@
       if (leftPinned) return -1;
       if (rightPinned) return 1;
 
-      return Number(left.dataset.symppOriginalIndex) - Number(right.dataset.symppOriginalIndex);
+      return Number(left.dataset.symppStreamOrder) - Number(right.dataset.symppStreamOrder);
     });
 
     var currentIds = items.map(function (stream) {

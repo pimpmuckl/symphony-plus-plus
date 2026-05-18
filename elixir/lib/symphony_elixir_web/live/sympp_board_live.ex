@@ -174,6 +174,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
               id={"sympp-stream-#{stream.id}"}
               class={["sympp-stream-item", if(stream.selected?, do: "selected")]}
               data-sympp-stream-id={stream.id}
+              data-sympp-stream-order={stream.order}
               data-sympp-pinned="false"
             >
               <a href={stream.href}>
@@ -1220,7 +1221,8 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     end)
     |> Map.values()
     |> Enum.sort_by(&{&1.repo, &1.base_branch})
-    |> Enum.map(&stream_item(&1, filters))
+    |> Enum.with_index()
+    |> Enum.map(fn {stream, index} -> stream_item(stream, filters, index) end)
   end
 
   defp stream_option_filters(filters) do
@@ -1273,11 +1275,12 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       (Map.has_key?(item, :work_package_id) and Map.has_key?(item, :requested_by))
   end
 
-  defp stream_item(stream, filters) do
+  defp stream_item(stream, filters, order) do
     %{
       id: stream.id,
       repo: stream.repo,
       base_branch: stream.base_branch,
+      order: order,
       package_count: stream.package_count,
       work_request_count: stream.work_request_count,
       solo_session_count: stream.solo_session_count,
