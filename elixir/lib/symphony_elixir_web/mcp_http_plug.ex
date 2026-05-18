@@ -164,13 +164,28 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
   end
 
   defp handle_stored_server_payload(config, payload, state_key, %Server{} = server) do
-    if repo_backed_followup?(payload, server) do
-      with_live_repo(payload, fn repo ->
-        HTTPTransport.handle(mcp_config(repo), payload, client_key: @client_key, state_key: state_key)
-      end)
-    else
-      HTTPTransport.handle(config, payload, client_key: @client_key, state_key: state_key)
+    cond do
+      health_followup?(payload) ->
+        case handle_with_live_repo(payload, state_key) do
+          {:error, :ledger_unavailable, ^payload} ->
+            HTTPTransport.handle(config, payload, client_key: @client_key, state_key: state_key)
+
+          result ->
+            result
+        end
+
+      repo_backed_followup?(payload, server) ->
+        handle_with_live_repo(payload, state_key)
+
+      true ->
+        HTTPTransport.handle(config, payload, client_key: @client_key, state_key: state_key)
     end
+  end
+
+  defp handle_with_live_repo(payload, state_key) do
+    with_live_repo(payload, fn repo ->
+      HTTPTransport.handle(mcp_config(repo), payload, client_key: @client_key, state_key: state_key)
+    end)
   end
 
   defp with_live_repo(payload, fun) when is_function(fun, 1) do
@@ -184,6 +199,9 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
 
   defp repo_backed_followup?(%{"method" => "tools/list"}, %Server{session: %Session{}}), do: true
   defp repo_backed_followup?(payload, %Server{}), do: repo_backed_followup?(payload)
+
+  defp health_followup?(%{"method" => "tools/call", "params" => %{"name" => "sympp.health"}}), do: true
+  defp health_followup?(_payload), do: false
 
   defp repo_backed_followup?(%{"method" => "resources/list"}), do: true
   defp repo_backed_followup?(%{"method" => "resources/read", "params" => %{"uri" => uri}}), do: protected_resource_uri?(uri)

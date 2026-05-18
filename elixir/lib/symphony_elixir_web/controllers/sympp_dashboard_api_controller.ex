@@ -224,8 +224,9 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp same_origin_browser_request?(conn) do
     fetch_site = conn |> Conn.get_req_header("sec-fetch-site") |> List.first()
+    fetch_site_allowed? = is_nil(fetch_site) or fetch_site in ["none", "same-origin"]
 
-    fetch_site in ["none", "same-origin"] and local_origin_header?(conn)
+    fetch_site_allowed? and local_origin_header?(conn)
   end
 
   defp local_origin_header?(conn) do
