@@ -205,7 +205,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
     assert {:ok, minted} =
              AccessGrantService.mint_architect_grant(Repo, phase_id,
                work_package_id: anchor.id,
-               capabilities: ["read:work_request"]
+               capabilities: ["read:work_request", "dispatch:work_request"]
              )
 
     init = post_json(initialize_request("init"))
@@ -224,6 +224,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
 
     assert "get_current_assignment" in tool_names
     assert "read_work_request" in tool_names
+    assert "dispatch_work_request_planned_slice" in tool_names
     refute "solo_attach" in tool_names
 
     read =
