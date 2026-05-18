@@ -27,6 +27,13 @@ endpoint contract:
 - A successful initialize response includes `Mcp-Session-Id`; subsequent
   requests must send that same header. Missing follow-up sessions fail with
   HTTP 400, and unknown sessions fail with HTTP 404.
+- After `claim_work_key` succeeds, the same local HTTP `Mcp-Session-Id`
+  retains the bound WorkPackage worker or WorkRequest architect session for
+  later `tools/list`, resource reads, and tool calls. Protected follow-ups use
+  the live dashboard repo path and revalidate the stored session proof against
+  the current grant before returning scoped data. For claimed sessions, treat
+  `Mcp-Session-Id` as sensitive local continuity material: do not print it,
+  commit it, paste it into prompts, or include it in logs.
 - Dispatch uses the existing dashboard lazy-repo access path so the configured
   local ledger is live and migrated before MCP tools run. Ledger startup or
   migration failures fail closed with a JSON-RPC server error.
@@ -54,8 +61,7 @@ the opt-in plugin/config/session startup path rather than the daemon.
 
 This slice intentionally does not add browser CORS/preflight support, cookies,
 Phoenix-session client binding, reconnect semantics, SSE streaming,
-remote/company authentication, daemon startup/plugin install configuration, or
-claimed-worker persistence over HTTP.
+remote/company authentication, or daemon startup/plugin install configuration.
 
 This keeps normal Codex app threads, implementation agents, and review-adjacent
 tools from spawning a new PowerShell/Mix/Erlang process tree per session while
@@ -169,12 +175,19 @@ bootstrap rather than an explicit worker tool call containing the raw secret.
 secret from the MCP process environment, claims or reconnects the grant, and
 binds the session before the worker calls `get_current_assignment()`.
 
-For stateless MCP transports, an explicit `state_key` is continuity metadata for
-the initialized handshake only. It is not a bearer capability for a claimed
-worker assignment. After reconnect initialize, workers must call
-`claim_work_key(secret, claimed_by)` again to bind the worker session. The
-state namespace follows the active ledger rather than a transient dynamic repo
-process, so handshake continuity survives reconnects to the same SQLite ledger.
+For the local HTTP transport, `Mcp-Session-Id` is connection continuity
+metadata for both initialized and claimed sessions. After claim, it is
+sensitive local bearer-continuity material for that daemon session, while the
+grant remains the scope authority: the stored session contains assignment
+metadata plus the grant secret hash proof, not the raw work-key secret, and
+protected follow-ups revalidate that proof against the live ledger. If the
+grant is revoked, expired, missing, or scope-drifted, bound worker and
+architect operations fail closed and discovery falls back to refresh/bootstrap
+tools where applicable.
+
+For other explicit state-key transports, the state namespace follows the active
+ledger rather than a transient dynamic repo process, so handshake continuity
+survives reconnects to the same SQLite ledger.
 Explicit state-key handshakes use a bounded retention window longer than the
 current worker grant defaults and are not evicted by the shorter implicit
 default response-state TTL. They remain continuity metadata until overwritten,
