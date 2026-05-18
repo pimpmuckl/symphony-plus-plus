@@ -23,16 +23,16 @@
     var pins = readPins();
     var list = rail.querySelector(".sympp-stream-list");
     if (!list) return;
-    var pinnedItems = [];
+    var items = Array.prototype.slice.call(list.querySelectorAll("[data-sympp-stream-id]"));
 
-    Array.prototype.forEach.call(list.querySelectorAll("[data-sympp-stream-id]"), function (item) {
+    items.forEach(function (item, index) {
       var id = item.getAttribute("data-sympp-stream-id");
       var pinned = pins.indexOf(id) !== -1;
       var pin = item.querySelector("[data-sympp-stream-pin]");
 
+      if (!item.dataset.symppOriginalIndex) item.dataset.symppOriginalIndex = String(index);
       item.dataset.symppPinned = pinned ? "true" : "false";
       item.classList.toggle("pinned", pinned);
-      if (pinned) pinnedItems.push(item);
 
       if (pin) {
         pin.setAttribute("aria-pressed", pinned ? "true" : "false");
@@ -41,27 +41,31 @@
       }
     });
 
-    var orderedPinnedItems = pins.map(function (id) {
-      return Array.prototype.find.call(pinnedItems, function (stream) {
-        return stream.getAttribute("data-sympp-stream-id") === id;
-      });
-    }).filter(Boolean);
+    var desiredItems = items.slice().sort(function (left, right) {
+      var leftPinIndex = pins.indexOf(left.getAttribute("data-sympp-stream-id"));
+      var rightPinIndex = pins.indexOf(right.getAttribute("data-sympp-stream-id"));
+      var leftPinned = leftPinIndex !== -1;
+      var rightPinned = rightPinIndex !== -1;
 
-    var currentPinnedIds = [];
-    Array.prototype.some.call(list.children, function (stream) {
-      if (stream.getAttribute("data-sympp-pinned") !== "true") return true;
-      currentPinnedIds.push(stream.getAttribute("data-sympp-stream-id"));
-      return false;
+      if (leftPinned && rightPinned) return leftPinIndex - rightPinIndex;
+      if (leftPinned) return -1;
+      if (rightPinned) return 1;
+
+      return Number(left.dataset.symppOriginalIndex) - Number(right.dataset.symppOriginalIndex);
     });
 
-    var orderedPinnedIds = orderedPinnedItems.map(function (stream) {
+    var currentIds = items.map(function (stream) {
       return stream.getAttribute("data-sympp-stream-id");
     });
 
-    if (currentPinnedIds.join("\n") === orderedPinnedIds.join("\n")) return;
+    var desiredIds = desiredItems.map(function (stream) {
+      return stream.getAttribute("data-sympp-stream-id");
+    });
 
-    orderedPinnedItems.slice().reverse().forEach(function (item) {
-      list.insertBefore(item, list.firstChild);
+    if (currentIds.join("\n") === desiredIds.join("\n")) return;
+
+    desiredItems.forEach(function (item) {
+      list.appendChild(item);
     });
   }
 
