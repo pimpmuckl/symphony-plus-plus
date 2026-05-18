@@ -104,6 +104,25 @@ It does not prove that an already-open Codex app session loaded or enabled the
 opt-in `symphony-plus-plus-mcp` plugin; reload/start that dedicated session
 after fixing plugin config or cache state.
 
+For a worker package whose private handoff has already placed the work key in a
+local secret store, read that secret into a short-lived environment variable
+inside your shell and run the bound smoke by variable name:
+
+```powershell
+$env:SYMPP_WORK_KEY_SECRET = Get-Content -LiteralPath "<private-secret-file>" -Raw
+.\scripts\smoke-sympp-mcp-http.ps1 `
+  -Bound `
+  -WorkKeySecretEnv SYMPP_WORK_KEY_SECRET `
+  -ClaimedBy <stable-worker-id>
+Remove-Item Env:\SYMPP_WORK_KEY_SECRET -ErrorAction SilentlyContinue
+```
+
+The bound smoke claims the session, confirms the bound worker tool surface no
+longer exposes Solo tools, verifies assignment/resource continuity, and redacts
+the claimed `Mcp-Session-Id` and raw work key from text and JSON output. Use
+`-SkipUnboundTools` only when you intentionally want to skip the pre-claim
+unbound surface check.
+
 After a WorkPackage worker or WorkRequest architect claims its work key, the
 same local HTTP `Mcp-Session-Id` remains bound for scoped follow-up tools and
 resources. Treat claimed-session ids as sensitive local continuity material:
