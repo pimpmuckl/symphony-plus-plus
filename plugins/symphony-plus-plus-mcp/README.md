@@ -33,6 +33,15 @@ plugin target should not spawn a per-session Elixir process.
 Enable this package only in the config/Codex home used for dedicated
 Symphony++ WorkRequest or WorkPackage sessions:
 
+```powershell
+.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName jonat-local -EnableMcpCompanion
+```
+
+The command validates that the installed companion package carries the expected
+HTTP MCP manifest, creates a timestamped backup before changing an existing
+`config.toml`, refuses the default `~/.codex` home, and writes only the
+companion plugin table:
+
 ```toml
 [plugins."symphony-plus-plus-mcp@jonat-local"]
 enabled = true

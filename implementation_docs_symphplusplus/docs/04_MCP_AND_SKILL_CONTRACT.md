@@ -68,10 +68,20 @@ The operator-safe diagnostic for that split-brain state is:
 `solo_ready_mcp_companion_not_enabled` means the default skill-only
 `symphony-plus-plus` plugin is enabled and the MCP companion package is
 installed, but `symphony-plus-plus-mcp` was not enabled before the current
-Codex session started. Enable `[plugins."symphony-plus-plus-mcp@jonat-local"]`
-only in the dedicated S++ MCP config/session, restart or reload that session,
-and keep generic worker, review-suite, and `codex review` configs on the
-skill-only default.
+Codex session started. Enable it only through the explicit opt-in command
+against the dedicated S++ MCP config/session:
+
+```powershell
+.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName jonat-local -EnableMcpCompanion
+```
+
+That command validates the installed companion cache and manifest, creates a
+timestamped backup before changing an existing `config.toml`, and writes only
+`[plugins."symphony-plus-plus-mcp@<marketplace>"] enabled = true`. It does not
+write `[mcp_servers.*]` or generic worker/review config, and it refuses the
+default `~/.codex` home. Restart or reload that dedicated session afterward and
+keep generic worker, review-suite, and
+`codex review` configs on the skill-only default.
 The doctor checks source/cache/config and the local HTTP daemon; it does not
 inspect the tool list already registered inside an open Codex model session.
 After enablement or cache changes, the operator must restart or reload the

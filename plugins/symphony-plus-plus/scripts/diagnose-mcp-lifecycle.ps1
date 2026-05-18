@@ -2,6 +2,7 @@ param(
   [string]$CodexHome = $(if ($env:CODEX_HOME) { $env:CODEX_HOME } else { "$HOME/.codex" }),
   [string]$MarketplaceName = "*",
   [string]$RepoRoot,
+  [switch]$EnableMcpCompanion,
   [switch]$SelfTest,
   [switch]$Doctor,
   [switch]$Json
@@ -15,7 +16,14 @@ function Resolve-OptionalFullPath([string]$Path) {
     return $null
   }
 
-  return [System.IO.Path]::GetFullPath($Path)
+  $expandedPath = $Path
+  if ($expandedPath -eq "~") {
+    $expandedPath = $HOME
+  } elseif ($expandedPath.StartsWith("~/") -or $expandedPath.StartsWith("~\")) {
+    $expandedPath = Join-Path $HOME $expandedPath.Substring(2)
+  }
+
+  return [System.IO.Path]::GetFullPath($expandedPath)
 }
 
 function Normalize-ComparablePath([string]$Path) {
@@ -24,7 +32,104 @@ function Normalize-ComparablePath([string]$Path) {
     return $null
   }
 
-  return $fullPath.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar).ToLowerInvariant()
+  $trimmedPath = $fullPath.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+  if (Test-PathComparisonCaseInsensitive) {
+    return $trimmedPath.ToLowerInvariant()
+  }
+
+  return $trimmedPath
+}
+
+function Test-PathComparisonCaseInsensitive {
+  return [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows) -or
+    [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)
+}
+
+function Get-ComparablePathStringComparer {
+  if (Test-PathComparisonCaseInsensitive) {
+    return [System.StringComparer]::OrdinalIgnoreCase
+  }
+
+  return [System.StringComparer]::Ordinal
+}
+
+function Test-ComparablePathEqual([string]$Left, [string]$Right) {
+  if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) {
+    return $false
+  }
+
+  return (Get-ComparablePathStringComparer).Equals($Left, $Right)
+}
+
+function Get-FileSystemLinkTargetPath($Item) {
+  if ($null -eq $Item) {
+    return $null
+  }
+
+  $targetProperty = $Item.PSObject.Properties["Target"]
+  if (-not $targetProperty) {
+    return $null
+  }
+
+  $target = @($targetProperty.Value | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1)
+  if (-not $target) {
+    return $null
+  }
+
+  if ([System.IO.Path]::IsPathRooted([string]$target)) {
+    return [System.IO.Path]::GetFullPath([string]$target)
+  }
+
+  return [System.IO.Path]::GetFullPath((Join-Path (Split-Path $Item.FullName -Parent) ([string]$target)))
+}
+
+function Resolve-ComparableFileSystemPath([string]$Path) {
+  $resolvedPath = Resolve-OptionalFullPath $Path
+  if (-not $resolvedPath) {
+    return $null
+  }
+
+  $visited = [System.Collections.Generic.HashSet[string]]::new((Get-ComparablePathStringComparer))
+
+  while ($true) {
+    $currentKey = Normalize-ComparablePath $resolvedPath
+    if (-not $currentKey -or -not $visited.Add($currentKey)) {
+      break
+    }
+
+    try {
+      $item = Get-Item -LiteralPath $resolvedPath -Force -ErrorAction Stop
+    } catch {
+      break
+    }
+
+    $targetPath = Get-FileSystemLinkTargetPath $item
+    if (-not $targetPath) {
+      $resolvedPath = $item.FullName
+      break
+    }
+
+    $resolvedPath = $targetPath
+  }
+
+  return Normalize-ComparablePath $resolvedPath
+}
+
+function Test-DefaultCodexHome([string]$Path) {
+  $defaultPath = Join-Path $HOME ".codex"
+  $defaultCodexHome = Normalize-ComparablePath $defaultPath
+  $targetCodexHome = Normalize-ComparablePath $Path
+  if ([string]::IsNullOrWhiteSpace($targetCodexHome)) {
+    return $false
+  }
+
+  if (Test-ComparablePathEqual $targetCodexHome $defaultCodexHome) {
+    return $true
+  }
+
+  $defaultFileSystemPath = Resolve-ComparableFileSystemPath $defaultPath
+  $targetFileSystemPath = Resolve-ComparableFileSystemPath $Path
+  return Test-ComparablePathEqual $targetFileSystemPath $defaultFileSystemPath
 }
 
 function Quote-PowerShellLiteral([string]$Value) {
@@ -152,6 +257,20 @@ function New-SourceScriptCommand([string]$SourceCheckoutRoot, [string]$RelativeS
   return $command
 }
 
+function New-CurrentDiagnosticCommand([string]$Arguments = $null) {
+  if ([string]::IsNullOrWhiteSpace($PSCommandPath)) {
+    return $null
+  }
+
+  $scriptPath = [System.IO.Path]::GetFullPath($PSCommandPath)
+  $command = "& $(Quote-PowerShellLiteral $scriptPath)"
+  if (-not [string]::IsNullOrWhiteSpace($Arguments)) {
+    $command = "$command $Arguments"
+  }
+
+  return $command
+}
+
 function New-CockpitCommand([string]$SourceCheckoutRoot) {
   if ([string]::IsNullOrWhiteSpace($SourceCheckoutRoot)) {
     return $null
@@ -239,12 +358,115 @@ function Invoke-SelfTest {
     throw "New-SourceScriptCommand did not emit an absolute PowerShell invocation."
   }
 
+  if ((Normalize-ComparablePath "~/.codex") -ne (Normalize-ComparablePath (Join-Path $HOME ".codex"))) {
+    throw "Resolve-OptionalFullPath did not expand a leading home-directory tilde."
+  }
+
+  if (Test-PathComparisonCaseInsensitive) {
+    if (-not (Test-ComparablePathEqual "SymphonyCodexHome" "symphonycodexhome")) {
+      throw "Test-ComparablePathEqual should ignore case on case-insensitive platforms."
+    }
+  } elseif (Test-ComparablePathEqual "SymphonyCodexHome" "symphonycodexhome") {
+    throw "Test-ComparablePathEqual should preserve case on case-sensitive platforms."
+  }
+
+  $tomlState = Update-TomlMultilineStringState 'note = """' $null
+  $tomlState = Update-TomlMultilineStringState "enabled = false" $tomlState
+  $tomlState = Update-TomlMultilineStringState '[plugins."not-a-section"]' $tomlState
+  $tomlState = Update-TomlMultilineStringState '"""' $tomlState
+  if (-not [string]::IsNullOrWhiteSpace($tomlState)) {
+    throw "Update-TomlMultilineStringState did not ignore TOML multiline string content."
+  }
+
+  if (-not (Test-TomlTableHeaderLine '[ plugins."symphony-plus-plus-mcp@jonat-local" ]')) {
+    throw "Test-TomlTableHeaderLine did not accept a valid spaced table header."
+  }
+
+  if (Test-TomlTableHeaderLine '  [1, 2],') {
+    throw "Test-TomlTableHeaderLine treated an array element as a table header."
+  }
+
+  $containerDepth = Update-TomlContainerDepth 'matrix = [' 0
+  $containerDepth = Update-TomlContainerDepth '  ["a"]' $containerDepth
+  $containerDepth = Update-TomlContainerDepth ']' $containerDepth
+  if ($containerDepth -ne 0) {
+    throw "Update-TomlContainerDepth did not track multiline array depth."
+  }
+
+  if ((Update-TomlContainerDepth 'notes = ["""hello"""]' 0) -ne 0) {
+    throw "Update-TomlContainerDepth did not skip same-line basic multiline strings inside arrays."
+  }
+
+  if ((Update-TomlContainerDepth "metadata = { note = '''hello''' }" 0) -ne 0) {
+    throw "Update-TomlContainerDepth did not skip same-line literal multiline strings inside inline tables."
+  }
+
+  $multilineArrayState = $null
+  $multilineArrayDepth = 0
+  foreach ($line in @('notes = ["""', 'hello', '"""]')) {
+    $nextState = Update-TomlMultilineStringState $line $multilineArrayState
+    $multilineArrayDepth = Update-TomlContainerDepthForLine $line $multilineArrayDepth $multilineArrayState $nextState
+    $multilineArrayState = $nextState
+  }
+  if ($multilineArrayDepth -ne 0) {
+    throw "Update-TomlContainerDepthForLine did not track array depth after a multiline string closed."
+  }
+
+  $inlineEnabled = Find-TomlBooleanKeyAssignment '"symphony-plus-plus-mcp@jonat-local" = { note = "enabled = false", enabled = false }' "enabled" 1
+  if ($null -eq $inlineEnabled -or $inlineEnabled.value -ne "false") {
+    throw "Find-TomlBooleanKeyAssignment did not find a boolean key outside quoted strings."
+  }
+
+  if ($null -ne (Find-TomlBooleanKeyAssignment '"symphony-plus-plus-mcp@jonat-local" = { note = { enabled = false } }' "enabled" 1)) {
+    throw "Find-TomlBooleanKeyAssignment treated a nested inline-table key as a top-level key."
+  }
+
+  $quotedInlineEnabled = Find-TomlBooleanKeyAssignment '"symphony-plus-plus-mcp@jonat-local" = { "enabled" = true }' "enabled" 1
+  if ($null -eq $quotedInlineEnabled -or $quotedInlineEnabled.value -ne "true") {
+    throw "Find-TomlBooleanKeyAssignment did not find a quoted boolean key."
+  }
+
+  $linkTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("sympp-diagnose-path-selftest-" + [guid]::NewGuid().ToString("N"))
+  $targetPath = Join-Path $linkTestRoot "target"
+  $linkPath = Join-Path $linkTestRoot "link"
+
+  try {
+    New-Item -ItemType Directory -Path $targetPath -Force | Out-Null
+    $linkCreated = $false
+
+    try {
+      New-Item -ItemType Junction -Path $linkPath -Target $targetPath -Force | Out-Null
+      $linkCreated = $true
+    } catch {
+      try {
+        New-Item -ItemType SymbolicLink -Path $linkPath -Target $targetPath -Force | Out-Null
+        $linkCreated = $true
+      } catch {
+        $linkCreated = $false
+      }
+    }
+
+    $resolvedLinkPath = Resolve-ComparableFileSystemPath $linkPath
+    $resolvedTargetPath = Resolve-ComparableFileSystemPath $targetPath
+    if ($linkCreated -and -not (Test-ComparablePathEqual $resolvedLinkPath $resolvedTargetPath)) {
+      throw "Resolve-ComparableFileSystemPath did not canonicalize a filesystem link target."
+    }
+  } finally {
+    Remove-Item -LiteralPath $linkPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $linkTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
   $missingSourceAction = New-SourceCheckoutAction "verify_http_mcp" "workrequest_mcp" "Verify the local HTTP MCP daemon." ([pscustomobject]@{ note = "No checkout." }) $null
   if ($missingSourceAction.PSObject.Properties["command"] -or $missingSourceAction.message -notmatch "No checkout") {
     throw "New-SourceCheckoutAction should omit commands and explain missing source roots."
   }
 
-  Write-Host "Sanitize-CommandLine self-test passed."
+  $currentDiagnosticCommand = New-CurrentDiagnosticCommand "-SelfTest"
+  if ($currentDiagnosticCommand -notmatch "diagnose-mcp-lifecycle\.ps1" -or $currentDiagnosticCommand -notmatch "-SelfTest") {
+    throw "New-CurrentDiagnosticCommand did not emit an invocation for the running diagnostic script."
+  }
+
+  Write-Host "diagnose-mcp-lifecycle self-test passed."
 }
 
 function Get-JsonFile([string]$Path) {
@@ -737,27 +959,90 @@ function Get-PluginConfigSummary([string]$ConfigPath, [string]$MarketplaceName) 
     }
   }
 
-  $lines = Get-Content -LiteralPath $ConfigPath
+  $lines = @(Read-ConfigLines $ConfigPath)
   $entries = @()
-  $sectionPattern = if ($MarketplaceName -eq "*") {
-    '^\[plugins\."(symphony-plus-plus(?:-mcp)?)@([^"]+)"\]'
-  } else {
-    '^\[plugins\."(symphony-plus-plus(?:-mcp)?)@(' + [regex]::Escape($MarketplaceName) + ')"\]'
-  }
+  $sectionPattern = "^\s*\[\s*(?:plugins|`"plugins`"|'plugins')\s*\.\s*(?:`"(symphony-plus-plus(?:-mcp)?)@([^`"]+)`"|'(symphony-plus-plus(?:-mcp)?)@([^']+)')\s*\]\s*(?:#.*)?$"
+  $dottedEnabledPattern = "^\s*(?:plugins|`"plugins`"|'plugins')\s*\.\s*(?:`"(symphony-plus-plus(?:-mcp)?)@([^`"]+)`"|'(symphony-plus-plus(?:-mcp)?)@([^']+)')\s*\.\s*(?:enabled|`"enabled`"|'enabled')\s*=\s*(true|false)\s*(?:#.*)?$"
+  $rootInlinePattern = "^\s*(?:plugins|`"plugins`"|'plugins')\s*\.\s*(?:`"(symphony-plus-plus(?:-mcp)?)@([^`"]+)`"|'(symphony-plus-plus(?:-mcp)?)@([^']+)')\s*=\s*\{.*\}\s*(?:#.*)?$"
+  $pluginsTableDottedEnabledPattern = "^\s*(?:`"(symphony-plus-plus(?:-mcp)?)@([^`"]+)`"|'(symphony-plus-plus(?:-mcp)?)@([^']+)')\s*\.\s*(?:enabled|`"enabled`"|'enabled')\s*=\s*(true|false)\s*(?:#.*)?$"
+  $pluginsTableInlinePattern = "^\s*(?:`"(symphony-plus-plus(?:-mcp)?)@([^`"]+)`"|'(symphony-plus-plus(?:-mcp)?)@([^']+)')\s*=\s*\{.*\}\s*(?:#.*)?$"
+  $dottedGlobalMcpPattern = '^\s*(?:mcp_servers|"mcp_servers"|''mcp_servers'')\s*\.\s*(?:symphony_plus_plus|"symphony_plus_plus"|''symphony_plus_plus'')\s*(?:\.|=)'
+  $mcpServersTableEntryPattern = '^\s*(?:symphony_plus_plus|"symphony_plus_plus"|''symphony_plus_plus'')\s*(?:\.|=)'
+  $pluginsRootSectionPattern = '^\s*\[\s*(?:plugins|"plugins"|''plugins'')\s*\]\s*(?:#.*)?$'
+  $mcpServersRootSectionPattern = '^\s*\[\s*(?:mcp_servers|"mcp_servers"|''mcp_servers'')\s*\]\s*(?:#.*)?$'
+
+  $globalSymppMcpEntry = $false
+  $multilineState = $null
+  $containerDepth = 0
+  $insideTomlTable = $false
+  $currentTomlTable = $null
   for ($index = 0; $index -lt $lines.Count; $index++) {
-    if ($lines[$index] -match $sectionPattern) {
-      $entryPluginName = $Matches[1]
-      $entryMarketplaceName = $Matches[2]
+    $atTopLevel = [string]::IsNullOrWhiteSpace($multilineState) -and $containerDepth -eq 0
+    $atRootTable = $atTopLevel -and -not $insideTomlTable
+
+    if ($atTopLevel -and $lines[$index] -match '^\s*\[\s*(?:mcp_servers|"mcp_servers"|''mcp_servers'')\s*\.\s*(?:symphony_plus_plus|"symphony_plus_plus"|''symphony_plus_plus'')\s*\]\s*(?:#.*)?$') {
+      $globalSymppMcpEntry = $true
+    }
+    if ($atRootTable -and $lines[$index] -match $dottedGlobalMcpPattern) {
+      $globalSymppMcpEntry = $true
+    }
+    if ($atTopLevel -and $currentTomlTable -eq "mcp_servers" -and $lines[$index] -match $mcpServersTableEntryPattern) {
+      $globalSymppMcpEntry = $true
+    }
+
+    if (($atRootTable -and $lines[$index] -match $dottedEnabledPattern) -or
+        ($atTopLevel -and $currentTomlTable -eq "plugins" -and $lines[$index] -match $pluginsTableDottedEnabledPattern)) {
+      $entryPluginName = if ($Matches[1]) { $Matches[1] } else { $Matches[3] }
+      $entryMarketplaceName = if ($Matches[2]) { $Matches[2] } else { $Matches[4] }
+
+      $entries += [pscustomobject]@{
+        plugin_name = $entryPluginName
+        marketplace_name = $entryMarketplaceName
+        enabled = [System.Boolean]::Parse($Matches[5])
+      }
+    } elseif (($atRootTable -and $lines[$index] -match $rootInlinePattern) -or
+              ($atTopLevel -and $currentTomlTable -eq "plugins" -and $lines[$index] -match $pluginsTableInlinePattern)) {
+      $entryPluginName = if ($Matches[1]) { $Matches[1] } else { $Matches[3] }
+      $entryMarketplaceName = if ($Matches[2]) { $Matches[2] } else { $Matches[4] }
+      $enabledAssignment = Find-TomlBooleanKeyAssignment $lines[$index] "enabled" 1
+      $entryEnabled = if ($null -ne $enabledAssignment) {
+        [System.Boolean]::Parse($enabledAssignment.value)
+      } else {
+        $null
+      }
+
+      $entries += [pscustomobject]@{
+        plugin_name = $entryPluginName
+        marketplace_name = $entryMarketplaceName
+        enabled = $entryEnabled
+      }
+    } elseif ($atTopLevel -and $lines[$index] -match $sectionPattern) {
+      $entryPluginName = if ($Matches[1]) { $Matches[1] } else { $Matches[3] }
+      $entryMarketplaceName = if ($Matches[2]) { $Matches[2] } else { $Matches[4] }
       $entryEnabled = $null
+      $entryEnabledValues = New-Object 'System.Collections.Generic.List[bool]'
+      $entryEnabledUnsupported = $false
+      $sectionMultilineState = $null
+      $sectionContainerDepth = 0
       for ($next = $index + 1; $next -lt $lines.Count; $next++) {
-        if ($lines[$next] -match '^\s*\[') {
+        $sectionAtTopLevel = [string]::IsNullOrWhiteSpace($sectionMultilineState) -and $sectionContainerDepth -eq 0
+
+        if ($sectionAtTopLevel -and (Test-TomlTableHeaderLine $lines[$next])) {
           break
         }
 
-        if ($lines[$next] -match '^\s*enabled\s*=\s*(true|false)\s*(?:#.*)?$') {
-          $entryEnabled = [System.Boolean]::Parse($Matches[1])
-          break
+        if ($sectionAtTopLevel -and $lines[$next] -match '^\s*(?:enabled|"enabled"|''enabled'')\s*=\s*(true|false)\s*(?:#.*)?$') {
+          [void]$entryEnabledValues.Add([System.Boolean]::Parse($Matches[1]))
+        } elseif ($sectionAtTopLevel -and $lines[$next] -match '^\s*(?:enabled|"enabled"|''enabled'')\s*=') {
+          $entryEnabledUnsupported = $true
         }
+
+        $nextSectionMultilineState = Update-TomlMultilineStringState $lines[$next] $sectionMultilineState
+        $sectionContainerDepth = Update-TomlContainerDepthForLine $lines[$next] $sectionContainerDepth $sectionMultilineState $nextSectionMultilineState
+        $sectionMultilineState = $nextSectionMultilineState
+      }
+      if ($entryEnabledValues.Count -eq 1 -and -not $entryEnabledUnsupported) {
+        $entryEnabled = $entryEnabledValues[0]
       }
 
       $entries += [pscustomobject]@{
@@ -766,13 +1051,33 @@ function Get-PluginConfigSummary([string]$ConfigPath, [string]$MarketplaceName) 
         enabled = $entryEnabled
       }
     }
+
+    if ($atTopLevel -and (Test-TomlTableHeaderLine $lines[$index])) {
+      $insideTomlTable = $true
+      if ($lines[$index] -match $pluginsRootSectionPattern) {
+        $currentTomlTable = "plugins"
+      } elseif ($lines[$index] -match $mcpServersRootSectionPattern) {
+        $currentTomlTable = "mcp_servers"
+      } else {
+        $currentTomlTable = $null
+      }
+    }
+    $nextMultilineState = Update-TomlMultilineStringState $lines[$index] $multilineState
+    $containerDepth = Update-TomlContainerDepthForLine $lines[$index] $containerDepth $multilineState $nextMultilineState
+    $multilineState = $nextMultilineState
   }
 
-  $enabledEntries = @($entries | Where-Object { $_.enabled -eq $true })
-  $disabledEntries = @($entries | Where-Object { $_.enabled -eq $false })
+  $selectedEntries = @(
+    $entries |
+      Where-Object {
+        $MarketplaceName -eq "*" -or [string]$_.marketplace_name -eq [string]$MarketplaceName
+      }
+  )
+  $enabledEntries = @($selectedEntries | Where-Object { $_.enabled -eq $true })
+  $disabledEntries = @($selectedEntries | Where-Object { $_.enabled -eq $false })
   $selectedEnabled = if ($enabledEntries.Count -gt 0) {
     $true
-  } elseif ($disabledEntries.Count -eq $entries.Count -and $entries.Count -gt 0) {
+  } elseif ($disabledEntries.Count -eq $selectedEntries.Count -and $selectedEntries.Count -gt 0) {
     $false
   } else {
     $null
@@ -785,7 +1090,7 @@ function Get-PluginConfigSummary([string]$ConfigPath, [string]$MarketplaceName) 
     symphony_plugin_entries = @($entries)
     symphony_default_plugin_enabled = Get-PluginEnabledFromEntries $entries "symphony-plus-plus" $MarketplaceName
     symphony_mcp_companion_plugin_enabled = Get-PluginEnabledFromEntries $entries "symphony-plus-plus-mcp" $MarketplaceName
-    global_sympp_mcp_entry = [bool]($lines | Where-Object { $_ -match '^\[mcp_servers\.symphony_plus_plus\]' } | Select-Object -First 1)
+    global_sympp_mcp_entry = $globalSymppMcpEntry
   }
 }
 
@@ -806,6 +1111,687 @@ function Get-PluginEnabledFromEntries($Entries, [string]$PluginName, [string]$Ma
   }
 
   return $null
+}
+
+function New-Utf8NoBomEncoding {
+  return (New-Object System.Text.UTF8Encoding $false)
+}
+
+function New-StrictUtf8NoBomEncoding {
+  return (New-Object System.Text.UTF8Encoding $false, $true)
+}
+
+function New-Utf8BomEncoding {
+  return (New-Object System.Text.UTF8Encoding $true, $true)
+}
+
+function Get-SystemAnsiEncoding {
+  try {
+    [System.Text.Encoding]::RegisterProvider([System.Text.CodePagesEncodingProvider]::Instance)
+  } catch {
+  }
+
+  return [System.Text.Encoding]::GetEncoding([System.Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage)
+}
+
+function Get-ConfigTextEncoding([string]$ConfigPath) {
+  if (-not (Test-Path -LiteralPath $ConfigPath)) {
+    return New-Utf8NoBomEncoding
+  }
+
+  $bytes = [System.IO.File]::ReadAllBytes($ConfigPath)
+  if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+    return New-Utf8BomEncoding
+  }
+  if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+    return (New-Object System.Text.UnicodeEncoding $false, $true, $true)
+  }
+  if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) {
+    return (New-Object System.Text.UnicodeEncoding $true, $true, $true)
+  }
+
+  $utf8 = New-StrictUtf8NoBomEncoding
+  try {
+    [void]$utf8.GetString($bytes)
+    return $utf8
+  } catch {
+    if ($IsWindows -or $env:OS -eq "Windows_NT") {
+      return Get-SystemAnsiEncoding
+    }
+
+    throw "Codex config is not valid UTF-8 and has no recognized Unicode BOM; refusing to rewrite it."
+  }
+}
+
+function Read-ConfigLines([string]$ConfigPath) {
+  $lines = [System.IO.File]::ReadAllLines($ConfigPath, (Get-ConfigTextEncoding $ConfigPath))
+  if ($lines.Count -gt 0) {
+    $lines[0] = $lines[0].TrimStart([char]0xFEFF)
+  }
+
+  return $lines
+}
+
+function New-TimestampedBackupPath([string]$Path) {
+  $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+  $backupPath = "$Path.sympp-backup-$timestamp"
+  $suffix = 1
+  while (Test-Path -LiteralPath $backupPath) {
+    $backupPath = "$Path.sympp-backup-$timestamp.$suffix"
+    $suffix += 1
+  }
+
+  return $backupPath
+}
+
+function Copy-CodexConfigBackup([string]$ConfigPath) {
+  $backupPath = New-TimestampedBackupPath $ConfigPath
+  Copy-Item -LiteralPath $ConfigPath -Destination $backupPath -Force:$false
+  return $backupPath
+}
+
+function Write-ConfigLines([string]$ConfigPath, [System.Collections.Generic.List[string]]$Lines) {
+  $parent = Split-Path $ConfigPath -Parent
+  if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
+    [void](New-Item -ItemType Directory -Path $parent -Force)
+  }
+
+  [System.IO.File]::WriteAllLines($ConfigPath, [string[]]$Lines.ToArray(), (Get-ConfigTextEncoding $ConfigPath))
+}
+
+function Find-UnescapedSequence([string]$Line, [string]$Sequence, [int]$StartIndex) {
+  $index = $Line.IndexOf($Sequence, $StartIndex, [System.StringComparison]::Ordinal)
+  while ($index -ge 0) {
+    $backslashCount = 0
+    for ($cursor = $index - 1; $cursor -ge 0 -and $Line[$cursor] -eq '\'; $cursor--) {
+      $backslashCount += 1
+    }
+
+    if (($backslashCount % 2) -eq 0) {
+      return $index
+    }
+
+    $index = $Line.IndexOf($Sequence, $index + $Sequence.Length, [System.StringComparison]::Ordinal)
+  }
+
+  return -1
+}
+
+function Update-TomlMultilineStringState([string]$Line, [string]$State) {
+  $index = 0
+  $stateValue = $State
+
+  while ($index -lt $Line.Length) {
+    if ($stateValue -eq "basic") {
+      $endIndex = Find-UnescapedSequence $Line '"""' $index
+      if ($endIndex -lt 0) {
+        return $stateValue
+      }
+
+      $index = $endIndex + 3
+      $stateValue = $null
+      continue
+    }
+
+    if ($stateValue -eq "literal") {
+      $endIndex = $Line.IndexOf("'''", $index, [System.StringComparison]::Ordinal)
+      if ($endIndex -lt 0) {
+        return $stateValue
+      }
+
+      $index = $endIndex + 3
+      $stateValue = $null
+      continue
+    }
+
+    $char = $Line[$index]
+    if ($char -eq "#") {
+      break
+    }
+
+    if ($index + 2 -lt $Line.Length -and $Line.Substring($index, 3) -eq '"""') {
+      $stateValue = "basic"
+      $index += 3
+      continue
+    }
+
+    if ($index + 2 -lt $Line.Length -and $Line.Substring($index, 3) -eq "'''") {
+      $stateValue = "literal"
+      $index += 3
+      continue
+    }
+
+    if ($char -eq '"') {
+      $index += 1
+      while ($index -lt $Line.Length) {
+        if ($Line[$index] -eq '\') {
+          $index += 2
+          continue
+        }
+
+        if ($Line[$index] -eq '"') {
+          $index += 1
+          break
+        }
+
+        $index += 1
+      }
+      continue
+    }
+
+    if ($char -eq "'") {
+      $index += 1
+      while ($index -lt $Line.Length) {
+        if ($Line[$index] -eq "'") {
+          $index += 1
+          break
+        }
+
+        $index += 1
+      }
+      continue
+    }
+
+    $index += 1
+  }
+
+  return $stateValue
+}
+
+function Test-TomlTableHeaderLine([string]$Line) {
+  $keySegment = '(?:"(?:[^"\\]|\\.)*"|''[^'']*''|[A-Za-z0-9_-]+)'
+  return $Line -match "^\s*\[\[?\s*$keySegment(?:\s*\.\s*$keySegment)*\s*\]\]?\s*(?:#.*)?$"
+}
+
+function Find-TomlBooleanKeyAssignment([string]$Line, [string]$KeyName, [int]$TargetDepth = 0) {
+  $index = 0
+  $depthValue = 0
+  $escapedKeyName = [regex]::Escape($KeyName)
+  $keyToken = "(?:$escapedKeyName|`"$escapedKeyName`"|'$escapedKeyName')"
+
+  while ($index -lt $Line.Length) {
+    $char = $Line[$index]
+    if ($char -eq "#") {
+      break
+    }
+
+    if ($index + 2 -lt $Line.Length -and $Line.Substring($index, 3) -eq '"""') {
+      $endIndex = Find-UnescapedSequence $Line '"""' ($index + 3)
+      if ($endIndex -lt 0) {
+        break
+      }
+
+      $index = $endIndex + 3
+      continue
+    }
+
+    if ($index + 2 -lt $Line.Length -and $Line.Substring($index, 3) -eq "'''") {
+      $endIndex = $Line.IndexOf("'''", $index + 3, [System.StringComparison]::Ordinal)
+      if ($endIndex -lt 0) {
+        break
+      }
+
+      $index = $endIndex + 3
+      continue
+    }
+
+    if ($char -eq '"') {
+      $index += 1
+      while ($index -lt $Line.Length) {
+        if ($Line[$index] -eq '\') {
+          $index += 2
+          continue
+        }
+
+        if ($Line[$index] -eq '"') {
+          $index += 1
+          break
+        }
+
+        $index += 1
+      }
+      continue
+    }
+
+    if ($char -eq "'") {
+      $index += 1
+      while ($index -lt $Line.Length) {
+        if ($Line[$index] -eq "'") {
+          $index += 1
+          break
+        }
+
+        $index += 1
+      }
+      continue
+    }
+
+    $match = if ($depthValue -eq $TargetDepth) {
+      [regex]::Match($Line.Substring($index), "^(\s*$keyToken\s*=\s*)(true|false)(?=\b)")
+    } else {
+      [System.Text.RegularExpressions.Match]::Empty
+    }
+    if ($match.Success) {
+      return [pscustomobject]@{
+        value = $match.Groups[2].Value
+        value_start = $index + $match.Groups[2].Index
+        value_length = $match.Groups[2].Length
+      }
+    }
+
+    if ($char -eq "[" -or $char -eq "{") {
+      $depthValue += 1
+    } elseif ($char -eq "]" -or $char -eq "}") {
+      if ($depthValue -gt 0) {
+        $depthValue -= 1
+      }
+    }
+
+    $index += 1
+  }
+
+  return $null
+}
+
+function Update-TomlContainerDepth([string]$Line, [int]$Depth) {
+  $index = 0
+  $depthValue = $Depth
+
+  while ($index -lt $Line.Length) {
+    $char = $Line[$index]
+    if ($char -eq "#") {
+      break
+    }
+
+    if ($index + 2 -lt $Line.Length -and $Line.Substring($index, 3) -eq '"""') {
+      $endIndex = Find-UnescapedSequence $Line '"""' ($index + 3)
+      if ($endIndex -lt 0) {
+        break
+      }
+
+      $index = $endIndex + 3
+      continue
+    }
+
+    if ($index + 2 -lt $Line.Length -and $Line.Substring($index, 3) -eq "'''") {
+      $endIndex = $Line.IndexOf("'''", $index + 3, [System.StringComparison]::Ordinal)
+      if ($endIndex -lt 0) {
+        break
+      }
+
+      $index = $endIndex + 3
+      continue
+    }
+
+    if ($char -eq '"') {
+      $index += 1
+      while ($index -lt $Line.Length) {
+        if ($Line[$index] -eq '\') {
+          $index += 2
+          continue
+        }
+
+        if ($Line[$index] -eq '"') {
+          $index += 1
+          break
+        }
+
+        $index += 1
+      }
+      continue
+    }
+
+    if ($char -eq "'") {
+      $index += 1
+      while ($index -lt $Line.Length) {
+        if ($Line[$index] -eq "'") {
+          $index += 1
+          break
+        }
+
+        $index += 1
+      }
+      continue
+    }
+
+    if ($char -eq "[" -or $char -eq "{") {
+      $depthValue += 1
+    } elseif ($char -eq "]" -or $char -eq "}") {
+      if ($depthValue -gt 0) {
+        $depthValue -= 1
+      }
+    }
+
+    $index += 1
+  }
+
+  return $depthValue
+}
+
+function Update-TomlContainerDepthForLine([string]$Line, [int]$Depth, [string]$PreviousMultilineState, [string]$NextMultilineState) {
+  if ([string]::IsNullOrWhiteSpace($PreviousMultilineState)) {
+    return Update-TomlContainerDepth $Line $Depth
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($NextMultilineState)) {
+    return $Depth
+  }
+
+  $endIndex = if ($PreviousMultilineState -eq "basic") {
+    Find-UnescapedSequence $Line '"""' 0
+  } else {
+    $Line.IndexOf("'''", 0, [System.StringComparison]::Ordinal)
+  }
+
+  if ($endIndex -lt 0) {
+    return $Depth
+  }
+
+  return Update-TomlContainerDepth $Line.Substring($endIndex + 3) $Depth
+}
+
+function Set-PluginEnabledInConfig([string]$ConfigPath, [string]$PluginKey) {
+  $configExisted = Test-Path -LiteralPath $ConfigPath
+  $sectionHeader = "[plugins.`"$PluginKey`"]"
+  $lineList = New-Object 'System.Collections.Generic.List[string]'
+
+  if ($configExisted) {
+    foreach ($line in @(Read-ConfigLines $ConfigPath)) {
+      [void]$lineList.Add([string]$line)
+    }
+  }
+
+  if (-not $configExisted) {
+    [void]$lineList.Add($sectionHeader)
+    [void]$lineList.Add("enabled = true")
+    Write-ConfigLines $ConfigPath $lineList
+
+    return [pscustomobject]@{
+      status = "created_config"
+      changed = $true
+      backup_path = $null
+      config_existed = $false
+      plugin_key = $PluginKey
+    }
+  }
+
+  $escapedPluginKey = [regex]::Escape($PluginKey)
+  $sectionPattern = "^\s*\[\s*(?:plugins|`"plugins`"|'plugins')\s*\.\s*(?:`"$escapedPluginKey`"|'$escapedPluginKey')\s*\]\s*(?:#.*)?$"
+  $dottedEnabledPattern = "^\s*(?:plugins|`"plugins`"|'plugins')\s*\.\s*(?:`"$escapedPluginKey`"|'$escapedPluginKey')\s*\.\s*(?:enabled|`"enabled`"|'enabled')\s*=\s*(true|false)\s*(?:#.*)?$"
+  $rootInlinePattern = "^\s*(?:plugins|`"plugins`"|'plugins')\s*\.\s*(?:`"$escapedPluginKey`"|'$escapedPluginKey')\s*=\s*\{.*\}\s*(?:#.*)?$"
+  $pluginsTableDottedEnabledPattern = "^\s*(?:`"$escapedPluginKey`"|'$escapedPluginKey')\s*\.\s*(?:enabled|`"enabled`"|'enabled')\s*=\s*(true|false)\s*(?:#.*)?$"
+  $pluginsTableInlinePattern = "^\s*(?:`"$escapedPluginKey`"|'$escapedPluginKey')\s*=\s*\{.*\}\s*(?:#.*)?$"
+  $pluginsRootSectionPattern = '^\s*\[\s*(?:plugins|"plugins"|''plugins'')\s*\]\s*(?:#.*)?$'
+  $sectionIndices = New-Object 'System.Collections.Generic.List[int]'
+  $dottedEnabledIndices = New-Object 'System.Collections.Generic.List[int]'
+  $inlineEntryIndices = New-Object 'System.Collections.Generic.List[int]'
+  $multilineState = $null
+  $containerDepth = 0
+  $insideTomlTable = $false
+  $currentTomlTable = $null
+  for ($index = 0; $index -lt $lineList.Count; $index++) {
+    $atTopLevel = [string]::IsNullOrWhiteSpace($multilineState) -and $containerDepth -eq 0
+    $atRootTable = $atTopLevel -and -not $insideTomlTable
+
+    if ($atTopLevel -and $lineList[$index] -match $sectionPattern) {
+      [void]$sectionIndices.Add($index)
+    } elseif (($atRootTable -and $lineList[$index] -match $dottedEnabledPattern) -or
+              ($atTopLevel -and $currentTomlTable -eq "plugins" -and $lineList[$index] -match $pluginsTableDottedEnabledPattern)) {
+      [void]$dottedEnabledIndices.Add($index)
+    } elseif (($atRootTable -and $lineList[$index] -match $rootInlinePattern) -or
+              ($atTopLevel -and $currentTomlTable -eq "plugins" -and $lineList[$index] -match $pluginsTableInlinePattern)) {
+      [void]$inlineEntryIndices.Add($index)
+    }
+    if ($atTopLevel -and (Test-TomlTableHeaderLine $lineList[$index])) {
+      $insideTomlTable = $true
+      if ($lineList[$index] -match $pluginsRootSectionPattern) {
+        $currentTomlTable = "plugins"
+      } else {
+        $currentTomlTable = $null
+      }
+    }
+    $nextMultilineState = Update-TomlMultilineStringState $lineList[$index] $multilineState
+    $containerDepth = Update-TomlContainerDepthForLine $lineList[$index] $containerDepth $multilineState $nextMultilineState
+    $multilineState = $nextMultilineState
+  }
+
+  if ($sectionIndices.Count -gt 1) {
+    throw "Codex config contains multiple [$sectionHeader] sections; refusing ambiguous mutation."
+  }
+  if ($dottedEnabledIndices.Count -gt 1) {
+    throw "Codex config contains multiple dotted enabled entries for [$sectionHeader]; refusing ambiguous mutation."
+  }
+  if ($inlineEntryIndices.Count -gt 1) {
+    throw "Codex config contains multiple inline table entries for [$sectionHeader]; refusing ambiguous mutation."
+  }
+  if ($sectionIndices.Count + $dottedEnabledIndices.Count + $inlineEntryIndices.Count -gt 1) {
+    throw "Codex config contains multiple entries for [$sectionHeader]; refusing ambiguous mutation."
+  }
+
+  $status = $null
+  if ($inlineEntryIndices.Count -eq 1) {
+    $inlineIndex = $inlineEntryIndices[0]
+    $enabledAssignment = Find-TomlBooleanKeyAssignment $lineList[$inlineIndex] "enabled" 1
+    if ($null -eq $enabledAssignment) {
+      throw "Target plugin inline table contains no supported enabled = true/false entry; rewrite it as a plugin section or dotted enabled key before enabling."
+    }
+
+    if ($enabledAssignment.value -eq "true") {
+      return [pscustomobject]@{
+        status = "already_enabled"
+        changed = $false
+        backup_path = $null
+        config_existed = $true
+        plugin_key = $PluginKey
+      }
+    }
+
+    $lineList[$inlineIndex] = $lineList[$inlineIndex].Remove($enabledAssignment.value_start, $enabledAssignment.value_length).Insert($enabledAssignment.value_start, "true")
+    $status = "enabled_existing_inline_table"
+  } elseif ($dottedEnabledIndices.Count -eq 1) {
+    $enabledIndex = $dottedEnabledIndices[0]
+    if ($lineList[$enabledIndex] -match "^\s*(?:plugins|`"plugins`"|'plugins')\s*\.\s*(?:`"$escapedPluginKey`"|'$escapedPluginKey')\s*\.\s*(?:enabled|`"enabled`"|'enabled')\s*=\s*true\s*(?:#.*)?$" -or
+        $lineList[$enabledIndex] -match "^\s*(?:`"$escapedPluginKey`"|'$escapedPluginKey')\s*\.\s*(?:enabled|`"enabled`"|'enabled')\s*=\s*true\s*(?:#.*)?$") {
+      return [pscustomobject]@{
+        status = "already_enabled"
+        changed = $false
+        backup_path = $null
+        config_existed = $true
+        plugin_key = $PluginKey
+      }
+    }
+
+    if ($lineList[$enabledIndex] -match "^(\s*(?:plugins|`"plugins`"|'plugins')\s*\.\s*(?:`"$escapedPluginKey`"|'$escapedPluginKey')\s*\.\s*(?:enabled|`"enabled`"|'enabled')\s*=\s*)false(\s*(?:#.*)?)$") {
+      $lineList[$enabledIndex] = "$($Matches[1])true$($Matches[2])"
+    } elseif ($lineList[$enabledIndex] -match "^(\s*(?:`"$escapedPluginKey`"|'$escapedPluginKey')\s*\.\s*(?:enabled|`"enabled`"|'enabled')\s*=\s*)false(\s*(?:#.*)?)$") {
+      $lineList[$enabledIndex] = "$($Matches[1])true$($Matches[2])"
+    } else {
+      $lineList[$enabledIndex] = "plugins.`"$PluginKey`".enabled = true"
+    }
+    $status = "enabled_existing_dotted_key"
+  } elseif ($sectionIndices.Count -eq 0) {
+    if ($lineList.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($lineList[$lineList.Count - 1])) {
+      [void]$lineList.Add("")
+    }
+    [void]$lineList.Add($sectionHeader)
+    [void]$lineList.Add("enabled = true")
+    $status = "added_section"
+  } else {
+    $sectionIndex = $sectionIndices[0]
+    $sectionEnd = $lineList.Count
+    $multilineState = $null
+    $containerDepth = 0
+    for ($index = $sectionIndex + 1; $index -lt $lineList.Count; $index++) {
+      if ([string]::IsNullOrWhiteSpace($multilineState) -and $containerDepth -eq 0 -and (Test-TomlTableHeaderLine $lineList[$index])) {
+        $sectionEnd = $index
+        break
+      }
+      $nextMultilineState = Update-TomlMultilineStringState $lineList[$index] $multilineState
+      $containerDepth = Update-TomlContainerDepthForLine $lineList[$index] $containerDepth $multilineState $nextMultilineState
+      $multilineState = $nextMultilineState
+    }
+
+    $enabledIndices = New-Object 'System.Collections.Generic.List[int]'
+    $multilineState = $null
+    $containerDepth = 0
+    for ($index = $sectionIndex + 1; $index -lt $sectionEnd; $index++) {
+      if (-not [string]::IsNullOrWhiteSpace($multilineState)) {
+        $nextMultilineState = Update-TomlMultilineStringState $lineList[$index] $multilineState
+        $containerDepth = Update-TomlContainerDepthForLine $lineList[$index] $containerDepth $multilineState $nextMultilineState
+        $multilineState = $nextMultilineState
+        continue
+      }
+
+      if ($containerDepth -eq 0 -and $lineList[$index] -match '^\s*(?:enabled|"enabled"|''enabled'')\s*=\s*(true|false)\s*(?:#.*)?$') {
+        [void]$enabledIndices.Add($index)
+      } elseif ($containerDepth -eq 0 -and $lineList[$index] -match '^\s*(?:enabled|"enabled"|''enabled'')\s*=') {
+        throw "Target plugin section contains an unsupported enabled value; expected true or false."
+      }
+      $nextMultilineState = Update-TomlMultilineStringState $lineList[$index] $multilineState
+      $containerDepth = Update-TomlContainerDepthForLine $lineList[$index] $containerDepth $multilineState $nextMultilineState
+      $multilineState = $nextMultilineState
+    }
+
+    if ($enabledIndices.Count -gt 1) {
+      throw "Target plugin section contains multiple enabled entries; refusing ambiguous mutation."
+    }
+
+    if ($enabledIndices.Count -eq 0) {
+      $lineList.Insert($sectionIndex + 1, "enabled = true")
+      $status = "added_enabled"
+    } else {
+      $enabledIndex = $enabledIndices[0]
+      if ($lineList[$enabledIndex] -match '^\s*(?:enabled|"enabled"|''enabled'')\s*=\s*true\s*(?:#.*)?$') {
+        return [pscustomobject]@{
+          status = "already_enabled"
+          changed = $false
+          backup_path = $null
+          config_existed = $true
+          plugin_key = $PluginKey
+        }
+      }
+
+      if ($lineList[$enabledIndex] -match '^(\s*(?:enabled|"enabled"|''enabled'')\s*=\s*)false(\s*(?:#.*)?)$') {
+        $lineList[$enabledIndex] = "$($Matches[1])true$($Matches[2])"
+      } else {
+        $lineList[$enabledIndex] = "enabled = true"
+      }
+      $status = "enabled_existing_section"
+    }
+  }
+
+  $backupPath = Copy-CodexConfigBackup $ConfigPath
+  Write-ConfigLines $ConfigPath $lineList
+
+  return [pscustomobject]@{
+    status = $status
+    changed = $true
+    backup_path = $backupPath
+    config_existed = $true
+    plugin_key = $PluginKey
+  }
+}
+
+function Format-ReadinessActions($Actions) {
+  $lines = @(
+    @($Actions) |
+      ForEach-Object {
+        $line = "[$($_.code)] $($_.message)"
+        if ($_.PSObject.Properties["command"]) {
+          $line = "$line Command: $($_.command)"
+        }
+        $line
+      }
+  )
+
+  if ($lines.Count -eq 0) {
+    return "Run the doctor again with -Doctor for the next action."
+  }
+
+  return ($lines -join " ")
+}
+
+function Invoke-McpCompanionEnable($Summary, [string]$RequestedMarketplaceName, [string]$CodexHomePath) {
+  if (Test-DefaultCodexHome $CodexHomePath) {
+    throw "Refusing to enable symphony-plus-plus-mcp in the default Codex home. Rerun with -CodexHome <dedicated-symphony-plus-plus-codex-home>."
+  }
+
+  if (Test-ActivationMarketplaceAmbiguous $Summary.installed_cache $RequestedMarketplaceName "symphony-plus-plus-mcp") {
+    throw "Multiple symphony-plus-plus-mcp plugin marketplaces are installed; rerun with -MarketplaceName <marketplace> before enabling the MCP companion."
+  }
+
+  if ($Summary.codex_config.global_sympp_mcp_entry -eq $true) {
+    throw "Codex config already contains [mcp_servers.symphony_plus_plus]. Remove or relocate that global MCP entry before enabling the plugin companion in this config."
+  }
+
+  $companionPackage = Get-PreferredActivationPackage $Summary.installed_cache "symphony-plus-plus-mcp" $RequestedMarketplaceName
+  if (-not (Test-McpCompanionPackageReady $companionPackage)) {
+    $nextActions = Format-ReadinessActions $Summary.readiness.next_actions
+    throw "Cannot enable symphony-plus-plus-mcp because the companion cache or manifest is missing or invalid. Doctor next action: $nextActions"
+  }
+
+  $marketplaceName = [string]$companionPackage.marketplace_name
+  if ([string]::IsNullOrWhiteSpace($marketplaceName) -or $marketplaceName -eq "*") {
+    throw "Cannot determine the target marketplace for symphony-plus-plus-mcp; rerun with -MarketplaceName <marketplace>."
+  }
+
+  $enabledOtherCompanionEntries = @(
+    $Summary.codex_config.symphony_plugin_entries |
+      Where-Object {
+        $_.plugin_name -eq "symphony-plus-plus-mcp" -and
+        $_.enabled -eq $true -and
+        [string]$_.marketplace_name -ne $marketplaceName
+      }
+  )
+  if ($enabledOtherCompanionEntries.Count -gt 0) {
+    throw "Another symphony-plus-plus-mcp marketplace is already enabled in this Codex config. Disable or relocate that entry before enabling $marketplaceName."
+  }
+
+  $pluginKey = Get-ActivationConfigKey "symphony-plus-plus-mcp" $marketplaceName
+  $configPath = Join-Path $CodexHomePath "config.toml"
+  $mutation = Set-PluginEnabledInConfig $configPath $pluginKey
+  $sourceRoot = if ($null -ne $Summary.source_checkout) { [string]$Summary.source_checkout.root } else { $null }
+  $smokeCommand = New-SourceScriptCommand $sourceRoot "scripts/smoke-sympp-mcp-http.ps1"
+  if ([string]::IsNullOrWhiteSpace($smokeCommand)) {
+    $smokeCommand = "Set-Location <path-to-symphony-plus-plus-checkout>; .\scripts\smoke-sympp-mcp-http.ps1"
+  }
+
+  return [pscustomobject]@{
+    status = $mutation.status
+    changed = $mutation.changed
+    codex_home = $CodexHomePath
+    config_path = $configPath
+    backup_path = $mutation.backup_path
+    plugin_key = $pluginKey
+    marketplace_name = $marketplaceName
+    companion_cache_label = $companionPackage.label
+    companion_cache_lifecycle = $companionPackage.default_plugin_lifecycle_status
+    companion_reference_mcp_server_status = $companionPackage.reference_mcp_server_status
+    companion_http_mcp_reachability_status = $companionPackage.http_mcp_reachability_status
+    restart_action = "Restart or reload the dedicated Symphony++ MCP Codex session so plugin MCP servers register before the model starts."
+    smoke_command = $smokeCommand
+    boundary = "Keep symphony-plus-plus-mcp out of generic worker, worker_smart, review-suite, and codex review configs; use a dedicated S++ MCP-enabled config/session instead."
+  }
+}
+
+function Write-McpCompanionEnableSummary($Result) {
+  Write-Host "Symphony++ MCP companion enable"
+  Write-Host "  status: $($Result.status)"
+  Write-Host "  changed: $($Result.changed)"
+  Write-Host "  codex_home: $($Result.codex_home)"
+  Write-Host "  config: $($Result.config_path)"
+  Write-Host "  backup: $(if ($Result.backup_path) { $Result.backup_path } else { 'none' })"
+  Write-Host "  plugin key: $($Result.plugin_key)"
+  Write-Host "  companion cache: $($Result.companion_cache_label) / $($Result.companion_cache_lifecycle)"
+  Write-Host "  server: $($Result.companion_reference_mcp_server_status)"
+  Write-Host "  endpoint: $($Result.companion_http_mcp_reachability_status)"
+  Write-Host ""
+  Write-Host "Next steps:"
+  Write-Host "  - $($Result.restart_action)"
+  Write-Host "  - Verify the local HTTP MCP daemon:"
+  Write-Host "    $($Result.smoke_command)"
+  Write-Host ""
+  Write-Host "Boundary: $($Result.boundary)"
 }
 
 function New-ReadinessAction([string]$Code, [string]$Lane, [string]$Message, [string]$Command = $null) {
@@ -836,14 +1822,20 @@ function Get-ActivationConfigKey([string]$PluginName, [string]$MarketplaceName) 
   return "$PluginName@$MarketplaceName"
 }
 
-function Test-ActivationMarketplaceAmbiguous($CachePackages, [string]$MarketplaceName) {
+function Test-ActivationMarketplaceAmbiguous($CachePackages, [string]$MarketplaceName, [string]$PackageName = $null) {
   if ($MarketplaceName -ne "*") {
     return $false
   }
 
   $marketplaces = @(
     $CachePackages |
-      Where-Object { $SymppPluginPackageNames -contains $_.package_name } |
+      Where-Object {
+        if ([string]::IsNullOrWhiteSpace($PackageName)) {
+          $SymppPluginPackageNames -contains $_.package_name
+        } else {
+          $_.package_name -eq $PackageName
+        }
+      } |
       ForEach-Object { [string]$_.marketplace_name } |
       Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
       Sort-Object -Unique
@@ -965,9 +1957,10 @@ function Test-McpCompanionPackageReady($Package) {
 }
 
 function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName, $SourceCheckout, [string]$CodexHomePath) {
-  $marketplaceAmbiguous = Test-ActivationMarketplaceAmbiguous $CachePackages $MarketplaceName
-  $defaultPackage = if ($marketplaceAmbiguous) { $null } else { Get-PreferredActivationPackage $CachePackages "symphony-plus-plus" $MarketplaceName }
-  $companionPackage = if ($marketplaceAmbiguous) { $null } else { Get-PreferredActivationPackage $CachePackages "symphony-plus-plus-mcp" $MarketplaceName }
+  $defaultMarketplaceAmbiguous = Test-ActivationMarketplaceAmbiguous $CachePackages $MarketplaceName "symphony-plus-plus"
+  $companionMarketplaceAmbiguous = Test-ActivationMarketplaceAmbiguous $CachePackages $MarketplaceName "symphony-plus-plus-mcp"
+  $defaultPackage = if ($defaultMarketplaceAmbiguous) { $null } else { Get-PreferredActivationPackage $CachePackages "symphony-plus-plus" $MarketplaceName }
+  $companionPackage = if ($companionMarketplaceAmbiguous) { $null } else { Get-PreferredActivationPackage $CachePackages "symphony-plus-plus-mcp" $MarketplaceName }
   $defaultMarketplace = if ($null -ne $defaultPackage -and -not [string]::IsNullOrWhiteSpace([string]$defaultPackage.marketplace_name)) {
     [string]$defaultPackage.marketplace_name
   } elseif ($MarketplaceName -ne "*") {
@@ -986,9 +1979,35 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
   $configExists = $Config.exists -eq $true
   $defaultEnabled = if ($configExists) { Get-PluginEnabledFromEntries $Config.symphony_plugin_entries "symphony-plus-plus" $defaultMarketplace } else { $null }
   $companionEnabled = if ($configExists) { Get-PluginEnabledFromEntries $Config.symphony_plugin_entries "symphony-plus-plus-mcp" $companionMarketplace } else { $null }
+  $targetCompanionEntries = @(
+    if ($configExists) {
+      $Config.symphony_plugin_entries |
+        Where-Object {
+          $_.plugin_name -eq "symphony-plus-plus-mcp" -and
+          ($companionMarketplace -eq "*" -or [string]$_.marketplace_name -eq [string]$companionMarketplace)
+        }
+    }
+  )
+  $unsupportedTargetCompanionConfigEntry = @(
+    $targetCompanionEntries |
+      Where-Object { $null -eq $_.enabled }
+  ).Count -gt 0 -or $targetCompanionEntries.Count -gt 1
+  $enabledCompanionEntries = @(
+    if ($configExists) {
+      $Config.symphony_plugin_entries |
+        Where-Object { $_.plugin_name -eq "symphony-plus-plus-mcp" -and $_.enabled -eq $true }
+    }
+  )
+  $enabledOtherCompanionEntries = @(
+    $enabledCompanionEntries |
+      Where-Object { [string]$_.marketplace_name -ne [string]$companionMarketplace }
+  )
   $defaultReady = Test-DefaultPackageReady $defaultPackage
   $companionReady = Test-McpCompanionPackageReady $companionPackage
   $companionProvidesSoloSkills = $companionReady -and $companionEnabled -eq $true
+  $defaultCodexHomeSelected = Test-DefaultCodexHome $CodexHomePath
+  $otherMarketplaceMcpCompanionEnabled = $enabledOtherCompanionEntries.Count -gt 0
+  $defaultHomeMcpCompanionEnabled = $configExists -and $enabledCompanionEntries.Count -gt 0 -and $defaultCodexHomeSelected
   $sourceRoot = if ($null -ne $SourceCheckout) { [string]$SourceCheckout.root } else { $null }
   $refreshCodexHomeArg = if ([string]::IsNullOrWhiteSpace($CodexHomePath)) { "" } else { "-CodexHome $(Quote-PowerShellLiteral $CodexHomePath) " }
   $defaultRefreshMarketplaceArg = if ([string]::IsNullOrWhiteSpace($defaultMarketplace)) { "" } else { "-MarketplaceName $(Quote-PowerShellLiteral $defaultMarketplace) " }
@@ -997,16 +2016,27 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
   $warnings = @()
 
   if (-not $configExists) {
-    $actions += New-ReadinessAction "create_codex_config" "config" "Create or restore the Codex config at $($Config.path) before plugin enablement can be diagnosed."
+    $createConfigMessage = if (-not $companionMarketplaceAmbiguous -and $companionReady -and $defaultCodexHomeSelected) {
+      "No Codex config exists at $($Config.path). Choose a dedicated Symphony++ MCP Codex home before enabling the companion; the default Codex home is intentionally refused."
+    } elseif (-not $companionMarketplaceAmbiguous -and $companionReady) {
+      "No Codex config exists at $($Config.path). Run the explicit MCP companion enable command below to create it, or restore the config before diagnosing unrelated plugin enablement."
+    } else {
+      "Create or restore the Codex config at $($Config.path) before plugin enablement can be diagnosed."
+    }
+    $actions += New-ReadinessAction "create_codex_config" "config" $createConfigMessage
   }
-  if ($marketplaceAmbiguous) {
-    $actions += New-ReadinessAction "rerun_with_marketplace" "config" "Multiple Symphony++ plugin marketplaces are installed; rerun this doctor with -MarketplaceName <marketplace> before using package-specific repair actions."
+  if ($companionMarketplaceAmbiguous) {
+    $actions += New-ReadinessAction "rerun_with_marketplace" "config" "Multiple symphony-plus-plus-mcp marketplaces are installed; rerun this doctor with -MarketplaceName <marketplace> before using MCP companion repair actions."
+  } elseif ($defaultMarketplaceAmbiguous) {
+    $actions += New-ReadinessAction "select_default_plugin_marketplace" "solo_session" "Multiple skill-only symphony-plus-plus marketplaces are installed; rerun with -MarketplaceName <marketplace> before using default plugin repair actions."
   }
 
   $defaultStatus = if (-not $configExists) {
     "config_missing"
   } elseif ($companionProvidesSoloSkills) {
     "ready_via_mcp_companion"
+  } elseif ($defaultMarketplaceAmbiguous) {
+    "default_plugin_marketplace_ambiguous"
   } elseif (-not $defaultReady) {
     "default_plugin_cache_missing_or_invalid"
   } elseif ($defaultEnabled -ne $true) {
@@ -1015,21 +2045,25 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     "ready"
   }
 
-  if (-not $marketplaceAmbiguous -and -not $defaultReady -and -not $companionProvidesSoloSkills) {
+  if (-not $defaultMarketplaceAmbiguous -and -not $defaultReady -and -not $companionProvidesSoloSkills) {
     $actions += New-SourceCheckoutAction "refresh_default_plugin_cache" "solo_session" "Refresh the skill-only Symphony++ plugin cache." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($defaultRefreshMarketplaceArg)-PluginName symphony-plus-plus -ValidateInstalledCache")
-  } elseif (-not $marketplaceAmbiguous -and $configExists -and $defaultEnabled -ne $true -and -not $companionProvidesSoloSkills) {
+  } elseif (-not $defaultMarketplaceAmbiguous -and $configExists -and $defaultEnabled -ne $true -and -not $companionProvidesSoloSkills) {
     $defaultConfigKey = Get-ActivationConfigKey "symphony-plus-plus" $defaultMarketplace
     $actions += New-ReadinessAction "enable_default_plugin" "solo_session" "Enable the default skill-only plugin for Solo Session planning: [plugins.`"$defaultConfigKey`"] enabled = true."
   }
 
   $companionStatus = if (-not $configExists) {
     "config_missing"
+  } elseif ($companionMarketplaceAmbiguous) {
+    "companion_marketplace_ambiguous"
   } elseif (-not $companionReady) {
     if ($null -eq $companionPackage) {
       "companion_cache_missing"
     } else {
       "companion_config_invalid"
     }
+  } elseif ($unsupportedTargetCompanionConfigEntry) {
+    "companion_config_entry_unsupported"
   } elseif ($companionEnabled -ne $true) {
     "companion_installed_not_enabled"
   } elseif ($companionPackage.http_mcp_reachability_status -eq "mcp_endpoint_available") {
@@ -1040,16 +2074,34 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     [string]$companionPackage.http_mcp_reachability_status
   }
 
-  if (-not $marketplaceAmbiguous -and -not $companionReady) {
+  if (-not $companionMarketplaceAmbiguous -and -not $companionReady) {
     $actions += New-SourceCheckoutAction "refresh_mcp_companion_cache" "workrequest_mcp" "Refresh the opt-in MCP companion cache and validate its HTTP .mcp.json." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($companionRefreshMarketplaceArg)-PluginName symphony-plus-plus-mcp -ValidateInstalledCache")
-  } elseif (-not $marketplaceAmbiguous -and $configExists -and $companionEnabled -ne $true) {
+  } elseif (-not $companionMarketplaceAmbiguous -and $companionReady -and $companionEnabled -ne $true -and $otherMarketplaceMcpCompanionEnabled) {
+    $actions += New-ReadinessAction "resolve_mcp_companion_marketplace_conflict" "config" "Another symphony-plus-plus-mcp marketplace is already enabled in this Codex config; disable or relocate that entry before enabling $companionMarketplace."
+  } elseif (-not $companionMarketplaceAmbiguous -and $companionReady -and $companionEnabled -ne $true -and $defaultCodexHomeSelected) {
+    $actions += New-ReadinessAction "choose_dedicated_codex_home" "workrequest_mcp" "Rerun the doctor and enable command with -CodexHome <dedicated-symphony-plus-plus-codex-home>; refusing to enable symphony-plus-plus-mcp in the default Codex home keeps generic worker/review configs MCP-clean."
+  } elseif (-not $companionMarketplaceAmbiguous -and $companionReady -and $unsupportedTargetCompanionConfigEntry) {
     $companionConfigKey = Get-ActivationConfigKey "symphony-plus-plus-mcp" $companionMarketplace
-    $actions += New-ReadinessAction "enable_mcp_companion" "workrequest_mcp" "Enable the opt-in MCP companion only in a dedicated S++ config/session: [plugins.`"$companionConfigKey`"] enabled = true."
+    $rewriteMessage = @(
+      "A $companionConfigKey config entry exists, but its enabled value is missing, duplicate, or unsupported."
+      "Rewrite it as a supported boolean plugin entry before using -EnableMcpCompanion, for example [plugins.`"$companionConfigKey`"] enabled = false."
+    ) -join " "
+    $actions += New-ReadinessAction "rewrite_mcp_companion_config_entry" "config" $rewriteMessage
+  } elseif (-not $companionMarketplaceAmbiguous -and $companionReady -and $companionEnabled -ne $true -and $Config.global_sympp_mcp_entry -ne $true) {
+    $companionConfigKey = Get-ActivationConfigKey "symphony-plus-plus-mcp" $companionMarketplace
+    $enableArgs = "$($refreshCodexHomeArg)$($companionRefreshMarketplaceArg)-EnableMcpCompanion"
+    $enableCommand = New-CurrentDiagnosticCommand $enableArgs
+    if ([string]::IsNullOrWhiteSpace($enableCommand)) {
+      $enableCommand = New-SourceScriptCommand $sourceRoot "plugins/symphony-plus-plus/scripts/diagnose-mcp-lifecycle.ps1" $enableArgs
+      $actions += New-SourceCheckoutAction "enable_mcp_companion" "workrequest_mcp" "Enable the opt-in MCP companion only in a dedicated S++ config/session: [plugins.`"$companionConfigKey`"] enabled = true." $SourceCheckout $enableCommand
+    } else {
+      $actions += New-ReadinessAction "enable_mcp_companion" "workrequest_mcp" "Enable the opt-in MCP companion only in a dedicated S++ config/session: [plugins.`"$companionConfigKey`"] enabled = true." $enableCommand
+    }
     $actions += New-ReadinessAction "restart_codex_session" "workrequest_mcp" "Restart or reload that dedicated Codex session so plugin MCP servers register before the model starts."
-  } elseif (-not $marketplaceAmbiguous -and $companionStatus -eq "endpoint_unreachable") {
+  } elseif (-not $companionMarketplaceAmbiguous -and $companionStatus -eq "endpoint_unreachable") {
     $actions += New-SourceCheckoutAction "start_cockpit" "workrequest_mcp" "Start the local Symphony++ cockpit/HTTP MCP daemon." $SourceCheckout (New-CockpitCommand $sourceRoot)
     $actions += New-SourceCheckoutAction "verify_http_mcp" "workrequest_mcp" "Verify the local HTTP MCP daemon independently of Codex plugin loading." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/smoke-sympp-mcp-http.ps1")
-  } elseif (-not $marketplaceAmbiguous -and $companionStatus -eq "ready") {
+  } elseif (-not $companionMarketplaceAmbiguous -and $companionStatus -eq "ready") {
     $actions += New-ReadinessAction "verify_codex_session" "workrequest_mcp" "If the current Codex session still lacks symphony_plus_plus tools, restart or reload the dedicated MCP-enabled session; this doctor verifies config, cache, and daemon readiness, not the already-open model tool list."
   }
 
@@ -1058,17 +2110,32 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     $actions += New-ReadinessAction "relocate_global_sympp_mcp_entry" "config" "Remove the top-level [mcp_servers.symphony_plus_plus] entry from generic configs, or move S++ MCP activation into a dedicated plugin-enabled S++ config/session."
   }
 
+  if ($defaultHomeMcpCompanionEnabled) {
+    $warnings += New-ReadinessWarning "default_codex_home_mcp_companion_enabled" "symphony-plus-plus-mcp is enabled in the default Codex home. Move MCP companion activation to a dedicated S++ Codex home/session to keep generic worker and review configs MCP-clean."
+    $actions += New-ReadinessAction "move_mcp_companion_to_dedicated_codex_home" "config" "Disable symphony-plus-plus-mcp in the default Codex home and enable it only in a dedicated Symphony++ MCP Codex home/session."
+  }
+
+  if ($otherMarketplaceMcpCompanionEnabled) {
+    $warnings += New-ReadinessWarning "other_marketplace_mcp_companion_enabled" "Another symphony-plus-plus-mcp marketplace is already enabled in this Codex config. Keep only one MCP companion marketplace enabled per dedicated S++ session."
+  }
+
   $soloReady = $defaultStatus -eq "ready" -or $defaultStatus -eq "ready_via_mcp_companion"
   $overallStatus = if (-not $configExists) {
     "config_missing"
-  } elseif ($marketplaceAmbiguous) {
+  } elseif ($companionMarketplaceAmbiguous) {
     "multiple_marketplaces_need_selection"
   } elseif ($Config.global_sympp_mcp_entry -eq $true) {
     "global_footgun_present"
+  } elseif ($defaultHomeMcpCompanionEnabled) {
+    "default_codex_home_mcp_companion_enabled"
+  } elseif ($otherMarketplaceMcpCompanionEnabled) {
+    "mcp_companion_enabled_in_other_marketplace"
   } elseif ($soloReady -and $companionStatus -eq "ready") {
     "healthy_local_workrequest_mcp"
   } elseif ($defaultStatus -eq "ready" -and $companionStatus -eq "companion_installed_not_enabled") {
     "solo_ready_mcp_companion_not_enabled"
+  } elseif ($companionStatus -eq "companion_config_entry_unsupported") {
+    "mcp_companion_config_entry_unsupported"
   } elseif ($companionStatus -eq "endpoint_unreachable") {
     "mcp_companion_endpoint_unreachable"
   } elseif ($companionStatus -eq "companion_installed_not_enabled") {
@@ -1403,6 +2470,21 @@ $readinessSourcePackages = @(
 $sourceCheckout = Resolve-ReadinessSourceCheckout $pluginRoot $RepoRoot $readinessSourcePackages
 $summary | Add-Member -NotePropertyName source_checkout -NotePropertyValue $sourceCheckout
 $summary | Add-Member -NotePropertyName readiness -NotePropertyValue (Get-ReadinessSummary $summary.installed_cache $summary.codex_config $MarketplaceName $sourceCheckout $codexHomePath)
+
+if ($EnableMcpCompanion) {
+  if (-not $PSBoundParameters.ContainsKey("CodexHome")) {
+    throw "Refusing to enable symphony-plus-plus-mcp without an explicit -CodexHome. Rerun with -CodexHome <dedicated-symphony-plus-plus-codex-home>."
+  }
+
+  $enableResult = Invoke-McpCompanionEnable $summary $MarketplaceName $codexHomePath
+  if ($Json) {
+    $enableResult | ConvertTo-Json -Depth 6
+    exit 0
+  }
+
+  Write-McpCompanionEnableSummary $enableResult
+  exit 0
+}
 
 if ($Json) {
   $summary | ConvertTo-Json -Depth 8

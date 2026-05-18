@@ -155,6 +155,7 @@ plugin root:
 .\scripts\diagnose-mcp-lifecycle.ps1 -Json
 .\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName jonat-local -Json
 .\scripts\diagnose-mcp-lifecycle.ps1 -RepoRoot C:\Code\symphony-plus-plus -Json
+.\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName jonat-local -EnableMcpCompanion
 .\scripts\diagnose-mcp-lifecycle.ps1 -SelfTest
 ```
 
@@ -184,9 +185,21 @@ common healthy-default/missing-tools state is
 `symphony-plus-plus@<marketplace>` plugin is enabled, the
 `symphony-plus-plus-mcp@<marketplace>` companion is installed, but that
 companion is not enabled for the current Codex config/session. The next action
-is to enable `symphony-plus-plus-mcp@<marketplace>` only in a dedicated S++ MCP
-config/session, restart or reload that session, and keep generic workers,
-review-suite lanes, and `codex review` on the clean skill-only default.
+is to run the explicit enable command against the dedicated S++ MCP Codex home:
+
+```powershell
+.\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName jonat-local -EnableMcpCompanion
+```
+
+That command validates the installed companion cache and manifest, writes only
+the `[plugins."symphony-plus-plus-mcp@<marketplace>"] enabled = true` table in
+the selected `config.toml`, and creates a timestamped
+`config.toml.sympp-backup-*` backup before changing an existing config. It does
+not write `[mcp_servers.*]`, generic worker profiles, review-suite config, or
+unrelated plugin entries. It refuses the default `~/.codex` home; pass the
+dedicated Codex home used only for S++ MCP sessions. After it succeeds, restart
+or reload that dedicated session and keep generic workers, review-suite lanes,
+and `codex review` on the clean skill-only default.
 The doctor verifies source/cache/config plus local HTTP daemon readiness. It
 cannot inspect the tool list already registered inside an open Codex model
 session, so after config/cache changes the final repair step is always to
@@ -284,10 +297,15 @@ If this smoke passes but a Codex session still lacks S++ MCP tools, run:
 .\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName jonat-local -Doctor
 ```
 
-The expected repair is config/session activation, not daemon debugging: enable
-`[plugins."symphony-plus-plus-mcp@jonat-local"] enabled = true` only in the
-dedicated S++ MCP config, then start a new/reloaded session so Codex registers
-the plugin MCP server before the model starts.
+The expected repair is config/session activation, not daemon debugging. Enable
+the companion only in the dedicated S++ MCP config:
+
+```powershell
+.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName jonat-local -EnableMcpCompanion
+```
+
+Then start a new/reloaded session so Codex registers the plugin MCP server
+before the model starts.
 
 Example explicit TOML for an opt-in S++ session:
 
