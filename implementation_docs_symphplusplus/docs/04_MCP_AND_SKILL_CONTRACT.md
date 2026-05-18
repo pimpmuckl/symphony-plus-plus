@@ -59,6 +59,26 @@ tool surface. It is intentionally separate from Codex app plugin visibility:
 if this smoke passes but MCP tools are absent in a Codex session, troubleshoot
 the opt-in plugin/config/session startup path rather than the daemon.
 
+To prove the claimed WorkPackage worker path, pass the work key through an
+environment variable name and provide the stable owner identity:
+
+```powershell
+$env:SYMPP_WORK_KEY_SECRET = Get-Content -LiteralPath "<private-secret-file>" -Raw
+.\scripts\smoke-sympp-mcp-http.ps1 `
+  -Bound `
+  -WorkKeySecretEnv SYMPP_WORK_KEY_SECRET `
+  -ClaimedBy <stable-worker-id>
+Remove-Item Env:\SYMPP_WORK_KEY_SECRET -ErrorAction SilentlyContinue
+```
+
+The bound smoke initializes a local HTTP MCP session, verifies the unbound
+surface unless `-SkipUnboundTools` is supplied, calls `claim_work_key`, then
+uses the claimed `Mcp-Session-Id` for `tools/list`, `get_current_assignment`,
+`resources/read sympp://assignment/current`, and `resources/list`. Text and
+JSON output redact claimed session ids and the raw work key. Do not use pasted
+logs from a custom debug path that prints the environment value or claimed
+`Mcp-Session-Id`.
+
 This slice intentionally does not add browser CORS/preflight support, cookies,
 Phoenix-session client binding, reconnect semantics, SSE streaming,
 remote/company authentication, or daemon startup/plugin install configuration.
