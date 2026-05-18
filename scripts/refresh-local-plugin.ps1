@@ -298,11 +298,21 @@ function Assert-CachePluginConfig([string]$TargetRoot, [string]$ExpectedVersion)
   $mcpConfigPath = [System.IO.Path]::GetFullPath((Join-Path $TargetRoot ".mcp.json"))
   Assert-PathInside $mcpConfigPath $TargetRoot "Installed plugin reference .mcp.json path resolves outside this cache"
   if ($PluginName -eq "symphony-plus-plus") {
+    $rootSkillsPath = Join-Path $TargetRoot "skills"
+    if (Test-Path -LiteralPath $rootSkillsPath) {
+      throw "Default installed plugin cache must not contain root skills; keep WorkPackage and architect skills in symphony-plus-plus-mcp: $rootSkillsPath"
+    }
+
     if (Test-Path -LiteralPath $mcpConfigPath) {
       throw "Default installed plugin cache must not contain root .mcp.json; use symphony-plus-plus-mcp for bundled MCP startup: $mcpConfigPath"
     }
 
     return
+  }
+
+  $mcpSoloSkillPath = Join-Path $TargetRoot "skills/symphony-solo-session"
+  if (Test-Path -LiteralPath $mcpSoloSkillPath) {
+    throw "Opt-in MCP plugin cache must not contain the Solo Session skill; keep that skill in the default symphony-plus-plus package: $mcpSoloSkillPath"
   }
 
   if (-not (Test-Path -LiteralPath $mcpConfigPath)) {

@@ -19,8 +19,13 @@ plugin session.
 This plugin intentionally bundles:
 
 - `mcpServers: "./.mcp.json"` for the generic `symphony_plus_plus` HTTP server at `http://127.0.0.1:4057/mcp`.
-- The WorkPackage, architect, and Solo Session skills.
+- The WorkPackage and architect skills.
 - The legacy stdio MCP wrapper for explicit fallback/dev bootstrap, plus the Solo wrapper script needed after marketplace/cache packaging.
+
+It intentionally does not bundle the Solo Session skill. The default
+`symphony-plus-plus` plugin owns that MCP-free skill, which prevents duplicate
+`symphony-solo-session` entries when both the default and MCP companion packages
+are enabled in the same Codex home.
 
 The default `symphony-plus-plus` plugin must remain skill-only and should stay
 enabled broadly. This opt-in plugin is the concrete install path for sessions
