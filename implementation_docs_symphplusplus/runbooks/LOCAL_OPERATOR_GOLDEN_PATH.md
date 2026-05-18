@@ -55,6 +55,10 @@ review-suite, or `codex review` configs.
 The doctor checks cache, config, and the local HTTP daemon; it cannot inspect
 the tool list already registered inside an open Codex model session. Treat
 session restart/reload as part of the repair after enablement or cache changes.
+The Codex app MCP settings list may show only explicitly configured MCP servers
+and may not list plugin-scoped MCP servers from an enabled opt-in plugin. Use
+the doctor plus `smoke-sympp-mcp-http.ps1` as the repeatable proof, then verify
+tool availability in a newly started dedicated MCP-enabled session.
 
 For normal operator use, keep one durable SQLite ledger path handy:
 
