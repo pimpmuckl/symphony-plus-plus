@@ -248,17 +248,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo do
   end
 
   defp default_database_path_without_side_effects do
-    System.user_home()
-    |> candidate_database_roots(System.tmp_dir())
-    |> Enum.find(&File.dir?/1)
-    |> case do
+    root =
+      case configured_default_database_root() do
+        root when is_binary(root) -> if File.dir?(root), do: root
+        nil -> existing_default_database_root()
+      end
+
+    case root do
       nil -> nil
       root -> Path.join(root, @default_database_file)
     end
   end
 
   defp default_database_root do
-    default_database_root(System.user_home(), System.tmp_dir(), &File.mkdir_p/1)
+    case configured_default_database_root() do
+      root when is_binary(root) ->
+        File.mkdir_p!(root)
+        root
+
+      nil ->
+        default_database_root(System.user_home(), System.tmp_dir(), &File.mkdir_p/1)
+    end
+  end
+
+  defp configured_default_database_root do
+    case Application.get_env(:symphony_elixir, :sympp_repo_default_database_root) do
+      root when is_binary(root) ->
+        root = String.trim(root)
+        if root == "", do: nil, else: Path.expand(root)
+
+      _root ->
+        nil
+    end
+  end
+
+  defp existing_default_database_root do
+    System.user_home()
+    |> candidate_database_roots(System.tmp_dir())
+    |> Enum.find(&File.dir?/1)
   end
 
   defp default_database_root(user_home, temp_dir, mkdir_fun) when is_function(mkdir_fun, 1) do
