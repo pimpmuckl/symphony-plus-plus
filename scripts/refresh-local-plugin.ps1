@@ -1,5 +1,6 @@
 param(
   [string]$MarketplacePath,
+  [string]$MarketplaceName,
   [string]$CodexHome = $(if ($env:CODEX_HOME) { $env:CODEX_HOME } else { "$HOME/.codex" }),
   [string]$PluginName = "all",
   [switch]$ValidateInstalledCache
@@ -7,6 +8,20 @@ param(
 
 $ErrorActionPreference = "Stop"
 $SymppPluginPackageNames = @("symphony-plus-plus", "symphony-plus-plus-mcp")
+
+function Quote-PowerShellLiteral([string]$Value) {
+  return "'" + ($Value -replace "'", "''") + "'"
+}
+
+function Get-AvailablePowerShellCommandName {
+  foreach ($candidate in @("pwsh", "powershell.exe", "powershell")) {
+    if (Get-Command $candidate -ErrorAction SilentlyContinue) {
+      return $candidate
+    }
+  }
+
+  return "powershell"
+}
 
 function Resolve-StrictPath([string]$Path) {
   return [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Path).Path)
@@ -147,6 +162,16 @@ function Assert-SafeVersionSegment([string]$Version) {
 
   if ($Version.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0 -or $Version.Contains("/") -or $Version.Contains("\")) {
     throw "Plugin manifest version is not safe for a cache directory name: $Version"
+  }
+}
+
+function Assert-SafeCacheSegment([string]$Value, [string]$Label) {
+  if ([string]::IsNullOrWhiteSpace($Value)) {
+    throw "$Label must be non-empty."
+  }
+
+  if ($Value.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0 -or $Value.Contains("/") -or $Value.Contains("\")) {
+    throw "$Label is not safe for a cache directory name: $Value"
   }
 }
 
@@ -341,10 +366,11 @@ if ([string]::IsNullOrWhiteSpace($MarketplacePath)) {
 
 $marketplaceFile = Resolve-StrictPath $MarketplacePath
 $marketplace = Get-Content -LiteralPath $marketplaceFile -Raw | ConvertFrom-Json
-$marketplaceName = [string]$marketplace.name
+$marketplaceName = if ([string]::IsNullOrWhiteSpace($MarketplaceName)) { [string]$marketplace.name } else { $MarketplaceName }
 if ([string]::IsNullOrWhiteSpace($marketplaceName)) {
   throw "Marketplace file must include a top-level name."
 }
+Assert-SafeCacheSegment $marketplaceName "Marketplace name"
 
 if ($PluginName -in @("all", "*")) {
   $selectedPluginNames = @(
@@ -359,9 +385,9 @@ if ($PluginName -in @("all", "*")) {
 
   foreach ($selectedPluginName in $selectedPluginNames) {
     if ($ValidateInstalledCache) {
-      & $PSCommandPath -MarketplacePath $marketplaceFile -CodexHome $CodexHome -PluginName $selectedPluginName -ValidateInstalledCache
+      & $PSCommandPath -MarketplacePath $marketplaceFile -MarketplaceName $marketplaceName -CodexHome $CodexHome -PluginName $selectedPluginName -ValidateInstalledCache
     } else {
-      & $PSCommandPath -MarketplacePath $marketplaceFile -CodexHome $CodexHome -PluginName $selectedPluginName
+      & $PSCommandPath -MarketplacePath $marketplaceFile -MarketplaceName $marketplaceName -CodexHome $CodexHome -PluginName $selectedPluginName
     }
   }
 
@@ -424,3 +450,7 @@ Write-Host "  local target: $localTargetRoot"
 Write-Host "  version target: $versionTargetRoot"
 Write-Host ""
 Write-Host "Restart or reload Codex to pick up refreshed plugin skills and MCP servers."
+Write-Host "Run the activation doctor to inspect enablement and next actions without mutating config:"
+$doctorScript = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "plugins/symphony-plus-plus/scripts/diagnose-mcp-lifecycle.ps1"))
+$doctorPowerShell = Get-AvailablePowerShellCommandName
+Write-Host "  $doctorPowerShell -NoProfile -File $(Quote-PowerShellLiteral $doctorScript) -CodexHome $(Quote-PowerShellLiteral $codexHomePath) -MarketplaceName $(Quote-PowerShellLiteral $marketplaceName) -Doctor"

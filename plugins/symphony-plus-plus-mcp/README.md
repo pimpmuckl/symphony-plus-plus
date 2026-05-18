@@ -28,6 +28,36 @@ that need MCP tools registered before the model starts. If the cockpit/local
 daemon is not already running, MCP tools may be unavailable, but this bundled
 plugin target should not spawn a per-session Elixir process.
 
+## Activation
+
+Enable this package only in the config/Codex home used for dedicated
+Symphony++ WorkRequest or WorkPackage sessions:
+
+```toml
+[plugins."symphony-plus-plus-mcp@jonat-local"]
+enabled = true
+```
+
+Then restart or reload that dedicated Codex session. Plugin MCP tools are
+registered at session startup; an already-open session that only loaded
+`symphony-plus-plus@jonat-local` can show the default Solo skill while still
+having no `symphony_plus_plus` MCP tool namespace.
+
+From the repository root, the activation doctor explains the current state and
+next action:
+
+```powershell
+.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName jonat-local -Doctor
+```
+
+The doctor checks cache, config, and the local HTTP daemon. It cannot inspect
+tools already registered inside an open Codex model session; if the doctor is
+healthy but tools are still absent, restart or reload the dedicated MCP-enabled
+session.
+
+Keep this companion out of generic worker, `worker_smart`, review-suite, and
+`codex review` configs so ordinary review and execution sessions stay MCP-clean.
+
 To prove the daemon independently of Codex plugin loading, start
 `mix sympp.cockpit` and run this from the source repository checkout root. This
 helper is not copied into installed plugin cache directories:

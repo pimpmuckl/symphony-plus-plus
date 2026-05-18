@@ -32,6 +32,22 @@ cache from the repository root:
 Then reload Codex and start a new session. Existing sessions may keep the old
 skill and MCP registration list.
 
+If the default Symphony++ skill is visible but the `symphony_plus_plus` MCP
+tools are missing, run the activation doctor from the repository root:
+
+```powershell
+.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName jonat-local -Doctor
+```
+
+The normal repair for `solo_ready_mcp_companion_not_enabled` is to enable
+`[plugins."symphony-plus-plus-mcp@jonat-local"] enabled = true` only in the
+dedicated S++ MCP config/Codex home, then restart or reload that dedicated
+session. Do not add the MCP companion to generic worker, `worker_smart`,
+review-suite, or `codex review` configs.
+The doctor checks cache, config, and the local HTTP daemon; it cannot inspect
+the tool list already registered inside an open Codex model session. Treat
+session restart/reload as part of the repair after enablement or cache changes.
+
 For normal operator use, keep one durable SQLite ledger path handy:
 
 ```powershell

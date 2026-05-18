@@ -3,6 +3,7 @@ param(
   [string]$MarketplaceName = "*",
   [string]$RepoRoot,
   [switch]$SelfTest,
+  [switch]$Doctor,
   [switch]$Json
 )
 
@@ -24,6 +25,154 @@ function Normalize-ComparablePath([string]$Path) {
   }
 
   return $fullPath.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar).ToLowerInvariant()
+}
+
+function Quote-PowerShellLiteral([string]$Value) {
+  return "'" + ($Value -replace "'", "''") + "'"
+}
+
+function Test-SourceCheckoutRoot([string]$Path) {
+  $fullPath = Resolve-OptionalFullPath $Path
+  if (-not $fullPath) {
+    return $false
+  }
+
+  return (Test-Path -LiteralPath (Join-Path $fullPath "elixir/mix.exs")) -and
+    (Test-Path -LiteralPath (Join-Path $fullPath "scripts/refresh-local-plugin.ps1")) -and
+    (Test-Path -LiteralPath (Join-Path $fullPath "scripts/smoke-sympp-mcp-http.ps1"))
+}
+
+function Get-SourceCheckoutFromPluginRoot([string]$PluginRoot) {
+  if ([string]::IsNullOrWhiteSpace($PluginRoot)) {
+    return $null
+  }
+
+  $candidate = Split-Path (Split-Path $PluginRoot -Parent) -Parent
+  if (Test-SourceCheckoutRoot $candidate) {
+    return Resolve-OptionalFullPath $candidate
+  }
+
+  return $null
+}
+
+function Get-SourceCheckoutFromCurrentDirectory {
+  try {
+    $candidate = (Get-Location).ProviderPath
+  } catch {
+    return $null
+  }
+
+  while (-not [string]::IsNullOrWhiteSpace($candidate)) {
+    if (Test-SourceCheckoutRoot $candidate) {
+      return Resolve-OptionalFullPath $candidate
+    }
+
+    $parent = Split-Path $candidate -Parent
+    if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $candidate) {
+      break
+    }
+    $candidate = $parent
+  }
+
+  return $null
+}
+
+function Test-PackageCanProvideSourceRootHint($Package) {
+  if ($null -eq $Package) {
+    return $false
+  }
+
+  if ($Package.package_name -eq "symphony-plus-plus") {
+    return Test-DefaultPackageReady $Package
+  }
+
+  if ($Package.package_name -eq "symphony-plus-plus-mcp") {
+    return Test-McpCompanionPackageReady $Package
+  }
+
+  return $false
+}
+
+function Get-UsableSourceHintRoots($Packages) {
+  return @(
+    $Packages |
+      Where-Object { Test-PackageCanProvideSourceRootHint $_ } |
+      ForEach-Object { Resolve-OptionalFullPath $_.source_root_hint } |
+      Where-Object { Test-SourceCheckoutRoot $_ } |
+      Sort-Object -Unique
+  )
+}
+
+function New-SourceCheckoutStatus([string]$Status, [string]$Root, [string]$Note = $null) {
+  return [pscustomobject]@{
+    status = $Status
+    root = $Root
+    note = $Note
+  }
+}
+
+function Resolve-ReadinessSourceCheckout([string]$PluginRoot, [string]$ProvidedRepoRoot, $PreferredPackages) {
+  if (Test-SourceCheckoutRoot $ProvidedRepoRoot) {
+    return New-SourceCheckoutStatus "repo_root_parameter" (Resolve-OptionalFullPath $ProvidedRepoRoot)
+  }
+
+  $sourceCheckoutRoot = Get-SourceCheckoutFromPluginRoot $PluginRoot
+  if ($sourceCheckoutRoot) {
+    return New-SourceCheckoutStatus "source_plugin_root" $sourceCheckoutRoot
+  }
+
+  $sourceCheckoutRoot = Get-SourceCheckoutFromCurrentDirectory
+  if ($sourceCheckoutRoot) {
+    return New-SourceCheckoutStatus "current_working_directory" $sourceCheckoutRoot
+  }
+
+  $preferredHintRoots = Get-UsableSourceHintRoots $PreferredPackages
+  if ($preferredHintRoots.Count -eq 1) {
+    return New-SourceCheckoutStatus "installed_cache_source_root_hint" (@($preferredHintRoots)[0])
+  }
+
+  if ($preferredHintRoots.Count -gt 1) {
+    return New-SourceCheckoutStatus "ambiguous_selected_installed_cache_source_root_hints" $null "Selected installed caches point at multiple usable source roots; rerun this doctor with -RepoRoot <path-to-symphony-plus-plus-checkout>."
+  }
+
+  return New-SourceCheckoutStatus "not_found" $null "No Symphony++ source checkout could be inferred; rerun this doctor with -RepoRoot <path-to-symphony-plus-plus-checkout>."
+}
+
+function New-SourceScriptCommand([string]$SourceCheckoutRoot, [string]$RelativeScript, [string]$Arguments = $null) {
+  if ([string]::IsNullOrWhiteSpace($SourceCheckoutRoot)) {
+    return $null
+  }
+
+  $scriptPath = [System.IO.Path]::GetFullPath((Join-Path $SourceCheckoutRoot $RelativeScript))
+  $command = "& $(Quote-PowerShellLiteral $scriptPath)"
+  if (-not [string]::IsNullOrWhiteSpace($Arguments)) {
+    $command = "$command $Arguments"
+  }
+
+  return $command
+}
+
+function New-CockpitCommand([string]$SourceCheckoutRoot) {
+  if ([string]::IsNullOrWhiteSpace($SourceCheckoutRoot)) {
+    return $null
+  }
+
+  $elixirRoot = [System.IO.Path]::GetFullPath((Join-Path $SourceCheckoutRoot "elixir"))
+  return "Set-Location $(Quote-PowerShellLiteral $elixirRoot); mix sympp.cockpit"
+}
+
+function New-SourceCheckoutAction([string]$Code, [string]$Lane, [string]$Message, $SourceCheckout, [string]$Command) {
+  if (-not [string]::IsNullOrWhiteSpace($Command)) {
+    return New-ReadinessAction $Code $Lane $Message $Command
+  }
+
+  $note = if ($null -ne $SourceCheckout -and -not [string]::IsNullOrWhiteSpace([string]$SourceCheckout.note)) {
+    [string]$SourceCheckout.note
+  } else {
+    "No Symphony++ source checkout could be inferred; rerun this doctor with -RepoRoot <path-to-symphony-plus-plus-checkout>."
+  }
+
+  return New-ReadinessAction $Code $Lane "$Message $note"
 }
 
 function Sanitize-CommandLine([string]$CommandLine) {
@@ -78,6 +227,21 @@ function Invoke-SelfTest {
         throw "Sanitize-CommandLine leaked '$secret' for command: $($case.Command)"
       }
     }
+  }
+
+  $quoted = Quote-PowerShellLiteral "C:\Symphony Roots\O'Hara"
+  if ($quoted -ne "'C:\Symphony Roots\O''Hara'") {
+    throw "Quote-PowerShellLiteral did not emit a valid single-quoted literal."
+  }
+
+  $sourceCommand = New-SourceScriptCommand "C:\Symphony Roots\Repo" "scripts/smoke-sympp-mcp-http.ps1" "-Json"
+  if ($sourceCommand -ne "& 'C:\Symphony Roots\Repo\scripts\smoke-sympp-mcp-http.ps1' -Json") {
+    throw "New-SourceScriptCommand did not emit an absolute PowerShell invocation."
+  }
+
+  $missingSourceAction = New-SourceCheckoutAction "verify_http_mcp" "workrequest_mcp" "Verify the local HTTP MCP daemon." ([pscustomobject]@{ note = "No checkout." }) $null
+  if ($missingSourceAction.PSObject.Properties["command"] -or $missingSourceAction.message -notmatch "No checkout") {
+    throw "New-SourceCheckoutAction should omit commands and explain missing source roots."
   }
 
   Write-Host "Sanitize-CommandLine self-test passed."
@@ -619,8 +783,382 @@ function Get-PluginConfigSummary([string]$ConfigPath, [string]$MarketplaceName) 
     exists = $true
     symphony_plugin_enabled = $selectedEnabled
     symphony_plugin_entries = @($entries)
+    symphony_default_plugin_enabled = Get-PluginEnabledFromEntries $entries "symphony-plus-plus" $MarketplaceName
+    symphony_mcp_companion_plugin_enabled = Get-PluginEnabledFromEntries $entries "symphony-plus-plus-mcp" $MarketplaceName
     global_sympp_mcp_entry = [bool]($lines | Where-Object { $_ -match '^\[mcp_servers\.symphony_plus_plus\]' } | Select-Object -First 1)
   }
+}
+
+function Get-PluginEnabledFromEntries($Entries, [string]$PluginName, [string]$MarketplaceName) {
+  $matchingEntries = @(
+    $Entries |
+      Where-Object {
+        $_.plugin_name -eq $PluginName -and
+        ($MarketplaceName -eq "*" -or $_.marketplace_name -eq $MarketplaceName)
+      }
+  )
+
+  if (@($matchingEntries | Where-Object { $_.enabled -eq $true }).Count -gt 0) {
+    return $true
+  }
+  if (@($matchingEntries | Where-Object { $_.enabled -eq $false }).Count -gt 0) {
+    return $false
+  }
+
+  return $null
+}
+
+function New-ReadinessAction([string]$Code, [string]$Lane, [string]$Message, [string]$Command = $null) {
+  $action = [ordered]@{
+    code = $Code
+    lane = $Lane
+    message = $Message
+  }
+  if (-not [string]::IsNullOrWhiteSpace($Command)) {
+    $action["command"] = $Command
+  }
+
+  return [pscustomobject]$action
+}
+
+function New-ReadinessWarning([string]$Code, [string]$Message) {
+  return [pscustomobject]@{
+    code = $Code
+    message = $Message
+  }
+}
+
+function Get-ActivationConfigKey([string]$PluginName, [string]$MarketplaceName) {
+  if ([string]::IsNullOrWhiteSpace($MarketplaceName) -or $MarketplaceName -eq "*") {
+    return "$PluginName@<marketplace>"
+  }
+
+  return "$PluginName@$MarketplaceName"
+}
+
+function Test-ActivationMarketplaceAmbiguous($CachePackages, [string]$MarketplaceName) {
+  if ($MarketplaceName -ne "*") {
+    return $false
+  }
+
+  $marketplaces = @(
+    $CachePackages |
+      Where-Object { $SymppPluginPackageNames -contains $_.package_name } |
+      ForEach-Object { [string]$_.marketplace_name } |
+      Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+      Sort-Object -Unique
+  )
+
+  return $marketplaces.Count -gt 1
+}
+
+function Get-PreferredActivationPackage($CachePackages, [string]$PackageName, [string]$MarketplaceName) {
+  $packages = @(
+    $CachePackages |
+      Where-Object {
+        $_.package_name -eq $PackageName -and
+        ($MarketplaceName -eq "*" -or $_.marketplace_name -eq $MarketplaceName)
+      } |
+      ForEach-Object {
+        $isReady = if ($PackageName -eq "symphony-plus-plus") {
+          Test-DefaultPackageReady $_
+        } elseif ($PackageName -eq "symphony-plus-plus-mcp") {
+          Test-McpCompanionPackageReady $_
+        } else {
+          $false
+        }
+        $readyPriority = if ($isReady) { 0 } else { 1 }
+        $priority = if ($_.label -eq "local") {
+          0
+        } elseif (-not [string]::IsNullOrWhiteSpace([string]$_.manifest_version) -and $_.label -eq $_.manifest_version) {
+          1
+        } else {
+          2
+        }
+        $parsedVersion = $null
+        $versionSortKey = if ([System.Version]::TryParse([string]$_.manifest_version, [ref]$parsedVersion)) {
+          $parsedVersion
+        } else {
+          [System.Version]::new(0, 0)
+        }
+
+        [pscustomobject]@{
+          ready_priority = $readyPriority
+          priority = $priority
+          version_sort_key = $versionSortKey
+          package = $_
+        }
+      } |
+      Sort-Object ready_priority, priority, @{ Expression = { [string]$_.package.marketplace_name } }, @{ Expression = { $_.version_sort_key }; Descending = $true }, @{ Expression = { [string]$_.package.label }; Descending = $true }
+  )
+
+  if ($packages.Count -eq 0) {
+    return $null
+  }
+
+  return $packages[0].package
+}
+
+function Get-PreferredActivationSourceHintPackage($CachePackages, [string]$PackageName, [string]$MarketplaceName) {
+  $packages = @(
+    $CachePackages |
+      Where-Object {
+        $_.package_name -eq $PackageName -and
+        ($MarketplaceName -eq "*" -or $_.marketplace_name -eq $MarketplaceName) -and
+        (Test-PackageCanProvideSourceRootHint $_) -and
+        (Test-SourceCheckoutRoot (Resolve-OptionalFullPath $_.source_root_hint))
+      } |
+      ForEach-Object {
+        $priority = if ($_.label -eq "local") {
+          0
+        } elseif (-not [string]::IsNullOrWhiteSpace([string]$_.manifest_version) -and $_.label -eq $_.manifest_version) {
+          1
+        } else {
+          2
+        }
+        $parsedVersion = $null
+        $versionSortKey = if ([System.Version]::TryParse([string]$_.manifest_version, [ref]$parsedVersion)) {
+          $parsedVersion
+        } else {
+          [System.Version]::new(0, 0)
+        }
+
+        [pscustomobject]@{
+          priority = $priority
+          version_sort_key = $versionSortKey
+          package = $_
+        }
+      } |
+      Sort-Object priority, @{ Expression = { [string]$_.package.marketplace_name } }, @{ Expression = { $_.version_sort_key }; Descending = $true }, @{ Expression = { [string]$_.package.label }; Descending = $true }
+  )
+
+  if ($packages.Count -eq 0) {
+    return $null
+  }
+
+  return $packages[0].package
+}
+
+function Get-ActivationSourceHintPackages($CachePackages, [string]$MarketplaceName) {
+  return @(
+    foreach ($packageName in $SymppPluginPackageNames) {
+      Get-PreferredActivationSourceHintPackage $CachePackages $packageName $MarketplaceName
+    }
+  )
+}
+
+function Test-DefaultPackageReady($Package) {
+  return $null -ne $Package -and
+    $Package.package_name -eq "symphony-plus-plus" -and
+    $Package.manifest_exists -eq $true -and
+    [string]::IsNullOrWhiteSpace([string]$Package.manifest_parse_error) -and
+    $Package.default_plugin_lifecycle_status -eq "skill_only"
+}
+
+function Test-McpCompanionPackageReady($Package) {
+  return $null -ne $Package -and
+    $Package.package_name -eq "symphony-plus-plus-mcp" -and
+    $Package.manifest_exists -eq $true -and
+    [string]::IsNullOrWhiteSpace([string]$Package.manifest_parse_error) -and
+    $Package.default_plugin_lifecycle_status -eq "opt_in_mcp_plugin_bundles_mcp" -and
+    $Package.reference_mcp_server_status -eq "ok"
+}
+
+function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName, $SourceCheckout, [string]$CodexHomePath) {
+  $marketplaceAmbiguous = Test-ActivationMarketplaceAmbiguous $CachePackages $MarketplaceName
+  $defaultPackage = if ($marketplaceAmbiguous) { $null } else { Get-PreferredActivationPackage $CachePackages "symphony-plus-plus" $MarketplaceName }
+  $companionPackage = if ($marketplaceAmbiguous) { $null } else { Get-PreferredActivationPackage $CachePackages "symphony-plus-plus-mcp" $MarketplaceName }
+  $defaultMarketplace = if ($null -ne $defaultPackage -and -not [string]::IsNullOrWhiteSpace([string]$defaultPackage.marketplace_name)) {
+    [string]$defaultPackage.marketplace_name
+  } elseif ($MarketplaceName -ne "*") {
+    $MarketplaceName
+  } else {
+    $null
+  }
+  $companionMarketplace = if ($null -ne $companionPackage -and -not [string]::IsNullOrWhiteSpace([string]$companionPackage.marketplace_name)) {
+    [string]$companionPackage.marketplace_name
+  } elseif ($MarketplaceName -ne "*") {
+    $MarketplaceName
+  } else {
+    $defaultMarketplace
+  }
+
+  $configExists = $Config.exists -eq $true
+  $defaultEnabled = if ($configExists) { Get-PluginEnabledFromEntries $Config.symphony_plugin_entries "symphony-plus-plus" $defaultMarketplace } else { $null }
+  $companionEnabled = if ($configExists) { Get-PluginEnabledFromEntries $Config.symphony_plugin_entries "symphony-plus-plus-mcp" $companionMarketplace } else { $null }
+  $defaultReady = Test-DefaultPackageReady $defaultPackage
+  $companionReady = Test-McpCompanionPackageReady $companionPackage
+  $companionProvidesSoloSkills = $companionReady -and $companionEnabled -eq $true
+  $sourceRoot = if ($null -ne $SourceCheckout) { [string]$SourceCheckout.root } else { $null }
+  $refreshCodexHomeArg = if ([string]::IsNullOrWhiteSpace($CodexHomePath)) { "" } else { "-CodexHome $(Quote-PowerShellLiteral $CodexHomePath) " }
+  $defaultRefreshMarketplaceArg = if ([string]::IsNullOrWhiteSpace($defaultMarketplace)) { "" } else { "-MarketplaceName $(Quote-PowerShellLiteral $defaultMarketplace) " }
+  $companionRefreshMarketplaceArg = if ([string]::IsNullOrWhiteSpace($companionMarketplace)) { "" } else { "-MarketplaceName $(Quote-PowerShellLiteral $companionMarketplace) " }
+  $actions = @()
+  $warnings = @()
+
+  if (-not $configExists) {
+    $actions += New-ReadinessAction "create_codex_config" "config" "Create or restore the Codex config at $($Config.path) before plugin enablement can be diagnosed."
+  }
+  if ($marketplaceAmbiguous) {
+    $actions += New-ReadinessAction "rerun_with_marketplace" "config" "Multiple Symphony++ plugin marketplaces are installed; rerun this doctor with -MarketplaceName <marketplace> before using package-specific repair actions."
+  }
+
+  $defaultStatus = if (-not $configExists) {
+    "config_missing"
+  } elseif ($companionProvidesSoloSkills) {
+    "ready_via_mcp_companion"
+  } elseif (-not $defaultReady) {
+    "default_plugin_cache_missing_or_invalid"
+  } elseif ($defaultEnabled -ne $true) {
+    "default_plugin_not_enabled"
+  } else {
+    "ready"
+  }
+
+  if (-not $marketplaceAmbiguous -and -not $defaultReady -and -not $companionProvidesSoloSkills) {
+    $actions += New-SourceCheckoutAction "refresh_default_plugin_cache" "solo_session" "Refresh the skill-only Symphony++ plugin cache." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($defaultRefreshMarketplaceArg)-PluginName symphony-plus-plus -ValidateInstalledCache")
+  } elseif (-not $marketplaceAmbiguous -and $configExists -and $defaultEnabled -ne $true -and -not $companionProvidesSoloSkills) {
+    $defaultConfigKey = Get-ActivationConfigKey "symphony-plus-plus" $defaultMarketplace
+    $actions += New-ReadinessAction "enable_default_plugin" "solo_session" "Enable the default skill-only plugin for Solo Session planning: [plugins.`"$defaultConfigKey`"] enabled = true."
+  }
+
+  $companionStatus = if (-not $configExists) {
+    "config_missing"
+  } elseif (-not $companionReady) {
+    if ($null -eq $companionPackage) {
+      "companion_cache_missing"
+    } else {
+      "companion_config_invalid"
+    }
+  } elseif ($companionEnabled -ne $true) {
+    "companion_installed_not_enabled"
+  } elseif ($companionPackage.http_mcp_reachability_status -eq "mcp_endpoint_available") {
+    "ready"
+  } elseif ($companionPackage.http_mcp_reachability_status -eq "unreachable") {
+    "endpoint_unreachable"
+  } else {
+    [string]$companionPackage.http_mcp_reachability_status
+  }
+
+  if (-not $marketplaceAmbiguous -and -not $companionReady) {
+    $actions += New-SourceCheckoutAction "refresh_mcp_companion_cache" "workrequest_mcp" "Refresh the opt-in MCP companion cache and validate its HTTP .mcp.json." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($companionRefreshMarketplaceArg)-PluginName symphony-plus-plus-mcp -ValidateInstalledCache")
+  } elseif (-not $marketplaceAmbiguous -and $configExists -and $companionEnabled -ne $true) {
+    $companionConfigKey = Get-ActivationConfigKey "symphony-plus-plus-mcp" $companionMarketplace
+    $actions += New-ReadinessAction "enable_mcp_companion" "workrequest_mcp" "Enable the opt-in MCP companion only in a dedicated S++ config/session: [plugins.`"$companionConfigKey`"] enabled = true."
+    $actions += New-ReadinessAction "restart_codex_session" "workrequest_mcp" "Restart or reload that dedicated Codex session so plugin MCP servers register before the model starts."
+  } elseif (-not $marketplaceAmbiguous -and $companionStatus -eq "endpoint_unreachable") {
+    $actions += New-SourceCheckoutAction "start_cockpit" "workrequest_mcp" "Start the local Symphony++ cockpit/HTTP MCP daemon." $SourceCheckout (New-CockpitCommand $sourceRoot)
+    $actions += New-SourceCheckoutAction "verify_http_mcp" "workrequest_mcp" "Verify the local HTTP MCP daemon independently of Codex plugin loading." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/smoke-sympp-mcp-http.ps1")
+  } elseif (-not $marketplaceAmbiguous -and $companionStatus -eq "ready") {
+    $actions += New-ReadinessAction "verify_codex_session" "workrequest_mcp" "If the current Codex session still lacks symphony_plus_plus tools, restart or reload the dedicated MCP-enabled session; this doctor verifies config, cache, and daemon readiness, not the already-open model tool list."
+  }
+
+  if ($Config.global_sympp_mcp_entry -eq $true) {
+    $warnings += New-ReadinessWarning "global_sympp_mcp_entry_present" "A top-level [mcp_servers.symphony_plus_plus] entry is present. Keep this out of generic worker/review configs unless every session using that config should see S++ MCP."
+    $actions += New-ReadinessAction "relocate_global_sympp_mcp_entry" "config" "Remove the top-level [mcp_servers.symphony_plus_plus] entry from generic configs, or move S++ MCP activation into a dedicated plugin-enabled S++ config/session."
+  }
+
+  $soloReady = $defaultStatus -eq "ready" -or $defaultStatus -eq "ready_via_mcp_companion"
+  $overallStatus = if (-not $configExists) {
+    "config_missing"
+  } elseif ($marketplaceAmbiguous) {
+    "multiple_marketplaces_need_selection"
+  } elseif ($Config.global_sympp_mcp_entry -eq $true) {
+    "global_footgun_present"
+  } elseif ($soloReady -and $companionStatus -eq "ready") {
+    "healthy_local_workrequest_mcp"
+  } elseif ($defaultStatus -eq "ready" -and $companionStatus -eq "companion_installed_not_enabled") {
+    "solo_ready_mcp_companion_not_enabled"
+  } elseif ($companionStatus -eq "endpoint_unreachable") {
+    "mcp_companion_endpoint_unreachable"
+  } elseif ($companionStatus -eq "companion_installed_not_enabled") {
+    "mcp_companion_not_enabled"
+  } elseif ($defaultStatus -eq "ready") {
+    "solo_ready_mcp_not_ready"
+  } else {
+    "needs_repair"
+  }
+
+  return [pscustomobject]@{
+    overall_status = $overallStatus
+    marketplace_name = if ($MarketplaceName -eq "*" -and $defaultMarketplace -eq $companionMarketplace -and -not [string]::IsNullOrWhiteSpace($defaultMarketplace)) { $defaultMarketplace } else { $MarketplaceName }
+    source_checkout = $SourceCheckout
+    solo_session = [pscustomobject]@{
+      status = $defaultStatus
+      plugin_config_key = Get-ActivationConfigKey "symphony-plus-plus" $defaultMarketplace
+      plugin_enabled = $defaultEnabled
+      cache_label = if ($null -ne $defaultPackage) { $defaultPackage.label } else { $null }
+      cache_lifecycle = if ($null -ne $defaultPackage) { $defaultPackage.default_plugin_lifecycle_status } else { $null }
+    }
+    workrequest_mcp = [pscustomobject]@{
+      status = $companionStatus
+      companion_config_key = Get-ActivationConfigKey "symphony-plus-plus-mcp" $companionMarketplace
+      companion_plugin_enabled = $companionEnabled
+      cache_label = if ($null -ne $companionPackage) { $companionPackage.label } else { $null }
+      cache_lifecycle = if ($null -ne $companionPackage) { $companionPackage.default_plugin_lifecycle_status } else { $null }
+      reference_mcp_server_status = if ($null -ne $companionPackage) { $companionPackage.reference_mcp_server_status } else { $null }
+      http_mcp_reachability_status = if ($null -ne $companionPackage) { $companionPackage.http_mcp_reachability_status } else { $null }
+      url = "http://127.0.0.1:4057/mcp"
+    }
+    next_actions = @($actions)
+    warnings = @($warnings)
+    session_visibility_note = "This doctor verifies source/cache/config and the local HTTP daemon. It cannot inspect tools already registered inside an open Codex model session; restart or reload the dedicated MCP-enabled session after config/cache changes."
+    generic_review_boundary = "Keep symphony-plus-plus-mcp out of generic worker, worker_smart, review-suite, and codex review configs; use a dedicated S++ MCP-enabled config/session instead."
+  }
+}
+
+function Write-DoctorSummary($Summary) {
+  $readiness = $Summary.readiness
+  Write-Host "Symphony++ activation doctor"
+  Write-Host "  overall: $($readiness.overall_status)"
+  Write-Host "  codex_home: $($Summary.codex_home)"
+  Write-Host "  marketplace: $($readiness.marketplace_name)"
+  Write-Host "  source checkout: $($readiness.source_checkout.status) $($readiness.source_checkout.root)"
+  if (-not [string]::IsNullOrWhiteSpace([string]$readiness.source_checkout.note)) {
+    Write-Host "  source note: $($readiness.source_checkout.note)"
+  }
+  Write-Host "  config: $($Summary.codex_config.path)"
+  Write-Host ""
+  Write-Host "Solo Session skill package"
+  Write-Host "  status: $($readiness.solo_session.status)"
+  Write-Host "  config key: $($readiness.solo_session.plugin_config_key)"
+  Write-Host "  enabled: $($readiness.solo_session.plugin_enabled)"
+  Write-Host "  cache: $($readiness.solo_session.cache_label) / $($readiness.solo_session.cache_lifecycle)"
+  Write-Host ""
+  Write-Host "WorkRequest MCP companion"
+  Write-Host "  status: $($readiness.workrequest_mcp.status)"
+  Write-Host "  config key: $($readiness.workrequest_mcp.companion_config_key)"
+  Write-Host "  enabled: $($readiness.workrequest_mcp.companion_plugin_enabled)"
+  Write-Host "  cache: $($readiness.workrequest_mcp.cache_label) / $($readiness.workrequest_mcp.cache_lifecycle)"
+  Write-Host "  server: $($readiness.workrequest_mcp.reference_mcp_server_status)"
+  Write-Host "  endpoint: $($readiness.workrequest_mcp.http_mcp_reachability_status)"
+  Write-Host "  url: $($readiness.workrequest_mcp.url)"
+  Write-Host ""
+
+  if (@($readiness.warnings).Count -gt 0) {
+    Write-Host "Warnings:"
+    foreach ($warning in @($readiness.warnings)) {
+      Write-Host "  - [$($warning.code)] $($warning.message)"
+    }
+    Write-Host ""
+  }
+
+  if (@($readiness.next_actions).Count -gt 0) {
+    Write-Host "Next actions:"
+    foreach ($action in @($readiness.next_actions)) {
+      Write-Host "  - [$($action.code)] $($action.message)"
+      if ($action.PSObject.Properties["command"]) {
+        Write-Host "    $($action.command)"
+      }
+    }
+  } else {
+    Write-Host "Next actions: none"
+  }
+
+  Write-Host ""
+  Write-Host "Session visibility: $($readiness.session_visibility_note)"
+  Write-Host ""
+  Write-Host "Boundary: $($readiness.generic_review_boundary)"
 }
 
 $pluginRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
@@ -857,8 +1395,22 @@ $summary = [pscustomobject]@{
   unattributed_launcher_parents = @($unattributedLauncherParents)
 }
 
+$readinessSourcePackages = @(
+  if (-not (Test-ActivationMarketplaceAmbiguous $cachePackages $MarketplaceName)) {
+    Get-ActivationSourceHintPackages $cachePackages $MarketplaceName
+  }
+) | Where-Object { $null -ne $_ }
+$sourceCheckout = Resolve-ReadinessSourceCheckout $pluginRoot $RepoRoot $readinessSourcePackages
+$summary | Add-Member -NotePropertyName source_checkout -NotePropertyValue $sourceCheckout
+$summary | Add-Member -NotePropertyName readiness -NotePropertyValue (Get-ReadinessSummary $summary.installed_cache $summary.codex_config $MarketplaceName $sourceCheckout $codexHomePath)
+
 if ($Json) {
   $summary | ConvertTo-Json -Depth 8
+  exit 0
+}
+
+if ($Doctor) {
+  Write-DoctorSummary $summary
   exit 0
 }
 
@@ -872,6 +1424,7 @@ if ($summary.process_scan_note) {
   Write-Host "  process_scan_note: $($summary.process_scan_note)"
 }
 Write-Host "  plugin_enabled: $($summary.codex_config.symphony_plugin_enabled)"
+Write-Host "  readiness: $($summary.readiness.overall_status)"
 Write-Host "  global_sympp_mcp_entry: $($summary.codex_config.global_sympp_mcp_entry)"
 Write-Host "  source_mcp_shape: $($summary.source_package.mcp_shape)"
 Write-Host "  live start-sympp-mcp pwsh: $($summary.live_process_counts.start_sympp_mcp_pwsh)"
