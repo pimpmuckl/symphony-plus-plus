@@ -1,5 +1,6 @@
 (function () {
   var storageKey = "sympp.projectRail.pins.v1";
+  var applyScheduled = false;
 
   function readPins() {
     try {
@@ -43,7 +44,7 @@
         return stream.getAttribute("data-sympp-stream-id") === id;
       });
 
-      if (item) list.insertBefore(item, list.firstChild);
+      if (item && item !== list.firstChild) list.insertBefore(item, list.firstChild);
     });
   }
 
@@ -66,6 +67,16 @@
     Array.prototype.forEach.call(document.querySelectorAll("[data-sympp-project-rail]"), applyPins);
   }
 
+  function scheduleInit() {
+    if (applyScheduled) return;
+
+    applyScheduled = true;
+    (window.requestAnimationFrame || window.setTimeout)(function () {
+      applyScheduled = false;
+      init();
+    });
+  }
+
   document.addEventListener("click", function (event) {
     var button = event.target.closest && event.target.closest("[data-sympp-stream-pin]");
     if (!button) return;
@@ -74,5 +85,10 @@
   });
 
   document.addEventListener("DOMContentLoaded", init);
-  window.addEventListener("phx:update", init);
+  window.addEventListener("phx:update", scheduleInit);
+  window.addEventListener("phx:page-loading-stop", scheduleInit);
+
+  if (window.MutationObserver) {
+    new MutationObserver(scheduleInit).observe(document.body, { childList: true, subtree: true });
+  }
 })();

@@ -490,6 +490,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
       status: "human_info_needed"
     )
 
+    create_work_request!(
+      id: "WR-PROJECT-RAIL-ONLY",
+      title: "Request-only stream",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "request-only-branch",
+      status: "human_info_needed"
+    )
+
     create_solo_session!(
       caller_id: "project-rail-visible",
       title: "Visible stream solo",
@@ -534,6 +542,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
       live(local_conn(), "/sympp/board?kind=dashboard&repo=nextide/symphony-plus-plus&base_branch=feature/project-rail")
 
     assert filtered_html =~ ~s(href="board?kind=dashboard")
+    assert filtered_html =~ ~s(name="base_branch")
+    assert filtered_html =~ "request-only-branch"
+    assert filtered_html =~ "0 pkg / 1 req / 0 solo"
   end
 
   test "local operator board shows compact Solo Sessions grouped by lifecycle" do

@@ -109,6 +109,8 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       <% else %>
         <section class="sympp-board-toolbar" aria-label="Board filters">
           <form class="sympp-board-filters" method="get">
+            <input :if={stream_base_branch(@filters) != @empty_filter} type="hidden" name="base_branch" value={stream_base_branch(@filters)} />
+
             <label>
               <span>Kind</span>
               <select name="kind">
@@ -156,8 +158,8 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
               <p>Filter the cockpit by repo and base branch.</p>
             </div>
             <a
-              class={["sympp-stream-show-all", if(@filters.repo == @empty_filter and @filters.base_branch == @empty_filter, do: "active")]}
-              href={board_path(%{@filters | repo: @empty_filter, base_branch: @empty_filter})}
+              class={["sympp-stream-show-all", if(not stream_filter_active?(@filters), do: "active")]}
+              href={board_path(clear_stream_filters(@filters))}
             >
               Show All
             </a>
@@ -1200,9 +1202,8 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
   defp work_streams(board, work_requests, solo_sessions, filters) do
     cards = board |> board_view(stream_option_filters(filters)) |> visible_cards()
-    requests = if stream_options_include_work_requests?(filters), do: work_requests, else: []
 
-    (cards ++ requests ++ solo_sessions)
+    (cards ++ work_requests ++ solo_sessions)
     |> Enum.reduce(%{}, fn item, streams ->
       case stream_key(item) do
         nil ->
@@ -1221,8 +1222,17 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     %{filters | repo: @empty_filter, base_branch: @empty_filter}
   end
 
-  defp stream_options_include_work_requests?(%{kind: @empty_filter, phase: @empty_filter}), do: true
-  defp stream_options_include_work_requests?(_filters), do: false
+  defp stream_filter_active?(filters) do
+    Map.get(filters, :repo, @empty_filter) != @empty_filter or stream_base_branch(filters) != @empty_filter
+  end
+
+  defp stream_base_branch(filters), do: Map.get(filters, :base_branch, @empty_filter)
+
+  defp clear_stream_filters(filters) do
+    filters
+    |> Map.put(:repo, @empty_filter)
+    |> Map.put(:base_branch, @empty_filter)
+  end
 
   defp stream_counts(item, repo, base_branch) do
     %{
