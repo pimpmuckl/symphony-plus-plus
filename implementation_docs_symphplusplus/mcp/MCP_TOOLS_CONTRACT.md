@@ -275,7 +275,11 @@ The stdio transport is newline-delimited JSON. Long one-shot stdio invocations
 that include `tools/list` or `read_work_request` can produce large response
 lines, so callers must drain stdout concurrently or redirect stdout to a file.
 Waiting for process exit while stdout is not being read can deadlock the caller
-before later requests are processed.
+before later requests are processed. The private-file wrapper provides
+`run-mcp-local-file-once` for diagnostics that need to send a JSONL request
+file and spool stdout/stderr to files while keeping the work key out of
+prompts and logs. Caller-supplied output/error files must not already exist;
+generated spool files are created when output/error files are omitted.
 
 `attach_branch` requires `branch` and `head_sha`. When no PR head is attached,
 review packages are matched to the latest attached branch head so stale

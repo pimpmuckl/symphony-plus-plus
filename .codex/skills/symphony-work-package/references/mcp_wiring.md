@@ -139,6 +139,15 @@ The wrapper does not print the secret. It sets `SYMPP_WORK_KEY_SECRET` only for
 the MCP child process, and `sympp.mcp` claims or reconnects the grant with
 `--work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by <stable-worker-id>`.
 
+For one-shot diagnostics, do not run the long-lived stdio server under a parent
+that waits for exit before draining stdout. Claimed architect/worker
+`tools/list` responses can be large enough to fill the pipe. Use the spooling
+mode instead: `run-mcp-local-file-once -InputFile <jsonl> -OutputFile <jsonl>`
+on Windows, or `run-mcp-local-file-once --input-file <jsonl> --output-file
+<jsonl>` on non-Windows. Caller-supplied output/error files must not already
+exist. The secret still stays in the child process environment only, and the
+wrapper prints only a small JSON summary.
+
 ## Worker Claim
 
 Workers should start from `get_current_assignment()` after MCP initialize. If
