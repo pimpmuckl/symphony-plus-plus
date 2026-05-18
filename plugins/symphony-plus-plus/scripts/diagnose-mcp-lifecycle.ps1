@@ -534,6 +534,10 @@ function Invoke-SelfTest {
     throw "Find-TomlBooleanKeyAssignment treated a nested inline-table key as a top-level key."
   }
 
+  if ($null -ne (Find-TomlBooleanKeyAssignment '"symphony-plus-plus-mcp@jonat-local" = { noteenabled = false }' "enabled" 1)) {
+    throw "Find-TomlBooleanKeyAssignment treated a bare key suffix as a standalone enabled key."
+  }
+
   $quotedInlineEnabled = Find-TomlBooleanKeyAssignment '"symphony-plus-plus-mcp@jonat-local" = { "enabled" = true }' "enabled" 1
   if ($null -eq $quotedInlineEnabled -or $quotedInlineEnabled.value -ne "true") {
     throw "Find-TomlBooleanKeyAssignment did not find a quoted boolean key."
@@ -1429,6 +1433,19 @@ function Test-TomlTableHeaderLine([string]$Line) {
   return $Line -match "^\s*\[\[?\s*$keySegment(?:\s*\.\s*$keySegment)*\s*\]\]?\s*(?:#.*)?$"
 }
 
+function Test-TomlInlineKeyStart([string]$Line, [int]$Index) {
+  $cursor = $Index - 1
+  while ($cursor -ge 0 -and [char]::IsWhiteSpace($Line[$cursor])) {
+    $cursor -= 1
+  }
+
+  if ($cursor -lt 0) {
+    return $true
+  }
+
+  return $Line[$cursor] -eq "{" -or $Line[$cursor] -eq ","
+}
+
 function Find-TomlBooleanKeyAssignment([string]$Line, [string]$KeyName, [int]$TargetDepth = 0) {
   $index = 0
   $depthValue = 0
@@ -1492,7 +1509,7 @@ function Find-TomlBooleanKeyAssignment([string]$Line, [string]$KeyName, [int]$Ta
       continue
     }
 
-    $match = if ($depthValue -eq $TargetDepth) {
+    $match = if ($depthValue -eq $TargetDepth -and (Test-TomlInlineKeyStart $Line $index)) {
       [regex]::Match($Line.Substring($index), "^(\s*$keyToken\s*=\s*)(true|false)(?=\b)")
     } else {
       [System.Text.RegularExpressions.Match]::Empty
