@@ -241,6 +241,12 @@ agent-facing access to the `mix sympp.solo` CLI from source or installed
 plugin cache. They are convenience surfaces over the local Solo Session ledger,
 not orchestration.
 
+By default, Solo Session CLI and wrapper commands use the same shared
+machine-local Symphony++ ledger as the local cockpit and WorkRequest/
+WorkPackage CLI paths. Pass `--database <sqlite-path>` or set `SYMPP_DATABASE`
+only when a caller intentionally needs an isolated test, development, or manual
+ledger.
+
 Target MCP access for Solo Sessions is through the shared Symphony++ HTTP MCP
 endpoint described in `04_MCP_AND_SKILL_CONTRACT.md`. In local mode, that
 endpoint is backed by the single local Symphony++ daemon/cockpit process for the

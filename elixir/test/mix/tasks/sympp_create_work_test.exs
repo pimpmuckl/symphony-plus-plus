@@ -240,7 +240,7 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
              "file:" <> encoded_expanded_uri_path(relative_path) <> "?mode=rwc"
   end
 
-  test "defaults to the Mix project workflow ledger when database is omitted" do
+  test "defaults to the shared local Repo ledger when database is omitted" do
     previous_workflow = Application.get_env(:symphony_elixir, :workflow_file_path)
     previous_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
     unrelated_workflow = Path.join(System.tmp_dir!(), "unrelated-WORKFLOW.md")
@@ -261,6 +261,7 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
       assert Application.get_env(:symphony_elixir, :sympp_repo_database) == unrelated_database
 
       assert Repo.same_database_path?(database_path, expected_database_path)
+      assert Path.basename(database_path) == "symphony_plus_plus.sqlite3"
     after
       if previous_workflow do
         Application.put_env(:symphony_elixir, :workflow_file_path, previous_workflow)

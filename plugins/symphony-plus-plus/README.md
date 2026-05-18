@@ -224,12 +224,14 @@ Start the local cockpit/daemon first:
 
 ```powershell
 cd elixir
-mix sympp.cockpit --database <ledger.sqlite3>
+mix sympp.cockpit
 ```
 
 By default it prints `http://127.0.0.1:4057/sympp/board` and serves MCP at
-`http://127.0.0.1:4057/mcp`. Codex must load an MCP server configuration before
-the model session starts for the tools to be registered in that session. The
+`http://127.0.0.1:4057/mcp`, backed by the shared local Symphony++ default
+ledger. Pass `--database <ledger.sqlite3>` only for isolation. Codex must load
+an MCP server configuration before the model session starts for the tools to be
+registered in that session. The
 sibling `plugins/symphony-plus-plus-mcp` plugin is the bundled opt-in package
 for dedicated configs and points at that local HTTP daemon. If the daemon is not
 running, the tools may be unavailable, but the plugin should not spawn a
@@ -318,11 +320,11 @@ service for pause, resume, complete, and archive transitions. Use the CLI
 wrapper when the host has not loaded the MCP entry or full ledger history is
 required.
 
-When neither `--database` nor `SYMPP_DATABASE` is supplied, the wrapper derives
-the caller workspace from the original current directory and passes
-`<caller-workspace>/.sympp/solo-sessions.sqlite3` to `mix sympp.solo`. The
-wrapper resolves relative database paths against the caller workspace and
-restores the original current directory after invoking Mix.
+When neither `--database` nor `SYMPP_DATABASE` is supplied, the wrapper lets
+`mix sympp.solo` use the shared local Symphony++ default ledger, matching
+cockpit and WorkRequest/WorkPackage CLI defaults. The wrapper resolves relative
+database overrides against the caller workspace and restores the original
+current directory after invoking Mix.
 
 Solo Session planning is explicitly separate from WorkPackage orchestration.
 Use `symphony-plus-plus-mcp:symphony-work-package` for assigned WorkPackages or

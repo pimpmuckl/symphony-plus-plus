@@ -314,7 +314,7 @@ defmodule Mix.Tasks.Sympp.Solo do
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
 
     try do
-      workflow_path = set_mix_project_workflow!(mix_project_workflow_fun)
+      workflow_path = set_mix_project_workflow(mix_project_workflow_fun)
       Application.delete_env(:symphony_elixir, :sympp_repo_database)
 
       default_database_path(create_directories, workflow_path)
@@ -338,7 +338,7 @@ defmodule Mix.Tasks.Sympp.Solo do
         Mix.raise(@unsupported_database_error_message)
 
       Repo.filesystem_database_path?(database) ->
-        database = Path.expand(database)
+        database = Path.expand(database, mix_project_root())
         maybe_create_database_parent_directories(database, create_directories)
         database
 
@@ -403,14 +403,15 @@ defmodule Mix.Tasks.Sympp.Solo do
         database
 
       Path.type(database) == :relative ->
-        workflow_path
-        |> Path.dirname()
-        |> Path.join(database)
+        Path.expand(database, relative_database_root(workflow_path))
 
       true ->
         database
     end
   end
+
+  defp relative_database_root(nil), do: mix_project_root()
+  defp relative_database_root(workflow_path), do: Path.dirname(workflow_path)
 
   defp reject_unsupported_database!(database) do
     cond do
@@ -491,14 +492,14 @@ defmodule Mix.Tasks.Sympp.Solo do
 
   defp maybe_create_database_parent_directories(database, _create_directories), do: database
 
-  defp set_mix_project_workflow!(mix_project_workflow_fun) do
+  defp set_mix_project_workflow(mix_project_workflow_fun) do
     case mix_project_workflow_fun.() do
       path when is_binary(path) ->
         Workflow.set_workflow_file_path(path)
         path
 
       nil ->
-        Mix.raise("mix sympp.solo requires --database or a WORKFLOW.md file in the Mix project root.")
+        nil
     end
   end
 
@@ -509,11 +510,15 @@ defmodule Mix.Tasks.Sympp.Solo do
   defp restore_sympp_repo_database(database), do: Application.put_env(:symphony_elixir, :sympp_repo_database, database)
 
   defp mix_project_workflow do
+    mix_project_root()
+    |> Path.join("WORKFLOW.md")
+    |> existing_file()
+  end
+
+  defp mix_project_root do
     Mix.Project.project_file()
     |> Path.dirname()
     |> Path.expand()
-    |> Path.join("WORKFLOW.md")
-    |> existing_file()
   end
 
   defp existing_file(path) do

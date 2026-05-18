@@ -148,6 +148,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@plugin_default_solo_skill_path) =~ "symphony-work-package"
     assert File.read!(@plugin_solo_script_path) =~ "mix sympp.solo"
     assert File.read!(@plugin_solo_script_path) =~ ".sympp-source-root"
+    refute File.read!(@plugin_solo_script_path) =~ "Resolve-DefaultDatabase"
+    refute File.read!(@plugin_solo_script_path) =~ "solo-sessions.sqlite3"
+    refute File.read!(@mcp_plugin_solo_script_path) =~ "Resolve-DefaultDatabase"
+    refute File.read!(@mcp_plugin_solo_script_path) =~ "solo-sessions.sqlite3"
 
     assert Enum.any?(marketplace["plugins"], fn plugin ->
              plugin["name"] == "symphony-plus-plus" and
@@ -199,6 +203,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@plugin_readme_path) =~ "subprocess/app-server session"
     assert File.read!(@plugin_readme_path) =~ "supported replacement for app-visible"
     assert File.read!(@plugin_readme_path) =~ "Solo/cockpit handoff path"
+    assert File.read!(@plugin_readme_path) =~ "shared local Symphony++ default ledger"
 
     assert File.read!(@plugin_default_solo_skill_path) =~
              "default Symphony++ planning path for real agents"

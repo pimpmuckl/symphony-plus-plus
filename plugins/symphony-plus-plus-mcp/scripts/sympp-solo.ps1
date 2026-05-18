@@ -17,7 +17,7 @@ function Write-Usage {
   Write-Host ""
   Write-Host "Environment:"
   Write-Host "  SYMPP_REPO_ROOT   Optional repo checkout root. Required when the plugin runs from installed cache without a source hint."
-  Write-Host "  SYMPP_DATABASE    Optional SQLite ledger path passed to mix sympp.solo when --database is not already present. Relative paths resolve against the caller workspace. Defaults to <caller-workspace>/.sympp/solo-sessions.sqlite3."
+  Write-Host "  SYMPP_DATABASE    Optional SQLite ledger path passed to mix sympp.solo when --database is not already present. Relative paths resolve against the caller workspace. When omitted, mix sympp.solo uses the shared local Symphony++ default ledger."
   Write-Host "  SYMPP_LAUNCHER    Optional launcher: 'direct' or 'mise'. Defaults to 'direct'."
   Write-Host "  SYMPP_MIX         Optional mix executable path or name for direct launcher. Defaults to 'mix'."
   Write-Host "  SYMPP_MISE        Optional mise executable path or name for mise launcher. Defaults to 'mise'."
@@ -74,11 +74,6 @@ function Resolve-CallerWorkspace {
   }
 
   return $cwd
-}
-
-function Resolve-DefaultDatabase([string]$CallerWorkspace) {
-  $symppDir = Join-Path $CallerWorkspace ".sympp"
-  return [System.IO.Path]::GetFullPath((Join-Path $symppDir "solo-sessions.sqlite3"))
 }
 
 function Test-IsWindowsAbsolutePath([string]$Path) {
@@ -204,7 +199,6 @@ if ($Help) {
 
 $repoRoot = Resolve-RepoRoot
 $callerWorkspace = Resolve-CallerWorkspace
-$defaultDatabase = Resolve-DefaultDatabase $callerWorkspace
 $resolvedSoloArgs = Resolve-DatabaseArgs -InputArgs $SoloArgs -CallerWorkspace $callerWorkspace
 $elixirDir = Join-Path $repoRoot "elixir"
 $soloTaskPath = Join-Path $elixirDir "lib/mix/tasks/sympp.solo.ex"
@@ -238,8 +232,6 @@ try {
     if (-not (Test-HasDatabaseArg -InputArgs $resolvedSoloArgs)) {
       if (-not [string]::IsNullOrWhiteSpace($env:SYMPP_DATABASE)) {
         $soloCommandArgs += @("--database", (Resolve-DatabasePath $env:SYMPP_DATABASE $callerWorkspace))
-      } else {
-        $soloCommandArgs += @("--database", $defaultDatabase)
       }
     }
     Invoke-Launcher -LauncherArgs $soloCommandArgs

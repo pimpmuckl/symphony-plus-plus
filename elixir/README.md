@@ -79,8 +79,7 @@ mix sympp.solo attach \
   --base-branch main \
   --workspace-path /path/to/worktree \
   --caller-id codex-local \
-  --title "Solo CLI pass" \
-  --database /tmp/sympp-solo.sqlite3
+  --title "Solo CLI pass"
 ```
 
 Append and read entries with the returned `solo_session.id`:
@@ -91,22 +90,22 @@ mix sympp.solo append \
   --entry-kind progress \
   --title "Implemented CLI surface" \
   --body "Added attach, append, show, list, and lifecycle commands." \
-  --idempotency-key solo-cli-progress-1 \
-  --database /tmp/sympp-solo.sqlite3
+  --idempotency-key solo-cli-progress-1
 
-mix sympp.solo show --session-id <solo-session-id> --database /tmp/sympp-solo.sqlite3
+mix sympp.solo show --session-id <solo-session-id>
 ```
 
 Supported entry kinds are `task_plan`, `finding`, `progress`, `blocker`,
 `decision`, and `validation_note`. The task also supports `list` filters for
 `repo`, `base_branch`, `workspace_path`, `caller_id`, and `status`, plus
 `pause`, `resume`, `complete`, and `archive` lifecycle aliases. If
-`--database` is omitted, the task uses the current project `WORKFLOW.md`
-database path after validating that file exists. The database must be a durable
-local filesystem path; `:memory:` and SQLite `file:` URIs are rejected because
-Solo Sessions must persist across CLI invocations. `attach` may create the
-ledger database; other commands require the resolved local database file to
-already exist.
+`--database` is omitted, the task uses the shared machine-local Symphony++
+default ledger, matching cockpit and WorkRequest/WorkPackage CLI defaults. The
+database must be a durable local filesystem path; `:memory:` and SQLite `file:`
+URIs are rejected because Solo Sessions must persist across CLI invocations.
+`attach` may create the ledger database; other commands require the resolved
+local database file to already exist. Pass `--database <sqlite-path>` for
+intentional isolation in tests, development, or manual experiments.
 
 ## Configuration
 

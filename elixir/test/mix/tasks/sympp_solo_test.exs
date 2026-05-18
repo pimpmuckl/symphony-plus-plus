@@ -365,6 +365,24 @@ defmodule Mix.Tasks.Sympp.SoloTest do
     assert SoloTask.database_path_for_test(filesystem_path) == Path.expand(filesystem_path)
   end
 
+  test "normalizes relative database paths against the Mix project root" do
+    relative_dir = Path.join(["tmp", "sympp-solo-cwd-#{System.unique_integer([:positive])}"])
+    relative_database = Path.join(relative_dir, "ledger.sqlite3")
+    outside_project = Path.join(System.tmp_dir!(), "sympp-solo-cwd-#{System.unique_integer([:positive])}")
+    expected_database = Path.expand(relative_database, mix_project_root())
+
+    try do
+      File.mkdir_p!(outside_project)
+
+      File.cd!(outside_project, fn ->
+        assert SoloTask.database_path_for_test(relative_database) == expected_database
+      end)
+    after
+      File.rm_rf(outside_project)
+      File.rm_rf(Path.join(mix_project_root(), relative_dir))
+    end
+  end
+
   test "rejects in-memory database targets" do
     assert_raise Mix.Error, ~r/requires a durable file-backed SQLite database/, fn ->
       SoloTask.database_path_for_test(":memory:")
@@ -404,7 +422,7 @@ defmodule Mix.Tasks.Sympp.SoloTest do
     end
   end
 
-  test "defaults to the Mix project workflow ledger when database is omitted" do
+  test "defaults to the shared local Repo ledger when database is omitted" do
     previous_workflow = Application.get_env(:symphony_elixir, :workflow_file_path)
     previous_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
     unrelated_workflow = Path.join(System.tmp_dir!(), "unrelated-WORKFLOW.md")
@@ -425,6 +443,7 @@ defmodule Mix.Tasks.Sympp.SoloTest do
       assert Application.get_env(:symphony_elixir, :sympp_repo_database) == unrelated_database
 
       assert Repo.same_database_path?(database_path, expected_database_path)
+      assert Path.basename(database_path) == "symphony_plus_plus.sqlite3"
     after
       if previous_workflow do
         Application.put_env(:symphony_elixir, :workflow_file_path, previous_workflow)
@@ -588,7 +607,52 @@ defmodule Mix.Tasks.Sympp.SoloTest do
     end
   end
 
-  test "omitted database fails when the project workflow is missing" do
+  test "omitted database resolves configured relative paths against the Mix project root when workflow is missing" do
+    previous_workflow = Application.get_env(:symphony_elixir, :workflow_file_path)
+    previous_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+    previous_repo_config = Application.get_env(:symphony_elixir, Repo)
+    outside_project = Path.join(System.tmp_dir!(), "sympp-solo-config-cwd-#{System.unique_integer([:positive])}")
+    relative_dir = Path.join(["tmp", "sympp-solo-config-#{System.unique_integer([:positive])}"])
+    relative_database = Path.join(relative_dir, "ledger.sqlite3")
+    expected_database = Path.expand(relative_database, mix_project_root())
+
+    try do
+      File.mkdir_p!(outside_project)
+      Application.delete_env(:symphony_elixir, :sympp_repo_database)
+      Application.put_env(:symphony_elixir, Repo, database: relative_database)
+
+      File.cd!(outside_project, fn ->
+        assert SoloTask.database_path_for_test(nil, fn -> nil end, false) == expected_database
+        refute File.exists?(Path.dirname(expected_database))
+
+        assert SoloTask.database_path_for_test(nil, fn -> nil end, true) == expected_database
+        assert File.dir?(Path.dirname(expected_database))
+      end)
+    after
+      File.rm_rf(outside_project)
+      File.rm_rf(Path.join(mix_project_root(), relative_dir))
+
+      if previous_workflow do
+        Workflow.set_workflow_file_path(previous_workflow)
+      else
+        Workflow.clear_workflow_file_path()
+      end
+
+      if previous_database do
+        Application.put_env(:symphony_elixir, :sympp_repo_database, previous_database)
+      else
+        Application.delete_env(:symphony_elixir, :sympp_repo_database)
+      end
+
+      if previous_repo_config do
+        Application.put_env(:symphony_elixir, Repo, previous_repo_config)
+      else
+        Application.delete_env(:symphony_elixir, Repo)
+      end
+    end
+  end
+
+  test "omitted database can use the shared local default when the project workflow is missing" do
     previous_workflow = Application.get_env(:symphony_elixir, :workflow_file_path)
     previous_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
     manual_workflow = Path.join(System.tmp_dir!(), "sympp-solo-manual-#{System.unique_integer([:positive])}.md")
@@ -598,10 +662,9 @@ defmodule Mix.Tasks.Sympp.SoloTest do
     Application.put_env(:symphony_elixir, :sympp_repo_database, WorkPackageFactory.database_path())
 
     try do
-      assert_raise Mix.Error, ~r/requires --database or a WORKFLOW\.md/, fn ->
-        SoloTask.database_path_for_test(nil, fn -> nil end)
-      end
+      database_path = SoloTask.database_path_for_test(nil, fn -> nil end)
 
+      assert Path.basename(database_path) == "symphony_plus_plus.sqlite3"
       assert Workflow.workflow_file_path() == manual_workflow
       assert is_binary(Application.get_env(:symphony_elixir, :sympp_repo_database))
     after
@@ -748,5 +811,9 @@ defmodule Mix.Tasks.Sympp.SoloTest do
       Repo.put_dynamic_repo(original_repo)
       GenServer.stop(pid)
     end
+  end
+
+  defp mix_project_root do
+    Path.expand("../../..", __DIR__)
   end
 end
