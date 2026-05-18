@@ -5,9 +5,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo do
     otp_app: :symphony_elixir,
     adapter: Ecto.Adapters.SQLite3
 
-  alias SymphonyElixir.Workflow
-
   @data_dir ".symphony_plus_plus"
+  @default_database_file "symphony_plus_plus.sqlite3"
 
   @spec child_options(keyword()) :: keyword()
   def child_options(opts \\ []) do
@@ -245,30 +244,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo do
   end
 
   defp default_database_path do
-    workflow_key =
-      Workflow.workflow_file_path()
-      |> database_key()
-      |> then(&:crypto.hash(:sha256, &1))
-      |> Base.encode16(case: :lower)
-      |> binary_part(0, 16)
-
-    Path.join([default_database_root(), "workflows", workflow_key, "symphony_plus_plus.sqlite3"])
+    Path.join(default_database_root(), @default_database_file)
   end
 
   defp default_database_path_without_side_effects do
-    workflow_key =
-      Workflow.workflow_file_path()
-      |> database_key()
-      |> then(&:crypto.hash(:sha256, &1))
-      |> Base.encode16(case: :lower)
-      |> binary_part(0, 16)
-
     System.user_home()
     |> candidate_database_roots(System.tmp_dir())
     |> Enum.find(&File.dir?/1)
     |> case do
       nil -> nil
-      root -> Path.join([root, "workflows", workflow_key, "symphony_plus_plus.sqlite3"])
+      root -> Path.join(root, @default_database_file)
     end
   end
 

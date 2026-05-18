@@ -503,7 +503,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     end
   end
 
-  test "blank configured Symphony++ Repo database path falls back to workflow default" do
+  test "blank configured Symphony++ Repo database path falls back to shared local default" do
     original_database_path = Application.get_env(:symphony_elixir, :sympp_repo_database)
 
     try do
@@ -512,7 +512,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
       database_path = Repo.database_path()
       assert database_path != Path.expand("")
       assert database_path =~ ".symphony_plus_plus"
-      assert database_path =~ "workflows"
+      assert Path.basename(database_path) == "symphony_plus_plus.sqlite3"
+      refute "workflows" in Path.split(database_path)
     after
       restore_app_env(:sympp_repo_database, original_database_path)
     end
@@ -540,7 +541,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert Repo.default_database_root_for_test(nil, nil) == ".symphony_plus_plus"
   end
 
-  test "default Symphony++ Repo database path is scoped to the workflow file" do
+  test "default Symphony++ Repo database path is shared across workflow files" do
     original_workflow_path = Application.get_env(:symphony_elixir, :workflow_file_path)
     original_database_path = Application.get_env(:symphony_elixir, :sympp_repo_database)
     Application.delete_env(:symphony_elixir, :sympp_repo_database)
@@ -555,11 +556,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
       Workflow.set_workflow_file_path(second_workflow)
       second_database = Repo.database_path()
 
-      assert first_database != second_database
+      assert first_database == second_database
       assert first_database =~ ".symphony_plus_plus"
-      assert first_database =~ "workflows"
+      assert Path.basename(first_database) == "symphony_plus_plus.sqlite3"
+      refute "workflows" in Path.split(first_database)
       assert second_database =~ ".symphony_plus_plus"
-      assert second_database =~ "workflows"
+      assert Path.basename(second_database) == "symphony_plus_plus.sqlite3"
+      refute "workflows" in Path.split(second_database)
     after
       if original_workflow_path do
         Workflow.set_workflow_file_path(original_workflow_path)
@@ -575,7 +578,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     end
   end
 
-  test "default Symphony++ Repo database path hashes canonical workflow identity on Windows" do
+  test "default Symphony++ Repo database path does not depend on workflow path case" do
     original_workflow_path = Application.get_env(:symphony_elixir, :workflow_file_path)
     original_database_path = Application.get_env(:symphony_elixir, :sympp_repo_database)
     Application.delete_env(:symphony_elixir, :sympp_repo_database)
@@ -583,19 +586,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     workflow_path = Path.join([System.tmp_dir!(), "sympp-tracker-workflow-case", "WORKFLOW.md"])
 
     try do
-      case :os.type() do
-        {:win32, _name} ->
-          Workflow.set_workflow_file_path(String.upcase(workflow_path))
-          first_database = Repo.database_path()
+      Workflow.set_workflow_file_path(String.upcase(workflow_path))
+      first_database = Repo.database_path()
 
-          Workflow.set_workflow_file_path(String.downcase(workflow_path))
-          second_database = Repo.database_path()
+      Workflow.set_workflow_file_path(String.downcase(workflow_path))
+      second_database = Repo.database_path()
 
-          assert first_database == second_database
-
-        _other ->
-          assert Repo.database_path() =~ ".symphony_plus_plus"
-      end
+      assert first_database == second_database
+      assert first_database =~ ".symphony_plus_plus"
+      refute "workflows" in Path.split(first_database)
     after
       if original_workflow_path do
         Workflow.set_workflow_file_path(original_workflow_path)

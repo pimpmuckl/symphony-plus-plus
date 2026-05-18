@@ -9,9 +9,9 @@ Use this flow before WorkPackages exist when the human request still needs
 product clarification or slicing. In local operator mode, the browser cockpit is
 the preferred front door for this flow.
 
-1. Start the local operator cockpit from `elixir/` with
-   `mix sympp.cockpit --database <ledger.sqlite3>` and open the printed local
-   `/sympp/board` URL.
+1. Start the local operator cockpit from `elixir/` with `mix sympp.cockpit` and
+   open the printed local `/sympp/board` URL. Omit `--database` for the shared
+   machine-local ledger; use `--database <ledger.sqlite3>` only for isolation.
 2. Open `/sympp/work-requests` and choose `New WorkRequest`.
 3. Enter repo and base branch explicitly, then set work type, desired dispatch
    shape, human description, and the structured constraint fields for paths,
@@ -65,15 +65,16 @@ To inspect local Symphony++ package state and manage pre-package WorkRequests,
 start the local operator cockpit from `elixir/`:
 
 ```powershell
-mix sympp.cockpit --database <ledger.sqlite3>
+mix sympp.cockpit
 ```
 
 The command binds to `127.0.0.1:4057` by default, prints
 `http://127.0.0.1:4057/sympp/board`, serves MCP at
-`http://127.0.0.1:4057/mcp`, initializes an empty configured SQLite ledger
-through the existing dashboard path, and blocks until interrupted. Use
-`--port 0` only when you intentionally need a dynamic local URL; public bind
-hosts are rejected.
+`http://127.0.0.1:4057/mcp`, initializes the shared machine-local SQLite
+ledger through the existing dashboard path, and blocks until interrupted. Use
+`--database <ledger.sqlite3>` only when you intentionally need an isolated
+ledger. Use `--port 0` only when you intentionally need a dynamic local URL;
+public bind hosts are rejected.
 
 1. Choose `quick_fix`, `hotfix`, `investigation`, or another package policy
    that matches the work. Keep repo, base branch, owned paths, acceptance

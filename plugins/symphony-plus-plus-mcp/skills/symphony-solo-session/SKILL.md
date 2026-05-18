@@ -48,11 +48,11 @@ environment as the MCP wrapper: `SYMPP_LAUNCHER=direct|mise`, `SYMPP_MIX`, and
 
 Set `SYMPP_DATABASE` to a durable local SQLite ledger path, or pass
 `--database <sqlite-path>` on each command when you need a specific ledger.
-When neither is supplied, the wrapper derives the caller workspace from the
-original current directory and uses
-`<caller-workspace>/.sympp/solo-sessions.sqlite3`. Relative `--database` and
-`SYMPP_DATABASE` paths resolve against the caller workspace. Treat
-`SYMPP_DATABASE` as a path only; do not echo secret-bearing environment values.
+When neither is supplied, the wrapper lets `mix sympp.solo` use the shared local
+Symphony++ default ledger, matching cockpit and WorkRequest/WorkPackage CLI
+defaults. Relative `--database` and `SYMPP_DATABASE` paths resolve against the
+caller workspace. Treat `SYMPP_DATABASE` as a path only; do not echo
+secret-bearing environment values.
 
 ## MCP Tools
 
