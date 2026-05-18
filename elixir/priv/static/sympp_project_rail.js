@@ -1,6 +1,7 @@
 (function () {
   var storageKey = "sympp.projectRail.pins.v1";
   var applyScheduled = false;
+  var observerStarted = false;
 
   function readPins() {
     try {
@@ -85,7 +86,16 @@
   }
 
   function init() {
-    Array.prototype.forEach.call(document.querySelectorAll("[data-sympp-project-rail]"), applyPins);
+    var rails = document.querySelectorAll("[data-sympp-project-rail]");
+    Array.prototype.forEach.call(rails, applyPins);
+    if (rails.length) startObserver();
+  }
+
+  function startObserver() {
+    if (observerStarted || !window.MutationObserver) return;
+
+    observerStarted = true;
+    new MutationObserver(scheduleInit).observe(document.body, { childList: true, subtree: true });
   }
 
   function scheduleInit() {
@@ -109,7 +119,4 @@
   window.addEventListener("phx:update", scheduleInit);
   window.addEventListener("phx:page-loading-stop", scheduleInit);
 
-  if (window.MutationObserver) {
-    new MutationObserver(scheduleInit).observe(document.body, { childList: true, subtree: true });
-  }
 })();
