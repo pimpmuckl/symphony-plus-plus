@@ -38,6 +38,20 @@ endpoint contract:
   must exactly match the local scheme, host, and port. It does not emit CORS
   headers.
 
+Operators can verify the local HTTP contract from the repository root while
+`mix sympp.cockpit` is running:
+
+```powershell
+.\scripts\smoke-sympp-mcp-http.ps1
+```
+
+Pass `-Url http://127.0.0.1:<port>/mcp` for a cockpit started on a non-default
+port and `-Json` for machine-readable output. This check proves daemon
+handshake, session-header continuity, `tools/list`, and the expected unbound
+tool surface. It is intentionally separate from Codex app plugin visibility:
+if this smoke passes but MCP tools are absent in a Codex session, troubleshoot
+the opt-in plugin/config/session startup path rather than the daemon.
+
 This slice intentionally does not add browser CORS/preflight support, cookies,
 Phoenix-session client binding, reconnect semantics, SSE streaming,
 remote/company authentication, daemon startup/plugin install configuration, or

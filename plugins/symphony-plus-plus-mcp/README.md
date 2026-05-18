@@ -27,3 +27,16 @@ enabled broadly. This opt-in plugin is the concrete install path for sessions
 that need MCP tools registered before the model starts. If the cockpit/local
 daemon is not already running, MCP tools may be unavailable, but this bundled
 plugin target should not spawn a per-session Elixir process.
+
+To prove the daemon independently of Codex plugin loading, start
+`mix sympp.cockpit` and run this from the source repository checkout root. This
+helper is not copied into installed plugin cache directories:
+
+```powershell
+.\scripts\smoke-sympp-mcp-http.ps1
+```
+
+Passing this smoke confirms the local HTTP MCP endpoint handshakes and exposes
+the expected unbound tools. It does not confirm that a Codex app session has
+loaded this opt-in plugin; reload or start that dedicated MCP-enabled session
+after changing plugin config/cache state.

@@ -237,6 +237,20 @@ for dedicated configs and points at that local HTTP daemon. If the daemon is not
 running, the tools may be unavailable, but the plugin should not spawn a
 per-session PowerShell/Mix/Erlang process tree.
 
+Before debugging Codex plugin visibility, verify the daemon itself from the
+source repository checkout root. This helper is not copied into installed
+plugin cache directories:
+
+```powershell
+.\scripts\smoke-sympp-mcp-http.ps1
+```
+
+Use `-Url http://127.0.0.1:<port>/mcp` for a non-default cockpit port and
+`-Json` for structured output. Passing this smoke means the local HTTP MCP
+daemon initialized, preserved the returned `Mcp-Session-Id`, and advertised the
+expected generic tools; Codex app plugin enabling/visibility is a separate
+startup/config step.
+
 Example explicit TOML for an opt-in S++ session:
 
 ```toml
