@@ -81,6 +81,29 @@ The task binds to `127.0.0.1:4057` by default, prints
 in your browser. Use `--port 0` only when you intentionally want a dynamic port
 for manual testing.
 
+In a second shell from the repository root, prove the local HTTP MCP daemon
+before troubleshooting Codex app plugin visibility:
+
+```powershell
+.\scripts\smoke-sympp-mcp-http.ps1
+```
+
+The smoke sends `initialize`, normalizes the returned `Mcp-Session-Id` to a
+single header value, follows with `tools/list`, and verifies the generic
+unbound tool surface including `sympp.health`, the `solo_*` tools, and
+`claim_work_key`. For a non-default or dynamic cockpit port, pass the printed
+MCP URL:
+
+```powershell
+.\scripts\smoke-sympp-mcp-http.ps1 -Url http://127.0.0.1:<port>/mcp
+.\scripts\smoke-sympp-mcp-http.ps1 -Json
+```
+
+A passing smoke proves the cockpit/MCP daemon is serving the HTTP MCP contract.
+It does not prove that an already-open Codex app session loaded or enabled the
+opt-in `symphony-plus-plus-mcp` plugin; reload/start that dedicated session
+after fixing plugin config or cache state.
+
 ## Create A WorkRequest
 
 Use a WorkRequest when the human goal still needs clarification, decisions, or
