@@ -2,9 +2,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPTransport do
   @moduledoc """
   Route-free HTTP MCP transport core for decoded JSON-RPC payloads.
 
-  This module only preserves initialized unbound MCP state. It does not own
-  Plug, CORS, cookie, current-alias, explicit reconnect, or bound worker
-  session semantics.
+  This module preserves initialized HTTP MCP state, including bound sessions
+  returned by `claim_work_key`. It does not own Plug, CORS, cookie,
+  current-alias, explicit reconnect, or browser auth semantics.
   """
 
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, HTTPStateStore, Server}
@@ -94,8 +94,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPTransport do
           {{state_update_lost_error(payload), server}, server}
         else
           {response, %Server{} = updated_server} = Server.handle_response_state(payload, server)
-          stored_server = unbound_server(updated_server)
-          {{response, stored_server}, stored_server}
+          {{response, updated_server}, updated_server}
         end
       end)
 
@@ -115,8 +114,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPTransport do
     {response, _server} = Server.handle_response_state(payload, Server.new(config))
     response
   end
-
-  defp unbound_server(%Server{} = server), do: %{server | session: nil}
 
   defp missing_state?(%Server{initialized: false, session: nil}), do: true
   defp missing_state?(%Server{}), do: false

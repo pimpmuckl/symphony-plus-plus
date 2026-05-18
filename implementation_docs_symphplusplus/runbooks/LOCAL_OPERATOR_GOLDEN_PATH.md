@@ -104,6 +104,13 @@ It does not prove that an already-open Codex app session loaded or enabled the
 opt-in `symphony-plus-plus-mcp` plugin; reload/start that dedicated session
 after fixing plugin config or cache state.
 
+After a WorkPackage worker or WorkRequest architect claims its work key, the
+same local HTTP `Mcp-Session-Id` remains bound for scoped follow-up tools and
+resources. Treat claimed-session ids as sensitive local continuity material:
+do not paste, log, or commit them. If the grant is revoked, expired, or no
+longer matches the live ledger scope, protected MCP calls fail closed instead
+of continuing from cached state.
+
 ## Create A WorkRequest
 
 Use a WorkRequest when the human goal still needs clarification, decisions, or

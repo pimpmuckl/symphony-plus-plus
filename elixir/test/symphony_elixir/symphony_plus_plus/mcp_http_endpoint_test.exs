@@ -5,11 +5,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
   import Plug.Conn, only: [get_resp_header: 2, put_req_header: 3]
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Assignment
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, HTTPStateStore, Session}
   alias SymphonyElixir.SymphonyPlusPlus.MCP.Server
+  alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository, as: SoloSessionRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
   alias SymphonyElixir.WorkPackageFactory
   alias SymphonyElixirWeb.Endpoint
 
@@ -41,6 +44,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
 
     assert :ok = WorkPackageRepository.migrate(Repo)
     assert :ok = SoloSessionRepository.migrate(Repo)
+    assert :ok = PhaseRepository.migrate(Repo)
+    assert :ok = WorkRequestRepository.migrate(Repo)
 
     on_exit(fn ->
       Application.put_env(:symphony_elixir, Endpoint, endpoint_config)
@@ -117,6 +122,163 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
              "solo_update_status",
              "sympp.health"
            ]
+  end
+
+  test "POST /mcp persists claimed worker continuity over same Mcp-Session-Id" do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               Repo,
+               WorkPackageFactory.attrs(id: "SYMPP-HTTP-ENDPOINT-WORKER", kind: "mcp", status: "ready_for_worker")
+             )
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(Repo, work_package.id)
+
+    init = post_json(initialize_request("init"))
+    [session_id] = get_resp_header(init, "mcp-session-id")
+
+    claim =
+      post_json(
+        tool_call_request("claim", "claim_work_key", %{"secret" => minted.work_key.secret, "claimed_by" => "worker-http"}),
+        [{"mcp-session-id", session_id}]
+      )
+
+    assert [^session_id] = get_resp_header(claim, "mcp-session-id")
+    assert get_in(json_response(claim, 200), ["result", "structuredContent", "assignment", "work_package_id"]) == work_package.id
+
+    tools = post_json(tools_list_request("worker-tools"), [{"mcp-session-id", session_id}])
+    tool_names = tool_names(json_response(tools, 200))
+
+    assert "get_current_assignment" in tool_names
+    assert "append_progress" in tool_names
+    refute "solo_attach" in tool_names
+
+    assignment_tool =
+      post_json(tool_call_request("assignment-tool", "get_current_assignment", %{}), [{"mcp-session-id", session_id}])
+
+    assert get_in(json_response(assignment_tool, 200), ["result", "structuredContent", "assignment", "work_package_id"]) ==
+             work_package.id
+
+    assignment_resource =
+      post_json(resources_read_request("assignment-resource", "sympp://assignment/current"), [{"mcp-session-id", session_id}])
+
+    assignment_payload =
+      assignment_resource
+      |> json_response(200)
+      |> resource_payload()
+
+    assert assignment_payload["work_package_id"] == work_package.id
+
+    resources = post_json(resources_list_request("resources"), [{"mcp-session-id", session_id}])
+
+    assert "sympp://work-packages/#{work_package.id}/task_plan.md" in resource_uris(json_response(resources, 200))
+  end
+
+  test "POST /mcp persists claimed architect continuity for scoped WorkRequest reads" do
+    phase_id = "phase-http-endpoint-architect"
+
+    assert {:ok, _phase} = PhaseRepository.create(Repo, %{id: phase_id, title: "HTTP endpoint architect phase"})
+
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               Repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-HTTP-ENDPOINT-ARCHITECT",
+                 kind: "mcp",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "main",
+                 phase_id: phase_id,
+                 status: "planning"
+               )
+             )
+
+    assert {:ok, work_request} =
+             WorkRequestRepository.create(
+               Repo,
+               work_request_attrs(%{
+                 id: "WR-HTTP-ENDPOINT-ARCHITECT",
+                 repo: anchor.repo,
+                 base_branch: anchor.base_branch,
+                 status: "ready_for_slicing"
+               })
+             )
+
+    assert {:ok, minted} =
+             AccessGrantService.mint_architect_grant(Repo, phase_id,
+               work_package_id: anchor.id,
+               capabilities: ["read:work_request"]
+             )
+
+    init = post_json(initialize_request("init"))
+    [session_id] = get_resp_header(init, "mcp-session-id")
+
+    claim =
+      post_json(
+        tool_call_request("claim", "claim_work_key", %{"secret" => minted.work_key.secret, "claimed_by" => "architect-http"}),
+        [{"mcp-session-id", session_id}]
+      )
+
+    assert get_in(json_response(claim, 200), ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+
+    tools = post_json(tools_list_request("architect-tools"), [{"mcp-session-id", session_id}])
+    tool_names = tool_names(json_response(tools, 200))
+
+    assert "get_current_assignment" in tool_names
+    assert "read_work_request" in tool_names
+    refute "solo_attach" in tool_names
+
+    read =
+      post_json(
+        tool_call_request("read-work-request", "read_work_request", %{"work_request_id" => work_request.id}),
+        [{"mcp-session-id", session_id}]
+      )
+
+    assert get_in(json_response(read, 200), ["result", "structuredContent", "work_request", "id"]) == work_request.id
+  end
+
+  test "POST /mcp claimed worker follow-ups fail closed after grant revocation" do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               Repo,
+               WorkPackageFactory.attrs(id: "SYMPP-HTTP-ENDPOINT-REVOKED", kind: "mcp", status: "ready_for_worker")
+             )
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(Repo, work_package.id)
+
+    init = post_json(initialize_request("init"))
+    [session_id] = get_resp_header(init, "mcp-session-id")
+
+    claim =
+      post_json(
+        tool_call_request("claim", "claim_work_key", %{"secret" => minted.work_key.secret, "claimed_by" => "worker-revoked"}),
+        [{"mcp-session-id", session_id}]
+      )
+
+    assert get_in(json_response(claim, 200), ["result", "structuredContent", "assignment", "work_package_id"]) == work_package.id
+    assert {:ok, _revoked} = AccessGrantService.revoke(Repo, minted.grant.id)
+
+    tools = post_json(tools_list_request("revoked-tools"), [{"mcp-session-id", session_id}])
+    tool_names = tool_names(json_response(tools, 200))
+
+    assert "claim_work_key" in tool_names
+    refute "get_current_assignment" in tool_names
+
+    assignment_tool =
+      post_json(tool_call_request("revoked-assignment", "get_current_assignment", %{}), [{"mcp-session-id", session_id}])
+
+    assert get_in(json_response(assignment_tool, 200), ["error", "data", "reason"]) == "revoked"
+
+    progress =
+      post_json(
+        tool_call_request("revoked-progress", "append_progress", %{"summary" => "Should not write", "idempotency_key" => "revoked-progress"}),
+        [{"mcp-session-id", session_id}]
+      )
+
+    assert get_in(json_response(progress, 200), ["error", "data", "reason"]) == "revoked"
+
+    assignment_resource =
+      post_json(resources_read_request("revoked-resource", "sympp://assignment/current"), [{"mcp-session-id", session_id}])
+
+    assert get_in(json_response(assignment_resource, 200), ["error", "data", "reason"]) == "revoked"
   end
 
   test "POST /mcp dispatches Solo tools through the dashboard lazy repo seam" do
@@ -476,6 +638,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
     |> get_in(["result", "tools"])
     |> Enum.map(& &1["name"])
     |> Enum.sort()
+  end
+
+  defp resource_uris(payload) do
+    payload
+    |> get_in(["result", "resources"])
+    |> Enum.map(& &1["uri"])
+    |> Enum.sort()
+  end
+
+  defp resource_payload(payload) do
+    payload
+    |> get_in(["result", "contents", Access.at(0), "text"])
+    |> Jason.decode!()
+  end
+
+  defp work_request_attrs(overrides) do
+    defaults = %{
+      id: "WR-HTTP-#{System.unique_integer([:positive])}",
+      title: "HTTP MCP WorkRequest",
+      repo: "nextide/symphony-plus-plus",
+      base_branch: "main",
+      work_type: "feature",
+      human_description: "Prove HTTP MCP architect continuity.",
+      constraints: %{"allowed_paths" => ["elixir/lib"], "requires_secret" => false},
+      desired_dispatch_shape: "single_package",
+      status: "draft"
+    }
+
+    Enum.into(overrides, defaults)
   end
 
   defp json_rpc_error(id, code, message, reason) do

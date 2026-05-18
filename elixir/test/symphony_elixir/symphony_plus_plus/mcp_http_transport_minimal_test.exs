@@ -3,7 +3,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
-  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, HTTPStateStore, HTTPTransport, LedgerNamespace, Server}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, HTTPStateStore, HTTPTransport, LedgerNamespace, Server, Session}
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository, as: SoloSessionRepository
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
@@ -220,7 +220,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
     assert HTTPStateStore.get(config, "client-a", init.state_key) == nil
   end
 
-  test "claim_work_key returns immediate response but does not persist bound HTTP continuity", %{config: config} do
+  test "claim_work_key persists bound HTTP continuity for later requests", %{config: config} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(
                config.repo,
@@ -234,13 +234,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
              HTTPTransport.handle(config, claim_request(minted.work_key.secret, "worker-a"), client_key: "client-a", state_key: init.state_key)
 
     assert get_in(claim.response, ["result", "structuredContent", "assignment", "work_package_id"]) == work_package.id
-    assert %Server{initialized: true, session: nil} = HTTPStateStore.get(config, "client-a", init.state_key)
+
+    assert %Server{initialized: true, session: %Session{} = session} = stored_server = HTTPStateStore.get(config, "client-a", init.state_key)
+    assert session.assignment.work_package_id == work_package.id
+    assert session.assignment.grant_id == minted.grant.id
+    assert session.proof_hash == minted.grant.secret_hash
+    refute inspect(stored_server) =~ minted.work_key.secret
 
     assert {:ok, tools} =
              HTTPTransport.handle(config, tools_list_request("tools-after-claim"), client_key: "client-a", state_key: init.state_key)
 
     assert "claim_work_key" in tool_names(tools.response)
-    refute "get_current_assignment" in tool_names(tools.response)
+    assert "get_current_assignment" in tool_names(tools.response)
+
+    assert {:ok, assignment} =
+             HTTPTransport.handle(config, get_current_assignment_request(), client_key: "client-a", state_key: init.state_key)
+
+    assert get_in(assignment.response, ["result", "structuredContent", "assignment", "work_package_id"]) == work_package.id
   end
 
   defp initialize_request(id) do
@@ -268,6 +278,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
   end
 
   defp notification_request, do: %{"jsonrpc" => "2.0", "method" => "notifications/initialized", "params" => %{}}
+
+  defp get_current_assignment_request do
+    %{
+      "jsonrpc" => "2.0",
+      "id" => "assignment",
+      "method" => "tools/call",
+      "params" => %{"name" => "get_current_assignment", "arguments" => %{}}
+    }
+  end
 
   defp claim_request(secret, claimed_by) do
     %{
