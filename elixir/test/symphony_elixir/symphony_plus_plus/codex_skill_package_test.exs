@@ -1525,6 +1525,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         assert readiness["overall_status"] == "multiple_marketplaces_need_selection"
         assert Enum.any?(readiness["next_actions"], &(&1["code"] == "rerun_with_marketplace"))
         refute Enum.any?(readiness["next_actions"], &(&1["code"] == "enable_mcp_companion"))
+
+        {enable_output, enable_status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              @plugin_lifecycle_diagnostic_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-EnableMcpCompanion"
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert enable_status != 0
+        assert enable_output =~ "resolve to different marketplaces"
+        refute File.read!(Path.join(temp_codex_home, "config.toml")) =~ "symphony-plus-plus-mcp"
+        assert config_backups(temp_codex_home) == []
       after
         File.rm_rf(temp_codex_home)
       end

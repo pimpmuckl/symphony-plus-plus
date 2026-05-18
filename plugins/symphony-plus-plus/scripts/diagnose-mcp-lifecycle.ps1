@@ -33,20 +33,81 @@ function Normalize-ComparablePath([string]$Path) {
   }
 
   $trimmedPath = $fullPath.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
-  if (Test-PathComparisonCaseInsensitive) {
+  if (Test-PathComparisonCaseInsensitive $trimmedPath) {
     return $trimmedPath.ToLowerInvariant()
   }
 
   return $trimmedPath
 }
 
-function Test-PathComparisonCaseInsensitive {
-  return [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows) -or
-    [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)
+function Get-CaseVariantName([string]$Name) {
+  $characters = @($Name.ToCharArray())
+  for ($index = 0; $index -lt $characters.Count; $index++) {
+    $character = [string]$characters[$index]
+    if ($character -cmatch '[a-z]') {
+      $characters[$index] = [char]$character.ToUpperInvariant()
+      return -join $characters
+    }
+    if ($character -cmatch '[A-Z]') {
+      $characters[$index] = [char]$character.ToLowerInvariant()
+      return -join $characters
+    }
+  }
+
+  return $null
 }
 
-function Get-ComparablePathStringComparer {
-  if (Test-PathComparisonCaseInsensitive) {
+function Get-ExistingCaseProbePath([string]$Path) {
+  $probePath = Resolve-OptionalFullPath $Path
+  if (-not $probePath) {
+    $probePath = (Get-Location).ProviderPath
+  }
+
+  while (-not [string]::IsNullOrWhiteSpace($probePath)) {
+    if (Test-Path -LiteralPath $probePath) {
+      return [System.IO.Path]::GetFullPath($probePath)
+    }
+
+    $parentPath = Split-Path -Path $probePath -Parent
+    if ([string]::IsNullOrWhiteSpace($parentPath) -or $parentPath -eq $probePath) {
+      return $null
+    }
+    $probePath = $parentPath
+  }
+
+  return $null
+}
+
+function Test-PathComparisonCaseInsensitive([string]$Path = $null) {
+  if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
+    return $true
+  }
+
+  if (-not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)) {
+    return $false
+  }
+
+  $probePath = Get-ExistingCaseProbePath $Path
+  if (-not $probePath) {
+    return $false
+  }
+
+  $probeName = Split-Path -Path $probePath -Leaf
+  $variantName = Get-CaseVariantName $probeName
+  if ([string]::IsNullOrWhiteSpace($variantName)) {
+    return $false
+  }
+
+  $parentPath = Split-Path -Path $probePath -Parent
+  if ([string]::IsNullOrWhiteSpace($parentPath)) {
+    return $false
+  }
+
+  return Test-Path -LiteralPath (Join-Path $parentPath $variantName)
+}
+
+function Get-ComparablePathStringComparer([string]$Path = $null) {
+  if (Test-PathComparisonCaseInsensitive $Path) {
     return [System.StringComparer]::OrdinalIgnoreCase
   }
 
@@ -58,7 +119,7 @@ function Test-ComparablePathEqual([string]$Left, [string]$Right) {
     return $false
   }
 
-  return (Get-ComparablePathStringComparer).Equals($Left, $Right)
+  return [System.StringComparer]::Ordinal.Equals((Normalize-ComparablePath $Left), (Normalize-ComparablePath $Right))
 }
 
 function Get-FileSystemLinkTargetPath($Item) {
@@ -89,7 +150,7 @@ function Resolve-ComparableFileSystemPath([string]$Path) {
     return $null
   }
 
-  $visited = [System.Collections.Generic.HashSet[string]]::new((Get-ComparablePathStringComparer))
+  $visited = [System.Collections.Generic.HashSet[string]]::new((Get-ComparablePathStringComparer $resolvedPath))
   $root = [System.IO.Path]::GetPathRoot($resolvedPath)
   if ([string]::IsNullOrWhiteSpace($root)) {
     return Normalize-ComparablePath $resolvedPath
@@ -1750,6 +1811,10 @@ function Invoke-McpCompanionEnable($Summary, [string]$RequestedMarketplaceName, 
     throw "Multiple symphony-plus-plus-mcp plugin marketplaces are installed; rerun with -MarketplaceName <marketplace> before enabling the MCP companion."
   }
 
+  if (Test-CrossActivationMarketplacePairingAmbiguous $Summary.installed_cache $RequestedMarketplaceName) {
+    throw "The skill-only and MCP companion packages resolve to different marketplaces in wildcard mode; rerun with -MarketplaceName <marketplace> before enabling the MCP companion."
+  }
+
   if ($Summary.codex_config.global_sympp_mcp_entry -eq $true) {
     throw "Codex config already contains [mcp_servers.symphony_plus_plus]. Remove or relocate that global MCP entry before enabling the plugin companion in this config."
   }
@@ -1921,6 +1986,23 @@ function Get-PreferredActivationPackage($CachePackages, [string]$PackageName, [s
   return $packages[0].package
 }
 
+function Test-CrossActivationMarketplacePairingAmbiguous($CachePackages, [string]$MarketplaceName) {
+  if ($MarketplaceName -ne "*") {
+    return $false
+  }
+
+  if ((Test-ActivationMarketplaceAmbiguous $CachePackages $MarketplaceName "symphony-plus-plus") -or
+      (Test-ActivationMarketplaceAmbiguous $CachePackages $MarketplaceName "symphony-plus-plus-mcp")) {
+    return $false
+  }
+
+  $defaultPackage = Get-PreferredActivationPackage $CachePackages "symphony-plus-plus" $MarketplaceName
+  $companionPackage = Get-PreferredActivationPackage $CachePackages "symphony-plus-plus-mcp" $MarketplaceName
+  return $null -ne $defaultPackage -and
+    $null -ne $companionPackage -and
+    [string]$defaultPackage.marketplace_name -ne [string]$companionPackage.marketplace_name
+}
+
 function Get-PreferredActivationSourceHintPackage($CachePackages, [string]$PackageName, [string]$MarketplaceName) {
   $packages = @(
     $CachePackages |
@@ -2005,12 +2087,7 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
   } else {
     $defaultMarketplace
   }
-  $crossMarketplacePairingAmbiguous = $MarketplaceName -eq "*" -and
-    -not $defaultMarketplaceAmbiguous -and
-    -not $companionMarketplaceAmbiguous -and
-    $null -ne $defaultPackage -and
-    $null -ne $companionPackage -and
-    [string]$defaultMarketplace -ne [string]$companionMarketplace
+  $crossMarketplacePairingAmbiguous = Test-CrossActivationMarketplacePairingAmbiguous $CachePackages $MarketplaceName
   $companionSelectionBlocked = $companionMarketplaceAmbiguous -or $crossMarketplacePairingAmbiguous
 
   $configExists = $Config.exists -eq $true
