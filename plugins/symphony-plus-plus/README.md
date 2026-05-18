@@ -151,6 +151,7 @@ plugin root:
 
 ```powershell
 .\scripts\diagnose-mcp-lifecycle.ps1
+.\scripts\diagnose-mcp-lifecycle.ps1 -Doctor
 .\scripts\diagnose-mcp-lifecycle.ps1 -Json
 .\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName jonat-local -Json
 .\scripts\diagnose-mcp-lifecycle.ps1 -RepoRoot C:\Code\symphony-plus-plus -Json
@@ -175,6 +176,33 @@ host-managed eager startup from duplicated marketplace entries. If the default
 skill-only plugin is refreshed and a fresh Codex host still starts S++ MCP for
 generic or review sessions, file a product issue for lazy or opt-in-only plugin
 MCP startup with the diagnostic JSON attached as evidence.
+Use `-Doctor` when the operator symptom is "I see the Symphony++ skill but no
+`symphony_plus_plus` MCP tools." The doctor adds a readiness summary that
+separates default Solo Session readiness from WorkRequest MCP readiness. The
+common healthy-default/missing-tools state is
+`solo_ready_mcp_companion_not_enabled`: the skill-only
+`symphony-plus-plus@<marketplace>` plugin is enabled, the
+`symphony-plus-plus-mcp@<marketplace>` companion is installed, but that
+companion is not enabled for the current Codex config/session. The next action
+is to enable `symphony-plus-plus-mcp@<marketplace>` only in a dedicated S++ MCP
+config/session, restart or reload that session, and keep generic workers,
+review-suite lanes, and `codex review` on the clean skill-only default.
+The doctor verifies source/cache/config plus local HTTP daemon readiness. It
+cannot inspect the tool list already registered inside an open Codex model
+session, so after config/cache changes the final repair step is always to
+restart or reload the dedicated MCP-enabled session and verify the tools there.
+When source-only repair commands are needed, the doctor emits absolute commands
+against the supplied `-RepoRoot`, the current source checkout, or a single
+usable `.sympp-source-root` hint from the selected activation package caches. If
+no source checkout can be inferred from those selected caches, it omits the
+broken command and tells the operator to rerun with
+`-RepoRoot <path-to-symphony-plus-plus-checkout>`.
+If more than one Symphony++ marketplace cache is installed and no
+`-MarketplaceName` is supplied, the doctor does not emit package-specific repair
+commands; rerun it with the intended marketplace. If it reports
+`global_footgun_present`, remove or relocate the top-level
+`[mcp_servers.symphony_plus_plus]` entry into a dedicated S++ config instead of
+leaving it in generic worker/review configs.
 Live process counts are scoped to `-RepoRoot` when supplied. Without
 `-RepoRoot`, the diagnostic uses installed-cache `.sympp-source-root` hints only
 from current usable cache entries: `local` and the source manifest-version
@@ -250,6 +278,16 @@ Use `-Url http://127.0.0.1:<port>/mcp` for a non-default cockpit port and
 daemon initialized, preserved the returned `Mcp-Session-Id`, and advertised the
 expected generic tools; Codex app plugin enabling/visibility is a separate
 startup/config step.
+If this smoke passes but a Codex session still lacks S++ MCP tools, run:
+
+```powershell
+.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName jonat-local -Doctor
+```
+
+The expected repair is config/session activation, not daemon debugging: enable
+`[plugins."symphony-plus-plus-mcp@jonat-local"] enabled = true` only in the
+dedicated S++ MCP config, then start a new/reloaded session so Codex registers
+the plugin MCP server before the model starts.
 
 Example explicit TOML for an opt-in S++ session:
 

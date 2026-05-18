@@ -59,6 +59,36 @@ tool surface. It is intentionally separate from Codex app plugin visibility:
 if this smoke passes but MCP tools are absent in a Codex session, troubleshoot
 the opt-in plugin/config/session startup path rather than the daemon.
 
+The operator-safe diagnostic for that split-brain state is:
+
+```powershell
+.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName jonat-local -Doctor
+```
+
+`solo_ready_mcp_companion_not_enabled` means the default skill-only
+`symphony-plus-plus` plugin is enabled and the MCP companion package is
+installed, but `symphony-plus-plus-mcp` was not enabled before the current
+Codex session started. Enable `[plugins."symphony-plus-plus-mcp@jonat-local"]`
+only in the dedicated S++ MCP config/session, restart or reload that session,
+and keep generic worker, review-suite, and `codex review` configs on the
+skill-only default.
+The doctor checks source/cache/config and the local HTTP daemon; it does not
+inspect the tool list already registered inside an open Codex model session.
+After enablement or cache changes, the operator must restart or reload the
+dedicated MCP-enabled session before expecting tools to appear.
+For source-only repair commands such as cache refresh, cockpit startup, and
+HTTP smoke verification, the doctor uses `-RepoRoot`, the current source
+checkout, or a single usable `.sympp-source-root` hint from the selected
+activation package caches to print absolute commands. If it cannot infer a
+source checkout from those selected caches, it says so and asks the operator to
+rerun with `-RepoRoot <path-to-symphony-plus-plus-checkout>` instead of printing
+a relative command that only works from the repo root.
+When multiple Symphony++ marketplaces are installed, pass the intended
+`-MarketplaceName`; the doctor avoids package-specific repair commands until
+that selection is explicit. `global_footgun_present` means a top-level
+`[mcp_servers.symphony_plus_plus]` entry is present and should be removed from
+generic configs or relocated into a dedicated S++ MCP config/session.
+
 To prove the claimed WorkPackage worker path, pass the work key through an
 environment variable name and provide the stable owner identity:
 
