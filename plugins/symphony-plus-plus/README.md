@@ -1,7 +1,7 @@
 # Symphony++ Codex Plugin
 
-This plugin exposes Symphony++ Codex skills and Solo Session planning helpers
-as a local Codex plugin. The default plugin package is physically MCP-free: it
+This plugin exposes the Symphony++ Solo Session planning skill as a local Codex
+plugin. The default plugin package is physically MCP-free: it
 must not ship a root `.mcp.json` and its manifest is skill-only. The sibling
 `symphony-plus-plus-mcp` package owns the bundled MCP startup file for
 dedicated S++ workflows. The canonical source for the runtime remains this
@@ -90,8 +90,10 @@ plugin-bundled MCP servers for generic sessions, review-suite lanes, and
 `codex review` calls whenever the plugin is enabled; that creates needless S++
 Elixir process churn when the session does not explicitly need S++ tools.
 The default manifest points at `skills-default/`, which exposes only the
-MCP-free Solo Session skill. MCP-dependent WorkPackage and architect skills
-ship in the sibling opt-in MCP plugin.
+MCP-free Solo Session skill. The default package intentionally does not ship a
+root `skills/` directory, so Codex hosts that scan package folders directly
+cannot surface the MCP-dependent WorkPackage or architect skills from the
+default plugin. Those skills ship only in the sibling opt-in MCP plugin.
 
 The default plugin source and refreshed default cache must not contain root
 `.mcp.json`. WorkPackage workers should use the scoped `run-mcp` command emitted
@@ -99,6 +101,17 @@ by Symphony++ dispatch. Dedicated plugin-based S++ MCP sessions can install the
 sibling `plugins/symphony-plus-plus-mcp` package in an explicit Codex config or
 alternate Codex home. Do not enable that opt-in MCP plugin in a generic/global
 config unless every session on that config should start S++ MCP.
+
+The preferred MCP runtime shape is a singleton local HTTP daemon, not one
+stdio Elixir tree per Codex session. A dogfood snapshot on Windows with the
+local cockpit already running showed the unbound `tools/list` response at about
+2.6 KB, roughly 650 token-equivalent by a simple chars/4 estimate, and local
+initialize plus `tools/list` handshakes averaging about 19 ms across ten
+samples, with the warm samples around 8-14 ms after one cold 105 ms sample. On
+the Chocolatey Elixir install, the singleton listener appeared as a tiny parent
+`erl.exe` launcher around 2 MB plus one real `erl.exe` VM around 25 MB working
+set. That is small enough for dedicated S++ sessions; the remaining product
+choice is tool visibility in generic sessions, not daemon CPU churn.
 
 Repo validation proves only the plugin package contract:
 
