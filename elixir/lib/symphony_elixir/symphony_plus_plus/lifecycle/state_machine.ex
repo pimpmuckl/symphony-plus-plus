@@ -68,6 +68,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
   def supported_kind?(@phase_child_kind), do: true
   def supported_kind?(kind), do: kind in @standalone_kinds
 
+  @spec standalone_kinds() :: [String.t()]
+  def standalone_kinds, do: @standalone_kinds
+
   defp validate_lifecycle_shape(%WorkPackage{} = work_package, next_status) do
     cond do
       not lifecycle_kind?(work_package.kind) -> {:error, :unsupported_work_package_kind}

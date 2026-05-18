@@ -139,6 +139,9 @@ service primitives: status movement is explicit through
 `set_work_request_status`, and question/decision tools do not mirror
 dashboard-only helper guards, auto-transition parent status, or add a new
 lifecycle/status transition matrix.
+`record_work_request_decision.source_type` must be one of `human`,
+`architect`, `operator`, or `ask_pro_advisory`; the live MCP input schema
+advertises this enum.
 `ask_work_request_question` may include an optional `decision_prompt` object
 with redacted `tl_dr`, `details`, one to four answer `options`, and optional
 `custom_redirect_label`. Responses include the redacted structured prompt when
@@ -157,6 +160,9 @@ slice requirement. Responses return JSON-safe redacted planned-slice or
 WorkRequest status projections plus scope/status metadata. These tools do not
 dispatch planned slices, create WorkPackages, alter SecretHandoff, mutate
 Linear, run automatic slicing/package generation, or change dashboard behavior.
+`add_work_request_planned_slice.work_package_kind` must be one of the
+standalone dispatchable WorkPackage kinds advertised by the live MCP input
+schema.
 `dispatch_work_request_planned_slice` is separate from those mutation tools and
 requires `dispatch:work_request` because it creates a WorkPackage, worker grant,
 and private SecretHandoff side effects. It requires `work_request_id`,
@@ -265,6 +271,11 @@ batch still binds the returned server/session for later standalone requests.
 After one claim succeeds in a batch, later `claim_work_key` entries in that
 same batch are rejected as rebinding attempts so a connection cannot claim
 multiple assignments.
+The stdio transport is newline-delimited JSON. Long one-shot stdio invocations
+that include `tools/list` or `read_work_request` can produce large response
+lines, so callers must drain stdout concurrently or redirect stdout to a file.
+Waiting for process exit while stdout is not being read can deadlock the caller
+before later requests are processed.
 
 `attach_branch` requires `branch` and `head_sha`. When no PR head is attached,
 review packages are matched to the latest attached branch head so stale

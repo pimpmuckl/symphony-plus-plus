@@ -15,6 +15,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Server, Session, Stdio}
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
@@ -32,6 +33,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
   alias SymphonyElixir.WorkPackageFactory
@@ -1353,6 +1355,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
            ]
 
     assert get_in(tools_by_name, ["record_work_request_decision", "inputSchema", "properties", "source_id", "type"]) == "string"
+    assert get_in(tools_by_name, ["record_work_request_decision", "inputSchema", "properties", "source_type", "enum"]) == DecisionLogEntry.source_types()
 
     assert get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "required"]) == [
              "work_request_id",
@@ -1369,6 +1372,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
            ]
 
     assert get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "owned_file_globs", "type"]) == "array"
+
+    assert get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "work_package_kind", "enum"]) ==
+             StateMachine.standalone_kinds()
+
     refute Map.has_key?(get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "forbidden_file_globs"]), "minItems")
     assert get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "branch_pattern", "type"]) == "string"
 
