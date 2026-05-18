@@ -1,6 +1,9 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   use ExUnit.Case, async: true
 
+  alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
+
   @repo_root Path.expand("../../../../", __DIR__)
   @skill_path Path.join(@repo_root, ".codex/skills/symphony-work-package/SKILL.md")
   @plugin_manifest_path Path.join(@repo_root, "plugins/symphony-plus-plus/.codex-plugin/plugin.json")
@@ -3611,6 +3614,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
     assert actual_tools == @worker_tools
     refute "request_context" in actual_tools
+  end
+
+  test "MCP contract enum constraints mirror runtime values" do
+    contract =
+      @contract_path
+      |> File.read!()
+      |> Jason.decode!()
+
+    architect_tools = Map.new(contract["architect_tools"], &{&1["name"], &1})
+
+    assert get_in(architect_tools, ["record_work_request_decision", "argument_constraints", "source_type"]) ==
+             DecisionLogEntry.source_types()
+
+    assert get_in(architect_tools, ["add_work_request_planned_slice", "argument_constraints", "work_package_kind"]) ==
+             StateMachine.standalone_kinds()
   end
 
   defp frontmatter(content) do

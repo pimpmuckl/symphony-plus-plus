@@ -43,7 +43,8 @@ Clarification is a product and architecture step, not implementation.
   one sentence. Use `decision_prompt` for higher-impact product choices where
   the human should compare concrete options.
 - Record decisions with rationale, scope impact, and explicit assumptions using
-  `record_work_request_decision`.
+  `record_work_request_decision`. Use only the advertised `source_type` enum:
+  `human`, `architect`, `operator`, or `ask_pro_advisory`.
 - Use `human_info_needed` when the human must decide. Do not choose behavior
   just to keep the lane moving.
 - Generated ask-pro output, chat history, local scratch notes, and review
@@ -78,6 +79,7 @@ approves a different shape.
 Each planned slice should include:
 
 - A short title and outcome-focused goal.
+- A dispatchable `work_package_kind` from the MCP tool-schema enum, not an invented category.
 - Owned files or globs and forbidden paths.
 - Acceptance criteria that the worker can prove.
 - Validation commands or blocked-validation owner.

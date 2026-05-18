@@ -1049,7 +1049,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool_description("record_work_request_decision") do
-    "Record a durable decision log entry on a scoped WorkRequest."
+    "Record a durable decision log entry on a scoped WorkRequest. source_type must be one of: #{Enum.join(DecisionLogEntry.source_types(), ", ")}."
   end
 
   defp architect_tool_description("add_work_request_planned_slice") do
@@ -1416,7 +1416,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(
       %{
         "work_request_id" => string_schema(),
-        "source_type" => string_schema(),
+        "source_type" => string_enum_schema(DecisionLogEntry.source_types()),
         "decision" => string_schema(),
         "rationale" => string_schema(),
         "scope_impact" => string_schema(),
@@ -1433,7 +1433,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "work_request_id" => string_schema(),
         "title" => string_schema(),
         "goal" => string_schema(),
-        "work_package_kind" => string_schema(),
+        "work_package_kind" => string_enum_schema(StateMachine.standalone_kinds()),
         "target_base_branch" => string_schema(),
         "owned_file_globs" => string_array_schema(),
         "forbidden_file_globs" => string_array_schema(),
@@ -1631,6 +1631,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp string_schema, do: %{"type" => "string"}
+  defp string_enum_schema(values) when is_list(values), do: %{"type" => "string", "enum" => values}
   defp nonblank_string_schema, do: %{"type" => "string", "minLength" => 1, "pattern" => "\\S"}
   defp boolean_schema, do: %{"type" => "boolean"}
   defp integer_schema, do: %{"type" => "integer"}
