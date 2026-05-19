@@ -323,7 +323,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case lookup_handle_state(server) do
       {%__MODULE__{} = stored, timestamp_ms, _explicit?} ->
         state_key_version = stored.state_key_version || timestamp_ms
-        session_refresh_required? = stale_explicit_session?(server, state_key_version)
+
+        session_refresh_required? =
+          stored.session_refresh_required or stale_explicit_session?(server, state_key_version)
+
         session = if session_refresh_required?, do: nil, else: server.session
 
         %{
@@ -383,6 +386,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp persist_handle_state(%__MODULE__{} = server, %__MODULE__{} = updated_server) do
     timestamp_ms =
       cond do
+        updated_server.session_refresh_required ->
+          put_handle_state(updated_server)
+
         server.initialized != updated_server.initialized or server.session != updated_server.session ->
           put_handle_state(updated_server)
 
@@ -5069,12 +5075,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          repo,
          %Session{assignment: %{grant_role: "architect"}} = session,
          guidance_request_id,
-         _arguments
+         arguments
        ) do
     with {:ok, session} <- architect_session(repo, session, "read:guidance_request"),
+         {:ok, work_package_id} <- optional_string_argument(arguments, "work_package_id"),
          {:ok, filters, scope} <- scoped_guidance_request_filters(repo, session),
          {:ok, guidance_request} <-
-           GuidanceRequestService.get_visible_to_architect(repo, guidance_request_id, filters) do
+           GuidanceRequestService.get_visible_to_architect(repo, guidance_request_id, filters),
+         :ok <- require_guidance_request_work_package(guidance_request, work_package_id) do
       {:ok, tool_result(%{"guidance_request" => guidance_request_payload(guidance_request), "scope" => scope})}
     else
       {:error, :not_found} -> guidance_request_not_found_error("read_guidance_request")
@@ -5085,6 +5093,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp read_guidance_request_for_session(_repo, %Session{}, _guidance_request_id, _arguments) do
     auth_error({:unauthorized, :unsupported_grant_role}, "read_guidance_request")
   end
+
+  defp require_guidance_request_work_package(%GuidanceRequest{}, nil), do: :ok
+
+  defp require_guidance_request_work_package(%GuidanceRequest{work_package_id: work_package_id}, work_package_id), do: :ok
+
+  defp require_guidance_request_work_package(%GuidanceRequest{}, _work_package_id), do: {:error, :not_found}
 
   defp pr_metadata_payload(repo, %Session{} = session, arguments, source_tool) do
     case legacy_attach_pr_payload(arguments, source_tool) do
@@ -7890,6 +7904,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_argument_scope(session, nil), do: {:ok, session}
   defp require_argument_scope(session, work_package_id) when work_package_id == session.assignment.work_package_id, do: {:ok, session}
   defp require_argument_scope(_session, _work_package_id), do: {:error, :forbidden}
+
+  defp authorize_solo_tool_call(%__MODULE__{session_refresh_required: true}, tool) do
+    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "claim_required", "action" => "claim_work_key"}}
+  end
 
   defp authorize_solo_tool_call(%__MODULE__{session: nil}, _tool), do: :ok
 

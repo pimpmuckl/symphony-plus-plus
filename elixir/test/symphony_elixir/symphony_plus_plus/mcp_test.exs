@@ -2711,13 +2711,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     # A duplicate initialize on the same reused explicit server is not a fresh
     # unbound session; keep the stale identity on the claim-only recovery
     # surface until re-claim or a new MCP process/session.
-    {reused_tools_response, _reused_tools_server} =
+    {reused_tools_response, reused_tools_server} =
       Server.handle_response_state(
         %{"jsonrpc" => "2.0", "id" => "tools-after-reused-stale-init", "method" => "tools/list", "params" => %{}},
         reused_init_server
       )
 
     reused_tools_by_name = reused_tools_response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
+
+    {stale_solo_response, _stale_solo_server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "solo-after-reused-stale-init", "method" => "tools/call", "params" => %{"name" => "solo_attach", "arguments" => %{}}},
+        reused_tools_server
+      )
+
+    {stateless_tools_response, stateless_tools_server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "tools-after-stateless-stale-recovery", "method" => "tools/list", "params" => %{}},
+        Server.new(Config.default(repo: repo), state_key: state_key)
+      )
+
+    stateless_tools_by_name = stateless_tools_response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
+
+    {stateless_solo_response, _stateless_solo_server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "solo-after-stateless-stale-recovery", "method" => "tools/call", "params" => %{"name" => "solo_attach", "arguments" => %{}}},
+        stateless_tools_server
+      )
 
     {fresh_init_response, fresh_initialized_server} =
       Server.handle_response_state(
@@ -2744,6 +2764,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Map.keys(repeat_tools_by_name) |> Enum.sort() == ["claim_work_key", "sympp.health"]
     assert get_in(reused_init_response, ["error", "data", "reason"]) == "already_initialized"
     assert Map.keys(reused_tools_by_name) |> Enum.sort() == ["claim_work_key", "sympp.health"]
+    assert get_in(stale_solo_response, ["error", "data", "reason"]) == "claim_required"
+    assert get_in(stale_solo_response, ["error", "data", "action"]) == "claim_work_key"
+    assert Map.keys(stateless_tools_by_name) |> Enum.sort() == ["claim_work_key", "sympp.health"]
+    assert get_in(stateless_solo_response, ["error", "data", "reason"]) == "claim_required"
+    assert get_in(stateless_solo_response, ["error", "data", "action"]) == "claim_work_key"
     assert get_in(fresh_init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
     refute Map.has_key?(reused_tools_by_name, "get_current_assignment")
     assert Map.has_key?(fresh_tools_by_name, "read_work_request")
