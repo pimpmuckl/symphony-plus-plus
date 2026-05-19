@@ -7,7 +7,7 @@ defmodule Mix.Tasks.Sympp.Mcp do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
-  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Session, Stdio}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Config, Repository, Session, Stdio}
   alias SymphonyElixir.SymphonyPlusPlus.Repo
 
   @shortdoc "Starts the Symphony++ MCP server"
@@ -34,8 +34,10 @@ defmodule Mix.Tasks.Sympp.Mcp do
     try do
       case setup_repo(config) do
         {:ok, _repo_ownership} ->
-          case session_options(config, &System.fetch_env/1) do
-            {:ok, session_options} -> Stdio.run(config, session_options)
+          with :ok <- Repository.ensure_migrated(Repo),
+               {:ok, session_options} <- session_options(config, &System.fetch_env/1) do
+            Stdio.run(config, session_options)
+          else
             {:error, reason} -> Mix.raise("Failed to start Symphony++ MCP server: #{inspect(reason)}")
           end
 
