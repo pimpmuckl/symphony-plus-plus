@@ -636,7 +636,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
       Application.put_env(:symphony_elixir, :sympp_repo_database, database_path)
 
       assert {:ok, []} = Tracker.fetch_candidate_issues()
-      Process.sleep(50)
       assert :undefined = adapter_repo_pid(database_path)
     after
       stop_adapter_repo(database_path)
