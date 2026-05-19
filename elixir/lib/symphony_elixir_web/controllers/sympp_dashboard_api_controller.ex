@@ -502,6 +502,15 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end)
   end
 
+  @spec operator_solo_session_detail(Conn.t(), map()) :: Conn.t()
+  def operator_solo_session_detail(conn, %{"solo_session_id" => solo_session_id}) do
+    send_local_operator_response(conn, fn repo ->
+      with {:ok, payload} <- Dashboard.solo_session_detail(repo, solo_session_id) do
+        json(conn, payload)
+      end
+    end)
+  end
+
   @spec operator_create_work_request(Conn.t(), map()) :: Conn.t()
   def operator_create_work_request(conn, params) do
     send_local_operator_response(conn, fn repo ->

@@ -225,6 +225,28 @@ export type SoloSession = {
   } | null;
 };
 
+export type SoloSessionEntry = {
+  id?: string | null;
+  sequence?: number | null;
+  kind?: string | null;
+  kind_label?: string | null;
+  status?: string | null;
+  status_label?: string | null;
+  title?: string | null;
+  body?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type SoloSessionDetailPayload = {
+  solo_session?: SoloSession & {
+    workspace_path?: string | null;
+    archived_at?: string | null;
+  };
+  entries?: SoloSessionEntry[];
+  entry_count?: number;
+};
+
 export type WorkPackageDetailPayload = {
   work_package?: WorkPackageCard & {
     branch_pattern?: string | null;

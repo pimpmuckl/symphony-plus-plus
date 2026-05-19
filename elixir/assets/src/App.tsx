@@ -17,7 +17,7 @@ import {
   Sun,
 } from "lucide-react";
 import type * as React from "react";
-import { Children, FormEvent, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Children, FormEvent, isValidElement, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -49,6 +49,8 @@ import type {
   GuidanceRequest,
   PlannedSlice,
   SoloSession,
+  SoloSessionDetailPayload,
+  SoloSessionEntry,
   WorkPackageCard,
   WorkPackageDetailPayload,
   WorkRequestCard,
@@ -61,9 +63,11 @@ const DASHBOARD_UI_STATE_KEY = "symphony-plus-plus.dashboard.ui-state.v1";
 const DASHBOARD_THEME_KEY = "symphony-plus-plus.dashboard.theme.v1";
 const ALIGNED_ROW_MIN_HEIGHT = 112;
 const BOARD_WIRE_TRACK_CLEARANCE = 40;
+const DASHBOARD_POLL_INTERVAL_MS = 7000;
 const TOP_PANEL_ORDER: TopPanelKey[] = ["guidance", "blockers", "finished"];
 const TOP_PANEL_RESIZE_MS = 210;
 const TOP_PANEL_SLIDE_MS = 360;
+const UPDATE_ANIMATION_TTL_MS = 1800;
 
 type GuidanceItem =
   | {
@@ -103,10 +107,25 @@ type StateToneStyle = {
 type WorkspaceTab = "workstreams" | "solo";
 type WorkstreamLayoutMode = "jira" | "aligned";
 type DashboardTheme = "light" | "dark";
+type UpdateMotionKind = "added" | "changed" | "guidance" | "blocker" | "finished";
+type UpdateMotion = { kind: UpdateMotionKind | "settled"; token: number };
+type UpdateAnimationEntity = {
+  signature: string;
+  status?: string | null;
+  guidanceCount: number;
+  blockerCount: number;
+  finished: boolean;
+};
+type DashboardUpdateAnimations = {
+  countPulseFor: (panel: TopPanelKey) => number;
+  motionFor: (key?: string | null) => UpdateMotion | undefined;
+  simulate: (kind: UpdateMotionKind) => void;
+};
 type CardDetailSelection =
   | { kind: "request"; detail: WorkRequestDetail }
   | { kind: "slice"; detail: WorkRequestDetail; slice: PlannedSlice; pkg?: WorkPackageCard }
-  | { kind: "package"; pkg: WorkPackageCard; detail?: WorkRequestDetail; slice?: PlannedSlice };
+  | { kind: "package"; pkg: WorkPackageCard; detail?: WorkRequestDetail; slice?: PlannedSlice }
+  | { kind: "solo"; session: SoloSession };
 type CardDetailSelect = (selection: CardDetailSelection) => void;
 type DashboardUiState = {
   workspaceTab?: WorkspaceTab;
@@ -256,11 +275,15 @@ export default function App() {
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>(readStoredWorkspaceTab);
   const [workstreamLayout, setWorkstreamLayout] = useState<WorkstreamLayoutMode>(readStoredWorkstreamLayout);
   const [theme, setTheme] = useState<DashboardTheme>(readStoredTheme);
+  const loadInFlightRef = useRef(false);
 
-  const loadDashboard = useCallback(async (mode: "initial" | "refresh" = "refresh") => {
+  const loadDashboard = useCallback(async (mode: "initial" | "refresh" | "silent" = "refresh") => {
+    if (loadInFlightRef.current && mode === "silent") return;
+    loadInFlightRef.current = true;
+
     if (mode === "initial") {
       setLoading(true);
-    } else {
+    } else if (mode === "refresh") {
       setRefreshing(true);
     }
 
@@ -277,13 +300,24 @@ export default function App() {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Dashboard API unavailable");
     } finally {
+      loadInFlightRef.current = false;
       setLoading(false);
-      setRefreshing(false);
+      if (mode === "refresh") setRefreshing(false);
     }
   }, []);
 
   useEffect(() => {
     void loadDashboard("initial");
+  }, [loadDashboard]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void loadDashboard("silent");
+      }
+    }, DASHBOARD_POLL_INTERVAL_MS);
+
+    return () => window.clearInterval(interval);
   }, [loadDashboard]);
 
   useEffect(() => {
@@ -312,6 +346,15 @@ export default function App() {
     soloSessions,
     requestDetails,
   ]);
+  const updateAnimations = useDashboardUpdateAnimations({
+    blockerItems,
+    finishedHighlights,
+    guidanceItems,
+    packages,
+    requestDetails,
+    ready: dashboard !== null,
+    soloSessions,
+  });
 
   if (loading) {
     return (
@@ -340,6 +383,7 @@ export default function App() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              <UpdateSimulationControls updateAnimations={updateAnimations} />
               <Badge variant={error ? "danger" : "success"}>{error ? "API unavailable" : "Live ledger"}</Badge>
               <ThemeToggle theme={theme} onToggle={() => setTheme((currentTheme) => (currentTheme === "dark" ? "light" : "dark"))} />
               <Button variant="outline" size="sm" onClick={() => void loadDashboard()} disabled={refreshing} className="button-lift">
@@ -375,6 +419,7 @@ export default function App() {
             blockerItems={blockerItems}
             finishedHighlights={finishedHighlights}
             onSelectGuidance={setSelectedGuidance}
+            updateAnimations={updateAnimations}
           />
 
           <Tabs value={workspaceTab} onValueChange={(value) => setWorkspaceTab(value as WorkspaceTab)} className="w-full motion-card">
@@ -403,13 +448,14 @@ export default function App() {
                       onSelectGuidance={setSelectedGuidance}
                       onSelectCard={setSelectedCardDetail}
                       layoutMode={workstreamLayout}
+                      updateAnimations={updateAnimations}
                     />
                   ))
                 )}
               </div>
             </TabsContent>
             <TabsContent value="solo">
-              <SoloSessions sessions={soloSessions} />
+              <SoloSessions sessions={soloSessions} onSelectCard={setSelectedCardDetail} updateAnimations={updateAnimations} />
             </TabsContent>
           </Tabs>
         </div>
@@ -436,16 +482,497 @@ export default function App() {
   );
 }
 
+function useDashboardUpdateAnimations({
+  blockerItems,
+  finishedHighlights,
+  guidanceItems,
+  packages,
+  ready,
+  requestDetails,
+  soloSessions,
+}: {
+  blockerItems: BlockerItem[];
+  finishedHighlights: FinishedHighlight[];
+  guidanceItems: GuidanceItem[];
+  packages: WorkPackageCard[];
+  ready: boolean;
+  requestDetails: WorkRequestDetail[];
+  soloSessions: SoloSession[];
+}): DashboardUpdateAnimations {
+  const previousSnapshotRef = useRef<Map<string, UpdateAnimationEntity> | null>(null);
+  const latestSnapshotRef = useRef<Map<string, UpdateAnimationEntity>>(new Map());
+  const timersRef = useRef<number[]>([]);
+  const tokenRef = useRef(0);
+  const [motions, setMotions] = useState<Record<string, UpdateMotion>>({});
+  const [countPulses, setCountPulses] = useState<Record<TopPanelKey, number>>({ blockers: 0, finished: 0, guidance: 0 });
+
+  const applyMotions = useCallback((nextMotions: Record<string, UpdateMotion>) => {
+    const motionEntries = Object.entries(nextMotions);
+    if (motionEntries.length === 0) return;
+
+    setMotions((current) => ({ ...current, ...nextMotions }));
+
+    const timer = window.setTimeout(() => {
+      setMotions((current) => {
+        let changed = false;
+        const next = { ...current };
+
+        motionEntries.forEach(([key, motion]) => {
+          if (next[key]?.token === motion.token) {
+            next[key] = { kind: "settled", token: motion.token };
+            changed = true;
+          }
+        });
+
+        return changed ? next : current;
+      });
+    }, UPDATE_ANIMATION_TTL_MS);
+
+    timersRef.current.push(timer);
+  }, []);
+
+  useEffect(
+    () => () => {
+      timersRef.current.forEach((timer) => window.clearTimeout(timer));
+      timersRef.current = [];
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!ready) {
+      latestSnapshotRef.current = new Map();
+      previousSnapshotRef.current = null;
+      setMotions({});
+      return;
+    }
+
+    const snapshot = dashboardAnimationSnapshot({ blockerItems, finishedHighlights, guidanceItems, packages, requestDetails, soloSessions });
+    latestSnapshotRef.current = snapshot;
+    const previousSnapshot = previousSnapshotRef.current;
+
+    if (!previousSnapshot) {
+      previousSnapshotRef.current = snapshot;
+      return;
+    }
+
+    const nextMotions: Record<string, UpdateMotion> = {};
+    snapshot.forEach((entity, key) => {
+      const motionKind = classifyUpdateMotion(previousSnapshot.get(key), entity);
+      if (!motionKind) return;
+
+      nextMotions[key] = { kind: motionKind, token: (tokenRef.current += 1) };
+    });
+
+    previousSnapshotRef.current = snapshot;
+
+    applyMotions(nextMotions);
+  }, [applyMotions, blockerItems, finishedHighlights, guidanceItems, packages, ready, requestDetails, soloSessions]);
+
+  const motionFor = useCallback((key?: string | null) => (key ? motions[key] : undefined), [motions]);
+  const countPulseFor = useCallback((panel: TopPanelKey) => countPulses[panel] || 0, [countPulses]);
+  const simulate = useCallback(
+    (kind: UpdateMotionKind) => {
+      const snapshot = latestSnapshotRef.current;
+      const keys = simulatedMotionKeys(kind, snapshot);
+      const nextMotions = Object.fromEntries(keys.map((key) => [key, { kind, token: (tokenRef.current += 1) } satisfies UpdateMotion]));
+
+      applyMotions(nextMotions);
+
+      const panel = topPanelForMotionKind(kind);
+      if (panel) {
+        setCountPulses((current) => ({ ...current, [panel]: (current[panel] || 0) + 1 }));
+      }
+    },
+    [applyMotions],
+  );
+
+  return useMemo(() => ({ countPulseFor, motionFor, simulate }), [countPulseFor, motionFor, simulate]);
+}
+
+function dashboardAnimationSnapshot({
+  blockerItems,
+  finishedHighlights,
+  guidanceItems,
+  packages,
+  requestDetails,
+  soloSessions,
+}: {
+  blockerItems: BlockerItem[];
+  finishedHighlights: FinishedHighlight[];
+  guidanceItems: GuidanceItem[];
+  packages: WorkPackageCard[];
+  requestDetails: WorkRequestDetail[];
+  soloSessions: SoloSession[];
+}) {
+  const snapshot = new Map<string, UpdateAnimationEntity>();
+  const packageById = new Map(packages.map((pkg) => [pkg.id, pkg]));
+
+  requestDetails.forEach((detail) => {
+    snapshot.set(requestUpdateKey(detail), requestAnimationEntity(detail));
+
+    (detail.planned_slices || []).forEach((slice) => {
+      snapshot.set(sliceUpdateKey(slice), sliceAnimationEntity(slice, slice.work_package_id ? packageById.get(slice.work_package_id) : undefined));
+    });
+  });
+
+  packages.forEach((pkg) => {
+    snapshot.set(packageUpdateKey(pkg), packageAnimationEntity(pkg));
+  });
+
+  guidanceItems.forEach((item) => {
+    snapshot.set(guidanceUpdateKey(item), guidanceAnimationEntity(item));
+  });
+
+  blockerItems.forEach((item) => {
+    snapshot.set(blockerUpdateKey(item), blockerAnimationEntity(item));
+  });
+
+  finishedHighlights.forEach((item) => {
+    snapshot.set(finishedHighlightUpdateKey(item), finishedHighlightAnimationEntity(item));
+  });
+
+  soloSessions.forEach((session) => {
+    snapshot.set(soloSessionUpdateKey(session), soloSessionAnimationEntity(session));
+  });
+
+  return snapshot;
+}
+
+function requestUpdateKey(detail: WorkRequestDetail) {
+  return `request:${detail.work_request.id}`;
+}
+
+function sliceUpdateKey(slice: PlannedSlice) {
+  return `slice:${slice.id}`;
+}
+
+function packageUpdateKey(pkg: WorkPackageCard) {
+  return `package:${pkg.id}`;
+}
+
+function guidanceUpdateKey(item: GuidanceItem) {
+  return `guidance:${item.source}:${item.id}`;
+}
+
+function blockerUpdateKey(item: BlockerItem) {
+  return `blocker:${item.id}`;
+}
+
+function finishedHighlightUpdateKey(item: FinishedHighlight) {
+  return `finished:${item.kind}:${item.id}`;
+}
+
+function soloSessionUpdateKey(session: SoloSession) {
+  return `solo:${session.id}`;
+}
+
+function finishedHighlightsListKey(items: FinishedHighlight[]) {
+  return items.map(finishedHighlightUpdateKey).join("|");
+}
+
+function classifyUpdateMotion(previous: UpdateAnimationEntity | undefined, current: UpdateAnimationEntity): UpdateMotionKind | null {
+  if (!previous) {
+    if (current.finished) return "finished";
+    if (current.blockerCount > 0 || isBlockedStatus(current.status)) return "blocker";
+    if (current.guidanceCount > 0) return "guidance";
+    return "added";
+  }
+
+  if (previous.signature === current.signature) return null;
+  if (current.finished && !previous.finished) return "finished";
+  if (current.blockerCount > previous.blockerCount || (!isBlockedStatus(previous.status) && isBlockedStatus(current.status))) return "blocker";
+  if (current.guidanceCount > previous.guidanceCount) return "guidance";
+  return "changed";
+}
+
+function simulatedMotionKeys(kind: UpdateMotionKind, snapshot: Map<string, UpdateAnimationEntity>) {
+  const entries = [...snapshot.entries()];
+  const preferred =
+    kind === "guidance"
+      ? entries.filter(([, entity]) => entity.guidanceCount > 0)
+      : kind === "blocker"
+        ? entries.filter(([, entity]) => entity.blockerCount > 0 || isBlockedStatus(entity.status))
+        : kind === "finished"
+          ? entries.filter(([, entity]) => entity.finished)
+          : entries.filter(([key]) => key.startsWith("request:") || key.startsWith("slice:") || key.startsWith("package:") || key.startsWith("solo:"));
+
+  return (preferred.length > 0 ? preferred : entries).slice(0, kind === "changed" ? 4 : 3).map(([key]) => key);
+}
+
+function topPanelForMotionKind(kind: UpdateMotionKind): TopPanelKey | null {
+  if (kind === "guidance") return "guidance";
+  if (kind === "blocker") return "blockers";
+  if (kind === "finished") return "finished";
+  return null;
+}
+
+function requestAnimationEntity(detail: WorkRequestDetail): UpdateAnimationEntity {
+  const request = detail.work_request;
+  const openQuestions = detail.clarification_questions?.filter((question) => question.status === "open") ?? [];
+  const guidanceCount = Math.max(openQuestions.length, request.open_question_count || 0, request.status === "human_info_needed" ? 1 : 0);
+
+  return {
+    signature: stableSignature([
+      request.status,
+      request.updated_at,
+      request.open_question_count,
+      request.answered_question_count,
+      request.planned_slice_count,
+      request.approved_slice_count,
+      request.dispatched_slice_count,
+      request.skipped_slice_count,
+      detail.summary,
+      (detail.clarification_questions || []).map((question) => [
+        question.id,
+        question.status,
+        question.answer,
+        question.answered_at,
+        question.updated_at,
+      ]),
+    ]),
+    status: request.status,
+    guidanceCount,
+    blockerCount: 0,
+    finished: requestLane(request) === "finished",
+  };
+}
+
+function sliceAnimationEntity(slice: PlannedSlice, pkg?: WorkPackageCard): UpdateAnimationEntity {
+  const status = slice.work_package_status || slice.status;
+  const blockerCount = pkg?.active_blocker_count || (pkg?.status === "blocked" ? 1 : 0);
+
+  return {
+    signature: stableSignature([
+      slice.status,
+      slice.work_package_id,
+      slice.work_package_status,
+      slice.updated_at,
+      slice.dispatched_at,
+      pkg?.status,
+      pkg?.active_blocker_count,
+      pkg?.latest_progress_at,
+      pkg?.updated_at,
+      pkg?.plan,
+    ]),
+    status,
+    guidanceCount: 0,
+    blockerCount,
+    finished: sliceLane(slice) === "finished" || Boolean(pkg && packageLane(pkg) === "finished"),
+  };
+}
+
+function packageAnimationEntity(pkg: WorkPackageCard): UpdateAnimationEntity {
+  const blockerCount = pkg.active_blocker_count || (pkg.status === "blocked" ? 1 : 0);
+
+  return {
+    signature: stableSignature([
+      pkg.status,
+      pkg.updated_at,
+      pkg.latest_progress_at,
+      pkg.active_blocker_count,
+      pkg.artifact_count,
+      pkg.finding_count,
+      pkg.plan,
+      pkg.metadata?.pr,
+      pkg.metadata?.review_package,
+      pkg.metadata?.review_suite_result,
+      pkg.active_agent_run,
+      pkg.runtime,
+    ]),
+    status: pkg.status,
+    guidanceCount: 0,
+    blockerCount,
+    finished: packageLane(pkg) === "finished",
+  };
+}
+
+function guidanceAnimationEntity(item: GuidanceItem): UpdateAnimationEntity {
+  const status = item.source === "guidance" ? item.guidance.status : item.question.status;
+
+  return {
+    signature: stableSignature([item.title, item.detail, status, item.prompt, item.source === "clarification" ? item.question.answer : item.guidance.context]),
+    status,
+    guidanceCount: isClosedGuidanceStatus(status) ? 0 : 1,
+    blockerCount: 0,
+    finished: false,
+  };
+}
+
+function blockerAnimationEntity(item: BlockerItem): UpdateAnimationEntity {
+  return {
+    signature: stableSignature([item.status, item.blockerCount, item.detail, item.title]),
+    status: item.status,
+    guidanceCount: 0,
+    blockerCount: item.blockerCount,
+    finished: false,
+  };
+}
+
+function finishedHighlightAnimationEntity(item: FinishedHighlight): UpdateAnimationEntity {
+  return {
+    signature: stableSignature([item.status, item.at, item.title, item.kind]),
+    status: item.status,
+    guidanceCount: 0,
+    blockerCount: 0,
+    finished: true,
+  };
+}
+
+function soloSessionAnimationEntity(session: SoloSession): UpdateAnimationEntity {
+  const attention = soloSessionAttention(session);
+
+  return {
+    signature: stableSignature([session.status, session.last_activity_at, session.updated_at, session.entry_counts, session.latest_entry]),
+    status: session.status,
+    guidanceCount: attention.guidanceCount,
+    blockerCount: attention.blockerCount,
+    finished: soloSessionLane(session) === "finished",
+  };
+}
+
+function stableSignature(value: unknown) {
+  return JSON.stringify(value);
+}
+
+function isClosedGuidanceStatus(status?: string | null) {
+  return ["answered", "closed", "resolved", "done", "completed"].includes(status || "");
+}
+
+function isBlockedStatus(status?: string | null) {
+  return status === "blocked";
+}
+
+function updateMotionAttributes(motion?: UpdateMotion) {
+  if (motion?.kind === "settled") return { "data-update-settled": "true" };
+  return motion ? { "data-update-kind": motion.kind, "data-update-token": motion.token } : {};
+}
+
+function useCountMotion(value: number, pulseToken = 0) {
+  const currentRef = useRef(value);
+  const pulseRef = useRef(pulseToken);
+  const tokenRef = useRef(0);
+  const [motion, setMotion] = useState({
+    active: false,
+    current: value,
+    direction: "idle" as "idle" | "up" | "down",
+    previous: value,
+    token: 0,
+  });
+
+  useEffect(() => {
+    const previous = currentRef.current;
+    const pulsing = pulseRef.current !== pulseToken;
+    if (previous === value && !pulsing) return;
+
+    pulseRef.current = pulseToken;
+    currentRef.current = value;
+    const token = (tokenRef.current += 1);
+    const direction = value >= previous ? "up" : "down";
+    const displayedPrevious = pulsing && previous === value ? Math.max(0, value - 1) : previous;
+
+    setMotion({ active: true, current: value, direction, previous: displayedPrevious, token });
+
+    const timer = window.setTimeout(() => {
+      setMotion({ active: false, current: value, direction: "idle", previous: value, token });
+    }, 760);
+
+    return () => window.clearTimeout(timer);
+  }, [pulseToken, value]);
+
+  return motion;
+}
+
+function NumberWheel({
+  value,
+  motion,
+  compact = false,
+}: {
+  value: number;
+  motion: ReturnType<typeof useCountMotion>;
+  compact?: boolean;
+}) {
+  return (
+    <span
+      key={motion.token}
+      className={cn("number-wheel", compact && "number-wheel-compact")}
+      data-direction={motion.active ? motion.direction : undefined}
+      data-animating={motion.active ? "true" : undefined}
+    >
+      <span className="number-wheel-value number-wheel-old">{motion.previous}</span>
+      <span className="number-wheel-value number-wheel-new">{value}</span>
+    </span>
+  );
+}
+
+function AnimatedTopGrid({ children, className }: { children: React.ReactNode; className?: string }) {
+  const layoutKey = Children.toArray(children)
+    .map((child, index) => (isValidElement(child) ? child.key ?? index : index))
+    .join("|");
+  const flipRef = useFlipList(layoutKey);
+
+  return (
+    <div className={className} ref={flipRef}>
+      {children}
+    </div>
+  );
+}
+
+function useFlipList(layoutKey: string) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const previousRectsRef = useRef<Map<string, DOMRect>>(new Map());
+
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const nextRects = new Map<string, DOMRect>();
+    const nodes = Array.from(container.querySelectorAll<HTMLElement>("[data-flip-id]"));
+
+    nodes.forEach((node) => {
+      const id = node.dataset.flipId;
+      if (!id) return;
+
+      const rect = node.getBoundingClientRect();
+      const previous = previousRectsRef.current.get(id);
+      nextRects.set(id, rect);
+
+      if (!previous) return;
+
+      const deltaX = previous.left - rect.left;
+      const deltaY = previous.top - rect.top;
+      if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1) return;
+
+      node.animate(
+        [
+          { transform: `translate3d(${deltaX}px, ${deltaY}px, 0)` },
+          { transform: "translate3d(0, 0, 0)" },
+        ],
+        {
+          duration: 360,
+          easing: "cubic-bezier(0.16, 1, 0.3, 1)",
+        },
+      );
+    });
+
+    previousRectsRef.current = nextRects;
+  }, [layoutKey]);
+
+  return containerRef;
+}
+
 function StatusRail({
   guidanceItems,
   blockerItems,
   finishedHighlights,
   onSelectGuidance,
+  updateAnimations,
 }: {
   guidanceItems: GuidanceItem[];
   blockerItems: BlockerItem[];
   finishedHighlights: FinishedHighlight[];
   onSelectGuidance: (item: GuidanceItem) => void;
+  updateAnimations: DashboardUpdateAnimations;
 }) {
   const [openPanel, setOpenPanel] = useState<TopPanelKey | null>(readStoredTopPanel);
   const renderPanel = useCallback(
@@ -456,11 +983,17 @@ function StatusRail({
             {guidanceItems.length === 0 ? (
               <EmptyPanel title="No human guidance needed" compact />
             ) : (
-              <div className="grid gap-3 xl:grid-cols-2">
+              <AnimatedTopGrid className="grid gap-3 xl:grid-cols-2">
                 {guidanceItems.slice(0, 6).map((item, index) => (
-                  <GuidancePreviewCard key={`${item.source}-${item.id}`} item={item} index={index} onSelect={onSelectGuidance} />
+                  <GuidancePreviewCard
+                    key={`${item.source}-${item.id}`}
+                    item={item}
+                    index={index}
+                    onSelect={onSelectGuidance}
+                    motion={updateAnimations.motionFor(guidanceUpdateKey(item))}
+                  />
                 ))}
-              </div>
+              </AnimatedTopGrid>
             )}
           </TopTray>
         );
@@ -472,11 +1005,11 @@ function StatusRail({
             {blockerItems.length === 0 ? (
               <EmptyPanel title="No active blockers" compact />
             ) : (
-              <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
+              <AnimatedTopGrid className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
                 {blockerItems.map((item, index) => (
-                  <BlockerPreviewCard key={item.id} item={item} index={index} />
+                  <BlockerPreviewCard key={item.id} item={item} index={index} motion={updateAnimations.motionFor(blockerUpdateKey(item))} />
                 ))}
-              </div>
+              </AnimatedTopGrid>
             )}
           </TopTray>
         );
@@ -487,12 +1020,12 @@ function StatusRail({
           {finishedHighlights.length === 0 ? (
             <EmptyPanel title="Nothing finished yet" compact />
           ) : (
-            <FinishedHighlightsBoard items={finishedHighlights} />
+            <FinishedHighlightsBoard items={finishedHighlights} updateAnimations={updateAnimations} />
           )}
         </TopTray>
       );
     },
-    [blockerItems, finishedHighlights, guidanceItems, onSelectGuidance],
+    [blockerItems, finishedHighlights, guidanceItems, onSelectGuidance, updateAnimations],
   );
 
   useEffect(() => {
@@ -510,6 +1043,7 @@ function StatusRail({
           tone="violet"
           openPanel={openPanel}
           onToggle={setOpenPanel}
+          pulseToken={updateAnimations.countPulseFor("guidance")}
         />
         <StatusTile
           panel="blockers"
@@ -519,6 +1053,7 @@ function StatusRail({
           tone="amber"
           openPanel={openPanel}
           onToggle={setOpenPanel}
+          pulseToken={updateAnimations.countPulseFor("blockers")}
         />
         <StatusTile
           panel="finished"
@@ -528,6 +1063,7 @@ function StatusRail({
           tone="emerald"
           openPanel={openPanel}
           onToggle={setOpenPanel}
+          pulseToken={updateAnimations.countPulseFor("finished")}
         />
       </div>
 
@@ -708,6 +1244,7 @@ function StatusTile({
   tone,
   openPanel,
   onToggle,
+  pulseToken = 0,
 }: {
   panel: TopPanelKey;
   title: string;
@@ -716,8 +1253,10 @@ function StatusTile({
   tone: "violet" | "amber" | "emerald";
   openPanel: TopPanelKey | null;
   onToggle: (panel: TopPanelKey | null) => void;
+  pulseToken?: number;
 }) {
   const open = openPanel === panel;
+  const countMotion = useCountMotion(value, pulseToken);
   const tones = {
     violet: {
       card: "border-violet-300 bg-violet-50/35 dark:border-violet-700/70 dark:bg-violet-950/35",
@@ -743,6 +1282,7 @@ function StatusTile({
         "status-tile motion-card group flex min-h-[104px] items-center justify-between rounded-lg border bg-card p-5 text-left shadow-sm outline-none transition-all hover:-translate-y-0.5 hover:shadow-dashboard focus-visible:ring-2 focus-visible:ring-ring",
         open && tones[tone].card,
       )}
+      data-count-motion={countMotion.direction}
       onClick={() => onToggle(open ? null : panel)}
       aria-expanded={open}
     >
@@ -750,7 +1290,9 @@ function StatusTile({
         <div className={cn("flex h-12 w-12 items-center justify-center rounded-full border", tones[tone].icon)}>{icon}</div>
         <div>
           <p className="text-base font-semibold">{title}</p>
-          <p className={cn("mt-2 text-3xl font-semibold", tones[tone].value)}>{value}</p>
+          <p className={cn("mt-2 text-3xl font-semibold", tones[tone].value)}>
+            <NumberWheel value={value} motion={countMotion} />
+          </p>
         </div>
       </div>
       <Tooltip>
@@ -776,7 +1318,52 @@ function TopTray({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function GuidancePreviewCard({ item, index, onSelect }: { item: GuidanceItem; index: number; onSelect: (item: GuidanceItem) => void }) {
+function UpdateSimulationControls({ updateAnimations }: { updateAnimations: DashboardUpdateAnimations }) {
+  const controls: Array<{
+    kind: UpdateMotionKind;
+    label: string;
+    icon: React.ReactNode;
+    tooltip: string;
+  }> = [
+    { kind: "guidance", label: "G", icon: <MessageSquareText className="h-3.5 w-3.5" />, tooltip: "Simulate new human guidance" },
+    { kind: "blocker", label: "B", icon: <AlertTriangle className="h-3.5 w-3.5" />, tooltip: "Simulate a fresh blocker" },
+    { kind: "finished", label: "F", icon: <CheckCircle2 className="h-3.5 w-3.5" />, tooltip: "Simulate finished work" },
+    { kind: "changed", label: "U", icon: <RefreshCw className="h-3.5 w-3.5" />, tooltip: "Simulate a card update" },
+  ];
+
+  return (
+    <div className="update-sim-controls" aria-label="Simulate dashboard update animations">
+      {controls.map((control) => (
+        <Tooltip key={control.kind}>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className="update-sim-button"
+              onClick={() => updateAnimations.simulate(control.kind)}
+              aria-label={control.tooltip}
+            >
+              {control.icon}
+              <span className="sr-only">{control.label}</span>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{control.tooltip}</TooltipContent>
+        </Tooltip>
+      ))}
+    </div>
+  );
+}
+
+function GuidancePreviewCard({
+  item,
+  index,
+  onSelect,
+  motion,
+}: {
+  item: GuidanceItem;
+  index: number;
+  onSelect: (item: GuidanceItem) => void;
+  motion?: UpdateMotion;
+}) {
   const tone: StateCardTone = item.source === "guidance" ? "guidance" : "queued";
 
   return (
@@ -788,6 +1375,8 @@ function GuidancePreviewCard({ item, index, onSelect }: { item: GuidanceItem; in
       )}
       style={stateCardStyle(tone, { animationDelay: `${index * 45}ms` })}
       onClick={() => onSelect(item)}
+      data-flip-id={guidanceUpdateKey(item)}
+      {...updateMotionAttributes(motion)}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -803,24 +1392,30 @@ function GuidancePreviewCard({ item, index, onSelect }: { item: GuidanceItem; in
           <p className="mt-4 text-sm font-medium">Description</p>
           <p className="mt-1 line-clamp-3 text-sm text-muted-foreground">{item.prompt?.details || item.detail}</p>
         </div>
-        <Badge variant={item.source === "guidance" ? "danger" : "warning"}>{item.source === "guidance" ? "Guidance" : "Clarify"}</Badge>
+        <Badge variant={item.source === "guidance" ? "danger" : "warning"} className="state-update-badge">
+          {item.source === "guidance" ? "Guidance" : "Clarify"}
+        </Badge>
       </div>
     </button>
   );
 }
 
-function BlockerPreviewCard({ item, index }: { item: BlockerItem; index: number }) {
+function BlockerPreviewCard({ item, index, motion }: { item: BlockerItem; index: number; motion?: UpdateMotion }) {
   return (
     <div
       className={stateCardClassName("blocked", "stagger-item p-4")}
       style={stateCardStyle("blocked", { animationDelay: `${index * 45}ms` })}
+      data-flip-id={blockerUpdateKey(item)}
+      {...updateMotionAttributes(motion)}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold">{item.title}</p>
           <p className="mt-1 truncate text-xs text-muted-foreground">{item.repo}</p>
         </div>
-        <Badge variant="danger">{formatStatus(item.status)}</Badge>
+        <Badge variant="danger" className="state-update-badge">
+          {formatStatus(item.status)}
+        </Badge>
       </div>
       <p className="mt-4 line-clamp-3 text-sm text-muted-foreground">{item.detail}</p>
       <div className="mt-4 flex items-center gap-2 text-xs text-amber-800 dark:text-amber-200">
@@ -837,10 +1432,12 @@ const finishedHighlightLanes: { kind: FinishedHighlightKind; title: string; empt
   { kind: "Work Package", title: "Work Packages", empty: "No finished packages" },
 ];
 
-function FinishedHighlightsBoard({ items }: { items: FinishedHighlight[] }) {
+function FinishedHighlightsBoard({ items, updateAnimations }: { items: FinishedHighlight[]; updateAnimations: DashboardUpdateAnimations }) {
+  const flipRef = useFlipList(finishedHighlightsListKey(items));
+
   return (
     <ScrollArea className="finished-highlights-scroll pr-3" type="auto">
-      <div className="finished-highlights-grid">
+      <div className="finished-highlights-grid" ref={flipRef}>
         {finishedHighlightLanes.map((lane) => {
           const laneItems = items.filter((item) => item.kind === lane.kind);
 
@@ -854,7 +1451,14 @@ function FinishedHighlightsBoard({ items }: { items: FinishedHighlight[] }) {
                 {laneItems.length === 0 ? (
                   <div className="jira-lane-empty">{lane.empty}</div>
                 ) : (
-                  laneItems.map((item, index) => <FinishedHighlightCard key={`${item.kind}-${item.id}`} item={item} index={index} />)
+                  laneItems.map((item, index) => (
+                    <FinishedHighlightCard
+                      key={`${item.kind}-${item.id}`}
+                      item={item}
+                      index={index}
+                      motion={updateAnimations.motionFor(finishedHighlightUpdateKey(item))}
+                    />
+                  ))
                 )}
               </div>
             </section>
@@ -865,11 +1469,13 @@ function FinishedHighlightsBoard({ items }: { items: FinishedHighlight[] }) {
   );
 }
 
-function FinishedHighlightCard({ item, index }: { item: FinishedHighlight; index: number }) {
+function FinishedHighlightCard({ item, index, motion }: { item: FinishedHighlight; index: number; motion?: UpdateMotion }) {
   return (
     <div
       className={stateCardClassName("finished", "stagger-item p-3")}
       style={stateCardStyle("finished", { animationDelay: `${index * 30}ms` })}
+      data-flip-id={finishedHighlightUpdateKey(item)}
+      {...updateMotionAttributes(motion)}
     >
       <div className="flex min-w-0 items-start gap-2">
         <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
@@ -879,7 +1485,9 @@ function FinishedHighlightCard({ item, index }: { item: FinishedHighlight; index
         </div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Badge variant="success">{formatStatus(item.status)}</Badge>
+        <Badge variant="success" className="state-update-badge">
+          {formatStatus(item.status)}
+        </Badge>
         {item.at ? (
           <span className="flex items-center gap-1 text-xs text-muted-foreground">
             <Clock3 className="h-3.5 w-3.5" />
@@ -897,12 +1505,14 @@ function RepoWorkstream({
   onSelectGuidance,
   onSelectCard,
   layoutMode,
+  updateAnimations,
 }: {
   repo: RepoSummary;
   requestDetails: WorkRequestDetail[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   layoutMode: WorkstreamLayoutMode;
+  updateAnimations: DashboardUpdateAnimations;
 }) {
   const stateKey = repoWorkstreamStateKey(repo);
   const [open, setOpen] = useState(() => readStoredRepoWorkstreamOpen(stateKey, defaultRepoWorkstreamOpen(repo)));
@@ -952,6 +1562,7 @@ function RepoWorkstream({
               onSelectGuidance={onSelectGuidance}
               onSelectCard={onSelectCard}
               layoutMode={layoutMode}
+              updateAnimations={updateAnimations}
             />
           </CardContent>
         </CollapsibleContent>
@@ -1052,6 +1663,7 @@ function RepoSummaryPlate({
   value: number;
   tone: "requested" | "active" | "implementing" | "finished" | "guidance" | "blocker";
 }) {
+  const countMotion = useCountMotion(value);
   const tones: Record<typeof tone, string> = {
     requested: "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700/70 dark:bg-slate-900/70 dark:text-slate-200",
     active: "border-cyan-200 bg-cyan-50 text-cyan-800 dark:border-cyan-700/70 dark:bg-cyan-950/50 dark:text-cyan-200",
@@ -1063,7 +1675,9 @@ function RepoSummaryPlate({
 
   return (
     <div className={cn("inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium", tones[tone])}>
-      <span className="font-semibold tabular-nums">{value}</span>
+      <span className="font-semibold tabular-nums">
+        <NumberWheel value={value} motion={countMotion} compact />
+      </span>
       <span className="whitespace-nowrap">{label}</span>
     </div>
   );
@@ -1078,7 +1692,7 @@ function stateCardClassName(tone: StateCardTone, className?: string) {
 }
 
 function stateCardStyle(tone: StateCardTone, style?: React.CSSProperties) {
-  return { ...style, borderLeftColor: STATE_CARD_TONES[tone].accent };
+  return { ...style, "--state-accent": STATE_CARD_TONES[tone].accent, borderLeftColor: STATE_CARD_TONES[tone].accent } as React.CSSProperties;
 }
 
 function wireToneStyle(tone: BoardWireTone) {
@@ -1092,6 +1706,7 @@ function WorkstreamBoard({
   onSelectGuidance,
   onSelectCard,
   layoutMode,
+  updateAnimations,
 }: {
   repoDetails: WorkRequestDetail[];
   packages: WorkPackageCard[];
@@ -1099,6 +1714,7 @@ function WorkstreamBoard({
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   layoutMode: WorkstreamLayoutMode;
+  updateAnimations: DashboardUpdateAnimations;
 }) {
   const boardRef = useRef<HTMLDivElement | null>(null);
   const sortedDetails = useMemo(() => sortWorkRequestDetails(repoDetails), [repoDetails]);
@@ -1151,6 +1767,7 @@ function WorkstreamBoard({
             workPackageCount={implementing.length + finished.length + implementingPackages.length + finishedPackages.length}
             onSelectGuidance={onSelectGuidance}
             onSelectCard={onSelectCard}
+            updateAnimations={updateAnimations}
           />
         ) : (
           <StackedWorkstreamColumns
@@ -1163,6 +1780,7 @@ function WorkstreamBoard({
             finishedPackages={finishedPackages}
             onSelectGuidance={onSelectGuidance}
             onSelectCard={onSelectCard}
+            updateAnimations={updateAnimations}
           />
         )}
       </div>
@@ -1180,6 +1798,7 @@ function StackedWorkstreamColumns({
   finishedPackages,
   onSelectGuidance,
   onSelectCard,
+  updateAnimations,
 }: {
   requested: WorkRequestDetail[];
   active: SliceEntry[];
@@ -1190,6 +1809,7 @@ function StackedWorkstreamColumns({
   finishedPackages: WorkPackageCard[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
+  updateAnimations: DashboardUpdateAnimations;
 }) {
   return (
     <>
@@ -1202,6 +1822,7 @@ function StackedWorkstreamColumns({
             onSelectCard={() => onSelectCard({ kind: "request", detail })}
             index={index}
             nodeId={requestNodeId(detail)}
+            motion={updateAnimations.motionFor(requestUpdateKey(detail))}
           />
         ))}
       </BoardLaneColumn>
@@ -1215,11 +1836,19 @@ function StackedWorkstreamColumns({
             index={index}
             nodeId={sliceNodeId(slice)}
             onSelectCard={() => onSelectCard({ kind: "slice", detail, slice, pkg })}
+            motion={updateAnimations.motionFor(sliceUpdateKey(slice))}
           />
         ))}
         {activePackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
         {activePackages.map((pkg, index) => (
-          <PackageCard key={pkg.id} pkg={pkg} lane="slices" index={active.length + index} onSelectCard={() => onSelectCard({ kind: "package", pkg })} />
+          <PackageCard
+            key={pkg.id}
+            pkg={pkg}
+            lane="slices"
+            index={active.length + index}
+            onSelectCard={() => onSelectCard({ kind: "package", pkg })}
+            motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
+          />
         ))}
       </BoardLaneColumn>
       <BoardLaneColumn title="Work Packages" count={implementing.length + finished.length + implementingPackages.length + finishedPackages.length} emptyLabel="No work packages yet">
@@ -1232,6 +1861,7 @@ function StackedWorkstreamColumns({
             index={index}
             nodeId={sliceNodeId(slice)}
             onSelectCard={() => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice })}
+            motion={updateAnimations.motionFor(pkg ? packageUpdateKey(pkg) : sliceUpdateKey(slice))}
           />
         ))}
         {finished.map(({ detail, slice, pkg }, index) => (
@@ -1243,6 +1873,7 @@ function StackedWorkstreamColumns({
             index={implementing.length + index}
             nodeId={sliceNodeId(slice)}
             onSelectCard={() => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice })}
+            motion={updateAnimations.motionFor(pkg ? packageUpdateKey(pkg) : sliceUpdateKey(slice))}
           />
         ))}
         {implementingPackages.length + finishedPackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
@@ -1253,6 +1884,7 @@ function StackedWorkstreamColumns({
             lane="implementing"
             index={implementing.length + finished.length + index}
             onSelectCard={() => onSelectCard({ kind: "package", pkg })}
+            motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
           />
         ))}
         {finishedPackages.map((pkg, index) => (
@@ -1262,6 +1894,7 @@ function StackedWorkstreamColumns({
             lane="finished"
             index={implementing.length + finished.length + implementingPackages.length + index}
             onSelectCard={() => onSelectCard({ kind: "package", pkg })}
+            motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
           />
         ))}
       </BoardLaneColumn>
@@ -1277,6 +1910,7 @@ function AlignedWorkstreamColumns({
   workPackageCount,
   onSelectGuidance,
   onSelectCard,
+  updateAnimations,
 }: {
   rows: WorkstreamRow[];
   rowTemplate: string;
@@ -1285,6 +1919,7 @@ function AlignedWorkstreamColumns({
   workPackageCount: number;
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
+  updateAnimations: DashboardUpdateAnimations;
 }) {
   const rowStyle = { gridTemplateRows: rowTemplate } as React.CSSProperties;
 
@@ -1300,6 +1935,7 @@ function AlignedWorkstreamColumns({
                 onSelectCard={() => onSelectCard({ kind: "request", detail: row.detail! })}
                 index={index}
                 nodeId={requestNodeId(row.detail)}
+                motion={updateAnimations.motionFor(requestUpdateKey(row.detail))}
               />
             ) : null}
           </FeatureLaneRow>
@@ -1317,11 +1953,19 @@ function AlignedWorkstreamColumns({
                 index={sliceIndex}
                 nodeId={sliceNodeId(slice)}
                 onSelectCard={() => onSelectCard({ kind: "slice", detail, slice, pkg })}
+                motion={updateAnimations.motionFor(sliceUpdateKey(slice))}
               />
             ))}
             {row.activePackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
             {row.activePackages.map((pkg, packageIndex) => (
-              <PackageCard key={pkg.id} pkg={pkg} lane="slices" index={row.active.length + packageIndex} onSelectCard={() => onSelectCard({ kind: "package", pkg })} />
+              <PackageCard
+                key={pkg.id}
+                pkg={pkg}
+                lane="slices"
+                index={row.active.length + packageIndex}
+                onSelectCard={() => onSelectCard({ kind: "package", pkg })}
+                motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
+              />
             ))}
           </FeatureLaneRow>
         ))}
@@ -1338,6 +1982,7 @@ function AlignedWorkstreamColumns({
                 index={sliceIndex}
                 nodeId={sliceNodeId(slice)}
                 onSelectCard={() => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice })}
+                motion={updateAnimations.motionFor(pkg ? packageUpdateKey(pkg) : sliceUpdateKey(slice))}
               />
             ))}
             {row.finished.map(({ detail, slice, pkg }, sliceIndex) => (
@@ -1349,6 +1994,7 @@ function AlignedWorkstreamColumns({
                 index={row.implementing.length + sliceIndex}
                 nodeId={sliceNodeId(slice)}
                 onSelectCard={() => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice })}
+                motion={updateAnimations.motionFor(pkg ? packageUpdateKey(pkg) : sliceUpdateKey(slice))}
               />
             ))}
             {row.implementingPackages.length + row.finishedPackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
@@ -1359,6 +2005,7 @@ function AlignedWorkstreamColumns({
                 lane="implementing"
                 index={row.implementing.length + row.finished.length + packageIndex}
                 onSelectCard={() => onSelectCard({ kind: "package", pkg })}
+                motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
               />
             ))}
             {row.finishedPackages.map((pkg, packageIndex) => (
@@ -1368,6 +2015,7 @@ function AlignedWorkstreamColumns({
                 lane="finished"
                 index={row.implementing.length + row.finished.length + row.implementingPackages.length + packageIndex}
                 onSelectCard={() => onSelectCard({ kind: "package", pkg })}
+                motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
               />
             ))}
           </FeatureLaneRow>
@@ -2187,12 +2835,14 @@ function RequestCard({
   onSelectCard,
   index = 0,
   nodeId,
+  motion,
 }: {
   detail: WorkRequestDetail;
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard?: () => void;
   index?: number;
   nodeId?: string;
+  motion?: UpdateMotion;
 }) {
   const request = detail.work_request;
   const openQuestions = detail.clarification_questions?.filter((question) => question.status === "open") ?? [];
@@ -2212,6 +2862,7 @@ function RequestCard({
       data-wire-id={nodeId}
       data-card-detail-kind="request"
       style={stateCardStyle(tone, { animationDelay: `${index * 30}ms` })}
+      {...updateMotionAttributes(motion)}
       {...interactiveCardProps(onSelectCard)}
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
@@ -2219,7 +2870,7 @@ function RequestCard({
           <p className="truncate text-sm font-semibold">{request.title || request.id}</p>
           <p className="mt-1 text-xs text-muted-foreground">{request.work_type || "feature"}</p>
         </div>
-        <Badge variant={requestStatusVariant(request.status)} className="shrink-0">
+        <Badge variant={requestStatusVariant(request.status)} className="state-update-badge shrink-0">
           {formatStatus(request.status)}
         </Badge>
       </div>
@@ -2245,6 +2896,7 @@ function SliceCard({
   index = 0,
   nodeId,
   onSelectCard,
+  motion,
 }: {
   slice: PlannedSlice;
   pkg?: WorkPackageCard;
@@ -2252,6 +2904,7 @@ function SliceCard({
   index?: number;
   nodeId?: string;
   onSelectCard?: () => void;
+  motion?: UpdateMotion;
 }) {
   const tone = sliceCardTone(slice, pkg, lane);
   const detail = slice.goal || pkg?.kind || slice.work_package_kind;
@@ -2262,11 +2915,12 @@ function SliceCard({
       data-wire-id={nodeId}
       data-card-detail-kind={pkg && lane !== "slices" ? "package" : "slice"}
       style={stateCardStyle(tone, { animationDelay: `${index * 30}ms` })}
+      {...updateMotionAttributes(motion)}
       {...interactiveCardProps(onSelectCard)}
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <p className="min-w-0 truncate text-sm font-medium">{slice.title || pkg?.title || slice.id}</p>
-        <Badge variant={statusVariant(slice.work_package_status || slice.status)} className="shrink-0">
+        <Badge variant={statusVariant(slice.work_package_status || slice.status)} className="state-update-badge shrink-0">
           {statusLabel(slice.work_package_status || slice.status)}
         </Badge>
       </div>
@@ -2280,11 +2934,13 @@ function PackageCard({
   lane,
   index = 0,
   onSelectCard,
+  motion,
 }: {
   pkg: WorkPackageCard;
   lane: BoardLane;
   index?: number;
   onSelectCard?: () => void;
+  motion?: UpdateMotion;
 }) {
   const tone = packageCardTone(pkg, lane);
   const attention = packageAttentionSignal(pkg);
@@ -2294,11 +2950,12 @@ function PackageCard({
       className={stateCardClassName(tone, cn("stagger-item p-3", onSelectCard && "card-detail-trigger"))}
       data-card-detail-kind="package"
       style={stateCardStyle(tone, { animationDelay: `${index * 30}ms` })}
+      {...updateMotionAttributes(motion)}
       {...interactiveCardProps(onSelectCard)}
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <p className="min-w-0 truncate text-sm font-medium">{pkg.title || pkg.id}</p>
-        <Badge variant={statusVariant(pkg.status)} className="shrink-0">
+        <Badge variant={statusVariant(pkg.status)} className="state-update-badge shrink-0">
           {statusLabel(pkg.status)}
         </Badge>
       </div>
@@ -2599,7 +3256,15 @@ function plural(word: string, count: number) {
   return count === 1 ? word : `${word}s`;
 }
 
-function SoloSessions({ sessions }: { sessions: SoloSession[] }) {
+function SoloSessions({
+  sessions,
+  onSelectCard,
+  updateAnimations,
+}: {
+  sessions: SoloSession[];
+  onSelectCard: CardDetailSelect;
+  updateAnimations: DashboardUpdateAnimations;
+}) {
   if (sessions.length === 0) {
     return <EmptyPanel title="No solo sessions" />;
   }
@@ -2607,7 +3272,7 @@ function SoloSessions({ sessions }: { sessions: SoloSession[] }) {
   return (
     <div className="grid gap-5">
       {soloSessionGroups(sessions).map((group) => (
-        <SoloSessionGroup key={`${group.repo}:${group.baseBranch}`} group={group} />
+        <SoloSessionGroup key={`${group.repo}:${group.baseBranch}`} group={group} onSelectCard={onSelectCard} updateAnimations={updateAnimations} />
       ))}
     </div>
   );
@@ -2615,6 +3280,8 @@ function SoloSessions({ sessions }: { sessions: SoloSession[] }) {
 
 function SoloSessionGroup({
   group,
+  onSelectCard,
+  updateAnimations,
 }: {
   group: {
     repo: string;
@@ -2624,6 +3291,8 @@ function SoloSessionGroup({
     guidanceCount: number;
     blockerCount: number;
   };
+  onSelectCard: CardDetailSelect;
+  updateAnimations: DashboardUpdateAnimations;
 }) {
   return (
     <Card className="motion-card overflow-hidden">
@@ -2647,8 +3316,20 @@ function SoloSessionGroup({
       <CardContent className="p-3 sm:p-4">
         <div className="solo-board-shell">
           <div className="jira-board jira-board-solo">
-            <SoloSessionLane title="Active" sessions={group.active} emptyLabel="No active solo sessions" />
-            <SoloSessionLane title="Finished" sessions={group.finished} emptyLabel="No finished solo sessions" />
+            <SoloSessionLane
+              title="Active"
+              sessions={group.active}
+              emptyLabel="No active solo sessions"
+              onSelectCard={onSelectCard}
+              updateAnimations={updateAnimations}
+            />
+            <SoloSessionLane
+              title="Finished"
+              sessions={group.finished}
+              emptyLabel="No finished solo sessions"
+              onSelectCard={onSelectCard}
+              updateAnimations={updateAnimations}
+            />
           </div>
         </div>
       </CardContent>
@@ -2656,38 +3337,68 @@ function SoloSessionGroup({
   );
 }
 
-function SoloSessionLane({ title, sessions, emptyLabel }: { title: string; sessions: SoloSession[]; emptyLabel: string }) {
+function SoloSessionLane({
+  title,
+  sessions,
+  emptyLabel,
+  onSelectCard,
+  updateAnimations,
+}: {
+  title: string;
+  sessions: SoloSession[];
+  emptyLabel: string;
+  onSelectCard: CardDetailSelect;
+  updateAnimations: DashboardUpdateAnimations;
+}) {
   return (
     <BoardLaneColumn title={title} count={sessions.length} emptyLabel={emptyLabel}>
-      {sessions.map((session, index) => <SoloSessionCard key={session.id} session={session} index={index} />)}
+      {sessions.map((session, index) => (
+        <SoloSessionCard
+          key={session.id}
+          session={session}
+          index={index}
+          onSelectCard={() => onSelectCard({ kind: "solo", session })}
+          motion={updateAnimations.motionFor(soloSessionUpdateKey(session))}
+        />
+      ))}
     </BoardLaneColumn>
   );
 }
 
-function SoloSessionCard({ session, index }: { session: SoloSession; index: number }) {
+function SoloSessionCard({
+  session,
+  index,
+  onSelectCard,
+  motion,
+}: {
+  session: SoloSession;
+  index: number;
+  onSelectCard: () => void;
+  motion?: UpdateMotion;
+}) {
   const attention = soloSessionAttention(session);
   const latest = session.latest_entry;
-  const latestText = latest?.title || latest?.body || "No recent entry";
+  const latestText = latest?.title || latest?.body;
   const latestSignalValue = latest?.status ? formatStatus(latest.status) : latestText;
-  const latestKind = latest?.kind_label || formatStatus(latest?.kind);
-  const entryCounts = session.entry_counts || [];
   const tone = soloSessionCardTone(session);
+  const showLatest = latest && latestText && !soloSessionLatestIsRedundant(session, latestText);
 
   return (
-    <div className={stateCardClassName(tone, "stagger-item p-3")} style={stateCardStyle(tone, { animationDelay: `${index * 35}ms` })}>
+    <div
+      className={stateCardClassName(tone, "stagger-item card-detail-trigger p-3")}
+      style={stateCardStyle(tone, { animationDelay: `${index * 35}ms` })}
+      data-card-detail-kind="solo"
+      {...updateMotionAttributes(motion)}
+      {...interactiveCardProps(onSelectCard)}
+    >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold">{session.title || session.id}</p>
-          <p className="mt-1 truncate text-xs text-muted-foreground">{session.id}</p>
+          <p className="mt-1 truncate text-xs text-muted-foreground">{session.caller_id || "Solo session"}</p>
         </div>
-        <Badge variant={soloSessionStatusVariant(session.status)} className="shrink-0">
+        <Badge variant={soloSessionStatusVariant(session.status)} className="state-update-badge shrink-0">
           {formatStatus(session.status)}
         </Badge>
-      </div>
-
-      <div className="mt-3 grid min-w-0 gap-2 sm:grid-cols-2">
-        <CardSignal label="State" value={soloSessionStateLabel(session)} tone={soloSessionSignalTone(session.status)} />
-        <CardSignal label={soloSessionLatestSignalLabel(session)} value={latestSignalValue} tone={soloSessionLatestSignalTone(session)} />
       </div>
 
       {attention.guidanceCount > 0 || attention.blockerCount > 0 ? (
@@ -2695,29 +3406,23 @@ function SoloSessionCard({ session, index }: { session: SoloSession; index: numb
           {attention.guidanceCount > 0 ? <RepoSummaryPlate label="Guidance Needed" value={attention.guidanceCount} tone="guidance" /> : null}
           {attention.blockerCount > 0 ? <RepoSummaryPlate label="Active Blockers" value={attention.blockerCount} tone="blocker" /> : null}
         </div>
+      ) : latestSignalValue ? (
+        <CardSignal className="mt-3" label={soloSessionLatestSignalLabel(session)} value={latestSignalValue} tone={soloSessionLatestSignalTone(session)} />
       ) : null}
 
-      {latest ? (
+      {showLatest ? (
         <>
           <Separator className="my-3" />
           <div className="flex min-w-0 items-start gap-2">
             <Badge variant="secondary" className="shrink-0">
-              {latestKind}
+              {latest.kind_label || formatStatus(latest.kind)}
             </Badge>
             <p className="line-clamp-2 min-w-0 text-sm text-muted-foreground">{latestText}</p>
           </div>
         </>
       ) : null}
 
-      {entryCounts.length > 0 ? (
-        <div className="mt-3 flex flex-wrap gap-1.5">
-          {entryCounts.slice(0, 5).map((entryCount) => (
-            <span key={entryCount.kind || entryCount.label} className="rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">
-              {entryCount.label || formatStatus(entryCount.kind)} <span className="font-semibold text-foreground">{entryCount.count || 0}</span>
-            </span>
-          ))}
-        </div>
-      ) : null}
+      <p className="mt-3 text-xs text-muted-foreground">Updated {detailDate(session.last_activity_at || session.updated_at || session.inserted_at)}</p>
     </div>
   );
 }
@@ -2869,6 +3574,128 @@ function soloSessionLatestSignalTone(session: SoloSession): SignalTone {
   if (text.includes("guidance") || text.includes("human info") || text.includes("question")) return "warning";
   if (text.includes("review") || text.includes("validation")) return text.includes("completed") || text.includes("green") ? "success" : "info";
   return "muted";
+}
+
+function soloSessionLatestIsRedundant(session: SoloSession, latestText: string) {
+  const title = session.title?.trim().toLowerCase();
+  const latest = latestText.trim().toLowerCase();
+  return !latest || Boolean(title && (latest === title || latest.includes(title)));
+}
+
+function sortSoloEntries(entries: SoloSessionEntry[]) {
+  return [...entries].sort((left, right) => {
+    const leftSequence = left.sequence ?? 0;
+    const rightSequence = right.sequence ?? 0;
+    if (leftSequence !== rightSequence) return leftSequence - rightSequence;
+    return sortableTime(left.created_at || left.updated_at) - sortableTime(right.created_at || right.updated_at);
+  });
+}
+
+function latestSoloEntries(entries: SoloSessionEntry[]) {
+  return [...entries]
+    .sort((left, right) => {
+      const timeDelta = sortableTime(right.created_at || right.updated_at) - sortableTime(left.created_at || left.updated_at);
+      if (timeDelta !== 0) return timeDelta;
+      return (right.sequence ?? 0) - (left.sequence ?? 0);
+    })
+    .slice(0, 3);
+}
+
+function soloEntriesByKind(entries: SoloSessionEntry[], kinds: string[]) {
+  return entries.filter((entry) => kinds.includes(entry.kind || ""));
+}
+
+function soloPlanningGroups(entries: SoloSessionEntry[]) {
+  const grouped = new Map<string, SoloSessionEntry[]>();
+
+  entries.forEach((entry) => {
+    const kind = entry.kind || "progress";
+    grouped.set(kind, [...(grouped.get(kind) || []), entry]);
+  });
+
+  return [...grouped.entries()]
+    .sort(([left], [right]) => soloEntryKindRank(left) - soloEntryKindRank(right))
+    .map(([kind, groupEntries]) => ({
+      kind,
+      title: soloPlanningTitle(kind),
+      entries: sortSoloEntries(groupEntries),
+    }));
+}
+
+function soloEntryKindRank(kind: string) {
+  const order = ["task_plan", "finding", "progress", "decision", "blocker", "validation_note"];
+  const index = order.indexOf(kind);
+  return index === -1 ? order.length : index;
+}
+
+function soloPlanningTitle(kind: string) {
+  const titles: Record<string, string> = {
+    task_plan: "Task Plan",
+    finding: "Findings",
+    progress: "Progress",
+    decision: "Decisions",
+    blocker: "Blockers",
+    validation_note: "Validation Notes",
+  };
+
+  return titles[kind] || formatStatus(kind);
+}
+
+function soloPlanningMeta(groups: Array<{ entries: SoloSessionEntry[] }>, loading: boolean, error: string | null) {
+  if (loading) return "Loading";
+  if (error) return "Unavailable";
+
+  const count = groups.reduce((total, group) => total + group.entries.length, 0);
+  return count === 1 ? "1 entry" : `${count} entries`;
+}
+
+function soloSessionAttentionText(attention: { guidanceCount: number; blockerCount: number }) {
+  const parts = [];
+  if (attention.blockerCount > 0) parts.push(`${attention.blockerCount} blocker${attention.blockerCount === 1 ? "" : "s"}`);
+  if (attention.guidanceCount > 0) parts.push(`${attention.guidanceCount} guidance`);
+  return parts.length > 0 ? parts.join(" / ") : "Clear";
+}
+
+function soloSessionPurpose(session: SoloSession, entries: SoloSessionEntry[]) {
+  const planEntry = soloEntriesByKind(entries, ["task_plan"])[0];
+  const planBody = markdownSummary(planEntry?.body);
+  const latestBody = markdownSummary(session.latest_entry?.body);
+
+  return firstSentence(planBody) || firstSentence(latestBody) || session.title || "No Solo Session purpose has been recorded yet.";
+}
+
+function soloEntrySummary(entry: SoloSessionEntry) {
+  return firstSentence(markdownSummary(entry.body));
+}
+
+function markdownSummary(value?: string | null) {
+  if (!value?.trim()) return "";
+
+  const meaningfulLine =
+    value
+      .replace(/\r\n/g, "\n")
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line && !line.startsWith("#") && !line.startsWith("```")) || "";
+
+  return stripMarkdown(meaningfulLine || value);
+}
+
+function stripMarkdown(value?: string | null) {
+  return (
+    value
+      ?.replace(/```[\s\S]*?```/g, " ")
+      .replace(/^#{1,6}\s+/gm, "")
+      .replace(/^\s*[-*]\s+/gm, "")
+      .replace(/^\s*\d+[.)]\s+/gm, "")
+      .replace(/[`*_]/g, "")
+      .replace(/\s+/g, " ")
+      .trim() || ""
+  );
+}
+
+function firstSentence(value: string) {
+  return value.match(/^(.+?[.!?])(?:\s|$)/)?.[1] || value;
 }
 
 function GuidanceDialog({
@@ -3276,7 +4103,11 @@ function CardDetailDialog({
   const [packageDetail, setPackageDetail] = useState<WorkPackageDetailPayload | null>(null);
   const [loadingPackage, setLoadingPackage] = useState(false);
   const [packageError, setPackageError] = useState<string | null>(null);
+  const [soloDetail, setSoloDetail] = useState<SoloSessionDetailPayload | null>(null);
+  const [loadingSolo, setLoadingSolo] = useState(false);
+  const [soloError, setSoloError] = useState<string | null>(null);
   const packageId = selection?.kind === "package" ? selection.pkg.id : null;
+  const soloSessionId = selection?.kind === "solo" ? selection.session.id : null;
 
   useEffect(() => {
     if (!packageId) {
@@ -3315,6 +4146,43 @@ function CardDetailDialog({
     return () => controller.abort();
   }, [packageId]);
 
+  useEffect(() => {
+    if (!soloSessionId) {
+      setSoloDetail(null);
+      setSoloError(null);
+      setLoadingSolo(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setLoadingSolo(true);
+    setSoloDetail(null);
+    setSoloError(null);
+
+    fetch(`/api/v1/sympp/operator/solo-sessions/${encodeURIComponent(soloSessionId)}`, {
+      headers: { accept: "application/json" },
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload?.error?.message || "Solo Session detail unavailable");
+        }
+        setSoloDetail(payload);
+      })
+      .catch((caught) => {
+        if (caught instanceof DOMException && caught.name === "AbortError") return;
+        setSoloError(caught instanceof Error ? caught.message : "Solo Session detail unavailable");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setLoadingSolo(false);
+        }
+      });
+
+    return () => controller.abort();
+  }, [soloSessionId]);
+
   return (
     <Dialog open={Boolean(selection)} onOpenChange={onOpenChange}>
       <DialogContent className="dashboard-dialog-content card-detail-dialog">
@@ -3323,6 +4191,7 @@ function CardDetailDialog({
         {selection?.kind === "package" ? (
           <PackageDetailContent selection={selection} detailPayload={packageDetail} loading={loadingPackage} error={packageError} />
         ) : null}
+        {selection?.kind === "solo" ? <SoloSessionDetailContent session={selection.session} detailPayload={soloDetail} loading={loadingSolo} error={soloError} /> : null}
       </DialogContent>
     </Dialog>
   );
@@ -3532,6 +4401,146 @@ function PackageDetailContent({
   );
 }
 
+function SoloSessionDetailContent({
+  session,
+  detailPayload,
+  loading,
+  error,
+}: {
+  session: SoloSession;
+  detailPayload: SoloSessionDetailPayload | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  const detailSession: SoloSession & { workspace_path?: string | null; archived_at?: string | null } = detailPayload?.solo_session || session;
+  const entries = sortSoloEntries(detailPayload?.entries || []);
+  const latestEntries = latestSoloEntries(entries);
+  const activeBlockers = soloEntriesByKind(entries, ["blocker"]).filter((entry) => !["resolved", "completed"].includes(entry.status || ""));
+  const attention = soloSessionAttention({ ...session, ...detailSession, entry_counts: session.entry_counts, latest_entry: session.latest_entry });
+  const planningGroups = soloPlanningGroups(entries);
+
+  return (
+    <>
+      <DetailHeader
+        title={detailSession.title || detailSession.id}
+        eyebrow={`${repoName(detailSession.repo)} / ${detailSession.base_branch || "main"} / ${detailSession.caller_id || "solo"}`}
+        badge={<Badge variant={soloSessionStatusVariant(detailSession.status)}>{formatStatus(detailSession.status)}</Badge>}
+      />
+      <div className="grid gap-4">
+        <DetailStatGrid
+          stats={[
+            { label: "Status", value: formatStatus(detailSession.status) },
+            { label: "Last Activity", value: detailDate(detailSession.last_activity_at || detailSession.updated_at || detailSession.inserted_at) },
+            { label: "Entries", value: String(detailPayload?.entry_count ?? entries.length) },
+            { label: "Attention", value: soloSessionAttentionText(attention) },
+          ]}
+        />
+        <DetailSection title="What It Does">
+          <p>{soloSessionPurpose(detailSession, entries)}</p>
+        </DetailSection>
+        <DetailSection title="Progress">
+          {loading ? (
+            <p>Loading the Solo Session ledger...</p>
+          ) : error ? (
+            <p>{error}</p>
+          ) : latestEntries.length > 0 ? (
+            <DetailActivityList
+              items={latestEntries.map((entry) => ({
+                title: entry.title || entry.kind_label || "Entry",
+                body: soloEntrySummary(entry),
+                at: entry.created_at || entry.updated_at,
+              }))}
+            />
+          ) : (
+            <p>No Solo Session activity has been recorded yet.</p>
+          )}
+        </DetailSection>
+        <DetailSection title="Blocked By">
+          {activeBlockers.length > 0 ? (
+            <DetailActivityList
+              items={activeBlockers.map((entry) => ({
+                title: entry.title || entry.status_label || "Blocker",
+                body: soloEntrySummary(entry),
+                at: entry.created_at || entry.updated_at,
+              }))}
+            />
+          ) : attention.guidanceCount > 0 ? (
+            <p>Human guidance has been surfaced in the Solo Session ledger.</p>
+          ) : (
+            <p>No active blocker surfaced.</p>
+          )}
+        </DetailSection>
+        <DetailDisclosure title="Planning Files" meta={soloPlanningMeta(planningGroups, loading, error)} defaultOpen>
+          {loading ? (
+            <p className="text-sm text-muted-foreground">Loading planning entries...</p>
+          ) : error ? (
+            <p className="text-sm text-muted-foreground">{error}</p>
+          ) : planningGroups.length > 0 ? (
+            <div className="grid gap-2">
+              {planningGroups.map((group, index) => (
+                <SoloPlanningGroup key={group.kind} group={group} defaultOpen={index === 0} />
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No planning entries recorded.</p>
+          )}
+        </DetailDisclosure>
+        <DetailDisclosure title="Details" meta="Scope and raw identifiers">
+          <DetailFacts
+            facts={[
+              ["Session ID", detailSession.id],
+              ["Workspace", detailSession.workspace_path],
+              ["Created", detailDate(detailSession.inserted_at)],
+              ["Archived", detailDate(detailSession.archived_at)],
+            ]}
+          />
+        </DetailDisclosure>
+      </div>
+    </>
+  );
+}
+
+function SoloPlanningGroup({
+  group,
+  defaultOpen,
+}: {
+  group: { kind: string; title: string; entries: SoloSessionEntry[] };
+  defaultOpen: boolean;
+}) {
+  const visibleEntries = group.entries.slice(0, 4);
+
+  return (
+    <Collapsible defaultOpen={defaultOpen} className="solo-planning-group">
+      <CollapsibleTrigger className="solo-planning-trigger">
+        <span className="flex min-w-0 items-center gap-2">
+          <ChevronRight className="solo-planning-chevron h-4 w-4 shrink-0 transition-transform duration-150" />
+          <span className="truncate">{group.title}</span>
+        </span>
+        <span className="shrink-0 text-xs text-muted-foreground">{group.entries.length}</span>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="collapsible-content">
+        <div className="solo-planning-body">
+          {visibleEntries.map((entry) => (
+            <article key={entry.id || `${entry.kind}:${entry.sequence}`} className="solo-planning-entry">
+              <div className="flex min-w-0 items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold">{entry.title || entry.kind_label || "Entry"}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{entry.status_label || formatStatus(entry.status)}</p>
+                </div>
+                <span className="shrink-0 text-xs text-muted-foreground">{detailDate(entry.created_at || entry.updated_at)}</span>
+              </div>
+              <MarkdownBlock value={entry.body} />
+            </article>
+          ))}
+          {group.entries.length > visibleEntries.length ? (
+            <p className="text-xs text-muted-foreground">+{group.entries.length - visibleEntries.length} older entries kept in the ledger.</p>
+          ) : null}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 function DetailHeader({ title, eyebrow, badge }: { title: string; eyebrow: string; badge?: React.ReactNode }) {
   return (
     <DialogHeader data-guidance-section style={{ animationDelay: "35ms" }}>
@@ -3675,6 +4684,142 @@ function JsonDetail({ label, value }: { label: string; value?: Record<string, un
       <pre className="detail-json">{JSON.stringify(value, null, 2)}</pre>
     </div>
   );
+}
+
+type MarkdownNode =
+  | { type: "heading"; depth: number; text: string }
+  | { type: "paragraph"; text: string }
+  | { type: "list"; ordered: boolean; items: string[] }
+  | { type: "code"; text: string };
+
+function MarkdownBlock({ value }: { value?: string | null }) {
+  const nodes = markdownNodes(value);
+
+  if (nodes.length === 0) {
+    return <p className="solo-markdown-empty">No details recorded.</p>;
+  }
+
+  return (
+    <div className="solo-markdown">
+      {nodes.map((node, index) => {
+        if (node.type === "heading") {
+          if (node.depth === 1) return <h4 key={index}>{renderMarkdownInline(node.text)}</h4>;
+          if (node.depth === 2) return <h5 key={index}>{renderMarkdownInline(node.text)}</h5>;
+          return <h6 key={index}>{renderMarkdownInline(node.text)}</h6>;
+        }
+
+        if (node.type === "list") {
+          const List = node.ordered ? "ol" : "ul";
+          return (
+            <List key={index}>
+              {node.items.map((item) => (
+                <li key={item}>{renderMarkdownInline(item)}</li>
+              ))}
+            </List>
+          );
+        }
+
+        if (node.type === "code") {
+          return <pre key={index}>{node.text}</pre>;
+        }
+
+        return <p key={index}>{renderMarkdownInline(node.text)}</p>;
+      })}
+    </div>
+  );
+}
+
+function renderMarkdownInline(text: string) {
+  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).filter((part) => part !== "");
+
+  return parts.map((part, index) => {
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return <code key={index}>{part.slice(1, -1)}</code>;
+    }
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+    return <span key={index}>{part}</span>;
+  });
+}
+
+function markdownNodes(value?: string | null): MarkdownNode[] {
+  if (!value?.trim()) return [];
+
+  const nodes: MarkdownNode[] = [];
+  const lines = value.replace(/\r\n/g, "\n").split("\n");
+  let paragraph: string[] = [];
+  let list: { ordered: boolean; items: string[] } | null = null;
+  let code: string[] | null = null;
+
+  const flushParagraph = () => {
+    if (paragraph.length > 0) {
+      nodes.push({ type: "paragraph", text: paragraph.join(" ").trim() });
+      paragraph = [];
+    }
+  };
+
+  const flushList = () => {
+    if (list) {
+      nodes.push({ type: "list", ordered: list.ordered, items: list.items });
+      list = null;
+    }
+  };
+
+  for (const line of lines) {
+    if (line.trim().startsWith("```")) {
+      if (code) {
+        nodes.push({ type: "code", text: code.join("\n").trimEnd() });
+        code = null;
+      } else {
+        flushParagraph();
+        flushList();
+        code = [];
+      }
+      continue;
+    }
+
+    if (code) {
+      code.push(line);
+      continue;
+    }
+
+    if (line.trim() === "") {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      nodes.push({ type: "heading", depth: heading[1].length, text: heading[2].trim() });
+      continue;
+    }
+
+    const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+    const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (bullet || ordered) {
+      flushParagraph();
+      const orderedList = Boolean(ordered);
+      if (!list || list.ordered !== orderedList) {
+        flushList();
+        list = { ordered: orderedList, items: [] };
+      }
+      list.items.push((bullet?.[1] || ordered?.[1] || "").trim());
+      continue;
+    }
+
+    flushList();
+    paragraph.push(line.trim());
+  }
+
+  flushParagraph();
+  flushList();
+  if (code) nodes.push({ type: "code", text: code.join("\n").trimEnd() });
+
+  return nodes;
 }
 
 function requestOpenQuestions(detail: WorkRequestDetail) {

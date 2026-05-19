@@ -798,7 +798,7 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
       solo_session_id: solo_session_id,
       entry_kind: kind,
       title: title,
-      body: "Synthetic demo Solo Session #{kind}.",
+      body: solo_demo_body(kind, title, status),
       status: status || "recorded",
       sequence: sequence,
       idempotency_key: "#{solo_session_id}:#{kind}",
@@ -807,6 +807,59 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
       updated_at: now
     }
   end
+
+  defp solo_demo_body("task_plan", title, _status) do
+    subject = solo_demo_subject(title)
+
+    """
+    ## Current plan
+    - Verify the local cockpit flow represented by `#{subject}`.
+    - Keep the card view short and move the deeper ledger context into the click-in modal.
+    - Record validation evidence before marking the session complete.
+    """
+  end
+
+  defp solo_demo_body("finding", _title, _status) do
+    """
+    ## Finding
+    The Solo Session is useful as a lightweight planning ledger, but the board should only surface active attention and recent progress.
+    """
+  end
+
+  defp solo_demo_body("progress", _title, "completed") do
+    """
+    ## Progress
+    - Finished the implementation pass.
+    - Captured the final validation state.
+    """
+  end
+
+  defp solo_demo_body("progress", _title, _status) do
+    """
+    ## Progress
+    - Inspected the active UI surface.
+    - Confirmed the next step is visible without adding noisy sub-cards.
+    """
+  end
+
+  defp solo_demo_body("decision", _title, _status) do
+    """
+    ## Decision
+    Keep Solo Session cards compact. Use dropdowns inside the modal for task plans, findings, progress, decisions, and validation notes.
+    """
+  end
+
+  defp solo_demo_body("validation_note", _title, _status) do
+    """
+    ## Validation
+    - Dashboard smoke path loads.
+    - Modal content preserves readable markdown formatting.
+    """
+  end
+
+  defp solo_demo_body(_kind, title, _status), do: "Synthetic demo Solo Session entry for #{title}."
+
+  defp solo_demo_subject(title), do: String.replace_prefix(title, "Plan ", "")
 
   defp insert_all(items, insert_fun) do
     Enum.reduce_while(items, {:ok, []}, fn item, {:ok, acc} ->

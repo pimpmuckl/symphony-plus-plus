@@ -26,6 +26,7 @@ defmodule SymphonyElixirWeb.Router do
     get("/api/v1/state", ObservabilityApiController, :state)
     get("/api/v1/sympp/operator/dashboard", SymppDashboardApiController, :operator_dashboard)
     get("/api/v1/sympp/operator/work-packages/:work_package_id", SymppDashboardApiController, :operator_package_detail)
+    get("/api/v1/sympp/operator/solo-sessions/:solo_session_id", SymppDashboardApiController, :operator_solo_session_detail)
     post("/api/v1/sympp/operator/work-requests", SymppDashboardApiController, :operator_create_work_request)
 
     post(
@@ -67,6 +68,7 @@ defmodule SymphonyElixirWeb.Router do
     match(:*, "/api/v1/sympp/board", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/sympp/operator/dashboard", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/sympp/operator/work-packages/:work_package_id", ObservabilityApiController, :method_not_allowed)
+    match(:*, "/api/v1/sympp/operator/solo-sessions/:solo_session_id", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/sympp/operator/work-requests", ObservabilityApiController, :method_not_allowed)
 
     match(:*, "/api/v1/sympp/work-requests", ObservabilityApiController, :method_not_allowed)

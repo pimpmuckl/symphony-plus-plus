@@ -21,6 +21,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service, as: SoloSessionsService
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
@@ -184,6 +187,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     repo.delete_all(ProgressEvent)
     repo.delete_all(Finding)
     repo.delete_all(PlanNode)
+    repo.delete_all(SoloSessionEntry)
+    repo.delete_all(SoloSession)
     repo.delete_all(AccessGrant)
     repo.delete_all(WorkPackage)
     repo.delete_all(Phase)
@@ -2889,6 +2894,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       assert payload["work_package"]["id"] == work_package.id
       assert is_list(payload["progress"])
       assert is_map(payload["summary"])
+    end)
+  end
+
+  test "local operator can fetch Solo Session detail through the dashboard API", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      assert {:ok, session} =
+               SoloSessionsService.create_or_attach_current(repo, %{
+                 repo: "nextide/demo-operator",
+                 base_branch: "main",
+                 workspace_path: @repo_root,
+                 caller_id: "local-dashboard-test",
+                 title: "Inspect solo modal"
+               })
+
+      assert {:ok, _entry} =
+               SoloSessionsService.append_entry(repo, session.id, %{
+                 entry_kind: "task_plan",
+                 title: "Plan the solo session card",
+                 body: "## Plan\n- Keep the card quiet.\n- Put the detail in the modal.",
+                 status: "in_progress",
+                 idempotency_key: "solo-dashboard-detail-test:plan"
+               })
+
+      payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/solo-sessions/#{session.id}")
+        |> json_response(200)
+
+      assert payload["solo_session"]["id"] == session.id
+      assert payload["entry_count"] == 1
+      assert [%{"kind" => "task_plan", "body" => body}] = payload["entries"]
+      assert body =~ "Keep the card quiet"
     end)
   end
 
