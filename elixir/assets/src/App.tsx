@@ -1065,10 +1065,10 @@ function WorkstreamBoard({
   const { paths: wirePaths, size: wireSize } = useBoardWirePaths(boardRef, wires, layoutMode);
 
   return (
-    <div className="overflow-x-auto pb-1">
+    <div className="workstream-board-shell">
       <div
         ref={boardRef}
-        className={cn("jira-board workstream-board min-w-[1040px]", layoutMode === "aligned" && "workstream-board-aligned")}
+        className={cn("jira-board workstream-board", layoutMode === "aligned" && "workstream-board-aligned")}
         data-layout={layoutMode}
       >
         <BoardWireLayer paths={wirePaths} width={wireSize.width} height={wireSize.height} />
@@ -2442,8 +2442,8 @@ function SoloSessionGroup({
         </div>
       </CardHeader>
       <CardContent className="p-3 sm:p-4">
-        <div className="overflow-x-auto pb-1">
-          <div className="jira-board jira-board-solo min-w-[640px]">
+        <div className="solo-board-shell">
+          <div className="jira-board jira-board-solo">
             <SoloSessionLane title="Active" sessions={group.active} emptyLabel="No active solo sessions" />
             <SoloSessionLane title="Finished" sessions={group.finished} emptyLabel="No finished solo sessions" />
           </div>
