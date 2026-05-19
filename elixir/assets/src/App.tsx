@@ -56,6 +56,7 @@ const CUSTOM_CHOICE = "__custom_redirect__";
 const DASHBOARD_URL = "/api/v1/sympp/operator/dashboard";
 const DASHBOARD_UI_STATE_KEY = "symphony-plus-plus.dashboard.ui-state.v1";
 const ALIGNED_ROW_MIN_HEIGHT = 112;
+const BOARD_WIRE_TRACK_CLEARANCE = 40;
 const TOP_PANEL_ORDER: TopPanelKey[] = ["guidance", "blockers", "finished"];
 const TOP_PANEL_RESIZE_MS = 210;
 const TOP_PANEL_SLIDE_MS = 360;
@@ -135,6 +136,7 @@ type BoardWirePath = BoardWire & {
   targetY: number;
   trackX: number;
   trackIndex: number;
+  trackCount: number;
   trackSide: WireTrackSide;
   hiddenRects: BoardWireHiddenRect[];
 };
@@ -161,6 +163,7 @@ type MeasuredBoardWire = BoardWire & {
   targetY: number;
   trackX: number;
   trackIndex: number;
+  trackCount: number;
   trackSide: WireTrackSide;
 };
 
@@ -1286,6 +1289,7 @@ function BoardWireLayer({ paths, width, height }: { paths: BoardWirePath[]; widt
               data-wire-to={wire.to}
               data-wire-track-x={wire.trackX.toFixed(2)}
               data-wire-track-index={wire.trackIndex}
+              data-wire-track-count={wire.trackCount}
               data-wire-track-side={wire.trackSide}
               data-mask-rects={wire.hiddenRects.length}
             >
@@ -1296,7 +1300,15 @@ function BoardWireLayer({ paths, width, height }: { paths: BoardWirePath[]; widt
       </svg>
       <svg className="board-wire-node-layer" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
         {paths.map((wire) => (
-          <g key={wire.id} data-wire-tone={wire.tone} data-wire-from={wire.from} data-wire-to={wire.to} data-wire-track-x={wire.trackX.toFixed(2)}>
+          <g
+            key={wire.id}
+            data-wire-tone={wire.tone}
+            data-wire-from={wire.from}
+            data-wire-to={wire.to}
+            data-wire-track-x={wire.trackX.toFixed(2)}
+            data-wire-track-index={wire.trackIndex}
+            data-wire-track-count={wire.trackCount}
+          >
             <circle className="board-wire-node board-wire-node-target" cx={wire.targetX} cy={wire.targetY} r="4" />
           </g>
         ))}
@@ -1471,6 +1483,7 @@ function measureBoardWires(board: HTMLDivElement, wires: BoardWire[]) {
         targetY,
         trackX: defaultBoardWireTrackX(sourceX, targetX),
         trackIndex: 0,
+        trackCount: 1,
         trackSide: "source",
       },
     ];
@@ -1484,13 +1497,14 @@ function measureBoardWires(board: HTMLDivElement, wires: BoardWire[]) {
       from: wire.from,
       to: wire.to,
       tone: wire.tone,
-      path: boardWirePath(wire.sourceX, wire.sourceY, wire.targetX, wire.targetY, wire.trackX),
+      path: boardWirePath(wire.sourceX, wire.sourceY, wire.targetX, wire.targetY, wire.trackX, wire.trackCount > 1 ? 8 : 14),
       sourceX: wire.sourceX,
       sourceY: wire.sourceY,
       targetX: wire.targetX,
       targetY: wire.targetY,
       trackX: wire.trackX,
       trackIndex: wire.trackIndex,
+      trackCount: wire.trackCount,
       trackSide: wire.trackSide,
       hiddenRects: skippedLaneRects(wire.source, wire.target, lanes),
     })),
@@ -1546,18 +1560,48 @@ function assignBoardWireTracks(wires: MeasuredBoardWire[], lanes: Array<{ node: 
 
     sorted.forEach((wire) => {
       const span = boardWireVerticalSpan(wire);
-      const reusableTrack = tracks.findIndex((endY) => endY + 14 < span.start);
+      const reusableTrack = tracks.findIndex((endY) => endY + BOARD_WIRE_TRACK_CLEARANCE < span.start);
       const trackIndex = reusableTrack >= 0 ? reusableTrack : tracks.length;
       tracks[trackIndex] = span.end;
       wire.trackIndex = trackIndex;
     });
 
     group.forEach((wire) => {
+      wire.trackCount = Math.max(1, tracks.length);
+    });
+    reorderSameSourceFanoutTracks(group, lanes);
+    group.forEach((wire) => {
       wire.trackX = boardWireTrackX(wire, lanes);
     });
   });
 
   return wires;
+}
+
+function reorderSameSourceFanoutTracks(wires: MeasuredBoardWire[], lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>) {
+  groupedWires(wires, (wire) => wire.from).forEach((group) => {
+    if (group.length <= 1) return;
+
+    const indices = [...new Set(group.map((wire) => wire.trackIndex))].sort((left, right) => left - right);
+    if (indices.length <= 1) return;
+    const sample = group[0];
+    const indicesFromOutsideIn = indices.sort((left, right) => {
+      const leftDistance = Math.abs(boardWireTrackX(sample, lanes, left) - sample.sourceX);
+      const rightDistance = Math.abs(boardWireTrackX(sample, lanes, right) - sample.sourceX);
+      return rightDistance - leftDistance;
+    });
+
+    [...group]
+      .sort((left, right) => {
+        const leftDistance = Math.abs(left.targetY - left.sourceY);
+        const rightDistance = Math.abs(right.targetY - right.sourceY);
+        if (leftDistance !== rightDistance) return leftDistance - rightDistance;
+        return left.targetY - right.targetY;
+      })
+      .forEach((wire, index) => {
+        wire.trackIndex = indicesFromOutsideIn[Math.min(index, indicesFromOutsideIn.length - 1)] ?? wire.trackIndex;
+      });
+  });
 }
 
 function groupedWires(wires: MeasuredBoardWire[], keyFor: (wire: MeasuredBoardWire) => string) {
@@ -1573,8 +1617,8 @@ function groupedWires(wires: MeasuredBoardWire[], keyFor: (wire: MeasuredBoardWi
 
 function edgeSlotY(rect: BoardWireHiddenRect, index: number, count: number) {
   const centerY = rect.y + rect.height / 2;
-  const guard = Math.min(18, Math.max(4, rect.height / 4));
-  const offset = clampNumber((index - (count - 1) / 2) * 8, -18, 18);
+  const guard = Math.min(22, Math.max(4, rect.height / 4));
+  const offset = clampNumber((index - (count - 1) / 2) * 10, -24, 24);
   return clampNumber(centerY + offset, rect.y + guard, rect.y + rect.height - guard);
 }
 
@@ -1594,7 +1638,7 @@ function boardWireVerticalSpan(wire: MeasuredBoardWire) {
   };
 }
 
-function boardWireTrackX(wire: MeasuredBoardWire, lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>) {
+function boardWireTrackX(wire: MeasuredBoardWire, lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>, trackIndex = wire.trackIndex) {
   const gapIndex = primaryBoardWireGapIndex(wire);
   const leftLane = lanes[gapIndex];
   const rightLane = lanes[gapIndex + 1];
@@ -1611,13 +1655,16 @@ function boardWireTrackX(wire: MeasuredBoardWire, lanes: Array<{ node: HTMLEleme
   const useSourceSide = wire.trackSide === "source";
   const preferStart = useSourceSide ? sourceSideIsStart : !sourceSideIsStart;
   const centerX = (minX + maxX) / 2;
-  const bandGap = Math.min(2, (maxX - minX) / 5);
+  const bandGap = Math.min(6, (maxX - minX) / 6);
   const bandStart = preferStart ? minX : centerX + bandGap;
   const bandEnd = preferStart ? centerX - bandGap : maxX;
   if (bandEnd <= bandStart) return preferStart ? minX : maxX;
 
-  const step = Math.min(5, Math.max(3, (bandEnd - bandStart) / 2));
-  const rawX = preferStart ? bandStart + wire.trackIndex * step : bandEnd - wire.trackIndex * step;
+  const trackCount = Math.max(1, wire.trackCount);
+  const trackRatio = trackCount === 1 ? 0.5 : trackIndex / (trackCount - 1);
+  const rawX = preferStart
+    ? bandStart + (bandEnd - bandStart) * trackRatio
+    : bandEnd - (bandEnd - bandStart) * trackRatio;
 
   return clampNumber(rawX, bandStart, bandEnd);
 }
@@ -1682,7 +1729,7 @@ function skippedLaneRects(
   }));
 }
 
-function boardWirePath(sourceX: number, sourceY: number, targetX: number, targetY: number, trackX = defaultBoardWireTrackX(sourceX, targetX)) {
+function boardWirePath(sourceX: number, sourceY: number, targetX: number, targetY: number, trackX = defaultBoardWireTrackX(sourceX, targetX), maxRadius = 14) {
   const deltaX = targetX - sourceX;
   if (Math.abs(deltaX) <= 24 || Math.abs(targetY - sourceY) < 2) {
     return `M ${sourceX} ${sourceY} H ${targetX}`;
@@ -1693,7 +1740,7 @@ function boardWirePath(sourceX: number, sourceY: number, targetX: number, target
   const minBendX = Math.min(sourceX, targetX) + 10;
   const maxBendX = Math.max(sourceX, targetX) - 10;
   const bendX = clampNumber(trackX, minBendX, maxBendX);
-  const radius = Math.min(14, Math.abs(targetY - sourceY) / 2, Math.abs(bendX - sourceX) / 2, Math.abs(targetX - bendX) / 2);
+  const radius = Math.min(maxRadius, Math.abs(targetY - sourceY) / 2, Math.abs(bendX - sourceX) / 2, Math.abs(targetX - bendX) / 2);
 
   if (radius < 1) {
     return [`M ${sourceX} ${sourceY}`, `H ${bendX}`, `V ${targetY}`, `H ${targetX}`].join(" ");

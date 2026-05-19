@@ -378,7 +378,7 @@
   .workstream-board {
     position: relative;
     isolation: isolate;
-    gap: 1.75rem;
+    gap: 3.25rem;
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
