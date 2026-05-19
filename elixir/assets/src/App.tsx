@@ -37,7 +37,7 @@ import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -68,6 +68,7 @@ const TOP_PANEL_ORDER: TopPanelKey[] = ["guidance", "blockers", "finished"];
 const TOP_PANEL_RESIZE_MS = 210;
 const TOP_PANEL_SLIDE_MS = 360;
 const UPDATE_ANIMATION_TTL_MS = 1800;
+const WORKSPACE_TAB_SLIDE_MS = 360;
 
 type GuidanceItem =
   | {
@@ -105,6 +106,7 @@ type StateToneStyle = {
   accent: string;
 };
 type WorkspaceTab = "workstreams" | "solo";
+type WorkspaceTabPhase = "idle" | "swapping";
 type WorkstreamLayoutMode = "jira" | "aligned";
 type DashboardTheme = "light" | "dark";
 type UpdateMotionKind = "added" | "changed" | "guidance" | "blocker" | "finished";
@@ -435,28 +437,32 @@ export default function App() {
               </TabsList>
               {workspaceTab === "workstreams" ? <WorkstreamLayoutToggle value={workstreamLayout} onChange={setWorkstreamLayout} /> : null}
             </div>
-            <TabsContent value="workstreams">
-              <div className="grid gap-5">
-                {repos.length === 0 ? (
-                  <EmptyPanel title="No workstreams yet" />
+            <WorkspaceTabCarousel
+              activeTab={workspaceTab}
+              renderTab={(tab) =>
+                tab === "workstreams" ? (
+                  <div className="grid gap-5">
+                    {repos.length === 0 ? (
+                      <EmptyPanel title="No workstreams yet" />
+                    ) : (
+                      repos.map((repo) => (
+                        <RepoWorkstream
+                          key={repoWorkstreamStateKey(repo)}
+                          repo={repo}
+                          requestDetails={requestDetails}
+                          onSelectGuidance={setSelectedGuidance}
+                          onSelectCard={setSelectedCardDetail}
+                          layoutMode={workstreamLayout}
+                          updateAnimations={updateAnimations}
+                        />
+                      ))
+                    )}
+                  </div>
                 ) : (
-                  repos.map((repo) => (
-                    <RepoWorkstream
-                      key={repoWorkstreamStateKey(repo)}
-                      repo={repo}
-                      requestDetails={requestDetails}
-                      onSelectGuidance={setSelectedGuidance}
-                      onSelectCard={setSelectedCardDetail}
-                      layoutMode={workstreamLayout}
-                      updateAnimations={updateAnimations}
-                    />
-                  ))
-                )}
-              </div>
-            </TabsContent>
-            <TabsContent value="solo">
-              <SoloSessions sessions={soloSessions} onSelectCard={setSelectedCardDetail} updateAnimations={updateAnimations} />
-            </TabsContent>
+                  <SoloSessions sessions={soloSessions} onSelectCard={setSelectedCardDetail} updateAnimations={updateAnimations} />
+                )
+              }
+            />
           </Tabs>
         </div>
 
@@ -959,6 +965,94 @@ function useFlipList(layoutKey: string) {
   }, [layoutKey]);
 
   return containerRef;
+}
+
+function WorkspaceTabCarousel({
+  activeTab,
+  renderTab,
+}: {
+  activeTab: WorkspaceTab;
+  renderTab: (tab: WorkspaceTab) => React.ReactNode;
+}) {
+  const [visibleTab, setVisibleTab] = useState<WorkspaceTab>(activeTab);
+  const [previousTab, setPreviousTab] = useState<WorkspaceTab | null>(null);
+  const [phase, setPhase] = useState<WorkspaceTabPhase>("idle");
+  const [direction, setDirection] = useState<TopPanelDirection>("forward");
+  const [height, setHeight] = useState<number | "auto">("auto");
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const visibleRef = useRef<HTMLDivElement | null>(null);
+  const latestTabRef = useRef<WorkspaceTab>(activeTab);
+  const transitionTokenRef = useRef(0);
+  const timersRef = useRef<number[]>([]);
+  const framesRef = useRef<number[]>([]);
+
+  useEffect(
+    () => () => {
+      clearTopPanelTimers(timersRef, framesRef);
+    },
+    [],
+  );
+
+  useLayoutEffect(() => {
+    const oldTab = latestTabRef.current;
+    if (oldTab === activeTab) return;
+
+    clearTopPanelTimers(timersRef, framesRef);
+
+    latestTabRef.current = activeTab;
+    transitionTokenRef.current += 1;
+
+    setDirection(workspaceTabDirection(oldTab, activeTab));
+    setPreviousTab(oldTab);
+    setVisibleTab(activeTab);
+    setPhase("swapping");
+    setHeight(measureElementHeight(visibleRef.current) || measureElementHeight(viewportRef.current));
+  }, [activeTab]);
+
+  useLayoutEffect(() => {
+    if (phase !== "swapping") return;
+
+    const token = transitionTokenRef.current;
+    const nextHeight = measureElementHeight(visibleRef.current);
+
+    nextFrame(framesRef, () => {
+      if (transitionTokenRef.current === token) {
+        setHeight(nextHeight);
+      }
+    });
+
+    later(timersRef, WORKSPACE_TAB_SLIDE_MS, () => {
+      if (transitionTokenRef.current !== token) return;
+
+      setPreviousTab(null);
+      setPhase("idle");
+      setHeight("auto");
+    });
+  }, [phase, visibleTab]);
+
+  const showSwapping = phase === "swapping" && previousTab;
+  const viewportStyle = {
+    height: height === "auto" ? undefined : `${Math.max(height, 0)}px`,
+  } as React.CSSProperties;
+
+  return (
+    <div ref={viewportRef} className="workspace-tab-viewport" data-phase={phase} style={viewportStyle}>
+      {showSwapping ? (
+        <div key="workspace-tab-previous" className="workspace-tab-layer" data-motion="exit" data-direction={direction}>
+          {renderTab(previousTab)}
+        </div>
+      ) : null}
+      <div
+        key="workspace-tab-visible"
+        ref={visibleRef}
+        className={showSwapping ? "workspace-tab-layer" : "workspace-tab-static"}
+        data-motion={showSwapping ? "enter" : "idle"}
+        data-direction={direction}
+      >
+        {renderTab(visibleTab)}
+      </div>
+    </div>
+  );
 }
 
 function StatusRail({
@@ -5537,6 +5631,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function topPanelDirection(from: TopPanelKey | null, to: TopPanelKey | null): TopPanelDirection {
   if (!from || !to) return "forward";
   return TOP_PANEL_ORDER.indexOf(to) > TOP_PANEL_ORDER.indexOf(from) ? "forward" : "backward";
+}
+
+function workspaceTabDirection(from: WorkspaceTab, to: WorkspaceTab): TopPanelDirection {
+  return to === "solo" && from === "workstreams" ? "forward" : "backward";
 }
 
 function measureElementHeight(element: HTMLElement | null) {
