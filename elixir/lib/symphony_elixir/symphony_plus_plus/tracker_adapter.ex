@@ -30,6 +30,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
   @migration_lock_retries :infinity
   @migration_lock_retry_delay_ms 100
   @local_lock_retry_delay_ms 100
+  @lock_wait_observer_key :sympp_tracker_adapter_lock_wait_observer
   @local_lock_owner :symphony_plus_plus_tracker_adapter_lock_owner
   @local_lock_owner_timeout_ms 1_000
   @local_lock_table :symphony_plus_plus_tracker_adapter_locks
@@ -213,6 +214,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
   def global_transaction_for_test(lock_id, fun, retries) when is_function(fun, 0) do
     global_transaction(lock_id, fun, retries)
   end
+
+  @doc false
+  @spec repo_access_lock_retries_for_test() :: non_neg_integer() | :infinity
+  def repo_access_lock_retries_for_test, do: @repo_access_lock_retries
+
+  @doc false
+  @spec migration_lock_retries_for_test() :: non_neg_integer() | :infinity
+  def migration_lock_retries_for_test, do: @migration_lock_retries
 
   @doc false
   @spec migration_file_lock_for_test(Path.t(), (-> term())) :: term()
@@ -543,7 +552,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
             with_migration_file_lock(database_path, fun, retries)
 
           :ok ->
-            Process.sleep(@migration_lock_retry_delay_ms)
+            notify_lock_wait(:migration_file_lock, lock_path)
+            Process.sleep(migration_lock_retry_delay_ms())
             with_migration_file_lock(database_path, fun, next_lock_retry(retries))
         end
 
@@ -554,6 +564,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
 
   defp next_lock_retry(:infinity), do: :infinity
   defp next_lock_retry(retries), do: retries - 1
+
+  defp migration_lock_retry_delay_ms do
+    configured_retry_delay_ms(
+      :sympp_tracker_adapter_migration_lock_retry_delay_ms,
+      @migration_lock_retry_delay_ms
+    )
+  end
+
+  defp local_lock_retry_delay_ms do
+    configured_retry_delay_ms(:sympp_tracker_adapter_local_lock_retry_delay_ms, @local_lock_retry_delay_ms)
+  end
+
+  defp notify_lock_wait(kind, identifier) do
+    case Application.get_env(:symphony_elixir, @lock_wait_observer_key) do
+      pid when is_pid(pid) ->
+        send(pid, {:tracker_adapter_lock_wait, kind, identifier, self()})
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp configured_retry_delay_ms(key, default) do
+    case Application.get_env(:symphony_elixir, key, default) do
+      value when is_integer(value) and value >= 0 -> value
+      _other -> default
+    end
+  end
 
   defp migration_file_lock_path(database_path) do
     if Repo.filesystem_database_path?(database_path) do
@@ -707,7 +745,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
         end
 
       :busy ->
-        Process.sleep(@local_lock_retry_delay_ms)
+        notify_lock_wait(:local_lock, lock_id)
+        Process.sleep(local_lock_retry_delay_ms())
         local_transaction(lock_id, fun, :infinity)
 
       :unavailable ->
@@ -725,7 +764,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
         end
 
       :busy ->
-        Process.sleep(@local_lock_retry_delay_ms)
+        notify_lock_wait(:local_lock, lock_id)
+        Process.sleep(local_lock_retry_delay_ms())
         local_transaction(lock_id, fun, retries - 1)
 
       :unavailable ->
