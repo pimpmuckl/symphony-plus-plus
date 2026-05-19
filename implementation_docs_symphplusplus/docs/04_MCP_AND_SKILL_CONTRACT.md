@@ -241,19 +241,21 @@ sensitive local bearer-continuity material for that daemon session, while the
 grant remains the scope authority: the stored session contains assignment
 metadata plus the grant secret hash proof, not the raw work-key secret, and
 protected follow-ups revalidate that proof against the live ledger. If the
-grant is revoked, expired, missing, or scope-drifted, bound worker and
+grant is revoked, explicitly expired, missing, or scope-drifted, bound worker and
 architect operations fail closed and discovery falls back to refresh/bootstrap
 tools where applicable.
 
 For other explicit state-key transports, the state namespace follows the active
 ledger rather than a transient dynamic repo process, so handshake continuity
 survives reconnects to the same SQLite ledger.
-Explicit state-key handshakes use a bounded retention window longer than the
-current worker grant defaults and are not evicted by the shorter implicit
-default response-state TTL. They remain continuity metadata until overwritten,
+Explicit state-key handshakes use a bounded retention window for transport
+continuity. They remain continuity metadata until overwritten,
 cleared by a failed explicit reconnect initialize, or expired by the explicit
-state-key retention window. A newer explicit initialize for the same state key
-invalidates stale live sessions claimed before that initialize.
+state-key retention window. Local grants do not expire by default; reconnect
+failure should be diagnosed through grant revocation, missing grant, scope drift,
+or an explicit expired `expires_at`, not by watching a default grant clock. A
+newer explicit initialize for the same state key invalidates stale live sessions
+claimed before that initialize.
 Duplicate initialize on the same active or stale explicit-state connection is
 still rejected as already initialized and does not clear the live session.
 Implicit response-state continuity is for a single logical connection; a fresh
@@ -472,8 +474,12 @@ transaction. Context-slice input is not part of the current contract.
 children, revalidates the live architect grant in the mint transaction, rejects
 new mints while any active child-delegated worker grant already exists for the
 same child, ignores unrelated normal worker grants, and caps child capabilities
-and expiry to that current grant. This is the pre-production v1 contract and is
-not a backwards-compatible replacement/remint promise. The raw child worker
+to the current grant. Expiry is also capped when the architect grant has an
+explicit expiry: child expiry defaults to the architect expiry and cannot exceed
+it. When the architect grant is non-expiring, child worker grants default to
+non-expiring and may specify a future explicit expiry. This is the
+pre-production v1 contract and is not a backwards-compatible replacement/remint
+promise. The raw child worker
 secret is stored through the private SecretHandoff path and is not returned in
 tool content; the response uses `worker_grant.secret_handoff` plus
 `worker_grant.secret_in_response` set to `false`, and omits `secret` and

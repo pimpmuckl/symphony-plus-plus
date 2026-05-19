@@ -3,6 +3,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Auth do
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.MCP.Session
 
   @type denial :: :unauthorized | :forbidden | {:service_unavailable, term()} | {:unauthorized, term()}
@@ -19,6 +20,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Auth do
     case fetch_grant(repo, grant_id) do
       {:ok, %AccessGrant{} = grant} ->
         with :ok <- require_proof(session, grant),
+             :ok <- AccessGrantService.require_live_package_authority(repo, grant),
              {:ok, live_session} <-
                Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: session.proof_hash) do
           {:ok, live_session}

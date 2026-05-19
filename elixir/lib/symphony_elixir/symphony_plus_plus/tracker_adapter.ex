@@ -1208,7 +1208,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
               where: grant.grant_role == "worker",
               where: not is_nil(grant.claimed_at),
               where: is_nil(grant.revoked_at),
-              where: grant.expires_at > ^now,
+              where: is_nil(grant.expires_at) or grant.expires_at > ^now,
               order_by: [desc: grant.claimed_at, asc: grant.id]
             )
           )
@@ -1233,7 +1233,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
           where: grant.work_package_id == ^work_package_id,
           where: not is_nil(grant.claimed_at),
           where: is_nil(grant.revoked_at),
-          where: grant.expires_at > ^now,
+          where: is_nil(grant.expires_at) or grant.expires_at > ^now,
           order_by: [desc: grant.claimed_at, asc: grant.id]
         )
       )

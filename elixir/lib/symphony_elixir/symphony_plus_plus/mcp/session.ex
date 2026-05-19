@@ -84,6 +84,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
   defp format_datetime(nil), do: nil
 
   defp active_grant?(%AccessGrant{revoked_at: %DateTime{}}, _now), do: {:error, :revoked}
+  defp active_grant?(%AccessGrant{expires_at: nil}, _now), do: :ok
 
   defp active_grant?(%AccessGrant{expires_at: %DateTime{} = expires_at}, now) do
     if DateTime.compare(expires_at, now) == :gt do
@@ -93,7 +94,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Session do
     end
   end
 
-  defp active_grant?(_grant, _now), do: {:error, :missing_expiry}
+  defp active_grant?(_grant, _now), do: {:error, :expired}
 
   defp claimed_grant?(%AccessGrant{claimed_at: %DateTime{}, claimed_by: claimed_by}) when is_binary(claimed_by) do
     if String.trim(claimed_by) == "" do

@@ -1079,6 +1079,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   end
 
   defp live_expires_at?(%DateTime{} = expires_at, %DateTime{} = now), do: DateTime.compare(expires_at, now) == :gt
+  defp live_expires_at?(nil, %DateTime{}), do: true
   defp live_expires_at?(_expires_at, _now), do: false
 
   defp exact_capabilities?(capabilities) when is_list(capabilities) do

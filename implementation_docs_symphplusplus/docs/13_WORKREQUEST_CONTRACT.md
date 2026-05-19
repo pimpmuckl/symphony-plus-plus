@@ -95,7 +95,9 @@ an architect handoff from the detail page. The handoff creates or reuses a
 deterministic phase and architect anchor WorkPackage scoped to the WorkRequest
 repo and base branch, then mints an unclaimed phase-scoped architect grant with
 `read:phase`, WorkRequest read/write/dispatch, and guidance read/write
-capabilities. Repeating the action replays the existing active unclaimed
+capabilities. The local handoff grant is non-expiring by default; authority is
+retired by revoke or lifecycle state, unless the caller deliberately passes an
+explicit expiry through a lower-level grant API. Repeating the action replays the existing active unclaimed
 handoff when possible; if the prior architect grant is claimed or otherwise not
 replayable, the same phase and anchor are reused and a new unclaimed grant is
 minted. Active handoff metadata that can be safely proven stale is retired

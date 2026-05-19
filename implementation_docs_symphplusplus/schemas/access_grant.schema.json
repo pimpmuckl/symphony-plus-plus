@@ -54,7 +54,8 @@
       "type": [
         "string",
         "null"
-      ]
+      ],
+      "description": "Null means no expiry for local Symphony++ orchestration grants; explicit timestamps remain supported as narrowing constraints."
     },
     "claimed_at": {
       "type": [
