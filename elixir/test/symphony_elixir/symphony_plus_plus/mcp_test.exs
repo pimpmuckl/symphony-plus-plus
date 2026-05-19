@@ -17,6 +17,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Server, Session, Stdio}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.Repository, as: MCPRepository
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
@@ -30,6 +31,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository, as: SoloSessionRepository
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
+  alias SymphonyElixir.SymphonyPlusPlus.TrackerAdapter
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
@@ -634,6 +636,112 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       assert claimed_grant.claimed_by == "worker-env-1"
     after
       System.delete_env(env_var)
+      Repo.put_dynamic_repo(original_repo)
+      GenServer.stop(pid)
+      File.rm(database_path)
+    end
+  end
+
+  test "mix task migrates legacy access grant expiry before env secret claim" do
+    database_path = WorkPackageFactory.database_path()
+    original_repo = Repo.get_dynamic_repo()
+    env_var = "SYMPP_MCP_TEST_SECRET_#{System.unique_integer([:positive])}"
+
+    {:ok, pid} =
+      Repo.start_link(database: database_path, name: Repo.process_name(database_path), pool_size: 1, log: false)
+
+    try do
+      Repo.put_dynamic_repo(pid)
+      assert :ok = WorkPackageRepository.migrate(Repo)
+      assert {:ok, package} = WorkPackageRepository.create(Repo, WorkPackageFactory.attrs(id: "SYMPP-MCP-LEGACY-ENV"))
+
+      assert {:ok, minted} =
+               AccessGrantService.mint_worker_grant(Repo, package.id, expires_at: ~U[2030-01-01 00:00:00Z])
+
+      rebuild_access_grants_with_not_null_expiry!(pid)
+      remove_null_expiry_migration_version!(pid)
+      assert access_grant_expiry_not_null?(pid)
+
+      System.put_env(env_var, minted.work_key.secret)
+
+      input =
+        [
+          Jason.encode!(%{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()}),
+          Jason.encode!(%{
+            "jsonrpc" => "2.0",
+            "id" => 1,
+            "method" => "resources/read",
+            "params" => %{"uri" => "sympp://assignment/current"}
+          })
+        ]
+        |> Enum.join("\n")
+        |> Kernel.<>("\n")
+
+      output =
+        capture_io(input, fn ->
+          McpTask.run(["--database", database_path, "--work-key-secret-env", env_var, "--claimed-by", "worker-legacy-env"])
+        end)
+
+      refute output =~ minted.work_key.secret
+      [_init_response, response] = decode_json_lines(output)
+      assignment = Jason.decode!(get_in(response, ["result", "contents", Access.at(0), "text"]))
+
+      assert assignment["work_package_id"] == "SYMPP-MCP-LEGACY-ENV"
+      assert assignment["claimed_by"] == "worker-legacy-env"
+      refute access_grant_expiry_not_null?(pid)
+      assert schema_migration_recorded?(pid, 20_260_519_120_000)
+    after
+      System.delete_env(env_var)
+      Repo.put_dynamic_repo(original_repo)
+      GenServer.stop(pid)
+      File.rm(database_path)
+    end
+  end
+
+  test "MCP repository preparation is cached after a successful migration" do
+    database_path = WorkPackageFactory.database_path()
+    original_repo = Repo.get_dynamic_repo()
+
+    {:ok, pid} =
+      Repo.start_link(database: database_path, name: Repo.process_name(database_path), pool_size: 1, log: false)
+
+    try do
+      Repo.put_dynamic_repo(pid)
+      assert :ok = MCPRepository.ensure_migrated(Repo)
+
+      parent = self()
+
+      lock_task =
+        Task.async(fn ->
+          TrackerAdapter.migration_file_lock_for_test(database_path, fn ->
+            send(parent, :migration_file_lock_acquired)
+
+            receive do
+              :release_migration_file_lock -> :ok
+            end
+          end)
+        end)
+
+      assert_receive :migration_file_lock_acquired, 1_000
+
+      ensure_task =
+        Task.async(fn ->
+          task_original_repo = Repo.get_dynamic_repo()
+
+          try do
+            Repo.put_dynamic_repo(pid)
+            MCPRepository.ensure_migrated(Repo)
+          after
+            Repo.put_dynamic_repo(task_original_repo)
+          end
+        end)
+
+      ensure_result = Task.yield(ensure_task, 500) || Task.shutdown(ensure_task, :brutal_kill)
+
+      send(lock_task.pid, :release_migration_file_lock)
+      assert :ok = Task.await(lock_task)
+      assert {:ok, :ok} = ensure_result
+    after
       Repo.put_dynamic_repo(original_repo)
       GenServer.stop(pid)
       File.rm(database_path)
@@ -2420,6 +2528,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(stale_status_response, ["error", "data", "reason"]) == "stale_status"
+  end
+
+  test "claim_work_key tool migrates legacy access grant expiry before unbound claim" do
+    database_path = WorkPackageFactory.database_path()
+    original_repo = Repo.get_dynamic_repo()
+
+    {:ok, pid} =
+      Repo.start_link(database: database_path, name: Repo.process_name(database_path), pool_size: 1, log: false)
+
+    try do
+      Repo.put_dynamic_repo(pid)
+      assert :ok = WorkPackageRepository.migrate(Repo)
+      assert {:ok, package} = WorkPackageRepository.create(Repo, WorkPackageFactory.attrs(id: "SYMPP-MCP-LEGACY-TOOL"))
+
+      assert {:ok, minted} =
+               AccessGrantService.mint_worker_grant(Repo, package.id, expires_at: ~U[2030-01-01 00:00:00Z])
+
+      rebuild_access_grants_with_not_null_expiry!(pid)
+      remove_null_expiry_migration_version!(pid)
+      assert access_grant_expiry_not_null?(pid)
+
+      response =
+        mcp_tool(
+          Repo,
+          nil,
+          "claim_work_key",
+          %{"secret" => minted.work_key.secret, "claimed_by" => "worker-legacy-tool"},
+          config: Config.default(repo: Repo, repo_root: test_repo_root(), database: database_path)
+        )
+
+      refute inspect(response) =~ minted.work_key.secret
+      assert get_in(response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-MCP-LEGACY-TOOL"
+      assert get_in(response, ["result", "structuredContent", "assignment", "claimed_by"]) == "worker-legacy-tool"
+      refute access_grant_expiry_not_null?(pid)
+      assert schema_migration_recorded?(pid, 20_260_519_120_000)
+    after
+      Repo.put_dynamic_repo(original_repo)
+      GenServer.stop(pid)
+      File.rm(database_path)
+    end
   end
 
   test "claim_work_key rejects terminal package grants without mutating them", %{repo: repo} do
@@ -13548,6 +13696,111 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   defp live_expires_at?(nil, %DateTime{}), do: true
   defp live_expires_at?(%DateTime{} = expires_at, %DateTime{} = now), do: DateTime.compare(expires_at, now) == :gt
+
+  defp rebuild_access_grants_with_not_null_expiry!(repo_or_pid) do
+    query!(repo_or_pid, "PRAGMA foreign_keys = OFF")
+
+    try do
+      query!(repo_or_pid, "DROP TABLE IF EXISTS sympp_access_grants_legacy_expiry")
+
+      query!(repo_or_pid, """
+      CREATE TABLE sympp_access_grants_legacy_expiry (
+        id TEXT PRIMARY KEY NOT NULL,
+        work_package_id TEXT NOT NULL REFERENCES sympp_work_packages(id) ON DELETE CASCADE,
+        display_key TEXT NOT NULL,
+        secret_hash TEXT NOT NULL,
+        grant_role TEXT NOT NULL,
+        capabilities TEXT NOT NULL DEFAULT '[]',
+        expires_at TEXT NOT NULL,
+        revoked_at TEXT,
+        claimed_at TEXT,
+        claimed_by TEXT,
+        inserted_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        phase_id TEXT REFERENCES sympp_phases(id) ON DELETE CASCADE,
+        scope_repo TEXT,
+        scope_base_branch TEXT,
+        provenance TEXT
+      )
+      """)
+
+      query!(repo_or_pid, """
+      INSERT INTO sympp_access_grants_legacy_expiry (
+        id,
+        work_package_id,
+        display_key,
+        secret_hash,
+        grant_role,
+        capabilities,
+        expires_at,
+        revoked_at,
+        claimed_at,
+        claimed_by,
+        inserted_at,
+        updated_at,
+        phase_id,
+        scope_repo,
+        scope_base_branch,
+        provenance
+      )
+      SELECT
+        id,
+        work_package_id,
+        display_key,
+        secret_hash,
+        grant_role,
+        capabilities,
+        expires_at,
+        revoked_at,
+        claimed_at,
+        claimed_by,
+        inserted_at,
+        updated_at,
+        phase_id,
+        scope_repo,
+        scope_base_branch,
+        provenance
+      FROM sympp_access_grants
+      """)
+
+      query!(repo_or_pid, "DROP TABLE sympp_access_grants")
+      query!(repo_or_pid, "ALTER TABLE sympp_access_grants_legacy_expiry RENAME TO sympp_access_grants")
+      recreate_access_grant_indexes!(repo_or_pid)
+    after
+      query!(repo_or_pid, "PRAGMA foreign_keys = ON")
+    end
+  end
+
+  defp recreate_access_grant_indexes!(repo_or_pid) do
+    query!(repo_or_pid, "CREATE UNIQUE INDEX sympp_access_grants_id_unique_index ON sympp_access_grants (id)")
+    query!(repo_or_pid, "CREATE UNIQUE INDEX sympp_access_grants_secret_hash_unique_index ON sympp_access_grants (secret_hash)")
+    query!(repo_or_pid, "CREATE INDEX sympp_access_grants_work_package_id_index ON sympp_access_grants (work_package_id)")
+    query!(repo_or_pid, "CREATE INDEX sympp_access_grants_display_key_index ON sympp_access_grants (display_key)")
+    query!(repo_or_pid, "CREATE INDEX sympp_access_grants_grant_role_index ON sympp_access_grants (grant_role)")
+    query!(repo_or_pid, "CREATE INDEX sympp_access_grants_phase_id_index ON sympp_access_grants (phase_id)")
+  end
+
+  defp remove_null_expiry_migration_version!(repo_or_pid) do
+    query!(repo_or_pid, "DELETE FROM schema_migrations WHERE version = ?", [20_260_519_120_000])
+  end
+
+  defp access_grant_expiry_not_null?(repo_or_pid) do
+    %{rows: rows} = query!(repo_or_pid, "PRAGMA table_info(sympp_access_grants)")
+
+    Enum.any?(rows, fn
+      [_cid, "expires_at", _type, not_null, _default_value, _primary_key] -> not_null in [1, true]
+      _column -> false
+    end)
+  end
+
+  defp schema_migration_recorded?(repo_or_pid, version) do
+    %{rows: [[count]]} = query!(repo_or_pid, "SELECT COUNT(*) FROM schema_migrations WHERE version = ?", [version])
+    count == 1
+  end
+
+  defp query!(repo_or_pid, sql, params \\ []) do
+    SQL.query!(repo_or_pid, sql, params, log: false)
+  end
 
   defp mcp_tool(repo, session, name, arguments, opts \\ []) do
     MCPHarness.request(
