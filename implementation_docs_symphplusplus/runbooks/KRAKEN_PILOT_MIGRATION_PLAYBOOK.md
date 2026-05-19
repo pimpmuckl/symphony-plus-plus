@@ -1126,9 +1126,9 @@ if ($childHead -ne $phaseParentHead) {
    interrupted, record the package as blocked, preserve branch/PR evidence, and
    have the architect use `revoke_child_worker_key` only for the target live
    child-worker grant inside the same frozen phase scope. A successful revoke
-   records redacted audit/progress evidence and allows `mint_child_worker_key`
-   to mint again when the child still satisfies normal mint preconditions; it
-   does not clean up persisted private handoff files. Use only the approved
+   records redacted audit/progress evidence, resets an active/interrupted child
+   back to `ready_for_worker`, and allows `mint_child_worker_key` to mint again;
+   it does not clean up persisted private handoff files. Use only the approved
    child-secret handoff wrapper. Do not paste raw MCP payloads or private
    handoff data into a transcript or planning file. The wrapper must perform
    the MCP call, keep worker secret material in the approved private store, and

@@ -154,7 +154,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     :work_package_id
   ]
   @child_worker_capabilities ["worker:claim", "worker:lifecycle.transition"]
-  @child_worker_recyclable_statuses ["ready_for_worker", "claimed", "planning", "implementing", "reviewing", "ci_waiting", "blocked"]
+  @child_worker_ready_status "ready_for_worker"
+  @child_worker_resettable_statuses ["claimed", "planning", "implementing", "reviewing", "ci_waiting", "blocked"]
+  @child_worker_recyclable_statuses [@child_worker_ready_status | @child_worker_resettable_statuses]
   @child_worker_grant_provenance "child_worker_delegation"
   @version_resource "sympp://health/version"
   @assignment_resource "sympp://assignment/current"
@@ -2464,8 +2466,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp architect_tool("revoke_child_worker_key", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- architect_session(config.repo, session, "revoke:child_worker_key"),
-         {:ok, grant_id} <- required_argument(arguments, "grant_id"),
-         {:ok, reason} <- required_argument(arguments, "reason"),
+         {:ok, grant_id} <- required_revoke_child_worker_string(arguments, "grant_id"),
+         {:ok, reason} <- required_revoke_child_worker_string(arguments, "reason"),
          {:ok, payload} <- revoke_child_worker_key_transaction(config.repo, session, grant_id, reason) do
       {:ok, tool_result(payload)}
     else
@@ -3334,8 +3336,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, child} <- require_transaction_current_child_scope(repo, grant.work_package_id, anchor, phase_id),
          :ok <- require_child_worker_recyclable_status(child),
          {:ok, revoked_grant} <- revoke_live_child_worker_grant(repo, grant, now),
-         {:ok, event} <- append_child_worker_revoke_event(repo, session, child, revoked_grant, reason) do
-      {:ok, child_worker_revoke_result(child, revoked_grant, event, reason)}
+         {:ok, reset_child} <- reset_child_worker_for_recycle(repo, child, now),
+         {:ok, event} <- append_child_worker_revoke_event(repo, session, child, reset_child, revoked_grant, reason) do
+      {:ok, child_worker_revoke_result(reset_child, revoked_grant, event, reason, child.status)}
+    end
+  end
+
+  defp required_revoke_child_worker_string(arguments, key) do
+    case Map.fetch(arguments, key) do
+      {:ok, value} when is_binary(value) ->
+        case String.trim(value) do
+          "" -> {:tool_error, "missing_#{key}"}
+          trimmed -> {:ok, trimmed}
+        end
+
+      {:ok, _value} ->
+        {:tool_error, "invalid_#{key}"}
+
+      :error ->
+        {:tool_error, "missing_#{key}"}
     end
   end
 
@@ -3411,19 +3430,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp append_child_worker_revoke_event(repo, %Session{} = session, %WorkPackage{} = child, %AccessGrant{} = grant, reason) do
-    payload = child_worker_revoke_payload(child.id, grant, reason)
+  defp reset_child_worker_for_recycle(_repo, %WorkPackage{status: @child_worker_ready_status} = child, _now), do: {:ok, child}
 
-    PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, child.id, %{
+  defp reset_child_worker_for_recycle(repo, %WorkPackage{status: status} = child, %DateTime{} = now)
+       when status in @child_worker_resettable_statuses do
+    query =
+      from(work_package in WorkPackage,
+        where: work_package.id == ^child.id and work_package.kind == "phase_child" and work_package.status == ^status
+      )
+
+    case repo.update_all(query, set: [status: @child_worker_ready_status, updated_at: now]) do
+      {1, _rows} -> WorkPackageRepository.get(repo, child.id)
+      {0, _rows} -> {:tool_error, "child_worker_recycle_status_conflict"}
+    end
+  end
+
+  defp reset_child_worker_for_recycle(_repo, %WorkPackage{}, _now), do: {:tool_error, "child_not_recyclable"}
+
+  defp append_child_worker_revoke_event(
+         repo,
+         %Session{} = session,
+         %WorkPackage{} = previous_child,
+         %WorkPackage{} = reset_child,
+         %AccessGrant{} = grant,
+         reason
+       ) do
+    payload = child_worker_revoke_payload(reset_child.id, grant, reason, previous_child.status, reset_child.status)
+
+    PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, reset_child.id, %{
       "summary" => "Child worker grant revoked for recycle",
-      "body" => "Recycle reason: #{redacted_child_worker_revoke_reason(reason)}",
+      "body" => "Recycle reason: #{redacted_child_worker_revoke_reason(reason)}; child status: #{previous_child.status} -> #{reset_child.status}",
       "status" => "child_worker_key_revoked",
       "idempotency_key" => metadata_idempotency_key(payload),
       "payload" => payload
     })
   end
 
-  defp child_worker_revoke_payload(work_package_id, %AccessGrant{} = grant, reason) do
+  defp child_worker_revoke_payload(work_package_id, %AccessGrant{} = grant, reason, previous_status, new_status) do
     %{
       "type" => "child_worker_key_revoke",
       "source_tool" => "revoke_child_worker_key",
@@ -3431,18 +3474,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "grant_id" => grant.id,
       "reason" => redacted_child_worker_revoke_reason(reason),
       "revoked_at" => timestamp(grant.revoked_at),
+      "previous_status" => previous_status,
+      "new_status" => new_status,
+      "status_reset" => previous_status != new_status,
       "private_handoff_cleanup" => "not_attempted"
     }
   end
 
-  defp child_worker_revoke_result(%WorkPackage{} = child, %AccessGrant{} = grant, %ProgressEvent{} = event, reason) do
+  defp child_worker_revoke_result(%WorkPackage{} = child, %AccessGrant{} = grant, %ProgressEvent{} = event, reason, previous_status) do
     %{
       "work_package" => child_work_package_payload(child),
       "revoked_worker_grant" => revoked_child_worker_grant_payload(grant),
       "recycle" => %{
         "status" => "revoked",
         "reason" => redacted_child_worker_revoke_reason(reason),
-        "remint_available" => child.status == "ready_for_worker",
+        "previous_child_status" => previous_status,
+        "new_child_status" => child.status,
+        "status_reset" => previous_status != child.status,
+        "remint_available" => true,
         "remint_precondition" => "child_status_ready_for_worker",
         "private_handoff_cleanup" => "not_attempted"
       },
@@ -7983,20 +8032,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp validate_required_architect_argument(arguments, properties, key) do
-    case {Map.get(arguments, key), get_in(properties, [key, "type"])} do
-      {value, "string"} when is_binary(value) ->
-        if String.trim(value) == "", do: {:error, "missing_#{key}"}, else: :ok
-
-      {value, "object"} when is_map(value) ->
-        :ok
-
-      {values, "array"} when is_list(values) ->
-        validate_required_architect_array_argument(properties, key, values)
-
-      {_value, _type} ->
-        {:error, "missing_#{key}"}
+    case Map.fetch(arguments, key) do
+      :error -> {:error, "missing_#{key}"}
+      {:ok, nil} -> {:error, "missing_#{key}"}
+      {:ok, value} -> validate_required_architect_argument_value(properties, key, value)
     end
   end
+
+  defp validate_required_architect_argument_value(properties, key, value) do
+    case get_in(properties, [key, "type"]) do
+      "string" -> validate_required_architect_string_argument(key, value)
+      "object" -> validate_required_architect_object_argument(key, value)
+      "array" -> validate_required_architect_array_argument_value(properties, key, value)
+      _type -> {:error, "invalid_#{key}"}
+    end
+  end
+
+  defp validate_required_architect_string_argument(key, value) when is_binary(value) do
+    if String.trim(value) == "", do: {:error, "missing_#{key}"}, else: :ok
+  end
+
+  defp validate_required_architect_string_argument(key, _value), do: {:error, "invalid_#{key}"}
+
+  defp validate_required_architect_object_argument(_key, value) when is_map(value), do: :ok
+  defp validate_required_architect_object_argument(key, _value), do: {:error, "invalid_#{key}"}
+
+  defp validate_required_architect_array_argument_value(properties, key, values) when is_list(values) do
+    validate_required_architect_array_argument(properties, key, values)
+  end
+
+  defp validate_required_architect_array_argument_value(_properties, key, _value), do: {:error, "invalid_#{key}"}
 
   defp validate_required_architect_array_argument(properties, key, values) do
     cond do

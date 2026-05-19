@@ -83,10 +83,12 @@ identity. In the current pre-production v1 child minting contract,
 child package and rejects remint attempts while one exists.
 `revoke_child_worker_key` lets an architect with `revoke:child_worker_key`
 revoke one live child-worker grant for a same-phase child inside the architect
-grant's frozen scope, then `mint_child_worker_key` can mint again when the child
-still satisfies normal mint preconditions. Revoke rejects unrelated, normal
-worker, sibling/out-of-scope, already revoked, expired, and architect-controlled
-child grants. It records a redacted audit/progress event, but does not delete
+grant's frozen scope, reset an active/interrupted child from `claimed`,
+`planning`, `implementing`, `reviewing`, `ci_waiting`, or `blocked` back to
+`ready_for_worker`, and then `mint_child_worker_key` can mint again. Revoke
+rejects unrelated, normal worker, sibling/out-of-scope, already revoked,
+expired, and architect-controlled/terminal child grants. It records a redacted
+audit/progress event with previous and new child statuses, but does not delete
 persisted child handoffs in this v1 package.
 
 Architect child worker minting follows the same private-handoff rule. The

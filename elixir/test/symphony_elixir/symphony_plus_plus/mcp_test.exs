@@ -6291,6 +6291,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     recycle = get_in(revoke_response, ["result", "structuredContent", "recycle"])
     assert recycle["status"] == "revoked"
     assert recycle["reason"] == "worker lost heartbeat"
+    assert recycle["previous_child_status"] == "ready_for_worker"
+    assert recycle["new_child_status"] == "ready_for_worker"
+    assert recycle["status_reset"] == false
     assert recycle["remint_available"] == true
     assert recycle["private_handoff_cleanup"] == "not_attempted"
 
@@ -6301,6 +6304,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert event["payload"]["work_package_id"] == child_id
     assert event["payload"]["grant_id"] == first_grant_id
     assert event["payload"]["reason"] == "worker lost heartbeat"
+    assert event["payload"]["previous_status"] == "ready_for_worker"
+    assert event["payload"]["new_status"] == "ready_for_worker"
+    assert event["payload"]["status_reset"] == false
     assert event["payload"]["private_handoff_cleanup"] == "not_attempted"
 
     content_text = get_in(revoke_response, ["result", "content", Access.at(0), "text"])
@@ -6326,6 +6332,67 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(second_response, ["result", "structuredContent", "worker_grant", "work_package_id"]) == child_id
   end
 
+  test "phase architect revokes in-progress child worker grant, resets child, and remints", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-RECYCLE-RESET-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "revoke:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-RECYCLE-RESET-CHILD")
+
+    first_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => child_worker_template(%{"claimed_by" => "worker-1"})
+      })
+
+    first_grant_id = get_in(first_response, ["result", "structuredContent", "worker_grant", "id"])
+    assert is_binary(first_grant_id)
+
+    worker_session = claim_child_worker_from_mint_response(repo, first_response, "worker-1")
+    advance_child_worker_to_ci_waiting(repo, worker_session)
+
+    assert {:ok, in_progress_child} = WorkPackageRepository.get(repo, child_id)
+    assert in_progress_child.status == "ci_waiting"
+
+    revoke_response =
+      mcp_tool(repo, architect_session, "revoke_child_worker_key", %{
+        "grant_id" => first_grant_id,
+        "reason" => "worker died during implementation"
+      })
+
+    assert get_in(revoke_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_worker"
+
+    recycle = get_in(revoke_response, ["result", "structuredContent", "recycle"])
+    assert recycle["status"] == "revoked"
+    assert recycle["previous_child_status"] == "ci_waiting"
+    assert recycle["new_child_status"] == "ready_for_worker"
+    assert recycle["status_reset"] == true
+    assert recycle["remint_available"] == true
+
+    event = get_in(revoke_response, ["result", "structuredContent", "revocation_event"])
+    assert event["payload"]["grant_id"] == first_grant_id
+    assert event["payload"]["previous_status"] == "ci_waiting"
+    assert event["payload"]["new_status"] == "ready_for_worker"
+    assert event["payload"]["status_reset"] == true
+
+    assert {:ok, reset_child} = WorkPackageRepository.get(repo, child_id)
+    assert reset_child.status == "ready_for_worker"
+
+    second_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => child_worker_template()
+      })
+
+    second_grant_id = get_in(second_response, ["result", "structuredContent", "worker_grant", "id"])
+    assert is_binary(second_grant_id)
+    assert second_grant_id != first_grant_id
+  end
+
   test "child worker revoke rejects normal grants and worker callers", %{repo: repo} do
     {_anchor, architect_session} =
       create_architect_session(repo, "SYMPP-P7-002-REVOKE-NORMAL-ANCHOR", [
@@ -6335,6 +6402,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       ])
 
     child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-REVOKE-NORMAL-CHILD")
+
+    invalid_grant_id_response =
+      mcp_tool(repo, architect_session, "revoke_child_worker_key", %{
+        "grant_id" => 123,
+        "reason" => "invalid grant id"
+      })
+
+    assert get_in(invalid_grant_id_response, ["error", "code"]) == -32_602
+    assert get_in(invalid_grant_id_response, ["error", "data", "reason"]) == "invalid_grant_id"
+
+    invalid_reason_response =
+      mcp_tool(repo, architect_session, "revoke_child_worker_key", %{
+        "grant_id" => "grant-id",
+        "reason" => 123
+      })
+
+    assert get_in(invalid_reason_response, ["error", "code"]) == -32_602
+    assert get_in(invalid_reason_response, ["error", "data", "reason"]) == "invalid_reason"
+
     assert {:ok, normal_minted} = AccessGrantService.mint_worker_grant(repo, child_id)
 
     normal_revoke_response =
@@ -6470,7 +6556,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "read:phase"
       ])
 
-    for status <- ["ready_for_architect_merge", "merging_into_phase", "merged_into_phase", "closed"] do
+    for status <- ["ready_for_architect_merge", "merging_into_phase", "merged_into_phase", "closed", "abandoned"] do
       suffix = status |> String.replace("_", "-") |> String.upcase()
       child_id = "SYMPP-P7-002-REVOKE-STATUS-#{suffix}"
       child_id = create_child_work_package(repo, architect_session, child_id)

@@ -29,7 +29,7 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 |---|---|
 | create_child_work_package | Create a `phase_child` work package inside the architect grant's current phase; child repo, phase, parent, and base branch are constrained to the architect phase anchor. |
 | mint_child_worker_key | Mint a child-scoped worker grant for a same-phase `phase_child` package; worker capabilities are limited to the child worker set and expiry cannot exceed the architect grant. |
-| revoke_child_worker_key | Revoke one live child-delegated worker grant for a same-phase child package inside the architect grant's frozen scope so the child can be reminted when normal mint preconditions still hold. |
+| revoke_child_worker_key | Revoke one live child-delegated worker grant for a same-phase child package inside the architect grant's frozen scope, reset active/interrupted children to `ready_for_worker`, and make immediate remint available. |
 | list_work_requests | List WorkRequests scoped to the architect assignment repo/base branch. Accepts only optional `status`. |
 | read_work_request | Read one scoped WorkRequest with clarification questions, decision log entries, planned slices, and count/status summaries. |
 | set_work_request_status | Move a scoped WorkRequest between valid statuses with optimistic `current_status` checking. |
@@ -112,12 +112,15 @@ there. `template.secret_handoff` may specify only `mode`, `store_dir`, and
 worker-grant capabilities. `revoke_child_worker_key` requires
 `revoke:child_worker_key`, revalidates the live architect grant and frozen
 phase anchor scope, and revokes only a live child-delegated worker grant for a
-same-phase child package. It rejects unrelated grants, normal worker grants,
-sibling/out-of-scope children, already revoked or expired grants, and children
-already in architect-controlled/closed/merged states. The response and durable
+same-phase child package. If the child is active/interrupted (`claimed`,
+`planning`, `implementing`, `reviewing`, `ci_waiting`, or `blocked`), the tool
+resets it to `ready_for_worker` so `mint_child_worker_key` can immediately
+remint. It rejects unrelated grants, normal worker grants, sibling/out-of-scope
+children, already revoked or expired grants, and children already in
+architect-controlled/closed/merged or terminal states. The response and durable
 audit/progress event are redacted and include only safe child package/grant
-metadata plus the redacted recycle reason; persisted private handoff cleanup is
-not performed in this v1 package.
+metadata, previous and new child statuses, and the redacted recycle reason;
+persisted private handoff cleanup is not performed in this v1 package.
 `list_work_requests` and `read_work_request` require `read:work_request`, are
 read-only, and require an explicit phase-scoped architect grant with frozen
 repo/base-branch scope. They do not accept caller-supplied repo or base-branch
