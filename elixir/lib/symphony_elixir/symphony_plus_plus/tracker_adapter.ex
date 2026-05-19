@@ -34,6 +34,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
   @local_lock_owner_timeout_ms 1_000
   @local_lock_table :symphony_plus_plus_tracker_adapter_locks
   @repo_access_lock_retries :infinity
+  @repo_shutdown_poll_ms 10
+  @repo_shutdown_timeout_ms 1_000
   @truncated_notice "[truncated]"
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
@@ -439,24 +441,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
     if Repo.memory_database?(database_path) do
       :ok
     else
-      stop_owned_repo(ownership)
+      stop_adapter_owned_repo(ownership, database_path)
     end
   end
 
-  defp stop_owned_repo(:existing), do: :ok
+  defp stop_adapter_owned_repo(:existing, _database_path), do: :ok
 
-  defp stop_owned_repo({:supervised, child_id, _pid}) do
-    if Process.whereis(SymphonyElixir.Supervisor) do
-      _ = Supervisor.terminate_child(SymphonyElixir.Supervisor, child_id)
-      _ = Supervisor.delete_child(SymphonyElixir.Supervisor, child_id)
+  defp stop_adapter_owned_repo({:supervised, child_id, pid}, database_path) do
+    case Process.whereis(SymphonyElixir.Supervisor) do
+      supervisor when is_pid(supervisor) ->
+        _ = Supervisor.terminate_child(supervisor, child_id)
+        _ = Supervisor.delete_child(supervisor, child_id)
+        wait_for_repo_unregistered(pid, database_path)
+
+      _no_supervisor ->
+        stop_direct_repo(pid, database_path)
     end
 
     :ok
   end
 
-  defp stop_owned_repo({:direct, pid}) when is_pid(pid), do: stop_direct_repo(pid)
+  defp stop_adapter_owned_repo({:direct, pid}, database_path) when is_pid(pid), do: stop_direct_repo(pid, database_path)
 
-  defp stop_direct_repo(pid) do
+  defp stop_direct_repo(pid, database_path) do
     ref = Process.monitor(pid)
     Process.exit(pid, :shutdown)
 
@@ -465,6 +472,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
     after
       1_000 ->
         Process.demonitor(ref, [:flush])
+        :ok
+    end
+
+    wait_for_repo_unregistered(pid, database_path)
+  end
+
+  defp wait_for_repo_unregistered(pid, database_path) do
+    deadline = System.monotonic_time(:millisecond) + @repo_shutdown_timeout_ms
+    wait_for_repo_unregistered(pid, database_path, deadline)
+  end
+
+  defp wait_for_repo_unregistered(pid, database_path, deadline) do
+    case global_repo_pid(database_path) do
+      ^pid ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          :ok
+        else
+          Process.sleep(@repo_shutdown_poll_ms)
+          wait_for_repo_unregistered(pid, database_path, deadline)
+        end
+
+      _unregistered_or_replaced ->
         :ok
     end
   end
