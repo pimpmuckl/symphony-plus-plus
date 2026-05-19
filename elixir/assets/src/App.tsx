@@ -113,10 +113,12 @@ type FinishedHighlight = {
   id: string;
   title: string;
   repo: string;
-  kind: "Request" | "Slice" | "Package";
+  kind: FinishedHighlightKind;
   status?: string | null;
   at?: string | null;
 };
+
+type FinishedHighlightKind = "Request" | "Slice" | "Work Package";
 
 type BoardWire = {
   id: string;
@@ -131,6 +133,9 @@ type BoardWirePath = BoardWire & {
   sourceY: number;
   targetX: number;
   targetY: number;
+  trackX: number;
+  trackIndex: number;
+  trackSide: WireTrackSide;
   hiddenRects: BoardWireHiddenRect[];
 };
 
@@ -139,6 +144,24 @@ type BoardWireHiddenRect = {
   y: number;
   width: number;
   height: number;
+};
+
+type WireTrackSide = "source" | "target";
+
+type MeasuredBoardWire = BoardWire & {
+  source: HTMLElement;
+  target: HTMLElement;
+  sourceLane: number;
+  targetLane: number;
+  sourceRect: BoardWireHiddenRect;
+  targetRect: BoardWireHiddenRect;
+  sourceX: number;
+  sourceY: number;
+  targetX: number;
+  targetY: number;
+  trackX: number;
+  trackIndex: number;
+  trackSide: WireTrackSide;
 };
 
 type SliceEntry = {
@@ -403,17 +426,11 @@ function StatusRail({
       }
 
       return (
-        <TopTray title="Most recent finished work">
+        <TopTray title="Recently finished requests, slices, and work packages">
           {finishedHighlights.length === 0 ? (
             <EmptyPanel title="Nothing finished yet" compact />
           ) : (
-            <ScrollArea className="finished-highlights-scroll pr-3">
-              <div className="grid gap-2">
-                {finishedHighlights.map((item, index) => (
-                  <FinishedHighlightRow key={`${item.kind}-${item.id}`} item={item} index={index} />
-                ))}
-              </div>
-            </ScrollArea>
+            <FinishedHighlightsBoard items={finishedHighlights} />
           )}
         </TopTray>
       );
@@ -448,7 +465,7 @@ function StatusRail({
         />
         <StatusTile
           panel="finished"
-          title="Ready / Finished"
+          title="Finished"
           value={finishedHighlights.length}
           icon={<CheckCircle2 className="h-6 w-6" />}
           tone="emerald"
@@ -755,23 +772,57 @@ function BlockerPreviewCard({ item, index }: { item: BlockerItem; index: number 
   );
 }
 
-function FinishedHighlightRow({ item, index }: { item: FinishedHighlight; index: number }) {
+const finishedHighlightLanes: { kind: FinishedHighlightKind; title: string; empty: string }[] = [
+  { kind: "Request", title: "Requests", empty: "No finished requests" },
+  { kind: "Slice", title: "Slices", empty: "No finished slices" },
+  { kind: "Work Package", title: "Work Packages", empty: "No finished packages" },
+];
+
+function FinishedHighlightsBoard({ items }: { items: FinishedHighlight[] }) {
+  return (
+    <ScrollArea className="finished-highlights-scroll pr-3" type="auto">
+      <div className="finished-highlights-grid">
+        {finishedHighlightLanes.map((lane) => {
+          const laneItems = items.filter((item) => item.kind === lane.kind);
+
+          return (
+            <section key={lane.kind} className="finished-mini-lane">
+              <div className="finished-mini-lane-header">
+                <span>{lane.title}</span>
+                <span className="jira-lane-count">{laneItems.length}</span>
+              </div>
+              <div className="finished-mini-lane-body">
+                {laneItems.length === 0 ? (
+                  <div className="jira-lane-empty">{lane.empty}</div>
+                ) : (
+                  laneItems.map((item, index) => <FinishedHighlightCard key={`${item.kind}-${item.id}`} item={item} index={index} />)
+                )}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </ScrollArea>
+  );
+}
+
+function FinishedHighlightCard({ item, index }: { item: FinishedHighlight; index: number }) {
   return (
     <div
-      className={stateCardClassName("finished", "stagger-item flex items-center justify-between gap-4 p-3")}
+      className={stateCardClassName("finished", "stagger-item p-3")}
       style={{ animationDelay: `${index * 30}ms` }}
     >
-      <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+      <div className="flex min-w-0 items-start gap-2">
+        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+        <div className="min-w-0">
           <p className="truncate text-sm font-semibold">{item.title}</p>
+          <p className="mt-1 truncate text-xs text-muted-foreground">{item.repo}</p>
         </div>
-        <p className="mt-1 truncate text-xs text-muted-foreground">{item.repo}</p>
       </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <Badge variant="success">{item.kind}</Badge>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Badge variant="success">{formatStatus(item.status)}</Badge>
         {item.at ? (
-          <span className="hidden items-center gap-1 text-xs text-muted-foreground sm:flex">
+          <span className="flex items-center gap-1 text-xs text-muted-foreground">
             <Clock3 className="h-3.5 w-3.5" />
             {formatDate(item.at)}
           </span>
@@ -1228,7 +1279,16 @@ function BoardWireLayer({ paths, width, height }: { paths: BoardWirePath[]; widt
           const maskId = wire.hiddenRects.length > 0 ? `${layerId}-board-wire-mask-${index}` : undefined;
 
           return (
-            <g key={wire.id} data-wire-tone={wire.tone} data-wire-from={wire.from} data-wire-to={wire.to} data-mask-rects={wire.hiddenRects.length}>
+            <g
+              key={wire.id}
+              data-wire-tone={wire.tone}
+              data-wire-from={wire.from}
+              data-wire-to={wire.to}
+              data-wire-track-x={wire.trackX.toFixed(2)}
+              data-wire-track-index={wire.trackIndex}
+              data-wire-track-side={wire.trackSide}
+              data-mask-rects={wire.hiddenRects.length}
+            >
               <path className="board-wire-path" d={wire.path} mask={maskId ? `url(#${maskId})` : undefined} />
             </g>
           );
@@ -1236,7 +1296,7 @@ function BoardWireLayer({ paths, width, height }: { paths: BoardWirePath[]; widt
       </svg>
       <svg className="board-wire-node-layer" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
         {paths.map((wire) => (
-          <g key={wire.id} data-wire-tone={wire.tone} data-wire-from={wire.from} data-wire-to={wire.to}>
+          <g key={wire.id} data-wire-tone={wire.tone} data-wire-from={wire.from} data-wire-to={wire.to} data-wire-track-x={wire.trackX.toFixed(2)}>
             <circle className="board-wire-node board-wire-node-target" cx={wire.targetX} cy={wire.targetY} r="4" />
           </g>
         ))}
@@ -1379,33 +1439,187 @@ function measureBoardWires(board: HTMLDivElement, wires: BoardWire[]) {
     if (id) nodes.set(id, node);
   });
 
+  const measuredWires = wires.flatMap<MeasuredBoardWire>((wire) => {
+    const source = nodes.get(wire.from);
+    const target = nodes.get(wire.to);
+    if (!source || !target) return [];
+
+    const sourceLane = lanes.findIndex((lane) => lane.node.contains(source));
+    const targetLane = lanes.findIndex((lane) => lane.node.contains(target));
+    if (sourceLane < 0 || targetLane < 0) return [];
+
+    const sourceRect = layoutRectWithinBoard(source, board);
+    const targetRect = layoutRectWithinBoard(target, board);
+    const forward = targetLane >= sourceLane;
+    const sourceX = forward ? sourceRect.x + sourceRect.width : sourceRect.x;
+    const targetX = forward ? targetRect.x : targetRect.x + targetRect.width;
+    const sourceY = sourceRect.y + sourceRect.height / 2;
+    const targetY = targetRect.y + targetRect.height / 2;
+
+    return [
+      {
+        ...wire,
+        source,
+        target,
+        sourceLane,
+        targetLane,
+        sourceRect,
+        targetRect,
+        sourceX,
+        sourceY,
+        targetX,
+        targetY,
+        trackX: defaultBoardWireTrackX(sourceX, targetX),
+        trackIndex: 0,
+        trackSide: "source",
+      },
+    ];
+  });
+  const routedWires = assignBoardWireTracks(applyBoardWireAnchorSlots(measuredWires), lanes);
+
   return {
     size: { width, height },
-    paths: wires.flatMap<BoardWirePath>((wire) => {
-      const source = nodes.get(wire.from);
-      const target = nodes.get(wire.to);
-      if (!source || !target) return [];
-
-      const sourceRect = layoutRectWithinBoard(source, board);
-      const targetRect = layoutRectWithinBoard(target, board);
-      const sourceX = sourceRect.x + sourceRect.width;
-      const sourceY = sourceRect.y + sourceRect.height / 2;
-      const targetX = targetRect.x;
-      const targetY = targetRect.y + targetRect.height / 2;
-
-      return [
-        {
-          ...wire,
-          path: boardWirePath(sourceX, sourceY, targetX, targetY),
-          sourceX,
-          sourceY,
-          targetX,
-          targetY,
-          hiddenRects: skippedLaneRects(source, target, lanes),
-        },
-      ];
-    }),
+    paths: routedWires.map<BoardWirePath>((wire) => ({
+      id: wire.id,
+      from: wire.from,
+      to: wire.to,
+      tone: wire.tone,
+      path: boardWirePath(wire.sourceX, wire.sourceY, wire.targetX, wire.targetY, wire.trackX),
+      sourceX: wire.sourceX,
+      sourceY: wire.sourceY,
+      targetX: wire.targetX,
+      targetY: wire.targetY,
+      trackX: wire.trackX,
+      trackIndex: wire.trackIndex,
+      trackSide: wire.trackSide,
+      hiddenRects: skippedLaneRects(wire.source, wire.target, lanes),
+    })),
   };
+}
+
+function applyBoardWireAnchorSlots(wires: MeasuredBoardWire[]) {
+  const next = wires.map((wire) => ({ ...wire }));
+
+  groupedWires(next, (wire) => wire.from).forEach((group) => {
+    if (group.length <= 1) return;
+    [...group]
+      .sort((left, right) => left.targetY - right.targetY)
+      .forEach((wire, index) => {
+        wire.sourceY = edgeSlotY(wire.sourceRect, index, group.length);
+      });
+  });
+
+  groupedWires(next, (wire) => wire.to).forEach((group) => {
+    if (group.length <= 1) return;
+    [...group]
+      .sort((left, right) => left.sourceY - right.sourceY)
+      .forEach((wire, index) => {
+        wire.targetY = edgeSlotY(wire.targetRect, index, group.length);
+      });
+  });
+
+  return next;
+}
+
+function assignBoardWireTracks(wires: MeasuredBoardWire[], lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>) {
+  const groups = new Map<string, MeasuredBoardWire[]>();
+
+  wires.forEach((wire) => {
+    const gapIndex = primaryBoardWireGapIndex(wire);
+    if (gapIndex < 0 || gapIndex >= lanes.length - 1) return;
+
+    wire.trackSide = boardWireTrackSide(wire);
+    const key = `${gapIndex}:${wire.trackSide}`;
+    const group = groups.get(key) || [];
+    group.push(wire);
+    groups.set(key, group);
+  });
+
+  groups.forEach((group) => {
+    const tracks: number[] = [];
+    const sorted = [...group].sort((left, right) => {
+      const leftSpan = boardWireVerticalSpan(left);
+      const rightSpan = boardWireVerticalSpan(right);
+      if (leftSpan.start !== rightSpan.start) return leftSpan.start - rightSpan.start;
+      return leftSpan.end - rightSpan.end;
+    });
+
+    sorted.forEach((wire) => {
+      const span = boardWireVerticalSpan(wire);
+      const reusableTrack = tracks.findIndex((endY) => endY + 14 < span.start);
+      const trackIndex = reusableTrack >= 0 ? reusableTrack : tracks.length;
+      tracks[trackIndex] = span.end;
+      wire.trackIndex = trackIndex;
+    });
+
+    group.forEach((wire) => {
+      wire.trackX = boardWireTrackX(wire, lanes);
+    });
+  });
+
+  return wires;
+}
+
+function groupedWires(wires: MeasuredBoardWire[], keyFor: (wire: MeasuredBoardWire) => string) {
+  const groups = new Map<string, MeasuredBoardWire[]>();
+  wires.forEach((wire) => {
+    const key = keyFor(wire);
+    const group = groups.get(key) || [];
+    group.push(wire);
+    groups.set(key, group);
+  });
+  return groups;
+}
+
+function edgeSlotY(rect: BoardWireHiddenRect, index: number, count: number) {
+  const centerY = rect.y + rect.height / 2;
+  const guard = Math.min(18, Math.max(4, rect.height / 4));
+  const offset = clampNumber((index - (count - 1) / 2) * 8, -18, 18);
+  return clampNumber(centerY + offset, rect.y + guard, rect.y + rect.height - guard);
+}
+
+function primaryBoardWireGapIndex(wire: MeasuredBoardWire) {
+  if (wire.sourceLane === wire.targetLane) return -1;
+  return Math.min(wire.sourceLane, wire.targetLane);
+}
+
+function boardWireTrackSide(wire: MeasuredBoardWire): WireTrackSide {
+  return wire.targetY >= wire.sourceY ? "source" : "target";
+}
+
+function boardWireVerticalSpan(wire: MeasuredBoardWire) {
+  return {
+    start: Math.min(wire.sourceY, wire.targetY),
+    end: Math.max(wire.sourceY, wire.targetY),
+  };
+}
+
+function boardWireTrackX(wire: MeasuredBoardWire, lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>) {
+  const gapIndex = primaryBoardWireGapIndex(wire);
+  const leftLane = lanes[gapIndex];
+  const rightLane = lanes[gapIndex + 1];
+  if (!leftLane || !rightLane) return defaultBoardWireTrackX(wire.sourceX, wire.targetX);
+
+  const gapStart = leftLane.rect.x + leftLane.rect.width;
+  const gapEnd = rightLane.rect.x;
+  const minX = Math.min(gapStart, gapEnd) + 4;
+  const maxX = Math.max(gapStart, gapEnd) - 4;
+  if (maxX <= minX) return defaultBoardWireTrackX(wire.sourceX, wire.targetX);
+
+  const forward = wire.targetLane >= wire.sourceLane;
+  const sourceSideIsStart = forward;
+  const useSourceSide = wire.trackSide === "source";
+  const preferStart = useSourceSide ? sourceSideIsStart : !sourceSideIsStart;
+  const centerX = (minX + maxX) / 2;
+  const bandGap = Math.min(2, (maxX - minX) / 5);
+  const bandStart = preferStart ? minX : centerX + bandGap;
+  const bandEnd = preferStart ? centerX - bandGap : maxX;
+  if (bandEnd <= bandStart) return preferStart ? minX : maxX;
+
+  const step = Math.min(5, Math.max(3, (bandEnd - bandStart) / 2));
+  const rawX = preferStart ? bandStart + wire.trackIndex * step : bandEnd - wire.trackIndex * step;
+
+  return clampNumber(rawX, bandStart, bandEnd);
 }
 
 function layoutRectWithinBoard(node: HTMLElement, board: HTMLElement): BoardWireHiddenRect {
@@ -1468,24 +1682,41 @@ function skippedLaneRects(
   }));
 }
 
-function boardWirePath(sourceX: number, sourceY: number, targetX: number, targetY: number) {
+function boardWirePath(sourceX: number, sourceY: number, targetX: number, targetY: number, trackX = defaultBoardWireTrackX(sourceX, targetX)) {
   const deltaX = targetX - sourceX;
-  if (deltaX <= 24 || Math.abs(targetY - sourceY) < 2) {
+  if (Math.abs(deltaX) <= 24 || Math.abs(targetY - sourceY) < 2) {
     return `M ${sourceX} ${sourceY} H ${targetX}`;
   }
 
-  const bendX = sourceX + Math.max(28, Math.min(96, deltaX * 0.46));
-  const turn = targetY >= sourceY ? 1 : -1;
+  const xTurn = deltaX >= 0 ? 1 : -1;
+  const yTurn = targetY >= sourceY ? 1 : -1;
+  const minBendX = Math.min(sourceX, targetX) + 10;
+  const maxBendX = Math.max(sourceX, targetX) - 10;
+  const bendX = clampNumber(trackX, minBendX, maxBendX);
   const radius = Math.min(14, Math.abs(targetY - sourceY) / 2, Math.abs(bendX - sourceX) / 2, Math.abs(targetX - bendX) / 2);
+
+  if (radius < 1) {
+    return [`M ${sourceX} ${sourceY}`, `H ${bendX}`, `V ${targetY}`, `H ${targetX}`].join(" ");
+  }
 
   return [
     `M ${sourceX} ${sourceY}`,
-    `H ${bendX - radius}`,
-    `Q ${bendX} ${sourceY} ${bendX} ${sourceY + turn * radius}`,
-    `V ${targetY - turn * radius}`,
-    `Q ${bendX} ${targetY} ${bendX + radius} ${targetY}`,
+    `H ${bendX - xTurn * radius}`,
+    `Q ${bendX} ${sourceY} ${bendX} ${sourceY + yTurn * radius}`,
+    `V ${targetY - yTurn * radius}`,
+    `Q ${bendX} ${targetY} ${bendX + xTurn * radius} ${targetY}`,
     `H ${targetX}`,
   ].join(" ");
+}
+
+function defaultBoardWireTrackX(sourceX: number, targetX: number) {
+  const deltaX = targetX - sourceX;
+  const direction = deltaX >= 0 ? 1 : -1;
+  return sourceX + direction * Math.max(28, Math.min(96, Math.abs(deltaX) * 0.46));
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function RequestCard({
@@ -2641,7 +2872,7 @@ function recentFinishedHighlights(
       id: pkg.id,
       title: pkg.title || pkg.id,
       repo: repoName(pkg.repo),
-      kind: "Package",
+      kind: "Work Package",
       status: pkg.status,
       at: pkg.latest_progress_at,
     }));
