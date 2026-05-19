@@ -49,8 +49,8 @@ const config = {
         dashboard: "0 18px 50px rgba(15, 23, 42, 0.08)",
       },
       fontFamily: {
-        sans: ["Inter", "ui-sans-serif", "system-ui", "sans-serif"],
-        mono: ["JetBrains Mono", "SFMono-Regular", "Consolas", "monospace"],
+        sans: ["var(--font-geist-sans)"],
+        mono: ["var(--font-geist-mono)"],
       },
     },
   },

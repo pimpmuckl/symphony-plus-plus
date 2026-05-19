@@ -55,6 +55,7 @@ import type {
 const CUSTOM_CHOICE = "__custom_redirect__";
 const DASHBOARD_URL = "/api/v1/sympp/operator/dashboard";
 const DASHBOARD_UI_STATE_KEY = "symphony-plus-plus.dashboard.ui-state.v1";
+const ALIGNED_ROW_MIN_HEIGHT = 112;
 const TOP_PANEL_ORDER: TopPanelKey[] = ["guidance", "blockers", "finished"];
 const TOP_PANEL_RESIZE_MS = 210;
 const TOP_PANEL_SLIDE_MS = 360;
@@ -86,6 +87,7 @@ type TopPanelKey = "guidance" | "blockers" | "finished";
 type TopPanelDirection = "forward" | "backward";
 type TopPanelPhase = "idle" | "opening" | "closing" | "pre-resize" | "swapping" | "post-resize";
 type BoardLane = "slices" | "implementing" | "finished";
+type FeatureLane = "requested" | "slices" | "packages";
 type SignalTone = "muted" | "info" | "warning" | "danger" | "success";
 type StateCardTone = "request" | "queued" | "slice" | "implementing" | "review" | "merge" | "guidance" | "blocked" | "finished" | "muted";
 type BoardWireTone = StateCardTone;
@@ -154,7 +156,7 @@ type WorkstreamRow = {
   activePackages: WorkPackageCard[];
   implementingPackages: WorkPackageCard[];
   finishedPackages: WorkPackageCard[];
-  height: number;
+  minHeight: number;
   unlinked?: boolean;
 };
 
@@ -167,7 +169,7 @@ type NewRequestForm = {
   human_description: string;
 };
 
-type BadgeTone = "default" | "secondary" | "outline" | "success" | "warning" | "danger" | "info";
+type BadgeTone = "default" | "secondary" | "outline" | "success" | "warning" | "danger" | "info" | "ready";
 
 const initialRequestForm: NewRequestForm = {
   title: "",
@@ -843,8 +845,7 @@ function RepoSummaryStrip({ repo }: { repo: RepoSummary }) {
   const progress = [
     { label: "Requests", value: repo.requested, tone: "requested" },
     { label: "Slices", value: repo.active, tone: "active" },
-    { label: "Implementing", value: repo.implementing, tone: "implementing" },
-    { label: "Finished", value: repo.finished, tone: "finished" },
+    { label: "Work Packages", value: repo.implementing + repo.finished, tone: "implementing" },
   ] as const;
   const attention = [
     { label: "Guidance Needed", value: repo.guidanceCount, tone: "guidance" },
@@ -922,7 +923,7 @@ function stateCardClassName(tone: StateCardTone, className?: string) {
     slice: "border-cyan-200/80 bg-cyan-50/80 border-l-cyan-400",
     implementing: "border-sky-200/80 bg-sky-50/80 border-l-sky-400",
     review: "border-indigo-200/80 bg-indigo-50/80 border-l-indigo-400",
-    merge: "border-amber-200/80 bg-amber-50/80 border-l-amber-400",
+    merge: "border-lime-200/80 bg-lime-50/80 border-l-lime-400",
     guidance: "border-violet-200/80 bg-violet-50/80 border-l-violet-400",
     blocked: "border-rose-200/80 bg-rose-50/80 border-l-rose-400",
     finished: "border-emerald-200/80 bg-emerald-50/80 border-l-emerald-400",
@@ -952,21 +953,29 @@ function WorkstreamBoard({
   const boardRef = useRef<HTMLDivElement | null>(null);
   const sortedDetails = useMemo(() => sortWorkRequestDetails(repoDetails), [repoDetails]);
   const requested = sortedDetails;
-  const sliceEntries = sortedDetails.flatMap((detail, requestIndex) =>
-    (detail.planned_slices ?? []).map((slice) => ({
-      detail,
-      slice,
-      pkg: packages.find((candidate) => candidate.id === slice.work_package_id),
-      requestIndex,
-    })),
+  const packageById = useMemo(() => new Map(packages.map((pkg) => [pkg.id, pkg])), [packages]);
+  const sliceEntries = useMemo(
+    () =>
+      sortedDetails.flatMap((detail, requestIndex) =>
+        (detail.planned_slices ?? []).map((slice) => ({
+          detail,
+          slice,
+          pkg: slice.work_package_id ? packageById.get(slice.work_package_id) : undefined,
+          requestIndex,
+        })),
+      ),
+    [packageById, sortedDetails],
   );
-  const active = sliceEntries.filter((entry) => sliceLane(entry.slice) === "slices");
-  const implementing = sliceEntries.filter((entry) => sliceLane(entry.slice) === "implementing");
-  const finished = sliceEntries.filter((entry) => sliceLane(entry.slice) === "finished");
+  const active = useMemo(() => sliceEntries.filter((entry) => sliceLane(entry.slice) === "slices"), [sliceEntries]);
+  const implementing = useMemo(() => sliceEntries.filter((entry) => sliceLane(entry.slice) === "implementing"), [sliceEntries]);
+  const finished = useMemo(() => sliceEntries.filter((entry) => sliceLane(entry.slice) === "finished"), [sliceEntries]);
   const sortedUnlinkedPackages = useMemo(() => sortPackages(unlinkedPackages), [unlinkedPackages]);
-  const activePackages = sortedUnlinkedPackages.filter((pkg) => packageLane(pkg) === "slices");
-  const implementingPackages = sortedUnlinkedPackages.filter((pkg) => packageLane(pkg) === "implementing");
-  const finishedPackages = sortedUnlinkedPackages.filter((pkg) => packageLane(pkg) === "finished");
+  const activePackages = useMemo(() => sortedUnlinkedPackages.filter((pkg) => packageLane(pkg) === "slices"), [sortedUnlinkedPackages]);
+  const implementingPackages = useMemo(
+    () => sortedUnlinkedPackages.filter((pkg) => packageLane(pkg) === "implementing"),
+    [sortedUnlinkedPackages],
+  );
+  const finishedPackages = useMemo(() => sortedUnlinkedPackages.filter((pkg) => packageLane(pkg) === "finished"), [sortedUnlinkedPackages]);
   const alignedRows = useMemo(
     () => workstreamRows(sortedDetails, sliceEntries, activePackages, implementingPackages, finishedPackages),
     [activePackages, finishedPackages, implementingPackages, sliceEntries, sortedDetails],
@@ -989,8 +998,7 @@ function WorkstreamBoard({
             rowTemplate={rowTemplate}
             requestedCount={requested.length}
             sliceCount={active.length + activePackages.length}
-            implementingCount={implementing.length + implementingPackages.length}
-            finishedCount={finished.length + finishedPackages.length}
+            workPackageCount={implementing.length + finished.length + implementingPackages.length + finishedPackages.length}
             onSelectGuidance={onSelectGuidance}
           />
         ) : (
@@ -1045,22 +1053,19 @@ function StackedWorkstreamColumns({
           <PackageCard key={pkg.id} pkg={pkg} lane="slices" index={active.length + index} />
         ))}
       </BoardLaneColumn>
-      <BoardLaneColumn title="Implementing" count={implementing.length + implementingPackages.length} emptyLabel="No implementation running">
+      <BoardLaneColumn title="Work Packages" count={implementing.length + finished.length + implementingPackages.length + finishedPackages.length} emptyLabel="No work packages yet">
         {implementing.map(({ slice, pkg }, index) => (
           <SliceCard key={slice.id} slice={slice} pkg={pkg} lane="implementing" index={index} nodeId={sliceNodeId(slice)} />
         ))}
-        {implementingPackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
-        {implementingPackages.map((pkg, index) => (
-          <PackageCard key={pkg.id} pkg={pkg} lane="implementing" index={implementing.length + index} />
-        ))}
-      </BoardLaneColumn>
-      <BoardLaneColumn title="Finished" count={finished.length + finishedPackages.length} emptyLabel="Nothing finished yet">
         {finished.map(({ slice, pkg }, index) => (
-          <SliceCard key={slice.id} slice={slice} pkg={pkg} lane="finished" index={index} nodeId={sliceNodeId(slice)} />
+          <SliceCard key={slice.id} slice={slice} pkg={pkg} lane="finished" index={implementing.length + index} nodeId={sliceNodeId(slice)} />
         ))}
-        {finishedPackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
+        {implementingPackages.length + finishedPackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
+        {implementingPackages.map((pkg, index) => (
+          <PackageCard key={pkg.id} pkg={pkg} lane="implementing" index={implementing.length + finished.length + index} />
+        ))}
         {finishedPackages.map((pkg, index) => (
-          <PackageCard key={pkg.id} pkg={pkg} lane="finished" index={finished.length + index} />
+          <PackageCard key={pkg.id} pkg={pkg} lane="finished" index={implementing.length + finished.length + implementingPackages.length + index} />
         ))}
       </BoardLaneColumn>
     </>
@@ -1072,16 +1077,14 @@ function AlignedWorkstreamColumns({
   rowTemplate,
   requestedCount,
   sliceCount,
-  implementingCount,
-  finishedCount,
+  workPackageCount,
   onSelectGuidance,
 }: {
   rows: WorkstreamRow[];
   rowTemplate: string;
   requestedCount: number;
   sliceCount: number;
-  implementingCount: number;
-  finishedCount: number;
+  workPackageCount: number;
   onSelectGuidance: (item: GuidanceItem) => void;
 }) {
   const rowStyle = { gridTemplateRows: rowTemplate } as React.CSSProperties;
@@ -1108,28 +1111,26 @@ function AlignedWorkstreamColumns({
           </FeatureLaneRow>
         ))}
       </BoardLaneColumn>
-      <BoardLaneColumn title="Implementing" count={implementingCount} emptyLabel="No implementation running" bodyStyle={rowStyle} aligned>
+      <BoardLaneColumn title="Work Packages" count={workPackageCount} emptyLabel="No work packages yet" bodyStyle={rowStyle} aligned>
         {rows.map((row, index) => (
-          <FeatureLaneRow key={workstreamRowKey(row, index)} row={row} lane="implementing" index={index}>
+          <FeatureLaneRow key={workstreamRowKey(row, index)} row={row} lane="packages" index={index}>
             {row.implementing.map(({ slice, pkg }, sliceIndex) => (
               <SliceCard key={slice.id} slice={slice} pkg={pkg} lane="implementing" index={sliceIndex} nodeId={sliceNodeId(slice)} />
             ))}
-            {row.implementingPackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
-            {row.implementingPackages.map((pkg, packageIndex) => (
-              <PackageCard key={pkg.id} pkg={pkg} lane="implementing" index={row.implementing.length + packageIndex} />
-            ))}
-          </FeatureLaneRow>
-        ))}
-      </BoardLaneColumn>
-      <BoardLaneColumn title="Finished" count={finishedCount} emptyLabel="Nothing finished yet" bodyStyle={rowStyle} aligned>
-        {rows.map((row, index) => (
-          <FeatureLaneRow key={workstreamRowKey(row, index)} row={row} lane="finished" index={index}>
             {row.finished.map(({ slice, pkg }, sliceIndex) => (
-              <SliceCard key={slice.id} slice={slice} pkg={pkg} lane="finished" index={sliceIndex} nodeId={sliceNodeId(slice)} />
+              <SliceCard key={slice.id} slice={slice} pkg={pkg} lane="finished" index={row.implementing.length + sliceIndex} nodeId={sliceNodeId(slice)} />
             ))}
-            {row.finishedPackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
+            {row.implementingPackages.length + row.finishedPackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
+            {row.implementingPackages.map((pkg, packageIndex) => (
+              <PackageCard key={pkg.id} pkg={pkg} lane="implementing" index={row.implementing.length + row.finished.length + packageIndex} />
+            ))}
             {row.finishedPackages.map((pkg, packageIndex) => (
-              <PackageCard key={pkg.id} pkg={pkg} lane="finished" index={row.finished.length + packageIndex} />
+              <PackageCard
+                key={pkg.id}
+                pkg={pkg}
+                lane="finished"
+                index={row.implementing.length + row.finished.length + row.implementingPackages.length + packageIndex}
+              />
             ))}
           </FeatureLaneRow>
         ))}
@@ -1177,15 +1178,16 @@ function FeatureLaneRow({
   children,
 }: {
   row: WorkstreamRow;
-  lane: "requested" | "slices" | "implementing" | "finished";
+  lane: FeatureLane;
   index: number;
   children: React.ReactNode;
 }) {
-  const empty = Children.count(children) === 0;
+  const renderedChildren = Children.toArray(children);
+  const empty = renderedChildren.length === 0;
 
   return (
-    <div className="feature-lane-row" data-feature-row={workstreamRowKey(row, index)} data-lane={lane}>
-      {children}
+    <div className="feature-lane-row" data-feature-row={workstreamRowKey(row, index)} data-lane={lane} data-empty={empty ? "true" : undefined}>
+      {renderedChildren}
       {empty ? <div className="feature-lane-empty" /> : null}
     </div>
   );
@@ -1285,7 +1287,7 @@ function useBoardWirePaths(boardRef: React.RefObject<HTMLDivElement>, wires: Boa
 }
 
 function useAlignedRowTemplate(boardRef: React.RefObject<HTMLDivElement>, rows: WorkstreamRow[], layoutMode: WorkstreamLayoutMode) {
-  const baseHeights = useMemo(() => rows.map((row) => row.height), [rows]);
+  const baseHeights = useMemo(() => rows.map((row) => row.minHeight), [rows]);
   const rowKeys = useMemo(() => rows.map((row, index) => workstreamRowKey(row, index)), [rows]);
   const baseKey = baseHeights.join(",");
   const rowKey = rowKeys.join("|");
@@ -1519,14 +1521,16 @@ function RequestCard({
           {formatStatus(request.status)}
         </Badge>
       </div>
-      <CardSignal
-        className="mt-3"
-        label="Open Qs"
-        value={String(questionCount)}
-        tone={questionCount > 0 ? "danger" : "muted"}
-        onClick={answerQuestion}
-        ariaLabel={question ? `Answer open question for ${request.title || request.id}` : undefined}
-      />
+      {questionCount > 0 ? (
+        <CardSignal
+          className="mt-3"
+          label="Open Questions"
+          value={String(questionCount)}
+          tone="danger"
+          onClick={answerQuestion}
+          ariaLabel={question ? `Answer open question for ${request.title || request.id}` : undefined}
+        />
+      ) : null}
       {question ? <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{question.question}</p> : null}
     </div>
   );
@@ -1545,8 +1549,8 @@ function SliceCard({
   index?: number;
   nodeId?: string;
 }) {
-  const signal = sliceSignal(slice, pkg, lane);
   const tone = sliceCardTone(slice, pkg, lane);
+  const detail = slice.goal || pkg?.kind || slice.work_package_kind;
 
   return (
     <div
@@ -1557,28 +1561,27 @@ function SliceCard({
       <div className="flex min-w-0 items-start justify-between gap-2">
         <p className="min-w-0 truncate text-sm font-medium">{slice.title || pkg?.title || slice.id}</p>
         <Badge variant={statusVariant(slice.work_package_status || slice.status)} className="shrink-0">
-          {formatStatus(slice.work_package_status || slice.status)}
+          {statusLabel(slice.work_package_status || slice.status)}
         </Badge>
       </div>
-      <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{slice.goal || pkg?.kind || slice.work_package_kind}</p>
-      <CardSignal className="mt-3" label={signal.label} value={signal.value} tone={signal.tone} />
+      {detail ? <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{detail}</p> : null}
     </div>
   );
 }
 
 function PackageCard({ pkg, lane, index = 0 }: { pkg: WorkPackageCard; lane: BoardLane; index?: number }) {
-  const signal = packageSignal(pkg, lane);
   const tone = packageCardTone(pkg, lane);
+  const attention = packageAttentionSignal(pkg);
 
   return (
     <div className={stateCardClassName(tone, "stagger-item p-3")} style={{ animationDelay: `${index * 30}ms` }}>
       <div className="flex min-w-0 items-start justify-between gap-2">
         <p className="min-w-0 truncate text-sm font-medium">{pkg.title || pkg.id}</p>
         <Badge variant={statusVariant(pkg.status)} className="shrink-0">
-          {formatStatus(pkg.status)}
+          {statusLabel(pkg.status)}
         </Badge>
       </div>
-      <CardSignal className="mt-3" label={signal.label} value={signal.value} tone={signal.tone} />
+      {attention ? <CardSignal className="mt-3" label={attention.label} value={attention.value} tone={attention.tone} /> : null}
     </div>
   );
 }
@@ -1621,14 +1624,14 @@ function CardSignal({
 
   if (onClick) {
     return (
-      <button type="button" className={signalClassName} onClick={onClick} aria-label={ariaLabel}>
+      <button type="button" className={signalClassName} onClick={onClick} aria-label={ariaLabel} data-card-signal>
         {content}
       </button>
     );
   }
 
   return (
-    <div className={signalClassName}>
+    <div className={signalClassName} data-card-signal>
       {content}
     </div>
   );
@@ -1673,6 +1676,16 @@ function packageCardTone(pkg: WorkPackageCard, lane?: BoardLane): StateCardTone 
   if (status === "implementing") return "implementing";
   if (["created", "ready_for_worker", "claimed", "planning"].includes(status)) return "queued";
   return lane === "implementing" ? "implementing" : "slice";
+}
+
+function packageAttentionSignal(pkg: WorkPackageCard): { label: string; value: string; tone: SignalTone } | null {
+  const blockerCount = pkg.active_blocker_count || 0;
+
+  if (blockerCount > 0 || pkg.status === "blocked") {
+    return { label: "Blockers", value: `${blockerCount || 1} ${plural("blocker", blockerCount || 1)}`, tone: "danger" };
+  }
+
+  return null;
 }
 
 function sliceSignal(slice: PlannedSlice, pkg: WorkPackageCard | undefined, lane: BoardLane) {
@@ -2857,7 +2870,7 @@ function workstreamRows(
       activePackages: [],
       implementingPackages: [],
       finishedPackages: [],
-      height: featureRowHeight([1, active.length, implementing.length, finished.length]),
+      minHeight: ALIGNED_ROW_MIN_HEIGHT,
     };
   });
 
@@ -2869,18 +2882,12 @@ function workstreamRows(
       activePackages,
       implementingPackages,
       finishedPackages,
-      height: featureRowHeight([0, activePackages.length, implementingPackages.length, finishedPackages.length], true),
+      minHeight: ALIGNED_ROW_MIN_HEIGHT,
       unlinked: true,
     });
   }
 
   return rows;
-}
-
-function featureRowHeight(counts: number[], hasGroupLabel = false) {
-  const cardCount = Math.max(...counts, 0);
-  const labelSpace = hasGroupLabel ? 28 : 0;
-  return Math.max(150, labelSpace + cardCount * 136 + Math.max(0, cardCount - 1) * 10 + 18);
 }
 
 function workstreamRowKey(row: WorkstreamRow, index: number) {
@@ -2892,34 +2899,36 @@ function workstreamWires(details: WorkRequestDetail[], packages: WorkPackageCard
   const packageMap = new Map(packages.map((pkg) => [pkg.id, pkg]));
 
   return details.flatMap((detail) => {
-    const byLane = {
-      slices: [] as PlannedSlice[],
-      implementing: [] as PlannedSlice[],
-      finished: [] as PlannedSlice[],
-    };
+    const wires: BoardWire[] = [];
+    const slices = detail.planned_slices || [];
+    const sliceTargets = slices.filter((slice) => sliceLane(slice) === "slices");
+    const packageTargets = slices.filter((slice) => sliceLane(slice) !== "slices");
+    let packageSources = [requestNodeId(detail)];
 
-    (detail.planned_slices || []).forEach((slice) => {
-      byLane[sliceLane(slice)].push(slice);
+    sliceTargets.forEach((target, index) => {
+      const source = requestNodeId(detail);
+      const targetNode = sliceNodeId(target);
+      wires.push({
+        id: `${source}->${targetNode}:${index}`,
+        from: source,
+        to: targetNode,
+        tone: wireToneForSlice(target, packageMap.get(target.work_package_id || "")),
+      });
     });
 
-    const wires: BoardWire[] = [];
-    let sources = [requestNodeId(detail)];
+    if (sliceTargets.length > 0) {
+      packageSources = sliceTargets.map(sliceNodeId);
+    }
 
-    ([byLane.slices, byLane.implementing, byLane.finished] as PlannedSlice[][]).forEach((targets) => {
-      if (targets.length === 0) return;
-
-      targets.forEach((target, index) => {
-        const source = sources[Math.min(index, sources.length - 1)];
-        const targetNode = sliceNodeId(target);
-        wires.push({
-          id: `${source}->${targetNode}`,
-          from: source,
-          to: targetNode,
-          tone: wireToneForSlice(target, packageMap.get(target.work_package_id || "")),
-        });
+    packageTargets.forEach((target, index) => {
+      const source = packageSources[Math.min(index, packageSources.length - 1)];
+      const targetNode = sliceNodeId(target);
+      wires.push({
+        id: `${source}->${targetNode}:${index}`,
+        from: source,
+        to: targetNode,
+        tone: wireToneForSlice(target, packageMap.get(target.work_package_id || "")),
       });
-
-      sources = targets.map(sliceNodeId);
     });
 
     return wires;
@@ -2944,7 +2953,7 @@ function statusVariant(status?: string | null): BadgeTone {
   if (["implementing", "reviewing", "ci_waiting", "ready_for_slicing", "approved", "created", "ready_for_worker", "claimed", "planning"].includes(status || "")) {
     return "info";
   }
-  if (["ready_for_human_merge", "ready_for_architect_merge"].includes(status || "")) return "warning";
+  if (["ready_for_human_merge", "ready_for_architect_merge", "merging_into_phase"].includes(status || "")) return "ready";
   return "secondary";
 }
 
@@ -2957,6 +2966,13 @@ function requestStatusVariant(status?: string | null): BadgeTone {
 
 function formatStatus(status?: string | null) {
   return status ? status.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : "Unknown";
+}
+
+function statusLabel(status?: string | null) {
+  if (status === "ready_for_human_merge" || status === "ready_for_architect_merge") return "Merge Ready";
+  if (status === "merging_into_phase") return "Merging";
+  if (status === "ci_waiting") return "CI Waiting";
+  return formatStatus(status);
 }
 
 function formatDate(value: string) {

@@ -2,8 +2,42 @@
 @tailwind components;
 @tailwind utilities;
 
+@font-face {
+  font-family: "Geist Sans";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Geist Sans";
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../node_modules/geist/dist/fonts/geist-sans/Geist-Italic[wght].woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../node_modules/geist/dist/fonts/geist-mono/GeistMono-Italic[wght].woff2") format("woff2");
+}
+
 @layer base {
   :root {
+    --font-geist-sans: "Geist Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-geist-mono: "Geist Mono", ui-monospace, SFMono-Regular, "Roboto Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
     --background: 210 20% 98%;
     --foreground: 224 27% 12%;
     --card: 0 0% 100%;
@@ -31,8 +65,20 @@
   }
 
   body {
-    @apply bg-background text-foreground antialiased;
+    @apply bg-background font-sans text-foreground antialiased;
+    font-family: var(--font-geist-sans);
+    font-feature-settings:
+      "rlig" 1,
+      "calt" 1;
     letter-spacing: 0;
+    text-rendering: optimizeLegibility;
+  }
+
+  code,
+  kbd,
+  pre,
+  samp {
+    font-family: var(--font-geist-mono);
   }
 }
 
@@ -284,6 +330,7 @@
   .workstream-board {
     position: relative;
     isolation: isolate;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .jira-board-solo {
@@ -350,6 +397,14 @@
     align-content: start;
     gap: 0.625rem;
     padding-block: 0.625rem;
+  }
+
+  .workstream-board-aligned .feature-lane-row {
+    align-content: center;
+  }
+
+  .workstream-board-aligned .feature-lane-row[data-empty="true"] {
+    align-content: start;
   }
 
   .feature-lane-row + .feature-lane-row {
