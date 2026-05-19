@@ -6391,6 +6391,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     second_grant_id = get_in(second_response, ["result", "structuredContent", "worker_grant", "id"])
     assert is_binary(second_grant_id)
     assert second_grant_id != first_grant_id
+
+    stale_worker_response =
+      mcp_tool(repo, worker_session, "set_status", %{
+        "expected_status" => "ready_for_worker",
+        "status" => "claimed",
+        "reason" => "stale worker should not mutate recycled child"
+      })
+
+    assert get_in(stale_worker_response, ["error", "code"]) == -32_001
+    assert get_in(stale_worker_response, ["error", "data", "reason"]) == "revoked"
+
+    assert {:ok, child_after_stale_worker_attempt} = WorkPackageRepository.get(repo, child_id)
+    assert child_after_stale_worker_attempt.status == "ready_for_worker"
   end
 
   test "child worker revoke rejects normal grants and worker callers", %{repo: repo} do
