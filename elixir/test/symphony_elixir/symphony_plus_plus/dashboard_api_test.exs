@@ -2877,6 +2877,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
+  test "local operator can fetch package detail through the dashboard API", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      %{work_package: work_package} = create_dashboard_fixture(repo, id: "SYMPP-LOCAL-OPERATOR-DETAIL")
+
+      payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/work-packages/#{work_package.id}")
+        |> json_response(200)
+
+      assert payload["work_package"]["id"] == work_package.id
+      assert is_list(payload["progress"])
+      assert is_map(payload["summary"])
+    end)
+  end
+
   test "local operator can create a WorkRequest through the dashboard API", %{repo: repo} do
     with_local_operator_endpoint(fn ->
       payload =

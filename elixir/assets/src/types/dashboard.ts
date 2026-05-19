@@ -29,6 +29,16 @@ export type PackageReviewMetadata = {
   head_sha?: string;
 };
 
+export type PackageAlertIndicator = {
+  active?: boolean;
+  label?: string;
+  type?: string;
+  severity?: string;
+  detail?: string;
+  missing?: string[];
+  reasons?: Array<Record<string, unknown>>;
+};
+
 export type PackageMetadata = {
   branch?: PackageBranchMetadata | null;
   pr?: PackagePrMetadata | null;
@@ -50,13 +60,16 @@ export type WorkPackageCard = {
   base_branch?: string | null;
   parent_id?: string | null;
   phase_id?: string | null;
+  owner_id?: string | null;
   active_blocker_count?: number;
   artifact_count?: number;
   finding_count?: number;
   latest_progress_at?: string | null;
+  inserted_at?: string | null;
   updated_at?: string | null;
   plan?: PackagePlanSummary | null;
   metadata?: PackageMetadata | null;
+  alert_indicators?: PackageAlertIndicator[];
   active_agent_run?: ActiveAgentRun | null;
   runtime?: Record<string, unknown> | null;
 };
@@ -104,21 +117,50 @@ export type ClarificationQuestion = {
   why_needed?: string | null;
   decision_prompt?: DecisionPrompt | null;
   status?: string | null;
+  asked_by_agent_run_id?: string | null;
   answer?: string | null;
+  answered_by?: string | null;
+  answered_at?: string | null;
+  inserted_at?: string | null;
+  updated_at?: string | null;
 };
 
 export type PlannedSlice = {
   id: string;
   work_request_id: string;
+  sequence?: number;
   title?: string | null;
   goal?: string | null;
   status?: string | null;
   work_package_id?: string | null;
   work_package_status?: string | null;
   work_package_kind?: string | null;
+  target_base_branch?: string | null;
   branch_pattern?: string | null;
+  owned_file_globs?: string[];
+  forbidden_file_globs?: string[];
+  acceptance_criteria?: string[];
+  validation_steps?: string[];
   dispatched_at?: string | null;
   review_lanes?: string[];
+  stop_conditions?: string[];
+  inserted_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type DecisionLogEntry = {
+  id: string;
+  work_request_id: string;
+  sequence?: number;
+  source_type?: string | null;
+  source_id?: string | null;
+  decision?: string | null;
+  rationale?: string | null;
+  scope_impact?: string | null;
+  created_by?: string | null;
+  created_at?: string | null;
+  inserted_at?: string | null;
+  updated_at?: string | null;
 };
 
 export type WorkRequestDetail = {
@@ -127,8 +169,18 @@ export type WorkRequestDetail = {
     constraints?: Record<string, unknown>;
   };
   clarification_questions?: ClarificationQuestion[];
+  decision_logs?: DecisionLogEntry[];
   planned_slices?: PlannedSlice[];
-  summary?: Record<string, unknown>;
+  summary?: {
+    open_question_count?: number;
+    answered_question_count?: number;
+    closed_question_count?: number;
+    decision_count?: number;
+    planned_slice_count?: number;
+    approved_slice_count?: number;
+    dispatched_slice_count?: number;
+    skipped_slice_count?: number;
+  };
 };
 
 export type GuidanceRequest = {
@@ -171,6 +223,87 @@ export type SoloSession = {
     kind_label?: string | null;
     created_at?: string | null;
   } | null;
+};
+
+export type WorkPackageDetailPayload = {
+  work_package?: WorkPackageCard & {
+    branch_pattern?: string | null;
+    product_description?: string | null;
+    engineering_scope?: string | null;
+    allowed_file_globs?: string[];
+    policy_template?: string | null;
+    acceptance_criteria?: string[];
+  };
+  summary?: {
+    artifact_count?: number;
+    finding_count?: number;
+    progress_event_count?: number;
+    active_blocker_count?: number;
+    guidance_request_count?: number;
+    active_agent_run_count?: number;
+    queued_agent_run_count?: number;
+    failed_agent_run_count?: number;
+    stale_agent_run_count?: number;
+    runtime?: Record<string, unknown> | null;
+    latest_progress_at?: string | null;
+    plan?: PackagePlanSummary | null;
+  };
+  plan?: Array<{
+    id?: string;
+    title?: string | null;
+    body?: string | null;
+    status?: string | null;
+    position?: number | null;
+    created_at?: string | null;
+    updated_at?: string | null;
+  }>;
+  findings?: Array<{
+    id?: string;
+    title?: string | null;
+    body?: string | null;
+    severity?: string | null;
+    sequence?: number | null;
+    created_at?: string | null;
+  }>;
+  progress?: Array<{
+    id?: string;
+    summary?: string | null;
+    body?: string | null;
+    status?: string | null;
+    sequence?: number | null;
+    created_at?: string | null;
+  }>;
+  artifacts?: Array<{
+    id?: string;
+    path?: string | null;
+    title?: string | null;
+    kind?: string | null;
+    uri?: string | null;
+    sequence?: number | null;
+    created_at?: string | null;
+  }>;
+  blockers?: Array<{
+    id?: string;
+    active?: boolean;
+    summary?: string | null;
+    body?: string | null;
+    status?: string | null;
+    resolution?: string | null;
+    updated_at?: string | null;
+  }>;
+  guidance_requests?: GuidanceRequest[];
+  agent_runs?: Array<ActiveAgentRun & {
+    id?: string;
+    status?: string | null;
+    actor_id?: string | null;
+    attempt?: number | null;
+    started_at?: string | null;
+    last_seen_at?: string | null;
+    finished_at?: string | null;
+    reason?: string | null;
+  }>;
+  metadata?: PackageMetadata | null;
+  alert_indicators?: PackageAlertIndicator[];
 };
 
 export type DashboardPayload = {

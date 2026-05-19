@@ -50,6 +50,7 @@ import type {
   PlannedSlice,
   SoloSession,
   WorkPackageCard,
+  WorkPackageDetailPayload,
   WorkRequestCard,
   WorkRequestDetail,
 } from "@/types/dashboard";
@@ -102,6 +103,11 @@ type StateToneStyle = {
 type WorkspaceTab = "workstreams" | "solo";
 type WorkstreamLayoutMode = "jira" | "aligned";
 type DashboardTheme = "light" | "dark";
+type CardDetailSelection =
+  | { kind: "request"; detail: WorkRequestDetail }
+  | { kind: "slice"; detail: WorkRequestDetail; slice: PlannedSlice; pkg?: WorkPackageCard }
+  | { kind: "package"; pkg: WorkPackageCard; detail?: WorkRequestDetail; slice?: PlannedSlice };
+type CardDetailSelect = (selection: CardDetailSelection) => void;
 type DashboardUiState = {
   workspaceTab?: WorkspaceTab;
   topPanel?: TopPanelKey | null;
@@ -245,6 +251,7 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedGuidance, setSelectedGuidance] = useState<GuidanceItem | null>(null);
+  const [selectedCardDetail, setSelectedCardDetail] = useState<CardDetailSelection | null>(null);
   const [newRequestOpen, setNewRequestOpen] = useState(false);
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>(readStoredWorkspaceTab);
   const [workstreamLayout, setWorkstreamLayout] = useState<WorkstreamLayoutMode>(readStoredWorkstreamLayout);
@@ -394,6 +401,7 @@ export default function App() {
                       repo={repo}
                       requestDetails={requestDetails}
                       onSelectGuidance={setSelectedGuidance}
+                      onSelectCard={setSelectedCardDetail}
                       layoutMode={workstreamLayout}
                     />
                   ))
@@ -415,6 +423,13 @@ export default function App() {
             setDashboard(payload);
             setSelectedGuidance(null);
           }}
+        />
+        <CardDetailDialog
+          selection={selectedCardDetail}
+          onOpenChange={(open) => {
+            if (!open) setSelectedCardDetail(null);
+          }}
+          onSelectGuidance={setSelectedGuidance}
         />
       </main>
     </TooltipProvider>
@@ -880,11 +895,13 @@ function RepoWorkstream({
   repo,
   requestDetails,
   onSelectGuidance,
+  onSelectCard,
   layoutMode,
 }: {
   repo: RepoSummary;
   requestDetails: WorkRequestDetail[];
   onSelectGuidance: (item: GuidanceItem) => void;
+  onSelectCard: CardDetailSelect;
   layoutMode: WorkstreamLayoutMode;
 }) {
   const stateKey = repoWorkstreamStateKey(repo);
@@ -933,6 +950,7 @@ function RepoWorkstream({
               packages={repo.packages}
               unlinkedPackages={unlinkedPackages}
               onSelectGuidance={onSelectGuidance}
+              onSelectCard={onSelectCard}
               layoutMode={layoutMode}
             />
           </CardContent>
@@ -1072,12 +1090,14 @@ function WorkstreamBoard({
   packages,
   unlinkedPackages,
   onSelectGuidance,
+  onSelectCard,
   layoutMode,
 }: {
   repoDetails: WorkRequestDetail[];
   packages: WorkPackageCard[];
   unlinkedPackages: WorkPackageCard[];
   onSelectGuidance: (item: GuidanceItem) => void;
+  onSelectCard: CardDetailSelect;
   layoutMode: WorkstreamLayoutMode;
 }) {
   const boardRef = useRef<HTMLDivElement | null>(null);
@@ -1130,6 +1150,7 @@ function WorkstreamBoard({
             sliceCount={active.length + activePackages.length}
             workPackageCount={implementing.length + finished.length + implementingPackages.length + finishedPackages.length}
             onSelectGuidance={onSelectGuidance}
+            onSelectCard={onSelectCard}
           />
         ) : (
           <StackedWorkstreamColumns
@@ -1141,6 +1162,7 @@ function WorkstreamBoard({
             implementingPackages={implementingPackages}
             finishedPackages={finishedPackages}
             onSelectGuidance={onSelectGuidance}
+            onSelectCard={onSelectCard}
           />
         )}
       </div>
@@ -1157,6 +1179,7 @@ function StackedWorkstreamColumns({
   implementingPackages,
   finishedPackages,
   onSelectGuidance,
+  onSelectCard,
 }: {
   requested: WorkRequestDetail[];
   active: SliceEntry[];
@@ -1166,36 +1189,80 @@ function StackedWorkstreamColumns({
   implementingPackages: WorkPackageCard[];
   finishedPackages: WorkPackageCard[];
   onSelectGuidance: (item: GuidanceItem) => void;
+  onSelectCard: CardDetailSelect;
 }) {
   return (
     <>
       <BoardLaneColumn title="Requests" count={requested.length} emptyLabel="No requested work">
         {requested.map((detail, index) => (
-          <RequestCard key={detail.work_request.id} detail={detail} onSelectGuidance={onSelectGuidance} index={index} nodeId={requestNodeId(detail)} />
+          <RequestCard
+            key={detail.work_request.id}
+            detail={detail}
+            onSelectGuidance={onSelectGuidance}
+            onSelectCard={() => onSelectCard({ kind: "request", detail })}
+            index={index}
+            nodeId={requestNodeId(detail)}
+          />
         ))}
       </BoardLaneColumn>
       <BoardLaneColumn title="Slices" count={active.length + activePackages.length} emptyLabel="No slices ready">
-        {active.map(({ slice, pkg }, index) => (
-          <SliceCard key={slice.id} slice={slice} pkg={pkg} lane="slices" index={index} nodeId={sliceNodeId(slice)} />
+        {active.map(({ detail, slice, pkg }, index) => (
+          <SliceCard
+            key={slice.id}
+            slice={slice}
+            pkg={pkg}
+            lane="slices"
+            index={index}
+            nodeId={sliceNodeId(slice)}
+            onSelectCard={() => onSelectCard({ kind: "slice", detail, slice, pkg })}
+          />
         ))}
         {activePackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
         {activePackages.map((pkg, index) => (
-          <PackageCard key={pkg.id} pkg={pkg} lane="slices" index={active.length + index} />
+          <PackageCard key={pkg.id} pkg={pkg} lane="slices" index={active.length + index} onSelectCard={() => onSelectCard({ kind: "package", pkg })} />
         ))}
       </BoardLaneColumn>
       <BoardLaneColumn title="Work Packages" count={implementing.length + finished.length + implementingPackages.length + finishedPackages.length} emptyLabel="No work packages yet">
-        {implementing.map(({ slice, pkg }, index) => (
-          <SliceCard key={slice.id} slice={slice} pkg={pkg} lane="implementing" index={index} nodeId={sliceNodeId(slice)} />
+        {implementing.map(({ detail, slice, pkg }, index) => (
+          <SliceCard
+            key={slice.id}
+            slice={slice}
+            pkg={pkg}
+            lane="implementing"
+            index={index}
+            nodeId={sliceNodeId(slice)}
+            onSelectCard={() => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice })}
+          />
         ))}
-        {finished.map(({ slice, pkg }, index) => (
-          <SliceCard key={slice.id} slice={slice} pkg={pkg} lane="finished" index={implementing.length + index} nodeId={sliceNodeId(slice)} />
+        {finished.map(({ detail, slice, pkg }, index) => (
+          <SliceCard
+            key={slice.id}
+            slice={slice}
+            pkg={pkg}
+            lane="finished"
+            index={implementing.length + index}
+            nodeId={sliceNodeId(slice)}
+            onSelectCard={() => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice })}
+          />
         ))}
         {implementingPackages.length + finishedPackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
         {implementingPackages.map((pkg, index) => (
-          <PackageCard key={pkg.id} pkg={pkg} lane="implementing" index={implementing.length + finished.length + index} />
+          <PackageCard
+            key={pkg.id}
+            pkg={pkg}
+            lane="implementing"
+            index={implementing.length + finished.length + index}
+            onSelectCard={() => onSelectCard({ kind: "package", pkg })}
+          />
         ))}
         {finishedPackages.map((pkg, index) => (
-          <PackageCard key={pkg.id} pkg={pkg} lane="finished" index={implementing.length + finished.length + implementingPackages.length + index} />
+          <PackageCard
+            key={pkg.id}
+            pkg={pkg}
+            lane="finished"
+            index={implementing.length + finished.length + implementingPackages.length + index}
+            onSelectCard={() => onSelectCard({ kind: "package", pkg })}
+          />
         ))}
       </BoardLaneColumn>
     </>
@@ -1209,6 +1276,7 @@ function AlignedWorkstreamColumns({
   sliceCount,
   workPackageCount,
   onSelectGuidance,
+  onSelectCard,
 }: {
   rows: WorkstreamRow[];
   rowTemplate: string;
@@ -1216,6 +1284,7 @@ function AlignedWorkstreamColumns({
   sliceCount: number;
   workPackageCount: number;
   onSelectGuidance: (item: GuidanceItem) => void;
+  onSelectCard: CardDetailSelect;
 }) {
   const rowStyle = { gridTemplateRows: rowTemplate } as React.CSSProperties;
 
@@ -1224,19 +1293,35 @@ function AlignedWorkstreamColumns({
       <BoardLaneColumn title="Requests" count={requestedCount} emptyLabel="No requested work" bodyStyle={rowStyle} aligned>
         {rows.map((row, index) => (
           <FeatureLaneRow key={workstreamRowKey(row, index)} row={row} lane="requested" index={index}>
-            {row.detail ? <RequestCard detail={row.detail} onSelectGuidance={onSelectGuidance} index={index} nodeId={requestNodeId(row.detail)} /> : null}
+            {row.detail ? (
+              <RequestCard
+                detail={row.detail}
+                onSelectGuidance={onSelectGuidance}
+                onSelectCard={() => onSelectCard({ kind: "request", detail: row.detail! })}
+                index={index}
+                nodeId={requestNodeId(row.detail)}
+              />
+            ) : null}
           </FeatureLaneRow>
         ))}
       </BoardLaneColumn>
       <BoardLaneColumn title="Slices" count={sliceCount} emptyLabel="No slices ready" bodyStyle={rowStyle} aligned>
         {rows.map((row, index) => (
           <FeatureLaneRow key={workstreamRowKey(row, index)} row={row} lane="slices" index={index}>
-            {row.active.map(({ slice, pkg }, sliceIndex) => (
-              <SliceCard key={slice.id} slice={slice} pkg={pkg} lane="slices" index={sliceIndex} nodeId={sliceNodeId(slice)} />
+            {row.active.map(({ detail, slice, pkg }, sliceIndex) => (
+              <SliceCard
+                key={slice.id}
+                slice={slice}
+                pkg={pkg}
+                lane="slices"
+                index={sliceIndex}
+                nodeId={sliceNodeId(slice)}
+                onSelectCard={() => onSelectCard({ kind: "slice", detail, slice, pkg })}
+              />
             ))}
             {row.activePackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
             {row.activePackages.map((pkg, packageIndex) => (
-              <PackageCard key={pkg.id} pkg={pkg} lane="slices" index={row.active.length + packageIndex} />
+              <PackageCard key={pkg.id} pkg={pkg} lane="slices" index={row.active.length + packageIndex} onSelectCard={() => onSelectCard({ kind: "package", pkg })} />
             ))}
           </FeatureLaneRow>
         ))}
@@ -1244,15 +1329,37 @@ function AlignedWorkstreamColumns({
       <BoardLaneColumn title="Work Packages" count={workPackageCount} emptyLabel="No work packages yet" bodyStyle={rowStyle} aligned>
         {rows.map((row, index) => (
           <FeatureLaneRow key={workstreamRowKey(row, index)} row={row} lane="packages" index={index}>
-            {row.implementing.map(({ slice, pkg }, sliceIndex) => (
-              <SliceCard key={slice.id} slice={slice} pkg={pkg} lane="implementing" index={sliceIndex} nodeId={sliceNodeId(slice)} />
+            {row.implementing.map(({ detail, slice, pkg }, sliceIndex) => (
+              <SliceCard
+                key={slice.id}
+                slice={slice}
+                pkg={pkg}
+                lane="implementing"
+                index={sliceIndex}
+                nodeId={sliceNodeId(slice)}
+                onSelectCard={() => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice })}
+              />
             ))}
-            {row.finished.map(({ slice, pkg }, sliceIndex) => (
-              <SliceCard key={slice.id} slice={slice} pkg={pkg} lane="finished" index={row.implementing.length + sliceIndex} nodeId={sliceNodeId(slice)} />
+            {row.finished.map(({ detail, slice, pkg }, sliceIndex) => (
+              <SliceCard
+                key={slice.id}
+                slice={slice}
+                pkg={pkg}
+                lane="finished"
+                index={row.implementing.length + sliceIndex}
+                nodeId={sliceNodeId(slice)}
+                onSelectCard={() => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice })}
+              />
             ))}
             {row.implementingPackages.length + row.finishedPackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
             {row.implementingPackages.map((pkg, packageIndex) => (
-              <PackageCard key={pkg.id} pkg={pkg} lane="implementing" index={row.implementing.length + row.finished.length + packageIndex} />
+              <PackageCard
+                key={pkg.id}
+                pkg={pkg}
+                lane="implementing"
+                index={row.implementing.length + row.finished.length + packageIndex}
+                onSelectCard={() => onSelectCard({ kind: "package", pkg })}
+              />
             ))}
             {row.finishedPackages.map((pkg, packageIndex) => (
               <PackageCard
@@ -1260,6 +1367,7 @@ function AlignedWorkstreamColumns({
                 pkg={pkg}
                 lane="finished"
                 index={row.implementing.length + row.finished.length + row.implementingPackages.length + packageIndex}
+                onSelectCard={() => onSelectCard({ kind: "package", pkg })}
               />
             ))}
           </FeatureLaneRow>
@@ -2056,14 +2164,33 @@ function clampNumber(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
+function interactiveCardProps(onSelect?: () => void) {
+  if (!onSelect) return {};
+
+  return {
+    role: "button",
+    tabIndex: 0,
+    onClick: onSelect,
+    onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.target !== event.currentTarget) return;
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        onSelect();
+      }
+    },
+  };
+}
+
 function RequestCard({
   detail,
   onSelectGuidance,
+  onSelectCard,
   index = 0,
   nodeId,
 }: {
   detail: WorkRequestDetail;
   onSelectGuidance: (item: GuidanceItem) => void;
+  onSelectCard?: () => void;
   index?: number;
   nodeId?: string;
 }) {
@@ -2071,14 +2198,21 @@ function RequestCard({
   const openQuestions = detail.clarification_questions?.filter((question) => question.status === "open") ?? [];
   const questionCount = openQuestions.length || request.open_question_count || 0;
   const question = openQuestions[0];
-  const answerQuestion = question ? () => onSelectGuidance(clarificationGuidanceItem(detail, question)) : undefined;
+  const answerQuestion = question
+    ? (event: React.MouseEvent<HTMLButtonElement>) => {
+        event.stopPropagation();
+        onSelectGuidance(clarificationGuidanceItem(detail, question));
+      }
+    : undefined;
   const tone = requestCardTone(detail, questionCount);
 
   return (
     <div
-      className={stateCardClassName(tone, "stagger-item p-3")}
+      className={stateCardClassName(tone, cn("stagger-item p-3", onSelectCard && "card-detail-trigger"))}
       data-wire-id={nodeId}
+      data-card-detail-kind="request"
       style={stateCardStyle(tone, { animationDelay: `${index * 30}ms` })}
+      {...interactiveCardProps(onSelectCard)}
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="min-w-0">
@@ -2110,21 +2244,25 @@ function SliceCard({
   lane,
   index = 0,
   nodeId,
+  onSelectCard,
 }: {
   slice: PlannedSlice;
   pkg?: WorkPackageCard;
   lane: BoardLane;
   index?: number;
   nodeId?: string;
+  onSelectCard?: () => void;
 }) {
   const tone = sliceCardTone(slice, pkg, lane);
   const detail = slice.goal || pkg?.kind || slice.work_package_kind;
 
   return (
     <div
-      className={stateCardClassName(tone, "stagger-item p-3")}
+      className={stateCardClassName(tone, cn("stagger-item p-3", onSelectCard && "card-detail-trigger"))}
       data-wire-id={nodeId}
+      data-card-detail-kind={pkg && lane !== "slices" ? "package" : "slice"}
       style={stateCardStyle(tone, { animationDelay: `${index * 30}ms` })}
+      {...interactiveCardProps(onSelectCard)}
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <p className="min-w-0 truncate text-sm font-medium">{slice.title || pkg?.title || slice.id}</p>
@@ -2137,12 +2275,27 @@ function SliceCard({
   );
 }
 
-function PackageCard({ pkg, lane, index = 0 }: { pkg: WorkPackageCard; lane: BoardLane; index?: number }) {
+function PackageCard({
+  pkg,
+  lane,
+  index = 0,
+  onSelectCard,
+}: {
+  pkg: WorkPackageCard;
+  lane: BoardLane;
+  index?: number;
+  onSelectCard?: () => void;
+}) {
   const tone = packageCardTone(pkg, lane);
   const attention = packageAttentionSignal(pkg);
 
   return (
-    <div className={stateCardClassName(tone, "stagger-item p-3")} style={stateCardStyle(tone, { animationDelay: `${index * 30}ms` })}>
+    <div
+      className={stateCardClassName(tone, cn("stagger-item p-3", onSelectCard && "card-detail-trigger"))}
+      data-card-detail-kind="package"
+      style={stateCardStyle(tone, { animationDelay: `${index * 30}ms` })}
+      {...interactiveCardProps(onSelectCard)}
+    >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <p className="min-w-0 truncate text-sm font-medium">{pkg.title || pkg.id}</p>
         <Badge variant={statusVariant(pkg.status)} className="shrink-0">
@@ -2166,7 +2319,7 @@ function CardSignal({
   value: string;
   tone: SignalTone;
   className?: string;
-  onClick?: () => void;
+  onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void;
   ariaLabel?: string;
 }) {
   const toneClasses: Record<SignalTone, string> = {
@@ -2407,7 +2560,7 @@ function reviewLaneLabel(lane: string) {
     case "review_github":
       return "Review-GitHub";
     default:
-      return "Review";
+      return formatStatus(lane);
   }
 }
 
@@ -3109,6 +3262,529 @@ function NewRequestDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+function CardDetailDialog({
+  selection,
+  onOpenChange,
+  onSelectGuidance,
+}: {
+  selection: CardDetailSelection | null;
+  onOpenChange: (open: boolean) => void;
+  onSelectGuidance: (item: GuidanceItem) => void;
+}) {
+  const [packageDetail, setPackageDetail] = useState<WorkPackageDetailPayload | null>(null);
+  const [loadingPackage, setLoadingPackage] = useState(false);
+  const [packageError, setPackageError] = useState<string | null>(null);
+  const packageId = selection?.kind === "package" ? selection.pkg.id : null;
+
+  useEffect(() => {
+    if (!packageId) {
+      setPackageDetail(null);
+      setPackageError(null);
+      setLoadingPackage(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setLoadingPackage(true);
+    setPackageDetail(null);
+    setPackageError(null);
+
+    fetch(`/api/v1/sympp/operator/work-packages/${encodeURIComponent(packageId)}`, {
+      headers: { accept: "application/json" },
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload?.error?.message || "Package detail unavailable");
+        }
+        setPackageDetail(payload);
+      })
+      .catch((caught) => {
+        if (caught instanceof DOMException && caught.name === "AbortError") return;
+        setPackageError(caught instanceof Error ? caught.message : "Package detail unavailable");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setLoadingPackage(false);
+        }
+      });
+
+    return () => controller.abort();
+  }, [packageId]);
+
+  return (
+    <Dialog open={Boolean(selection)} onOpenChange={onOpenChange}>
+      <DialogContent className="dashboard-dialog-content card-detail-dialog">
+        {selection?.kind === "request" ? <RequestDetailContent detail={selection.detail} onSelectGuidance={onSelectGuidance} /> : null}
+        {selection?.kind === "slice" ? <SliceDetailContent detail={selection.detail} slice={selection.slice} pkg={selection.pkg} /> : null}
+        {selection?.kind === "package" ? (
+          <PackageDetailContent selection={selection} detailPayload={packageDetail} loading={loadingPackage} error={packageError} />
+        ) : null}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RequestDetailContent({ detail, onSelectGuidance }: { detail: WorkRequestDetail; onSelectGuidance: (item: GuidanceItem) => void }) {
+  const request = detail.work_request;
+  const openQuestions = requestOpenQuestions(detail);
+  const sliceCounts = requestSliceCounts(detail);
+
+  return (
+    <>
+      <DetailHeader
+        title={request.title || request.id}
+        eyebrow={`${repoName(request.repo)} / ${request.base_branch || "main"} / ${request.work_type || "feature"}`}
+        badge={<Badge variant={requestStatusVariant(request.status)}>{formatStatus(request.status)}</Badge>}
+      />
+      <div className="grid gap-4">
+        <DetailStatGrid
+          stats={[
+            { label: "Open Questions", value: String(openQuestions.length || request.open_question_count || 0) },
+            { label: "Slices", value: String(sliceCounts.total) },
+            { label: "Decisions", value: String(detail.decision_logs?.length || detail.summary?.decision_count || 0) },
+            { label: "Updated", value: detailDate(request.updated_at || request.inserted_at) },
+          ]}
+        />
+        <DetailSection title="What It Does">
+          <p>{request.human_description || "No operator-facing description has been recorded yet."}</p>
+        </DetailSection>
+        <DetailSection title="Progress">
+          <p>{requestProgressText(detail)}</p>
+        </DetailSection>
+        <DetailSection title="Blocked By">
+          {openQuestions.length > 0 ? (
+            <div className="grid gap-2">
+              {openQuestions.slice(0, 2).map((question) => (
+                <button
+                  type="button"
+                  key={question.id}
+                  className="detail-list-item text-left hover:border-primary/50 hover:bg-primary/5"
+                  onClick={() => onSelectGuidance(clarificationGuidanceItem(detail, question))}
+                >
+                  <span className="text-sm font-medium">{question.decision_prompt?.tl_dr || question.question || "Open question"}</span>
+                  {question.why_needed ? <span className="mt-1 line-clamp-2 text-xs text-muted-foreground">{question.why_needed}</span> : null}
+                </button>
+              ))}
+              {openQuestions.length > 2 ? <p className="text-xs text-muted-foreground">+{openQuestions.length - 2} more open question{openQuestions.length - 2 === 1 ? "" : "s"}</p> : null}
+            </div>
+          ) : (
+            <p>No open human questions.</p>
+          )}
+        </DetailSection>
+        <RecentDecisionsDisclosure detail={detail} />
+        <DetailDisclosure title="Details" meta="IDs, constraints, and slice plan">
+          <DetailFacts
+            facts={[
+              ["Request ID", request.id],
+              ["Dispatch Shape", formatStatus(request.desired_dispatch_shape)],
+              ["Created", detailDate(request.inserted_at)],
+              ["Updated", detailDate(request.updated_at)],
+            ]}
+          />
+          <DetailList title="Planned slices" items={(detail.planned_slices || []).map((slice) => slice.title || slice.id)} empty="No slices recorded." />
+          <JsonDetail label="Constraints" value={request.constraints} />
+        </DetailDisclosure>
+      </div>
+    </>
+  );
+}
+
+function SliceDetailContent({ detail, slice, pkg }: { detail: WorkRequestDetail; slice: PlannedSlice; pkg?: WorkPackageCard }) {
+  const status = slice.work_package_status || slice.status;
+  const blockerCount = pkg ? Math.max(pkg.active_blocker_count || 0, pkg.status === "blocked" ? 1 : 0) : 0;
+  const reviewLanes = slice.review_lanes || [];
+
+  return (
+    <>
+      <DetailHeader
+        title={slice.title || pkg?.title || slice.id}
+        eyebrow={`${repoName(detail.work_request.repo)} / ${detail.work_request.title || detail.work_request.id}`}
+        badge={<Badge variant={statusVariant(status)}>{statusLabel(status)}</Badge>}
+      />
+      <div className="grid gap-4">
+        <DetailStatGrid
+          stats={[
+            { label: "Package", value: pkg ? statusLabel(pkg.status) : "Not dispatched" },
+            { label: "Review", value: reviewLanes.length > 0 ? reviewLanes.map(reviewLaneLabel).join(", ") : "Not recorded" },
+            { label: "Blockers", value: String(blockerCount) },
+            { label: "Updated", value: detailDate(slice.updated_at || slice.dispatched_at || slice.inserted_at) },
+          ]}
+        />
+        <DetailSection title="What It Does">
+          <p>{slice.goal || pkg?.kind || "No slice goal has been recorded yet."}</p>
+        </DetailSection>
+        <DetailSection title="Progress">
+          <p>{sliceProgressText(slice, pkg)}</p>
+        </DetailSection>
+        <DetailSection title="Blocked By">
+          {blockerCount > 0 ? (
+            <p>{blockerCount} active blocker{blockerCount === 1 ? "" : "s"} on the linked work package.</p>
+          ) : (
+            <p>No blocker surfaced for this slice.</p>
+          )}
+        </DetailSection>
+        <RecentDecisionsDisclosure detail={detail} />
+        <DetailDisclosure title="Details" meta="Branch, files, and acceptance">
+          <DetailFacts
+            facts={[
+              ["Slice ID", slice.id],
+              ["Work Package", slice.work_package_id || "Not dispatched"],
+              ["Target Branch", slice.target_base_branch || detail.work_request.base_branch || "main"],
+              ["Dispatched", detailDate(slice.dispatched_at)],
+            ]}
+          />
+          <DetailList title="Acceptance" items={slice.acceptance_criteria || []} empty="No acceptance criteria recorded." />
+          <DetailList title="Validation" items={slice.validation_steps || []} empty="No validation steps recorded." />
+          <DetailList title="Owned paths" items={slice.owned_file_globs || []} empty="No owned path constraints recorded." />
+          <DetailList title="Stop conditions" items={slice.stop_conditions || []} empty="No stop conditions recorded." />
+        </DetailDisclosure>
+      </div>
+    </>
+  );
+}
+
+function PackageDetailContent({
+  selection,
+  detailPayload,
+  loading,
+  error,
+}: {
+  selection: Extract<CardDetailSelection, { kind: "package" }>;
+  detailPayload: WorkPackageDetailPayload | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  const pkg = (detailPayload?.work_package || selection.pkg) as WorkPackageCard & {
+    branch_pattern?: string | null;
+    product_description?: string | null;
+    engineering_scope?: string | null;
+    acceptance_criteria?: string[];
+  };
+  const summary = detailPayload?.summary;
+  const blockers = (detailPayload?.blockers || []).filter((blocker) => blocker.active !== false);
+  const progress = latestPackageProgress(detailPayload);
+  const plan = summary?.plan || pkg.plan;
+  const blockerCount = blockers.length || summary?.active_blocker_count || pkg.active_blocker_count || (pkg.status === "blocked" ? 1 : 0);
+
+  return (
+    <>
+      <DetailHeader
+        title={pkg.title || pkg.id}
+        eyebrow={`${repoName(pkg.repo)} / ${pkg.base_branch || "main"} / ${pkg.kind || "work package"}`}
+        badge={<Badge variant={statusVariant(pkg.status)}>{statusLabel(pkg.status)}</Badge>}
+      />
+      <div className="grid gap-4">
+        <DetailStatGrid
+          stats={[
+            { label: "Plan", value: planSummaryText(plan) },
+            { label: "Runtime", value: packageRuntimeText(summary, pkg) },
+            { label: "Blockers", value: String(blockerCount) },
+            { label: "Updated", value: detailDate(summary?.latest_progress_at || pkg.latest_progress_at || pkg.updated_at || pkg.inserted_at) },
+          ]}
+        />
+        <DetailSection title="What It Does">
+          <p>{packagePurpose(pkg)}</p>
+        </DetailSection>
+        <DetailSection title="Progress">
+          {loading ? (
+            <p>Loading latest package activity...</p>
+          ) : progress.length > 0 ? (
+            <DetailActivityList items={progress.map((item) => ({ title: item.summary || item.status || "Progress", body: item.body, at: item.created_at }))} />
+          ) : (
+            <p>{planSummaryText(plan) === "No plan" ? "No package progress recorded yet." : `Plan is ${planSummaryText(plan).toLowerCase()}.`}</p>
+          )}
+        </DetailSection>
+        <DetailSection title="Blocked By">
+          {error ? (
+            <p>{error}</p>
+          ) : blockerCount > 0 ? (
+            <DetailActivityList
+              items={(blockers.length > 0 ? blockers : [{ summary: "Package is blocked", body: "No blocker detail was included in the board summary." }]).map(
+                (blocker) => ({ title: blocker.summary || blocker.status || "Blocker", body: blocker.body || blocker.resolution, at: blocker.updated_at }),
+              )}
+            />
+          ) : (
+            <p>No active blockers surfaced.</p>
+          )}
+        </DetailSection>
+        {selection.detail ? <RecentDecisionsDisclosure detail={selection.detail} /> : null}
+        <DetailDisclosure title="Details" meta="PR, review, artifacts, and raw identifiers">
+          <DetailFacts
+            facts={[
+              ["Package ID", pkg.id],
+              ["Parent", pkg.parent_id || selection.slice?.work_request_id || "Not linked"],
+              ["Branch", pkg.metadata?.branch?.branch || pkg.branch_pattern || "Not recorded"],
+              ["PR", packagePrLabel(pkg) || pkg.metadata?.pr?.url || "Not attached"],
+              ["Review", packageReviewSignal(pkg)?.value || "Not recorded"],
+              ["Artifacts", String(summary?.artifact_count ?? pkg.artifact_count ?? 0)],
+              ["Findings", String(summary?.finding_count ?? pkg.finding_count ?? 0)],
+            ]}
+          />
+          <DetailList title="Acceptance" items={pkg.acceptance_criteria || selection.slice?.acceptance_criteria || []} empty="No acceptance criteria recorded." />
+          <DetailList title="Alerts" items={(detailPayload?.alert_indicators || pkg.alert_indicators || []).filter((item) => item.active !== false).map((item) => item.detail || item.label || item.type || "Alert")} empty="No active alerts." />
+        </DetailDisclosure>
+      </div>
+    </>
+  );
+}
+
+function DetailHeader({ title, eyebrow, badge }: { title: string; eyebrow: string; badge?: React.ReactNode }) {
+  return (
+    <DialogHeader data-guidance-section style={{ animationDelay: "35ms" }}>
+      <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <DialogTitle className="pr-6">{title}</DialogTitle>
+          <DialogDescription className="mt-1 truncate">{eyebrow}</DialogDescription>
+        </div>
+        {badge ? <div className="shrink-0 sm:pr-6">{badge}</div> : null}
+      </div>
+    </DialogHeader>
+  );
+}
+
+function DetailStatGrid({ stats }: { stats: Array<{ label: string; value: string }> }) {
+  return (
+    <div className="detail-stat-grid" data-guidance-section style={{ animationDelay: "70ms" }}>
+      {stats.map((stat) => (
+        <div key={stat.label} className="detail-stat">
+          <span>{stat.label}</span>
+          <strong>{stat.value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="detail-section" data-guidance-section style={{ animationDelay: "95ms" }}>
+      <h3>{title}</h3>
+      <div className="detail-section-body">{children}</div>
+    </section>
+  );
+}
+
+function DetailDisclosure({
+  title,
+  meta,
+  children,
+  defaultOpen = false,
+}: {
+  title: string;
+  meta?: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  return (
+    <Collapsible defaultOpen={defaultOpen} className="detail-disclosure" data-guidance-section style={{ animationDelay: "120ms" }}>
+      <CollapsibleTrigger className="detail-disclosure-trigger">
+        <span className="flex min-w-0 items-center gap-2">
+          <ChevronRight className="detail-disclosure-chevron h-4 w-4 shrink-0 transition-transform duration-150" />
+          <span className="truncate">{title}</span>
+        </span>
+        {meta ? <span className="truncate text-xs text-muted-foreground">{meta}</span> : null}
+      </CollapsibleTrigger>
+      <CollapsibleContent className="collapsible-content">
+        <div className="detail-disclosure-body">{children}</div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function RecentDecisionsDisclosure({ detail }: { detail: WorkRequestDetail }) {
+  const decisions = latestDecisionLogs(detail);
+
+  return (
+    <DetailDisclosure title="Recent Decisions" meta={decisions.length > 0 ? `${decisions.length} recorded` : "None recorded"}>
+      {decisions.length > 0 ? (
+        <DetailActivityList
+          items={decisions.slice(0, 3).map((decision) => ({
+            title: decision.decision || decision.scope_impact || "Decision",
+            body: decision.rationale,
+            at: decision.created_at || decision.inserted_at,
+          }))}
+        />
+      ) : (
+        <p className="text-sm text-muted-foreground">No decisions recorded for this request yet.</p>
+      )}
+    </DetailDisclosure>
+  );
+}
+
+function DetailActivityList({ items }: { items: Array<{ title?: string | null; body?: string | null; at?: string | null }> }) {
+  return (
+    <div className="grid gap-2">
+      {items.slice(0, 3).map((item, index) => (
+        <div key={`${item.title || "item"}:${index}`} className="detail-list-item">
+          <div className="flex min-w-0 items-start justify-between gap-3">
+            <span className="min-w-0 text-sm font-medium">{item.title || "Update"}</span>
+            {item.at ? <span className="shrink-0 text-xs text-muted-foreground">{formatDate(item.at)}</span> : null}
+          </div>
+          {item.body ? <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{item.body}</p> : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DetailFacts({ facts }: { facts: Array<[string, string | null | undefined]> }) {
+  return (
+    <dl className="detail-facts">
+      {facts.map(([label, value]) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd>{value || "Not recorded"}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function DetailList({ title, items, empty }: { title: string; items: string[]; empty: string }) {
+  const visibleItems = items.filter(Boolean).slice(0, 4);
+
+  return (
+    <div className="grid gap-2">
+      <p className="text-xs font-semibold text-muted-foreground">{title}</p>
+      {visibleItems.length > 0 ? (
+        <ul className="grid gap-1.5 text-sm text-muted-foreground">
+          {visibleItems.map((item) => (
+            <li key={item} className="detail-bullet">
+              {item}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-sm text-muted-foreground">{empty}</p>
+      )}
+      {items.length > visibleItems.length ? <p className="text-xs text-muted-foreground">+{items.length - visibleItems.length} more</p> : null}
+    </div>
+  );
+}
+
+function JsonDetail({ label, value }: { label: string; value?: Record<string, unknown> }) {
+  if (!value || Object.keys(value).length === 0) return null;
+
+  return (
+    <div className="grid gap-2">
+      <p className="text-xs font-semibold text-muted-foreground">{label}</p>
+      <pre className="detail-json">{JSON.stringify(value, null, 2)}</pre>
+    </div>
+  );
+}
+
+function requestOpenQuestions(detail: WorkRequestDetail) {
+  return (detail.clarification_questions || []).filter((question) => question.status === "open");
+}
+
+function requestSliceCounts(detail: WorkRequestDetail) {
+  const summary = detail.summary || {};
+  const planned = summary.planned_slice_count ?? detail.work_request.planned_slice_count ?? 0;
+  const approved = summary.approved_slice_count ?? detail.work_request.approved_slice_count ?? 0;
+  const dispatched = summary.dispatched_slice_count ?? detail.work_request.dispatched_slice_count ?? 0;
+  const skipped = summary.skipped_slice_count ?? detail.work_request.skipped_slice_count ?? 0;
+  const total = Math.max(detail.planned_slices?.length || 0, planned + approved + dispatched + skipped);
+
+  return { planned, approved, dispatched, skipped, total };
+}
+
+function requestProgressText(detail: WorkRequestDetail) {
+  const request = detail.work_request;
+  const questions = requestOpenQuestions(detail);
+  const slices = requestSliceCounts(detail);
+
+  if (questions.length > 0) {
+    return `${questions.length} open human question${questions.length === 1 ? "" : "s"} before the architect can continue.`;
+  }
+
+  if (request.status === "sliced" || slices.total > 0) {
+    return `${slices.total} slice${slices.total === 1 ? "" : "s"} recorded: ${slices.approved} approved, ${slices.dispatched} dispatched, ${slices.skipped} skipped.`;
+  }
+
+  if (request.status === "ready_for_slicing") {
+    return "Ready for an architecture agent to slice into work packages.";
+  }
+
+  if (request.status === "clarifying" || request.status === "ready_for_clarification") {
+    return "Architecture intake is still clarifying the request.";
+  }
+
+  return `Current request state: ${formatStatus(request.status)}.`;
+}
+
+function sliceProgressText(slice: PlannedSlice, pkg?: WorkPackageCard) {
+  if (pkg) {
+    const progress = planProgressLabel(pkg);
+    return progress ? `Linked work package is ${statusLabel(pkg.status)} with ${progress.toLowerCase()}.` : `Linked work package is ${statusLabel(pkg.status)}.`;
+  }
+
+  if (slice.status === "approved") {
+    return "Approved and ready to dispatch into a worker-owned package.";
+  }
+
+  if (slice.status === "planned") {
+    return "Planned by architecture; not dispatched yet.";
+  }
+
+  if (slice.status === "skipped") {
+    return "Skipped by architecture and not expected to move forward.";
+  }
+
+  return `Current slice state: ${formatStatus(slice.status)}.`;
+}
+
+function latestPackageProgress(payload: WorkPackageDetailPayload | null) {
+  return [...(payload?.progress || [])].sort((left, right) => {
+    const sequenceDelta = (right.sequence || 0) - (left.sequence || 0);
+    if (sequenceDelta !== 0) return sequenceDelta;
+    return sortableTime(right.created_at) - sortableTime(left.created_at);
+  });
+}
+
+function planSummaryText(plan?: WorkPackageCard["plan"] | null) {
+  const total = plan?.total_count || 0;
+  if (total <= 0) return "No plan";
+
+  const open = plan?.open_count || 0;
+  const completed = plan?.completed_count || 0;
+
+  return open > 0 ? `${open} open / ${total} total` : `${completed}/${total} done`;
+}
+
+function packageRuntimeText(summary: WorkPackageDetailPayload["summary"] | undefined, pkg: WorkPackageCard) {
+  if (summary?.stale_agent_run_count) return `${summary.stale_agent_run_count} stale`;
+  if (summary?.failed_agent_run_count) return `${summary.failed_agent_run_count} failed`;
+  if (summary?.active_agent_run_count) return `${summary.active_agent_run_count} active`;
+  if (summary?.queued_agent_run_count) return `${summary.queued_agent_run_count} queued`;
+  if (pkg.active_agent_run?.stale) return "Stale run";
+  if (pkg.active_agent_run?.runtime_state === "queued") return "Queued";
+  if (pkg.active_agent_run || runtimeBoolean(pkg.runtime || {}, "active_count")) return "Active";
+  return "No active run";
+}
+
+function packagePurpose(pkg: WorkPackageCard | NonNullable<WorkPackageDetailPayload["work_package"]>) {
+  const richPackage = pkg as NonNullable<WorkPackageDetailPayload["work_package"]>;
+  return firstParagraph(richPackage.engineering_scope) || firstParagraph(richPackage.product_description) || pkg.kind || "No package description has been recorded yet.";
+}
+
+function latestDecisionLogs(detail: WorkRequestDetail) {
+  return [...(detail.decision_logs || [])].sort((left, right) => {
+    const sequenceDelta = (right.sequence || 0) - (left.sequence || 0);
+    if (sequenceDelta !== 0) return sequenceDelta;
+    return sortableTime(right.created_at || right.inserted_at) - sortableTime(left.created_at || left.inserted_at);
+  });
+}
+
+function detailDate(value?: string | null) {
+  return value ? formatDate(value) : "Not recorded";
+}
+
+function firstParagraph(value?: string | null) {
+  return value?.split(/\n\s*\n/)[0]?.trim() || "";
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
