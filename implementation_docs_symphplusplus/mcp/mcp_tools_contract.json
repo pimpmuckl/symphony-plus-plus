@@ -89,11 +89,16 @@
       "handoff_template_policy": "Optional template.secret_handoff may include only mode, store_dir, and claimed_by. Unexpected fields, blank values, and unsupported modes are rejected and cannot broaden grant capabilities.",
       "configuration_policy": "The MCP server must be configured with repo_root/--repo-root before child minting so handoff scripts are resolved from an operator-chosen repository root; minting fails before grant creation if the expected handoff script is missing there.",
       "handoff_failure_policy": "If private handoff storage or metadata persistence fails, the new mint must not leave a usable active child grant and errors must not expose raw worker secret material.",
-      "revoke_cleanup_policy": "revoke_child_worker_key remains a not-implemented Phase 7 stub in this package; deleting persisted child handoffs on revoke belongs with the future child-revocation implementation."
+      "revoke_cleanup_policy": "Child worker revoke does not delete persisted child handoffs in this v1 package; operators must treat private handoff cleanup as a separate follow-up."
     },
     {
       "name": "revoke_child_worker_key",
-      "purpose": "Phase 7 stub for revoking child worker keys; returns phase7_not_implemented after architect authorization."
+      "purpose": "Revoke one live child-delegated worker grant for a same-phase phase_child package, reset active/interrupted children to ready_for_worker, and make immediate remint available.",
+      "required_capabilities": ["revoke:child_worker_key"],
+      "required_arguments": ["grant_id", "reason"],
+      "scope_policy": "Requires a live architect grant with frozen phase/repo/base-branch anchor scope. The target grant must be a live worker grant with child_worker_delegation provenance for a same-phase child inside that anchor. Children in claimed, planning, implementing, reviewing, ci_waiting, or blocked are reset to ready_for_worker after revoke. Unrelated grants, normal worker grants, sibling/out-of-scope children, already revoked or expired grants, and children in architect-controlled/closed/merged or terminal states are rejected.",
+      "response_policy": "Returns redacted operator-useful metadata only: child work package projection after reset, revoked grant id/work_package_id/capabilities/expiry/revoked_at, recycle status with previous_child_status/new_child_status/status_reset/remint_available=true, and the audit event payload. It never returns raw worker secrets, work keys, display keys, secret hashes, bearer tokens, API tokens, private handoff payloads, or MCP auth tokens.",
+      "audit_policy": "Appends a durable redacted child progress/audit event with type child_worker_key_revoke, source_tool revoke_child_worker_key, the child work_package_id, target grant_id, redacted recycle reason, revoked_at, previous_status, new_status, status_reset, and private_handoff_cleanup=not_attempted."
     },
     {
       "name": "list_work_requests",

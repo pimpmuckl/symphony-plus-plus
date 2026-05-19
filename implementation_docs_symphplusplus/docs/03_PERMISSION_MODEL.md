@@ -80,10 +80,16 @@ path or credential target needed for later cleanup; they are not worker secrets
 and must not contain work keys, bearer material, run commands, or claimed owner
 identity. In the current pre-production v1 child minting contract,
 `mint_child_worker_key` allows only one active child-worker grant/handoff per
-child package and rejects remint attempts while one exists; it does not perform
-implicit replacement or old-handoff cleanup. `revoke_child_worker_key` remains a
-not-implemented Phase 7 stub in this package; deleting persisted child handoffs
-on revoke belongs with the future child-revocation implementation.
+child package and rejects remint attempts while one exists.
+`revoke_child_worker_key` lets an architect with `revoke:child_worker_key`
+revoke one live child-worker grant for a same-phase child inside the architect
+grant's frozen scope, reset an active/interrupted child from `claimed`,
+`planning`, `implementing`, `reviewing`, `ci_waiting`, or `blocked` back to
+`ready_for_worker`, and then `mint_child_worker_key` can mint again. Revoke
+rejects unrelated, normal worker, sibling/out-of-scope, already revoked,
+expired, and architect-controlled/terminal child grants. It records a redacted
+audit/progress event with previous and new child statuses, but does not delete
+persisted child handoffs in this v1 package.
 
 Architect child worker minting follows the same private-handoff rule. The
 `mint_child_worker_key` MCP response returns `worker_grant.secret_handoff` and
