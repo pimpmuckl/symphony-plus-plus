@@ -7,20 +7,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
 
-  @default_lifetime_seconds 86_400
   @default_worker_capabilities ["worker:claim", "worker:lifecycle.transition"]
   @default_architect_capabilities ["read:phase"]
+  @terminal_work_package_statuses ["merged", "merged_into_phase", "closed", "abandoned"]
 
   @type minted_grant :: %{grant: AccessGrant.t(), work_key: WorkKey.t()}
-  @type error :: Repository.error() | :missing_work_package_id | :outside_phase_scope
+  @type error :: Repository.error() | WorkPackageRepository.error() | :missing_work_package_id | :outside_phase_scope | :work_package_terminal
 
   @spec mint_worker_grant(Repository.repo(), String.t(), keyword() | map()) ::
           {:ok, minted_grant()} | {:error, error()}
   def mint_worker_grant(repo, work_package_id, opts \\ [])
       when is_atom(repo) and is_binary(work_package_id) and (is_list(opts) or is_map(opts)) do
     opts = normalize_options(opts)
-    now = option(opts, :now, DateTime.utc_now(:microsecond))
-    expires_at = option(opts, :expires_at, DateTime.add(now, @default_lifetime_seconds, :second))
+    expires_at = option(opts, :expires_at, nil)
     capabilities = option(opts, :capabilities, @default_worker_capabilities)
     provenance = option(opts, :provenance, nil)
     work_key = WorkKey.generate()
@@ -34,7 +33,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service do
              grant_role: "worker",
              provenance: provenance,
              capabilities: capabilities,
-             expires_at: DateTime.truncate(expires_at, :microsecond)
+             expires_at: truncate_expires_at(expires_at)
            }) do
       {:ok, %{grant: grant, work_key: work_key}}
     end
@@ -45,8 +44,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service do
   def mint_architect_grant(repo, phase_id, opts \\ [])
       when is_atom(repo) and is_binary(phase_id) and (is_list(opts) or is_map(opts)) do
     opts = normalize_options(opts)
-    now = option(opts, :now, DateTime.utc_now(:microsecond))
-    expires_at = option(opts, :expires_at, DateTime.add(now, @default_lifetime_seconds, :second))
+    expires_at = option(opts, :expires_at, nil)
     capabilities = option(opts, :capabilities, @default_architect_capabilities)
     work_package_id = option(opts, :work_package_id, nil)
     work_key = WorkKey.generate()
@@ -62,7 +60,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service do
              secret_hash: WorkKey.secret_hash(work_key.secret),
              grant_role: "architect",
              capabilities: capabilities,
-             expires_at: DateTime.truncate(expires_at, :microsecond)
+             expires_at: truncate_expires_at(expires_at)
            }) do
       {:ok, %{grant: grant, work_key: work_key}}
     end
@@ -90,7 +88,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service do
     opts = normalize_options(opts)
     now = option(opts, :now, DateTime.utc_now(:microsecond))
 
-    Repository.claim(repo, secret, %{claimed_by: option(opts, :claimed_by, nil)}, now)
+    with :ok <- reject_display_key_only(secret),
+         {:ok, grant} <- Repository.find_by_secret_hash(repo, WorkKey.secret_hash(secret)),
+         :ok <- require_live_package_authority(repo, grant) do
+      Repository.claim(repo, secret, %{claimed_by: option(opts, :claimed_by, nil)}, now, terminal_work_package_statuses: @terminal_work_package_statuses)
+    end
   end
 
   @spec revoke(Repository.repo(), String.t(), keyword() | map()) :: {:ok, AccessGrant.t()} | {:error, error()}
@@ -99,8 +101,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service do
     Repository.revoke(repo, id, option(opts, :now, DateTime.utc_now(:microsecond)))
   end
 
+  @spec require_live_package_authority(Repository.repo(), AccessGrant.t()) :: :ok | {:error, error()}
+  def require_live_package_authority(repo, %AccessGrant{work_package_id: work_package_id}) when is_atom(repo) and is_binary(work_package_id) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, %{status: status}} when status in @terminal_work_package_statuses -> {:error, :work_package_terminal}
+      {:ok, _work_package} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def require_live_package_authority(_repo, %AccessGrant{}), do: {:error, :missing_work_package_id}
+
   defp normalize_options(opts) when is_list(opts), do: Map.new(opts)
   defp normalize_options(opts) when is_map(opts), do: opts
+
+  defp truncate_expires_at(%DateTime{} = expires_at), do: DateTime.truncate(expires_at, :microsecond)
+  defp truncate_expires_at(nil), do: nil
+
+  defp reject_display_key_only(secret) do
+    if String.length(secret) == 4 do
+      {:error, :display_key_only}
+    else
+      :ok
+    end
+  end
 
   defp option(opts, key, default) do
     Map.get(opts, key) || Map.get(opts, Atom.to_string(key)) || default

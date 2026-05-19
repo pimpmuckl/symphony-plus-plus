@@ -23,6 +23,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     def get(_schema, _id), do: raise(%Exqlite.Error{message: "disk I/O failed"})
   end
 
+  defmodule TerminalClaimRaceRepo do
+    import Ecto.Query, only: [from: 2]
+
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+    alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+
+    @race_key :sympp_terminal_claim_race
+
+    def arm(work_package_id), do: Process.put(@race_key, work_package_id)
+    def disarm, do: Process.delete(@race_key)
+
+    def get(schema, id), do: Repo.get(schema, id)
+    def insert(changeset), do: Repo.insert(changeset)
+    def one(query), do: Repo.one(query)
+    def update(changeset), do: Repo.update(changeset)
+
+    def update_all(query, updates) do
+      case Process.get(@race_key) do
+        work_package_id when is_binary(work_package_id) ->
+          Process.delete(@race_key)
+
+          Repo.update_all(
+            from(work_package in WorkPackage, where: work_package.id == ^work_package_id),
+            set: [status: "merged", updated_at: DateTime.utc_now(:microsecond)]
+          )
+
+        _race ->
+          :ok
+      end
+
+      Repo.update_all(query, updates)
+    end
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
 
@@ -64,19 +98,66 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     assert grant.grant_role == "worker"
     assert grant.display_key == work_key.display_key
     assert grant.secret_hash == WorkKey.secret_hash(work_key.secret)
+    assert grant.expires_at == nil
     refute grant.secret_hash == work_key.secret
 
     assert {:ok, persisted} = Repository.get(repo, grant.id)
+    assert persisted.expires_at == nil
     refute Map.has_key?(Map.from_struct(persisted), :secret)
     refute Map.has_key?(Map.from_struct(persisted), :raw_secret)
     refute inspect(persisted) =~ persisted.secret_hash
     refute inspect(work_key) =~ work_key.secret
   end
 
+  test "default worker grants are non-expiring and remain claimable", %{repo: repo} do
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
+    assert {:ok, minted} = Service.mint_worker_grant(repo, work_package.id)
+    far_future = ~U[2027-04-30 10:00:00Z]
+
+    assert minted.grant.expires_at == nil
+    assert {:ok, %Assignment{} = assignment} = Service.claim(repo, minted.work_key.secret, now: far_future, claimed_by: "worker-1")
+    assert assignment.grant_id == minted.grant.id
+  end
+
+  test "explicit worker grant expiry is preserved", %{repo: repo} do
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
+    expires_at = ~U[2026-05-01 12:00:00.123456Z]
+
+    assert {:ok, %{grant: grant}} = Service.mint_worker_grant(repo, work_package.id, expires_at: expires_at)
+
+    assert DateTime.compare(grant.expires_at, expires_at) == :eq
+    assert {:ok, persisted} = Repository.get(repo, grant.id)
+    assert persisted.expires_at == expires_at
+  end
+
+  test "default architect grants are non-expiring and remain claimable", %{repo: repo} do
+    assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-no-expiry-grant", title: "No expiry grant"})
+
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(kind: "mcp", phase_id: phase.id)
+             )
+
+    assert {:ok, minted} =
+             Service.mint_architect_grant(repo, phase.id,
+               work_package_id: work_package.id,
+               capabilities: ["read:phase", "create:child_work_package"]
+             )
+
+    far_future = ~U[2027-04-30 10:00:00Z]
+
+    assert minted.grant.expires_at == nil
+    assert {:ok, %Assignment{} = assignment} = Service.claim(repo, minted.work_key.secret, now: far_future, claimed_by: "architect-1")
+    assert assignment.grant_role == "architect"
+    assert assignment.phase_id == phase.id
+  end
+
   test "create ignores terminal lifecycle fields", %{repo: repo} do
     assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs())
     work_key = WorkKey.generate()
     timestamp = ~U[2026-04-30 10:00:00Z]
+    expires_at = DateTime.add(timestamp, 60, :second)
 
     assert {:ok, grant} =
              Repository.create(repo, %{
@@ -85,12 +166,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
                secret_hash: WorkKey.secret_hash(work_key.secret),
                grant_role: "worker",
                capabilities: ["worker:claim"],
-               expires_at: DateTime.add(timestamp, 60, :second),
+               expires_at: expires_at,
                claimed_at: timestamp,
                claimed_by: "worker-1",
                revoked_at: timestamp
              })
 
+    assert DateTime.compare(grant.expires_at, expires_at) == :eq
     assert grant.claimed_at == nil
     assert grant.claimed_by == nil
     assert grant.revoked_at == nil
@@ -162,6 +244,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     assert {:ok, %AccessGrant{revoked_at: %DateTime{}}} = Service.revoke(repo, minted.grant.id)
 
     assert {:error, :revoked} = Service.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+  end
+
+  test "terminal work package state rejects claims without mutating the grant", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(status: "merged"))
+
+    assert {:ok, minted} = Service.mint_worker_grant(repo, work_package.id)
+
+    assert {:error, :work_package_terminal} =
+             Service.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+
+    assert {:ok, grant} = Repository.get(repo, minted.grant.id)
+    assert grant.claimed_at == nil
+    assert grant.claimed_by == nil
+  end
+
+  test "terminal work package claim race rejects atomically without mutating the grant", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(status: "ready_for_worker"))
+
+    assert {:ok, minted} = Service.mint_worker_grant(repo, work_package.id)
+
+    try do
+      TerminalClaimRaceRepo.arm(work_package.id)
+
+      assert {:error, :work_package_terminal} =
+               Service.claim(TerminalClaimRaceRepo, minted.work_key.secret, claimed_by: "worker-1")
+    after
+      TerminalClaimRaceRepo.disarm()
+    end
+
+    assert {:ok, grant} = Repository.get(repo, minted.grant.id)
+    assert grant.claimed_at == nil
+    assert grant.claimed_by == nil
   end
 
   test "revoke is idempotent and preserves the first revocation timestamp", %{repo: repo} do

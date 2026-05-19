@@ -322,7 +322,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Session.from_map(%{attrs | "claimed_at" => 123}) == {:error, {:invalid, "claimed_at"}}
   end
 
-  test "session grant validation rejects inactive or unclaimed grants" do
+  test "session grant validation accepts nil expiry and rejects inactive or unclaimed grants" do
     now = ~U[2026-05-04 12:00:00Z]
 
     grant = %AccessGrant{
@@ -341,7 +341,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert Session.from_grant(%{grant | revoked_at: now}, now) == {:error, :revoked}
     assert Session.from_grant(%{grant | expires_at: now}, now) == {:error, :expired}
-    assert Session.from_grant(%{grant | expires_at: nil}, now) == {:error, :missing_expiry}
+    assert {:ok, nil_expiry_session} = Session.from_grant(%{grant | expires_at: nil}, now)
+    assert nil_expiry_session.assignment.grant_id == grant.id
     assert Session.from_grant(%{grant | claimed_at: nil}, now) == {:error, :unclaimed}
     assert Session.from_grant(%{grant | claimed_by: " "}, now) == {:error, :missing_claim_identity}
   end
@@ -364,6 +365,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert Auth.require_work_package(session, "SYMPP-OTHER", UnexpectedAuthRepo) ==
              {:error, {:service_unavailable, {:unexpected_grant_lookup_result, :tuple}}}
+  end
+
+  test "auth helpers reject sessions after package authority reaches a terminal state", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-AUTH-TERMINAL", kind: "mcp", status: "ready_for_worker"))
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    assert {:ok, _terminal_package} = WorkPackageRepository.update(repo, package.id, %{status: "merged"})
+
+    assert Auth.require_session(session, repo) == {:error, {:unauthorized, :work_package_terminal}}
+  end
+
+  test "auth helpers preserve live architect sessions and retire them with their anchor package", %{repo: repo} do
+    {package, session, _grant} = create_phase_architect_session(repo, "SYMPP-AUTH-ARCH-TERMINAL", ["read:phase"])
+
+    assert {:ok, live_session} = Auth.require_session(session, repo)
+    assert live_session.assignment.grant_role == "architect"
+    assert live_session.assignment.work_package_id == package.id
+    assert live_session.assignment.phase_id == package.phase_id
+
+    assert {:ok, _terminal_package} = WorkPackageRepository.update(repo, package.id, %{status: "merged"})
+
+    assert Auth.require_session(session, repo) == {:error, {:unauthorized, :work_package_terminal}}
   end
 
   test "config parser defaults to stdio and rejects unsupported modes" do
@@ -2395,6 +2422,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(stale_status_response, ["error", "data", "reason"]) == "stale_status"
   end
 
+  test "claim_work_key rejects terminal package grants without mutating them", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-P3-TERMINAL-CLAIM", kind: "mcp", status: "merged"))
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-terminal-package",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_001
+    assert get_in(response, ["error", "data", "reason"]) == "work_package_terminal"
+
+    assert {:ok, grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert grant.claimed_at == nil
+    assert grant.claimed_by == nil
+  end
+
   test "response-only handle preserves claimed session for sequential calls", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-HANDLE-CLAIM", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -3661,6 +3713,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(refresh_response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-WORKER-CLAIM-REFRESH"
     assert refreshed_server.session.assignment.work_package_id == "SYMPP-WORKER-CLAIM-REFRESH"
+  end
+
+  test "bound MCP sessions fail closed after package authority reaches a terminal state", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-CLAIM-TERMINAL", kind: "mcp", status: "ready_for_worker"))
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert {:ok, _terminal_package} = WorkPackageRepository.update(repo, package.id, %{status: "merged"})
+
+    assignment_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "assignment-after-terminal", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        claimed_server
+      )
+
+    assert get_in(assignment_response, ["error", "code"]) == -32_001
+    assert get_in(assignment_response, ["error", "data", "reason"]) == "work_package_terminal"
+
+    reconnect_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-reconnect-after-terminal",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true, state_key: make_ref())
+      )
+
+    assert get_in(reconnect_response, ["error", "code"]) == -32_001
+    assert get_in(reconnect_response, ["error", "data", "reason"]) == "work_package_terminal"
   end
 
   test "claim_work_key rejects non-worker non-architect grant roles", %{repo: repo} do
@@ -7196,6 +7292,56 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(broader_response, ["error", "data", "reason"]) == "broader_child_grant"
   end
 
+  test "child worker key minting defaults to no expiry for non-expiring architect grants", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_non_expiring_architect_session(repo, "SYMPP-P7-002-MINT-NO-EXPIRY-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-NO-EXPIRY-CHILD")
+
+    response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => child_worker_template()
+      })
+
+    assert get_in(response, ["result", "structuredContent", "worker_grant", "work_package_id"]) == child_id
+    assert get_in(response, ["result", "structuredContent", "worker_grant", "expires_at"]) == nil
+
+    grant_id = get_in(response, ["result", "structuredContent", "worker_grant", "id"])
+    assert {:ok, grant} = AccessGrantRepository.get(repo, grant_id)
+    assert grant.expires_at == nil
+
+    explicit_child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-NO-EXPIRY-EXPLICIT")
+    explicit_expires_at = DateTime.utc_now(:microsecond) |> DateTime.add(3_600, :second) |> DateTime.truncate(:microsecond)
+
+    explicit_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => explicit_child_id,
+        "template" => Map.put(child_worker_template(), "expires_at", DateTime.to_iso8601(explicit_expires_at))
+      })
+
+    assert get_in(explicit_response, ["result", "structuredContent", "worker_grant", "work_package_id"]) == explicit_child_id
+    minted_expires_at = get_in(explicit_response, ["result", "structuredContent", "worker_grant", "expires_at"])
+    assert {:ok, minted_expires_at, _offset} = DateTime.from_iso8601(minted_expires_at)
+    assert DateTime.compare(DateTime.truncate(minted_expires_at, :microsecond), explicit_expires_at) == :eq
+
+    expired_child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-NO-EXPIRY-PAST")
+    expired_expires_at = DateTime.utc_now(:microsecond) |> DateTime.add(-60, :second) |> DateTime.truncate(:microsecond)
+
+    expired_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => expired_child_id,
+        "template" => Map.put(child_worker_template(), "expires_at", DateTime.to_iso8601(expired_expires_at))
+      })
+
+    assert get_in(expired_response, ["error", "code"]) == -32_602
+    assert get_in(expired_response, ["error", "data", "reason"]) == "invalid_expires_at"
+  end
+
   test "phase architect cannot mint or read child worker key for sibling anchor, sibling phase, or mismatched base branch", %{repo: repo} do
     {_anchor, architect_session} =
       create_architect_session(repo, "SYMPP-P7-002-MINT-SCOPE-ANCHOR", [
@@ -7615,7 +7761,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "idempotency_key" => "post-merge-worker-blocker"
       })
 
-    assert get_in(post_merge_worker_report_blocker_response, ["error", "data", "reason"]) == "child_under_architect_control"
+    assert get_in(post_merge_worker_report_blocker_response, ["error", "data", "reason"]) == "work_package_terminal"
 
     merge_replay_response =
       mcp_tool(repo, architect_session, "merge_child_into_phase", %{
@@ -13358,13 +13504,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     {package, session}
   end
 
+  defp create_non_expiring_architect_session(repo, work_package_id, capabilities) do
+    phase_id = ensure_architect_phase(repo)
+
+    package_attrs =
+      [
+        id: work_package_id,
+        kind: "mcp",
+        base_branch: "symphony-plus-plus/beta",
+        repo: "nextide/symphony-plus-plus",
+        allowed_file_globs: ["elixir/lib/**"],
+        status: "planning",
+        phase_id: phase_id
+      ]
+      |> WorkPackageFactory.attrs()
+
+    assert {:ok, package} = WorkPackageRepository.create(repo, package_attrs)
+
+    assert {:ok, minted} =
+             AccessGrantService.mint_architect_grant(repo, phase_id,
+               work_package_id: package.id,
+               capabilities: capabilities
+             )
+
+    assert minted.grant.expires_at == nil
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, minted.work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(minted.work_key.secret))
+    {:ok, package} = WorkPackageRepository.get(repo, package.id)
+
+    {package, session}
+  end
+
   defp active_worker_grants(grants) do
     now = DateTime.utc_now(:microsecond)
 
     Enum.filter(grants, fn grant ->
-      grant.grant_role == "worker" and is_nil(grant.revoked_at) and DateTime.compare(grant.expires_at, now) == :gt
+      grant.grant_role == "worker" and is_nil(grant.revoked_at) and live_expires_at?(grant.expires_at, now)
     end)
   end
+
+  defp live_expires_at?(nil, %DateTime{}), do: true
+  defp live_expires_at?(%DateTime{} = expires_at, %DateTime{} = now), do: DateTime.compare(expires_at, now) == :gt
 
   defp mcp_tool(repo, session, name, arguments, opts \\ []) do
     MCPHarness.request(

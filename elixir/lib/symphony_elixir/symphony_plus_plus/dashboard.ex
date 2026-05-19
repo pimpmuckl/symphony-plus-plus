@@ -485,6 +485,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     DateTime.compare(expires_at, now) == :gt
   end
 
+  defp live_worker_grant?(%AccessGrant{grant_role: "worker", revoked_at: nil, expires_at: nil}, %DateTime{}), do: true
+
   defp live_worker_grant?(%AccessGrant{}, %DateTime{}), do: false
 
   defp local_operator_handoff_opts(repo) do

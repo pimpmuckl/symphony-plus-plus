@@ -71,10 +71,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service do
       grant.work_package_id != work_package.id -> {:error, :actor_scope_mismatch}
       is_nil(grant.claimed_at) -> {:error, :actor_scope_mismatch}
       not is_nil(grant.revoked_at) -> {:error, :actor_scope_mismatch}
-      DateTime.compare(grant.expires_at, DateTime.utc_now(:microsecond)) != :gt -> {:error, :actor_scope_mismatch}
+      expired?(grant.expires_at, DateTime.utc_now(:microsecond)) -> {:error, :actor_scope_mismatch}
       true -> :ok
     end
   end
+
+  defp expired?(nil, %DateTime{}), do: false
+  defp expired?(%DateTime{} = expires_at, %DateTime{} = now), do: DateTime.compare(expires_at, now) != :gt
 
   defp grant_id(actor), do: Map.get(actor, :grant_id) || Map.get(actor, "grant_id")
 end

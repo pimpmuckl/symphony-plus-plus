@@ -112,6 +112,12 @@ its active unclaimed metadata is safely readable and replayable; reload display
 is read-only and does not mint, renew, revoke, or clean up handoffs.
 Board-grant WorkRequest detail cannot create this handoff.
 
+Local worker and architect grants are non-expiring by default. Operators should
+recover stale or abandoned authority by revoking grants, completing/merging or
+archiving packages, or recycling child workers, not by waiting for default grant
+clocks. An explicit `expires_at` remains a deliberate narrowing constraint when
+a package or tool passes one.
+
 Explicit phase-scoped architect MCP sessions with `read:work_request` can call
 `list_work_requests(status?)` and `read_work_request(work_request_id)` for the
 same frozen repo/base-branch WorkRequest scope. For local architect handoff

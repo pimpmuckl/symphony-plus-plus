@@ -112,8 +112,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant do
       :display_key,
       :secret_hash,
       :grant_role,
-      :capabilities,
-      :expires_at
+      :capabilities
     ])
     |> validate_length(:display_key, is: 4)
     |> validate_length(:secret_hash, is: 64)

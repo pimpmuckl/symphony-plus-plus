@@ -625,7 +625,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
       where: not is_nil(grant.claimed_at),
       where: not is_nil(grant.claimed_by),
       where: is_nil(grant.revoked_at),
-      where: grant.expires_at > ^now
+      where: is_nil(grant.expires_at) or grant.expires_at > ^now
     )
   end
 
@@ -656,7 +656,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
       where: not is_nil(grant.claimed_at),
       where: not is_nil(grant.claimed_by),
       where: is_nil(grant.revoked_at),
-      where: grant.expires_at > ^now,
+      where: is_nil(grant.expires_at) or grant.expires_at > ^now,
       limit: 1
     )
   end

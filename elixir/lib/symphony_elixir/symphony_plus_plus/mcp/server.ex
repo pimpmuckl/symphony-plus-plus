@@ -1927,6 +1927,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp revalidate_bound_session(repo, %Session{} = session, proof_hash) do
     with {:ok, grant} <- AccessGrantRepository.get(repo, session.assignment.grant_id),
+         :ok <- AccessGrantService.require_live_package_authority(repo, grant),
          {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash),
          :ok <- require_mcp_claimable_assignment(session.assignment) do
       {:ok, session}
@@ -1956,6 +1957,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp reconnect_claimed_session(repo, proof_hash, claimed_by) do
     with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, proof_hash),
          :ok <- require_same_claim_owner(grant, claimed_by),
+         :ok <- AccessGrantService.require_live_package_authority(repo, grant),
          {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash),
          :ok <- require_mcp_claimable_assignment(session.assignment) do
       {:ok, session}
@@ -1975,7 +1977,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_mcp_claimable_secret(repo, proof_hash) do
     with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, proof_hash) do
-      require_mcp_claimable_assignment(grant)
+      with :ok <- AccessGrantService.require_live_package_authority(repo, grant) do
+        require_mcp_claimable_assignment(grant)
+      end
     end
   end
 
@@ -3371,10 +3375,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       match?(%DateTime{}, grant.revoked_at) ->
         {:tool_error, "child_worker_grant_already_revoked"}
 
-      not match?(%DateTime{}, grant.expires_at) ->
-        {:tool_error, "child_worker_grant_expired"}
-
-      DateTime.compare(grant.expires_at, now) != :gt ->
+      not live_expires_at?(grant.expires_at, now) ->
         {:tool_error, "child_worker_grant_expired"}
 
       true ->
@@ -3399,7 +3400,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         where:
           access_grant.id == ^grant.id and access_grant.work_package_id == ^grant.work_package_id and
             access_grant.grant_role == "worker" and access_grant.provenance == ^@child_worker_grant_provenance and
-            is_nil(access_grant.revoked_at) and access_grant.expires_at > ^now
+            is_nil(access_grant.revoked_at) and (is_nil(access_grant.expires_at) or access_grant.expires_at > ^now)
       )
 
     case repo.update_all(query, set: [revoked_at: now, updated_at: now]) do
@@ -4121,7 +4122,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       from(grant in AccessGrant,
         where:
           grant.work_package_id == ^work_package_id and grant.grant_role == "worker" and is_nil(grant.revoked_at) and
-            grant.provenance == ^@child_worker_grant_provenance and grant.expires_at > ^now,
+            grant.provenance == ^@child_worker_grant_provenance and
+            (is_nil(grant.expires_at) or grant.expires_at > ^now),
         select: count(grant.id)
       )
 
@@ -4664,7 +4666,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp child_worker_expires_at(_template, _architect_grant), do: {:error, :phase_scope_not_available}
+  defp child_worker_expires_at(template, %{expires_at: nil}) do
+    with {:ok, expires_at} <- optional_child_worker_expires_at(template, nil),
+         :ok <- require_child_expiry_live(expires_at) do
+      {:ok, expires_at}
+    end
+  end
 
   defp optional_child_worker_expires_at(template, default) do
     case Map.fetch(template, "expires_at") do
@@ -4690,10 +4697,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_child_expires_before_architect(expires_at, architect_expires_at) do
     cond do
+      is_nil(expires_at) -> {:tool_error, "broader_child_grant"}
       DateTime.compare(expires_at, architect_expires_at) == :gt -> {:tool_error, "broader_child_grant"}
       DateTime.compare(expires_at, DateTime.utc_now(:microsecond)) != :gt -> {:tool_error, "invalid_expires_at"}
       true -> :ok
     end
+  end
+
+  defp require_child_expiry_live(nil), do: :ok
+
+  defp require_child_expiry_live(%DateTime{} = expires_at) do
+    if DateTime.compare(expires_at, DateTime.utc_now(:microsecond)) == :gt,
+      do: :ok,
+      else: {:tool_error, "invalid_expires_at"}
   end
 
   defp solo_tool("solo_attach", arguments, %__MODULE__{config: config}) do
@@ -5835,7 +5851,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp require_live_grant(%AccessGrant{}, _now), do: {:error, :phase_scope_not_available}
+  defp require_live_grant(%AccessGrant{expires_at: nil}, %DateTime{}), do: :ok
 
   defp require_architect_capabilities(assignment, capabilities) do
     Enum.reduce_while(capabilities, :ok, fn capability, :ok ->
@@ -8658,7 +8674,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "display_key" => grant.display_key,
       "grant_role" => grant.grant_role,
       "capabilities" => grant.capabilities || [],
-      "expires_at" => DateTime.to_iso8601(grant.expires_at),
+      "expires_at" => timestamp(grant.expires_at),
       "secret_in_response" => false,
       "secret_handoff" => secret_handoff
     }
@@ -8671,10 +8687,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "display_key" => grant.display_key,
       "grant_role" => grant.grant_role,
       "capabilities" => grant.capabilities || [],
-      "expires_at" => DateTime.to_iso8601(grant.expires_at),
+      "expires_at" => timestamp(grant.expires_at),
       "secret" => work_key.secret
     }
   end
+
+  defp live_expires_at?(nil, %DateTime{}), do: true
+  defp live_expires_at?(%DateTime{} = expires_at, %DateTime{} = now), do: DateTime.compare(expires_at, now) == :gt
 
   defp redacted_child_worker_grant(worker_grant) when is_map(worker_grant) do
     Map.delete(worker_grant, "secret")

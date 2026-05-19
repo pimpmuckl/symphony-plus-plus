@@ -5,7 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
     "quick_fix" => %{
       template: "quick_fix",
       constraints: %{
-        expiry_seconds: 86_400,
+        expiry_seconds: nil,
         planning_depth: "brief",
         terminal_readiness_status: "ready_for_human_merge"
       },
@@ -16,7 +16,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
     "hotfix" => %{
       template: "hotfix",
       constraints: %{
-        expiry_seconds: 21_600,
+        expiry_seconds: nil,
         planning_depth: "incident",
         terminal_readiness_status: "ready_for_human_merge"
       },
@@ -27,7 +27,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
     "adapter" => %{
       template: "adapter",
       constraints: %{
-        expiry_seconds: 86_400,
+        expiry_seconds: nil,
         planning_depth: "package",
         terminal_readiness_status: "ready_for_human_merge"
       },
@@ -38,7 +38,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
     "mcp" => %{
       template: "worker_package",
       constraints: %{
-        expiry_seconds: 86_400,
+        expiry_seconds: nil,
         planning_depth: "package",
         terminal_readiness_status: "ready_for_human_merge"
       },
@@ -50,7 +50,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       work_package_kind: "mcp",
       template: "worker_package",
       constraints: %{
-        expiry_seconds: 86_400,
+        expiry_seconds: nil,
         planning_depth: "package",
         terminal_readiness_status: "ready_for_human_merge"
       },
@@ -68,7 +68,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       work_package_kind: "mcp",
       template: "worker_package",
       constraints: %{
-        expiry_seconds: 86_400,
+        expiry_seconds: nil,
         planning_depth: "package",
         terminal_readiness_status: "ready_for_human_merge"
       },
@@ -86,7 +86,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       work_package_kind: "mcp",
       template: "worker_package",
       constraints: %{
-        expiry_seconds: 86_400,
+        expiry_seconds: nil,
         planning_depth: "package",
         terminal_readiness_status: "ready_for_human_merge"
       },
@@ -114,7 +114,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
     "skill" => %{
       template: "worker_package",
       constraints: %{
-        expiry_seconds: 86_400,
+        expiry_seconds: nil,
         planning_depth: "package",
         terminal_readiness_status: "ready_for_human_merge"
       },
@@ -125,7 +125,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
     "hooks" => %{
       template: "worker_package",
       constraints: %{
-        expiry_seconds: 86_400,
+        expiry_seconds: nil,
         planning_depth: "package",
         terminal_readiness_status: "ready_for_human_merge"
       },
@@ -136,7 +136,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
     "phase_child" => %{
       template: "phase_child",
       constraints: %{
-        expiry_seconds: 172_800,
+        expiry_seconds: nil,
         planning_depth: "package",
         terminal_readiness_status: "ready_for_architect_merge"
       },
@@ -153,7 +153,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
     "investigation" => %{
       template: "investigation",
       constraints: %{
-        expiry_seconds: 43_200,
+        expiry_seconds: nil,
         planning_depth: "findings",
         terminal_readiness_status: "ready_for_human_merge"
       },
@@ -166,7 +166,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
   @type template :: %{
           template: String.t(),
           constraints: %{
-            expiry_seconds: pos_integer(),
+            expiry_seconds: pos_integer() | nil,
             planning_depth: String.t(),
             terminal_readiness_status: String.t()
           },

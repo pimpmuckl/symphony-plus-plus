@@ -1117,12 +1117,12 @@ if ($childHead -ne $phaseParentHead) {
 
 8. Mint a child worker key only for the next child that is about to be
    dispatched. Do not mint both child keys up front: `mint_child_worker_key`
-   inherits the architect grant expiry when no explicit expiry is supplied, and
-   a sequential or review-heavy pilot can otherwise strand the second child
-   before it starts. For first dispatch, step 7 must already have proven that
-   no leftover remote child branch exists. Do not document or attempt a normal
-   replacement-key reassignment after a child has already been claimed or
-   started without an explicit recycle decision. If a child worker is
+   defaults to a non-expiring child grant when the architect grant is
+   non-expiring, while explicit architect expiry still bounds child expiry. For
+   first dispatch, step 7 must already have proven that no leftover remote child
+   branch exists. Do not document or attempt a normal replacement-key
+   reassignment after a child has already been claimed or started without an
+   explicit recycle decision. If a child worker is
    interrupted, record the package as blocked, preserve branch/PR evidence, and
    have the architect use `revoke_child_worker_key` only for the target live
    child-worker grant inside the same frozen phase scope. A successful revoke
@@ -1134,11 +1134,10 @@ if ($childHead -ne $phaseParentHead) {
    the MCP call, keep worker secret material in the approved private store, and
    print only non-secret grant metadata before that child
    worker is dispatched. If the wrapper cannot confirm storage, do not dispatch
-   the worker; record the live child grant as residual access risk until expiry
-   or approved admin revocation and do not call `mark_ready` for the child. If
-   the architect grant has too little remaining lifetime for the child
-   implementation plus review window, rotate/recreate the grant through an
-   approved operator path before minting the child key.
+   the worker; record the live child grant as residual access risk until
+   explicit revocation, child-worker recycle, terminal package lifecycle, or an
+   explicit grant expiry when one was deliberately supplied. Do not call
+   `mark_ready` for the child while that residual risk is unresolved.
 
    Example Child A wrapper input, run only immediately before dispatching
    Child A:

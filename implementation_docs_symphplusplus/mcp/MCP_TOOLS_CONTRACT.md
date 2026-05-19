@@ -28,7 +28,7 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | Tool | Purpose |
 |---|---|
 | create_child_work_package | Create a `phase_child` work package inside the architect grant's current phase; child repo, phase, parent, and base branch are constrained to the architect phase anchor. |
-| mint_child_worker_key | Mint a child-scoped worker grant for a same-phase `phase_child` package; worker capabilities are limited to the child worker set and expiry cannot exceed the architect grant. |
+| mint_child_worker_key | Mint a child-scoped worker grant for a same-phase `phase_child` package; worker capabilities are limited to the child worker set, and explicit expiry cannot exceed an explicitly expiring architect grant. |
 | revoke_child_worker_key | Revoke one live child-delegated worker grant for a same-phase child package inside the architect grant's frozen scope, reset active/interrupted children to `ready_for_worker`, and make immediate remint available. |
 | list_work_requests | List WorkRequests scoped to the architect assignment repo/base branch. Accepts only optional `status`. |
 | read_work_request | Read one scoped WorkRequest with clarification questions, decision log entries, planned slices, and count/status summaries. |
@@ -102,7 +102,9 @@ grant cannot include architect capabilities, cannot include capabilities outside
 the child worker capability set, rejects new mints while any active
 child-delegated worker grant already exists for that child, ignores unrelated
 normal worker grants, and cannot outlive the transaction-current architect
-grant. This is the pre-production v1 contract and does not provide implicit
+grant when that architect grant has an explicit expiry. With a non-expiring
+architect grant, the child worker grant defaults to non-expiring and may use a
+future explicit expiry. This is the pre-production v1 contract and does not provide implicit
 replacement/remint behavior. The tool stores the newly minted child worker
 secret through the private SecretHandoff store and returns only redacted
 metadata under `worker_grant.secret_handoff`; `worker_grant.secret_in_response`
@@ -261,12 +263,13 @@ again, preferably through the private-store MCP bootstrap rather than a raw
 secret tool call. The continuity namespace is the active ledger, so a reconnect
 to the same SQLite ledger can restore handshake state even when the dynamic repo
 process changes.
-Explicit state-key handshakes use a bounded retention window longer than the
-current worker grant defaults and are not evicted by the shorter implicit
-default response-state TTL. They remain continuity metadata until overwritten,
+Explicit state-key handshakes use a bounded retention window for transport
+continuity. They remain continuity metadata until overwritten,
 cleared by a failed explicit reconnect initialize, or expired by the explicit
-state-key retention window. A newer explicit initialize for the same state key
-invalidates stale live sessions that were claimed before that initialize.
+state-key retention window. Local grants do not expire by default; reconnect
+failure should be diagnosed through revoke, missing grant, scope drift, or an
+explicit expired `expires_at`. A newer explicit initialize for the same state
+key invalidates stale live sessions that were claimed before that initialize.
 Duplicate initialize on the same active or stale explicit-state connection is
 still rejected as already initialized and does not clear the live session.
 Implicit response-state continuity is for a single logical connection; a fresh

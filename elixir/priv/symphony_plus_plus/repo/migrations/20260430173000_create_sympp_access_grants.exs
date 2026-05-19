@@ -9,7 +9,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo.Migrations.CreateSymppAccessGrant
       add(:secret_hash, :text, null: false)
       add(:grant_role, :text, null: false)
       add(:capabilities, :text, null: false, default: "[]")
-      add(:expires_at, :utc_datetime_usec, null: false)
+      add(:expires_at, :utc_datetime_usec)
       add(:revoked_at, :utc_datetime_usec)
       add(:claimed_at, :utc_datetime_usec)
       add(:claimed_by, :text)

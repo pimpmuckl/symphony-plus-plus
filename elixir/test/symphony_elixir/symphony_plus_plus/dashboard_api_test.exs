@@ -2855,6 +2855,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              json_response(get(unknown_work_key_conn, "/api/v1/sympp/board"), 401)
   end
 
+  test "dashboard API rejects grants after package authority reaches terminal state", %{repo: repo} do
+    %{work_package: work_package, work_key_secret: secret} = create_dashboard_fixture(repo, status: "planning")
+
+    assert %{"work_package" => %{"id" => fetched_id}} =
+             json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+
+    assert fetched_id == work_package.id
+    assert {:ok, _terminal_package} = WorkPackageRepository.update(repo, work_package.id, %{status: "merged"})
+
+    assert %{"error" => %{"code" => "unauthorized"}} =
+             json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 401)
+  end
+
   test "dashboard browser sessions reject unknown work keys with login responses", %{repo: repo} do
     %{work_package: work_package} = create_dashboard_fixture(repo)
     unknown_secret = WorkKey.generate().secret
