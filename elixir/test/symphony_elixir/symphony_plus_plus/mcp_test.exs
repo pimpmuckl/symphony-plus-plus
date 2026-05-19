@@ -1314,6 +1314,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "write:work_request",
         "write:guidance_request",
         "mint:child_worker_key",
+        "revoke:child_worker_key",
         "read:phase",
         "dispatch:work_request",
         "approve:child_ready_state",
@@ -1332,7 +1333,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Map.has_key?(tools_by_name, "get_current_assignment")
     refute Map.has_key?(tools_by_name, "claim_work_key")
     refute Map.has_key?(tools_by_name, "create_child_work_package")
-    refute Map.has_key?(tools_by_name, "revoke_child_worker_key")
     assert get_in(tools_by_name, ["list_work_requests", "inputSchema", "required"]) == []
     assert get_in(tools_by_name, ["list_work_requests", "inputSchema", "properties", "status", "type"]) == "string"
     assert get_in(tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
@@ -1410,6 +1410,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["approve_child_ready_state", "inputSchema", "properties", "request_id", "type"]) == "string"
     assert get_in(tools_by_name, ["mint_child_worker_key", "inputSchema", "required"]) == ["work_package_id", "template"]
     assert get_in(tools_by_name, ["mint_child_worker_key", "inputSchema", "properties", "template", "type"]) == "object"
+    assert get_in(tools_by_name, ["revoke_child_worker_key", "inputSchema", "required"]) == ["grant_id", "reason"]
+    assert get_in(tools_by_name, ["revoke_child_worker_key", "inputSchema", "properties", "grant_id", "type"]) == "string"
     assert get_in(tools_by_name, ["merge_child_into_phase", "inputSchema", "required"]) == ["work_package_id", "merge_artifact"]
     assert get_in(tools_by_name, ["merge_child_into_phase", "inputSchema", "properties", "merge_artifact", "required"]) == ["status", "uri"]
     assert get_in(tools_by_name, ["split_work_package", "inputSchema", "properties", "child_specs", "minItems"]) == 1
@@ -6247,6 +6249,256 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert claimed_grant.provenance == @child_worker_grant_provenance
   end
 
+  test "phase architect revokes child worker grant and can remint same child", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-RECYCLE-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "revoke:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-RECYCLE-CHILD")
+
+    first_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => child_worker_template()
+      })
+
+    first_grant_id = get_in(first_response, ["result", "structuredContent", "worker_grant", "id"])
+    assert is_binary(first_grant_id)
+    assert {:ok, first_grant_before_revoke} = AccessGrantRepository.get(repo, first_grant_id)
+    assert first_grant_before_revoke.revoked_at == nil
+    assert first_grant_before_revoke.provenance == @child_worker_grant_provenance
+
+    revoke_response =
+      mcp_tool(repo, architect_session, "revoke_child_worker_key", %{
+        "grant_id" => first_grant_id,
+        "reason" => "worker lost heartbeat"
+      })
+
+    revoked_grant = get_in(revoke_response, ["result", "structuredContent", "revoked_worker_grant"])
+    assert revoked_grant["id"] == first_grant_id
+    assert revoked_grant["work_package_id"] == child_id
+    assert revoked_grant["secret_in_response"] == false
+    assert is_binary(revoked_grant["revoked_at"])
+    refute Map.has_key?(revoked_grant, "display_key")
+    refute Map.has_key?(revoked_grant, "secret")
+    refute Map.has_key?(revoked_grant, "secret_hash")
+    refute Map.has_key?(revoked_grant, "secret_returned_once")
+
+    recycle = get_in(revoke_response, ["result", "structuredContent", "recycle"])
+    assert recycle["status"] == "revoked"
+    assert recycle["reason"] == "worker lost heartbeat"
+    assert recycle["remint_available"] == true
+    assert recycle["private_handoff_cleanup"] == "not_attempted"
+
+    event = get_in(revoke_response, ["result", "structuredContent", "revocation_event"])
+    assert event["status"] == "child_worker_key_revoked"
+    assert event["payload"]["type"] == "child_worker_key_revoke"
+    assert event["payload"]["source_tool"] == "revoke_child_worker_key"
+    assert event["payload"]["work_package_id"] == child_id
+    assert event["payload"]["grant_id"] == first_grant_id
+    assert event["payload"]["reason"] == "worker lost heartbeat"
+    assert event["payload"]["private_handoff_cleanup"] == "not_attempted"
+
+    content_text = get_in(revoke_response, ["result", "content", Access.at(0), "text"])
+    refute content_text =~ "display_key"
+    refute content_text =~ "secret_hash"
+    refute content_text =~ "secret_returned_once"
+
+    assert {:ok, first_grant_after_revoke} = AccessGrantRepository.get(repo, first_grant_id)
+    assert %DateTime{} = first_grant_after_revoke.revoked_at
+
+    assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, child_id)
+    assert Enum.any?(progress_events, &(&1.status == "child_worker_key_revoked" and &1.payload["grant_id"] == first_grant_id))
+
+    second_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => child_worker_template()
+      })
+
+    second_grant_id = get_in(second_response, ["result", "structuredContent", "worker_grant", "id"])
+    assert is_binary(second_grant_id)
+    assert second_grant_id != first_grant_id
+    assert get_in(second_response, ["result", "structuredContent", "worker_grant", "work_package_id"]) == child_id
+  end
+
+  test "child worker revoke rejects normal grants and worker callers", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-REVOKE-NORMAL-ANCHOR", [
+        "create:child_work_package",
+        "revoke:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-REVOKE-NORMAL-CHILD")
+    assert {:ok, normal_minted} = AccessGrantService.mint_worker_grant(repo, child_id)
+
+    normal_revoke_response =
+      mcp_tool(repo, architect_session, "revoke_child_worker_key", %{
+        "grant_id" => normal_minted.grant.id,
+        "reason" => "not a child-worker grant"
+      })
+
+    assert get_in(normal_revoke_response, ["error", "code"]) == -32_602
+    assert get_in(normal_revoke_response, ["error", "data", "reason"]) == "not_child_worker_grant"
+
+    assert {:ok, normal_grant_after_revoke_attempt} = AccessGrantRepository.get(repo, normal_minted.grant.id)
+    assert normal_grant_after_revoke_attempt.revoked_at == nil
+
+    assert {:ok, worker_minted} = AccessGrantService.mint_worker_grant(repo, child_id)
+    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, worker_minted.work_key.secret, claimed_by: "worker-1")
+    worker_session = MCPHarness.session(worker_assignment, proof_hash: worker_minted.grant.secret_hash)
+
+    worker_revoke_response =
+      mcp_tool(repo, worker_session, "revoke_child_worker_key", %{
+        "grant_id" => normal_minted.grant.id,
+        "reason" => "worker caller denied"
+      })
+
+    assert get_in(worker_revoke_response, ["error", "code"]) == -32_001
+    assert get_in(worker_revoke_response, ["error", "data", "reason"]) == "architect_grant_required"
+  end
+
+  test "child worker revoke rejects sibling and stale child grants", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-REVOKE-SCOPE-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "revoke:child_worker_key",
+        "read:phase"
+      ])
+
+    {_other_anchor, other_architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-REVOKE-SCOPE-OTHER", [
+        "revoke:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-REVOKE-SCOPE-CHILD")
+
+    mint_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => child_worker_template()
+      })
+
+    grant_id = get_in(mint_response, ["result", "structuredContent", "worker_grant", "id"])
+    assert is_binary(grant_id)
+
+    sibling_revoke_response =
+      mcp_tool(repo, other_architect_session, "revoke_child_worker_key", %{
+        "grant_id" => grant_id,
+        "reason" => "sibling denied"
+      })
+
+    assert get_in(sibling_revoke_response, ["error", "code"]) == -32_003
+    assert get_in(sibling_revoke_response, ["error", "data", "reason"]) == "outside_session_scope"
+
+    assert {:ok, grant_after_sibling_attempt} = AccessGrantRepository.get(repo, grant_id)
+    assert grant_after_sibling_attempt.revoked_at == nil
+  end
+
+  test "child worker revoke rejects already revoked and expired grants", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-REVOKE-STALE-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "revoke:child_worker_key",
+        "read:phase"
+      ])
+
+    revoked_child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-REVOKE-STALE-REVOKED")
+
+    revoked_mint_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => revoked_child_id,
+        "template" => child_worker_template()
+      })
+
+    revoked_grant_id = get_in(revoked_mint_response, ["result", "structuredContent", "worker_grant", "id"])
+    assert {:ok, _revoked_grant} = AccessGrantRepository.revoke(repo, revoked_grant_id, DateTime.utc_now(:microsecond))
+
+    already_revoked_response =
+      mcp_tool(repo, architect_session, "revoke_child_worker_key", %{
+        "grant_id" => revoked_grant_id,
+        "reason" => "second revoke denied"
+      })
+
+    assert get_in(already_revoked_response, ["error", "code"]) == -32_602
+    assert get_in(already_revoked_response, ["error", "data", "reason"]) == "child_worker_grant_already_revoked"
+
+    expired_child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-REVOKE-STALE-EXPIRED")
+
+    expired_mint_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => expired_child_id,
+        "template" => child_worker_template()
+      })
+
+    expired_grant_id = get_in(expired_mint_response, ["result", "structuredContent", "worker_grant", "id"])
+    expired_at = DateTime.add(DateTime.utc_now(:microsecond), -60, :second)
+
+    assert {1, _rows} =
+             repo.update_all(
+               from(grant in AccessGrant, where: grant.id == ^expired_grant_id),
+               set: [expires_at: expired_at, updated_at: DateTime.utc_now(:microsecond)]
+             )
+
+    expired_revoke_response =
+      mcp_tool(repo, architect_session, "revoke_child_worker_key", %{
+        "grant_id" => expired_grant_id,
+        "reason" => "expired denied"
+      })
+
+    assert get_in(expired_revoke_response, ["error", "code"]) == -32_602
+    assert get_in(expired_revoke_response, ["error", "data", "reason"]) == "child_worker_grant_expired"
+
+    assert {:ok, expired_grant_after_revoke_attempt} = AccessGrantRepository.get(repo, expired_grant_id)
+    assert expired_grant_after_revoke_attempt.revoked_at == nil
+  end
+
+  test "child worker revoke rejects architect-controlled child statuses", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_architect_session(repo, "SYMPP-P7-002-REVOKE-STATUS-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "revoke:child_worker_key",
+        "read:phase"
+      ])
+
+    for status <- ["ready_for_architect_merge", "merging_into_phase", "merged_into_phase", "closed"] do
+      suffix = status |> String.replace("_", "-") |> String.upcase()
+      child_id = "SYMPP-P7-002-REVOKE-STATUS-#{suffix}"
+      child_id = create_child_work_package(repo, architect_session, child_id)
+
+      mint_response =
+        mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+          "work_package_id" => child_id,
+          "template" => child_worker_template()
+        })
+
+      grant_id = get_in(mint_response, ["result", "structuredContent", "worker_grant", "id"])
+      assert is_binary(grant_id)
+      assert {:ok, _updated_child} = WorkPackageRepository.update(repo, child_id, %{status: status})
+
+      response =
+        mcp_tool(repo, architect_session, "revoke_child_worker_key", %{
+          "grant_id" => grant_id,
+          "reason" => "status denied"
+        })
+
+      assert get_in(response, ["error", "code"]) == -32_602
+      assert get_in(response, ["error", "data", "reason"]) == "child_not_recyclable"
+
+      assert {:ok, grant_after_revoke_attempt} = AccessGrantRepository.get(repo, grant_id)
+      assert grant_after_revoke_attempt.revoked_at == nil
+    end
+  end
+
   test "child worker key minting rejects broader grants and worker callers", %{repo: repo} do
     {_anchor, architect_session} =
       create_architect_session(repo, "SYMPP-P7-002-BROADER-ANCHOR", [
@@ -7542,16 +7794,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     {_package, session} =
       create_architect_session(repo, "SYMPP-ARCHITECT-PHASE7", [
         "read:phase",
-        "revoke:child_worker_key"
+        "request:child_replan"
       ])
 
     grants_before = repo.aggregate(AccessGrant, :count)
 
-    revoke_response =
-      mcp_tool(repo, session, "revoke_child_worker_key", %{"grant_id" => "grant-placeholder", "reason" => "not wired"})
+    replan_response =
+      mcp_tool(repo, session, "request_child_replan", %{"work_package_id" => "SYMPP-ARCHITECT-PHASE7", "reason" => "not wired"})
 
-    assert get_in(revoke_response, ["error", "code"]) == -32_604
-    assert get_in(revoke_response, ["error", "data", "reason"]) == "phase7_not_implemented"
+    assert get_in(replan_response, ["error", "code"]) == -32_604
+    assert get_in(replan_response, ["error", "data", "reason"]) == "phase7_not_implemented"
     assert repo.aggregate(AccessGrant, :count) == grants_before
   end
 
@@ -7560,49 +7812,49 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {:ok, other_phase} = PhaseRepository.create(repo, %{id: "phase-mcp-stub-drift", title: "Stub drift"})
 
     assert {:ok, architect_work_key} =
-             create_architect_work_key(repo, package.id, ["mint:child_worker_key", "read:phase", "revoke:child_worker_key"])
+             create_architect_work_key(repo, package.id, ["mint:child_worker_key", "read:phase", "request:child_replan"])
 
     assert {:ok, architect_assignment} =
              AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
 
     session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
 
-    revoke_response =
+    replan_response =
       MCPHarness.request(
         %{
           "jsonrpc" => "2.0",
-          "id" => "revoke-child-stub",
+          "id" => "replan-child-stub",
           "method" => "tools/call",
           "params" => %{
-            "name" => "revoke_child_worker_key",
-            "arguments" => %{"grant_id" => "grant-placeholder", "reason" => "drift check"}
+            "name" => "request_child_replan",
+            "arguments" => %{"work_package_id" => package.id, "reason" => "drift check"}
           }
         },
         config: test_mcp_config(repo),
         session: session
       )
 
-    assert get_in(revoke_response, ["error", "data", "reason"]) == "phase7_not_implemented"
+    assert get_in(replan_response, ["error", "data", "reason"]) == "phase7_not_implemented"
 
     assert {:ok, _package} = WorkPackageRepository.update(repo, package.id, %{phase_id: other_phase.id})
 
-    stale_revoke_response =
+    stale_replan_response =
       MCPHarness.request(
         %{
           "jsonrpc" => "2.0",
-          "id" => "revoke-child-stale",
+          "id" => "replan-child-stale",
           "method" => "tools/call",
           "params" => %{
-            "name" => "revoke_child_worker_key",
-            "arguments" => %{"grant_id" => "grant-placeholder", "reason" => "drift check"}
+            "name" => "request_child_replan",
+            "arguments" => %{"work_package_id" => package.id, "reason" => "drift check"}
           }
         },
         repo: repo,
         session: session
       )
 
-    assert get_in(stale_revoke_response, ["error", "code"]) == -32_003
-    assert get_in(stale_revoke_response, ["error", "data", "reason"]) == "outside_session_scope"
+    assert get_in(stale_replan_response, ["error", "code"]) == -32_003
+    assert get_in(stale_replan_response, ["error", "data", "reason"]) == "outside_session_scope"
 
     stale_mint_response =
       MCPHarness.request(

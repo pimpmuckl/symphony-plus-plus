@@ -1122,18 +1122,17 @@ if ($childHead -ne $phaseParentHead) {
    before it starts. For first dispatch, step 7 must already have proven that
    no leftover remote child branch exists. Do not document or attempt a normal
    replacement-key reassignment after a child has already been claimed or
-   started: the current `mint_child_worker_key` path is only usable before
-   child work starts and rejects active claimed child grants. If a child worker
-   is interrupted after claim, record the package as blocked, preserve branch/PR
-   evidence, and ask the operator to choose an explicit recovery path: wait for
-   the original worker, abandon/recreate the child package with a new pilot ID,
-   or use an approved admin revocation/reassignment mechanism outside this
-   pilot playbook. Use only the approved child-secret handoff wrapper. Do not
-   paste a raw
-   `mint_child_worker_key` call into a transcript or planning file, because the
-   normal tool response contains the live one-time child worker secret. The
-   wrapper must perform the MCP call, store the returned secret in the approved
-   secret manager, and print only non-secret grant metadata before that child
+   started without an explicit recycle decision. If a child worker is
+   interrupted, record the package as blocked, preserve branch/PR evidence, and
+   have the architect use `revoke_child_worker_key` only for the target live
+   child-worker grant inside the same frozen phase scope. A successful revoke
+   records redacted audit/progress evidence and allows `mint_child_worker_key`
+   to mint again when the child still satisfies normal mint preconditions; it
+   does not clean up persisted private handoff files. Use only the approved
+   child-secret handoff wrapper. Do not paste raw MCP payloads or private
+   handoff data into a transcript or planning file. The wrapper must perform
+   the MCP call, keep worker secret material in the approved private store, and
+   print only non-secret grant metadata before that child
    worker is dispatched. If the wrapper cannot confirm storage, do not dispatch
    the worker; record the live child grant as residual access risk until expiry
    or approved admin revocation and do not call `mark_ready` for the child. If
@@ -2074,7 +2073,8 @@ Package rollback:
 2. Revoke every live grant created for the pilot package or phase through the
    dashboard/API or an approved operator admin path: standalone worker grants,
    the mini-phase anchor worker grant, the mini-phase architect grant, and both
-   child worker grants. If the current deployment exposes no executable
+   child worker grants. Use `revoke_child_worker_key` for same-phase live child
+   worker grants when available. If the current deployment exposes no executable
    revocation control for one of these grant types, record the live grant ID as
    residual access risk and do not call rollback complete until the grant
    expires or an operator revokes it through an approved admin path.

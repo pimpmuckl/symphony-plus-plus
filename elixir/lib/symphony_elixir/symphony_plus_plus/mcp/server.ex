@@ -116,7 +116,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "escalate_guidance_request"
   ]
   @phase7_stub_architect_tools [
-    "revoke_child_worker_key",
     "request_child_replan",
     "split_work_package",
     "publish_phase_update"
@@ -155,6 +154,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     :work_package_id
   ]
   @child_worker_capabilities ["worker:claim", "worker:lifecycle.transition"]
+  @child_worker_recyclable_statuses ["ready_for_worker", "claimed", "planning", "implementing", "reviewing", "ci_waiting", "blocked"]
   @child_worker_grant_provenance "child_worker_delegation"
   @version_resource "sympp://health/version"
   @assignment_resource "sympp://assignment/current"
@@ -1006,6 +1006,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp architect_tool_description("mint_child_worker_key") do
     "Mint a narrower worker grant for a phase-child work package in the architect grant's current phase."
+  end
+
+  defp architect_tool_description("revoke_child_worker_key") do
+    "Revoke one live child-worker grant for a same-phase child package in the architect grant's current phase."
   end
 
   defp architect_tool_description("list_work_requests") do
@@ -2458,6 +2462,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp architect_tool("revoke_child_worker_key", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "revoke:child_worker_key"),
+         {:ok, grant_id} <- required_argument(arguments, "grant_id"),
+         {:ok, reason} <- required_argument(arguments, "reason"),
+         {:ok, payload} <- revoke_child_worker_key_transaction(config.repo, session, grant_id, reason) do
+      {:ok, tool_result(payload)}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "revoke_child_worker_key", "reason" => reason}}
+      {:error, reason} -> architect_error(reason, "revoke_child_worker_key")
+    end
+  end
+
   defp architect_tool("approve_scope_expansion", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- architect_session(config.repo, session, "approve:scope_expansion"),
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
@@ -3296,6 +3312,160 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     details = Enum.map_join(metadata, ", ", fn {key, value} -> "#{key}=#{value}" end)
 
     "#{reason}; #{details}"
+  end
+
+  defp revoke_child_worker_key_transaction(repo, %Session{} = session, grant_id, reason) do
+    run_architect_transaction(repo, fn ->
+      revoke_child_worker_key_in_transaction(repo, session, grant_id, reason)
+    end)
+  end
+
+  defp revoke_child_worker_key_in_transaction(repo, %Session{} = session, grant_id, reason) do
+    now = DateTime.utc_now(:microsecond)
+
+    with :ok <- lock_access_grant(repo, session.assignment.grant_id),
+         {:ok, architect_grant} <- require_live_architect_grant(repo, session),
+         :ok <- lock_work_package(repo, Session.work_package_id(session)),
+         {:ok, phase_id, anchor} <- architect_child_phase_anchor(repo, session, architect_grant),
+         {:ok, candidate_grant} <- scoped_child_worker_grant_for_revoke(repo, grant_id, anchor, phase_id, now),
+         :ok <- lock_work_package(repo, candidate_grant.work_package_id),
+         :ok <- lock_access_grant(repo, grant_id),
+         {:ok, grant} <- scoped_child_worker_grant_for_revoke(repo, grant_id, anchor, phase_id, now),
+         {:ok, child} <- require_transaction_current_child_scope(repo, grant.work_package_id, anchor, phase_id),
+         :ok <- require_child_worker_recyclable_status(child),
+         {:ok, revoked_grant} <- revoke_live_child_worker_grant(repo, grant, now),
+         {:ok, event} <- append_child_worker_revoke_event(repo, session, child, revoked_grant, reason) do
+      {:ok, child_worker_revoke_result(child, revoked_grant, event, reason)}
+    end
+  end
+
+  defp scoped_child_worker_grant_for_revoke(repo, grant_id, %WorkPackage{} = anchor, phase_id, %DateTime{} = now) do
+    with {:ok, grant} <- AccessGrantRepository.get(repo, grant_id),
+         {:ok, work_package_id} <- child_worker_grant_work_package_id(grant),
+         {:ok, _child} <- require_transaction_current_child_scope(repo, work_package_id, anchor, phase_id),
+         :ok <- require_live_child_worker_grant_for_revoke(grant, now) do
+      {:ok, grant}
+    end
+  end
+
+  defp child_worker_grant_work_package_id(%AccessGrant{work_package_id: work_package_id}) when is_binary(work_package_id) do
+    case String.trim(work_package_id) do
+      "" -> {:error, :phase_scope_not_available}
+      trimmed -> {:ok, trimmed}
+    end
+  end
+
+  defp child_worker_grant_work_package_id(%AccessGrant{}), do: {:error, :phase_scope_not_available}
+
+  defp require_live_child_worker_grant_for_revoke(%AccessGrant{grant_role: "worker", provenance: @child_worker_grant_provenance} = grant, now) do
+    cond do
+      not child_worker_grant_capabilities?(grant.capabilities || []) ->
+        {:tool_error, "not_child_worker_grant"}
+
+      match?(%DateTime{}, grant.revoked_at) ->
+        {:tool_error, "child_worker_grant_already_revoked"}
+
+      not match?(%DateTime{}, grant.expires_at) ->
+        {:tool_error, "child_worker_grant_expired"}
+
+      DateTime.compare(grant.expires_at, now) != :gt ->
+        {:tool_error, "child_worker_grant_expired"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp require_live_child_worker_grant_for_revoke(%AccessGrant{}, _now), do: {:tool_error, "not_child_worker_grant"}
+
+  defp child_worker_grant_capabilities?(capabilities) when is_list(capabilities) do
+    Enum.all?(capabilities, &(&1 in @child_worker_capabilities))
+  end
+
+  defp child_worker_grant_capabilities?(_capabilities), do: false
+
+  defp require_child_worker_recyclable_status(%WorkPackage{status: status}) when status in @child_worker_recyclable_statuses, do: :ok
+  defp require_child_worker_recyclable_status(%WorkPackage{}), do: {:tool_error, "child_not_recyclable"}
+
+  defp revoke_live_child_worker_grant(repo, %AccessGrant{} = grant, %DateTime{} = now) do
+    query =
+      from(access_grant in AccessGrant,
+        where:
+          access_grant.id == ^grant.id and access_grant.work_package_id == ^grant.work_package_id and
+            access_grant.grant_role == "worker" and access_grant.provenance == ^@child_worker_grant_provenance and
+            is_nil(access_grant.revoked_at) and access_grant.expires_at > ^now
+      )
+
+    case repo.update_all(query, set: [revoked_at: now, updated_at: now]) do
+      {1, _rows} -> AccessGrantRepository.get(repo, grant.id)
+      {0, _rows} -> classify_child_worker_revoke_miss(repo, grant.id, now)
+    end
+  end
+
+  defp classify_child_worker_revoke_miss(repo, grant_id, %DateTime{} = now) do
+    with {:ok, grant} <- AccessGrantRepository.get(repo, grant_id) do
+      case require_live_child_worker_grant_for_revoke(grant, now) do
+        :ok -> {:tool_error, "child_worker_revoke_conflict"}
+        {:tool_error, reason} -> {:tool_error, reason}
+      end
+    end
+  end
+
+  defp append_child_worker_revoke_event(repo, %Session{} = session, %WorkPackage{} = child, %AccessGrant{} = grant, reason) do
+    payload = child_worker_revoke_payload(child.id, grant, reason)
+
+    PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, child.id, %{
+      "summary" => "Child worker grant revoked for recycle",
+      "body" => "Recycle reason: #{redacted_child_worker_revoke_reason(reason)}",
+      "status" => "child_worker_key_revoked",
+      "idempotency_key" => metadata_idempotency_key(payload),
+      "payload" => payload
+    })
+  end
+
+  defp child_worker_revoke_payload(work_package_id, %AccessGrant{} = grant, reason) do
+    %{
+      "type" => "child_worker_key_revoke",
+      "source_tool" => "revoke_child_worker_key",
+      "work_package_id" => work_package_id,
+      "grant_id" => grant.id,
+      "reason" => redacted_child_worker_revoke_reason(reason),
+      "revoked_at" => timestamp(grant.revoked_at),
+      "private_handoff_cleanup" => "not_attempted"
+    }
+  end
+
+  defp child_worker_revoke_result(%WorkPackage{} = child, %AccessGrant{} = grant, %ProgressEvent{} = event, reason) do
+    %{
+      "work_package" => child_work_package_payload(child),
+      "revoked_worker_grant" => revoked_child_worker_grant_payload(grant),
+      "recycle" => %{
+        "status" => "revoked",
+        "reason" => redacted_child_worker_revoke_reason(reason),
+        "remint_available" => child.status == "ready_for_worker",
+        "remint_precondition" => "child_status_ready_for_worker",
+        "private_handoff_cleanup" => "not_attempted"
+      },
+      "revocation_event" => progress_event_payload(event)
+    }
+  end
+
+  defp revoked_child_worker_grant_payload(%AccessGrant{} = grant) do
+    %{
+      "id" => grant.id,
+      "work_package_id" => grant.work_package_id,
+      "grant_role" => grant.grant_role,
+      "capabilities" => grant.capabilities || [],
+      "expires_at" => timestamp(grant.expires_at),
+      "revoked_at" => timestamp(grant.revoked_at),
+      "secret_in_response" => false
+    }
+  end
+
+  defp redacted_child_worker_revoke_reason(reason) when is_binary(reason) do
+    reason
+    |> String.trim()
+    |> Redactor.redact_text()
   end
 
   defp approve_child_ready_state_transaction(repo, %Session{} = session, work_package_id, rationale, request_id) do
