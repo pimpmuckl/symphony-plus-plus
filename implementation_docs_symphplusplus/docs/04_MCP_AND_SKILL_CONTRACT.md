@@ -486,9 +486,18 @@ scripts are resolved from an operator-chosen repository root; minting fails
 before grant creation if the expected handoff script is missing there.
 `template.secret_handoff` is optional and narrow: only `mode`, `store_dir`, and
 `claimed_by` are accepted, blank values are rejected, and grant capabilities
-cannot be broadened through handoff settings. `revoke_child_worker_key` remains
-a not-implemented Phase 7 stub in this package; deleting persisted child
-handoffs on revoke belongs with the future child-revocation implementation.
+cannot be broadened through handoff settings. `revoke_child_worker_key` requires
+`revoke:child_worker_key`, revalidates the live architect grant and frozen
+phase anchor scope, and revokes only a live child-delegated worker grant for a
+same-phase child package. If the child is in `claimed`, `planning`,
+`implementing`, `reviewing`, `ci_waiting`, or `blocked`, revoke resets it to
+`ready_for_worker` so the architect can immediately remint. It rejects unrelated
+grants, normal worker grants, sibling/out-of-scope children, already revoked or
+expired grants, and children already in architect-controlled/closed/merged or
+terminal states. The response and durable audit/progress event are redacted and
+identify only safe child package and grant metadata, previous and new child
+statuses, and the redacted recycle reason; persisted private handoff cleanup is
+not performed in this v1 package.
 `read_child_status(work_package_id)` requires both `read:child_progress` and
 `read:child_findings`; it can read the architect anchor package or a same-phase
 child package. `approve_child_ready_state(work_package_id, rationale, request_id?)` can
