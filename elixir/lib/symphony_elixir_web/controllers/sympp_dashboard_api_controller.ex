@@ -11,8 +11,15 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service, as: GuidanceRequestService
+  alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.TrackerAdapter
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixirWeb.Endpoint
 
@@ -23,6 +30,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @operator_session_key "sympp_local_operator"
   @max_package_sessions 8
   @access_grant_lazy_migration_columns ["phase_id", "scope_repo", "scope_base_branch", "provenance"]
+  @local_operator_actor "local-operator"
+  @local_operator_worker "local-operator-worker"
 
   @spec authorize_board_browser(Conn.t(), term()) :: Conn.t()
   def authorize_board_browser(conn, _opts) do
@@ -262,7 +271,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
-  defp put_local_operator_session(conn) do
+  @spec put_local_operator_session(Conn.t()) :: Conn.t()
+  def put_local_operator_session(conn) do
     conn
     |> clear_board_session()
     |> Conn.put_session(@operator_session_key, true)
@@ -474,6 +484,81 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     send_package_response(conn, normalize_package_route_id(work_package_id), &Dashboard.agent_runs/2)
   end
 
+  @spec operator_dashboard(Conn.t(), map()) :: Conn.t()
+  def operator_dashboard(conn, _params) do
+    send_local_operator_response(conn, fn repo ->
+      with {:ok, payload} <- operator_dashboard_payload(repo) do
+        json(conn, payload)
+      end
+    end)
+  end
+
+  @spec operator_create_work_request(Conn.t(), map()) :: Conn.t()
+  def operator_create_work_request(conn, params) do
+    send_local_operator_response(conn, fn repo ->
+      attrs = work_request_attrs(params)
+
+      with {:ok, work_request} <- WorkRequestService.create(repo, attrs),
+           {:ok, detail} <- Dashboard.work_request_detail(repo, work_request.id) do
+        conn
+        |> put_status(201)
+        |> json(%{work_request: detail, dashboard: operator_dashboard_payload!(repo)})
+      end
+    end)
+  end
+
+  @spec operator_answer_question(Conn.t(), map()) :: Conn.t()
+  def operator_answer_question(conn, %{"work_request_id" => work_request_id, "question_id" => question_id} = params) do
+    send_local_operator_response(conn, fn repo ->
+      with {:ok, question} <- scoped_question(repo, work_request_id, question_id),
+           :ok <- require_open_question(question),
+           {:ok, attrs} <- local_operator_question_answer_attrs(question, params),
+           {:ok, _answered} <- WorkRequestService.answer_question(repo, question.id, question.status, attrs),
+           {:ok, detail} <- Dashboard.work_request_detail(repo, work_request_id) do
+        json(conn, %{work_request: detail, dashboard: operator_dashboard_payload!(repo)})
+      end
+    end)
+  end
+
+  @spec operator_answer_guidance(Conn.t(), map()) :: Conn.t()
+  def operator_answer_guidance(conn, %{"work_package_id" => work_package_id, "guidance_request_id" => guidance_request_id} = params) do
+    send_local_operator_response(conn, fn repo ->
+      attrs = Map.put(params, "work_package_id", work_package_id)
+
+      with {:ok, result} <-
+             GuidanceRequestService.answer_human_info_needed_for_local_operator(
+               repo,
+               :local_operator,
+               guidance_request_id,
+               attrs
+             ) do
+        json(conn, %{guidance_request_id: result.guidance_request.id, dashboard: operator_dashboard_payload!(repo)})
+      end
+    end)
+  end
+
+  @spec operator_create_architect_handoff(Conn.t(), map()) :: Conn.t()
+  def operator_create_architect_handoff(conn, %{"work_request_id" => work_request_id}) do
+    send_local_operator_response(conn, fn repo ->
+      with {:ok, handoff} <-
+             ArchitectHandoff.create_or_replay(repo, work_request_id,
+               local_operator?: true,
+               secret_handoff_opts: architect_handoff_opts(repo)
+             ) do
+        json(conn, %{architect_handoff: handoff, dashboard: operator_dashboard_payload!(repo)})
+      end
+    end)
+  end
+
+  @spec operator_dispatch_planned_slice(Conn.t(), map()) :: Conn.t()
+  def operator_dispatch_planned_slice(conn, %{"work_request_id" => work_request_id, "planned_slice_id" => planned_slice_id}) do
+    send_local_operator_response(conn, fn repo ->
+      with {:ok, dispatch} <- PlannedSliceDispatch.dispatch(repo, work_request_id, planned_slice_id, dispatch_handoff_opts(repo)) do
+        json(conn, %{dispatch: PlannedSliceDispatch.response_payload(dispatch), dashboard: operator_dashboard_payload!(repo)})
+      end
+    end)
+  end
+
   defp send_package_response(conn, work_package_id, fetch_fun) do
     send_repo_response(conn, fn repo, secret ->
       with {:ok, auth_context} <- auth_context(conn, repo, secret),
@@ -494,6 +579,228 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       %Conn{} = conn -> conn
     end
   end
+
+  defp send_local_operator_response(conn, fun) when is_function(fun, 1) do
+    conn = maybe_refresh_local_operator_session(conn)
+
+    if local_operator_api_request?(conn) do
+      with_dashboard_repo(fun)
+      |> case do
+        {:error, reason} -> error_response(conn, reason)
+        %Conn{} = conn -> conn
+      end
+    else
+      error_response(conn, :unauthorized)
+    end
+  end
+
+  defp maybe_refresh_local_operator_session(conn) do
+    if local_operator_browser?(conn) do
+      conn
+      |> Conn.fetch_session()
+      |> put_local_operator_session()
+    else
+      conn
+    end
+  end
+
+  defp local_operator_api_request?(conn) do
+    local_operator_browser?(conn) or fetched_active_local_operator_session?(conn)
+  end
+
+  defp fetched_active_local_operator_session?(conn) do
+    conn
+    |> Conn.fetch_session()
+    |> active_local_operator_session?()
+  end
+
+  defp operator_dashboard_payload(repo) do
+    with {:ok, board} <- Dashboard.board(repo),
+         {:ok, work_requests} <- Dashboard.work_requests(repo),
+         {:ok, work_request_details} <- operator_work_request_details(repo, Map.get(work_requests, :work_requests, [])),
+         {:ok, guidance_requests} <- Dashboard.human_guidance_requests(repo),
+         {:ok, solo_sessions} <- Dashboard.solo_sessions(repo, %{}) do
+      {:ok,
+       %{
+         generated_at: DateTime.utc_now(:microsecond) |> DateTime.to_iso8601(),
+         board: board,
+         work_requests: work_requests,
+         work_request_details: work_request_details,
+         guidance_requests: guidance_requests,
+         solo_sessions: solo_sessions
+       }}
+    end
+  end
+
+  defp operator_work_request_details(repo, work_request_cards) when is_list(work_request_cards) do
+    work_request_cards
+    |> Enum.map(&Map.get(&1, :id))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.reduce_while({:ok, []}, fn work_request_id, {:ok, details} ->
+      case Dashboard.work_request_detail(repo, work_request_id) do
+        {:ok, detail} -> {:cont, {:ok, [detail | details]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, details} -> {:ok, Enum.reverse(details)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp operator_dashboard_payload!(repo) do
+    case operator_dashboard_payload(repo) do
+      {:ok, payload} -> payload
+      {:error, reason} -> %{error: inspect(reason)}
+    end
+  end
+
+  defp work_request_attrs(params) do
+    %{
+      "title" => text_param(params, "title"),
+      "repo" => text_param(params, "repo"),
+      "base_branch" => text_param(params, "base_branch"),
+      "work_type" => text_param(params, "work_type", "feature"),
+      "human_description" => text_param(params, "human_description"),
+      "desired_dispatch_shape" => text_param(params, "desired_dispatch_shape", "architect_led_feature_branch"),
+      "status" => text_param(params, "status", "ready_for_clarification"),
+      "constraints" => constraints_param(params)
+    }
+  end
+
+  defp constraints_param(%{"constraints" => constraints}) when is_map(constraints), do: constraints
+  defp constraints_param(%{constraints: constraints}) when is_map(constraints), do: constraints
+
+  defp constraints_param(params) do
+    params
+    |> Map.take(["allowed_paths", "forbidden_paths", "stop_conditions", "compatibility_stance", "validation_expectations", "dependencies_notes"])
+    |> Enum.reject(fn {_key, value} -> blank_param?(value) end)
+    |> Map.new(fn {key, value} -> {key, normalize_constraint_value(value)} end)
+  end
+
+  defp normalize_constraint_value(value) when is_list(value), do: value |> Enum.map(&text_value/1) |> Enum.reject(&(&1 == ""))
+  defp normalize_constraint_value(value) when is_binary(value), do: newline_list(value)
+  defp normalize_constraint_value(value), do: value
+
+  defp newline_list(value) do
+    value
+    |> String.split(["\r\n", "\n"], trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp scoped_question(repo, work_request_id, question_id) when is_binary(work_request_id) and is_binary(question_id) do
+    with {:ok, questions} <- WorkRequestService.list_questions(repo, work_request_id) do
+      case Enum.find(questions, &(&1.id == question_id)) do
+        %ClarificationQuestion{} = question -> {:ok, question}
+        nil -> {:error, :not_found}
+      end
+    end
+  end
+
+  defp scoped_question(_repo, _work_request_id, _question_id), do: {:error, :not_found}
+
+  defp require_open_question(%ClarificationQuestion{status: "open"}), do: :ok
+  defp require_open_question(%ClarificationQuestion{status: "answered"}), do: {:error, :already_answered}
+  defp require_open_question(%ClarificationQuestion{status: "closed"}), do: {:error, :already_closed}
+  defp require_open_question(%ClarificationQuestion{}), do: {:error, :invalid_status}
+
+  defp local_operator_question_answer_attrs(%ClarificationQuestion{} = question, params) do
+    case HumanDecisionPrompt.answer_text_result(question.decision_prompt, params) do
+      {:ok, answer} ->
+        case String.trim(answer) do
+          "" -> {:error, :missing_answer}
+          answer -> {:ok, %{"answer" => answer, "answered_by" => @local_operator_actor}}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp text_param(params, key, default \\ nil) do
+    case Map.get(params, key) || Map.get(params, String.to_atom(key)) do
+      value when is_binary(value) ->
+        value = String.trim(value)
+        if value == "", do: default, else: value
+
+      nil ->
+        default
+
+      value ->
+        to_string(value)
+    end
+  end
+
+  defp text_value(value) when is_binary(value), do: String.trim(value)
+  defp text_value(nil), do: ""
+  defp text_value(value), do: to_string(value)
+
+  defp blank_param?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank_param?(value) when is_list(value), do: value |> Enum.map(&text_value/1) |> Enum.all?(&(&1 == ""))
+  defp blank_param?(nil), do: true
+  defp blank_param?(_value), do: false
+
+  defp architect_handoff_opts(repo) do
+    [
+      mode: "auto",
+      database: dashboard_ledger_database(repo),
+      repo_root: SecretHandoff.local_operator_repo_root(),
+      claimed_by: ArchitectHandoff.claimed_by()
+    ]
+    |> put_optional_handoff_opt(:store_dir, Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir))
+  end
+
+  defp dispatch_handoff_opts(repo) do
+    [
+      mode: "auto",
+      database: dashboard_ledger_database(repo),
+      repo_root: SecretHandoff.local_operator_repo_root(),
+      claimed_by: @local_operator_worker
+    ]
+    |> put_optional_handoff_opt(:store_dir, Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir))
+  end
+
+  defp dashboard_ledger_database(repo) do
+    configured_ledger_database() || live_ledger_database(repo)
+  end
+
+  defp live_ledger_database(repo) do
+    case repo.query("PRAGMA database_list", []) do
+      {:ok, %{rows: rows}} -> persistent_main_database_path(rows) || configured_ledger_database()
+      {:error, _reason} -> configured_ledger_database()
+      _result -> configured_ledger_database()
+    end
+  rescue
+    _error in [Exqlite.Error, UndefinedFunctionError] -> configured_ledger_database()
+  end
+
+  defp persistent_main_database_path(rows) do
+    Enum.find_value(rows, fn
+      [_seq, "main", path] when is_binary(path) and path != "" -> path
+      _row -> nil
+    end)
+  end
+
+  defp configured_ledger_database do
+    case Application.get_env(:symphony_elixir, :sympp_repo_database) do
+      database when is_binary(database) -> configured_ledger_database_path(database)
+      database -> database
+    end
+  end
+
+  defp configured_ledger_database_path(database) do
+    database = String.trim(database)
+
+    cond do
+      database == "" -> nil
+      Repo.filesystem_database_path?(database) -> Path.expand(database)
+      true -> database
+    end
+  end
+
+  defp put_optional_handoff_opt(opts, _key, nil), do: opts
+  defp put_optional_handoff_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp authorize_package_session(conn, work_package_id) do
     package_result =
@@ -1282,12 +1589,45 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp error_response(conn, :unauthorized), do: error_response(conn, 401, "unauthorized", "Unauthorized")
   defp error_response(conn, :forbidden), do: error_response(conn, 403, "forbidden", "Forbidden")
   defp error_response(conn, :database_busy), do: error_response(conn, 503, "database_busy", "Dashboard ledger is busy")
+  defp error_response(conn, :already_answered), do: error_response(conn, 409, "already_answered", "Question is already answered")
+  defp error_response(conn, :already_closed), do: error_response(conn, 409, "already_closed", "Question is already closed")
+  defp error_response(conn, :invalid_answer_choice), do: error_response(conn, 422, "invalid_answer_choice", "Answer choice is invalid")
+  defp error_response(conn, :missing_answer), do: error_response(conn, 422, "missing_answer", "Answer is required")
+
+  defp error_response(conn, :missing_custom_redirect_note) do
+    error_response(conn, 422, "missing_custom_redirect_note", "A note is required for the custom answer")
+  end
+
+  defp error_response(conn, :invalid_status), do: error_response(conn, 422, "invalid_status", "Action is not valid for the current status")
+
+  defp error_response(conn, %Ecto.Changeset{} = changeset) do
+    error_response(conn, 422, "invalid_request", changeset_error_message(changeset))
+  end
+
+  defp error_response(conn, {:invalid_work_request_status, _status}) do
+    error_response(conn, 422, "invalid_work_request_status", "WorkRequest is not ready for this action")
+  end
+
+  defp error_response(conn, {:invalid_planned_slice_status, _status}) do
+    error_response(conn, 422, "invalid_planned_slice_status", "Planned slice is not ready for this action")
+  end
 
   defp error_response(conn, {:storage_failed, _reason}) do
     error_response(conn, 503, "storage_failed", "Dashboard ledger storage failed")
   end
 
   defp error_response(conn, _reason), do: error_response(conn, 500, "dashboard_unavailable", "Dashboard API unavailable")
+
+  defp changeset_error_message(%Ecto.Changeset{} = changeset) do
+    changeset
+    |> Ecto.Changeset.traverse_errors(fn {message, _opts} -> message end)
+    |> Enum.map(fn {field, messages} -> "#{field}: #{Enum.join(messages, ", ")}" end)
+    |> Enum.join("; ")
+    |> case do
+      "" -> "Request did not pass validation"
+      message -> message
+    end
+  end
 
   defp board_browser_error_response(conn, :forbidden) do
     board_login_response(conn, status: 403, message: "The work key is not allowed to open the board.")

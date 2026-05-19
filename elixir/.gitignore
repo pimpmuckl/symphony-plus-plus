@@ -13,12 +13,17 @@
 # Temporary files, for example, from tests.
 /tmp/
 
-# Generated browser assets.
+# Vite dependencies and generated browser assets.
+/assets/node_modules/
+/assets/*.tsbuildinfo
+/priv/static/.vite/
 /priv/static/assets/
+/priv/static/index.html
 
 # Local runtime logs.
 /log/
 /logs/
+/output/
 
 # If the VM crashes, it generates a dump, let's ignore it too.
 erl_crash.dump

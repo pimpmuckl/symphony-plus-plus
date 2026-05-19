@@ -11,10 +11,12 @@ defmodule Mix.Tasks.Sympp.Cockpit do
   @default_host "127.0.0.1"
   @default_port 4057
   @board_path "/sympp/board"
+  @default_dashboard_origin "http://127.0.0.1:5173"
   @switches [
     database: :string,
     host: :string,
     port: :integer,
+    dashboard_origin: :string,
     help: :boolean
   ]
 
@@ -38,7 +40,8 @@ defmodule Mix.Tasks.Sympp.Cockpit do
       "Usage: mix sympp.cockpit",
       "[--database <sqlite-path>]",
       "[--host <loopback-host>]",
-      "[--port <port>]"
+      "[--port <port>]",
+      "[--dashboard-origin <vite-origin>]"
     ]
     |> Enum.join(" ")
   end
@@ -76,6 +79,9 @@ defmodule Mix.Tasks.Sympp.Cockpit do
       has_blank_option?(opts, [:database, :host]) ->
         {:error, usage()}
 
+      has_blank_option?(opts, [:dashboard_origin]) ->
+        {:error, usage()}
+
       not loopback_host?(Keyword.get(opts, :host, @default_host)) ->
         {:error, "Symphony++ cockpit host must be loopback: #{@default_host}, localhost, ::1, or [::1]."}
 
@@ -91,7 +97,15 @@ defmodule Mix.Tasks.Sympp.Cockpit do
     opts
     |> Keyword.put_new(:host, @default_host)
     |> Keyword.put_new(:port, @default_port)
+    |> Keyword.put_new(:dashboard_origin, dashboard_origin_from_env())
     |> maybe_resolve_database()
+  end
+
+  defp dashboard_origin_from_env do
+    case System.get_env("SYMPP_DASHBOARD_ORIGIN") do
+      value when is_binary(value) and value != "" -> value
+      _value -> @default_dashboard_origin
+    end
   end
 
   defp maybe_resolve_database(opts) do
@@ -114,7 +128,8 @@ defmodule Mix.Tasks.Sympp.Cockpit do
       :ok = start_http_server_or_raise(opts)
       port = wait_for_bound_port()
 
-      Mix.shell().info("Symphony++ local operator cockpit: #{cockpit_url(opts, port)}")
+      Mix.shell().info("Symphony++ local operator dashboard: #{cockpit_url(opts, port)}")
+      Mix.shell().info("Symphony++ API bridge: #{api_url(opts, port)}")
       Mix.shell().info("Press Ctrl+C to stop.")
 
       wait_fun.()
@@ -175,7 +190,11 @@ defmodule Mix.Tasks.Sympp.Cockpit do
 
   defp endpoint_config(original_endpoint_config, opts) do
     original_endpoint_config
-    |> Keyword.merge(server: false, sympp_local_operator: true)
+    |> Keyword.merge(
+      server: false,
+      sympp_local_operator: true,
+      sympp_dashboard_origin: Keyword.get(opts, :dashboard_origin, dashboard_origin_from_env())
+    )
     |> maybe_force_default_repo(opts)
   end
 
@@ -230,9 +249,14 @@ defmodule Mix.Tasks.Sympp.Cockpit do
     end) || Mix.raise("Symphony++ cockpit started but no bound HTTP port was reported.")
   end
 
-  defp cockpit_url(opts, port) do
+  defp cockpit_url(opts, _port) do
+    dashboard_origin = opts |> Keyword.fetch!(:dashboard_origin) |> String.trim_trailing("/")
+    "#{dashboard_origin}#{@board_path}"
+  end
+
+  defp api_url(opts, port) do
     host = opts |> Keyword.fetch!(:host) |> url_host()
-    "http://#{host}:#{port}#{@board_path}"
+    "http://#{host}:#{port}"
   end
 
   defp url_host("::1"), do: "[::1]"

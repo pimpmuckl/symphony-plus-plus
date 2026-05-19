@@ -2855,6 +2855,51 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              json_response(get(unknown_work_key_conn, "/api/v1/sympp/board"), 401)
   end
 
+  test "local operator dashboard returns aggregate workflow state", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      assert {:ok, work_request} =
+               WorkRequestRepository.create(repo, %{
+                 title: "Operator intake",
+                 repo: "symphony-plus-plus",
+                 base_branch: "main",
+                 work_type: "feature",
+                 human_description: "Build the dashboard.",
+                 constraints: %{},
+                 desired_dispatch_shape: "architect_led_feature_branch",
+                 status: "ready_for_clarification"
+               })
+
+      payload = json_response(get(local_operator_conn(), "/api/v1/sympp/operator/dashboard"), 200)
+
+      assert payload["work_requests"]["total_count"] == 1
+      assert [%{"work_request" => %{"id" => work_request_id}}] = payload["work_request_details"]
+      assert work_request_id == work_request.id
+    end)
+  end
+
+  test "local operator can create a WorkRequest through the dashboard API", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      payload =
+        local_operator_conn()
+        |> post("/api/v1/sympp/operator/work-requests", %{
+          "title" => "Fresh dashboard request",
+          "repo" => "symphony-plus-plus",
+          "base_branch" => "main",
+          "work_type" => "feature",
+          "human_description" => "Create a first-class operator cockpit.",
+          "desired_dispatch_shape" => "architect_led_feature_branch",
+          "constraints" => %{"allowed_paths" => ["elixir"]}
+        })
+        |> json_response(201)
+
+      assert payload["work_request"]["work_request"]["status"] == "ready_for_clarification"
+      assert payload["dashboard"]["work_requests"]["total_count"] == 1
+
+      assert {:ok, [stored]} = WorkRequestRepository.list(repo)
+      assert stored.title == "Fresh dashboard request"
+    end)
+  end
+
   test "dashboard browser sessions reject unknown work keys with login responses", %{repo: repo} do
     %{work_package: work_package} = create_dashboard_fixture(repo)
     unknown_secret = WorkKey.generate().secret
@@ -3694,6 +3739,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     |> put_req_header("authorization", "Bearer #{secret}")
   end
 
+  defp local_operator_conn do
+    build_conn()
+    |> Map.put(:host, "localhost")
+    |> Map.put(:remote_ip, {127, 0, 0, 1})
+    |> put_req_header("origin", "http://localhost")
+  end
+
   defp start_test_endpoint do
     endpoint_config =
       :symphony_elixir
@@ -3702,6 +3754,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
     start_supervised!({SymphonyElixirWeb.Endpoint, []})
+  end
+
+  defp with_local_operator_endpoint(fun) when is_function(fun, 0) do
+    endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
+
+    Application.put_env(
+      :symphony_elixir,
+      SymphonyElixirWeb.Endpoint,
+      Keyword.put(endpoint_config, :sympp_local_operator, true)
+    )
+
+    try do
+      fun.()
+    after
+      Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
+    end
   end
 
   defp with_endpoint_repo(repo, fun) when is_atom(repo) and is_function(fun, 0) do
