@@ -25,6 +25,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
     use Ecto.Repo, otp_app: :symphony_elixir, adapter: Ecto.Adapters.SQLite3
   end
 
+  defmodule FailingLazyHTTPRepo do
+    @moduledoc false
+
+    def __adapter__, do: Ecto.Adapters.SQLite3
+    def config, do: Application.get_env(:symphony_elixir, __MODULE__, [])
+    def start_link(_opts), do: {:error, :start_failed}
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
     endpoint_config = Application.get_env(:symphony_elixir, Endpoint, [])
@@ -452,17 +460,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
 
   test "POST /mcp fails closed when dashboard lazy repo startup fails" do
     database_path = WorkPackageFactory.database_path()
-    original_repo_config = Application.get_env(:symphony_elixir, LazyHTTPRepo)
+    original_repo_config = Application.get_env(:symphony_elixir, FailingLazyHTTPRepo)
 
-    File.mkdir_p!(database_path)
-    Application.put_env(:symphony_elixir, LazyHTTPRepo, database: database_path)
+    Application.put_env(:symphony_elixir, FailingLazyHTTPRepo, database: database_path)
 
     on_exit(fn ->
-      restore_app_env(LazyHTTPRepo, original_repo_config)
-      File.rm_rf(database_path)
+      restore_app_env(FailingLazyHTTPRepo, original_repo_config)
+      File.rm(database_path)
     end)
 
-    with_endpoint_repo(LazyHTTPRepo, fn ->
+    with_endpoint_repo(FailingLazyHTTPRepo, fn ->
       conn = post_json(initialize_request("init"))
 
       assert json_response(conn, 503) == json_rpc_error("init", -32_000, "Server error", "ledger_unavailable")
