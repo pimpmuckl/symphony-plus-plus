@@ -6,6 +6,22 @@
     <link rel="icon" type="image/png" href="/splusplus-logo.png" />
     <link rel="apple-touch-icon" href="/splusplus-logo.png" />
     <title>Symphony++ Dashboard</title>
+    <script>
+      (() => {
+        const key = "symphony-plus-plus.dashboard.theme.v1";
+        let stored = null;
+
+        try {
+          stored = localStorage.getItem(key);
+        } catch {
+          stored = null;
+        }
+
+        const prefersDark = typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches;
+        const dark = stored === "dark" || (!stored && prefersDark);
+        document.documentElement.classList.toggle("dark", dark);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

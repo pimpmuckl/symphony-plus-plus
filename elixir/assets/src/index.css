@@ -1,43 +1,13 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
-@font-face {
-  font-family: "Geist Sans";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url("../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2") format("woff2");
-}
-
-@font-face {
-  font-family: "Geist Sans";
-  font-style: italic;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url("../node_modules/geist/dist/fonts/geist-sans/Geist-Italic[wght].woff2") format("woff2");
-}
-
-@font-face {
-  font-family: "Geist Mono";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url("../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2") format("woff2");
-}
-
-@font-face {
-  font-family: "Geist Mono";
-  font-style: italic;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url("../node_modules/geist/dist/fonts/geist-mono/GeistMono-Italic[wght].woff2") format("woff2");
-}
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "tailwindcss";
+@config "../tailwind.config.ts";
 
 @layer base {
   :root {
-    --font-geist-sans: "Geist Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    --font-geist-mono: "Geist Mono", ui-monospace, SFMono-Regular, "Roboto Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    color-scheme: light;
+    --font-geist-sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-geist-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, "Roboto Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
     --background: 210 20% 98%;
     --foreground: 224 27% 12%;
     --card: 0 0% 100%;
@@ -60,6 +30,29 @@
     --radius: 0.5rem;
   }
 
+  .dark {
+    color-scheme: dark;
+    --background: 222 32% 7%;
+    --foreground: 214 24% 94%;
+    --card: 222 28% 10%;
+    --card-foreground: 214 24% 94%;
+    --popover: 222 30% 9%;
+    --popover-foreground: 214 24% 94%;
+    --primary: 190 84% 46%;
+    --primary-foreground: 222 44% 8%;
+    --secondary: 222 20% 15%;
+    --secondary-foreground: 214 24% 92%;
+    --muted: 222 22% 15%;
+    --muted-foreground: 215 16% 70%;
+    --accent: 193 42% 17%;
+    --accent-foreground: 190 78% 88%;
+    --destructive: 350 82% 58%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 218 20% 23%;
+    --input: 218 20% 23%;
+    --ring: 190 90% 56%;
+  }
+
   * {
     @apply border-border;
   }
@@ -72,6 +65,9 @@
       "calt" 1;
     letter-spacing: 0;
     text-rendering: optimizeLegibility;
+    transition:
+      background-color 180ms ease,
+      color 180ms ease;
   }
 
   code,
@@ -107,12 +103,57 @@
     box-shadow: 0 8px 20px hsl(224 27% 12% / 0.08);
   }
 
+  .dark .button-lift:hover {
+    box-shadow: 0 10px 24px hsl(0 0% 0% / 0.28);
+  }
+
   .status-tile {
     animation: surface-enter 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
   }
 
   .stagger-item {
     animation: surface-enter 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+
+  .dashboard-header-glass {
+    isolation: isolate;
+    overflow: clip;
+    border-bottom: 1px solid hsl(var(--border) / 0.46);
+    background: transparent;
+    box-shadow: 0 8px 22px hsl(224 27% 12% / 0.035);
+    transform: translateZ(0);
+    backface-visibility: hidden;
+    will-change: transform;
+  }
+
+  .dashboard-header-glass::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(180deg, hsl(var(--background) / 0.46), hsl(var(--background) / 0.24)),
+      hsl(var(--background) / 0.2);
+    backdrop-filter: blur(10px) saturate(1.75);
+    -webkit-backdrop-filter: blur(10px) saturate(1.75);
+    transform: translateZ(0);
+  }
+
+  .dashboard-header-glass > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .dark .dashboard-header-glass {
+    border-bottom-color: hsl(var(--border) / 0.44);
+    box-shadow: 0 10px 26px hsl(0 0% 0% / 0.18);
+  }
+
+  .dark .dashboard-header-glass::before {
+    background:
+      linear-gradient(180deg, hsl(var(--background) / 0.52), hsl(var(--background) / 0.26)),
+      hsl(var(--background) / 0.18);
   }
 
   .collapsible-content {
@@ -192,6 +233,10 @@
     filter: drop-shadow(0 14px 24px hsl(224 27% 12% / 0.08));
   }
 
+  .dark .top-panel-viewport[data-phase="swapping"] .top-panel-layer {
+    filter: drop-shadow(0 18px 34px hsl(0 0% 0% / 0.36));
+  }
+
   .top-panel-layer[data-motion="enter"][data-direction="forward"] {
     animation: top-panel-enter-forward 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
@@ -210,6 +255,10 @@
 
   .top-tray-card {
     box-shadow: 0 1px 2px hsl(224 27% 12% / 0.04);
+  }
+
+  .dark .top-tray-card {
+    box-shadow: 0 1px 2px hsl(0 0% 0% / 0.32);
   }
 
   .finished-highlights-scroll {
@@ -304,6 +353,12 @@
     will-change: transform;
   }
 
+  .dark .dashboard-tabs-indicator {
+    box-shadow:
+      0 1px 2px hsl(0 0% 0% / 0.34),
+      0 8px 18px hsl(0 0% 0% / 0.26);
+  }
+
   .dashboard-tabs-indicator[data-tab="solo"] {
     transform: translateX(100%);
   }
@@ -369,6 +424,12 @@
       0 5px 12px hsl(224 27% 12% / 0.06);
   }
 
+  .dark .workstream-layout-toggle-button[data-active="true"] {
+    box-shadow:
+      0 1px 2px hsl(0 0% 0% / 0.34),
+      0 7px 16px hsl(0 0% 0% / 0.24);
+  }
+
   .workstream-board-shell,
   .solo-board-shell {
     min-width: 0;
@@ -415,6 +476,10 @@
     border-radius: var(--radius);
     background: hsl(var(--muted) / 0.58);
     box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.64);
+  }
+
+  .dark .jira-lane {
+    box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.05);
   }
 
   .workstream-board-aligned .jira-lane {
@@ -558,11 +623,20 @@
     animation: board-wire-draw 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
+  .dark .board-wire-path {
+    opacity: 0.92;
+    filter: drop-shadow(0 1px 2px hsl(0 0% 0% / 0.42));
+  }
+
   .board-wire-node {
     fill: hsl(var(--background));
     stroke: var(--wire-color, rgb(148 163 184));
     stroke-width: 2.25;
     filter: drop-shadow(0 1px 2px hsl(224 27% 12% / 0.2));
+  }
+
+  .dark .board-wire-node {
+    filter: drop-shadow(0 1px 2px hsl(0 0% 0% / 0.52));
   }
 
   .board-wire-node-target {

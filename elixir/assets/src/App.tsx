@@ -9,10 +9,12 @@ import {
   GitBranch,
   Loader2,
   MessageSquareText,
+  Moon,
   Plus,
   RefreshCw,
   Route,
   Send,
+  Sun,
 } from "lucide-react";
 import type * as React from "react";
 import { Children, FormEvent, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -55,6 +57,7 @@ import type {
 const CUSTOM_CHOICE = "__custom_redirect__";
 const DASHBOARD_URL = "/api/v1/sympp/operator/dashboard";
 const DASHBOARD_UI_STATE_KEY = "symphony-plus-plus.dashboard.ui-state.v1";
+const DASHBOARD_THEME_KEY = "symphony-plus-plus.dashboard.theme.v1";
 const ALIGNED_ROW_MIN_HEIGHT = 112;
 const BOARD_WIRE_TRACK_CLEARANCE = 40;
 const TOP_PANEL_ORDER: TopPanelKey[] = ["guidance", "blockers", "finished"];
@@ -98,6 +101,7 @@ type StateToneStyle = {
 };
 type WorkspaceTab = "workstreams" | "solo";
 type WorkstreamLayoutMode = "jira" | "aligned";
+type DashboardTheme = "light" | "dark";
 type DashboardUiState = {
   workspaceTab?: WorkspaceTab;
   topPanel?: TopPanelKey | null;
@@ -184,16 +188,16 @@ type MeasuredBoardWire = BoardWire & {
 };
 
 const STATE_CARD_TONES: Record<StateCardTone, StateToneStyle> = {
-  request: { card: "border-slate-200 bg-slate-50/80", accent: "rgb(203 213 225)" },
-  queued: { card: "border-teal-200/80 bg-teal-50/80", accent: "rgb(45 212 191)" },
-  slice: { card: "border-cyan-200/80 bg-cyan-50/80", accent: "rgb(34 211 238)" },
-  implementing: { card: "border-sky-200/80 bg-sky-50/80", accent: "rgb(56 189 248)" },
-  review: { card: "border-indigo-200/80 bg-indigo-50/80", accent: "rgb(129 140 248)" },
-  merge: { card: "border-lime-200/80 bg-lime-50/80", accent: "rgb(163 230 53)" },
-  guidance: { card: "border-violet-200/80 bg-violet-50/80", accent: "rgb(167 139 250)" },
-  blocked: { card: "border-rose-200/80 bg-rose-50/80", accent: "rgb(251 113 133)" },
-  finished: { card: "border-emerald-200/80 bg-emerald-50/80", accent: "rgb(52 211 153)" },
-  muted: { card: "border-zinc-200/80 bg-zinc-50/80", accent: "rgb(212 212 216)" },
+  request: { card: "border-slate-200 bg-slate-50/80 dark:border-slate-700/80 dark:bg-slate-900/70", accent: "rgb(203 213 225)" },
+  queued: { card: "border-teal-200/80 bg-teal-50/80 dark:border-teal-700/70 dark:bg-teal-950/45", accent: "rgb(45 212 191)" },
+  slice: { card: "border-cyan-200/80 bg-cyan-50/80 dark:border-cyan-700/70 dark:bg-cyan-950/45", accent: "rgb(34 211 238)" },
+  implementing: { card: "border-sky-200/80 bg-sky-50/80 dark:border-sky-700/70 dark:bg-sky-950/45", accent: "rgb(56 189 248)" },
+  review: { card: "border-indigo-200/80 bg-indigo-50/80 dark:border-indigo-700/70 dark:bg-indigo-950/45", accent: "rgb(129 140 248)" },
+  merge: { card: "border-lime-200/80 bg-lime-50/80 dark:border-lime-700/70 dark:bg-lime-950/45", accent: "rgb(163 230 53)" },
+  guidance: { card: "border-violet-200/80 bg-violet-50/80 dark:border-violet-700/70 dark:bg-violet-950/45", accent: "rgb(167 139 250)" },
+  blocked: { card: "border-rose-200/80 bg-rose-50/80 dark:border-rose-700/70 dark:bg-rose-950/45", accent: "rgb(251 113 133)" },
+  finished: { card: "border-emerald-200/80 bg-emerald-50/80 dark:border-emerald-700/70 dark:bg-emerald-950/45", accent: "rgb(52 211 153)" },
+  muted: { card: "border-zinc-200/80 bg-zinc-50/80 dark:border-zinc-700/80 dark:bg-zinc-900/70", accent: "rgb(212 212 216)" },
 };
 
 type SliceEntry = {
@@ -244,6 +248,7 @@ export default function App() {
   const [newRequestOpen, setNewRequestOpen] = useState(false);
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>(readStoredWorkspaceTab);
   const [workstreamLayout, setWorkstreamLayout] = useState<WorkstreamLayoutMode>(readStoredWorkstreamLayout);
+  const [theme, setTheme] = useState<DashboardTheme>(readStoredTheme);
 
   const loadDashboard = useCallback(async (mode: "initial" | "refresh" = "refresh") => {
     if (mode === "initial") {
@@ -282,6 +287,10 @@ export default function App() {
     writeDashboardUiStateValue("workstreamLayout", workstreamLayout);
   }, [workstreamLayout]);
 
+  useEffect(() => {
+    writeStoredTheme(theme);
+  }, [theme]);
+
   const packages = useMemo(() => allPackages(dashboard), [dashboard]);
   const requests = dashboard?.work_requests?.work_requests ?? [];
   const requestDetails = dashboard?.work_request_details ?? [];
@@ -311,7 +320,7 @@ export default function App() {
   return (
     <TooltipProvider delayDuration={150}>
       <main className="min-h-screen bg-background">
-        <header className="sticky top-0 z-20 border-b bg-background/92 backdrop-blur">
+        <header className="dashboard-header-glass sticky top-0 z-20">
           <div className="mx-auto flex max-w-[1500px] flex-col gap-4 px-4 py-4 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
             <div className="flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border bg-card shadow-sm motion-pop">
@@ -325,6 +334,7 @@ export default function App() {
 
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant={error ? "danger" : "success"}>{error ? "API unavailable" : "Live ledger"}</Badge>
+              <ThemeToggle theme={theme} onToggle={() => setTheme((currentTheme) => (currentTheme === "dark" ? "light" : "dark"))} />
               <Button variant="outline" size="sm" onClick={() => void loadDashboard()} disabled={refreshing} className="button-lift">
                 {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                 Refresh
@@ -345,8 +355,8 @@ export default function App() {
 
         <div className="mx-auto grid max-w-[1500px] gap-5 px-4 py-5 sm:px-6 lg:px-8">
           {error ? (
-            <Card className="border-rose-200 bg-rose-50 motion-card">
-              <CardContent className="flex items-center gap-3 p-4 text-sm text-rose-800">
+            <Card className="border-rose-200 bg-rose-50 motion-card dark:border-rose-700/70 dark:bg-rose-950/45">
+              <CardContent className="flex items-center gap-3 p-4 text-sm text-rose-800 dark:text-rose-200">
                 <AlertCircle className="h-4 w-4" />
                 {error}
               </CardContent>
@@ -695,19 +705,19 @@ function StatusTile({
   const open = openPanel === panel;
   const tones = {
     violet: {
-      card: "border-violet-300 bg-violet-50/35",
-      icon: "border-violet-200 bg-violet-50 text-violet-700",
-      value: "text-violet-700",
+      card: "border-violet-300 bg-violet-50/35 dark:border-violet-700/70 dark:bg-violet-950/35",
+      icon: "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-700/70 dark:bg-violet-950/70 dark:text-violet-200",
+      value: "text-violet-700 dark:text-violet-200",
     },
     amber: {
-      card: "border-amber-200 bg-amber-50/25",
-      icon: "border-amber-200 bg-amber-50 text-amber-700",
-      value: "text-amber-700",
+      card: "border-amber-200 bg-amber-50/25 dark:border-amber-700/70 dark:bg-amber-950/30",
+      icon: "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-700/70 dark:bg-amber-950/70 dark:text-amber-200",
+      value: "text-amber-700 dark:text-amber-200",
     },
     emerald: {
-      card: "border-emerald-200 bg-emerald-50/25",
-      icon: "border-emerald-200 bg-emerald-50 text-emerald-700",
-      value: "text-emerald-700",
+      card: "border-emerald-200 bg-emerald-50/25 dark:border-emerald-700/70 dark:bg-emerald-950/30",
+      icon: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700/70 dark:bg-emerald-950/70 dark:text-emerald-200",
+      value: "text-emerald-700 dark:text-emerald-200",
     },
   };
 
@@ -767,7 +777,7 @@ function GuidancePreviewCard({ item, index, onSelect }: { item: GuidanceItem; in
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-violet-50 text-violet-700">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-violet-50 text-violet-700 dark:bg-violet-950/70 dark:text-violet-200">
               <Route className="h-4 w-4" />
             </div>
             <p className="truncate text-sm font-semibold">{item.repo}</p>
@@ -798,7 +808,7 @@ function BlockerPreviewCard({ item, index }: { item: BlockerItem; index: number 
         <Badge variant="danger">{formatStatus(item.status)}</Badge>
       </div>
       <p className="mt-4 line-clamp-3 text-sm text-muted-foreground">{item.detail}</p>
-      <div className="mt-4 flex items-center gap-2 text-xs text-amber-800">
+      <div className="mt-4 flex items-center gap-2 text-xs text-amber-800 dark:text-amber-200">
         <AlertTriangle className="h-4 w-4" />
         {item.blockerCount} active blocker{item.blockerCount === 1 ? "" : "s"}
       </div>
@@ -878,9 +888,15 @@ function RepoWorkstream({
   layoutMode: WorkstreamLayoutMode;
 }) {
   const stateKey = repoWorkstreamStateKey(repo);
-  const [open, setOpen] = useState(() => readStoredRepoWorkstreamOpen(stateKey, defaultRepoWorkstreamOpen()));
-  const repoDetails = requestDetails.filter((detail) => repoName(detail.work_request.repo) === repo.repo);
-  const unlinkedPackages = repo.packages.filter((pkg) => !packageLinkedToRequest(pkg, requestDetails));
+  const [open, setOpen] = useState(() => readStoredRepoWorkstreamOpen(stateKey, defaultRepoWorkstreamOpen(repo)));
+  const repoDetails = useMemo(
+    () => requestDetails.filter((detail) => repoName(detail.work_request.repo) === repo.repo),
+    [repo.repo, requestDetails],
+  );
+  const unlinkedPackages = useMemo(
+    () => repo.packages.filter((pkg) => !packageLinkedToRequest(pkg, requestDetails)),
+    [repo.packages, requestDetails],
+  );
 
   useEffect(() => {
     writeStoredRepoWorkstreamOpen(stateKey, open);
@@ -975,6 +991,40 @@ function WorkstreamLayoutToggle({ value, onChange }: { value: WorkstreamLayoutMo
   );
 }
 
+function ThemeToggle({ theme, onToggle }: { theme: DashboardTheme; onToggle: () => void }) {
+  const dark = theme === "dark";
+  const label = dark ? "Switch to light mode" : "Switch to dark mode";
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="button-lift relative overflow-hidden"
+          aria-label={label}
+          onClick={onToggle}
+        >
+          <Sun
+            className={cn(
+              "absolute h-4 w-4 transition-all duration-200",
+              dark ? "rotate-45 scale-0 opacity-0" : "rotate-0 scale-100 opacity-100",
+            )}
+          />
+          <Moon
+            className={cn(
+              "absolute h-4 w-4 transition-all duration-200",
+              dark ? "rotate-0 scale-100 opacity-100" : "-rotate-45 scale-0 opacity-0",
+            )}
+          />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 function RepoSummaryPlate({
   label,
   value,
@@ -985,12 +1035,12 @@ function RepoSummaryPlate({
   tone: "requested" | "active" | "implementing" | "finished" | "guidance" | "blocker";
 }) {
   const tones: Record<typeof tone, string> = {
-    requested: "border-slate-200 bg-slate-50 text-slate-700",
-    active: "border-cyan-200 bg-cyan-50 text-cyan-800",
-    implementing: "border-sky-200 bg-sky-50 text-sky-700",
-    finished: "border-emerald-200 bg-emerald-50 text-emerald-700",
-    guidance: "border-violet-200 bg-violet-50 text-violet-700",
-    blocker: "border-amber-200 bg-amber-50 text-amber-800",
+    requested: "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700/70 dark:bg-slate-900/70 dark:text-slate-200",
+    active: "border-cyan-200 bg-cyan-50 text-cyan-800 dark:border-cyan-700/70 dark:bg-cyan-950/50 dark:text-cyan-200",
+    implementing: "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-700/70 dark:bg-sky-950/50 dark:text-sky-200",
+    finished: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700/70 dark:bg-emerald-950/50 dark:text-emerald-200",
+    guidance: "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-700/70 dark:bg-violet-950/50 dark:text-violet-200",
+    blocker: "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-700/70 dark:bg-amber-950/50 dark:text-amber-200",
   };
 
   return (
@@ -1345,7 +1395,7 @@ function BoardWireLayer({ paths, width, height }: { paths: BoardWirePath[]; widt
   );
 }
 
-function useBoardWirePaths(boardRef: React.RefObject<HTMLDivElement>, wires: BoardWire[], measureKey: string) {
+function useBoardWirePaths(boardRef: React.RefObject<HTMLDivElement | null>, wires: BoardWire[], measureKey: string) {
   const [paths, setPaths] = useState<BoardWirePath[]>([]);
   const [size, setSize] = useState({ width: 0, height: 0 });
 
@@ -1386,7 +1436,7 @@ function useBoardWirePaths(boardRef: React.RefObject<HTMLDivElement>, wires: Boa
   return { paths, size };
 }
 
-function useAlignedRowTemplate(boardRef: React.RefObject<HTMLDivElement>, rows: WorkstreamRow[], layoutMode: WorkstreamLayoutMode) {
+function useAlignedRowTemplate(boardRef: React.RefObject<HTMLDivElement | null>, rows: WorkstreamRow[], layoutMode: WorkstreamLayoutMode) {
   const baseHeights = useMemo(() => rows.map((row) => row.minHeight), [rows]);
   const rowKeys = useMemo(() => rows.map((row, index) => workstreamRowKey(row, index)), [rows]);
   const baseKey = baseHeights.join(",");
@@ -2121,10 +2171,10 @@ function CardSignal({
 }) {
   const toneClasses: Record<SignalTone, string> = {
     muted: "border-transparent bg-muted text-foreground",
-    info: "border-sky-200 bg-sky-50 text-sky-800",
-    warning: "border-amber-200 bg-amber-50 text-amber-900",
-    danger: "border-rose-200 bg-rose-50 text-rose-800",
-    success: "border-emerald-200 bg-emerald-50 text-emerald-800",
+    info: "border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-700/70 dark:bg-sky-950/50 dark:text-sky-200",
+    warning: "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-700/70 dark:bg-amber-950/50 dark:text-amber-200",
+    danger: "border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-700/70 dark:bg-rose-950/50 dark:text-rose-200",
+    success: "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-700/70 dark:bg-emerald-950/50 dark:text-emerald-200",
   };
   const signalClassName = cn(
     "min-w-0 max-w-full w-full rounded-md border px-2.5 py-2 text-xs",
@@ -2867,7 +2917,7 @@ function ProsCons({ option }: { option: DecisionOption }) {
 
   return (
     <div className="mt-3 grid gap-2 md:grid-cols-2">
-      <div className="rounded-md bg-emerald-50 p-3 text-xs text-emerald-800">
+      <div className="rounded-md bg-emerald-50 p-3 text-xs text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200">
         <p className="font-semibold">Pros</p>
         <ul className="mt-1 space-y-1">
           {(option.pros || ["No specific pros recorded"]).map((pro) => (
@@ -2875,7 +2925,7 @@ function ProsCons({ option }: { option: DecisionOption }) {
           ))}
         </ul>
       </div>
-      <div className="rounded-md bg-rose-50 p-3 text-xs text-rose-800">
+      <div className="rounded-md bg-rose-50 p-3 text-xs text-rose-800 dark:bg-rose-950/50 dark:text-rose-200">
         <p className="font-semibold">Cons</p>
         <ul className="mt-1 space-y-1">
           {(option.cons || ["No specific cons recorded"]).map((con) => (
@@ -3599,13 +3649,48 @@ function updateDashboardUiState(updater: (state: DashboardUiState) => DashboardU
   }
 }
 
-function defaultRepoWorkstreamOpen() {
+function readStoredTheme(): DashboardTheme {
+  if (typeof window === "undefined") return "light";
+
+  try {
+    const storedTheme = window.localStorage.getItem(DASHBOARD_THEME_KEY);
+    if (isDashboardTheme(storedTheme)) return storedTheme;
+  } catch {
+    // Storage can be unavailable in locked-down browser contexts; fall back to the OS preference.
+  }
+
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function writeStoredTheme(theme: DashboardTheme) {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.setItem(DASHBOARD_THEME_KEY, theme);
+  } catch {
+    // Theme persistence is best-effort; the class toggle still applies for the active session.
+  }
+
+  document.documentElement.classList.toggle("dark", theme === "dark");
+}
+
+function defaultRepoWorkstreamOpen(repo: Pick<RepoSummary, "requested" | "active" | "implementing" | "finished" | "guidanceCount" | "blockerCount">) {
+  if (!repoWorkstreamHasActivity(repo)) return false;
   return typeof window === "undefined" ? true : window.innerWidth >= 900;
 }
 
-function repoWorkstreamStateKey(repo: Pick<RepoSummary, "repo" | "baseBranches">) {
+function repoWorkstreamStateKey(
+  repo: Pick<RepoSummary, "repo" | "baseBranches" | "requested" | "active" | "implementing" | "finished" | "guidanceCount" | "blockerCount">,
+) {
   const branchKey = uniqueNonEmpty(repo.baseBranches).sort().join("|") || "main";
-  return `${repo.repo}::${branchKey}`;
+  const activityKey = repoWorkstreamHasActivity(repo) ? "active" : "empty";
+  return `${repo.repo}::${branchKey}::${activityKey}`;
+}
+
+function repoWorkstreamHasActivity(
+  repo: Pick<RepoSummary, "requested" | "active" | "implementing" | "finished" | "guidanceCount" | "blockerCount">,
+) {
+  return repo.requested + repo.active + repo.implementing + repo.finished + repo.guidanceCount + repo.blockerCount > 0;
 }
 
 function isWorkspaceTab(value: unknown): value is WorkspaceTab {
@@ -3618,6 +3703,10 @@ function isTopPanelKey(value: unknown): value is TopPanelKey {
 
 function isWorkstreamLayoutMode(value: unknown): value is WorkstreamLayoutMode {
   return value === "jira" || value === "aligned";
+}
+
+function isDashboardTheme(value: unknown): value is DashboardTheme {
+  return value === "light" || value === "dark";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
