@@ -356,10 +356,10 @@ human-answerable questions before slicing, use structured `decision_prompt`
 options for material choices, record decisions, dispatch only approved slices,
 and stop/report a blocker instead of asking for raw secrets or inventing state
 when MCP/session/handoff or required references are missing.
-MCP dispatch is advertised only when the MCP server has `repo_root`/`--repo-root`
-configured to a repository containing the worker secret handoff script, and
-direct calls fail closed if that root is missing or invalid. It additionally
-requires a file-backed live ledger database so the worker handoff command
+MCP dispatch has a statically discoverable schema, and direct calls fail closed
+unless the MCP server has `repo_root`/`--repo-root` configured to a repository
+containing the worker secret handoff script. It additionally requires a
+file-backed live ledger database so the worker handoff command
 reconnects to the same ledger; in-memory database configuration fails closed
 before WorkPackage or grant side effects. Blank database configuration is
 treated as absent and uses the live ledger. Matching

@@ -181,8 +181,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
 
   test "architect lists scoped guidance, answers it, and workers cannot answer", %{repo: repo} do
     {anchor, architect_session} = create_architect_session(repo, "SYMPP-GUIDANCE-ARCHITECT")
-    {_visible_package, worker_session} = create_worker_session(repo, "SYMPP-GUIDANCE-VISIBLE", phase_id: anchor.phase_id)
-    {_outside_package, outside_worker_session} = create_worker_session(repo, "SYMPP-GUIDANCE-OUTSIDE", phase_id: "phase-guidance-other")
+    {visible_package, worker_session} = create_worker_session(repo, "SYMPP-GUIDANCE-VISIBLE", phase_id: anchor.phase_id)
+    {outside_package, outside_worker_session} = create_worker_session(repo, "SYMPP-GUIDANCE-OUTSIDE", phase_id: "phase-guidance-other")
 
     visible_request_id =
       create_guidance_request(repo, worker_session, %{
@@ -208,6 +208,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
 
     outside_read_response = mcp_tool(repo, architect_session, "read_guidance_request", %{"guidance_request_id" => outside_request_id})
     assert get_in(outside_read_response, ["error", "data", "reason"]) == "not_found"
+
+    scoped_read_response =
+      mcp_tool(repo, architect_session, "read_guidance_request", %{"guidance_request_id" => visible_request_id, "work_package_id" => visible_package.id})
+
+    assert get_in(scoped_read_response, ["result", "structuredContent", "guidance_request", "id"]) == visible_request_id
+
+    mismatched_scope_read_response =
+      mcp_tool(repo, architect_session, "read_guidance_request", %{"guidance_request_id" => visible_request_id, "work_package_id" => outside_package.id})
+
+    assert get_in(mismatched_scope_read_response, ["error", "data", "reason"]) == "not_found"
 
     worker_outside_read_response =
       mcp_tool(repo, worker_session, "read_guidance_request", %{"guidance_request_id" => outside_request_id})

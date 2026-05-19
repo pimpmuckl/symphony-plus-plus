@@ -95,26 +95,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "split_work_package",
     "publish_phase_update"
   ]
-  @phase_scoped_work_request_tools [
-    "list_work_requests",
-    "read_work_request",
-    "set_work_request_status",
-    "ask_work_request_question",
-    "answer_work_request_question",
-    "close_work_request_question",
-    "record_work_request_decision",
-    "add_work_request_planned_slice",
-    "approve_work_request_planned_slice",
-    "skip_work_request_planned_slice",
-    "mark_work_request_sliced",
-    "dispatch_work_request_planned_slice"
-  ]
-  @phase_scoped_guidance_request_tools [
-    "list_guidance_requests",
-    "read_guidance_request",
-    "answer_guidance_request",
-    "escalate_guidance_request"
-  ]
   @phase7_stub_architect_tools [
     "request_child_replan",
     "split_work_package",
@@ -170,7 +150,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @plan_node_patch_keys ["body", "id", "status", "title"]
 
   @enforce_keys [:config]
-  defstruct [:config, :session, :state_key, :state_key_version, state_key_explicit: false, initialized: false]
+  defstruct [
+    :config,
+    :session,
+    :state_key,
+    :state_key_version,
+    state_key_explicit: false,
+    session_refresh_required: false,
+    initialized: false
+  ]
 
   @type t :: %__MODULE__{
           config: Config.t(),
@@ -178,6 +166,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
           state_key: term(),
           state_key_version: integer() | nil,
           state_key_explicit: boolean(),
+          session_refresh_required: boolean(),
           initialized: boolean()
         }
 
@@ -194,6 +183,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       state_key: state_key,
       state_key_version: nil,
       state_key_explicit: state_key_explicit?,
+      session_refresh_required: false,
       initialized: Keyword.get(opts, :initialized, false)
     }
   end
@@ -296,7 +286,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp restore_handle_state(payload, %__MODULE__{state_key_explicit: true} = server) do
     if initialize_request?(payload) do
       if server.initialized do
-        server
+        # Duplicate initialize on a reused explicit MCP server must not silently
+        # downgrade a stale bound identity into generic unbound discovery. The
+        # recovery paths are an explicit re-claim on this session or a new MCP
+        # process/session that starts from the fresh unbound surface.
+        restore_explicit_handle_state(server)
       else
         %{server | initialized: false, session: nil}
       end
@@ -329,13 +323,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case lookup_handle_state(server) do
       {%__MODULE__{} = stored, timestamp_ms, _explicit?} ->
         state_key_version = stored.state_key_version || timestamp_ms
-        session = if stale_explicit_session?(server, state_key_version), do: nil, else: server.session
+
+        session_refresh_required? =
+          stored.session_refresh_required or stale_explicit_session?(server, state_key_version)
+
+        session = if session_refresh_required?, do: nil, else: server.session
 
         %{
           server
           | initialized: server.initialized or stored.initialized,
             session: session,
-            state_key_version: state_key_version
+            state_key_version: state_key_version,
+            session_refresh_required: session_refresh_required?
         }
 
       _stored ->
@@ -352,6 +351,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         server
     end
   end
+
+  defp stale_explicit_session?(%__MODULE__{session_refresh_required: true, state_key_version: version}, timestamp_ms)
+       when version == timestamp_ms,
+       do: true
 
   defp stale_explicit_session?(%__MODULE__{session: nil}, _timestamp_ms), do: false
   defp stale_explicit_session?(%__MODULE__{state_key_version: nil}, _timestamp_ms), do: true
@@ -383,6 +386,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp persist_handle_state(%__MODULE__{} = server, %__MODULE__{} = updated_server) do
     timestamp_ms =
       cond do
+        updated_server.session_refresh_required ->
+          put_handle_state(updated_server)
+
         server.initialized != updated_server.initialized or server.session != updated_server.session ->
           put_handle_state(updated_server)
 
@@ -756,8 +762,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:error, -32_602, "Invalid params", %{"reason" => "missing_protocol_version", "supported" => @protocol_version}}
   end
 
-  defp dispatch("tools/list", params, %__MODULE__{config: config, session: session}) when is_map(params) do
-    case tool_specs_for_session(config, session) do
+  defp dispatch("tools/list", params, %__MODULE__{} = server) when is_map(params) do
+    case tool_specs_for_server(server) do
       {:ok, tools} -> {:ok, %{"tools" => tools}}
       {:error, reason} -> worker_error(reason, "tools/list")
     end
@@ -807,6 +813,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          %{"name" => "read_guidance_request"} = params,
          %__MODULE__{session: %Session{assignment: %{grant_role: "architect"}}} = server
        ) do
+    with :ok <- authorize_architect_tool_call(server, "read_guidance_request"),
+         {:ok, arguments} <- architect_tool_arguments(params, "read_guidance_request") do
+      read_guidance_request_tool(arguments, server)
+    else
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:error, reason} -> architect_error(reason, "read_guidance_request")
+    end
+  end
+
+  defp dispatch("tools/call", %{"name" => "read_guidance_request"} = params, %__MODULE__{session: nil} = server) do
     with :ok <- authorize_architect_tool_call(server, "read_guidance_request"),
          {:ok, arguments} <- architect_tool_arguments(params, "read_guidance_request") do
       read_guidance_request_tool(arguments, server)
@@ -1343,7 +1359,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool_input_schema("read_guidance_request") do
-    schema(%{"guidance_request_id" => string_schema()}, ["guidance_request_id"])
+    worker_tool_input_schema("read_guidance_request")
   end
 
   defp architect_tool_input_schema("answer_guidance_request") do
@@ -1541,10 +1557,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:ok, unbound_tool_specs()}
   end
 
-  defp tool_specs_for_session(%Config{repo: repo} = config, session) do
+  defp tool_specs_for_session(%Config{repo: repo}, session) do
     case Auth.require_session(session, repo) do
-      {:ok, %Session{assignment: %{grant_role: "architect"}} = session} ->
-        {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs_for_session(config, session)]}
+      {:ok, %Session{assignment: %{grant_role: "architect"}}} ->
+        {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs()]}
 
       {:ok, %Session{assignment: %{grant_role: "worker"}}} ->
         {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
@@ -1563,50 +1579,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp claimable_tool_specs, do: [health_tool_spec(), worker_tool_spec("claim_work_key")]
 
   defp unbound_tool_specs do
-    [health_tool_spec() | Enum.map(@solo_tools, &solo_tool_spec/1) ++ [worker_tool_spec("claim_work_key")]]
+    [health_tool_spec()] ++ Enum.map(@solo_tools, &solo_tool_spec/1) ++ [worker_tool_spec("claim_work_key")] ++ architect_tool_specs()
   end
 
-  defp architect_tool_specs_for_session(%Config{} = config, %Session{assignment: %{capabilities: capabilities}} = session)
-       when is_list(capabilities) do
-    @architect_tools
-    |> Enum.filter(fn tool ->
-      capability_allowed? = architect_tool_required_capabilities(tool) -- capabilities == []
-      capability_allowed? and architect_tool_visible_for_session?(config, session, tool)
-    end)
-    |> Enum.map(&architect_tool_spec/1)
-  end
+  defp architect_tool_specs, do: Enum.map(@architect_tools, &architect_tool_spec/1)
 
-  defp architect_tool_specs_for_session(_config, _session), do: []
+  defp tool_specs_for_server(%__MODULE__{session_refresh_required: true}), do: {:ok, claimable_tool_specs()}
 
-  defp architect_tool_visible_for_session?(%Config{repo: repo} = config, %Session{} = session, tool)
-       when tool in @phase_scoped_work_request_tools do
-    case scoped_work_request_filters(repo, session) do
-      {:ok, _filters, _scope} -> dispatch_tool_visible_for_config?(config, tool)
-      _reason -> false
-    end
-  end
-
-  defp architect_tool_visible_for_session?(%Config{repo: repo}, %Session{} = session, tool)
-       when tool in @phase_scoped_guidance_request_tools do
-    case scoped_guidance_request_filters(repo, session) do
-      {:ok, _filters, _scope} -> true
-      _reason -> false
-    end
-  end
-
-  defp architect_tool_visible_for_session?(_config, %Session{}, _tool), do: true
-
-  defp dispatch_tool_visible_for_config?(%Config{} = config, "dispatch_work_request_planned_slice") do
-    with {:ok, repo_root} <- config_repo_root(config),
-         :ok <- validate_child_secret_handoff_repo_root(repo_root, "auto"),
-         {:ok, _database} <- dispatch_handoff_database(config.database, config.repo) do
-      true
-    else
-      _reason -> false
-    end
-  end
-
-  defp dispatch_tool_visible_for_config?(_config, _tool), do: true
+  defp tool_specs_for_server(%__MODULE__{config: config, session: session}), do: tool_specs_for_session(config, session)
 
   defp schema(properties, required) do
     %{"type" => "object", "additionalProperties" => false, "properties" => properties, "required" => required}
@@ -1868,14 +1848,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp handle_claim_work_key(params, id, %__MODULE__{} = server) do
     case claim_work_key(params, server) do
-      {:ok, result, session} -> {response(id, tool_result(result)), %{server | session: session}}
-      {:error, code, message, data} -> {error_response(id, code, message, data), server}
+      {:ok, result, session} ->
+        {response(id, tool_result(result)), %{server | session: session, session_refresh_required: false}}
+
+      {:error, code, message, data} ->
+        {error_response(id, code, message, data), server}
     end
   end
 
   defp handle_claim_work_key_notification(params, %__MODULE__{} = server) do
     case claim_work_key(params, server) do
-      {:ok, _result, session} -> {nil, %{server | session: session}}
+      {:ok, _result, session} -> {nil, %{server | session: session, session_refresh_required: false}}
       {:error, _code, _message, _data} -> {nil, server}
     end
   end
@@ -2017,6 +2000,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp require_architect_capability(_assignment, _capability), do: {:error, :insufficient_capability}
+
+  defp authorize_architect_tool_call(%__MODULE__{session: nil}, name) do
+    {:error, -32_001, "Unauthorized", %{"resource" => name, "reason" => "claim_required", "action" => "claim_work_key"}}
+  end
 
   defp authorize_architect_tool_call(%__MODULE__{config: config, session: session}, name) do
     with {:ok, _session} <- architect_session(config.repo, session, architect_tool_required_capabilities(name)) do
@@ -5088,12 +5075,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          repo,
          %Session{assignment: %{grant_role: "architect"}} = session,
          guidance_request_id,
-         _arguments
+         arguments
        ) do
     with {:ok, session} <- architect_session(repo, session, "read:guidance_request"),
+         {:ok, work_package_id} <- optional_string_argument(arguments, "work_package_id"),
          {:ok, filters, scope} <- scoped_guidance_request_filters(repo, session),
          {:ok, guidance_request} <-
-           GuidanceRequestService.get_visible_to_architect(repo, guidance_request_id, filters) do
+           GuidanceRequestService.get_visible_to_architect(repo, guidance_request_id, filters),
+         :ok <- require_guidance_request_work_package(guidance_request, work_package_id) do
       {:ok, tool_result(%{"guidance_request" => guidance_request_payload(guidance_request), "scope" => scope})}
     else
       {:error, :not_found} -> guidance_request_not_found_error("read_guidance_request")
@@ -5104,6 +5093,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp read_guidance_request_for_session(_repo, %Session{}, _guidance_request_id, _arguments) do
     auth_error({:unauthorized, :unsupported_grant_role}, "read_guidance_request")
   end
+
+  defp require_guidance_request_work_package(%GuidanceRequest{}, nil), do: :ok
+
+  defp require_guidance_request_work_package(%GuidanceRequest{work_package_id: work_package_id}, work_package_id), do: :ok
+
+  defp require_guidance_request_work_package(%GuidanceRequest{}, _work_package_id), do: {:error, :not_found}
 
   defp pr_metadata_payload(repo, %Session{} = session, arguments, source_tool) do
     case legacy_attach_pr_payload(arguments, source_tool) do
@@ -7909,6 +7904,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_argument_scope(session, nil), do: {:ok, session}
   defp require_argument_scope(session, work_package_id) when work_package_id == session.assignment.work_package_id, do: {:ok, session}
   defp require_argument_scope(_session, _work_package_id), do: {:error, :forbidden}
+
+  defp authorize_solo_tool_call(%__MODULE__{session_refresh_required: true}, tool) do
+    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "claim_required", "action" => "claim_work_key"}}
+  end
 
   defp authorize_solo_tool_call(%__MODULE__{session: nil}, _tool), do: :ok
 

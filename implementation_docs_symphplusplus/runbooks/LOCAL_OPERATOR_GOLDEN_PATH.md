@@ -118,9 +118,11 @@ before troubleshooting Codex app plugin visibility:
 
 The smoke sends `initialize`, normalizes the returned `Mcp-Session-Id` to a
 single header value, follows with `tools/list`, and verifies the generic
-unbound tool surface including `sympp.health`, the `solo_*` tools, and
-`claim_work_key`. For a non-default or dynamic cockpit port, pass the printed
-MCP URL:
+unbound tool surface including `sympp.health`, the `solo_*` tools,
+`claim_work_key`, and statically discoverable architect schemas such as
+`read_work_request` and `list_guidance_requests`. Worker-only mutation tools
+remain absent until claim. For a non-default or dynamic cockpit port, pass the
+printed MCP URL:
 
 ```powershell
 .\scripts\smoke-sympp-mcp-http.ps1 -Url http://127.0.0.1:<port>/mcp

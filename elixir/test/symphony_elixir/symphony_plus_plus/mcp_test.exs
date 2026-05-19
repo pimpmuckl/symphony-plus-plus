@@ -40,6 +40,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   @architect_phase_id "phase-mcp-architect-test"
   @child_worker_grant_provenance "child_worker_delegation"
+  @architect_tool_names [
+    "create_child_work_package",
+    "mint_child_worker_key",
+    "revoke_child_worker_key",
+    "list_work_requests",
+    "read_work_request",
+    "list_guidance_requests",
+    "read_guidance_request",
+    "answer_guidance_request",
+    "escalate_guidance_request",
+    "set_work_request_status",
+    "ask_work_request_question",
+    "answer_work_request_question",
+    "close_work_request_question",
+    "record_work_request_decision",
+    "add_work_request_planned_slice",
+    "approve_work_request_planned_slice",
+    "skip_work_request_planned_slice",
+    "mark_work_request_sliced",
+    "dispatch_work_request_planned_slice",
+    "read_child_status",
+    "approve_scope_expansion",
+    "read_phase_board",
+    "request_child_replan",
+    "approve_child_ready_state",
+    "merge_child_into_phase",
+    "split_work_package",
+    "publish_phase_update"
+  ]
 
   defmodule FailingAuthRepo do
     def get(_schema, _id), do: raise(RuntimeError, "ledger unavailable")
@@ -742,7 +771,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert is_list(get_in(post_init_response, ["result", "tools"]))
   end
 
-  test "tools list keeps unbound sessions narrow and advertises worker schemas only after binding", %{repo: repo} do
+  test "tools list keeps unbound worker surface narrow while advertising architect schemas before binding", %{repo: repo} do
     unbound_server = Server.new(Config.default(repo: repo), initialized: true)
 
     unbound_response =
@@ -753,23 +782,49 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       |> get_in(["result", "tools"])
       |> Map.new(&{&1["name"], &1})
 
-    assert Map.keys(unbound_tools_by_name) |> Enum.sort() == [
-             "claim_work_key",
-             "solo_append",
-             "solo_attach",
-             "solo_list",
-             "solo_show",
-             "solo_update_status",
-             "sympp.health"
-           ]
+    assert Map.keys(unbound_tools_by_name) |> Enum.sort() ==
+             Enum.sort([
+               "claim_work_key",
+               "solo_append",
+               "solo_attach",
+               "solo_list",
+               "solo_show",
+               "solo_update_status",
+               "sympp.health"
+               | @architect_tool_names
+             ])
 
     assert get_in(unbound_tools_by_name, ["claim_work_key", "inputSchema", "required"]) == ["secret", "claimed_by"]
     assert get_in(unbound_tools_by_name, ["claim_work_key", "inputSchema", "properties", "secret", "type"]) == "string"
+    assert get_in(unbound_tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
+    assert get_in(unbound_tools_by_name, ["list_guidance_requests", "inputSchema", "required"]) == []
+
+    assert get_in(unbound_tools_by_name, ["record_work_request_decision", "inputSchema", "required"]) == [
+             "work_request_id",
+             "source_type",
+             "decision",
+             "rationale",
+             "scope_impact",
+             "created_by"
+           ]
+
+    assert get_in(unbound_tools_by_name, ["add_work_request_planned_slice", "inputSchema", "required"]) == [
+             "work_request_id",
+             "title",
+             "goal",
+             "work_package_kind",
+             "target_base_branch",
+             "owned_file_globs",
+             "forbidden_file_globs",
+             "acceptance_criteria",
+             "validation_steps",
+             "review_lanes",
+             "stop_conditions"
+           ]
+
     refute Map.has_key?(unbound_tools_by_name, "get_current_assignment")
     refute Map.has_key?(unbound_tools_by_name, "append_progress")
     refute Map.has_key?(unbound_tools_by_name, "set_status")
-    refute Map.has_key?(unbound_tools_by_name, "read_child_status")
-    refute Map.has_key?(unbound_tools_by_name, "mint_child_worker_key")
 
     assert {:ok, claim_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-UNBOUND-CLAIM-CALL", kind: "mcp"))
     assert {:ok, claim_minted} = AccessGrantService.mint_worker_grant(repo, claim_package.id)
@@ -801,6 +856,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["append_progress", "inputSchema", "required"]) == ["summary", "idempotency_key"]
     assert get_in(tools_by_name, ["append_finding", "inputSchema", "required"]) == ["title", "body", "idempotency_key"]
     assert get_in(tools_by_name, ["read_guidance_request", "inputSchema", "required"]) == ["guidance_request_id"]
+    assert get_in(unbound_tools_by_name, ["read_guidance_request", "inputSchema"]) == get_in(tools_by_name, ["read_guidance_request", "inputSchema"])
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "required"]) == ["expected_version"]
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "expected_version", "type"]) == "integer"
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "patch", "required"]) == ["nodes"]
@@ -1305,7 +1361,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert session.status == "active"
   end
 
-  test "tools list advertises architect schemas only for architect sessions", %{repo: repo} do
+  test "tools list advertises static architect schemas for architect sessions", %{repo: repo} do
     {_anchor, session, _grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-TOOLS-LIST", [
         "read:child_progress",
@@ -1332,7 +1388,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Map.has_key?(tools_by_name, "sympp.health")
     assert Map.has_key?(tools_by_name, "get_current_assignment")
     refute Map.has_key?(tools_by_name, "claim_work_key")
-    refute Map.has_key?(tools_by_name, "create_child_work_package")
+
+    for tool <- @architect_tool_names do
+      assert Map.has_key?(tools_by_name, tool)
+    end
+
     assert get_in(tools_by_name, ["list_work_requests", "inputSchema", "required"]) == []
     assert get_in(tools_by_name, ["list_work_requests", "inputSchema", "properties", "status", "type"]) == "string"
     assert get_in(tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
@@ -1417,7 +1477,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["split_work_package", "inputSchema", "properties", "child_specs", "minItems"]) == 1
   end
 
-  test "tools list hides planned-slice dispatch when repo_root is not configured", %{repo: repo} do
+  test "tools list advertises planned-slice dispatch even when repo_root is not configured", %{repo: repo} do
     {_anchor, session, _grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-DISPATCH-TOOLS-NO-ROOT", [
         "read:work_request",
@@ -1438,10 +1498,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert Map.has_key?(tools_by_name, "list_work_requests")
     assert Map.has_key?(tools_by_name, "add_work_request_planned_slice")
-    refute Map.has_key?(tools_by_name, "dispatch_work_request_planned_slice")
+    assert Map.has_key?(tools_by_name, "dispatch_work_request_planned_slice")
   end
 
-  test "tools list hides planned-slice dispatch when the ledger cannot be handed off", %{repo: repo} do
+  test "tools list advertises planned-slice dispatch when the ledger cannot be handed off", %{repo: repo} do
     {_anchor, session, _grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-DISPATCH-TOOLS-MEMORY-DB", [
         "read:work_request",
@@ -1462,7 +1522,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert Map.has_key?(tools_by_name, "list_work_requests")
     assert Map.has_key?(tools_by_name, "add_work_request_planned_slice")
-    refute Map.has_key?(tools_by_name, "dispatch_work_request_planned_slice")
+    assert Map.has_key?(tools_by_name, "dispatch_work_request_planned_slice")
   end
 
   test "tools list cannot receive legacy WorkRequest architect sessions from grant creation", %{repo: repo} do
@@ -1474,7 +1534,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {"architect phase-scoped grants require phase scope", []} in Keyword.get_values(changeset.errors, :phase_id)
   end
 
-  test "tools list hides WorkRequest tools when phase scope snapshot is missing", %{repo: repo} do
+  test "tools list advertises WorkRequest schemas when phase scope snapshot is missing", %{repo: repo} do
     {_anchor, session, grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-TOOLS-MISSING-SCOPE", [
         "read:work_request",
@@ -1505,11 +1565,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "mark_work_request_sliced",
           "dispatch_work_request_planned_slice"
         ] do
-      refute Map.has_key?(tools_by_name, tool)
+      assert Map.has_key?(tools_by_name, tool)
     end
   end
 
-  test "tools list hides WorkRequest tools when phase anchor no longer matches frozen scope", %{repo: repo} do
+  test "tools list advertises WorkRequest schemas when phase anchor no longer matches frozen scope", %{repo: repo} do
     {anchor, session, _grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-TOOLS-DRIFTED-ANCHOR", [
         "read:work_request",
@@ -1540,7 +1600,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "mark_work_request_sliced",
           "dispatch_work_request_planned_slice"
         ] do
-      refute Map.has_key?(tools_by_name, tool)
+      assert Map.has_key?(tools_by_name, tool)
     end
   end
 
@@ -1585,7 +1645,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(response, ["error", "data", "reason"]) == "ledger_unavailable"
   end
 
-  test "tools list does not treat lifecycle architect capabilities as MCP tool capabilities", %{repo: repo} do
+  test "tools list advertises architect schemas even when lifecycle capability is not an MCP tool grant", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-LIFECYCLE-ONLY", kind: "mcp"))
     assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["architect:lifecycle.transition"])
 
@@ -1598,7 +1658,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     response = Server.handle(%{"jsonrpc" => "2.0", "id" => "lifecycle-only-architect-tools", "method" => "tools/list", "params" => %{}}, server)
     tools_by_name = response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
 
-    assert Map.keys(tools_by_name) |> Enum.sort() == ["get_current_assignment", "sympp.health"]
+    assert Map.has_key?(tools_by_name, "get_current_assignment")
+    assert Map.has_key?(tools_by_name, "sympp.health")
+
+    for tool <- @architect_tool_names do
+      assert Map.has_key?(tools_by_name, tool)
+    end
+
+    denied_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "lifecycle-only-read-work-request",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_work_request", "arguments" => %{"work_request_id" => "WR-MISSING"}}
+        },
+        server
+      )
+
+    assert get_in(denied_response, ["error", "code"]) == -32_001
+    assert get_in(denied_response, ["error", "data", "reason"]) == "insufficient_capability"
   end
 
   test "architect tools reject arguments outside their advertised schemas", %{repo: repo} do
@@ -1663,6 +1742,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(unbound_response, ["error", "code"]) == -32_001
     assert get_in(unbound_response, ["error", "data", "resource"]) == "append_progress"
     assert get_in(unbound_response, ["error", "data", "reason"]) == "missing_session"
+
+    unbound_guidance_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "unbound-guidance-call",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_guidance_request", "arguments" => %{"unexpected" => "value"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(unbound_guidance_response, ["error", "code"]) == -32_001
+    assert get_in(unbound_guidance_response, ["error", "data", "resource"]) == "read_guidance_request"
+    assert get_in(unbound_guidance_response, ["error", "data", "reason"]) == "claim_required"
+    assert get_in(unbound_guidance_response, ["error", "data", "action"]) == "claim_work_key"
 
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-WORKER-CALL", kind: "mcp"))
     assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])
@@ -2563,7 +2658,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
   end
 
-  test "explicit state key reinitialize clears stale live server sessions", %{repo: repo} do
+  test "explicit state key stale live server remains claim-only until new session", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-STATE-STALE-LIVE", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
     state_key = make_ref()
@@ -2591,6 +2686,73 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         Server.new(Config.default(repo: repo), state_key: state_key)
       )
 
+    {tools_response, tools_server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "tools-after-stale-reinit", "method" => "tools/list", "params" => %{}},
+        claimed_server
+      )
+
+    tools_by_name = tools_response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
+
+    {repeat_tools_response, repeat_tools_server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "tools-after-stale-reinit-repeat", "method" => "tools/list", "params" => %{}},
+        tools_server
+      )
+
+    repeat_tools_by_name = repeat_tools_response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
+
+    {reused_init_response, reused_init_server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "reused-init-after-stale", "method" => "initialize", "params" => initialize_params()},
+        repeat_tools_server
+      )
+
+    # A duplicate initialize on the same reused explicit server is not a fresh
+    # unbound session; keep the stale identity on the claim-only recovery
+    # surface until re-claim or a new MCP process/session.
+    {reused_tools_response, reused_tools_server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "tools-after-reused-stale-init", "method" => "tools/list", "params" => %{}},
+        reused_init_server
+      )
+
+    reused_tools_by_name = reused_tools_response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
+
+    {stale_solo_response, _stale_solo_server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "solo-after-reused-stale-init", "method" => "tools/call", "params" => %{"name" => "solo_attach", "arguments" => %{}}},
+        reused_tools_server
+      )
+
+    {stateless_tools_response, stateless_tools_server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "tools-after-stateless-stale-recovery", "method" => "tools/list", "params" => %{}},
+        Server.new(Config.default(repo: repo), state_key: state_key)
+      )
+
+    stateless_tools_by_name = stateless_tools_response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
+
+    {stateless_solo_response, _stateless_solo_server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "solo-after-stateless-stale-recovery", "method" => "tools/call", "params" => %{"name" => "solo_attach", "arguments" => %{}}},
+        stateless_tools_server
+      )
+
+    {fresh_init_response, fresh_initialized_server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "fresh-init-after-stale", "method" => "initialize", "params" => initialize_params()},
+        Server.new(Config.default(repo: repo), state_key: state_key)
+      )
+
+    {fresh_tools_response, _fresh_tools_server} =
+      Server.handle_response_state(
+        %{"jsonrpc" => "2.0", "id" => "tools-after-fresh-init", "method" => "tools/list", "params" => %{}},
+        fresh_initialized_server
+      )
+
+    fresh_tools_by_name = fresh_tools_response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
+
     {assignment_response, _server} =
       Server.handle_response_state(
         %{"jsonrpc" => "2.0", "id" => "assignment-after-reinit", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
@@ -2598,6 +2760,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(reinit_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
+    assert Map.keys(tools_by_name) |> Enum.sort() == ["claim_work_key", "sympp.health"]
+    assert Map.keys(repeat_tools_by_name) |> Enum.sort() == ["claim_work_key", "sympp.health"]
+    assert get_in(reused_init_response, ["error", "data", "reason"]) == "already_initialized"
+    assert Map.keys(reused_tools_by_name) |> Enum.sort() == ["claim_work_key", "sympp.health"]
+    assert get_in(stale_solo_response, ["error", "data", "reason"]) == "claim_required"
+    assert get_in(stale_solo_response, ["error", "data", "action"]) == "claim_work_key"
+    assert Map.keys(stateless_tools_by_name) |> Enum.sort() == ["claim_work_key", "sympp.health"]
+    assert get_in(stateless_solo_response, ["error", "data", "reason"]) == "claim_required"
+    assert get_in(stateless_solo_response, ["error", "data", "action"]) == "claim_work_key"
+    assert get_in(fresh_init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
+    refute Map.has_key?(reused_tools_by_name, "get_current_assignment")
+    assert Map.has_key?(fresh_tools_by_name, "read_work_request")
+    assert Map.has_key?(fresh_tools_by_name, "solo_attach")
+    refute Map.has_key?(fresh_tools_by_name, "get_current_assignment")
     assert get_in(assignment_response, ["error", "data", "reason"]) == "missing_session"
   end
 
@@ -3656,7 +3832,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(missing_response, ["error", "code"]) == -32_001
-    assert get_in(missing_response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(missing_response, ["error", "data", "reason"]) == "claim_required"
+    assert get_in(missing_response, ["error", "data", "action"]) == "claim_work_key"
 
     assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])
 
@@ -5058,12 +5235,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       |> get_in(["result", "tools"])
       |> Map.new(&{&1["name"], &1})
 
-    refute Map.has_key?(read_only_tools, "ask_work_request_question")
-    refute Map.has_key?(read_only_tools, "add_work_request_planned_slice")
-    refute Map.has_key?(read_only_tools, "approve_work_request_planned_slice")
-    refute Map.has_key?(read_only_tools, "skip_work_request_planned_slice")
-    refute Map.has_key?(read_only_tools, "mark_work_request_sliced")
-    refute Map.has_key?(read_only_tools, "dispatch_work_request_planned_slice")
+    assert Map.has_key?(read_only_tools, "ask_work_request_question")
+    assert Map.has_key?(read_only_tools, "add_work_request_planned_slice")
+    assert Map.has_key?(read_only_tools, "approve_work_request_planned_slice")
+    assert Map.has_key?(read_only_tools, "skip_work_request_planned_slice")
+    assert Map.has_key?(read_only_tools, "mark_work_request_sliced")
+    assert Map.has_key?(read_only_tools, "dispatch_work_request_planned_slice")
 
     assert {:ok, legacy_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-WR-MUTATE-LEGACY", kind: "mcp"))
@@ -5205,7 +5382,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       })
 
     assert get_in(anonymous_response, ["error", "code"]) == -32_001
-    assert get_in(anonymous_response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(anonymous_response, ["error", "data", "reason"]) == "claim_required"
+    assert get_in(anonymous_response, ["error", "data", "action"]) == "claim_work_key"
 
     anonymous_slice_response =
       mcp_tool(repo, nil, "mark_work_request_sliced", %{
@@ -5214,7 +5392,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       })
 
     assert get_in(anonymous_slice_response, ["error", "code"]) == -32_001
-    assert get_in(anonymous_slice_response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(anonymous_slice_response, ["error", "data", "reason"]) == "claim_required"
+    assert get_in(anonymous_slice_response, ["error", "data", "action"]) == "claim_work_key"
 
     anonymous_dispatch_response =
       mcp_tool(repo, nil, "dispatch_work_request_planned_slice", %{
@@ -5224,7 +5403,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       })
 
     assert get_in(anonymous_dispatch_response, ["error", "code"]) == -32_001
-    assert get_in(anonymous_dispatch_response, ["error", "data", "reason"]) == "missing_session"
+    assert get_in(anonymous_dispatch_response, ["error", "data", "reason"]) == "claim_required"
+    assert get_in(anonymous_dispatch_response, ["error", "data", "action"]) == "claim_work_key"
   end
 
   test "WorkRequest MCP question mutations fail closed for sibling question ids", %{repo: repo} do

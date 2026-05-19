@@ -13,12 +13,12 @@ inventing product behavior.
 ## Start
 
 1. Read the current assignment, WorkRequest, or architect package context from
-   the Symphony++ MCP server and MCP resources before planning.
-   If `tools/list` shows only `sympp.health`, Solo Session tools, and
-   `claim_work_key`, treat the session as pre-claim/bootstrap, not as missing
-   WorkRequest capability. Use the local architect handoff/private-store
-   bootstrap to bind the session first, then refresh tool discovery before
-   reading the WorkRequest.
+   the Symphony++ MCP server and MCP resources before planning. `tools/list`
+   may advertise WorkRequest and architect schemas before claim; schema
+   visibility is not authorization. If an architect tool call returns
+   `claim_required`, missing-session, or another session-binding denial, treat
+   the session as pre-claim/bootstrap and use the local architect
+   handoff/private-store bootstrap to bind it before reading the WorkRequest.
 2. For WorkRequest-led lanes, use `list_work_requests(status?)` and
    `read_work_request(work_request_id)` to find the scoped request and its
    questions, decisions, planned slices, and status summary.

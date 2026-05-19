@@ -25,8 +25,8 @@ C:\Users\jonat\.codex\tmp\sympp-v2-dogfood-001-codex-home-20260518-170735
 | Dedicated-home enable command | Passed with `status: created_config`; wrote only the companion plugin enablement entry. |
 | Dedicated-home post-enable doctor | `healthy_local_workrequest_mcp`; companion `ready`, companion plugin enabled, endpoint reachable, no global S++ MCP entry. |
 | Dedicated-home config content | Exactly `[plugins."symphony-plus-plus-mcp@jonat-local"]` plus `enabled = true`. |
-| Unbound HTTP MCP smoke | Passed; exposed `sympp.health`, `claim_work_key`, and the `solo_*` tools. |
-| Synthetic bound worker HTTP MCP smoke | Passed against an isolated temporary ledger on port `4058`; exposed 20 bound worker tools, 9 bound resources, and 7 unbound pre-claim tools. Raw work-key material and the temporary synthetic ledger directory were removed after the smoke. |
+| Unbound HTTP MCP smoke | Passed in the historical pre-static-discovery run; exposed `sympp.health`, `claim_work_key`, and the `solo_*` tools. |
+| Synthetic bound worker HTTP MCP smoke | Passed against an isolated temporary ledger on port `4058`; historical run exposed 20 bound worker tools, 9 bound resources, and the then-current 7 unbound pre-claim tools before static architect schema discovery. Raw work-key material and the temporary synthetic ledger directory were removed after the smoke. |
 | Doctor self-test and HTTP smoke self-test | Passed. |
 
 The bound smoke used a local synthetic WorkPackage and a short-lived
