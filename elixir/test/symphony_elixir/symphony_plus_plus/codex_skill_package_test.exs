@@ -3085,6 +3085,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     temp_codex_home = unique_temp_path("sympp-plugin-refresh")
 
     if powershell do
+      fake_mix = fake_mix_executable(temp_codex_home)
+
       try do
         expected_version =
           @plugin_manifest_path
@@ -3103,10 +3105,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-ValidateInstalledCache"
             ],
-            stderr_to_stdout: true
+            stderr_to_stdout: true,
+            env: [{"SYMPP_LAUNCHER", "direct"}, {"SYMPP_MIX", fake_mix}]
           )
 
         assert status == 0, output
+        assert output =~ "Mix 1.99.0 test"
+        assert output =~ "Symphony++ Solo Session wrapper validation passed."
+        assert output =~ "Symphony++ generic MCP wrapper validation passed."
         assert output =~ "Validated installed Symphony++ plugin cache:"
         assert output =~ "cache: local"
         assert output =~ "cache: #{expected_version}"
@@ -3126,6 +3132,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     temp_codex_home = unique_temp_path("sympp-plugin-mcp-refresh")
 
     if powershell do
+      fake_mix = fake_mix_executable(temp_codex_home)
+
       try do
         {output, status} =
           System.cmd(
@@ -3140,10 +3148,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-ValidateInstalledCache"
             ],
-            stderr_to_stdout: true
+            stderr_to_stdout: true,
+            env: [{"SYMPP_LAUNCHER", "direct"}, {"SYMPP_MIX", fake_mix}]
           )
 
         assert status == 0, output
+        assert output =~ "Mix 1.99.0 test"
+        assert output =~ "Symphony++ Solo Session wrapper validation passed."
+        assert output =~ "Symphony++ generic MCP wrapper validation passed."
         assert output =~ "Validated installed Symphony++ plugin cache:"
         assert output =~ "cache: local"
         assert output =~ "cache: #{@plugin_version}"
@@ -3599,6 +3611,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   defp normalize_newlines(value) do
     String.replace(value, "\r\n", "\n")
   end
+
+  defp fake_mix_executable(temp_root) do
+    path = Path.join(temp_root, if(windows?(), do: "mix.cmd", else: "mix"))
+    File.mkdir_p!(Path.dirname(path))
+
+    File.write!(path, fake_mix_script())
+
+    unless windows?() do
+      File.chmod!(path, 0o755)
+    end
+
+    path
+  end
+
+  defp fake_mix_script do
+    if windows?() do
+      """
+      @echo off
+      if "%~1"=="--version" (
+        echo Mix 1.99.0 test
+        exit /b 0
+      )
+      echo unexpected mix args: %*
+      exit /b 2
+      """
+    else
+      """
+      #!/usr/bin/env sh
+      if [ "$1" = "--version" ]; then
+        echo "Mix 1.99.0 test"
+        exit 0
+      fi
+      echo "unexpected mix args: $*" >&2
+      exit 2
+      """
+    end
+  end
+
+  defp windows?, do: match?({:win32, _name}, :os.type())
 
   defp unique_temp_path(prefix) do
     Path.join(System.tmp_dir!(), "#{prefix}-#{unique_id()}")
