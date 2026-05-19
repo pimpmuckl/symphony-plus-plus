@@ -148,7 +148,7 @@ type BoardWireHiddenRect = {
   height: number;
 };
 
-type WireTrackSide = "source" | "target";
+type WireTrackSide = "source" | "target" | "spread";
 
 type MeasuredBoardWire = BoardWire & {
   source: HTMLElement;
@@ -1537,12 +1537,24 @@ function applyBoardWireAnchorSlots(wires: MeasuredBoardWire[]) {
 
 function assignBoardWireTracks(wires: MeasuredBoardWire[], lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>) {
   const groups = new Map<string, MeasuredBoardWire[]>();
+  const fanoutSources = new Map<string, number>();
+  const fanoutGaps = new Set<number>();
+
+  wires.forEach((wire) => {
+    const gapIndex = primaryBoardWireGapIndex(wire);
+    if (gapIndex < 0 || gapIndex >= lanes.length - 1) return;
+    const key = `${gapIndex}:${wire.from}`;
+    fanoutSources.set(key, (fanoutSources.get(key) || 0) + 1);
+  });
+  fanoutSources.forEach((count, key) => {
+    if (count > 1) fanoutGaps.add(Number(key.split(":")[0]));
+  });
 
   wires.forEach((wire) => {
     const gapIndex = primaryBoardWireGapIndex(wire);
     if (gapIndex < 0 || gapIndex >= lanes.length - 1) return;
 
-    wire.trackSide = boardWireTrackSide(wire);
+    wire.trackSide = fanoutGaps.has(gapIndex) ? "spread" : boardWireTrackSide(wire);
     const key = `${gapIndex}:${wire.trackSide}`;
     const group = groups.get(key) || [];
     group.push(wire);
@@ -1569,13 +1581,36 @@ function assignBoardWireTracks(wires: MeasuredBoardWire[], lanes: Array<{ node: 
     group.forEach((wire) => {
       wire.trackCount = Math.max(1, tracks.length);
     });
-    reorderSameSourceFanoutTracks(group, lanes);
+    if (group[0]?.trackSide === "spread") {
+      reorderSpreadTracks(group);
+    } else {
+      reorderSameSourceFanoutTracks(group, lanes);
+    }
     group.forEach((wire) => {
       wire.trackX = boardWireTrackX(wire, lanes);
     });
   });
 
   return wires;
+}
+
+function reorderSpreadTracks(wires: MeasuredBoardWire[]) {
+  if (wires.length <= 1) return;
+
+  const sample = wires[0];
+  const trackCount = wires.length;
+  const indices = Array.from({ length: trackCount }, (_, index) => index);
+  const orderedIndices = sample.targetLane >= sample.sourceLane ? indices : [...indices].reverse();
+
+  [...wires]
+    .sort((left, right) => {
+      if (left.targetY !== right.targetY) return left.targetY - right.targetY;
+      return left.sourceY - right.sourceY;
+    })
+    .forEach((wire, index) => {
+      wire.trackCount = Math.max(wire.trackCount, trackCount);
+      wire.trackIndex = orderedIndices[index] ?? wire.trackIndex;
+    });
 }
 
 function reorderSameSourceFanoutTracks(wires: MeasuredBoardWire[], lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>) {
@@ -1585,6 +1620,28 @@ function reorderSameSourceFanoutTracks(wires: MeasuredBoardWire[], lanes: Array<
     const indices = [...new Set(group.map((wire) => wire.trackIndex))].sort((left, right) => left - right);
     if (indices.length <= 1) return;
     const sample = group[0];
+
+    if (sample.trackSide === "spread") {
+      const trackCount = group.length;
+      const leftToRight = Array.from({ length: trackCount }, (_, index) => index);
+      const rightToLeft = [...leftToRight].reverse();
+      const forward = sample.targetLane >= sample.sourceLane;
+      const aboveSource = [...group].filter((wire) => wire.targetY < wire.sourceY).sort((left, right) => left.targetY - right.targetY);
+      const belowSource = [...group].filter((wire) => wire.targetY >= wire.sourceY).sort((left, right) => left.targetY - right.targetY);
+      const aboveIndices = (forward ? leftToRight : rightToLeft).slice(0, aboveSource.length);
+      const belowIndices = (forward ? rightToLeft : leftToRight).slice(0, belowSource.length);
+
+      aboveSource.forEach((wire, index) => {
+        wire.trackCount = Math.max(wire.trackCount, trackCount);
+        wire.trackIndex = aboveIndices[index] ?? wire.trackIndex;
+      });
+      belowSource.forEach((wire, index) => {
+        wire.trackCount = Math.max(wire.trackCount, trackCount);
+        wire.trackIndex = belowIndices[index] ?? wire.trackIndex;
+      });
+      return;
+    }
+
     const indicesFromOutsideIn = indices.sort((left, right) => {
       const leftDistance = Math.abs(boardWireTrackX(sample, lanes, left) - sample.sourceX);
       const rightDistance = Math.abs(boardWireTrackX(sample, lanes, right) - sample.sourceX);
@@ -1650,6 +1707,13 @@ function boardWireTrackX(wire: MeasuredBoardWire, lanes: Array<{ node: HTMLEleme
   const maxX = Math.max(gapStart, gapEnd) - 4;
   if (maxX <= minX) return defaultBoardWireTrackX(wire.sourceX, wire.targetX);
 
+  const trackCount = Math.max(1, wire.trackCount);
+  const trackRatio = trackCount === 1 ? 0.5 : trackIndex / (trackCount - 1);
+
+  if (wire.trackSide === "spread") {
+    return clampNumber(minX + (maxX - minX) * trackRatio, minX, maxX);
+  }
+
   const forward = wire.targetLane >= wire.sourceLane;
   const sourceSideIsStart = forward;
   const useSourceSide = wire.trackSide === "source";
@@ -1660,8 +1724,6 @@ function boardWireTrackX(wire: MeasuredBoardWire, lanes: Array<{ node: HTMLEleme
   const bandEnd = preferStart ? centerX - bandGap : maxX;
   if (bandEnd <= bandStart) return preferStart ? minX : maxX;
 
-  const trackCount = Math.max(1, wire.trackCount);
-  const trackRatio = trackCount === 1 ? 0.5 : trackIndex / (trackCount - 1);
   const rawX = preferStart
     ? bandStart + (bandEnd - bandStart) * trackRatio
     : bandEnd - (bandEnd - bandStart) * trackRatio;
