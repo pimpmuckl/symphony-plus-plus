@@ -503,7 +503,7 @@
 
   .board-wire-path {
     fill: none;
-    stroke: var(--wire-color);
+    stroke: var(--wire-color, rgb(148 163 184));
     stroke-linecap: round;
     stroke-linejoin: round;
     stroke-width: 2.25;
@@ -514,53 +514,13 @@
 
   .board-wire-node {
     fill: hsl(var(--background));
-    stroke: var(--wire-color);
+    stroke: var(--wire-color, rgb(148 163 184));
     stroke-width: 2.25;
     filter: drop-shadow(0 1px 2px hsl(224 27% 12% / 0.2));
   }
 
   .board-wire-node-target {
-    fill: var(--wire-color);
-  }
-
-  [data-wire-tone="request"] {
-    --wire-color: rgb(203 213 225);
-  }
-
-  [data-wire-tone="queued"] {
-    --wire-color: rgb(45 212 191);
-  }
-
-  [data-wire-tone="slice"] {
-    --wire-color: rgb(34 211 238);
-  }
-
-  [data-wire-tone="implementing"] {
-    --wire-color: rgb(56 189 248);
-  }
-
-  [data-wire-tone="review"] {
-    --wire-color: rgb(129 140 248);
-  }
-
-  [data-wire-tone="merge"] {
-    --wire-color: rgb(251 191 36);
-  }
-
-  [data-wire-tone="guidance"] {
-    --wire-color: rgb(167 139 250);
-  }
-
-  [data-wire-tone="blocked"] {
-    --wire-color: rgb(251 113 133);
-  }
-
-  [data-wire-tone="finished"] {
-    --wire-color: rgb(52 211 153);
-  }
-
-  [data-wire-tone="muted"] {
-    --wire-color: rgb(212 212 216);
+    fill: var(--wire-color, rgb(148 163 184));
   }
 
   .dialog-overlay[data-state="open"] {

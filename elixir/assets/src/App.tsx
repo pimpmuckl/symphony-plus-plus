@@ -92,6 +92,10 @@ type FeatureLane = "requested" | "slices" | "packages";
 type SignalTone = "muted" | "info" | "warning" | "danger" | "success";
 type StateCardTone = "request" | "queued" | "slice" | "implementing" | "review" | "merge" | "guidance" | "blocked" | "finished" | "muted";
 type BoardWireTone = StateCardTone;
+type StateToneStyle = {
+  card: string;
+  accent: string;
+};
 type WorkspaceTab = "workstreams" | "solo";
 type WorkstreamLayoutMode = "jira" | "aligned";
 type DashboardUiState = {
@@ -148,6 +152,18 @@ type BoardWireHiddenRect = {
   height: number;
 };
 
+type BoardWireHorizontalSegment = {
+  x1: number;
+  x2: number;
+  y: number;
+};
+
+type BoardWireVerticalSegment = {
+  x: number;
+  y1: number;
+  y2: number;
+};
+
 type WireTrackSide = "source" | "target" | "spread";
 
 type MeasuredBoardWire = BoardWire & {
@@ -165,6 +181,19 @@ type MeasuredBoardWire = BoardWire & {
   trackIndex: number;
   trackCount: number;
   trackSide: WireTrackSide;
+};
+
+const STATE_CARD_TONES: Record<StateCardTone, StateToneStyle> = {
+  request: { card: "border-slate-200 bg-slate-50/80", accent: "rgb(203 213 225)" },
+  queued: { card: "border-teal-200/80 bg-teal-50/80", accent: "rgb(45 212 191)" },
+  slice: { card: "border-cyan-200/80 bg-cyan-50/80", accent: "rgb(34 211 238)" },
+  implementing: { card: "border-sky-200/80 bg-sky-50/80", accent: "rgb(56 189 248)" },
+  review: { card: "border-indigo-200/80 bg-indigo-50/80", accent: "rgb(129 140 248)" },
+  merge: { card: "border-lime-200/80 bg-lime-50/80", accent: "rgb(163 230 53)" },
+  guidance: { card: "border-violet-200/80 bg-violet-50/80", accent: "rgb(167 139 250)" },
+  blocked: { card: "border-rose-200/80 bg-rose-50/80", accent: "rgb(251 113 133)" },
+  finished: { card: "border-emerald-200/80 bg-emerald-50/80", accent: "rgb(52 211 153)" },
+  muted: { card: "border-zinc-200/80 bg-zinc-50/80", accent: "rgb(212 212 216)" },
 };
 
 type SliceEntry = {
@@ -723,14 +752,16 @@ function TopTray({ title, children }: { title: string; children: React.ReactNode
 }
 
 function GuidancePreviewCard({ item, index, onSelect }: { item: GuidanceItem; index: number; onSelect: (item: GuidanceItem) => void }) {
+  const tone: StateCardTone = item.source === "guidance" ? "guidance" : "queued";
+
   return (
     <button
       type="button"
       className={stateCardClassName(
-        item.source === "guidance" ? "guidance" : "queued",
+        tone,
         "stagger-item grid gap-4 p-4 text-left hover:border-primary/50 hover:shadow-dashboard",
       )}
-      style={{ animationDelay: `${index * 45}ms` }}
+      style={stateCardStyle(tone, { animationDelay: `${index * 45}ms` })}
       onClick={() => onSelect(item)}
     >
       <div className="flex items-start justify-between gap-3">
@@ -757,7 +788,7 @@ function BlockerPreviewCard({ item, index }: { item: BlockerItem; index: number 
   return (
     <div
       className={stateCardClassName("blocked", "stagger-item p-4")}
-      style={{ animationDelay: `${index * 45}ms` }}
+      style={stateCardStyle("blocked", { animationDelay: `${index * 45}ms` })}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -813,7 +844,7 @@ function FinishedHighlightCard({ item, index }: { item: FinishedHighlight; index
   return (
     <div
       className={stateCardClassName("finished", "stagger-item p-3")}
-      style={{ animationDelay: `${index * 30}ms` }}
+      style={stateCardStyle("finished", { animationDelay: `${index * 30}ms` })}
     >
       <div className="flex min-w-0 items-start gap-2">
         <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
@@ -971,24 +1002,19 @@ function RepoSummaryPlate({
 }
 
 function stateCardClassName(tone: StateCardTone, className?: string) {
-  const tones: Record<StateCardTone, string> = {
-    request: "border-slate-200 bg-slate-50/80 border-l-slate-300",
-    queued: "border-teal-200/80 bg-teal-50/80 border-l-teal-400",
-    slice: "border-cyan-200/80 bg-cyan-50/80 border-l-cyan-400",
-    implementing: "border-sky-200/80 bg-sky-50/80 border-l-sky-400",
-    review: "border-indigo-200/80 bg-indigo-50/80 border-l-indigo-400",
-    merge: "border-lime-200/80 bg-lime-50/80 border-l-lime-400",
-    guidance: "border-violet-200/80 bg-violet-50/80 border-l-violet-400",
-    blocked: "border-rose-200/80 bg-rose-50/80 border-l-rose-400",
-    finished: "border-emerald-200/80 bg-emerald-50/80 border-l-emerald-400",
-    muted: "border-zinc-200/80 bg-zinc-50/80 border-l-zinc-300",
-  };
-
   return cn(
     "min-w-0 max-w-full rounded-lg border border-l-4 shadow-sm transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out",
-    tones[tone],
+    STATE_CARD_TONES[tone].card,
     className,
   );
+}
+
+function stateCardStyle(tone: StateCardTone, style?: React.CSSProperties) {
+  return { ...style, borderLeftColor: STATE_CARD_TONES[tone].accent };
+}
+
+function wireToneStyle(tone: BoardWireTone) {
+  return { "--wire-color": STATE_CARD_TONES[tone].accent } as React.CSSProperties;
 }
 
 function WorkstreamBoard({
@@ -1292,6 +1318,7 @@ function BoardWireLayer({ paths, width, height }: { paths: BoardWirePath[]; widt
               data-wire-track-count={wire.trackCount}
               data-wire-track-side={wire.trackSide}
               data-mask-rects={wire.hiddenRects.length}
+              style={wireToneStyle(wire.tone)}
             >
               <path className="board-wire-path" d={wire.path} mask={maskId ? `url(#${maskId})` : undefined} />
             </g>
@@ -1308,6 +1335,7 @@ function BoardWireLayer({ paths, width, height }: { paths: BoardWirePath[]; widt
             data-wire-track-x={wire.trackX.toFixed(2)}
             data-wire-track-index={wire.trackIndex}
             data-wire-track-count={wire.trackCount}
+            style={wireToneStyle(wire.tone)}
           >
             <circle className="board-wire-node board-wire-node-target" cx={wire.targetX} cy={wire.targetY} r="4" />
           </g>
@@ -1497,7 +1525,7 @@ function measureBoardWires(board: HTMLDivElement, wires: BoardWire[]) {
       from: wire.from,
       to: wire.to,
       tone: wire.tone,
-      path: boardWirePath(wire.sourceX, wire.sourceY, wire.targetX, wire.targetY, wire.trackX, wire.trackCount > 1 ? 8 : 14),
+      path: boardWirePath(wire.sourceX, wire.sourceY, wire.targetX, wire.targetY, wire.trackX, boardWireBendRadius(wire, lanes)),
       sourceX: wire.sourceX,
       sourceY: wire.sourceY,
       targetX: wire.targetX,
@@ -1582,7 +1610,7 @@ function assignBoardWireTracks(wires: MeasuredBoardWire[], lanes: Array<{ node: 
       wire.trackCount = Math.max(1, tracks.length);
     });
     if (group[0]?.trackSide === "spread") {
-      reorderSpreadTracks(group);
+      reorderSpreadTracks(group, lanes);
     } else {
       reorderSameSourceFanoutTracks(group, lanes);
     }
@@ -1594,23 +1622,162 @@ function assignBoardWireTracks(wires: MeasuredBoardWire[], lanes: Array<{ node: 
   return wires;
 }
 
-function reorderSpreadTracks(wires: MeasuredBoardWire[]) {
+function reorderSpreadTracks(wires: MeasuredBoardWire[], lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>) {
   if (wires.length <= 1) return;
 
-  const sample = wires[0];
   const trackCount = wires.length;
-  const indices = Array.from({ length: trackCount }, (_, index) => index);
-  const orderedIndices = sample.targetLane >= sample.sourceLane ? indices : [...indices].reverse();
-
-  [...wires]
+  const sorted = [...wires]
     .sort((left, right) => {
       if (left.targetY !== right.targetY) return left.targetY - right.targetY;
       return left.sourceY - right.sourceY;
-    })
-    .forEach((wire, index) => {
-      wire.trackCount = Math.max(wire.trackCount, trackCount);
-      wire.trackIndex = orderedIndices[index] ?? wire.trackIndex;
     });
+  const assignment = bestSpreadTrackAssignment(sorted, lanes, trackCount);
+
+  sorted.forEach((wire, index) => {
+    wire.trackCount = Math.max(wire.trackCount, trackCount);
+    wire.trackIndex = assignment[index] ?? wire.trackIndex;
+  });
+}
+
+function bestSpreadTrackAssignment(
+  wires: MeasuredBoardWire[],
+  lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>,
+  trackCount: number,
+) {
+  const indices = Array.from({ length: trackCount }, (_, index) => index);
+  const initial = [...indices].reverse();
+
+  if (wires.length > 8) {
+    return optimizeSpreadTrackAssignment(wires, lanes, initial, trackCount);
+  }
+
+  let best = initial;
+  let bestCost = boardWireAssignmentCost(wires, lanes, initial, trackCount);
+  const used = new Set<number>();
+  const current: number[] = [];
+
+  const visit = () => {
+    if (current.length === wires.length) {
+      const candidate = [...current];
+      const cost = boardWireAssignmentCost(wires, lanes, candidate, trackCount);
+      if (cost < bestCost) {
+        best = candidate;
+        bestCost = cost;
+      }
+      return;
+    }
+
+    indices.forEach((index) => {
+      if (used.has(index)) return;
+      used.add(index);
+      current.push(index);
+      visit();
+      current.pop();
+      used.delete(index);
+    });
+  };
+
+  visit();
+  return best;
+}
+
+function optimizeSpreadTrackAssignment(
+  wires: MeasuredBoardWire[],
+  lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>,
+  initial: number[],
+  trackCount: number,
+) {
+  const assignment = [...initial];
+  let bestCost = boardWireAssignmentCost(wires, lanes, assignment, trackCount);
+  let improved = true;
+
+  while (improved) {
+    improved = false;
+    for (let left = 0; left < assignment.length; left += 1) {
+      for (let right = left + 1; right < assignment.length; right += 1) {
+        [assignment[left], assignment[right]] = [assignment[right], assignment[left]];
+        const cost = boardWireAssignmentCost(wires, lanes, assignment, trackCount);
+        if (cost < bestCost) {
+          bestCost = cost;
+          improved = true;
+        } else {
+          [assignment[left], assignment[right]] = [assignment[right], assignment[left]];
+        }
+      }
+    }
+  }
+
+  return assignment;
+}
+
+function boardWireAssignmentCost(
+  wires: MeasuredBoardWire[],
+  lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>,
+  assignment: number[],
+  trackCount: number,
+) {
+  const routes = wires.map((wire, index) => boardWireRouteSegments(wire, boardWireTrackX(wire, lanes, assignment[index], trackCount)));
+  let cost = 0;
+
+  routes.forEach((route) => {
+    cost += (route.source.x2 - route.source.x1 + route.target.x2 - route.target.x1) * 0.01;
+  });
+
+  for (let left = 0; left < routes.length; left += 1) {
+    for (let right = left + 1; right < routes.length; right += 1) {
+      cost += boardWireRoutePairCost(routes[left], routes[right]);
+    }
+  }
+
+  return cost;
+}
+
+function boardWireRouteSegments(wire: MeasuredBoardWire, trackX: number) {
+  return {
+    source: horizontalSegment(wire.sourceX, trackX, wire.sourceY),
+    trunk: verticalSegment(trackX, wire.sourceY, wire.targetY),
+    target: horizontalSegment(trackX, wire.targetX, wire.targetY),
+  };
+}
+
+function boardWireRoutePairCost(
+  left: { source: BoardWireHorizontalSegment; trunk: BoardWireVerticalSegment; target: BoardWireHorizontalSegment },
+  right: { source: BoardWireHorizontalSegment; trunk: BoardWireVerticalSegment; target: BoardWireHorizontalSegment },
+) {
+  let cost = 0;
+  [left.source, left.target].forEach((horizontal) => {
+    cost += horizontalVerticalCrossingCost(horizontal, right.trunk);
+  });
+  [right.source, right.target].forEach((horizontal) => {
+    cost += horizontalVerticalCrossingCost(horizontal, left.trunk);
+  });
+  cost += horizontalOverlapCost(left.source, right.source);
+  cost += horizontalOverlapCost(left.target, right.target);
+  return cost;
+}
+
+function horizontalSegment(leftX: number, rightX: number, y: number): BoardWireHorizontalSegment {
+  return { x1: Math.min(leftX, rightX), x2: Math.max(leftX, rightX), y };
+}
+
+function verticalSegment(x: number, topY: number, bottomY: number): BoardWireVerticalSegment {
+  return { x, y1: Math.min(topY, bottomY), y2: Math.max(topY, bottomY) };
+}
+
+function horizontalVerticalCrossingCost(horizontal: BoardWireHorizontalSegment, vertical: BoardWireVerticalSegment) {
+  const crossing =
+    vertical.x > horizontal.x1 + 2 &&
+    vertical.x < horizontal.x2 - 2 &&
+    horizontal.y > vertical.y1 + 2 &&
+    horizontal.y < vertical.y2 - 2;
+
+  return crossing ? 1000 : 0;
+}
+
+function horizontalOverlapCost(left: BoardWireHorizontalSegment, right: BoardWireHorizontalSegment) {
+  if (Math.abs(left.y - right.y) > 3) return 0;
+  const overlap = Math.min(left.x2, right.x2) - Math.max(left.x1, right.x1);
+  return overlap > 0 ? overlap * 0.25 : 0;
 }
 
 function reorderSameSourceFanoutTracks(wires: MeasuredBoardWire[], lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>) {
@@ -1695,7 +1862,12 @@ function boardWireVerticalSpan(wire: MeasuredBoardWire) {
   };
 }
 
-function boardWireTrackX(wire: MeasuredBoardWire, lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>, trackIndex = wire.trackIndex) {
+function boardWireTrackX(
+  wire: MeasuredBoardWire,
+  lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>,
+  trackIndex = wire.trackIndex,
+  trackCount = wire.trackCount,
+) {
   const gapIndex = primaryBoardWireGapIndex(wire);
   const leftLane = lanes[gapIndex];
   const rightLane = lanes[gapIndex + 1];
@@ -1707,8 +1879,8 @@ function boardWireTrackX(wire: MeasuredBoardWire, lanes: Array<{ node: HTMLEleme
   const maxX = Math.max(gapStart, gapEnd) - 4;
   if (maxX <= minX) return defaultBoardWireTrackX(wire.sourceX, wire.targetX);
 
-  const trackCount = Math.max(1, wire.trackCount);
-  const trackRatio = trackCount === 1 ? 0.5 : trackIndex / (trackCount - 1);
+  const safeTrackCount = Math.max(1, trackCount);
+  const trackRatio = safeTrackCount === 1 ? 0.5 : trackIndex / (safeTrackCount - 1);
 
   if (wire.trackSide === "spread") {
     return clampNumber(minX + (maxX - minX) * trackRatio, minX, maxX);
@@ -1729,6 +1901,12 @@ function boardWireTrackX(wire: MeasuredBoardWire, lanes: Array<{ node: HTMLEleme
     : bandEnd - (bandEnd - bandStart) * trackRatio;
 
   return clampNumber(rawX, bandStart, bandEnd);
+}
+
+function boardWireBendRadius(wire: MeasuredBoardWire, lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>) {
+  if (wire.trackCount <= 1) return 14;
+  const adjacentTrackGap = Math.abs(boardWireTrackX(wire, lanes, 1, wire.trackCount) - boardWireTrackX(wire, lanes, 0, wire.trackCount));
+  return clampNumber(adjacentTrackGap / 2, 3, 8);
 }
 
 function layoutRectWithinBoard(node: HTMLElement, board: HTMLElement): BoardWireHiddenRect {
@@ -1850,7 +2028,7 @@ function RequestCard({
     <div
       className={stateCardClassName(tone, "stagger-item p-3")}
       data-wire-id={nodeId}
-      style={{ animationDelay: `${index * 30}ms` }}
+      style={stateCardStyle(tone, { animationDelay: `${index * 30}ms` })}
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="min-w-0">
@@ -1896,7 +2074,7 @@ function SliceCard({
     <div
       className={stateCardClassName(tone, "stagger-item p-3")}
       data-wire-id={nodeId}
-      style={{ animationDelay: `${index * 30}ms` }}
+      style={stateCardStyle(tone, { animationDelay: `${index * 30}ms` })}
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <p className="min-w-0 truncate text-sm font-medium">{slice.title || pkg?.title || slice.id}</p>
@@ -1914,7 +2092,7 @@ function PackageCard({ pkg, lane, index = 0 }: { pkg: WorkPackageCard; lane: Boa
   const attention = packageAttentionSignal(pkg);
 
   return (
-    <div className={stateCardClassName(tone, "stagger-item p-3")} style={{ animationDelay: `${index * 30}ms` }}>
+    <div className={stateCardClassName(tone, "stagger-item p-3")} style={stateCardStyle(tone, { animationDelay: `${index * 30}ms` })}>
       <div className="flex min-w-0 items-start justify-between gap-2">
         <p className="min-w-0 truncate text-sm font-medium">{pkg.title || pkg.id}</p>
         <Badge variant={statusVariant(pkg.status)} className="shrink-0">
@@ -2293,7 +2471,7 @@ function SoloSessionCard({ session, index }: { session: SoloSession; index: numb
   const tone = soloSessionCardTone(session);
 
   return (
-    <div className={stateCardClassName(tone, "stagger-item p-3")} style={{ animationDelay: `${index * 35}ms` }}>
+    <div className={stateCardClassName(tone, "stagger-item p-3")} style={stateCardStyle(tone, { animationDelay: `${index * 35}ms` })}>
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold">{session.title || session.id}</p>
