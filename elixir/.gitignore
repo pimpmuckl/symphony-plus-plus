@@ -19,6 +19,7 @@
 /priv/static/.vite/
 /priv/static/assets/
 /priv/static/index.html
+/priv/static/splusplus-logo.png
 
 # Local runtime logs.
 /log/

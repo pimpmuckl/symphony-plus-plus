@@ -84,7 +84,8 @@ defmodule Mix.Tasks.Sympp.DemoLedgerTest do
                "SYMPP-DEMO-WR-CLARIFY",
                "SYMPP-DEMO-WR-HUMAN",
                "SYMPP-DEMO-WR-SLICING",
-               "SYMPP-DEMO-WR-SLICED"
+               "SYMPP-DEMO-WR-SLICED",
+               "SYMPP-DEMO-WR-LIFECYCLE"
              ]
 
       with_repo(database_path, fn repo ->
@@ -92,21 +93,37 @@ defmodule Mix.Tasks.Sympp.DemoLedgerTest do
           "SYMPP-DEMO-WR-CLARIFY" => "clarifying",
           "SYMPP-DEMO-WR-HUMAN" => "human_info_needed",
           "SYMPP-DEMO-WR-SLICING" => "ready_for_slicing",
-          "SYMPP-DEMO-WR-SLICED" => "sliced"
+          "SYMPP-DEMO-WR-SLICED" => "sliced",
+          "SYMPP-DEMO-WR-LIFECYCLE" => "sliced"
         })
 
         assert_statuses(repo, WorkPackage, %{
           "SYMPP-DEMO-WP-ACTIVE" => "implementing",
+          "SYMPP-DEMO-WP-QUEUED" => "ready_for_worker",
+          "SYMPP-DEMO-WP-PLANNING" => "planning",
           "SYMPP-DEMO-WP-REVIEW" => "reviewing",
+          "SYMPP-DEMO-WP-CI" => "ci_waiting",
           "SYMPP-DEMO-WP-READY" => "ready_for_human_merge",
+          "SYMPP-DEMO-WP-ARCH-READY" => "ready_for_architect_merge",
           "SYMPP-DEMO-WP-BLOCKED" => "blocked",
-          "SYMPP-DEMO-WP-MERGED" => "merged"
+          "SYMPP-DEMO-WP-MERGED" => "merged",
+          "SYMPP-DEMO-WP-MERGED-DOCS" => "merged",
+          "SYMPP-DEMO-WP-CLOSED-SPIKE" => "closed"
         })
 
         assert_statuses(repo, PlannedSlice, %{
           "SYMPP-DEMO-SLICE-APPROVED" => "approved",
           "SYMPP-DEMO-SLICE-SKIPPED" => "skipped",
-          "SYMPP-DEMO-SLICE-DISPATCHED" => "dispatched"
+          "SYMPP-DEMO-SLICE-DISPATCHED" => "dispatched",
+          "SYMPP-DEMO-SLICE-QUEUED" => "dispatched",
+          "SYMPP-DEMO-SLICE-PLANNING" => "dispatched",
+          "SYMPP-DEMO-SLICE-REVIEW" => "dispatched",
+          "SYMPP-DEMO-SLICE-CI" => "dispatched",
+          "SYMPP-DEMO-SLICE-READY" => "dispatched",
+          "SYMPP-DEMO-SLICE-ARCH-READY" => "dispatched",
+          "SYMPP-DEMO-SLICE-MERGED" => "dispatched",
+          "SYMPP-DEMO-SLICE-MERGED-DOCS" => "dispatched",
+          "SYMPP-DEMO-SLICE-CLOSED-SPIKE" => "dispatched"
         })
 
         question = repo.get!(ClarificationQuestion, "SYMPP-DEMO-WRQ-STRUCTURED")
@@ -199,8 +216,8 @@ defmodule Mix.Tasks.Sympp.DemoLedgerTest do
       assert demo_stable_rows(database_path) == first_stable_rows
 
       with_repo(database_path, fn repo ->
-        assert repo.aggregate(WorkPackage, :count) == 5
-        assert repo.aggregate(WorkRequest, :count) == 4
+        assert repo.aggregate(WorkPackage, :count) == 11
+        assert repo.aggregate(WorkRequest, :count) == 5
       end)
     after
       File.rm(database_path)

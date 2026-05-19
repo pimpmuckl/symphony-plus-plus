@@ -1,3 +1,46 @@
+export type PackagePlanSummary = {
+  completed_count?: number;
+  total_count?: number;
+  open_count?: number;
+};
+
+export type PackageBranchMetadata = {
+  branch?: string;
+  head_sha?: string;
+  type?: string;
+  source_tool?: string;
+};
+
+export type PackagePrMetadata = {
+  url?: string;
+  number?: number | string;
+  title?: string;
+  state?: string;
+  head_sha?: string;
+};
+
+export type PackageReviewMetadata = {
+  lane?: string;
+  review_lane?: string;
+  suite?: string;
+  verdict?: string;
+  status?: string;
+  reviews?: PackageReviewMetadata[];
+  head_sha?: string;
+};
+
+export type PackageMetadata = {
+  branch?: PackageBranchMetadata | null;
+  pr?: PackagePrMetadata | null;
+  review_package?: PackageReviewMetadata | null;
+  review_suite_result?: PackageReviewMetadata | null;
+};
+
+export type ActiveAgentRun = {
+  runtime_state?: string;
+  stale?: boolean;
+};
+
 export type WorkPackageCard = {
   id: string;
   title?: string | null;
@@ -11,6 +54,10 @@ export type WorkPackageCard = {
   artifact_count?: number;
   finding_count?: number;
   latest_progress_at?: string | null;
+  updated_at?: string | null;
+  plan?: PackagePlanSummary | null;
+  metadata?: PackageMetadata | null;
+  active_agent_run?: ActiveAgentRun | null;
   runtime?: Record<string, unknown> | null;
 };
 
@@ -69,6 +116,9 @@ export type PlannedSlice = {
   work_package_id?: string | null;
   work_package_status?: string | null;
   work_package_kind?: string | null;
+  branch_pattern?: string | null;
+  dispatched_at?: string | null;
+  review_lanes?: string[];
 };
 
 export type WorkRequestDetail = {
@@ -103,12 +153,23 @@ export type SoloSession = {
   title?: string | null;
   repo?: string | null;
   base_branch?: string | null;
+  caller_id?: string | null;
   status?: string | null;
   last_activity_at?: string | null;
+  inserted_at?: string | null;
+  updated_at?: string | null;
+  entry_counts?: Array<{
+    kind?: string | null;
+    label?: string | null;
+    count?: number | null;
+  }>;
   latest_entry?: {
+    kind?: string | null;
+    status?: string | null;
     title?: string | null;
     body?: string | null;
     kind_label?: string | null;
+    created_at?: string | null;
   } | null;
 };
 
