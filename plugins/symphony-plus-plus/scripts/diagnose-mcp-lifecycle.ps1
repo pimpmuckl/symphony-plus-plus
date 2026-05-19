@@ -543,6 +543,319 @@ function Invoke-SelfTest {
     throw "Find-TomlBooleanKeyAssignment did not find a quoted boolean key."
   }
 
+  $pluginKey = "symphony-plus-plus-mcp@jonat-local"
+  $companionSectionPattern = '\[\s*(?:plugins|"plugins"|''plugins'')\s*\.\s*(?:"symphony-plus-plus-mcp@jonat-local"|''symphony-plus-plus-mcp@jonat-local'')\s*\]'
+  $mutationRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("sympp-enable-selftest-" + [guid]::NewGuid().ToString("N"))
+  $mutationCases = @(
+    @{
+      Name = "missing_config"
+      Initial = $null
+      Status = "created_config"
+      Changed = $true
+      Backup = $false
+      CompanionSection = $true
+      Contains = @()
+    },
+    @{
+      Name = "absent_section"
+      Initial = @'
+[plugins."symphony-plus-plus@jonat-local"]
+enabled = true
+
+[plugins."unrelated@jonat-local"]
+enabled = false
+
+[mcp_servers.other]
+url = "http://127.0.0.1:9999/mcp"
+'@
+      Status = "added_section"
+      Changed = $true
+      Backup = $true
+      CompanionSection = $true
+      Contains = @('[mcp_servers.other]')
+    },
+    @{
+      Name = "disabled_section"
+      Initial = @'
+[plugins."symphony-plus-plus-mcp@jonat-local"]
+enabled = false # dedicated only
+'@
+      Status = "enabled_existing_section"
+      Changed = $true
+      Backup = $true
+      CompanionSection = $true
+      Contains = @('enabled = true # dedicated only')
+      Absent = @('enabled = false # dedicated only')
+    },
+    @{
+      Name = "quoted_enabled_section"
+      Initial = @'
+[plugins."symphony-plus-plus-mcp@jonat-local"]
+"enabled" = false # dedicated only
+'@
+      Status = "enabled_existing_section"
+      Changed = $true
+      Backup = $true
+      CompanionSection = $true
+      Contains = @('"enabled" = true # dedicated only')
+      Absent = @('"enabled" = false # dedicated only')
+    },
+    @{
+      Name = "missing_enabled"
+      Initial = @'
+[plugins."symphony-plus-plus-mcp@jonat-local"]
+note = "dedicated only"
+'@
+      Status = "added_enabled"
+      Changed = $true
+      Backup = $true
+      CompanionSection = $true
+      Contains = @('enabled = true')
+      Absent = @('enabled = false')
+    },
+    @{
+      Name = "literal_quoted_section"
+      Initial = @'
+["plugins" . 'symphony-plus-plus-mcp@jonat-local' ]
+enabled = false
+'@
+      Status = "enabled_existing_section"
+      Changed = $true
+      Backup = $true
+      CompanionSection = $true
+      Contains = @('enabled = true')
+      Absent = @('enabled = false')
+    },
+    @{
+      Name = "spaced_section_with_array"
+      Initial = @'
+ [ plugins."symphony-plus-plus-mcp@jonat-local" ]
+ matrix = [
+   ["a"]
+ ]
+ enabled = false
+'@
+      Status = "enabled_existing_section"
+      Changed = $true
+      Backup = $true
+      CompanionSection = $true
+      Contains = @('["a"]')
+      Absent = @('enabled = false')
+    },
+    @{
+      Name = "section_with_same_line_multiline_string_in_array"
+      Initial = @'
+[plugins."symphony-plus-plus-mcp@jonat-local"]
+notes = ["""hello"""]
+enabled = false
+'@
+      Status = "enabled_existing_section"
+      Changed = $true
+      Backup = $true
+      CompanionSection = $true
+      Contains = @('notes = ["""hello"""]')
+      Absent = @('enabled = false')
+    },
+    @{
+      Name = "section_with_multiline_string_array"
+      Initial = @'
+[plugins."symphony-plus-plus-mcp@jonat-local"]
+notes = ["""
+hello
+"""]
+enabled = false
+'@
+      Status = "enabled_existing_section"
+      Changed = $true
+      Backup = $true
+      CompanionSection = $true
+      Contains = @('hello')
+      Absent = @('enabled = false')
+    },
+    @{
+      Name = "dotted_key"
+      Initial = @'
+plugins."symphony-plus-plus-mcp@jonat-local".enabled = false # dedicated only
+'@
+      Status = "enabled_existing_dotted_key"
+      Changed = $true
+      Backup = $true
+      CompanionSection = $false
+      Contains = @('plugins."symphony-plus-plus-mcp@jonat-local".enabled = true # dedicated only')
+      Absent = @('plugins."symphony-plus-plus-mcp@jonat-local".enabled = false # dedicated only')
+    },
+    @{
+      Name = "plugins_table_dotted_key"
+      Initial = @'
+[plugins]
+"symphony-plus-plus-mcp@jonat-local".enabled = false # dedicated only
+'@
+      Status = "enabled_existing_dotted_key"
+      Changed = $true
+      Backup = $true
+      CompanionSection = $false
+      Contains = @('"symphony-plus-plus-mcp@jonat-local".enabled = true # dedicated only')
+      Absent = @('"symphony-plus-plus-mcp@jonat-local".enabled = false # dedicated only')
+    },
+    @{
+      Name = "plugins_table_inline_table"
+      Initial = @'
+[plugins]
+"symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", enabled = false }
+'@
+      Status = "enabled_existing_inline_table"
+      Changed = $true
+      Backup = $true
+      CompanionSection = $false
+      Contains = @('"symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", enabled = true }')
+      Absent = @('"symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", enabled = false }')
+    },
+    @{
+      Name = "plugins_table_inline_table_quoted_enabled"
+      Initial = @'
+[plugins]
+"symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", "enabled" = false }
+'@
+      Status = "enabled_existing_inline_table"
+      Changed = $true
+      Backup = $true
+      CompanionSection = $false
+      Contains = @('"symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", "enabled" = true }')
+      Absent = @('"symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", "enabled" = false }')
+    },
+    @{
+      Name = "root_inline_table"
+      Initial = @'
+plugins."symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", enabled = false }
+'@
+      Status = "enabled_existing_inline_table"
+      Changed = $true
+      Backup = $true
+      CompanionSection = $false
+      Contains = @('plugins."symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", enabled = true }')
+      Absent = @('plugins."symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", enabled = false }')
+    },
+    @{
+      Name = "root_inline_table_quoted_enabled"
+      Initial = @'
+plugins."symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", "enabled" = false }
+'@
+      Status = "enabled_existing_inline_table"
+      Changed = $true
+      Backup = $true
+      CompanionSection = $false
+      Contains = @('plugins."symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", "enabled" = true }')
+      Absent = @('plugins."symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", "enabled" = false }')
+    },
+    @{
+      Name = "profile_relative_dotted_key_ignored"
+      Initial = @'
+[profiles.spp]
+plugins."symphony-plus-plus-mcp@jonat-local".enabled = true
+'@
+      Status = "added_section"
+      Changed = $true
+      Backup = $true
+      CompanionSection = $true
+      Contains = @('[profiles.spp]')
+    },
+    @{
+      Name = "profile_relative_other_market_dotted_key_ignored"
+      Initial = @'
+[profiles.spp]
+plugins."symphony-plus-plus-mcp@other-market".enabled = true
+'@
+      Status = "added_section"
+      Changed = $true
+      Backup = $true
+      CompanionSection = $true
+      Contains = @('[profiles.spp]')
+    },
+    @{
+      Name = "multiline_string_section"
+      Initial = @'
+[plugins."symphony-plus-plus-mcp@jonat-local"]
+note = """
+enabled = false
+[plugins."not-a-real-section@jonat-local"]
+[mcp_servers.symphony_plus_plus]
+"""
+'@
+      Status = "added_enabled"
+      Changed = $true
+      Backup = $true
+      CompanionSection = $true
+      Contains = @('[plugins."not-a-real-section@jonat-local"]', '[mcp_servers.symphony_plus_plus]')
+    },
+    @{
+      Name = "already_enabled"
+      Initial = @'
+[plugins."symphony-plus-plus-mcp@jonat-local"]
+enabled = true
+'@
+      Status = "already_enabled"
+      Changed = $false
+      Backup = $false
+      CompanionSection = $true
+      Contains = @('enabled = true')
+    }
+  )
+
+  try {
+    [void](New-Item -ItemType Directory -Path $mutationRoot -Force)
+
+    foreach ($case in $mutationCases) {
+      $caseRoot = Join-Path $mutationRoot $case.Name
+      $configPath = Join-Path $caseRoot "config.toml"
+      [void](New-Item -ItemType Directory -Path $caseRoot -Force)
+
+      if ($null -ne $case.Initial) {
+        [System.IO.File]::WriteAllText($configPath, [string]$case.Initial, (New-StrictUtf8NoBomEncoding))
+      }
+
+      $result = Set-PluginEnabledInConfig $configPath $pluginKey
+      if ($result.status -ne $case.Status) {
+        throw "Set-PluginEnabledInConfig returned status '$($result.status)' for $($case.Name); expected '$($case.Status)'."
+      }
+      if ([bool]$result.changed -ne [bool]$case.Changed) {
+        throw "Set-PluginEnabledInConfig returned changed '$($result.changed)' for $($case.Name); expected '$($case.Changed)'."
+      }
+
+      $configText = [System.IO.File]::ReadAllText($configPath)
+      if ([bool]($configText -match $companionSectionPattern) -ne [bool]$case.CompanionSection) {
+        throw "Set-PluginEnabledInConfig companion section presence mismatch for $($case.Name)."
+      }
+
+      foreach ($needle in @($case.Contains)) {
+        if (-not $configText.Contains([string]$needle)) {
+          throw "Set-PluginEnabledInConfig output for $($case.Name) did not contain expected text: $needle"
+        }
+      }
+
+      if ($case.ContainsKey("Absent")) {
+        foreach ($needle in @($case.Absent)) {
+          if ($configText.Contains([string]$needle)) {
+            throw "Set-PluginEnabledInConfig output for $($case.Name) still contained stale text: $needle"
+          }
+        }
+      }
+
+      if ($case.Backup) {
+        if ([string]::IsNullOrWhiteSpace([string]$result.backup_path) -or -not (Test-Path -LiteralPath $result.backup_path)) {
+          throw "Set-PluginEnabledInConfig did not create a backup for $($case.Name)."
+        }
+        $backupText = [System.IO.File]::ReadAllText([string]$result.backup_path)
+        if ($backupText -cne [string]$case.Initial) {
+          throw "Set-PluginEnabledInConfig backup content changed for $($case.Name)."
+        }
+      } elseif (-not [string]::IsNullOrWhiteSpace([string]$result.backup_path)) {
+        throw "Set-PluginEnabledInConfig unexpectedly created a backup for $($case.Name)."
+      }
+    }
+  } finally {
+    Remove-Item -LiteralPath $mutationRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
   $linkTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("sympp-diagnose-path-selftest-" + [guid]::NewGuid().ToString("N"))
   $targetPath = Join-Path $linkTestRoot "target"
   $targetChildPath = Join-Path $targetPath ".codex"
