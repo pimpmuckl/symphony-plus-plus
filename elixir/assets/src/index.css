@@ -286,8 +286,9 @@
   .top-panel-viewport {
     position: relative;
     isolation: isolate;
+    width: 100vw;
+    margin-inline: calc(50% - 50vw);
     overflow: hidden;
-    --top-panel-slide-distance: clamp(120px, 18vw, 240px);
     --top-panel-next-height: 0px;
     transition: height 210ms cubic-bezier(0.2, 0.8, 0.2, 1);
   }
@@ -308,20 +309,50 @@
     animation: top-panel-close 200ms cubic-bezier(0.4, 0, 0.2, 1) both;
   }
 
-  .top-panel-layer {
-    position: absolute;
-    inset: 0;
+  .top-panel-track {
+    display: flex;
+    width: 100vw;
+    min-width: 0;
     backface-visibility: hidden;
     transform: translate3d(0, 0, 0);
-    will-change: transform, opacity;
+    will-change: transform;
   }
 
-  .top-panel-layer[data-motion="exit"] {
-    z-index: 1;
+  .top-panel-track[data-phase="swapping"] {
+    width: 200vw;
   }
 
-  .top-panel-layer[data-motion="enter"] {
-    z-index: 3;
+  .top-panel-track[data-phase="swapping"][data-direction="forward"] {
+    animation: dashboard-push-track-forward 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .top-panel-track[data-phase="swapping"][data-direction="backward"] {
+    animation: dashboard-push-track-backward 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .top-panel-pane {
+    flex: 0 0 100vw;
+    min-width: 0;
+  }
+
+  .top-panel-pane-inner,
+  .workspace-tab-pane-inner {
+    width: min(1500px, calc(100vw - 2rem));
+    margin-inline: auto;
+  }
+
+  @media (min-width: 640px) {
+    .top-panel-pane-inner,
+    .workspace-tab-pane-inner {
+      width: min(1500px, calc(100vw - 3rem));
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .top-panel-pane-inner,
+    .workspace-tab-pane-inner {
+      width: min(1500px, calc(100vw - 4rem));
+    }
   }
 
   .top-panel-viewport[data-phase="swapping"][data-resize="shrinking"]::after {
@@ -335,28 +366,12 @@
     pointer-events: none;
   }
 
-  .top-panel-viewport[data-phase="swapping"] .top-panel-layer {
+  .top-panel-viewport[data-phase="swapping"] .top-panel-pane {
     filter: drop-shadow(0 14px 24px hsl(224 27% 12% / 0.08));
   }
 
-  .dark .top-panel-viewport[data-phase="swapping"] .top-panel-layer {
+  .dark .top-panel-viewport[data-phase="swapping"] .top-panel-pane {
     filter: drop-shadow(0 18px 34px hsl(0 0% 0% / 0.36));
-  }
-
-  .top-panel-layer[data-motion="enter"][data-direction="forward"] {
-    animation: top-panel-enter-forward 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
-
-  .top-panel-layer[data-motion="exit"][data-direction="forward"] {
-    animation: top-panel-exit-forward 360ms cubic-bezier(0.4, 0, 0.2, 1) both;
-  }
-
-  .top-panel-layer[data-motion="enter"][data-direction="backward"] {
-    animation: top-panel-enter-backward 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
-
-  .top-panel-layer[data-motion="exit"][data-direction="backward"] {
-    animation: top-panel-exit-backward 360ms cubic-bezier(0.4, 0, 0.2, 1) both;
   }
 
   .top-tray-card {
@@ -371,9 +386,10 @@
     position: relative;
     isolation: isolate;
     min-width: 0;
+    width: 100vw;
+    margin-inline: calc(50% - 50vw);
     margin-top: 1rem;
     overflow: hidden;
-    --workspace-tab-slide-distance: clamp(140px, 22vw, 280px);
     transition: height 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
   }
 
@@ -381,63 +397,44 @@
     overflow: visible;
   }
 
-  .workspace-tab-static {
-    position: relative;
+  .workspace-tab-track {
+    display: flex;
+    width: 100vw;
+    min-width: 0;
+    backface-visibility: hidden;
+    transform: translate3d(0, 0, 0);
+    will-change: transform;
   }
 
-  .workspace-tab-layer {
-    position: absolute;
-    inset: 0;
+  .workspace-tab-track[data-phase="swapping"] {
+    width: 200vw;
+  }
+
+  .workspace-tab-track[data-phase="swapping"][data-direction="forward"] {
+    animation: dashboard-push-track-forward 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .workspace-tab-track[data-phase="swapping"][data-direction="backward"] {
+    animation: dashboard-push-track-backward 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .workspace-tab-pane {
+    flex: 0 0 100vw;
     min-width: 0;
     background:
       linear-gradient(180deg, hsl(var(--background)) 0%, hsl(var(--muted) / 0.18) 46%, hsl(var(--background)) 100%),
       hsl(var(--background));
-    backface-visibility: hidden;
-    transform: translate3d(0, 0, 0);
-    will-change: transform, opacity;
   }
 
-  .dark .workspace-tab-layer {
+  .dark .workspace-tab-pane {
     background:
       linear-gradient(180deg, hsl(var(--background)) 0%, hsl(var(--muted) / 0.14) 46%, hsl(var(--background)) 100%),
       hsl(var(--background));
   }
 
-  .workspace-tab-layer[data-motion="exit"] {
-    z-index: 1;
-  }
-
-  .workspace-tab-layer[data-motion="enter"] {
-    z-index: 2;
-  }
-
-  .workspace-tab-viewport[data-phase="swapping"] .workspace-tab-layer {
-    filter: drop-shadow(0 14px 24px hsl(224 27% 12% / 0.08));
-  }
-
-  .dark .workspace-tab-viewport[data-phase="swapping"] .workspace-tab-layer {
-    filter: drop-shadow(0 18px 34px hsl(0 0% 0% / 0.36));
-  }
-
   .workspace-tab-viewport .motion-card,
   .workspace-tab-viewport .stagger-item {
     animation: none;
-  }
-
-  .workspace-tab-layer[data-motion="enter"][data-direction="forward"] {
-    animation: workspace-tab-enter-forward 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
-
-  .workspace-tab-layer[data-motion="exit"][data-direction="forward"] {
-    animation: workspace-tab-exit-forward 360ms cubic-bezier(0.4, 0, 0.2, 1) both;
-  }
-
-  .workspace-tab-layer[data-motion="enter"][data-direction="backward"] {
-    animation: workspace-tab-enter-backward 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
-
-  .workspace-tab-layer[data-motion="exit"][data-direction="backward"] {
-    animation: workspace-tab-exit-backward 360ms cubic-bezier(0.4, 0, 0.2, 1) both;
   }
 
   .finished-highlights-scroll {
@@ -799,7 +796,10 @@
     stroke-width: 2.25;
     opacity: 0.86;
     filter: drop-shadow(0 1px 1px hsl(224 27% 12% / 0.12));
-    animation: board-wire-draw 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    transition:
+      stroke 180ms ease,
+      opacity 180ms ease,
+      filter 180ms ease;
   }
 
   .dark .board-wire-path {
@@ -1526,20 +1526,6 @@
     }
   }
 
-  @keyframes board-wire-draw {
-    from {
-      opacity: 0;
-      stroke-dasharray: 18 10;
-      stroke-dashoffset: 28;
-    }
-
-    to {
-      opacity: 0.86;
-      stroke-dasharray: 18 0;
-      stroke-dashoffset: 0;
-    }
-  }
-
   @keyframes dialog-overlay-open {
     from {
       opacity: 0;
@@ -1676,99 +1662,24 @@
     }
   }
 
-  @keyframes top-panel-enter-forward {
+  @keyframes dashboard-push-track-forward {
     from {
-      opacity: 0.98;
-      transform: translate3d(var(--top-panel-slide-distance), 0, 0);
-    }
-
-    to {
-      opacity: 1;
-      transform: translate3d(0, 0, 0);
-    }
-  }
-
-  @keyframes top-panel-exit-forward {
-    from {
-      opacity: 1;
       transform: translate3d(0, 0, 0);
     }
 
     to {
-      opacity: 0.98;
-      transform: translate3d(calc(var(--top-panel-slide-distance) * -1), 0, 0);
+      transform: translate3d(-100vw, 0, 0);
     }
   }
 
-  @keyframes top-panel-enter-backward {
+  @keyframes dashboard-push-track-backward {
     from {
-      opacity: 0.98;
-      transform: translate3d(calc(var(--top-panel-slide-distance) * -1), 0, 0);
+      transform: translate3d(-100vw, 0, 0);
     }
 
     to {
-      opacity: 1;
       transform: translate3d(0, 0, 0);
     }
   }
 
-  @keyframes top-panel-exit-backward {
-    from {
-      opacity: 1;
-      transform: translate3d(0, 0, 0);
-    }
-
-    to {
-      opacity: 0.98;
-      transform: translate3d(var(--top-panel-slide-distance), 0, 0);
-    }
-  }
-
-  @keyframes workspace-tab-enter-forward {
-    from {
-      opacity: 0.98;
-      transform: translate3d(var(--workspace-tab-slide-distance), 0, 0);
-    }
-
-    to {
-      opacity: 1;
-      transform: translate3d(0, 0, 0);
-    }
-  }
-
-  @keyframes workspace-tab-exit-forward {
-    from {
-      opacity: 1;
-      transform: translate3d(0, 0, 0);
-    }
-
-    to {
-      opacity: 0.98;
-      transform: translate3d(calc(var(--workspace-tab-slide-distance) * -1), 0, 0);
-    }
-  }
-
-  @keyframes workspace-tab-enter-backward {
-    from {
-      opacity: 0.98;
-      transform: translate3d(calc(var(--workspace-tab-slide-distance) * -1), 0, 0);
-    }
-
-    to {
-      opacity: 1;
-      transform: translate3d(0, 0, 0);
-    }
-  }
-
-  @keyframes workspace-tab-exit-backward {
-    from {
-      opacity: 1;
-      transform: translate3d(0, 0, 0);
-    }
-
-    to {
-      opacity: 0.98;
-      transform: translate3d(var(--workspace-tab-slide-distance), 0, 0);
-    }
-  }
 }

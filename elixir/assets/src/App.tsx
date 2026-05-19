@@ -1030,26 +1030,37 @@ function WorkspaceTabCarousel({
     });
   }, [phase, visibleTab]);
 
-  const showSwapping = phase === "swapping" && previousTab;
+  const showSwapping = phase === "swapping" && previousTab !== null;
+  const panes =
+    showSwapping && previousTab !== null
+      ? direction === "forward"
+        ? [
+            { tab: previousTab, current: false },
+            { tab: visibleTab, current: true },
+          ]
+        : [
+            { tab: visibleTab, current: true },
+            { tab: previousTab, current: false },
+          ]
+      : [{ tab: visibleTab, current: true }];
   const viewportStyle = {
     height: height === "auto" ? undefined : `${Math.max(height, 0)}px`,
   } as React.CSSProperties;
 
   return (
     <div ref={viewportRef} className="workspace-tab-viewport" data-phase={phase} style={viewportStyle}>
-      {showSwapping ? (
-        <div key="workspace-tab-previous" className="workspace-tab-layer" data-motion="exit" data-direction={direction}>
-          {renderTab(previousTab)}
-        </div>
-      ) : null}
-      <div
-        key="workspace-tab-visible"
-        ref={visibleRef}
-        className={showSwapping ? "workspace-tab-layer" : "workspace-tab-static"}
-        data-motion={showSwapping ? "enter" : "idle"}
-        data-direction={direction}
-      >
-        {renderTab(visibleTab)}
+      <div className="workspace-tab-track" data-direction={direction} data-phase={showSwapping ? "swapping" : "idle"}>
+        {panes.map(({ tab, current }) => (
+          <div
+            key={tab}
+            ref={current ? visibleRef : undefined}
+            className="workspace-tab-pane"
+            data-pane={current ? "current" : "previous"}
+            aria-hidden={!current}
+          >
+            <div className="workspace-tab-pane-inner">{renderTab(tab)}</div>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -1275,8 +1286,23 @@ function TopPanelCarousel({
   }, [activePanel]);
 
   const showStaticPrevious = phase === "pre-resize" && previousPanel;
-  const showSwapping = phase === "swapping" && previousPanel && visiblePanel;
-  const showStaticCurrent = visiblePanel && !showStaticPrevious && !showSwapping;
+  const showSwapping = phase === "swapping" && previousPanel !== null && visiblePanel !== null;
+  const showTrackCurrent = visiblePanel !== null && !showStaticPrevious && phase !== "opening" && phase !== "closing";
+  const showStaticCurrent = visiblePanel && !showStaticPrevious && !showTrackCurrent;
+  const panes =
+    showSwapping && previousPanel !== null && visiblePanel !== null
+      ? direction === "forward"
+        ? [
+            { panel: previousPanel, current: false },
+            { panel: visiblePanel, current: true },
+          ]
+        : [
+            { panel: visiblePanel, current: true },
+            { panel: previousPanel, current: false },
+          ]
+      : visiblePanel
+        ? [{ panel: visiblePanel, current: true }]
+        : [];
   const resizeMode =
     phase === "swapping" && transitionHeights.to < transitionHeights.from - 2
       ? "shrinking"
@@ -1302,18 +1328,23 @@ function TopPanelCarousel({
       >
         {showStaticPrevious ? (
           <div ref={visibleRef} className="top-panel-static" data-motion="hold">
-            {renderPanel(previousPanel)}
+            <div className="top-panel-pane-inner">{renderPanel(previousPanel)}</div>
           </div>
         ) : null}
-        {showSwapping ? (
-          <>
-            <div className="top-panel-layer" data-motion="exit" data-direction={direction}>
-              {renderPanel(previousPanel)}
-            </div>
-            <div ref={visibleRef} className="top-panel-layer" data-motion="enter" data-direction={direction}>
-              {renderPanel(visiblePanel)}
-            </div>
-          </>
+        {showTrackCurrent ? (
+          <div className="top-panel-track" data-direction={direction} data-phase={showSwapping ? "swapping" : "idle"}>
+            {panes.map(({ panel, current }) => (
+              <div
+                key={panel}
+                ref={current ? visibleRef : undefined}
+                className="top-panel-pane"
+                data-pane={current ? "current" : "previous"}
+                aria-hidden={!current}
+              >
+                <div className="top-panel-pane-inner">{renderPanel(panel)}</div>
+              </div>
+            ))}
+          </div>
         ) : null}
         {showStaticCurrent ? (
           <div
@@ -1322,7 +1353,7 @@ function TopPanelCarousel({
             data-motion={phase === "opening" ? "open" : phase === "closing" ? "close" : "idle"}
             data-direction={direction}
           >
-            {renderPanel(visiblePanel)}
+            <div className="top-panel-pane-inner">{renderPanel(visiblePanel)}</div>
           </div>
         ) : null}
       </div>
