@@ -42,6 +42,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type {
+  ActiveBlockingEdge,
   ClarificationQuestion,
   DashboardPayload,
   DecisionOption,
@@ -237,7 +238,10 @@ type BoardWire = {
   from: string;
   to: string;
   tone: BoardWireTone;
+  kind?: BoardWireKind;
 };
+
+type BoardWireKind = "progress" | "blocker";
 
 type BoardWirePath = BoardWire & {
   path: string;
@@ -527,6 +531,7 @@ export default function App() {
                           key={repoWorkstreamStateKey(repo)}
                           repo={repo}
                           requestDetails={requestDetails}
+                          activeBlockingEdges={dashboard?.active_blocking_edges ?? []}
                           onSelectGuidance={setSelectedGuidance}
                           onSelectCard={setSelectedCardDetail}
                           layoutMode={workstreamLayout}
@@ -1755,6 +1760,7 @@ function FinishedHighlightCard({
 function RepoWorkstream({
   repo,
   requestDetails,
+  activeBlockingEdges,
   onSelectGuidance,
   onSelectCard,
   layoutMode,
@@ -1762,6 +1768,7 @@ function RepoWorkstream({
 }: {
   repo: RepoSummary;
   requestDetails: WorkRequestDetail[];
+  activeBlockingEdges: ActiveBlockingEdge[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   layoutMode: WorkstreamLayoutMode;
@@ -1812,6 +1819,7 @@ function RepoWorkstream({
               repoDetails={repoDetails}
               packages={repo.packages}
               unlinkedPackages={unlinkedPackages}
+              activeBlockingEdges={activeBlockingEdges}
               onSelectGuidance={onSelectGuidance}
               onSelectCard={onSelectCard}
               layoutMode={layoutMode}
@@ -2053,6 +2061,7 @@ function WorkstreamBoard({
   repoDetails,
   packages,
   unlinkedPackages,
+  activeBlockingEdges,
   onSelectGuidance,
   onSelectCard,
   layoutMode,
@@ -2061,6 +2070,7 @@ function WorkstreamBoard({
   repoDetails: WorkRequestDetail[];
   packages: WorkPackageCard[];
   unlinkedPackages: WorkPackageCard[];
+  activeBlockingEdges: ActiveBlockingEdge[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   layoutMode: WorkstreamLayoutMode;
@@ -2097,7 +2107,7 @@ function WorkstreamBoard({
     [activePackages, finishedPackages, implementingPackages, sliceEntries, sortedDetails],
   );
   const rowTemplate = useAlignedRowTemplate(boardRef, alignedRows, layoutMode);
-  const wires = useMemo(() => workstreamWires(sortedDetails, packages), [sortedDetails, packages]);
+  const wires = useMemo(() => workstreamWires(sortedDetails, packages, activeBlockingEdges), [activeBlockingEdges, sortedDetails, packages]);
   const { paths: wirePaths, size: wireSize } = useBoardWirePaths(boardRef, wires, layoutMode);
 
   return (
@@ -2196,6 +2206,7 @@ function StackedWorkstreamColumns({
             pkg={pkg}
             lane="slices"
             index={active.length + index}
+            nodeId={packageNodeId(pkg)}
             onSelectCard={() => onSelectCard({ kind: "package", pkg })}
             motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
           />
@@ -2209,7 +2220,7 @@ function StackedWorkstreamColumns({
             pkg={pkg}
             lane="implementing"
             index={index}
-            nodeId={sliceNodeId(slice)}
+            nodeId={pkg ? packageNodeId(pkg) : sliceNodeId(slice)}
             onSelectCard={() => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice })}
             motion={updateAnimations.motionFor(pkg ? packageUpdateKey(pkg) : sliceUpdateKey(slice))}
           />
@@ -2221,7 +2232,7 @@ function StackedWorkstreamColumns({
             pkg={pkg}
             lane="finished"
             index={implementing.length + index}
-            nodeId={sliceNodeId(slice)}
+            nodeId={pkg ? packageNodeId(pkg) : sliceNodeId(slice)}
             onSelectCard={() => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice })}
             motion={updateAnimations.motionFor(pkg ? packageUpdateKey(pkg) : sliceUpdateKey(slice))}
           />
@@ -2233,6 +2244,7 @@ function StackedWorkstreamColumns({
             pkg={pkg}
             lane="implementing"
             index={implementing.length + finished.length + index}
+            nodeId={packageNodeId(pkg)}
             onSelectCard={() => onSelectCard({ kind: "package", pkg })}
             motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
           />
@@ -2243,6 +2255,7 @@ function StackedWorkstreamColumns({
             pkg={pkg}
             lane="finished"
             index={implementing.length + finished.length + implementingPackages.length + index}
+            nodeId={packageNodeId(pkg)}
             onSelectCard={() => onSelectCard({ kind: "package", pkg })}
             motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
           />
@@ -2313,6 +2326,7 @@ function AlignedWorkstreamColumns({
                 pkg={pkg}
                 lane="slices"
                 index={row.active.length + packageIndex}
+                nodeId={packageNodeId(pkg)}
                 onSelectCard={() => onSelectCard({ kind: "package", pkg })}
                 motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
               />
@@ -2330,7 +2344,7 @@ function AlignedWorkstreamColumns({
                 pkg={pkg}
                 lane="implementing"
                 index={sliceIndex}
-                nodeId={sliceNodeId(slice)}
+                nodeId={pkg ? packageNodeId(pkg) : sliceNodeId(slice)}
                 onSelectCard={() => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice })}
                 motion={updateAnimations.motionFor(pkg ? packageUpdateKey(pkg) : sliceUpdateKey(slice))}
               />
@@ -2342,7 +2356,7 @@ function AlignedWorkstreamColumns({
                 pkg={pkg}
                 lane="finished"
                 index={row.implementing.length + sliceIndex}
-                nodeId={sliceNodeId(slice)}
+                nodeId={pkg ? packageNodeId(pkg) : sliceNodeId(slice)}
                 onSelectCard={() => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice })}
                 motion={updateAnimations.motionFor(pkg ? packageUpdateKey(pkg) : sliceUpdateKey(slice))}
               />
@@ -2354,6 +2368,7 @@ function AlignedWorkstreamColumns({
                 pkg={pkg}
                 lane="implementing"
                 index={row.implementing.length + row.finished.length + packageIndex}
+                nodeId={packageNodeId(pkg)}
                 onSelectCard={() => onSelectCard({ kind: "package", pkg })}
                 motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
               />
@@ -2364,6 +2379,7 @@ function AlignedWorkstreamColumns({
                 pkg={pkg}
                 lane="finished"
                 index={row.implementing.length + row.finished.length + row.implementingPackages.length + packageIndex}
+                nodeId={packageNodeId(pkg)}
                 onSelectCard={() => onSelectCard({ kind: "package", pkg })}
                 motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
               />
@@ -2465,7 +2481,9 @@ function BoardWireLayer({ paths, width, height }: { paths: BoardWirePath[]; widt
 
           return (
             <g
+              className="board-wire-group"
               key={wire.id}
+              data-wire-kind={wire.kind || "progress"}
               data-wire-tone={wire.tone}
               data-wire-from={wire.from}
               data-wire-to={wire.to}
@@ -2484,7 +2502,9 @@ function BoardWireLayer({ paths, width, height }: { paths: BoardWirePath[]; widt
       <svg className="board-wire-node-layer" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
         {paths.map((wire) => (
           <g
+            className="board-wire-node-group"
             key={wire.id}
+            data-wire-kind={wire.kind || "progress"}
             data-wire-tone={wire.tone}
             data-wire-from={wire.from}
             data-wire-to={wire.to}
@@ -2493,7 +2513,7 @@ function BoardWireLayer({ paths, width, height }: { paths: BoardWirePath[]; widt
             data-wire-track-count={wire.trackCount}
             style={wireToneStyle(wire.tone)}
           >
-            <circle className="board-wire-node board-wire-node-target" cx={wire.targetX} cy={wire.targetY} r="4" />
+            <circle className="board-wire-node board-wire-node-target" cx={wire.targetX} cy={wire.targetY} r={wire.kind === "blocker" ? 4.5 : 4} />
           </g>
         ))}
       </svg>
@@ -2681,6 +2701,7 @@ function measureBoardWires(board: HTMLDivElement, wires: BoardWire[]) {
       from: wire.from,
       to: wire.to,
       tone: wire.tone,
+      kind: wire.kind,
       path: boardWirePath(wire.sourceX, wire.sourceY, wire.targetX, wire.targetY, wire.trackX, boardWireBendRadius(wire, lanes)),
       sourceX: wire.sourceX,
       sourceY: wire.sourceY,
@@ -3283,12 +3304,14 @@ function PackageCard({
   pkg,
   lane,
   index = 0,
+  nodeId,
   onSelectCard,
   motion,
 }: {
   pkg: WorkPackageCard;
   lane: BoardLane;
   index?: number;
+  nodeId?: string;
   onSelectCard?: () => void;
   motion?: UpdateMotion;
 }) {
@@ -3298,6 +3321,7 @@ function PackageCard({
   return (
     <div
       className={stateCardClassName(tone, cn("stagger-item p-3", onSelectCard && "card-detail-trigger"))}
+      data-wire-id={nodeId}
       data-card-detail-kind="package"
       style={stateCardStyle(tone, { animationDelay: `${index * 30}ms` })}
       {...updateMotionAttributes(motion)}
@@ -5808,10 +5832,9 @@ function workstreamRowKey(row: WorkstreamRow, index: number) {
   return row.unlinked ? "unlinked-row" : `row:${index}`;
 }
 
-function workstreamWires(details: WorkRequestDetail[], packages: WorkPackageCard[]): BoardWire[] {
+function workstreamWires(details: WorkRequestDetail[], packages: WorkPackageCard[], activeBlockingEdges: ActiveBlockingEdge[] = []): BoardWire[] {
   const packageMap = new Map(packages.map((pkg) => [pkg.id, pkg]));
-
-  return details.flatMap((detail) => {
+  const progressWires = details.flatMap((detail) => {
     const wires: BoardWire[] = [];
     const slices = detail.planned_slices || [];
     const sliceTargets = slices.filter((slice) => sliceLane(slice) === "slices");
@@ -5835,17 +5858,20 @@ function workstreamWires(details: WorkRequestDetail[], packages: WorkPackageCard
 
     packageTargets.forEach((target, index) => {
       const source = packageSources[Math.min(index, packageSources.length - 1)];
-      const targetNode = sliceNodeId(target);
+      const pkg = packageMap.get(target.work_package_id || "");
+      const targetNode = pkg ? packageNodeId(pkg) : sliceNodeId(target);
       wires.push({
         id: `${source}->${targetNode}:${index}`,
         from: source,
         to: targetNode,
-        tone: wireToneForSlice(target, packageMap.get(target.work_package_id || "")),
+        tone: wireToneForSlice(target, pkg),
       });
     });
 
     return wires;
   });
+
+  return [...progressWires, ...activeBlockingWires(details, packages, activeBlockingEdges)];
 }
 
 function requestNodeId(detail: WorkRequestDetail) {
@@ -5854,6 +5880,83 @@ function requestNodeId(detail: WorkRequestDetail) {
 
 function sliceNodeId(slice: PlannedSlice) {
   return `slice:${slice.id}`;
+}
+
+function packageNodeId(pkg: WorkPackageCard | string) {
+  return `package:${typeof pkg === "string" ? pkg : pkg.id}`;
+}
+
+function activeBlockingWires(details: WorkRequestDetail[], packages: WorkPackageCard[], activeBlockingEdges: ActiveBlockingEdge[]): BoardWire[] {
+  if (activeBlockingEdges.length === 0) return [];
+
+  const context = blockerWireContext(details, packages);
+
+  return activeBlockingEdges.flatMap((edge) => {
+    const target = blockerEndpointNodeId(edge.to, context, "target");
+    if (!target) return [];
+
+    const source = blockerEndpointNodeId(edge.from, context, "source") || blockerFallbackSourceNode(edge, context);
+    if (!source || source === target) return [];
+
+    return [
+      {
+        id: `blocker:${edge.id}`,
+        from: source,
+        to: target,
+        tone: "blocked",
+        kind: "blocker",
+      },
+    ];
+  });
+}
+
+function blockerWireContext(details: WorkRequestDetail[], packages: WorkPackageCard[]) {
+  const detailById = new Map(details.map((detail) => [detail.work_request.id, detail]));
+  const detailBySliceId = new Map<string, WorkRequestDetail>();
+  const sliceById = new Map<string, PlannedSlice>();
+  const packageById = new Map(packages.map((pkg) => [pkg.id, pkg]));
+
+  details.forEach((detail) => {
+    (detail.planned_slices || []).forEach((slice) => {
+      sliceById.set(slice.id, slice);
+      detailBySliceId.set(slice.id, detail);
+    });
+  });
+
+  return { detailById, detailBySliceId, packageById, sliceById };
+}
+
+function blockerEndpointNodeId(
+  endpoint: ActiveBlockingEdge["from"],
+  context: ReturnType<typeof blockerWireContext>,
+  role: "source" | "target",
+) {
+  if (endpoint.kind === "work_package") {
+    return context.packageById.has(endpoint.id) ? packageNodeId(endpoint.id) : undefined;
+  }
+
+  const slice = context.sliceById.get(endpoint.id);
+  if (!slice) return undefined;
+
+  if (role === "target" || sliceLane(slice) === "slices") {
+    return sliceNodeId(slice);
+  }
+
+  return undefined;
+}
+
+function blockerFallbackSourceNode(edge: ActiveBlockingEdge, context: ReturnType<typeof blockerWireContext>) {
+  if (edge.from.kind === "slice") {
+    const detail = context.detailBySliceId.get(edge.from.id);
+    if (detail) return requestNodeId(detail);
+  }
+
+  if (edge.work_request_id) {
+    const detail = context.detailById.get(edge.work_request_id);
+    if (detail) return requestNodeId(detail);
+  }
+
+  return undefined;
 }
 
 function wireToneForSlice(slice: PlannedSlice, pkg?: WorkPackageCard): BoardWireTone {

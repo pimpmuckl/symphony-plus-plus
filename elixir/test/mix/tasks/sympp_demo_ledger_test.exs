@@ -142,6 +142,17 @@ defmodule Mix.Tasks.Sympp.DemoLedgerTest do
         blocked = Enum.find(cards, &(&1.id == "SYMPP-DEMO-WP-BLOCKED"))
         assert blocked.active_blocker_count == 1
 
+        ci = Enum.find(cards, &(&1.id == "SYMPP-DEMO-WP-CI"))
+        assert ci.active_blocker_count == 1
+
+        assert {:ok, operator_board} = Dashboard.operator_board(repo)
+
+        assert Enum.any?(operator_board.active_blocking_edges, fn edge ->
+                 edge.blocker_id == "demo-ci-smoke-dependency" and
+                   edge.from == %{kind: "slice", id: "SYMPP-DEMO-SLICE-CI"} and
+                   edge.to == %{kind: "work_package", id: "SYMPP-DEMO-WP-CI"}
+               end)
+
         ready = Enum.find(cards, &(&1.id == "SYMPP-DEMO-WP-READY"))
         assert ready.artifact_count == 1
         assert ready.finding_count == 1

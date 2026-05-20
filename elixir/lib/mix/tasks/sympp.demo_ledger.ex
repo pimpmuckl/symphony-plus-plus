@@ -585,7 +585,17 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
       {"SYMPP-DEMO-WP-CI",
        %{
          plan: [{"Open PR", "done"}, {"Wait for CI", "pending"}],
-         progress: [{"CI waiting on required checks", "ci_waiting", %{"checks" => ["unit", "ui-build"]}}],
+         progress: [
+           {"CI waiting on required checks", "ci_waiting", %{"checks" => ["unit", "ui-build"]}},
+           {"Dependency waiting on smoke coverage", "blocked",
+            %{
+              "type" => "blocker",
+              "source_tool" => "report_blocker",
+              "blocker_id" => "demo-ci-smoke-dependency",
+              "active" => true,
+              "summary" => "Wait for API bridge smoke coverage before this package can clear CI."
+            }}
+         ],
          findings: [{"No live secrets needed for CI demo", "info"}],
          artifacts: [{"CI preview", "https://example.invalid/symphony-plus-plus/actions/runs/303"}]
        }},
