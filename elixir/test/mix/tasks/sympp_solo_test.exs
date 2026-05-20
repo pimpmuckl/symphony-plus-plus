@@ -443,6 +443,7 @@ defmodule Mix.Tasks.Sympp.SoloTest do
       assert Application.get_env(:symphony_elixir, :sympp_repo_database) == unrelated_database
 
       assert Repo.same_database_path?(database_path, expected_database_path)
+      assert Path.split(database_path) |> Enum.take(-3) == [".agents", "splusplus", "symphony_plus_plus.sqlite3"]
       assert Path.basename(database_path) == "symphony_plus_plus.sqlite3"
     after
       if previous_workflow do
@@ -664,6 +665,7 @@ defmodule Mix.Tasks.Sympp.SoloTest do
     try do
       database_path = SoloTask.database_path_for_test(nil, fn -> nil end)
 
+      assert Path.split(database_path) |> Enum.take(-3) == [".agents", "splusplus", "symphony_plus_plus.sqlite3"]
       assert Path.basename(database_path) == "symphony_plus_plus.sqlite3"
       assert Workflow.workflow_file_path() == manual_workflow
       assert is_binary(Application.get_env(:symphony_elixir, :sympp_repo_database))

@@ -46,13 +46,17 @@ then runs from the resolved `elixir/` directory. It accepts the same launcher
 environment as the MCP wrapper: `SYMPP_LAUNCHER=direct|mise`, `SYMPP_MIX`, and
 `SYMPP_MISE`.
 
-Set `SYMPP_DATABASE` to a durable local SQLite ledger path, or pass
-`--database <sqlite-path>` on each command when you need a specific ledger.
-When neither is supplied, the wrapper lets `mix sympp.solo` use the shared local
-Symphony++ default ledger, matching cockpit and WorkRequest/WorkPackage CLI
-defaults. Relative `--database` and `SYMPP_DATABASE` paths resolve against the
-caller workspace. Treat `SYMPP_DATABASE` as a path only; do not echo
-secret-bearing environment values.
+When neither `--database` nor `SYMPP_DATABASE` is supplied, the wrapper lets
+`mix sympp.solo` use the shared local Symphony++ default ledger, preferring
+`$HOME/.agents/splusplus/symphony_plus_plus.sqlite3`
+(`%USERPROFILE%\.agents\splusplus\symphony_plus_plus.sqlite3` on Windows) and
+falling back under a temp/relative `.agents/splusplus` root if home is
+unavailable,
+matching cockpit and WorkRequest/WorkPackage CLI defaults. Set
+`SYMPP_DATABASE` or pass `--database <sqlite-path>` only when you need a
+specific isolated ledger. Relative `--database` and `SYMPP_DATABASE` paths
+resolve against the caller workspace. Treat `SYMPP_DATABASE` as a path only; do
+not echo secret-bearing environment values.
 
 ## MCP Tools
 

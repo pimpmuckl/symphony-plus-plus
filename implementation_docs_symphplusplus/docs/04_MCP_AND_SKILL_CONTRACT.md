@@ -442,9 +442,9 @@ point at a repository that contains the worker secret handoff script. MCP
 dispatch requires a file-backed live ledger so the returned worker
 bootstrap command reconnects to the same ledger; in-memory database
 configuration fails closed before dispatch side effects. Blank database
-configuration is treated as absent and uses the live ledger. Matching configured
-SQLite file URI options are preserved in the worker bootstrap command when they
-resolve to the same live ledger, including default repo database configuration;
+configuration is treated as absent and uses the live local ledger. Matching
+configured SQLite file URI options are preserved in the worker bootstrap command
+when they resolve to the same live ledger, including the default local ledger;
 divergent explicit MCP database configuration fails closed, and matching
 read-only SQLite URI options such as `mode=ro` or `immutable=1` are rejected
 before dispatch. The tool verifies the WorkRequest and planned slice are in scope before
@@ -572,14 +572,17 @@ implementation, the MCP server command is:
 
 ```bash
 cd elixir
-mise exec -- mix sympp.mcp --mode stdio --database <ledger-path>
+mise exec -- mix sympp.mcp --mode stdio
 ```
 
 Codex MCP configuration should start that command from the `elixir/` directory
-as a stdio MCP dependency. Do not embed raw work-key secrets or bearer tokens in
-that configuration. For first-use worker dispatch, use the private-store wrapper
-documented in `mcp_wiring.md`; it injects `SYMPP_WORK_KEY_SECRET` only into the
-MCP child process and passes `--claimed-by <worker-id>`. For stateless
+as a stdio MCP dependency. Omit `--database` for the normal local ledger,
+preferring `$HOME/.agents/splusplus/symphony_plus_plus.sqlite3` and falling
+back under a temp/relative `.agents/splusplus` root if home is unavailable; add
+it only for isolated tests or manual experiments. Do not embed raw work-key secrets or bearer tokens
+in that configuration. For first-use worker dispatch, use the private-store
+wrapper documented in `mcp_wiring.md`; it injects `SYMPP_WORK_KEY_SECRET` only
+into the MCP child process and passes `--claimed-by <worker-id>`. For stateless
 transports, `state_key` is only handshake continuity and does not replace the
 same secret proof plus owner identity.
 

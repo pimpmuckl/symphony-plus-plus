@@ -52,7 +52,8 @@ defmodule Mix.Tasks.Sympp.CreateWork do
     [
       "Usage: mix sympp.create_work --file <request.json|request.yaml> --claimed-by <worker-id>",
       "[--database <sqlite-path>]",
-      "[--secret-handoff auto|windows-credential-manager|local-private-file]"
+      "[--secret-handoff auto|windows-credential-manager|local-private-file]",
+      Repo.default_database_help_text()
     ]
     |> Enum.join(" ")
   end

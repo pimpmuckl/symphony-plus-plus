@@ -243,9 +243,13 @@ not orchestration.
 
 By default, Solo Session CLI and wrapper commands use the same shared
 machine-local Symphony++ ledger as the local cockpit and WorkRequest/
-WorkPackage CLI paths. Pass `--database <sqlite-path>` or set `SYMPP_DATABASE`
-only when a caller intentionally needs an isolated test, development, or manual
-ledger.
+WorkPackage CLI paths. The preferred home is
+`$HOME/.agents/splusplus/symphony_plus_plus.sqlite3` on POSIX-style shells and
+`%USERPROFILE%\.agents\splusplus\symphony_plus_plus.sqlite3` on Windows; if
+home is unavailable, Symphony++ falls back under a temp/relative
+`.agents/splusplus` root. Pass `--database <sqlite-path>` or set
+`SYMPP_DATABASE` only when a caller intentionally needs an isolated test,
+development, or manual ledger.
 
 Target MCP access for Solo Sessions is through the shared Symphony++ HTTP MCP
 endpoint described in `04_MCP_AND_SKILL_CONTRACT.md`. In local mode, that
@@ -307,15 +311,14 @@ Supported commands:
 - `pause`, `resume`, `complete`, and `archive` call the lifecycle transition
   API for a session.
 
-All commands accept `--database <sqlite-path>`. When `--database` is omitted,
-the task resolves the current project `WORKFLOW.md` database path and fails
-before ledger access if that file is unavailable. The resolved database must be
-a durable local filesystem path; `:memory:` and SQLite `file:` URIs are
-rejected because Solo Sessions must persist across separate CLI invocations.
-`attach` may create the ledger database; `append`, `show`, `list`, and
-lifecycle aliases require the resolved local database file to already exist.
-The CLI uses the service redaction, idempotency, lifecycle, and validation
-behavior directly.
+All commands accept `--database <sqlite-path>`, but normal local use omits it.
+When `--database` is omitted, the task resolves the central Symphony++ local
+ledger home. The resolved database must be a durable local filesystem path;
+`:memory:` and SQLite `file:` URIs are rejected because Solo Sessions must
+persist across separate CLI invocations. `attach` may create the ledger
+database; `append`, `show`, `list`, and lifecycle aliases require the resolved
+local database file to already exist. The CLI uses the service redaction,
+idempotency, lifecycle, and validation behavior directly.
 
 ## Future Promotion
 

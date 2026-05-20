@@ -48,7 +48,8 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSlice do
       "Usage: mix sympp.dispatch_planned_slice --work-request-id <id> --planned-slice-id <id> --claimed-by <worker-id>",
       "[--database <sqlite-path>]",
       "[--secret-handoff auto|windows-credential-manager|local-private-file]",
-      "[--secret-store-dir <path>]"
+      "[--secret-store-dir <path>]",
+      Repo.default_database_help_text()
     ]
     |> Enum.join(" ")
   end

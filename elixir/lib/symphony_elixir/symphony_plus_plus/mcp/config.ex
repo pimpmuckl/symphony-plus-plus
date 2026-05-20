@@ -55,7 +55,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Config do
 
   @spec usage() :: String.t()
   def usage do
-    "Usage: mix sympp.mcp [--mode stdio] [--database <sqlite-path>] [--repo-root <path>] [--work-key-secret-env <env-var>] [--claimed-by <worker-id>]"
+    [
+      "Usage: mix sympp.mcp [--mode stdio] [--database <sqlite-path>] [--repo-root <path>] [--work-key-secret-env <env-var>] [--claimed-by <worker-id>]",
+      Repo.default_database_help_text()
+    ]
+    |> Enum.join("\n")
   end
 
   defp parse_options(opts) do

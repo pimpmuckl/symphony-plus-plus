@@ -155,11 +155,11 @@ pointing at the repository that contains the worker secret handoff script;
 otherwise the tool is not advertised and direct calls fail closed. Use a
 file-backed live ledger; in-memory database configuration is rejected so the
 worker handoff cannot point at an unclaimable ledger. Blank database
-configuration is treated as absent and uses the live ledger. Matching configured
-SQLite file URI options are
-preserved for the worker command when they resolve to the same live ledger,
-including default repo database configuration; divergent explicit MCP database
-configuration is rejected. Do not start dispatch MCP with read-only SQLite URI
+configuration is treated as absent and uses the live local ledger. Matching
+configured SQLite file URI options are preserved for the worker command when
+they resolve to the same live ledger, including the default local ledger;
+divergent explicit MCP database configuration is rejected. Do not start dispatch
+MCP with read-only SQLite URI
 options such as `mode=ro` or `immutable=1`; those are rejected before dispatch
 because workers must claim grants and write progress.
 
@@ -195,7 +195,6 @@ Run planned-slice dispatch from `elixir/` after a slice is approved:
 
 ```powershell
 mix sympp.dispatch_planned_slice `
-  --database <sqlite-path> `
   --work-request-id <work-request-id> `
   --planned-slice-id <planned-slice-id> `
   --claimed-by <stable-worker-id> `
@@ -203,7 +202,8 @@ mix sympp.dispatch_planned_slice `
 ```
 
 The task also accepts `--secret-store-dir <path>` for local private-file
-handoff storage. It validates required identifiers and `claimed_by` before
+handoff storage and `--database <sqlite-path>` only for an intentionally
+isolated ledger. It validates required identifiers and `claimed_by` before
 opening or creating the ledger database, migrates the Symphony++ repo, and
 prints pretty JSON on success. Normal output is redacted: it includes the
 created WorkPackage, redacted worker grant, non-secret handoff coordinates, and
