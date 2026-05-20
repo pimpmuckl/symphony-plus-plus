@@ -28,6 +28,26 @@ first entering a board work key. This mode is for the human machine owner
 inspecting local Symphony++ state and creating or managing local WorkRequests
 before WorkPackages exist.
 
+For live React dashboard development, register the friendly local hostname once
+from an elevated PowerShell session if Windows does not already resolve it:
+
+```powershell
+.\scripts\register-spp-localhost.ps1
+```
+
+Then start the API bridge and Vite shell as separate processes:
+
+```powershell
+cd elixir
+mix sympp.cockpit --dashboard-origin http://spp.localhost:19999
+
+cd assets
+npm run dev
+```
+
+The Vite shell binds to `127.0.0.1:19999`, accepts `spp.localhost`, and redirects
+`http://spp.localhost:19999/` to `/sympp/board`.
+
 Local operator mode:
 
 - requires a direct loopback request to a local host name with browser Fetch
