@@ -45,6 +45,65 @@ export type PackageAlertIndicator = {
   reasons?: Array<Record<string, unknown>>;
 };
 
+export type PackageOperationalAttention = {
+  key?: string;
+  label?: string;
+  tone?: string;
+  reason?: string;
+  blocker_ids?: string[];
+  missing?: string[];
+  successor_work_package_ids?: string[];
+  original_work_package_ids?: string[];
+  error?: string;
+};
+
+export type PackageOperationalState = {
+  key?: string | null;
+  label?: string | null;
+  tone?: string | null;
+  reason?: string | null;
+  raw_status?: string | null;
+  attention_items?: PackageOperationalAttention[];
+};
+
+export type PackageLineageEntry = {
+  relationship?: string | null;
+  work_package_id?: string | null;
+  branch?: string | null;
+  status?: string | null;
+  source_work_package_id?: string | null;
+  source_branch?: string | null;
+  source_status?: string | null;
+  target_work_package_id?: string | null;
+  target_branch?: string | null;
+  target_status?: string | null;
+  reason?: string | null;
+  decision?: Record<string, unknown> | null;
+  oracle_preserved?: boolean;
+  event_id?: string | null;
+  recorded_at?: string | null;
+};
+
+export type PackageLineage = {
+  work_package_id?: string | null;
+  original_work?: PackageLineageEntry[];
+  successor_work?: PackageLineageEntry[];
+  superseded_by?: PackageLineageEntry[];
+  recut_as?: PackageLineageEntry[];
+  oracle_for?: PackageLineageEntry[];
+  oracle_work?: PackageLineageEntry[];
+  oracle_status?: {
+    preserved?: boolean;
+    oracle_for_work_package_ids?: string[];
+    has_oracle?: boolean;
+    oracle_work_package_ids?: string[];
+  };
+  available?: boolean;
+  unavailable?: boolean;
+  error?: string | null;
+  cleanup_attention?: PackageOperationalAttention[];
+};
+
 export type PackageMetadata = {
   branch?: PackageBranchMetadata | null;
   pr?: PackagePrMetadata | null;
@@ -79,6 +138,8 @@ export type WorkPackageCard = {
   alert_indicators?: PackageAlertIndicator[];
   active_agent_run?: ActiveAgentRun | null;
   runtime?: Record<string, unknown> | null;
+  operational_state?: PackageOperationalState | null;
+  lineage?: PackageLineage | null;
 };
 
 export type WorkRequestCard = {
@@ -153,6 +214,7 @@ export type PlannedSlice = {
   stop_conditions?: string[];
   inserted_at?: string | null;
   updated_at?: string | null;
+  operational_state?: PackageOperationalState | null;
 };
 
 export type DecisionLogEntry = {
@@ -351,6 +413,7 @@ export type WorkPackageDetailPayload = {
   }>;
   metadata?: PackageMetadata | null;
   alert_indicators?: PackageAlertIndicator[];
+  lineage?: PackageLineage | null;
 };
 
 export type DashboardPayload = {

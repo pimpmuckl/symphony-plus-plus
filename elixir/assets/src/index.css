@@ -30,6 +30,17 @@
     --radius: 0.5rem;
   }
 
+  html {
+    overflow-y: auto;
+    scrollbar-gutter: stable both-edges;
+  }
+
+  @supports not (scrollbar-gutter: stable) {
+    html {
+      overflow-y: scroll;
+    }
+  }
+
   .dark {
     color-scheme: dark;
     --background: 222 32% 7%;
@@ -779,6 +790,62 @@
     gap: clamp(0.875rem, 2.6vw, 3.25rem);
   }
 
+  .workstream-board .jira-lane,
+  .workstream-board .stagger-item,
+  .workstream-board .board-wire-layer,
+  .workstream-board .board-wire-node-layer {
+    will-change: opacity, transform, filter;
+  }
+
+  .workstream-board .stagger-item:not([data-update-kind]) {
+    animation: none;
+  }
+
+  [data-board-open-motion="open"] .workstream-board,
+  .workstream-board[data-board-motion="layout"] {
+    animation: board-body-enter 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  [data-board-open-motion="open"] .workstream-board .jira-lane,
+  .workstream-board[data-board-motion="layout"] .jira-lane {
+    animation: board-lane-enter 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  [data-board-open-motion="open"] .workstream-board .jira-lane:nth-of-type(2),
+  .workstream-board[data-board-motion="layout"] .jira-lane:nth-of-type(2) {
+    animation-delay: 24ms;
+  }
+
+  [data-board-open-motion="open"] .workstream-board .jira-lane:nth-of-type(3),
+  .workstream-board[data-board-motion="layout"] .jira-lane:nth-of-type(3) {
+    animation-delay: 48ms;
+  }
+
+  [data-board-open-motion="open"] .workstream-board .stagger-item:not([data-update-kind]),
+  .workstream-board[data-board-motion="layout"] .stagger-item:not([data-update-kind]) {
+    animation: board-card-enter 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  [data-board-open-motion="open"] .workstream-board .board-wire-layer,
+  [data-board-open-motion="open"] .workstream-board .board-wire-node-layer,
+  .workstream-board[data-board-motion="layout"] .board-wire-layer,
+  .workstream-board[data-board-motion="layout"] .board-wire-node-layer {
+    animation: board-wire-enter 340ms cubic-bezier(0.16, 1, 0.3, 1) 70ms both;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .workstream-board,
+    .workstream-board .jira-lane,
+    .workstream-board .stagger-item,
+    .workstream-board .board-wire-layer,
+    .workstream-board .board-wire-node-layer {
+      animation: none !important;
+      filter: none !important;
+      transform: none !important;
+      will-change: auto;
+    }
+  }
+
   .jira-board-solo {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1082,6 +1149,33 @@
     animation: card-signal-open 560ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
+  .card-signal-action {
+    transition:
+      border-color 150ms ease,
+      box-shadow 150ms ease,
+      background-color 150ms ease,
+      filter 150ms ease;
+  }
+
+  .card-signal-action:hover {
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, currentColor 36%, transparent),
+      0 0 0 2px hsl(var(--background) / 0.34);
+    filter: saturate(1.06) brightness(1.01);
+  }
+
+  .card-signal-action:active {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 46%, transparent);
+    filter: saturate(1.08) brightness(0.985);
+  }
+
+  .dark .card-signal-action:hover {
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, currentColor 42%, transparent),
+      0 0 0 2px hsl(var(--foreground) / 0.045);
+    filter: saturate(1.08) brightness(1.08);
+  }
+
   .state-update-badge {
     position: relative;
     justify-content: center;
@@ -1095,14 +1189,15 @@
   }
 
   .badge-push-stack {
-    display: grid;
-    min-width: 0;
+    display: inline-grid;
+    min-width: max-content;
     overflow: hidden;
   }
 
   .badge-push-stack > span {
     grid-area: 1 / 1;
-    min-width: 0;
+    min-width: max-content;
+    white-space: nowrap;
   }
 
   .badge-push-measure {
@@ -1456,6 +1551,66 @@
     to {
       opacity: 1;
       transform: translateY(0) scale(1);
+    }
+  }
+
+  @keyframes board-body-enter {
+    from {
+      opacity: 0.72;
+      transform: translateY(5px);
+      filter: blur(1px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0);
+      filter: blur(0);
+    }
+  }
+
+  @keyframes board-lane-enter {
+    from {
+      opacity: 0;
+      transform: translateY(10px) scale(0.996);
+      filter: blur(1px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      filter: blur(0);
+    }
+  }
+
+  @keyframes board-card-enter {
+    0% {
+      opacity: 0;
+      transform: translateY(10px) scale(0.992);
+      filter: blur(1px);
+    }
+
+    78% {
+      opacity: 1;
+      transform: translateY(-1px) scale(1);
+      filter: blur(0);
+    }
+
+    100% {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      filter: blur(0);
+    }
+  }
+
+  @keyframes board-wire-enter {
+    from {
+      opacity: 0;
+      filter: blur(1px);
+    }
+
+    to {
+      opacity: 1;
+      filter: blur(0);
     }
   }
 

@@ -828,41 +828,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp dashboard_ledger_database(repo) do
-    configured_ledger_database() || live_ledger_database(repo)
-  end
-
-  defp live_ledger_database(repo) do
-    case repo.query("PRAGMA database_list", []) do
-      {:ok, %{rows: rows}} -> persistent_main_database_path(rows) || configured_ledger_database()
-      {:error, _reason} -> configured_ledger_database()
-      _result -> configured_ledger_database()
-    end
-  rescue
-    _error in [Exqlite.Error, UndefinedFunctionError] -> configured_ledger_database()
-  end
-
-  defp persistent_main_database_path(rows) do
-    Enum.find_value(rows, fn
-      [_seq, "main", path] when is_binary(path) and path != "" -> path
-      _row -> nil
-    end)
-  end
-
-  defp configured_ledger_database do
-    case Application.get_env(:symphony_elixir, :sympp_repo_database) do
-      database when is_binary(database) -> configured_ledger_database_path(database)
-      database -> database
-    end
-  end
-
-  defp configured_ledger_database_path(database) do
-    database = String.trim(database)
-
-    cond do
-      database == "" -> nil
-      Repo.filesystem_database_path?(database) -> Path.expand(database)
-      true -> database
-    end
+    Repo.operator_database_path(repo)
   end
 
   defp put_optional_handoff_opt(opts, _key, nil), do: opts
