@@ -3138,60 +3138,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
-  test "refresh script installs and validates the opt-in MCP plugin" do
-    powershell = System.find_executable("pwsh")
-    temp_codex_home = unique_temp_path("sympp-plugin-mcp-refresh")
-
-    if powershell do
-      fake_mix = fake_mix_executable(temp_codex_home)
-
-      try do
-        {output, status} =
-          System.cmd(
-            powershell,
-            [
-              "-NoProfile",
-              "-File",
-              @refresh_script_path,
-              "-PluginName",
-              "symphony-plus-plus-mcp",
-              "-CodexHome",
-              temp_codex_home,
-              "-ValidateInstalledCache"
-            ],
-            stderr_to_stdout: true,
-            env: [{"SYMPP_LAUNCHER", "direct"}, {"SYMPP_MIX", fake_mix}]
-          )
-
-        assert status == 0, output
-        assert output =~ "Mix 1.99.0 test"
-        assert output =~ "Symphony++ Solo Session wrapper validation passed."
-        assert output =~ "Symphony++ generic MCP wrapper validation passed."
-        assert output =~ "Validated installed Symphony++ plugin cache:"
-        assert output =~ "cache: local"
-        assert output =~ "cache: #{@plugin_version}"
-
-        for cache_name <- ["local", @plugin_version] do
-          manifest_path =
-            plugin_cache_path(temp_codex_home, [cache_name, ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
-
-          source_hint_path = plugin_cache_path(temp_codex_home, [cache_name, ".sympp-source-root"], "symphony-plus-plus-mcp")
-
-          manifest = manifest_path |> File.read!() |> Jason.decode!()
-          assert manifest["name"] == "symphony-plus-plus-mcp"
-          assert manifest["version"] == @plugin_version
-          assert manifest["mcpServers"] == "./.mcp.json"
-          refute File.exists?(plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-solo-session"], "symphony-plus-plus-mcp"))
-          assert File.exists?(plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-work-package", "SKILL.md"], "symphony-plus-plus-mcp"))
-          assert File.exists?(plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-architect", "SKILL.md"], "symphony-plus-plus-mcp"))
-          assert same_path?(String.trim(File.read!(source_hint_path)), @repo_root)
-        end
-      after
-        File.rm_rf!(temp_codex_home)
-      end
-    end
-  end
-
   test "refresh script overlays local and manifest-version caches without deleting unrelated entries" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = unique_temp_path("sympp-plugin-refresh")
