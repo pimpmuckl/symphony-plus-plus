@@ -1872,13 +1872,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp progress_review_lanes_present?(progress_events, required_lanes) do
     Enum.all?(required_lanes, fn lane ->
-      latest_generic_progress_status(progress_events, review_progress_statuses(lane)) ==
-        review_progress_green_status(lane)
+      green_status = "review_#{lane}_green"
+      statuses = [green_status, "review_#{lane}_red", "review_#{lane}_failed"]
+
+      latest_generic_progress_status(progress_events, statuses) == green_status
     end)
   end
-
-  defp review_progress_statuses(lane), do: [review_progress_green_status(lane), "review_#{lane}_red", "review_#{lane}_failed"]
-  defp review_progress_green_status(lane), do: "review_#{lane}_green"
 
   defp progress_status_recorded?(progress_events, expected_status) do
     latest_generic_progress_status(progress_events, [expected_status, failed_status(expected_status)]) ==
