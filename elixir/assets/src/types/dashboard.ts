@@ -190,6 +190,24 @@ export type WorkRequestDetail = {
   };
 };
 
+export type ActiveBlockingEdgeEndpoint = {
+  kind: "slice" | "work_package";
+  id: string;
+};
+
+export type ActiveBlockingEdge = {
+  id: string;
+  blocker_id: string;
+  from: ActiveBlockingEdgeEndpoint;
+  to: ActiveBlockingEdgeEndpoint;
+  summary?: string | null;
+  body?: string | null;
+  updated_at?: string | null;
+  work_request_id?: string | null;
+  planned_slice_id?: string | null;
+  work_package_id?: string | null;
+};
+
 export type GuidanceRequest = {
   id: string;
   work_package_id: string;
@@ -337,6 +355,7 @@ export type WorkPackageDetailPayload = {
 
 export type DashboardPayload = {
   generated_at?: string;
+  active_blocking_edges?: ActiveBlockingEdge[];
   board?: {
     groups?: Record<string, WorkPackageCard[]>;
     total_count?: number;

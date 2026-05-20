@@ -663,14 +663,18 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp operator_dashboard_payload(repo) do
-    with {:ok, board} <- Dashboard.board(repo),
+    with {:ok, board} <- Dashboard.operator_board(repo),
          {:ok, work_requests} <- Dashboard.work_requests(repo),
          {:ok, work_request_details} <- operator_work_request_details(repo, Map.get(work_requests, :work_requests, [])),
          {:ok, guidance_requests} <- Dashboard.human_guidance_requests(repo),
          {:ok, solo_sessions} <- Dashboard.solo_sessions(repo, %{}) do
+      active_blocking_edges = Map.get(board, :active_blocking_edges, [])
+      board = Map.delete(board, :active_blocking_edges)
+
       {:ok,
        %{
          generated_at: DateTime.utc_now(:microsecond) |> DateTime.to_iso8601(),
+         active_blocking_edges: active_blocking_edges,
          board: board,
          work_requests: work_requests,
          work_request_details: work_request_details,
@@ -1363,8 +1367,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
         payload
         |> Map.put(grants_key, grants)
-        |> put_summary_count("grant_count", length(grants))
-        |> put_summary_count("active_grant_count", Enum.count(grants, &grant_active?/1))
+        |> put_summary_count(:grant_count, length(grants))
+        |> put_summary_count(:active_grant_count, Enum.count(grants, &grant_active?/1))
 
       _missing ->
         payload
@@ -1389,12 +1393,12 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
         payload
         |> Map.put(runs_key, runs)
         |> put_active_agent_run(runs)
-        |> put_summary_count("agent_run_count", length(runs))
-        |> put_summary_count("active_agent_run_count", Enum.count(runs, &agent_run_in_flight?/1))
-        |> put_summary_count("queued_agent_run_count", Enum.count(runs, &(runtime_state(&1) == "queued")))
-        |> put_summary_count("stopped_agent_run_count", Enum.count(runs, &(runtime_state(&1) == "stopped")))
-        |> put_summary_count("failed_agent_run_count", Enum.count(runs, &agent_run_failed?/1))
-        |> put_summary_count("stale_agent_run_count", Enum.count(runs, &agent_run_stale?/1))
+        |> put_summary_count(:agent_run_count, length(runs))
+        |> put_summary_count(:active_agent_run_count, Enum.count(runs, &agent_run_in_flight?/1))
+        |> put_summary_count(:queued_agent_run_count, Enum.count(runs, &(runtime_state(&1) == "queued")))
+        |> put_summary_count(:stopped_agent_run_count, Enum.count(runs, &(runtime_state(&1) == "stopped")))
+        |> put_summary_count(:failed_agent_run_count, Enum.count(runs, &agent_run_failed?/1))
+        |> put_summary_count(:stale_agent_run_count, Enum.count(runs, &agent_run_stale?/1))
         |> put_runtime_summary(runs)
         |> put_top_level_runtime_summary(runs)
         |> scope_run_alerts(runs)
@@ -1412,12 +1416,12 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
-  defp put_summary_count(%{"summary" => summary} = payload, key, count) when is_map(summary) do
-    put_in(payload, ["summary", key], count)
+  defp put_summary_count(%{"summary" => summary} = payload, key, count) when is_map(summary) and is_atom(key) do
+    put_in(payload, ["summary", Atom.to_string(key)], count)
   end
 
-  defp put_summary_count(%{summary: summary} = payload, key, count) when is_map(summary) and is_binary(key) do
-    Map.update!(payload, :summary, &Map.put(&1, String.to_existing_atom(key), count))
+  defp put_summary_count(%{summary: summary} = payload, key, count) when is_map(summary) and is_atom(key) do
+    Map.update!(payload, :summary, &Map.put(&1, key, count))
   end
 
   defp put_summary_count(payload, _key, _count), do: payload
