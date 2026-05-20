@@ -5601,10 +5601,12 @@ function RecentDecisionsDisclosure({ detail }: { detail: WorkRequestDetail }) {
 }
 
 function DetailActivityList({ items }: { items: Array<{ title?: string | null; body?: string | null; at?: string | null }> }) {
+  const rows = detailActivityRows(items);
+
   return (
     <div className="grid gap-2">
-      {items.slice(0, 3).map((item) => (
-        <div key={detailActivityKey(item)} className="detail-list-item">
+      {rows.map(({ item, key }) => (
+        <div key={key} className="detail-list-item">
           <div className="flex min-w-0 items-start justify-between gap-3">
             <span className="min-w-0 text-sm font-medium">{item.title || "Update"}</span>
             {item.at ? <span className="shrink-0 text-xs text-muted-foreground">{formatDate(item.at)}</span> : null}
@@ -5614,6 +5616,17 @@ function DetailActivityList({ items }: { items: Array<{ title?: string | null; b
       ))}
     </div>
   );
+}
+
+function detailActivityRows(items: Array<{ title?: string | null; body?: string | null; at?: string | null }>) {
+  const seen = new Map<string, number>();
+
+  return items.slice(0, 3).map((item) => {
+    const baseKey = detailActivityKey(item);
+    const occurrence = seen.get(baseKey) || 0;
+    seen.set(baseKey, occurrence + 1);
+    return { item, key: occurrence === 0 ? baseKey : `${baseKey}:${occurrence}` };
+  });
 }
 
 function detailActivityKey(item: { title?: string | null; body?: string | null; at?: string | null }) {
