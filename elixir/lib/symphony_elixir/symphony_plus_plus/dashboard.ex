@@ -13,6 +13,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Finding
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
@@ -39,6 +40,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   @complete_plan_statuses ["done", "completed", "skipped"]
   @merge_required_gates ["human_merge", "architect_merge"]
   @runtime_merge_required_kinds ["hotfix", "adapter", "mcp", "skill", "hooks", "phase_child"]
+  @started_package_statuses ["claimed", "planning", "implementing"]
+  @merged_package_statuses ["merged", "merged_into_phase"]
+  @closed_package_statuses ["closed", "abandoned"]
   @scope_guard_gate "scope_guard"
   @local_operator_worker "local-operator-worker"
   @dropped_child_statuses ["abandoned"]
@@ -234,7 +238,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            {:ok, questions} <- WorkRequestRepository.list_questions(repo, work_request_id),
            {:ok, decisions} <- WorkRequestRepository.list_decisions(repo, work_request_id),
            {:ok, planned_slices} <- WorkRequestRepository.list_planned_slices(repo, work_request_id),
-           {:ok, work_package_statuses} <- planned_slice_work_package_statuses(repo, planned_slices) do
+           {:ok, work_package_contexts} <- planned_slice_work_package_contexts(repo, planned_slices) do
         questions = ordered_sequence_records(questions)
         decisions = ordered_sequence_records(decisions)
         planned_slices = ordered_sequence_records(planned_slices)
@@ -244,7 +248,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            work_request: work_request_detail(work_request),
            clarification_questions: Enum.map(questions, &clarification_question/1),
            decision_logs: Enum.map(decisions, &decision_log_entry/1),
-           planned_slices: Enum.map(planned_slices, &planned_slice(&1, work_package_statuses, include_dispatch_linkage?: true)),
+           planned_slices: Enum.map(planned_slices, &planned_slice(&1, work_package_contexts, include_dispatch_linkage?: true)),
            summary: work_request_summary(questions, decisions, planned_slices)
          }}
       end
@@ -399,7 +403,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     with {:ok, status_summary} <- PlanningRepository.get_status_summary(repo, work_package.id),
          {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, work_package.id),
          {:ok, readiness_collections} <- readiness_collections(repo, work_package),
-         {:ok, agent_runs} <- AgentRunRepository.list_for_work_package(repo, work_package.id) do
+         {:ok, agent_runs} <- AgentRunRepository.list_for_work_package(repo, work_package.id),
+         {:ok, grants} <- AccessGrantRepository.list_for_work_package(repo, work_package.id) do
       %{artifacts: artifacts, findings: findings} = readiness_collections
       blockers = blockers(progress_events)
       runtime = runtime_summary(agent_runs)
@@ -412,6 +417,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
           artifacts,
           findings
         )
+
+      metadata = metadata(progress_events, artifacts, work_package.id)
+      operational_state = work_package_operational_state(work_package, progress_events, blockers, runtime, metadata, readiness_context, grants)
 
       {:ok,
        %{
@@ -434,7 +442,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            artifact_count: status_summary.artifact_count,
            finding_count: status_summary.finding_count,
            plan: plan_summary(status_summary.plan_nodes),
-           metadata: metadata(progress_events, artifacts, work_package.id),
+           metadata: metadata,
+           operational_state: operational_state,
            alert_indicators: alert_indicators(readiness_context, blockers, runtime),
            inserted_at: timestamp(work_package.inserted_at),
            updated_at: timestamp(work_package.updated_at)
@@ -1372,18 +1381,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     |> maybe_put_dispatch_linkage(planned_slice, work_package_statuses, opts)
   end
 
-  defp maybe_put_dispatch_linkage(payload, %PlannedSlice{} = planned_slice, work_package_statuses, opts) do
+  defp maybe_put_dispatch_linkage(payload, %PlannedSlice{} = planned_slice, work_package_contexts, opts) do
     if Keyword.get(opts, :include_dispatch_linkage?, false) do
+      work_package_context = Map.get(work_package_contexts, planned_slice.work_package_id)
+
       payload
       |> Map.put(:work_package_id, planned_slice.work_package_id)
-      |> Map.put(:work_package_status, Map.get(work_package_statuses, planned_slice.work_package_id))
+      |> Map.put(:work_package_status, linked_work_package_status(work_package_context))
       |> Map.put(:dispatched_at, timestamp(planned_slice.dispatched_at))
+      |> Map.put(:operational_state, planned_slice_operational_state(planned_slice, work_package_context))
     else
       payload
     end
   end
 
-  defp planned_slice_work_package_statuses(repo, planned_slices) do
+  defp planned_slice_work_package_contexts(repo, planned_slices) do
     work_package_ids =
       planned_slices
       |> Enum.map(& &1.work_package_id)
@@ -1393,17 +1405,106 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     if work_package_ids == [] do
       {:ok, %{}}
     else
-      statuses =
+      work_packages =
         repo.all(
           from(work_package in WorkPackage,
-            where: work_package.id in ^work_package_ids,
-            select: {work_package.id, work_package.status}
+            where: work_package.id in ^work_package_ids
           )
         )
 
-      {:ok, Map.new(statuses)}
+      {:ok, linked_work_package_contexts(repo, work_packages)}
     end
   end
+
+  defp linked_work_package_contexts(_repo, []), do: %{}
+
+  defp linked_work_package_contexts(repo, work_packages) do
+    work_package_ids = Enum.map(work_packages, & &1.id)
+    progress_events_by_id = grouped_progress_events(repo, work_package_ids)
+    plan_nodes_by_id = grouped_plan_nodes(repo, work_package_ids)
+    artifacts_by_id = grouped_artifacts(repo, work_package_ids)
+    findings_by_id = grouped_findings(repo, work_package_ids)
+    agent_runs_by_id = grouped_agent_runs(repo, work_package_ids)
+    grants_by_id = grouped_access_grants(repo, work_package_ids)
+
+    Map.new(work_packages, fn %WorkPackage{} = work_package ->
+      progress_events = Map.get(progress_events_by_id, work_package.id, [])
+      plan_nodes = Map.get(plan_nodes_by_id, work_package.id, [])
+      artifacts = Map.get(artifacts_by_id, work_package.id, [])
+      findings = Map.get(findings_by_id, work_package.id, [])
+      agent_runs = Map.get(agent_runs_by_id, work_package.id, [])
+      grants = Map.get(grants_by_id, work_package.id, [])
+      blockers = blockers(progress_events)
+      runtime = runtime_summary(agent_runs)
+      metadata = metadata(progress_events, artifacts, work_package.id)
+      readiness_context = readiness_context(work_package, plan_nodes, progress_events, artifacts, findings)
+      operational_state = work_package_operational_state(work_package, progress_events, blockers, runtime, metadata, readiness_context, grants)
+
+      {work_package.id, %{work_package: work_package, card: %{operational_state: operational_state}}}
+    end)
+  end
+
+  defp grouped_progress_events(repo, work_package_ids) do
+    repo.all(
+      from(progress_event in ProgressEvent,
+        where: progress_event.work_package_id in ^work_package_ids,
+        order_by: [asc: progress_event.work_package_id, asc: progress_event.sequence, asc: progress_event.inserted_at]
+      )
+    )
+    |> records_by_work_package_id()
+  end
+
+  defp grouped_plan_nodes(repo, work_package_ids) do
+    repo.all(
+      from(plan_node in PlanNode,
+        where: plan_node.work_package_id in ^work_package_ids,
+        order_by: [asc: plan_node.work_package_id, asc: plan_node.position, asc: plan_node.inserted_at]
+      )
+    )
+    |> records_by_work_package_id()
+  end
+
+  defp grouped_artifacts(repo, work_package_ids) do
+    repo.all(
+      from(artifact in Artifact,
+        where: artifact.work_package_id in ^work_package_ids,
+        order_by: [asc: artifact.work_package_id, asc: artifact.sequence, asc: artifact.inserted_at]
+      )
+    )
+    |> records_by_work_package_id()
+  end
+
+  defp grouped_findings(repo, work_package_ids) do
+    repo.all(
+      from(finding in Finding,
+        where: finding.work_package_id in ^work_package_ids,
+        order_by: [asc: finding.work_package_id, asc: finding.sequence, asc: finding.inserted_at]
+      )
+    )
+    |> records_by_work_package_id()
+  end
+
+  defp grouped_agent_runs(repo, work_package_ids) do
+    repo.all(
+      from(agent_run in AgentRun,
+        where: agent_run.work_package_id in ^work_package_ids,
+        order_by: [asc: agent_run.work_package_id, asc: agent_run.started_at, asc: agent_run.inserted_at]
+      )
+    )
+    |> records_by_work_package_id()
+  end
+
+  defp grouped_access_grants(repo, work_package_ids) do
+    repo.all(
+      from(access_grant in AccessGrant,
+        where: access_grant.work_package_id in ^work_package_ids,
+        order_by: [asc: access_grant.work_package_id, asc: access_grant.inserted_at]
+      )
+    )
+    |> records_by_work_package_id()
+  end
+
+  defp records_by_work_package_id(records), do: Enum.group_by(records, & &1.work_package_id)
 
   defp work_request_summary(questions, decisions, planned_slices) do
     %{
@@ -1603,6 +1704,347 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       total_count: total,
       completed_count: completed,
       open_count: max(total - completed, 0)
+    }
+  end
+
+  defp work_package_operational_state(%WorkPackage{} = work_package, progress_events, blockers, runtime, metadata, readiness_context, grants) do
+    missing_readiness = if work_package.status in @ready_statuses, do: missing_readiness_evidence(readiness_context), else: []
+    delivery_started = delivery_started?(work_package, progress_events, runtime, metadata, grants)
+    attention_items = work_package_attention_items(work_package, blockers, metadata, missing_readiness, delivery_started)
+
+    work_package
+    |> base_work_package_operational_state(blockers, metadata, missing_readiness, delivery_started)
+    |> Map.put(:attention_items, attention_items)
+  end
+
+  defp base_work_package_operational_state(%WorkPackage{status: status}, blockers, metadata, missing_readiness, delivery_started) do
+    active_blocker_count = blockers |> active_blockers() |> length()
+
+    cond do
+      active_blocker_count > 0 ->
+        operational_state("blocked", "Blocked", "critical", blocker_detail(active_blocker_count), status)
+
+      status == "blocked" ->
+        operational_state("blocked", "Blocked", "critical", "Raw lifecycle status is blocked.", status)
+
+      pr_merged?(metadata) and open_package_status?(status) ->
+        operational_state("merged", "Merged", "success", "PR metadata reports a merged pull request while raw status is #{status}.", status)
+
+      status in @merged_package_statuses ->
+        operational_state("merged", "Merged", "success", "Raw lifecycle status indicates merged delivery.", status)
+
+      status in @closed_package_statuses ->
+        operational_state(status, status_label(status), "neutral", "Raw lifecycle status is #{status}.", status)
+
+      status == "merging_into_phase" ->
+        operational_state("merging", "Merging", "info", "Package is being merged into its phase.", status)
+
+      status in @ready_statuses ->
+        tone = if missing_readiness == [], do: "success", else: "warning"
+        reason = if missing_readiness == [], do: "Package is marked ready with required evidence present.", else: "Package is marked ready but evidence is incomplete."
+        operational_state("merge_ready", "Ready For Merge", tone, reason, status)
+
+      status == "ci_waiting" ->
+        operational_state("ci_waiting", "CI Waiting", "info", "Package is waiting on validation or CI evidence.", status)
+
+      status == "reviewing" or review_activity?(metadata) ->
+        operational_state("reviewing", "Reviewing", "info", "Review evidence or lifecycle status indicates review is active.", status)
+
+      delivery_started ->
+        operational_state("in_progress", "In Progress", "info", "Worker, runtime, progress, PR, review, or lifecycle evidence indicates work has started.", status)
+
+      status == "ready_for_worker" ->
+        operational_state("ready_for_worker", "Ready For Worker", "neutral", "No linked delivery, worker, runtime, progress, blocker, review, PR, or merge activity is recorded.", status)
+
+      status == "created" ->
+        operational_state("created", "Created", "neutral", "Package has been created but is not ready for worker pickup.", status)
+
+      true ->
+        operational_state(status || "unknown", status_label(status), "neutral", "Raw lifecycle status is #{status || "unknown"}.", status)
+    end
+  end
+
+  defp planned_slice_operational_state(%PlannedSlice{} = planned_slice, nil) do
+    planned_slice
+    |> base_unlinked_planned_slice_operational_state()
+    |> Map.put(:attention_items, planned_slice_attention_items(planned_slice, nil))
+  end
+
+  defp planned_slice_operational_state(%PlannedSlice{} = planned_slice, %{card: card, work_package: %WorkPackage{} = work_package}) do
+    linked_state = Map.fetch!(card, :operational_state)
+    attention_items = planned_slice_attention_items(planned_slice, work_package, linked_state)
+
+    cond do
+      promoted_linked_operational_state?(linked_state) ->
+        operational_state(
+          linked_state.key,
+          linked_state.label,
+          linked_state.tone,
+          "Linked WorkPackage #{work_package.id} is #{linked_state.label}.",
+          planned_slice.status,
+          attention_items
+        )
+
+      true ->
+        linked_idle_planned_slice_operational_state(planned_slice, work_package, attention_items)
+    end
+  end
+
+  defp base_unlinked_planned_slice_operational_state(%PlannedSlice{status: "approved"} = planned_slice) do
+    operational_state("ready_for_worker", "Ready For Worker", "neutral", "Approved slice has no linked WorkPackage or delivery activity.", planned_slice.status)
+  end
+
+  defp base_unlinked_planned_slice_operational_state(%PlannedSlice{status: "planned"} = planned_slice) do
+    operational_state("planned", "Planned", "neutral", "Slice is planned and has no linked WorkPackage.", planned_slice.status)
+  end
+
+  defp base_unlinked_planned_slice_operational_state(%PlannedSlice{status: "skipped"} = planned_slice) do
+    operational_state("skipped", "Skipped", "neutral", "Slice was skipped before dispatch.", planned_slice.status)
+  end
+
+  defp base_unlinked_planned_slice_operational_state(%PlannedSlice{} = planned_slice) do
+    operational_state("dispatched", "Dispatched", "warning", "Slice is marked dispatched but no linked WorkPackage is available.", planned_slice.status)
+  end
+
+  defp linked_idle_planned_slice_operational_state(%PlannedSlice{status: "approved"} = planned_slice, %WorkPackage{} = work_package, attention_items) do
+    operational_state(
+      "ready_for_worker",
+      "Ready For Worker",
+      "neutral",
+      "Approved slice is linked to WorkPackage #{work_package.id}, which has not started.",
+      planned_slice.status,
+      attention_items
+    )
+  end
+
+  defp linked_idle_planned_slice_operational_state(%PlannedSlice{status: "planned"} = planned_slice, %WorkPackage{} = work_package, attention_items) do
+    operational_state(
+      "planned",
+      "Planned",
+      "neutral",
+      "Slice is linked to WorkPackage #{work_package.id}, which has not started.",
+      planned_slice.status,
+      attention_items
+    )
+  end
+
+  defp linked_idle_planned_slice_operational_state(%PlannedSlice{status: "skipped"} = planned_slice, %WorkPackage{} = work_package, attention_items) do
+    operational_state(
+      "skipped",
+      "Skipped",
+      "neutral",
+      "Skipped slice is linked to WorkPackage #{work_package.id}.",
+      planned_slice.status,
+      attention_items
+    )
+  end
+
+  defp linked_idle_planned_slice_operational_state(%PlannedSlice{} = planned_slice, %WorkPackage{} = work_package, attention_items) do
+    operational_state(
+      "dispatched",
+      "Dispatched",
+      "neutral",
+      "Slice is linked to WorkPackage #{work_package.id}, which has not started.",
+      planned_slice.status,
+      attention_items
+    )
+  end
+
+  defp planned_slice_attention_items(%PlannedSlice{} = planned_slice, nil) do
+    if planned_slice.status == "dispatched" and not filled_string?(planned_slice.work_package_id) do
+      [
+        %{
+          key: "missing_linked_work_package",
+          label: "Missing Linked WorkPackage",
+          tone: "warning",
+          reason: "Slice is marked dispatched without a linked WorkPackage."
+        }
+      ]
+    else
+      []
+    end
+  end
+
+  defp planned_slice_attention_items(%PlannedSlice{} = planned_slice, %WorkPackage{} = work_package, linked_state) do
+    inherited_items = Map.get(linked_state, :attention_items, [])
+
+    maybe_idle_slice_attention =
+      if planned_slice.status in ["planned", "approved"] and promoted_linked_operational_state?(linked_state) do
+        [
+          %{
+            key: "linked_package_started_while_slice_idle",
+            label: "Linked Package Started",
+            tone: "warning",
+            reason: "Linked WorkPackage #{work_package.id} has operational state #{linked_state.key} while slice status is #{planned_slice.status}."
+          }
+        ]
+      else
+        []
+      end
+
+    inherited_items ++ maybe_idle_slice_attention
+  end
+
+  defp linked_work_package_status(%{work_package: %WorkPackage{status: status}}), do: status
+  defp linked_work_package_status(_work_package_context), do: nil
+
+  defp promoted_linked_operational_state?(%{key: key}) do
+    key in ["blocked", "in_progress", "reviewing", "ci_waiting", "merge_ready", "merging", "merged", "closed", "abandoned"]
+  end
+
+  defp promoted_linked_operational_state?(_state), do: false
+
+  defp work_package_attention_items(%WorkPackage{} = work_package, blockers, metadata, missing_readiness, delivery_started) do
+    [
+      active_blocker_attention_item(blockers),
+      pr_merged_attention_item(work_package, metadata),
+      missing_readiness_attention_item(work_package, missing_readiness),
+      ready_status_with_activity_attention_item(work_package, delivery_started)
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp active_blocker_attention_item(blockers) do
+    case active_blockers(blockers) do
+      [] ->
+        nil
+
+      active ->
+        %{
+          key: "active_blocker",
+          label: "Active Blocker",
+          tone: "critical",
+          reason: blocker_detail(length(active)),
+          blocker_ids: Enum.map(active, & &1.id)
+        }
+    end
+  end
+
+  defp pr_merged_attention_item(%WorkPackage{status: status}, metadata) do
+    if pr_merged?(metadata) and open_package_status?(status) do
+      %{
+        key: "pr_merged_raw_status_open",
+        label: "Merged PR With Open Status",
+        tone: "warning",
+        reason: "PR metadata reports merged while raw package status remains #{status}."
+      }
+    end
+  end
+
+  defp missing_readiness_attention_item(%WorkPackage{status: status}, missing_readiness) when status in @ready_statuses do
+    case missing_readiness do
+      [] ->
+        nil
+
+      missing ->
+        %{
+          key: "missing_readiness_evidence",
+          label: "Missing Readiness Evidence",
+          tone: "warning",
+          reason: missing_detail(missing),
+          missing: missing
+        }
+    end
+  end
+
+  defp missing_readiness_attention_item(%WorkPackage{}, _missing_readiness), do: nil
+
+  defp ready_status_with_activity_attention_item(%WorkPackage{status: "ready_for_worker"}, delivery_started) do
+    if delivery_started do
+      %{
+        key: "ready_for_worker_with_activity",
+        label: "Ready Status With Activity",
+        tone: "warning",
+        reason: "Raw status is ready_for_worker but worker, runtime, progress, PR, review, or merge activity is recorded."
+      }
+    end
+  end
+
+  defp ready_status_with_activity_attention_item(%WorkPackage{}, _delivery_started), do: nil
+
+  defp active_blockers(blockers), do: Enum.filter(blockers, & &1.active)
+
+  defp delivery_started?(%WorkPackage{status: status}, progress_events, runtime, metadata, grants) do
+    status in @started_package_statuses or
+      active_worker_grant?(grants) or
+      runtime_activity?(runtime) or
+      progress_events != [] or
+      metadata_activity?(metadata)
+  end
+
+  defp active_worker_grant?(grants) do
+    Enum.any?(grants, fn
+      %AccessGrant{grant_role: "worker"} = grant -> active_grant?(grant)
+      _grant -> false
+    end)
+  end
+
+  defp runtime_activity?(runtime) when is_map(runtime) do
+    Enum.any?([:active_count, :queued_count, :stopped_count, :failed_count, :completed_count, :terminal_count], &(Map.get(runtime, &1, 0) > 0))
+  end
+
+  defp runtime_activity?(_runtime), do: false
+
+  defp metadata_activity?(metadata) when is_map(metadata) do
+    Enum.any?([:branch, :pr, :review_progress, :review_package, :review_suite_result], &present_metadata_value?(Map.get(metadata, &1)))
+  end
+
+  defp metadata_activity?(_metadata), do: false
+
+  defp review_activity?(metadata) when is_map(metadata) do
+    Enum.any?([:review_progress, :review_package, :review_suite_result], &present_metadata_value?(Map.get(metadata, &1)))
+  end
+
+  defp review_activity?(_metadata), do: false
+
+  defp present_metadata_value?(nil), do: false
+  defp present_metadata_value?(value) when is_map(value), do: map_size(value) > 0
+  defp present_metadata_value?(value) when is_list(value), do: value != []
+  defp present_metadata_value?(_value), do: true
+
+  defp pr_merged?(%{pr: %{"stale" => true}}), do: false
+  defp pr_merged?(%{pr: pr}), do: pr_merged_payload?(pr)
+  defp pr_merged?(_metadata), do: false
+
+  defp pr_merged_payload?(%{} = pr) do
+    merged_value?(map_value(pr, "merged")) or
+      merged_value?(map_value(pr, "state")) or
+      merged_value?(map_value(pr, "status")) or
+      merged_value?(map_value(pr, "conclusion")) or
+      merge_state_merged?(map_value(pr, "merge_state"))
+  end
+
+  defp pr_merged_payload?(_pr), do: false
+
+  defp merge_state_merged?(%{} = merge_state) do
+    merged_value?(map_value(merge_state, "merged")) or
+      merged_value?(map_value(merge_state, "state")) or
+      merged_value?(map_value(merge_state, "status")) or
+      merged_value?(map_value(merge_state, "mergeable_state"))
+  end
+
+  defp merge_state_merged?(_merge_state), do: false
+
+  defp map_value(%{} = map, key) when is_binary(key), do: Map.get(map, key) || Map.get(map, String.to_atom(key))
+
+  defp merged_value?(true), do: true
+
+  defp merged_value?(value) when is_binary(value) do
+    value |> String.trim() |> String.downcase() |> then(&(&1 in ["merged", "true"]))
+  end
+
+  defp merged_value?(_value), do: false
+
+  defp open_package_status?(status), do: status not in @merged_package_statuses and status not in @closed_package_statuses
+
+  defp operational_state(key, label, tone, reason, raw_status, attention_items \\ []) do
+    %{
+      key: key,
+      label: label,
+      tone: tone,
+      reason: reason,
+      raw_status: raw_status,
+      attention_items: attention_items
     }
   end
 

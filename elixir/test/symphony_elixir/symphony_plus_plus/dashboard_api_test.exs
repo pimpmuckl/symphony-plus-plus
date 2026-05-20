@@ -217,11 +217,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert card.artifact_count == 1
     assert card.finding_count == 1
     assert card.metadata.pr["url"] == "https://github.com/example/repo/pull/1"
+    assert card.operational_state.key == "blocked"
+    assert card.operational_state.raw_status == "planning"
+    assert [%{key: "active_blocker", blocker_ids: ["blocker-a"]}] = card.operational_state.attention_items
 
     payload = json_response(get(auth_conn(architect_secret), "/api/v1/sympp/board"), 200)
 
     assert payload["total_count"] == 2
-    assert [%{"id" => "SYMPP-DASH-1"}] = payload["groups"]["planning"]
+    assert [%{"id" => "SYMPP-DASH-1", "operational_state" => %{"key" => "blocked", "raw_status" => "planning"}}] = payload["groups"]["planning"]
     assert [%{"id" => "SYMPP-DASH-2"}] = payload["groups"]["blocked"]
     assert payload["groups"]["created"] == []
 
@@ -234,6 +237,110 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              "work_package" => %{"id" => "SYMPP-DASH-2"},
              "summary" => %{"artifact_count" => 0, "progress_event_count" => 0}
            } = json_response(get(auth_conn(architect_secret), "/api/v1/sympp/work-packages/SYMPP-DASH-2"), 200)
+  end
+
+  test "package operational state only emits ready for worker before delivery activity starts", %{repo: repo} do
+    assert {:ok, ready} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-OP-READY", status: "ready_for_worker"))
+
+    assert {:ok, card} = Dashboard.card(repo, ready)
+    assert card.operational_state.key == "ready_for_worker"
+    assert card.operational_state.attention_items == []
+
+    assert {:ok, started} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-OP-READY-STARTED", status: "ready_for_worker"))
+
+    create_claimed_worker_grant(repo, started.id, "worker-started")
+
+    assert {:ok, started_card} = Dashboard.card(repo, started)
+    assert started_card.operational_state.key == "in_progress"
+    assert [%{key: "ready_for_worker_with_activity"}] = started_card.operational_state.attention_items
+
+    assert {:ok, ci_waiting} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-OP-CI-WAITING", status: "ci_waiting"))
+
+    assert {:ok, _review_progress} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: ci_waiting.id,
+               summary: "Review started",
+               status: "review_started",
+               payload: %{type: "review_progress", source_tool: "submit_review_package"},
+               created_at: ~U[2026-05-05 00:00:00Z]
+             })
+
+    assert {:ok, ci_card} = Dashboard.card(repo, ci_waiting)
+    assert ci_card.operational_state.key == "ci_waiting"
+  end
+
+  test "package operational state surfaces merged PR and missing readiness contradictions", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-OP-MERGED-PR",
+                 kind: "mcp",
+                 status: "ready_for_human_merge",
+                 policy_template: "mcp"
+               )
+             )
+
+    timestamp = ~U[2026-05-05 00:00:00Z]
+
+    assert {:ok, _branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Branch attached",
+               status: "branch_attached",
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "head-a"},
+               created_at: DateTime.add(timestamp, 1, :second)
+             })
+
+    assert {:ok, _pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR attached",
+               status: "pr_attached",
+               payload: %{type: "pr", source_tool: "attach_pr", url: "https://github.com/example/repo/pull/77", head_sha: "head-a"},
+               created_at: DateTime.add(timestamp, 2, :second)
+             })
+
+    assert {:ok, _pr_sync} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR merged",
+               status: "pr_synced",
+               payload: %{
+                 type: "pr",
+                 source_tool: "sync_pr",
+                 url: "https://github.com/example/repo/pull/77",
+                 repository: "example/repo",
+                 number: 77,
+                 head_sha: "head-a",
+                 merge_state: %{merged: true}
+               },
+               created_at: DateTime.add(timestamp, 3, :second)
+             })
+
+    assert {:ok, card} = Dashboard.card(repo, work_package)
+    assert card.operational_state.key == "merged"
+    assert card.operational_state.raw_status == "ready_for_human_merge"
+
+    attention_by_key = Map.new(card.operational_state.attention_items, &{&1.key, &1})
+    assert attention_by_key["pr_merged_raw_status_open"].tone == "warning"
+    assert "review_package_submitted" in attention_by_key["missing_readiness_evidence"].missing
+
+    assert {:ok, _new_branch_head} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Branch advanced",
+               status: "branch_attached",
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "head-b"},
+               created_at: DateTime.add(timestamp, 4, :second)
+             })
+
+    assert {:ok, stale_card} = Dashboard.card(repo, work_package)
+    assert stale_card.operational_state.key == "merge_ready"
+    refute Enum.any?(stale_card.operational_state.attention_items, &(&1.key == "pr_merged_raw_status_open"))
   end
 
   test "phase board authorization preserves exact persisted phase ids", %{repo: repo} do
@@ -899,6 +1006,85 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              "dispatched_slice_count" => 0,
              "skipped_slice_count" => 0
            }
+  end
+
+  test "local WorkRequest detail includes planned-slice operational state from linked package activity", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-DASH-OP-SLICES", status: "ready_for_slicing")
+
+    assert {:ok, approved_ready} =
+             WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-OP-READY"))
+
+    assert {:ok, _approved_ready} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, approved_ready.id, "planned")
+
+    assert {:ok, approved_idle_linked} =
+             WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-OP-IDLE-LINKED"))
+
+    assert {:ok, approved_idle_linked} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, approved_idle_linked.id, "planned")
+
+    idle_package =
+      create_matching_work_package!(repo, work_request, approved_idle_linked,
+        id: "SYMPP-OP-IDLE-LINKED",
+        status: "ready_for_worker"
+      )
+
+    assert {:ok, dispatched_idle} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_idle_linked.id, "approved", idle_package.id)
+
+    repo.update!(Ecto.Changeset.change(dispatched_idle, status: "approved"))
+
+    assert {:ok, approved_linked} =
+             WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-OP-LINKED"))
+
+    assert {:ok, approved_linked} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, approved_linked.id, "planned")
+
+    linked_package =
+      create_matching_work_package!(repo, work_request, approved_linked,
+        id: "SYMPP-OP-LINKED",
+        status: "implementing"
+      )
+
+    assert {:ok, dispatched} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_linked.id, "approved", linked_package.id)
+
+    repo.update!(Ecto.Changeset.change(dispatched, status: "approved"))
+
+    assert {:ok, approved_terminal} =
+             WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-OP-TERMINAL"))
+
+    assert {:ok, approved_terminal} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, approved_terminal.id, "planned")
+
+    terminal_package =
+      create_matching_work_package!(repo, work_request, approved_terminal,
+        id: "SYMPP-OP-TERMINAL",
+        status: "abandoned"
+      )
+
+    assert {:ok, dispatched_terminal} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_terminal.id, "approved", terminal_package.id)
+
+    repo.update!(Ecto.Changeset.change(dispatched_terminal, status: "approved"))
+
+    assert {:ok, payload} = Dashboard.work_request_detail(repo, work_request.id)
+    slices_by_id = Map.new(payload.planned_slices, &{&1.id, &1})
+
+    assert get_in(slices_by_id, ["WRS-OP-READY", :operational_state, :key]) == "ready_for_worker"
+    assert get_in(slices_by_id, ["WRS-OP-READY", :operational_state, :raw_status]) == "approved"
+    assert get_in(slices_by_id, ["WRS-OP-IDLE-LINKED", :operational_state, :key]) == "ready_for_worker"
+
+    linked_slice = Map.fetch!(slices_by_id, "WRS-OP-LINKED")
+    assert linked_slice.work_package_id == linked_package.id
+    assert linked_slice.work_package_status == "implementing"
+    assert linked_slice.operational_state.key == "in_progress"
+    assert linked_slice.operational_state.raw_status == "approved"
+
+    assert Enum.any?(
+             linked_slice.operational_state.attention_items,
+             &(&1.key == "linked_package_started_while_slice_idle")
+           )
+
+    terminal_slice = Map.fetch!(slices_by_id, "WRS-OP-TERMINAL")
+    assert terminal_slice.work_package_status == "abandoned"
+    assert terminal_slice.operational_state.key == "abandoned"
   end
 
   test "dashboard API WorkRequest endpoints enforce board reader authorization and scope", %{repo: repo} do
