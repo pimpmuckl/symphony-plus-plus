@@ -2235,6 +2235,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     %{
       branch: branch,
       pr: pr_metadata(pr, head_filter),
+      review_progress: latest_payload(progress_events, "review_progress", nil),
       review_package: latest_current_payload(progress_events, "review_package", "submit_review_package", head_filter),
       review_suite_result: review_suite_result_payload(progress_events, artifacts, work_package_id, head_filter)
     }

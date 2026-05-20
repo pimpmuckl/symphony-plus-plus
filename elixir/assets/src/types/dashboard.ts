@@ -23,8 +23,14 @@ export type PackageReviewMetadata = {
   lane?: string;
   review_lane?: string;
   suite?: string;
+  profile?: string;
+  mode?: string;
+  provider?: string;
   verdict?: string;
   status?: string;
+  step_current?: number | string;
+  step_total?: number | string;
+  step_name?: string | null;
   reviews?: PackageReviewMetadata[];
   head_sha?: string;
 };
@@ -42,6 +48,7 @@ export type PackageAlertIndicator = {
 export type PackageMetadata = {
   branch?: PackageBranchMetadata | null;
   pr?: PackagePrMetadata | null;
+  review_progress?: PackageReviewMetadata | null;
   review_package?: PackageReviewMetadata | null;
   review_suite_result?: PackageReviewMetadata | null;
 };

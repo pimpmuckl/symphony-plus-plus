@@ -445,7 +445,7 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={150}>
-      <main className="dashboard-shell min-h-screen bg-background">
+      <main className="dashboard-shell min-h-screen">
         <header className="dashboard-header-glass sticky top-0 z-20">
           <div className="mx-auto flex max-w-[1500px] flex-col gap-4 px-4 py-4 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
             <div className="flex items-center gap-3">
@@ -482,7 +482,7 @@ export default function App() {
 
         <div className="mx-auto grid max-w-[1500px] gap-5 px-4 py-5 sm:px-6 lg:px-8">
           {error ? (
-            <Card className="border-rose-200 bg-rose-50 motion-card dark:border-rose-700/70 dark:bg-rose-950/45">
+            <Card className="dashboard-glass-surface border-rose-200 bg-rose-50 motion-card dark:border-rose-700/70 dark:bg-rose-950/45">
               <CardContent className="flex items-center gap-3 p-4 text-sm text-rose-800 dark:text-rose-200">
                 <AlertCircle className="h-4 w-4" />
                 {error}
@@ -1478,7 +1478,7 @@ function StatusTile({
     <button
       type="button"
       className={cn(
-        "status-tile motion-card group flex min-h-[104px] items-center justify-between rounded-lg border bg-card p-5 text-left shadow-sm outline-none transition-all hover:-translate-y-0.5 hover:shadow-dashboard focus-visible:ring-2 focus-visible:ring-ring",
+        "dashboard-glass-surface status-tile motion-card group flex min-h-[104px] items-center justify-between rounded-lg border bg-card p-5 text-left shadow-sm outline-none transition-all hover:-translate-y-0.5 hover:shadow-dashboard focus-visible:ring-2 focus-visible:ring-ring",
         open && tones[tone].card,
       )}
       data-count-motion={countMotion.direction}
@@ -1508,7 +1508,7 @@ function StatusTile({
 
 function TopTray({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <Card className="top-tray-card overflow-hidden">
+    <Card className="dashboard-glass-surface top-tray-card overflow-hidden">
       <CardHeader className="pb-3">
         <CardTitle>{title}</CardTitle>
       </CardHeader>
@@ -1727,8 +1727,8 @@ function RepoWorkstream({
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <Card className="motion-card overflow-hidden">
-        <CardHeader className="border-b bg-card">
+      <Card className="dashboard-glass-surface motion-card overflow-hidden">
+        <CardHeader className="dashboard-panel-header border-b">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="flex min-w-0 items-center gap-3">
               <CollapsibleTrigger asChild>
@@ -3394,7 +3394,7 @@ function packageSignal(pkg: WorkPackageCard, lane: BoardLane): { label: string; 
   }
 
   if (status === "reviewing") {
-    return packageReviewSignal(pkg) || { label: "Review", value: "In review", tone: "info" };
+    return packageReviewSignal(pkg) || { label: "Review", value: "Reviewing", tone: "info" };
   }
 
   if (status === "ci_waiting") {
@@ -3457,7 +3457,10 @@ function runtimeBoolean(runtime: Record<string, unknown>, key: string) {
 }
 
 function packageReviewSignal(pkg: WorkPackageCard) {
-  return reviewPayloadSignal(pkg.metadata?.review_suite_result) || reviewPackageSignal(pkg.metadata?.review_package);
+  const progressSignal = reviewPayloadSignal(pkg.metadata?.review_progress);
+  const resultSignal = reviewPayloadSignal(pkg.metadata?.review_suite_result) || reviewPackageSignal(pkg.metadata?.review_package);
+
+  return pkg.status === "reviewing" ? progressSignal || resultSignal : resultSignal || progressSignal;
 }
 
 function reviewPackageSignal(reviewPackage: WorkPackageCard["metadata"] extends infer _Metadata ? NonNullable<WorkPackageCard["metadata"]>["review_package"] : never) {
@@ -3476,14 +3479,17 @@ function reviewPackageSignal(reviewPackage: WorkPackageCard["metadata"] extends 
 function reviewPayloadSignal(payload?: NonNullable<WorkPackageCard["metadata"]>["review_suite_result"] | null) {
   if (!payload) return null;
 
-  const lane = payload.lane || payload.review_lane || payload.suite;
-  if (!lane) return null;
+  const lane = payload.profile || payload.mode || payload.lane || payload.review_lane || payload.suite;
+  const stage = reviewStageLabel(payload);
+  if (!lane && !stage) return null;
 
   const state = reviewState(payload.verdict || payload.status);
   const tone: SignalTone = state === "green" ? "success" : state === "failed" ? "danger" : "info";
   const suffix = state === "green" ? "Green" : state === "failed" ? "Failed" : "Pending";
+  const label = lane ? reviewLaneLabel(lane) : "Review";
+  const value = stage ? `${label} ${stage}` : `${label} ${suffix}`;
 
-  return { label: "Review", value: `${reviewLaneLabel(lane)} ${suffix}`, tone, rank: reviewLaneRank(lane) };
+  return { label: "Review", value, tone, rank: lane ? reviewLaneRank(lane) : -1 };
 }
 
 function reviewState(value?: string) {
@@ -3494,17 +3500,17 @@ function reviewState(value?: string) {
 }
 
 function reviewLaneLabel(lane: string) {
-  switch (lane.trim().toLowerCase()) {
+  switch (normalizeReviewLane(lane)) {
+    case "brief":
+      return "Brief";
+    case "normal":
+      return "Normal";
+    case "deep":
+      return "Deep";
+    case "emergency":
+      return "Emergency";
     case "review_deslop":
       return "Review-Deslop";
-    case "review_t1":
-      return "Review-T1";
-    case "review_t2":
-      return "Review-T2";
-    case "review_t3":
-      return "Review-T3";
-    case "review_t4":
-      return "Review-T4";
     case "review_github":
       return "Review-GitHub";
     default:
@@ -3513,7 +3519,48 @@ function reviewLaneLabel(lane: string) {
 }
 
 function reviewLaneRank(lane: string) {
-  return ["review_deslop", "review_t1", "review_t2", "review_t3", "review_t4", "review_github"].indexOf(lane.trim().toLowerCase());
+  return ["review_deslop", "brief", "normal", "deep", "emergency", "review_github"].indexOf(normalizeReviewLane(lane));
+}
+
+function normalizeReviewLane(lane: string) {
+  const normalized = lane.trim().toLowerCase().replace(/-/g, "_");
+
+  switch (normalized) {
+    case "review_t1":
+    case "t1":
+    case "review_brief":
+      return "brief";
+    case "review_t2":
+    case "t2":
+    case "review_normal":
+      return "normal";
+    case "review_deep":
+      return "deep";
+    case "review_emergency":
+      return "emergency";
+    default:
+      return normalized;
+  }
+}
+
+function reviewStageLabel(payload: NonNullable<WorkPackageCard["metadata"]>["review_suite_result"]) {
+  const current = numericPayloadValue(payload?.step_current);
+  const total = numericPayloadValue(payload?.step_total);
+
+  if (current && total) return `${current}/${total}`;
+  if (payload?.step_name) return formatStatus(payload.step_name);
+  return null;
+}
+
+function numericPayloadValue(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+
+  return null;
 }
 
 function packagePrLabel(pkg: WorkPackageCard) {
@@ -3586,8 +3633,8 @@ function SoloSessionGroup({
   updateAnimations: DashboardUpdateAnimations;
 }) {
   return (
-    <Card className="motion-card overflow-hidden">
-      <CardHeader className="border-b bg-card">
+    <Card className="dashboard-glass-surface motion-card overflow-hidden">
+      <CardHeader className="dashboard-panel-header border-b">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="min-w-0">
             <CardTitle className="flex items-center gap-2">
@@ -4472,18 +4519,116 @@ function CardDetailDialog({
     return () => controller.abort();
   }, [soloSessionId]);
 
+  const effectiveLoadingPackage = selection?.kind === "package" && !packageDetail && !packageError ? true : loadingPackage;
+  const effectiveLoadingSolo = selection?.kind === "solo" && !soloDetail && !soloError ? true : loadingSolo;
+  const detailMotionKey = cardDetailMotionKey(selection, {
+    loadingPackage: effectiveLoadingPackage,
+    loadingSolo: effectiveLoadingSolo,
+    packageDetail,
+    packageError,
+    soloDetail,
+    soloError,
+  });
+
   return (
     <Dialog open={Boolean(selection)} onOpenChange={onOpenChange}>
       <DialogContent className="dashboard-dialog-content card-detail-dialog">
-        {selection?.kind === "request" ? <RequestDetailContent detail={selection.detail} onSelectGuidance={onSelectGuidance} /> : null}
-        {selection?.kind === "slice" ? <SliceDetailContent detail={selection.detail} slice={selection.slice} pkg={selection.pkg} /> : null}
-        {selection?.kind === "package" ? (
-          <PackageDetailContent selection={selection} detailPayload={packageDetail} loading={loadingPackage} error={packageError} />
-        ) : null}
-        {selection?.kind === "solo" ? <SoloSessionDetailContent session={selection.session} detailPayload={soloDetail} loading={loadingSolo} error={soloError} /> : null}
+        <AnimatedDetailBody motionKey={detailMotionKey}>
+          {selection?.kind === "request" ? <RequestDetailContent detail={selection.detail} onSelectGuidance={onSelectGuidance} /> : null}
+          {selection?.kind === "slice" ? <SliceDetailContent detail={selection.detail} slice={selection.slice} pkg={selection.pkg} /> : null}
+          {selection?.kind === "package" ? (
+            <PackageDetailContent selection={selection} detailPayload={packageDetail} loading={effectiveLoadingPackage} error={packageError} />
+          ) : null}
+          {selection?.kind === "solo" ? (
+            <SoloSessionDetailContent session={selection.session} detailPayload={soloDetail} loading={effectiveLoadingSolo} error={soloError} />
+          ) : null}
+        </AnimatedDetailBody>
       </DialogContent>
     </Dialog>
   );
+}
+
+function AnimatedDetailBody({ motionKey, children }: { motionKey: string; children: React.ReactNode }) {
+  const innerRef = useRef<HTMLDivElement>(null);
+  const animationFrameRef = useRef<number | null>(null);
+  const [height, setHeight] = useState<number | null>(null);
+
+  const measure = useCallback(() => {
+    const node = innerRef.current;
+    if (!node) return;
+
+    const nextHeight = Math.ceil(node.getBoundingClientRect().height);
+    if (nextHeight <= 0) return;
+
+    setHeight((currentHeight) => (currentHeight === nextHeight ? currentHeight : nextHeight));
+  }, []);
+
+  useLayoutEffect(() => {
+    measure();
+  }, [measure, motionKey]);
+
+  useEffect(() => {
+    const node = innerRef.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(() => {
+      if (animationFrameRef.current !== null) {
+        window.cancelAnimationFrame(animationFrameRef.current);
+      }
+
+      animationFrameRef.current = window.requestAnimationFrame(measure);
+    });
+
+    observer.observe(node);
+
+    return () => {
+      observer.disconnect();
+
+      if (animationFrameRef.current !== null) {
+        window.cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+    };
+  }, [measure]);
+
+  return (
+    <div className="detail-modal-size-frame" data-detail-motion-key={motionKey} style={height === null ? undefined : { height }}>
+      <div ref={innerRef} className="detail-modal-size-inner">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function cardDetailMotionKey(
+  selection: CardDetailSelection | null,
+  state: {
+    loadingPackage: boolean;
+    loadingSolo: boolean;
+    packageDetail: WorkPackageDetailPayload | null;
+    packageError: string | null;
+    soloDetail: SoloSessionDetailPayload | null;
+    soloError: string | null;
+  },
+) {
+  if (!selection) return "closed";
+
+  switch (selection.kind) {
+    case "request":
+      return `request:${selection.detail.work_request.id}`;
+    case "slice":
+      return `slice:${selection.slice.id}:${selection.pkg?.id || "undispatched"}`;
+    case "package":
+      return `package:${selection.pkg.id}:${detailLoadState(state.loadingPackage, state.packageDetail, state.packageError)}`;
+    case "solo":
+      return `solo:${selection.session.id}:${detailLoadState(state.loadingSolo, state.soloDetail, state.soloError)}`;
+  }
+}
+
+function detailLoadState(loading: boolean, payload: unknown, error: string | null) {
+  if (error) return "error";
+  if (payload) return "loaded";
+  return loading ? "loading" : "summary";
 }
 
 function RequestDetailContent({ detail, onSelectGuidance }: { detail: WorkRequestDetail; onSelectGuidance: (item: GuidanceItem) => void }) {
@@ -4677,7 +4822,10 @@ function PackageDetailContent({
               ["Parent", pkg.parent_id || selection.slice?.work_request_id || "Not linked"],
               ["Branch", pkg.metadata?.branch?.branch || pkg.branch_pattern || "Not recorded"],
               ["PR", packagePrLabel(pkg) || pkg.metadata?.pr?.url || "Not attached"],
-              ["Review", packageReviewSignal(pkg)?.value || "Not recorded"],
+              [
+                "Review",
+                packageReviewSignal(pkg)?.value || (pkg.status === "reviewing" ? "Reviewing" : "Not recorded"),
+              ],
               ["Artifacts", String(summary?.artifact_count ?? pkg.artifact_count ?? 0)],
               ["Findings", String(summary?.finding_count ?? pkg.finding_count ?? 0)],
             ]}
@@ -5232,7 +5380,9 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function EmptyPanel({ title, compact = false }: { title: string; compact?: boolean }) {
   return (
-    <div className={`flex items-center justify-center rounded-lg border border-dashed bg-muted/30 text-sm text-muted-foreground ${compact ? "min-h-[96px]" : "min-h-[180px]"}`}>
+    <div
+      className={`dashboard-glass-surface flex items-center justify-center rounded-lg border border-dashed bg-muted/30 text-sm text-muted-foreground ${compact ? "min-h-[96px]" : "min-h-[180px]"}`}
+    >
       {title}
     </div>
   );

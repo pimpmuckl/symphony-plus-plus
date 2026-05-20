@@ -149,6 +149,10 @@ defmodule Mix.Tasks.Sympp.DemoLedgerTest do
 
         review = Enum.find(cards, &(&1.id == "SYMPP-DEMO-WP-REVIEW"))
 
+        assert get_in(review.metadata, [:review_progress, "profile"]) == "normal"
+        assert get_in(review.metadata, [:review_progress, "step_current"]) == 1
+        assert get_in(review.metadata, [:review_progress, "step_total"]) == 3
+
         assert get_in(review.metadata, [:review_package, "reviews"]) == [
                  %{"lane" => "normal", "verdict" => "green"}
                ]

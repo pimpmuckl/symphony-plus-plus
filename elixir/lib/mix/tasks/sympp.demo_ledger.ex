@@ -599,7 +599,7 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
       {"SYMPP-DEMO-WP-ARCH-READY",
        %{
          plan: [{"Review suite green", "done"}, {"Architect merge gate", "pending"}],
-         progress: [{"Ready for architect merge", "ready_for_architect_merge", %{"review_t2" => "green"}}],
+         progress: [{"Ready for architect merge", "ready_for_architect_merge", %{"review_normal" => "green"}}],
          findings: [{"Architect signoff is the remaining gate", "info"}],
          artifacts: [{"Merge checklist", "implementation_docs_symphplusplus/templates/WORKFLOW.symfony_pp.md"}]
        }},
