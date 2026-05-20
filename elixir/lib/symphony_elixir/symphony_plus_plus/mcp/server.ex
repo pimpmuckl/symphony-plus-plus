@@ -3767,7 +3767,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     required_review_lanes = required_review_lanes(state.work_package)
 
     with {:ok, reasons} <- readiness_failure_reasons(repo, state, required_review_lanes) do
-      reasons = Enum.reject(reasons, &(Map.get(&1, "gate") == "status_ci_waiting"))
+      reasons = Enum.reject(reasons, &(Map.get(&1, "gate") in ["status_ci_waiting", "status_reviewing"]))
       missing = missing_readiness_gates(reasons)
 
       if missing == [], do: :ok, else: {:error, {:readiness_failed, missing, reasons}}
@@ -5443,9 +5443,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       with :ok <- PlanningService.require_valid_assignment(repo, session.assignment),
            :ok <- lock_work_package(repo, Session.work_package_id(session)),
            {:ok, state} <- PlanningRepository.get_state(repo, Session.work_package_id(session)),
-           :ok <- readiness_gates(repo, state) do
-        ready_status = terminal_ready_status(state.work_package)
-        LifecycleService.transition(repo, state.work_package, ready_status, actor(session))
+           :ok <- readiness_gates(repo, state),
+           ready_status = StateMachine.terminal_readiness_status(state.work_package),
+           :ok <- StateMachine.validate_ready_transition(state.work_package, ready_status, actor(session)) do
+        WorkPackageRepository.update_status(repo, state.work_package.id, state.work_package.status, ready_status)
       end
     end)
   end
@@ -7228,7 +7229,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp base_readiness_failure_reasons(state, required_review_lanes) do
     [
-      {state.work_package.status != "ci_waiting", "status_ci_waiting"},
+      {readiness_status_missing?(state.work_package), readiness_status_gate(state.work_package)},
       {active_blocker?(state.progress_events), "no_active_blockers"},
       {incomplete_plan?(state), "plan_complete"},
       {acceptance_missing?(state), "acceptance_criteria_met"},
@@ -7312,6 +7313,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp readiness_failure_message("status_ci_waiting"), do: "Work package must be in ci_waiting before mark_ready."
+  defp readiness_failure_message("status_reviewing"), do: "Work package must be in reviewing before mark_ready when CI is not required."
   defp readiness_failure_message("no_active_blockers"), do: "Active blockers must be resolved before mark_ready."
   defp readiness_failure_message("plan_complete"), do: "Required package plan nodes must be complete."
   defp readiness_failure_message("acceptance_criteria_met"), do: "Acceptance criteria evidence is missing."
@@ -7647,6 +7649,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     plan_required?(state.work_package) and (state.plan_nodes == [] or Enum.any?(state.plan_nodes, &(&1.status == "pending")))
   end
 
+  defp readiness_status_missing?(%WorkPackage{} = work_package) do
+    if ci_waiting_required?(work_package) do
+      work_package.status != "ci_waiting"
+    else
+      work_package.status not in ["reviewing", "ci_waiting"]
+    end
+  end
+
+  defp readiness_status_gate(%WorkPackage{} = work_package), do: if(ci_waiting_required?(work_package), do: "status_ci_waiting", else: "status_reviewing")
+  defp ci_waiting_required?(%WorkPackage{} = work_package), do: required_gate?(work_package, "ci_waiting")
+
   defp plan_required?(%WorkPackage{} = work_package) do
     case LifecycleService.policy_for(work_package) do
       {:ok, policy} -> get_in(policy, [:constraints, :planning_depth]) == "package"
@@ -7897,9 +7910,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp payload_type?(%ProgressEvent{}, _type, _source_tool), do: false
-
-  defp terminal_ready_status(%WorkPackage{kind: "phase_child"}), do: "ready_for_architect_merge"
-  defp terminal_ready_status(%WorkPackage{}), do: "ready_for_human_merge"
 
   defp solo_error(:not_found, tool), do: {:error, -32_004, "Not found", %{"tool" => tool, "reason" => "not_found"}}
   defp solo_error(reason, tool), do: worker_error(reason, tool)

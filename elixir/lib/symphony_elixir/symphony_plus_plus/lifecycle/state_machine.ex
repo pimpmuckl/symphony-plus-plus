@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
   @moduledoc false
 
+  alias SymphonyElixir.SymphonyPlusPlus.Policies.Templates
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
   @worker_capability "worker:lifecycle.transition"
@@ -50,12 +51,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
           | :worker_cannot_advance_phase_state
           | :actor_scope_mismatch
           | :missing_lifecycle_capability
+          | :unknown_policy_template
 
   @spec validate_transition(WorkPackage.t(), String.t(), actor()) :: :ok | {:error, error()}
   def validate_transition(%WorkPackage{} = work_package, next_status, actor)
       when is_binary(next_status) and is_map(actor) do
     case validate_lifecycle_shape(work_package, next_status) do
       :ok -> validate_allowed_transition(work_package, next_status, actor)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @spec validate_ready_transition(WorkPackage.t(), String.t(), actor()) :: :ok | {:error, error()}
+  def validate_ready_transition(%WorkPackage{} = work_package, next_status, actor)
+      when is_binary(next_status) and is_map(actor) do
+    case validate_lifecycle_shape(work_package, next_status) do
+      :ok -> validate_mark_ready_transition(work_package, next_status, actor)
       {:error, _reason} = error -> error
     end
   end
@@ -88,6 +99,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine do
       {:error, :invalid_transition}
     end
   end
+
+  defp validate_mark_ready_transition(%WorkPackage{} = work_package, next_status, actor) do
+    with :ok <- validate_mark_ready_status(work_package, next_status),
+         :ok <- validate_mark_ready_policy(work_package) do
+      validate_actor(work_package, next_status, actor)
+    end
+  end
+
+  defp validate_mark_ready_status(%WorkPackage{} = work_package, next_status) do
+    cond do
+      next_status != terminal_readiness_status(work_package) -> {:error, :invalid_transition}
+      work_package.status not in ["reviewing", "ci_waiting"] -> {:error, :invalid_transition}
+      true -> :ok
+    end
+  end
+
+  defp validate_mark_ready_policy(%WorkPackage{status: "ci_waiting"}), do: :ok
+
+  defp validate_mark_ready_policy(%WorkPackage{} = work_package) do
+    case Templates.expand(policy_key(work_package)) do
+      {:ok, policy} -> if "ci_waiting" in Map.get(policy, :required_gates, []), do: {:error, :invalid_transition}, else: :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp policy_key(%WorkPackage{policy_template: policy_template}) when is_binary(policy_template) and policy_template != "" do
+    policy_template
+  end
+
+  defp policy_key(%WorkPackage{kind: kind}), do: kind
 
   defp validate_actor(%WorkPackage{}, next_status, actor) when next_status in ["merged", "merged_into_phase"] do
     case role(actor) do

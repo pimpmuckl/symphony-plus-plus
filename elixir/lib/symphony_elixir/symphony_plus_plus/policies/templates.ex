@@ -1,6 +1,22 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
   @moduledoc false
 
+  @mcp_policy %{
+    template: "worker_package",
+    constraints: %{
+      expiry_seconds: nil,
+      planning_depth: "package",
+      terminal_readiness_status: "ready_for_human_merge"
+    },
+    required_gates: ["package_acceptance", "focused_tests", "review_normal", "human_merge"],
+    readiness_requirements: ["acceptance_criteria_met", "tests_passed", "review_normal_green"],
+    review_suite: %{required: ["normal"], optional: ["deep"]}
+  }
+
+  @mcp_ci_required_policy @mcp_policy
+                          |> Map.put(:work_package_kind, "mcp")
+                          |> Map.update!(:required_gates, &(&1 ++ ["ci_waiting"]))
+                          |> Map.update!(:readiness_requirements, &(&1 ++ ["ci_waiting"]))
   @templates %{
     "quick_fix" => %{
       template: "quick_fix",
@@ -35,17 +51,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Policies.Templates do
       readiness_requirements: ["acceptance_criteria_met", "tests_passed", "review_normal_green"],
       review_suite: %{required: ["normal"], optional: ["deep"]}
     },
-    "mcp" => %{
-      template: "worker_package",
-      constraints: %{
-        expiry_seconds: nil,
-        planning_depth: "package",
-        terminal_readiness_status: "ready_for_human_merge"
-      },
-      required_gates: ["package_acceptance", "focused_tests", "review_normal", "human_merge"],
-      readiness_requirements: ["acceptance_criteria_met", "tests_passed", "review_normal_green"],
-      review_suite: %{required: ["normal"], optional: ["deep"]}
-    },
+    "mcp" => @mcp_policy,
+    "mcp_ci_required" => @mcp_ci_required_policy,
     "mcp_current_pr_state" => %{
       work_package_kind: "mcp",
       template: "worker_package",

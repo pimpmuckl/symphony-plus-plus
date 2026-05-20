@@ -298,6 +298,12 @@ such as progress, findings, blockers, branch/PR metadata, scope requests, and
 review packages reject new writes for the ready package while preserving
 idempotent replay behavior for already-recorded operations.
 
+CI is policy-controlled. A package policy requires the lifecycle `ci_waiting`
+step only when its `required_gates` includes `ci_waiting`; otherwise
+`mark_ready` may move directly from `reviewing` to the terminal ready status
+after all non-CI readiness gates pass. The `mcp_ci_required` policy template is
+the explicit MCP policy variant for packages that must preserve the CI wait.
+
 For non-merge-gated policies such as `quick_fix`, workers may satisfy focused
 test and review-profile readiness with ordinary generic `append_progress`
 statuses: `tests_passed` and `review_<profile>_green`, such as
