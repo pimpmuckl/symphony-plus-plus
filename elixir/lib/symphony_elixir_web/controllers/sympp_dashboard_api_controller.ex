@@ -17,11 +17,11 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.TrackerAdapter
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
-  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixirWeb.Endpoint
 
   @type auth_context :: {:grant, AccessGrant.t()}
@@ -587,7 +587,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @spec operator_dispatch_planned_slice(Conn.t(), map()) :: Conn.t()
   def operator_dispatch_planned_slice(conn, %{"work_request_id" => work_request_id, "planned_slice_id" => planned_slice_id}) do
     send_local_operator_response(conn, fn repo ->
-      with {:ok, dispatch} <- PlannedSliceDispatch.dispatch(repo, work_request_id, planned_slice_id, dispatch_handoff_opts(repo)),
+      with {:ok, dispatch} <-
+             PlannedSliceDispatch.dispatch(repo, work_request_id, planned_slice_id, dispatch_handoff_opts(repo)),
            {:ok, dashboard} <- operator_dashboard_payload(repo) do
         json(conn, %{dispatch: PlannedSliceDispatch.response_payload(dispatch), dashboard: dashboard})
       end
@@ -1674,8 +1675,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp changeset_error_message(%Ecto.Changeset{} = changeset) do
     changeset
     |> Ecto.Changeset.traverse_errors(fn {message, _opts} -> message end)
-    |> Enum.map(fn {field, messages} -> "#{field}: #{Enum.join(messages, ", ")}" end)
-    |> Enum.join("; ")
+    |> Enum.map_join("; ", fn {field, messages} -> "#{field}: #{Enum.join(messages, ", ")}" end)
     |> case do
       "" -> "Request did not pass validation"
       message -> message
