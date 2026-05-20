@@ -48,6 +48,10 @@ already on `PATH`:
 make -C elixir all
 ```
 
+The aggregate gate is quiet by default and writes per-step logs under
+`elixir/_build/make-logs/`. Use `VERBOSE=1` when you need the full Mix output
+streamed to the console.
+
 If the Elixir toolchain is managed by `mise`, run the validated command from
 the Elixir project:
 
