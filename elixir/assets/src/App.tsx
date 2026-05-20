@@ -76,6 +76,7 @@ const DASHBOARD_THEME_KEY = "symphony-plus-plus.dashboard.theme.v1";
 const DASHBOARD_DEBUG_ANIMATIONS_KEY = "symphony-plus-plus.dashboard.debug-animations";
 const ALIGNED_ROW_MIN_HEIGHT = 112;
 const BOARD_WIRE_TRACK_CLEARANCE = 40;
+const BOARD_LAYOUT_MOTION_MS = 360;
 const DASHBOARD_POLL_INTERVAL_MS = 7000;
 const LOCAL_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 const TOP_PANEL_ORDER: TopPanelKey[] = ["guidance", "blockers", "finished"];
@@ -2098,6 +2099,32 @@ function RepoWorkstream({
     () => repo.packages.filter((pkg) => !packageLinkedToRequest(pkg, requestDetails)),
     [repo.packages, requestDetails],
   );
+  const [openMotion, setOpenMotion] = useState(false);
+  const previousOpenRef = useRef(open);
+  const openMotionTimerRef = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (openMotionTimerRef.current !== null) {
+        window.clearTimeout(openMotionTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  useLayoutEffect(() => {
+    if (open && !previousOpenRef.current) {
+      if (openMotionTimerRef.current !== null) {
+        window.clearTimeout(openMotionTimerRef.current);
+      }
+      setOpenMotion(true);
+      openMotionTimerRef.current = window.setTimeout(() => {
+        setOpenMotion(false);
+        openMotionTimerRef.current = null;
+      }, BOARD_LAYOUT_MOTION_MS + 120);
+    }
+    previousOpenRef.current = open;
+  }, [open]);
 
   useEffect(() => {
     writeStoredRepoWorkstreamOpen(stateKey, open);
@@ -2128,7 +2155,7 @@ function RepoWorkstream({
           </div>
         </CardHeader>
         <CollapsibleContent className="collapsible-content">
-          <CardContent className="p-3 sm:p-4">
+          <CardContent className="p-3 sm:p-4" data-board-open-motion={openMotion ? "open" : "idle"}>
             <WorkstreamBoard
               repoDetails={repoDetails}
               packages={repo.packages}
@@ -2404,6 +2431,7 @@ function WorkstreamBoard({
   layoutMode: WorkstreamLayoutMode;
   updateAnimations: DashboardUpdateAnimations;
 }) {
+  const shellRef = useRef<HTMLDivElement | null>(null);
   const boardRef = useRef<HTMLDivElement | null>(null);
   const sortedDetails = useMemo(() => sortWorkRequestDetails(repoDetails), [repoDetails]);
   const requested = sortedDetails;
@@ -2437,13 +2465,15 @@ function WorkstreamBoard({
   const rowTemplate = useAlignedRowTemplate(boardRef, alignedRows, layoutMode);
   const wires = useMemo(() => workstreamWires(sortedDetails, packages, activeBlockingEdges), [activeBlockingEdges, sortedDetails, packages]);
   const { paths: wirePaths, size: wireSize } = useBoardWirePaths(boardRef, wires, layoutMode);
+  const layoutMotion = useBoardLayoutMotion(shellRef, boardRef, layoutMode);
 
   return (
-    <div className="workstream-board-shell">
+    <div ref={shellRef} className="workstream-board-shell">
       <div
         ref={boardRef}
         className={cn("jira-board workstream-board", layoutMode === "aligned" && "workstream-board-aligned")}
         data-layout={layoutMode}
+        data-board-motion={layoutMotion ? "layout" : "idle"}
       >
         <BoardWireLayer paths={wirePaths} width={wireSize.width} height={wireSize.height} />
         {layoutMode === "aligned" ? (
@@ -2854,6 +2884,96 @@ function BoardWireLayer({ paths, width, height }: { paths: BoardWirePath[]; widt
       </svg>
     </>
   );
+}
+
+function useBoardLayoutMotion(
+  shellRef: React.RefObject<HTMLDivElement | null>,
+  boardRef: React.RefObject<HTMLDivElement | null>,
+  motionKey: string,
+) {
+  const [active, setActive] = useState(false);
+  const previousKeyRef = useRef(motionKey);
+  const lastHeightRef = useRef<number | null>(null);
+  const timersRef = useRef<number[]>([]);
+
+  useEffect(
+    () => () => {
+      timersRef.current.forEach((timer) => window.clearTimeout(timer));
+      timersRef.current = [];
+    },
+    [],
+  );
+
+  useLayoutEffect(() => {
+    const board = boardRef.current;
+    if (!board || active || previousKeyRef.current !== motionKey) return;
+    lastHeightRef.current = measureBoardHeight(board);
+  });
+
+  useLayoutEffect(() => {
+    const shell = shellRef.current;
+    const board = boardRef.current;
+    if (!shell || !board) return;
+
+    const measuredHeight = measureBoardHeight(board);
+    if (lastHeightRef.current === null) {
+      lastHeightRef.current = measuredHeight;
+      previousKeyRef.current = motionKey;
+      return;
+    }
+
+    if (previousKeyRef.current === motionKey) {
+      lastHeightRef.current = measuredHeight;
+      return;
+    }
+
+    timersRef.current.forEach((timer) => window.clearTimeout(timer));
+    timersRef.current = [];
+
+    const startHeight = lastHeightRef.current;
+    previousKeyRef.current = motionKey;
+    lastHeightRef.current = measuredHeight;
+    setActive(true);
+
+    shell.style.height = `${startHeight}px`;
+    shell.style.overflow = "clip";
+    shell.style.transition = `height ${BOARD_LAYOUT_MOTION_MS}ms cubic-bezier(0.16, 1, 0.3, 1)`;
+    shell.style.willChange = "height";
+
+    const syncHeight = () => {
+      const nextHeight = measureBoardHeight(board);
+      if (nextHeight <= 0) return;
+      lastHeightRef.current = nextHeight;
+      shell.style.height = `${nextHeight}px`;
+    };
+
+    const observer = new ResizeObserver(syncHeight);
+    observer.observe(board);
+
+    void shell.offsetHeight;
+    syncHeight();
+
+    const settleTimer = window.setTimeout(() => {
+      observer.disconnect();
+      lastHeightRef.current = measureBoardHeight(board);
+      shell.style.height = "";
+      shell.style.overflow = "";
+      shell.style.transition = "";
+      shell.style.willChange = "";
+      setActive(false);
+    }, BOARD_LAYOUT_MOTION_MS + 90);
+    timersRef.current.push(settleTimer);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [boardRef, motionKey, shellRef]);
+
+  return active;
+}
+
+function measureBoardHeight(board: HTMLDivElement) {
+  return Math.max(0, Math.ceil(board.getBoundingClientRect().height));
 }
 
 function diamondPath(x: number, y: number, radius: number) {
