@@ -1927,7 +1927,7 @@ function GuidancePreviewCard({
           <p className="mt-1 line-clamp-3 text-sm text-muted-foreground">{item.prompt?.details || item.detail}</p>
         </div>
         <AnimatedBadge
-          label={item.source === "guidance" ? "Guidance" : "Clarify"}
+          label={item.source === "guidance" ? "Guidance Needed" : "Clarify"}
           variant={item.source === "guidance" ? "danger" : "warning"}
         />
       </div>
@@ -3666,9 +3666,10 @@ function SliceCard({
   motion?: UpdateMotion;
 }) {
   const tone = sliceCardTone(slice, pkg, lane);
-  const detail = slice.goal || pkg?.kind || slice.work_package_kind;
   const operational = sliceOperationalState(slice, pkg);
   const status = slice.work_package_status || slice.status;
+  const detail = sliceCardSubtitle(slice, pkg, operational, status);
+  const blockerSignal = cardBlockerSignal(pkg, operational);
 
   return (
     <div
@@ -3688,8 +3689,52 @@ function SliceCard({
         />
       </div>
       {detail ? <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{detail}</p> : null}
+      {blockerSignal ? (
+        <CardSignal
+          className="mt-3"
+          label={blockerSignal.label}
+          value={blockerSignal.value}
+          tone={blockerSignal.tone}
+          onClick={onSelectCard ? (event) => {
+            event.stopPropagation();
+            onSelectCard();
+          } : undefined}
+          ariaLabel={`Open blockers for ${slice.title || pkg?.title || slice.id}`}
+        />
+      ) : null}
     </div>
   );
+}
+
+function sliceCardSubtitle(
+  slice: PlannedSlice,
+  pkg: WorkPackageCard | undefined,
+  operational: WorkPackageCard["operational_state"],
+  status?: string | null,
+) {
+  if (quietTerminalCard(operational, status, pkg?.status)) return null;
+  return slice.goal || pkg?.kind || slice.work_package_kind;
+}
+
+function quietTerminalCard(operational?: WorkPackageCard["operational_state"], ...statuses: Array<string | null | undefined>) {
+  const keys = [operational?.key, ...statuses].filter(Boolean);
+  return keys.some((key) => ["blocked", "merged", "merged_into_phase", "closed"].includes(key || ""));
+}
+
+function cardBlockerSignal(pkg?: WorkPackageCard, operational?: WorkPackageCard["operational_state"]): { label: string; value: string; tone: SignalTone } | null {
+  const blockerCount = pkg?.active_blocker_count || 0;
+  const hasBlockerAttention = (operational?.attention_items || []).some(operationalAttentionIsBlocker);
+
+  if (blockerCount <= 0 && !hasBlockerAttention) return null;
+
+  const count = blockerCount || 1;
+  return { label: "Blockers", value: `${count} ${plural("blocker", count)}`, tone: "danger" };
+}
+
+function operationalAttentionIsBlocker(attention: OperationalAttention) {
+  const key = (attention.key || "").toLowerCase();
+  const label = (attention.label || "").toLowerCase();
+  return key.includes("blocker") || label.includes("blocker");
 }
 
 function PackageCard({
@@ -3755,7 +3800,7 @@ function CardSignal({
     "min-w-0 max-w-full w-full rounded-md border px-2.5 py-2 text-xs",
     toneClasses[tone],
     onClick &&
-      "cursor-pointer text-left transition-[border-color,box-shadow,transform] duration-150 ease-out hover:-translate-y-0.5 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 active:translate-y-0",
+      "card-signal-action cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2",
     className,
   );
   const content = (

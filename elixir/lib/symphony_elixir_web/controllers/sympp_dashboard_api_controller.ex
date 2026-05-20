@@ -828,7 +828,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp dashboard_ledger_database(repo) do
-    configured_ledger_database() || live_ledger_database(repo)
+    configured_ledger_database() || live_ledger_database(repo) || Repo.database_path_if_present()
   end
 
   defp live_ledger_database(repo) do
