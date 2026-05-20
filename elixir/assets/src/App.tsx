@@ -17,7 +17,7 @@ import {
   Sun,
 } from "lucide-react";
 import type * as React from "react";
-import { Children, FormEvent, isValidElement, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Children, FormEvent, isValidElement, useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -342,6 +342,65 @@ type NewRequestForm = {
 
 type BadgeTone = "default" | "secondary" | "outline" | "success" | "warning" | "danger" | "info" | "ready";
 
+type AppState = {
+  dashboard: DashboardPayload | null;
+  loading: boolean;
+  refreshing: boolean;
+  error: string | null;
+  workspaceTab: WorkspaceTab;
+  workstreamLayout: WorkstreamLayoutMode;
+  theme: DashboardTheme;
+};
+
+type AppStateAction = {
+  type: "patch";
+  state: Partial<AppState>;
+};
+
+function createInitialAppState(): AppState {
+  return {
+    dashboard: null,
+    loading: true,
+    refreshing: false,
+    error: null,
+    workspaceTab: readStoredWorkspaceTab(),
+    workstreamLayout: readStoredWorkstreamLayout(),
+    theme: readStoredTheme(),
+  };
+}
+
+function appStateReducer(state: AppState, action: AppStateAction): AppState {
+  return { ...state, ...action.state };
+}
+
+type AppDialogState = {
+  selectedGuidance: GuidanceItem | null;
+  selectedCardDetail: CardDetailSelection | null;
+  newRequestOpen: boolean;
+};
+
+type AppDialogAction =
+  | { type: "guidance"; selectedGuidance: GuidanceItem | null }
+  | { type: "cardDetail"; selectedCardDetail: CardDetailSelection | null }
+  | { type: "newRequest"; open: boolean };
+
+const initialAppDialogState: AppDialogState = {
+  selectedGuidance: null,
+  selectedCardDetail: null,
+  newRequestOpen: false,
+};
+
+function appDialogReducer(state: AppDialogState, action: AppDialogAction): AppDialogState {
+  switch (action.type) {
+    case "guidance":
+      return { ...state, selectedGuidance: action.selectedGuidance };
+    case "cardDetail":
+      return { ...state, selectedCardDetail: action.selectedCardDetail };
+    case "newRequest":
+      return { ...state, newRequestOpen: action.open };
+  }
+}
+
 const initialRequestForm: NewRequestForm = {
   title: "",
   repo: "symphony-plus-plus",
@@ -352,20 +411,40 @@ const initialRequestForm: NewRequestForm = {
 };
 
 export default function App() {
-  const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [selectedGuidance, setSelectedGuidance] = useState<GuidanceItem | null>(null);
-  const [selectedCardDetail, setSelectedCardDetail] = useState<CardDetailSelection | null>(null);
-  const [newRequestOpen, setNewRequestOpen] = useState(false);
-  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>(readStoredWorkspaceTab);
-  const [workstreamLayout, setWorkstreamLayout] = useState<WorkstreamLayoutMode>(readStoredWorkstreamLayout);
-  const [theme, setTheme] = useState<DashboardTheme>(readStoredTheme);
-  const [showUpdateSimulationControls] = useState(shouldShowUpdateSimulationControls);
+  const [appState, dispatchApp] = useReducer(appStateReducer, null, createInitialAppState);
+  const { dashboard, error, loading, refreshing, theme, workspaceTab, workstreamLayout } = appState;
+  const [dialogState, dispatchDialog] = useReducer(appDialogReducer, initialAppDialogState);
+  const showUpdateSimulationControls = useMemo(shouldShowUpdateSimulationControls, []);
   const loadInFlightRef = useRef(false);
   const prSyncInFlightRef = useRef(false);
   const lastPrSyncAtRef = useRef(Date.now());
+  const setDashboard = useCallback((nextDashboard: DashboardPayload | null) => {
+    dispatchApp({ type: "patch", state: { dashboard: nextDashboard } });
+  }, []);
+  const setLoading = useCallback((nextLoading: boolean) => {
+    dispatchApp({ type: "patch", state: { loading: nextLoading } });
+  }, []);
+  const setRefreshing = useCallback((nextRefreshing: boolean) => {
+    dispatchApp({ type: "patch", state: { refreshing: nextRefreshing } });
+  }, []);
+  const setError = useCallback((nextError: string | null) => {
+    dispatchApp({ type: "patch", state: { error: nextError } });
+  }, []);
+  const setWorkspaceTab = useCallback((nextWorkspaceTab: WorkspaceTab) => {
+    dispatchApp({ type: "patch", state: { workspaceTab: nextWorkspaceTab } });
+  }, []);
+  const setWorkstreamLayout = useCallback((nextWorkstreamLayout: WorkstreamLayoutMode) => {
+    dispatchApp({ type: "patch", state: { workstreamLayout: nextWorkstreamLayout } });
+  }, []);
+  const setSelectedGuidance = useCallback((selectedGuidance: GuidanceItem | null) => {
+    dispatchDialog({ type: "guidance", selectedGuidance });
+  }, []);
+  const setSelectedCardDetail = useCallback((selectedCardDetail: CardDetailSelection | null) => {
+    dispatchDialog({ type: "cardDetail", selectedCardDetail });
+  }, []);
+  const setNewRequestOpen = useCallback((open: boolean) => {
+    dispatchDialog({ type: "newRequest", open });
+  }, []);
 
   const applyDashboardResponse = useCallback(
     async (response: Response, fallbackMessage: string, selectDashboard: (payload: any) => DashboardPayload = (payload) => payload) => {
@@ -462,12 +541,10 @@ export default function App() {
   }, [theme]);
 
   const toggleTheme = useCallback(() => {
-    setTheme((currentTheme) => {
-      const nextTheme = currentTheme === "dark" ? "light" : "dark";
-      writeStoredTheme(nextTheme);
-      return nextTheme;
-    });
-  }, []);
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    writeStoredTheme(nextTheme);
+    dispatchApp({ type: "patch", state: { theme: nextTheme } });
+  }, [theme]);
 
   const packages = useMemo(() => allPackages(dashboard), [dashboard]);
   const requests = dashboard?.work_requests?.work_requests ?? [];
@@ -492,6 +569,23 @@ export default function App() {
     ready: dashboard !== null,
     soloSessions,
   });
+  const workspacePanes = useMemo<Record<WorkspaceTab, React.ReactNode>>(
+    () => ({
+      workstreams: (
+        <WorkstreamsPane
+          repos={repos}
+          requestDetails={requestDetails}
+          activeBlockingEdges={dashboard?.active_blocking_edges ?? []}
+          onSelectGuidance={setSelectedGuidance}
+          onSelectCard={setSelectedCardDetail}
+          layoutMode={workstreamLayout}
+          updateAnimations={updateAnimations}
+        />
+      ),
+      solo: <SoloSessions sessions={soloSessions} onSelectCard={setSelectedCardDetail} updateAnimations={updateAnimations} />,
+    }),
+    [dashboard?.active_blocking_edges, repos, requestDetails, soloSessions, updateAnimations, workstreamLayout],
+  );
 
   if (loading) {
     return (
@@ -528,7 +622,7 @@ export default function App() {
                 Refresh
               </Button>
               <NewRequestDialog
-                open={newRequestOpen}
+                open={dialogState.newRequestOpen}
                 onOpenChange={setNewRequestOpen}
                 onCreated={(payload) => {
                   setDashboard(payload);
@@ -573,38 +667,12 @@ export default function App() {
               </TabsList>
               {workspaceTab === "workstreams" ? <WorkstreamLayoutToggle value={workstreamLayout} onChange={setWorkstreamLayout} /> : null}
             </div>
-            <WorkspaceTabCarousel
-              activeTab={workspaceTab}
-              renderTab={(tab) =>
-                tab === "workstreams" ? (
-                  <div className="grid gap-5">
-                    {repos.length === 0 ? (
-                      <EmptyPanel title="No workstreams yet" />
-                    ) : (
-                      repos.map((repo) => (
-                        <RepoWorkstream
-                          key={repoWorkstreamStateKey(repo)}
-                          repo={repo}
-                          requestDetails={requestDetails}
-                          activeBlockingEdges={dashboard?.active_blocking_edges ?? []}
-                          onSelectGuidance={setSelectedGuidance}
-                          onSelectCard={setSelectedCardDetail}
-                          layoutMode={workstreamLayout}
-                          updateAnimations={updateAnimations}
-                        />
-                      ))
-                    )}
-                  </div>
-                ) : (
-                  <SoloSessions sessions={soloSessions} onSelectCard={setSelectedCardDetail} updateAnimations={updateAnimations} />
-                )
-              }
-            />
+            <WorkspaceTabCarousel activeTab={workspaceTab} paneContent={workspacePanes} />
           </Tabs>
         </div>
 
         <GuidanceDialog
-          item={selectedGuidance}
+          item={dialogState.selectedGuidance}
           onOpenChange={(open) => {
             if (!open) setSelectedGuidance(null);
           }}
@@ -614,7 +682,7 @@ export default function App() {
           }}
         />
         <CardDetailDialog
-          selection={selectedCardDetail}
+          selection={dialogState.selectedCardDetail}
           onOpenChange={(open) => {
             if (!open) setSelectedCardDetail(null);
           }}
@@ -1104,18 +1172,91 @@ function useFlipList(layoutKey: string) {
   return containerRef;
 }
 
+function WorkstreamsPane({
+  repos,
+  requestDetails,
+  activeBlockingEdges,
+  onSelectGuidance,
+  onSelectCard,
+  layoutMode,
+  updateAnimations,
+}: {
+  repos: RepoSummary[];
+  requestDetails: WorkRequestDetail[];
+  activeBlockingEdges: ActiveBlockingEdge[];
+  onSelectGuidance: (item: GuidanceItem) => void;
+  onSelectCard: CardDetailSelect;
+  layoutMode: WorkstreamLayoutMode;
+  updateAnimations: DashboardUpdateAnimations;
+}) {
+  if (repos.length === 0) return <EmptyPanel title="No workstreams yet" />;
+
+  return (
+    <div className="grid gap-5">
+      {repos.map((repo) => (
+        <RepoWorkstream
+          key={repoWorkstreamStateKey(repo)}
+          repo={repo}
+          requestDetails={requestDetails}
+          activeBlockingEdges={activeBlockingEdges}
+          onSelectGuidance={onSelectGuidance}
+          onSelectCard={onSelectCard}
+          layoutMode={layoutMode}
+          updateAnimations={updateAnimations}
+        />
+      ))}
+    </div>
+  );
+}
+
+type WorkspaceTabCarouselState = {
+  visibleTab: WorkspaceTab;
+  previousTab: WorkspaceTab | null;
+  phase: WorkspaceTabPhase;
+  direction: TopPanelDirection;
+  height: number | "auto";
+};
+
+type WorkspaceTabCarouselAction =
+  | { type: "start"; from: WorkspaceTab; to: WorkspaceTab; height: number }
+  | { type: "height"; height: number | "auto" }
+  | { type: "finish" };
+
+function initialWorkspaceTabCarouselState(activeTab: WorkspaceTab): WorkspaceTabCarouselState {
+  return {
+    visibleTab: activeTab,
+    previousTab: null,
+    phase: "idle",
+    direction: "forward",
+    height: "auto",
+  };
+}
+
+function workspaceTabCarouselReducer(state: WorkspaceTabCarouselState, action: WorkspaceTabCarouselAction): WorkspaceTabCarouselState {
+  switch (action.type) {
+    case "start":
+      return {
+        visibleTab: action.to,
+        previousTab: action.from,
+        phase: "swapping",
+        direction: workspaceTabDirection(action.from, action.to),
+        height: action.height,
+      };
+    case "height":
+      return { ...state, height: action.height };
+    case "finish":
+      return { ...state, previousTab: null, phase: "idle", height: "auto" };
+  }
+}
+
 function WorkspaceTabCarousel({
   activeTab,
-  renderTab,
+  paneContent,
 }: {
   activeTab: WorkspaceTab;
-  renderTab: (tab: WorkspaceTab) => React.ReactNode;
+  paneContent: Record<WorkspaceTab, React.ReactNode>;
 }) {
-  const [visibleTab, setVisibleTab] = useState<WorkspaceTab>(activeTab);
-  const [previousTab, setPreviousTab] = useState<WorkspaceTab | null>(null);
-  const [phase, setPhase] = useState<WorkspaceTabPhase>("idle");
-  const [direction, setDirection] = useState<TopPanelDirection>("forward");
-  const [height, setHeight] = useState<number | "auto">("auto");
+  const [state, dispatch] = useReducer(workspaceTabCarouselReducer, activeTab, initialWorkspaceTabCarouselState);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const visibleRef = useRef<HTMLDivElement | null>(null);
   const latestTabRef = useRef<WorkspaceTab>(activeTab);
@@ -1139,54 +1280,53 @@ function WorkspaceTabCarousel({
     latestTabRef.current = activeTab;
     transitionTokenRef.current += 1;
 
-    setDirection(workspaceTabDirection(oldTab, activeTab));
-    setPreviousTab(oldTab);
-    setVisibleTab(activeTab);
-    setPhase("swapping");
-    setHeight(measureElementHeight(visibleRef.current) || measureElementHeight(viewportRef.current));
+    dispatch({
+      type: "start",
+      from: oldTab,
+      to: activeTab,
+      height: measureElementHeight(visibleRef.current) || measureElementHeight(viewportRef.current),
+    });
   }, [activeTab]);
 
   useLayoutEffect(() => {
-    if (phase !== "swapping") return;
+    if (state.phase !== "swapping") return;
 
     const token = transitionTokenRef.current;
     const nextHeight = measureElementHeight(visibleRef.current);
 
     nextFrame(framesRef, () => {
       if (transitionTokenRef.current === token) {
-        setHeight(nextHeight);
+        dispatch({ type: "height", height: nextHeight });
       }
     });
 
     later(timersRef, WORKSPACE_TAB_SLIDE_MS, () => {
       if (transitionTokenRef.current !== token) return;
 
-      setPreviousTab(null);
-      setPhase("idle");
-      setHeight("auto");
+      dispatch({ type: "finish" });
     });
-  }, [phase, visibleTab]);
+  }, [state.phase, state.visibleTab]);
 
-  const showSwapping = phase === "swapping" && previousTab !== null;
+  const showSwapping = state.phase === "swapping" && state.previousTab !== null;
   const panes =
-    showSwapping && previousTab !== null
-      ? direction === "forward"
+    showSwapping && state.previousTab !== null
+      ? state.direction === "forward"
         ? [
-            { tab: previousTab, current: false },
-            { tab: visibleTab, current: true },
+            { tab: state.previousTab, current: false },
+            { tab: state.visibleTab, current: true },
           ]
         : [
-            { tab: visibleTab, current: true },
-            { tab: previousTab, current: false },
+            { tab: state.visibleTab, current: true },
+            { tab: state.previousTab, current: false },
           ]
-      : [{ tab: visibleTab, current: true }];
+      : [{ tab: state.visibleTab, current: true }];
   const viewportStyle = {
-    height: height === "auto" ? undefined : `${Math.max(height, 0)}px`,
+    height: state.height === "auto" ? undefined : `${Math.max(state.height, 0)}px`,
   } as React.CSSProperties;
 
   return (
-    <div ref={viewportRef} className="workspace-tab-viewport" data-phase={phase} style={viewportStyle}>
-      <div className="workspace-tab-track" data-direction={direction} data-phase={showSwapping ? "swapping" : "idle"}>
+    <div ref={viewportRef} className="workspace-tab-viewport" data-phase={state.phase} style={viewportStyle}>
+      <div className="workspace-tab-track" data-direction={state.direction} data-phase={showSwapping ? "swapping" : "idle"}>
         {panes.map(({ tab, current }) => (
           <div
             key={tab}
@@ -1195,7 +1335,7 @@ function WorkspaceTabCarousel({
             data-pane={current ? "current" : "previous"}
             aria-hidden={!current}
           >
-            <div className="workspace-tab-pane-inner">{renderTab(tab)}</div>
+            <div className="workspace-tab-pane-inner">{paneContent[tab]}</div>
           </div>
         ))}
       </div>
@@ -1220,68 +1360,6 @@ function StatusRail({
 }) {
   const [openPanel, setOpenPanel] = useState<TopPanelKey | null>(readStoredTopPanel);
   const selectCardFromPanel = useCallback((selection: CardDetailSelection) => onSelectCard(selection), [onSelectCard]);
-  const renderPanel = useCallback(
-    (panel: TopPanelKey, interactive = true) => {
-      if (panel === "guidance") {
-        return (
-          <TopTray title="Decisions and input needed to keep work moving">
-            {guidanceItems.length === 0 ? (
-              <EmptyPanel title="No human guidance needed" compact />
-            ) : (
-              <AnimatedTopGrid className="grid gap-3 xl:grid-cols-2">
-                {guidanceItems.slice(0, 6).map((item, index) => (
-                  <GuidancePreviewCard
-                    key={`${item.source}-${item.id}`}
-                    item={item}
-                    index={index}
-                    onSelect={onSelectGuidance}
-                    motion={updateAnimations.motionFor(guidanceUpdateKey(item))}
-                  />
-                ))}
-              </AnimatedTopGrid>
-            )}
-          </TopTray>
-        );
-      }
-
-      if (panel === "blockers") {
-        return (
-          <TopTray title="Blocked packages and dependency waits">
-            {blockerItems.length === 0 ? (
-              <EmptyPanel title="No active blockers" compact />
-            ) : (
-              <AnimatedTopGrid className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
-                {blockerItems.map((item, index) => (
-                  <BlockerPreviewCard
-                    key={item.id}
-                    item={item}
-                    index={index}
-                    onSelectCard={interactive ? () => selectCardFromPanel(item.selection) : undefined}
-                    motion={updateAnimations.motionFor(blockerUpdateKey(item))}
-                  />
-                ))}
-              </AnimatedTopGrid>
-            )}
-          </TopTray>
-        );
-      }
-
-      return (
-        <TopTray title="Recently finished requests, slices, and work packages">
-          {finishedHighlights.length === 0 ? (
-            <EmptyPanel title="Nothing finished yet" compact />
-          ) : (
-            <FinishedHighlightsBoard
-              items={finishedHighlights}
-              onSelectCard={interactive ? selectCardFromPanel : undefined}
-              updateAnimations={updateAnimations}
-            />
-          )}
-        </TopTray>
-      );
-    },
-    [blockerItems, finishedHighlights, guidanceItems, onSelectGuidance, selectCardFromPanel, updateAnimations],
-  );
 
   useEffect(() => {
     writeDashboardUiStateValue("topPanel", openPanel);
@@ -1322,30 +1400,154 @@ function StatusRail({
         />
       </div>
 
-      <TopPanelCarousel activePanel={openPanel} renderPanel={renderPanel} />
+      <TopPanelCarousel
+        activePanel={openPanel}
+        guidanceItems={guidanceItems}
+        blockerItems={blockerItems}
+        finishedHighlights={finishedHighlights}
+        onSelectGuidance={onSelectGuidance}
+        onSelectCard={selectCardFromPanel}
+        updateAnimations={updateAnimations}
+      />
     </section>
   );
 }
 
+type TopPanelContentProps = {
+  panel: TopPanelKey;
+  interactive?: boolean;
+  guidanceItems: GuidanceItem[];
+  blockerItems: BlockerItem[];
+  finishedHighlights: FinishedHighlight[];
+  onSelectGuidance: (item: GuidanceItem) => void;
+  onSelectCard: CardDetailSelect;
+  updateAnimations: DashboardUpdateAnimations;
+};
+
+function TopPanelContent({
+  panel,
+  interactive = true,
+  guidanceItems,
+  blockerItems,
+  finishedHighlights,
+  onSelectGuidance,
+  onSelectCard,
+  updateAnimations,
+}: TopPanelContentProps) {
+  if (panel === "guidance") {
+    return (
+      <TopTray title="Decisions and input needed to keep work moving">
+        {guidanceItems.length === 0 ? (
+          <EmptyPanel title="No human guidance needed" compact />
+        ) : (
+          <AnimatedTopGrid className="grid gap-3 xl:grid-cols-2">
+            {guidanceItems.slice(0, 6).map((item, index) => (
+              <GuidancePreviewCard
+                key={`${item.source}-${item.id}`}
+                item={item}
+                index={index}
+                onSelect={onSelectGuidance}
+                motion={updateAnimations.motionFor(guidanceUpdateKey(item))}
+              />
+            ))}
+          </AnimatedTopGrid>
+        )}
+      </TopTray>
+    );
+  }
+
+  if (panel === "blockers") {
+    return (
+      <TopTray title="Blocked packages and dependency waits">
+        {blockerItems.length === 0 ? (
+          <EmptyPanel title="No active blockers" compact />
+        ) : (
+          <AnimatedTopGrid className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
+            {blockerItems.map((item, index) => (
+              <BlockerPreviewCard
+                key={item.id}
+                item={item}
+                index={index}
+                onSelectCard={interactive ? () => onSelectCard(item.selection) : undefined}
+                motion={updateAnimations.motionFor(blockerUpdateKey(item))}
+              />
+            ))}
+          </AnimatedTopGrid>
+        )}
+      </TopTray>
+    );
+  }
+
+  return (
+    <TopTray title="Recently finished requests, slices, and work packages">
+      {finishedHighlights.length === 0 ? (
+        <EmptyPanel title="Nothing finished yet" compact />
+      ) : (
+        <FinishedHighlightsBoard
+          items={finishedHighlights}
+          onSelectCard={interactive ? onSelectCard : undefined}
+          updateAnimations={updateAnimations}
+        />
+      )}
+    </TopTray>
+  );
+}
+
+type TopPanelCarouselState = {
+  visiblePanel: TopPanelKey | null;
+  previousPanel: TopPanelKey | null;
+  phase: TopPanelPhase;
+  direction: TopPanelDirection;
+  height: number | "auto";
+  transitionHeights: { from: number; to: number };
+};
+
+type TopPanelCarouselAction =
+  | { type: "replace"; state: TopPanelCarouselState }
+  | { type: "patch"; state: Partial<TopPanelCarouselState> };
+
+function initialTopPanelCarouselState(activePanel: TopPanelKey | null): TopPanelCarouselState {
+  return {
+    visiblePanel: activePanel,
+    previousPanel: null,
+    phase: "idle",
+    direction: "forward",
+    height: activePanel ? "auto" : 0,
+    transitionHeights: { from: 0, to: 0 },
+  };
+}
+
+function topPanelCarouselReducer(state: TopPanelCarouselState, action: TopPanelCarouselAction): TopPanelCarouselState {
+  if (action.type === "replace") return action.state;
+  return { ...state, ...action.state };
+}
+
 function TopPanelCarousel({
   activePanel,
-  renderPanel,
-}: {
+  guidanceItems,
+  blockerItems,
+  finishedHighlights,
+  onSelectGuidance,
+  onSelectCard,
+  updateAnimations,
+}: Omit<TopPanelContentProps, "panel" | "interactive"> & {
   activePanel: TopPanelKey | null;
-  renderPanel: (panel: TopPanelKey, interactive?: boolean) => React.ReactNode;
 }) {
-  const [visiblePanel, setVisiblePanel] = useState<TopPanelKey | null>(activePanel);
-  const [previousPanel, setPreviousPanel] = useState<TopPanelKey | null>(null);
-  const [phase, setPhase] = useState<TopPanelPhase>("idle");
-  const [direction, setDirection] = useState<TopPanelDirection>("forward");
-  const [height, setHeight] = useState<number | "auto">(activePanel ? "auto" : 0);
-  const [transitionHeights, setTransitionHeights] = useState({ from: 0, to: 0 });
+  const [state, dispatch] = useReducer(topPanelCarouselReducer, activePanel, initialTopPanelCarouselState);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const visibleRef = useRef<HTMLDivElement | null>(null);
   const measureRef = useRef<HTMLDivElement | null>(null);
   const latestPanelRef = useRef<TopPanelKey | null>(activePanel);
   const timersRef = useRef<number[]>([]);
   const framesRef = useRef<number[]>([]);
+  const contentProps = {
+    blockerItems,
+    finishedHighlights,
+    guidanceItems,
+    onSelectCard,
+    onSelectGuidance,
+    updateAnimations,
+  };
 
   useEffect(
     () => () => {
@@ -1363,34 +1565,44 @@ function TopPanelCarousel({
     const oldHeight = measureElementHeight(visibleRef.current) || measureElementHeight(viewportRef.current);
     const newHeight = activePanel ? measureElementHeight(measureRef.current) : 0;
     const nextDirection = topPanelDirection(oldPanel, activePanel);
-
-    setDirection(nextDirection);
-    setTransitionHeights({ from: oldHeight, to: newHeight });
+    const transitionHeights = { from: oldHeight, to: newHeight };
 
     if (!oldPanel && activePanel) {
       latestPanelRef.current = activePanel;
-      setVisiblePanel(activePanel);
-      setPreviousPanel(null);
-      setPhase("opening");
-      setHeight(0);
-      nextFrame(framesRef, () => setHeight(newHeight));
+      dispatch({
+        type: "replace",
+        state: {
+          visiblePanel: activePanel,
+          previousPanel: null,
+          phase: "opening",
+          direction: nextDirection,
+          height: 0,
+          transitionHeights,
+        },
+      });
+      nextFrame(framesRef, () => dispatch({ type: "patch", state: { height: newHeight } }));
       later(timersRef, TOP_PANEL_SLIDE_MS, () => {
-        setPhase("idle");
-        setHeight("auto");
+        dispatch({ type: "patch", state: { phase: "idle", height: "auto" } });
       });
       return;
     }
 
     if (oldPanel && !activePanel) {
       latestPanelRef.current = null;
-      setVisiblePanel(oldPanel);
-      setPreviousPanel(null);
-      setPhase("closing");
-      setHeight(oldHeight);
-      nextFrame(framesRef, () => setHeight(0));
+      dispatch({
+        type: "replace",
+        state: {
+          visiblePanel: oldPanel,
+          previousPanel: null,
+          phase: "closing",
+          direction: nextDirection,
+          height: oldHeight,
+          transitionHeights,
+        },
+      });
+      nextFrame(framesRef, () => dispatch({ type: "patch", state: { height: 0 } }));
       later(timersRef, TOP_PANEL_SLIDE_MS, () => {
-        setVisiblePanel(null);
-        setPhase("idle");
+        dispatch({ type: "patch", state: { visiblePanel: null, phase: "idle" } });
       });
       return;
     }
@@ -1398,91 +1610,103 @@ function TopPanelCarousel({
     if (!oldPanel || !activePanel) return;
 
     latestPanelRef.current = activePanel;
-    setPreviousPanel(oldPanel);
-    setVisiblePanel(activePanel);
 
     if (newHeight > oldHeight + 2) {
-      setPhase("pre-resize");
-      setHeight(oldHeight);
-      nextFrame(framesRef, () => setHeight(newHeight));
+      dispatch({
+        type: "replace",
+        state: {
+          visiblePanel: activePanel,
+          previousPanel: oldPanel,
+          phase: "pre-resize",
+          direction: nextDirection,
+          height: oldHeight,
+          transitionHeights,
+        },
+      });
+      nextFrame(framesRef, () => dispatch({ type: "patch", state: { height: newHeight } }));
       later(timersRef, TOP_PANEL_RESIZE_MS, () => {
-        setPhase("swapping");
+        dispatch({ type: "patch", state: { phase: "swapping" } });
         later(timersRef, TOP_PANEL_SLIDE_MS, () => {
-          setPreviousPanel(null);
-          setPhase("idle");
-          setHeight("auto");
+          dispatch({ type: "patch", state: { previousPanel: null, phase: "idle", height: "auto" } });
         });
       });
       return;
     }
 
-    setPhase("swapping");
-    setHeight(oldHeight);
+    dispatch({
+      type: "replace",
+      state: {
+        visiblePanel: activePanel,
+        previousPanel: oldPanel,
+        phase: "swapping",
+        direction: nextDirection,
+        height: oldHeight,
+        transitionHeights,
+      },
+    });
     later(timersRef, TOP_PANEL_SLIDE_MS, () => {
-      setPreviousPanel(null);
-
       if (newHeight < oldHeight - 2) {
-        setPhase("post-resize");
-        nextFrame(framesRef, () => setHeight(newHeight));
+        dispatch({ type: "patch", state: { previousPanel: null, phase: "post-resize" } });
+        nextFrame(framesRef, () => dispatch({ type: "patch", state: { height: newHeight } }));
         later(timersRef, TOP_PANEL_RESIZE_MS, () => {
-          setPhase("idle");
-          setHeight("auto");
+          dispatch({ type: "patch", state: { phase: "idle", height: "auto" } });
         });
       } else {
-        setPhase("idle");
-        setHeight("auto");
+        dispatch({ type: "patch", state: { previousPanel: null, phase: "idle", height: "auto" } });
       }
     });
   }, [activePanel]);
 
-  const showStaticPrevious = phase === "pre-resize" && previousPanel;
-  const showSwapping = phase === "swapping" && previousPanel !== null && visiblePanel !== null;
-  const showTrackCurrent = visiblePanel !== null && !showStaticPrevious && phase !== "opening" && phase !== "closing";
-  const showStaticCurrent = visiblePanel && !showStaticPrevious && !showTrackCurrent;
+  const showStaticPrevious = state.phase === "pre-resize" && state.previousPanel;
+  const showSwapping = state.phase === "swapping" && state.previousPanel !== null && state.visiblePanel !== null;
+  const showTrackCurrent = state.visiblePanel !== null && !showStaticPrevious && state.phase !== "opening" && state.phase !== "closing";
+  const showStaticCurrent = state.visiblePanel && !showStaticPrevious && !showTrackCurrent;
   const panes =
-    showSwapping && previousPanel !== null && visiblePanel !== null
-      ? direction === "forward"
+    showSwapping && state.previousPanel !== null && state.visiblePanel !== null
+      ? state.direction === "forward"
         ? [
-            { panel: previousPanel, current: false },
-            { panel: visiblePanel, current: true },
+            { panel: state.previousPanel, current: false },
+            { panel: state.visiblePanel, current: true },
           ]
         : [
-            { panel: visiblePanel, current: true },
-            { panel: previousPanel, current: false },
+            { panel: state.visiblePanel, current: true },
+            { panel: state.previousPanel, current: false },
           ]
-      : visiblePanel
-        ? [{ panel: visiblePanel, current: true }]
+      : state.visiblePanel
+        ? [{ panel: state.visiblePanel, current: true }]
         : [];
   const resizeMode =
-    phase === "swapping" && transitionHeights.to < transitionHeights.from - 2
+    state.phase === "swapping" && state.transitionHeights.to < state.transitionHeights.from - 2
       ? "shrinking"
-      : phase === "swapping" && transitionHeights.to > transitionHeights.from + 2
+      : state.phase === "swapping" && state.transitionHeights.to > state.transitionHeights.from + 2
         ? "growing"
         : "steady";
   const viewportStyle = {
-    height: height === "auto" ? undefined : `${Math.max(height, 0)}px`,
-    "--top-panel-next-height": `${Math.max(transitionHeights.to, 0)}px`,
+    height: state.height === "auto" ? undefined : `${Math.max(state.height, 0)}px`,
+    "--top-panel-next-height": `${Math.max(state.transitionHeights.to, 0)}px`,
   } as React.CSSProperties;
 
   return (
     <>
       <div className="top-panel-measure" ref={measureRef} aria-hidden="true">
-        {activePanel ? renderPanel(activePanel, false) : null}
+        {activePanel ? <TopPanelContent {...contentProps} panel={activePanel} interactive={false} /> : null}
       </div>
       <div
         ref={viewportRef}
         className="top-panel-viewport"
-        data-phase={phase}
+        data-phase={state.phase}
         data-resize={resizeMode}
         style={viewportStyle}
       >
         {showStaticPrevious ? (
           <div ref={visibleRef} className="top-panel-static" data-motion="hold">
-            <div className="top-panel-pane-inner">{renderPanel(previousPanel)}</div>
+            <div className="top-panel-pane-inner">
+              {state.previousPanel ? <TopPanelContent {...contentProps} panel={state.previousPanel} /> : null}
+            </div>
           </div>
         ) : null}
         {showTrackCurrent ? (
-          <div className="top-panel-track" data-direction={direction} data-phase={showSwapping ? "swapping" : "idle"}>
+          <div className="top-panel-track" data-direction={state.direction} data-phase={showSwapping ? "swapping" : "idle"}>
             {panes.map(({ panel, current }) => (
               <div
                 key={panel}
@@ -1491,7 +1715,9 @@ function TopPanelCarousel({
                 data-pane={current ? "current" : "previous"}
                 aria-hidden={!current}
               >
-                <div className="top-panel-pane-inner">{renderPanel(panel)}</div>
+                <div className="top-panel-pane-inner">
+                  <TopPanelContent {...contentProps} panel={panel} />
+                </div>
               </div>
             ))}
           </div>
@@ -1500,10 +1726,12 @@ function TopPanelCarousel({
           <div
             ref={visibleRef}
             className="top-panel-static"
-            data-motion={phase === "opening" ? "open" : phase === "closing" ? "close" : "idle"}
-            data-direction={direction}
+            data-motion={state.phase === "opening" ? "open" : state.phase === "closing" ? "close" : "idle"}
+            data-direction={state.direction}
           >
-            <div className="top-panel-pane-inner">{renderPanel(visiblePanel)}</div>
+            <div className="top-panel-pane-inner">
+              {state.visiblePanel ? <TopPanelContent {...contentProps} panel={state.visiblePanel} /> : null}
+            </div>
           </div>
         ) : null}
       </div>
@@ -2029,10 +2257,7 @@ function AnimatedBadge({
   variant?: React.ComponentProps<typeof Badge>["variant"];
   className?: string;
 }) {
-  const [currentLabel, setCurrentLabel] = useState(label);
-  const [previousLabel, setPreviousLabel] = useState<string | null>(null);
-  const [phase, setPhase] = useState<BadgePushPhase>("idle");
-  const [width, setWidth] = useState<number | null>(null);
+  const [state, dispatch] = useReducer(animatedBadgeReducer, label, initialAnimatedBadgeState);
   const badgeRef = useRef<HTMLDivElement | null>(null);
   const currentTextRef = useRef<HTMLSpanElement | null>(null);
   const measureRef = useRef<HTMLSpanElement | null>(null);
@@ -2047,7 +2272,7 @@ function AnimatedBadge({
   );
 
   useLayoutEffect(() => {
-    if (label === currentLabel) return;
+    if (label === state.currentLabel) return;
 
     clearTopPanelTimers(timersRef, framesRef);
 
@@ -2055,10 +2280,7 @@ function AnimatedBadge({
     const oldTextWidth = measureElementWidth(currentTextRef.current);
     const chromeWidth = Math.max(0, oldWidth - oldTextWidth);
 
-    setPreviousLabel(currentLabel);
-    setCurrentLabel(label);
-    setPhase("measure");
-    setWidth(oldWidth);
+    dispatch({ type: "start", label, previousLabel: state.currentLabel, width: oldWidth });
 
     nextFrame(framesRef, () => {
       const newTextWidth = measureElementWidth(measureRef.current);
@@ -2066,55 +2288,75 @@ function AnimatedBadge({
       const wider = newWidth > oldWidth + 1;
 
       if (wider) {
-        setPhase("resize-first");
-        setWidth(newWidth);
+        dispatch({ type: "patch", state: { phase: "resize-first", width: newWidth } });
 
         later(timersRef, BADGE_RESIZE_MS, () => {
-          setPhase("push");
-          later(timersRef, BADGE_TEXT_PUSH_MS, () => settleAnimatedBadge(setPhase, setPreviousLabel, setWidth));
+          dispatch({ type: "patch", state: { phase: "push" } });
+          later(timersRef, BADGE_TEXT_PUSH_MS, () => dispatch({ type: "settle" }));
         });
       } else {
-        setPhase("push");
+        dispatch({ type: "patch", state: { phase: "push" } });
 
         later(timersRef, BADGE_TEXT_PUSH_MS, () => {
-          setPhase("resize-last");
-          setWidth(newWidth);
-          later(timersRef, BADGE_RESIZE_MS, () => settleAnimatedBadge(setPhase, setPreviousLabel, setWidth));
+          dispatch({ type: "patch", state: { phase: "resize-last", width: newWidth } });
+          later(timersRef, BADGE_RESIZE_MS, () => dispatch({ type: "settle" }));
         });
       }
     });
-  }, [currentLabel, label]);
+  }, [label, state.currentLabel]);
 
   return (
     <Badge
       ref={badgeRef}
       variant={variant}
       className={cn("state-update-badge", className)}
-      data-badge-phase={phase}
-      data-badge-has-previous={previousLabel ? "true" : "false"}
-      style={width === null ? undefined : { width: `${Math.max(width, 0)}px` }}
+      data-badge-phase={state.phase}
+      data-badge-has-previous={state.previousLabel ? "true" : "false"}
+      style={state.width === null ? undefined : { width: `${Math.max(state.width, 0)}px` }}
     >
       <span ref={measureRef} className="badge-push-measure">
-        {currentLabel}
+        {state.currentLabel}
       </span>
       <span className="badge-push-stack">
-        {previousLabel ? <span className="badge-push-old">{previousLabel}</span> : null}
+        {state.previousLabel ? <span className="badge-push-old">{state.previousLabel}</span> : null}
         <span ref={currentTextRef} className="badge-push-new">
-          {currentLabel}
+          {state.currentLabel}
         </span>
       </span>
     </Badge>
   );
 }
 
-function settleAnimatedBadge(
-  setPhase: React.Dispatch<React.SetStateAction<BadgePushPhase>>,
-  setPreviousLabel: React.Dispatch<React.SetStateAction<string | null>>,
-  setWidth: React.Dispatch<React.SetStateAction<number | null>>,
-) {
-  setPreviousLabel(null);
-  setPhase("idle");
-  setWidth(null);
+type AnimatedBadgeState = {
+  currentLabel: string;
+  previousLabel: string | null;
+  phase: BadgePushPhase;
+  width: number | null;
+};
+
+type AnimatedBadgeAction =
+  | { type: "start"; label: string; previousLabel: string; width: number }
+  | { type: "patch"; state: Partial<AnimatedBadgeState> }
+  | { type: "settle" };
+
+function initialAnimatedBadgeState(label: string): AnimatedBadgeState {
+  return {
+    currentLabel: label,
+    previousLabel: null,
+    phase: "idle",
+    width: null,
+  };
+}
+
+function animatedBadgeReducer(state: AnimatedBadgeState, action: AnimatedBadgeAction): AnimatedBadgeState {
+  switch (action.type) {
+    case "start":
+      return { currentLabel: action.label, previousLabel: action.previousLabel, phase: "measure", width: action.width };
+    case "patch":
+      return { ...state, ...action.state };
+    case "settle":
+      return { ...state, previousLabel: null, phase: "idle", width: null };
+  }
 }
 
 function stateCardClassName(tone: StateCardTone, className?: string) {
@@ -4255,6 +4497,63 @@ function firstSentence(value: string) {
   return value.match(/^(.+?[.!?])(?:\s|$)/)?.[1] || value;
 }
 
+type GuidanceDialogState = {
+  selectedChoice: string;
+  notes: Record<string, string>;
+  openNotes: Record<string, boolean>;
+  submitting: boolean;
+  error: string | null;
+};
+
+type GuidanceDialogAction =
+  | { type: "reset"; selectedChoice: string }
+  | { type: "select"; optionId: string }
+  | { type: "toggleNote"; optionId: string }
+  | { type: "focusNote"; optionId: string }
+  | { type: "note"; optionId: string; value: string }
+  | { type: "submitting"; submitting: boolean }
+  | { type: "error"; error: string | null };
+
+const initialGuidanceDialogState: GuidanceDialogState = {
+  selectedChoice: "",
+  notes: {},
+  openNotes: {},
+  submitting: false,
+  error: null,
+};
+
+function guidanceDialogReducer(state: GuidanceDialogState, action: GuidanceDialogAction): GuidanceDialogState {
+  switch (action.type) {
+    case "reset":
+      return { ...initialGuidanceDialogState, selectedChoice: action.selectedChoice };
+    case "select":
+      return { ...state, selectedChoice: action.optionId };
+    case "toggleNote":
+      return {
+        ...state,
+        selectedChoice: action.optionId,
+        openNotes: { ...state.openNotes, [action.optionId]: !state.openNotes[action.optionId] },
+      };
+    case "focusNote":
+      return {
+        ...state,
+        selectedChoice: action.optionId,
+        openNotes: action.optionId === CUSTOM_CHOICE ? state.openNotes : { ...state.openNotes, [action.optionId]: true },
+      };
+    case "note":
+      return {
+        ...state,
+        selectedChoice: action.optionId,
+        notes: { ...state.notes, [action.optionId]: action.value },
+        openNotes: action.optionId === CUSTOM_CHOICE ? state.openNotes : { ...state.openNotes, [action.optionId]: true },
+      };
+    case "submitting":
+      return { ...state, submitting: action.submitting, error: action.submitting ? null : state.error };
+    case "error":
+      return { ...state, error: action.error };
+  }
+}
+
 function GuidanceDialog({
   item,
   onOpenChange,
@@ -4264,56 +4563,43 @@ function GuidanceDialog({
   onOpenChange: (open: boolean) => void;
   onAnswered: (dashboard: DashboardPayload) => void;
 }) {
-  const [selectedChoice, setSelectedChoice] = useState<string>("");
-  const [notes, setNotes] = useState<Record<string, string>>({});
-  const [openNotes, setOpenNotes] = useState<Record<string, boolean>>({});
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [state, dispatch] = useReducer(guidanceDialogReducer, initialGuidanceDialogState);
 
   const options = useMemo(() => guidanceOptions(item?.prompt), [item?.prompt]);
 
   useEffect(() => {
     if (item) {
-      setSelectedChoice(options[0]?.id || CUSTOM_CHOICE);
-      setNotes({});
-      setOpenNotes({});
-      setError(null);
+      dispatch({ type: "reset", selectedChoice: options[0]?.id || CUSTOM_CHOICE });
     }
   }, [item, options]);
 
   function selectChoice(optionId: string) {
-    setSelectedChoice(optionId);
+    dispatch({ type: "select", optionId });
   }
 
   function toggleNote(optionId: string) {
-    selectChoice(optionId);
-    setOpenNotes((current) => ({ ...current, [optionId]: !current[optionId] }));
+    dispatch({ type: "toggleNote", optionId });
   }
 
   function focusNote(optionId: string) {
-    selectChoice(optionId);
-    if (optionId !== CUSTOM_CHOICE) {
-      setOpenNotes((current) => ({ ...current, [optionId]: true }));
-    }
+    dispatch({ type: "focusNote", optionId });
   }
 
   function updateNote(optionId: string, value: string) {
-    focusNote(optionId);
-    setNotes((current) => ({ ...current, [optionId]: value }));
+    dispatch({ type: "note", optionId, value });
   }
 
   async function submitAnswer() {
-    if (!item || !selectedChoice) return;
+    if (!item || !state.selectedChoice) return;
 
-    setSubmitting(true);
-    setError(null);
+    dispatch({ type: "submitting", submitting: true });
 
     try {
-      const answerNote = notes[selectedChoice] || "";
+      const answerNote = state.notes[state.selectedChoice] || "";
       const body = JSON.stringify({
-        answer_choice: selectedChoice,
+        answer_choice: state.selectedChoice,
         answer_note: answerNote,
-        answer: selectedChoice === CUSTOM_CHOICE ? answerNote : undefined,
+        answer: state.selectedChoice === CUSTOM_CHOICE ? answerNote : undefined,
       });
 
       const response = await fetch(guidanceAnswerUrl(item), {
@@ -4329,9 +4615,9 @@ function GuidanceDialog({
 
       onAnswered(payload.dashboard);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Answer was not recorded");
+      dispatch({ type: "error", error: caught instanceof Error ? caught.message : "Answer was not recorded" });
     } finally {
-      setSubmitting(false);
+      dispatch({ type: "submitting", submitting: false });
     }
   }
 
@@ -4356,8 +4642,8 @@ function GuidanceDialog({
               <div className="grid gap-3" role="radiogroup" aria-label="Guidance options" data-guidance-section style={{ animationDelay: "120ms" }}>
                 {options.map((option, index) => {
                   const isCustom = option.id === CUSTOM_CHOICE;
-                  const selected = selectedChoice === option.id;
-                  const noteOpen = isCustom || Boolean(openNotes[option.id]);
+                  const selected = state.selectedChoice === option.id;
+                  const noteOpen = isCustom || Boolean(state.openNotes[option.id]);
 
                   return (
                     <div
@@ -4414,7 +4700,7 @@ function GuidanceDialog({
                                 <Textarea
                                   className="mt-1 min-h-[72px]"
                                   placeholder={isCustom ? "Tell the architect what to do instead." : "Add optional context for this answer."}
-                                  value={notes[option.id] || ""}
+                                  value={state.notes[option.id] || ""}
                                   onFocus={() => focusNote(option.id)}
                                   onChange={(event) => updateNote(option.id, event.target.value)}
                                   onClick={(event) => {
@@ -4431,14 +4717,14 @@ function GuidanceDialog({
                   );
                 })}
               </div>
-              {error ? <p className="text-sm text-destructive">{error}</p> : null}
+              {state.error ? <p className="text-sm text-destructive">{state.error}</p> : null}
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => onOpenChange(false)}>
                 Cancel
               </Button>
-              <Button onClick={submitAnswer} disabled={submitting || (selectedChoice === CUSTOM_CHOICE && !notes[selectedChoice]?.trim())}>
-                {submitting ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+              <Button onClick={submitAnswer} disabled={state.submitting || (state.selectedChoice === CUSTOM_CHOICE && !state.notes[state.selectedChoice]?.trim())}>
+                {state.submitting ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
                 Answer
               </Button>
             </DialogFooter>
@@ -4648,6 +4934,75 @@ function NewRequestDialog({
   );
 }
 
+type DetailResourceState<T> = {
+  payload: T | null;
+  loading: boolean;
+  error: string | null;
+};
+
+type CardDetailDialogState = {
+  package: DetailResourceState<WorkPackageDetailPayload>;
+  solo: DetailResourceState<SoloSessionDetailPayload>;
+};
+
+type CardDetailDialogAction =
+  | { type: "resetPackage" }
+  | { type: "loadPackage" }
+  | { type: "packageSuccess"; payload: WorkPackageDetailPayload }
+  | { type: "packageError"; error: string }
+  | { type: "resetSolo" }
+  | { type: "loadSolo" }
+  | { type: "soloSuccess"; payload: SoloSessionDetailPayload }
+  | { type: "soloError"; error: string };
+
+const emptyPackageDetailState: DetailResourceState<WorkPackageDetailPayload> = {
+  payload: null,
+  loading: false,
+  error: null,
+};
+const emptySoloDetailState: DetailResourceState<SoloSessionDetailPayload> = {
+  payload: null,
+  loading: false,
+  error: null,
+};
+const initialCardDetailDialogState: CardDetailDialogState = {
+  package: emptyPackageDetailState,
+  solo: emptySoloDetailState,
+};
+
+function cardDetailDialogReducer(state: CardDetailDialogState, action: CardDetailDialogAction): CardDetailDialogState {
+  switch (action.type) {
+    case "resetPackage":
+      return { ...state, package: emptyPackageDetailState };
+    case "loadPackage":
+      return { ...state, package: { payload: null, loading: true, error: null } };
+    case "packageSuccess":
+      return { ...state, package: { payload: action.payload, loading: false, error: null } };
+    case "packageError":
+      return { ...state, package: { payload: null, loading: false, error: action.error } };
+    case "resetSolo":
+      return { ...state, solo: emptySoloDetailState };
+    case "loadSolo":
+      return { ...state, solo: { payload: null, loading: true, error: null } };
+    case "soloSuccess":
+      return { ...state, solo: { payload: action.payload, loading: false, error: null } };
+    case "soloError":
+      return { ...state, solo: { payload: null, loading: false, error: action.error } };
+  }
+}
+
+async function loadOperatorPayload<T>(path: string, signal: AbortSignal, fallbackMessage: string): Promise<T> {
+  const response = await fetch(operatorApiUrl(path), {
+    headers: jsonHeaders(),
+    signal,
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload?.error?.message || fallbackMessage);
+  }
+  return payload;
+}
+
 function CardDetailDialog({
   selection,
   onOpenChange,
@@ -4657,47 +5012,26 @@ function CardDetailDialog({
   onOpenChange: (open: boolean) => void;
   onSelectGuidance: (item: GuidanceItem) => void;
 }) {
-  const [packageDetail, setPackageDetail] = useState<WorkPackageDetailPayload | null>(null);
-  const [loadingPackage, setLoadingPackage] = useState(false);
-  const [packageError, setPackageError] = useState<string | null>(null);
-  const [soloDetail, setSoloDetail] = useState<SoloSessionDetailPayload | null>(null);
-  const [loadingSolo, setLoadingSolo] = useState(false);
-  const [soloError, setSoloError] = useState<string | null>(null);
+  const [state, dispatch] = useReducer(cardDetailDialogReducer, initialCardDetailDialogState);
   const packageId = selection?.kind === "package" ? selection.pkg.id : null;
   const soloSessionId = selection?.kind === "solo" ? selection.session.id : null;
 
   useEffect(() => {
     if (!packageId) {
-      setPackageDetail(null);
-      setPackageError(null);
-      setLoadingPackage(false);
+      dispatch({ type: "resetPackage" });
       return;
     }
 
     const controller = new AbortController();
-    setLoadingPackage(true);
-    setPackageDetail(null);
-    setPackageError(null);
+    dispatch({ type: "loadPackage" });
 
-    fetch(operatorApiUrl(`/work-packages/${encodeURIComponent(packageId)}`), {
-      headers: jsonHeaders(),
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload?.error?.message || "Package detail unavailable");
-        }
-        setPackageDetail(payload);
+    loadOperatorPayload<WorkPackageDetailPayload>(`/work-packages/${encodeURIComponent(packageId)}`, controller.signal, "Package detail unavailable")
+      .then((payload) => {
+        if (!controller.signal.aborted) dispatch({ type: "packageSuccess", payload });
       })
       .catch((caught) => {
         if (caught instanceof DOMException && caught.name === "AbortError") return;
-        setPackageError(caught instanceof Error ? caught.message : "Package detail unavailable");
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) {
-          setLoadingPackage(false);
-        }
+        if (!controller.signal.aborted) dispatch({ type: "packageError", error: caught instanceof Error ? caught.message : "Package detail unavailable" });
       });
 
     return () => controller.abort();
@@ -4705,50 +5039,34 @@ function CardDetailDialog({
 
   useEffect(() => {
     if (!soloSessionId) {
-      setSoloDetail(null);
-      setSoloError(null);
-      setLoadingSolo(false);
+      dispatch({ type: "resetSolo" });
       return;
     }
 
     const controller = new AbortController();
-    setLoadingSolo(true);
-    setSoloDetail(null);
-    setSoloError(null);
+    dispatch({ type: "loadSolo" });
 
-    fetch(operatorApiUrl(`/solo-sessions/${encodeURIComponent(soloSessionId)}`), {
-      headers: jsonHeaders(),
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload?.error?.message || "Solo Session detail unavailable");
-        }
-        setSoloDetail(payload);
+    loadOperatorPayload<SoloSessionDetailPayload>(`/solo-sessions/${encodeURIComponent(soloSessionId)}`, controller.signal, "Solo Session detail unavailable")
+      .then((payload) => {
+        if (!controller.signal.aborted) dispatch({ type: "soloSuccess", payload });
       })
       .catch((caught) => {
         if (caught instanceof DOMException && caught.name === "AbortError") return;
-        setSoloError(caught instanceof Error ? caught.message : "Solo Session detail unavailable");
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) {
-          setLoadingSolo(false);
-        }
+        if (!controller.signal.aborted) dispatch({ type: "soloError", error: caught instanceof Error ? caught.message : "Solo Session detail unavailable" });
       });
 
     return () => controller.abort();
   }, [soloSessionId]);
 
-  const effectiveLoadingPackage = selection?.kind === "package" && !packageDetail && !packageError ? true : loadingPackage;
-  const effectiveLoadingSolo = selection?.kind === "solo" && !soloDetail && !soloError ? true : loadingSolo;
+  const effectiveLoadingPackage = selection?.kind === "package" && !state.package.payload && !state.package.error ? true : state.package.loading;
+  const effectiveLoadingSolo = selection?.kind === "solo" && !state.solo.payload && !state.solo.error ? true : state.solo.loading;
   const detailMotionKey = cardDetailMotionKey(selection, {
     loadingPackage: effectiveLoadingPackage,
     loadingSolo: effectiveLoadingSolo,
-    packageDetail,
-    packageError,
-    soloDetail,
-    soloError,
+    packageDetail: state.package.payload,
+    packageError: state.package.error,
+    soloDetail: state.solo.payload,
+    soloError: state.solo.error,
   });
 
   return (
@@ -4758,10 +5076,10 @@ function CardDetailDialog({
           {selection?.kind === "request" ? <RequestDetailContent detail={selection.detail} onSelectGuidance={onSelectGuidance} /> : null}
           {selection?.kind === "slice" ? <SliceDetailContent detail={selection.detail} slice={selection.slice} pkg={selection.pkg} /> : null}
           {selection?.kind === "package" ? (
-            <PackageDetailContent selection={selection} detailPayload={packageDetail} loading={effectiveLoadingPackage} error={packageError} />
+            <PackageDetailContent selection={selection} detailPayload={state.package.payload} loading={effectiveLoadingPackage} error={state.package.error} />
           ) : null}
           {selection?.kind === "solo" ? (
-            <SoloSessionDetailContent session={selection.session} detailPayload={soloDetail} loading={effectiveLoadingSolo} error={soloError} />
+            <SoloSessionDetailContent session={selection.session} detailPayload={state.solo.payload} loading={effectiveLoadingSolo} error={state.solo.error} />
           ) : null}
         </AnimatedDetailBody>
       </DialogContent>
@@ -5283,10 +5601,12 @@ function RecentDecisionsDisclosure({ detail }: { detail: WorkRequestDetail }) {
 }
 
 function DetailActivityList({ items }: { items: Array<{ title?: string | null; body?: string | null; at?: string | null }> }) {
+  const rows = detailActivityRows(items);
+
   return (
     <div className="grid gap-2">
-      {items.slice(0, 3).map((item, index) => (
-        <div key={`${item.title || "item"}:${index}`} className="detail-list-item">
+      {rows.map(({ item, key }) => (
+        <div key={key} className="detail-list-item">
           <div className="flex min-w-0 items-start justify-between gap-3">
             <span className="min-w-0 text-sm font-medium">{item.title || "Update"}</span>
             {item.at ? <span className="shrink-0 text-xs text-muted-foreground">{formatDate(item.at)}</span> : null}
@@ -5296,6 +5616,21 @@ function DetailActivityList({ items }: { items: Array<{ title?: string | null; b
       ))}
     </div>
   );
+}
+
+function detailActivityRows(items: Array<{ title?: string | null; body?: string | null; at?: string | null }>) {
+  const seen = new Map<string, number>();
+
+  return items.slice(0, 3).map((item) => {
+    const baseKey = detailActivityKey(item);
+    const occurrence = seen.get(baseKey) || 0;
+    seen.set(baseKey, occurrence + 1);
+    return { item, key: occurrence === 0 ? baseKey : `${baseKey}:${occurrence}` };
+  });
+}
+
+function detailActivityKey(item: { title?: string | null; body?: string | null; at?: string | null }) {
+  return `activity:${hashText([item.title, item.body, item.at].filter(Boolean).join("|"))}`;
 }
 
 function DetailFacts({ facts }: { facts: Array<[string, string | null | undefined]> }) {
@@ -5345,10 +5680,20 @@ function JsonDetail({ label, value }: { label: string; value?: Record<string, un
 }
 
 type MarkdownNode =
-  | { type: "heading"; depth: number; text: string }
-  | { type: "paragraph"; text: string }
-  | { type: "list"; ordered: boolean; items: string[] }
-  | { type: "code"; text: string };
+  | { key: string; type: "heading"; depth: number; text: string }
+  | { key: string; type: "paragraph"; text: string }
+  | { key: string; type: "list"; ordered: boolean; items: MarkdownListItem[] }
+  | { key: string; type: "code"; text: string };
+
+type MarkdownListItem = {
+  key: string;
+  text: string;
+};
+
+type MarkdownInlineNode =
+  | { key: string; type: "code"; text: string }
+  | { key: string; type: "strong"; text: string }
+  | { key: string; type: "text"; text: string };
 
 function MarkdownBlock({ value }: { value?: string | null }) {
   const nodes = markdownNodes(value);
@@ -5359,46 +5704,75 @@ function MarkdownBlock({ value }: { value?: string | null }) {
 
   return (
     <div className="solo-markdown">
-      {nodes.map((node, index) => {
-        if (node.type === "heading") {
-          if (node.depth === 1) return <h4 key={index}>{renderMarkdownInline(node.text)}</h4>;
-          if (node.depth === 2) return <h5 key={index}>{renderMarkdownInline(node.text)}</h5>;
-          return <h6 key={index}>{renderMarkdownInline(node.text)}</h6>;
-        }
-
-        if (node.type === "list") {
-          const List = node.ordered ? "ol" : "ul";
-          return (
-            <List key={index}>
-              {node.items.map((item) => (
-                <li key={item}>{renderMarkdownInline(item)}</li>
-              ))}
-            </List>
-          );
-        }
-
-        if (node.type === "code") {
-          return <pre key={index}>{node.text}</pre>;
-        }
-
-        return <p key={index}>{renderMarkdownInline(node.text)}</p>;
-      })}
+      {nodes.map((node) => (
+        <MarkdownNodeView key={node.key} node={node} />
+      ))}
     </div>
   );
 }
 
-function renderMarkdownInline(text: string) {
-  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).filter((part) => part !== "");
+function MarkdownNodeView({ node }: { node: MarkdownNode }) {
+  if (node.type === "heading") {
+    if (node.depth === 1) return <h4><MarkdownInline text={node.text} /></h4>;
+    if (node.depth === 2) return <h5><MarkdownInline text={node.text} /></h5>;
+    return <h6><MarkdownInline text={node.text} /></h6>;
+  }
 
-  return parts.map((part, index) => {
-    if (part.startsWith("`") && part.endsWith("`")) {
-      return <code key={index}>{part.slice(1, -1)}</code>;
-    }
-    if (part.startsWith("**") && part.endsWith("**")) {
-      return <strong key={index}>{part.slice(2, -2)}</strong>;
-    }
-    return <span key={index}>{part}</span>;
+  if (node.type === "list") {
+    const List = node.ordered ? "ol" : "ul";
+    return (
+      <List>
+        {node.items.map((item) => (
+          <li key={item.key}><MarkdownInline text={item.text} /></li>
+        ))}
+      </List>
+    );
+  }
+
+  if (node.type === "code") {
+    return <pre>{node.text}</pre>;
+  }
+
+  return <p><MarkdownInline text={node.text} /></p>;
+}
+
+function MarkdownInline({ text }: { text: string }) {
+  return markdownInlineNodes(text).map((part) => {
+    if (part.type === "code") return <code key={part.key}>{part.text}</code>;
+    if (part.type === "strong") return <strong key={part.key}>{part.text}</strong>;
+    return <span key={part.key}>{part.text}</span>;
   });
+}
+
+function markdownInlineNodes(text: string): MarkdownInlineNode[] {
+  const nodes: MarkdownInlineNode[] = [];
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*)/g;
+  let offset = 0;
+
+  for (const match of text.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index > offset) {
+      nodes.push(markdownInlineNode("text", text.slice(offset, index), offset));
+    }
+
+    const token = match[0];
+    if (token.startsWith("`") && token.endsWith("`")) {
+      nodes.push(markdownInlineNode("code", token.slice(1, -1), index));
+    } else {
+      nodes.push(markdownInlineNode("strong", token.slice(2, -2), index));
+    }
+    offset = index + token.length;
+  }
+
+  if (offset < text.length) {
+    nodes.push(markdownInlineNode("text", text.slice(offset), offset));
+  }
+
+  return nodes;
+}
+
+function markdownInlineNode(type: MarkdownInlineNode["type"], text: string, offset: number): MarkdownInlineNode {
+  return { key: `${type}:${offset}:${hashText(text)}`, type, text } as MarkdownInlineNode;
 }
 
 function markdownNodes(value?: string | null): MarkdownNode[] {
@@ -5407,27 +5781,30 @@ function markdownNodes(value?: string | null): MarkdownNode[] {
   const nodes: MarkdownNode[] = [];
   const lines = value.replace(/\r\n/g, "\n").split("\n");
   let paragraph: string[] = [];
-  let list: { ordered: boolean; items: string[] } | null = null;
+  let list: { ordered: boolean; items: MarkdownListItem[] } | null = null;
   let code: string[] | null = null;
 
   const flushParagraph = () => {
     if (paragraph.length > 0) {
-      nodes.push({ type: "paragraph", text: paragraph.join(" ").trim() });
+      const text = paragraph.join(" ").trim();
+      nodes.push({ key: markdownNodeKey("paragraph", text, nodes.length), type: "paragraph", text });
       paragraph = [];
     }
   };
 
   const flushList = () => {
     if (list) {
-      nodes.push({ type: "list", ordered: list.ordered, items: list.items });
+      const text = list.items.map((item) => item.text).join("\n");
+      nodes.push({ key: markdownNodeKey("list", text, nodes.length), type: "list", ordered: list.ordered, items: list.items });
       list = null;
     }
   };
 
-  for (const line of lines) {
+  for (const [lineNumber, line] of lines.entries()) {
     if (line.trim().startsWith("```")) {
       if (code) {
-        nodes.push({ type: "code", text: code.join("\n").trimEnd() });
+        const text = code.join("\n").trimEnd();
+        nodes.push({ key: markdownNodeKey("code", text, nodes.length), type: "code", text });
         code = null;
       } else {
         flushParagraph();
@@ -5452,7 +5829,8 @@ function markdownNodes(value?: string | null): MarkdownNode[] {
     if (heading) {
       flushParagraph();
       flushList();
-      nodes.push({ type: "heading", depth: heading[1].length, text: heading[2].trim() });
+      const text = heading[2].trim();
+      nodes.push({ key: markdownNodeKey("heading", text, nodes.length), type: "heading", depth: heading[1].length, text });
       continue;
     }
 
@@ -5465,7 +5843,8 @@ function markdownNodes(value?: string | null): MarkdownNode[] {
         flushList();
         list = { ordered: orderedList, items: [] };
       }
-      list.items.push((bullet?.[1] || ordered?.[1] || "").trim());
+      const text = (bullet?.[1] || ordered?.[1] || "").trim();
+      list.items.push({ key: `item:${lineNumber}:${hashText(text)}`, text });
       continue;
     }
 
@@ -5475,9 +5854,24 @@ function markdownNodes(value?: string | null): MarkdownNode[] {
 
   flushParagraph();
   flushList();
-  if (code) nodes.push({ type: "code", text: code.join("\n").trimEnd() });
+  if (code) {
+    const text = code.join("\n").trimEnd();
+    nodes.push({ key: markdownNodeKey("code", text, nodes.length), type: "code", text });
+  }
 
   return nodes;
+}
+
+function markdownNodeKey(type: MarkdownNode["type"], text: string, ordinal: number) {
+  return `${type}:${ordinal}:${hashText(text)}`;
+}
+
+function hashText(text: string) {
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 31 + text.charCodeAt(index)) | 0;
+  }
+  return Math.abs(hash).toString(36);
 }
 
 function requestOpenQuestions(detail: WorkRequestDetail) {
