@@ -48,6 +48,13 @@ push
 Polling remains an acceptable synchronization mode when webhook delivery is not
 configured.
 
+For the local operator dashboard, periodic PR merge reconciliation first uses
+the already-authenticated GitHub CLI (`gh pr view ... --json ...`). This keeps
+local auto-sync aligned with the operator's existing `gh auth` session instead
+of requiring `GITHUB_TOKEN` or `GH_TOKEN` in the Symphony++ server process.
+Server or remote deployments can still configure the HTTP GitHub client and use
+token-backed API access.
+
 ## Review suite integration
 
 Review-suite artifacts should be attached to the work package and keyed by PR head SHA.

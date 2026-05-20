@@ -353,15 +353,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.MergeReconciler do
 
   defp stringify_keys(%{} = map), do: Map.new(map, fn {key, value} -> {to_string(key), value} end)
 
-  defp validate_periodic_auth(HttpClient, opts) do
-    if Keyword.get(opts, :require_authenticated_client?, false) and not HttpClient.authenticated?() do
-      {:skip, "github_token_required_for_periodic_sync"}
+  defp validate_periodic_auth(client, opts) do
+    if Keyword.get(opts, :require_authenticated_client?, false) do
+      validate_authenticated_client(client, opts)
     else
       :ok
     end
   end
 
-  defp validate_periodic_auth(_client, _opts), do: :ok
+  defp validate_authenticated_client(client, opts) do
+    Code.ensure_loaded?(client)
+
+    cond do
+      function_exported?(client, :auth_status, 1) ->
+        case client.auth_status(opts) do
+          :ok -> :ok
+          {:error, reason} -> {:skip, periodic_auth_skip_reason(reason)}
+        end
+
+      function_exported?(client, :authenticated?, 0) ->
+        if client.authenticated?(), do: :ok, else: {:skip, periodic_auth_skip_reason(:github_token_required)}
+
+      true ->
+        {:skip, periodic_auth_skip_reason(:authenticated_client_required)}
+    end
+  end
+
+  defp periodic_auth_skip_reason(:github_token_required), do: "github_token_required_for_periodic_sync"
+  defp periodic_auth_skip_reason(:gh_unavailable), do: "gh_cli_unavailable_for_periodic_sync"
+  defp periodic_auth_skip_reason(:gh_unauthorized), do: "gh_cli_auth_required_for_periodic_sync"
+  defp periodic_auth_skip_reason(:github_cli_or_token_required), do: "github_cli_or_token_required_for_periodic_sync"
+  defp periodic_auth_skip_reason(:authenticated_client_required), do: "authenticated_client_required_for_periodic_sync"
+  defp periodic_auth_skip_reason(reason) when is_atom(reason), do: "#{reason}_for_periodic_sync"
 
   defp missing_base_branch?(%WorkPackage{base_branch: package_base_branch}, payload) do
     is_nil(clean_branch(package_base_branch)) or is_nil(clean_branch(payload["base_branch"]))
