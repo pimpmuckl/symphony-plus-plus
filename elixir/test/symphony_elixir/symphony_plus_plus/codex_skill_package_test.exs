@@ -1219,8 +1219,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
-  test "diagnostic does not offer enable command while global MCP footgun exists" do
+  test "diagnostic blocks enable command while global MCP footgun exists" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    enable_case = "section"
 
     cases = [
       {"section",
@@ -1250,11 +1251,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
     if powershell do
       for {case_name, config} <- cases do
-        temp_codex_home =
-          Path.join(
-            System.tmp_dir!(),
-            "sympp-plugin-enable-global-footgun-#{case_name}-#{System.unique_integer([:positive])}"
-          )
+        temp_codex_home = unique_temp_path("sympp-plugin-enable-global-footgun-#{case_name}")
 
         try do
           write_activation_cache(temp_codex_home, "jonat-local")
@@ -1283,26 +1280,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           assert Enum.any?(readiness["next_actions"], &(&1["code"] == "relocate_global_sympp_mcp_entry"))
           assert readiness["overall_status"] == "global_footgun_present"
 
-          {output, status} =
-            System.cmd(
-              powershell,
-              [
-                "-NoProfile",
-                "-File",
-                @plugin_lifecycle_diagnostic_path,
-                "-CodexHome",
-                temp_codex_home,
-                "-MarketplaceName",
-                "jonat-local",
-                "-EnableMcpCompanion"
-              ],
-              stderr_to_stdout: true
-            )
+          if case_name == enable_case do
+            {output, status} =
+              System.cmd(
+                powershell,
+                [
+                  "-NoProfile",
+                  "-File",
+                  @plugin_lifecycle_diagnostic_path,
+                  "-CodexHome",
+                  temp_codex_home,
+                  "-MarketplaceName",
+                  "jonat-local",
+                  "-EnableMcpCompanion"
+                ],
+                stderr_to_stdout: true
+              )
 
-          assert status != 0
-          assert output =~ "Codex config already contains [mcp_servers.symphony_plus_plus]"
-          assert normalize_newlines(File.read!(Path.join(temp_codex_home, "config.toml"))) == normalize_newlines(config)
-          assert config_backups(temp_codex_home) == []
+            assert status != 0
+            assert output =~ "Codex config already contains [mcp_servers.symphony_plus_plus]"
+            assert normalize_newlines(File.read!(Path.join(temp_codex_home, "config.toml"))) == normalize_newlines(config)
+            assert config_backups(temp_codex_home) == []
+          end
         after
           File.rm_rf(temp_codex_home)
         end

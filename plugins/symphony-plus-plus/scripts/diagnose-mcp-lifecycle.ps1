@@ -856,6 +856,87 @@ enabled = true
     Remove-Item -LiteralPath $mutationRoot -Recurse -Force -ErrorAction SilentlyContinue
   }
 
+  $globalFootgunRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("sympp-global-footgun-selftest-" + [guid]::NewGuid().ToString("N"))
+  $globalFootgunCases = @(
+    @{
+      Name = "section"
+      Initial = @'
+[plugins."symphony-plus-plus@jonat-local"]
+enabled = true
+
+   [ mcp_servers . symphony_plus_plus ]
+url = "http://127.0.0.1:4057/mcp"
+'@
+      GlobalMcpEntry = $true
+    },
+    @{
+      Name = "dotted"
+      Initial = @'
+mcp_servers.symphony_plus_plus.url = "http://127.0.0.1:4057/mcp"
+
+[plugins."symphony-plus-plus@jonat-local"]
+enabled = true
+'@
+      GlobalMcpEntry = $true
+    },
+    @{
+      Name = "mcp_servers_table"
+      Initial = @'
+[plugins."symphony-plus-plus@jonat-local"]
+enabled = true
+
+[mcp_servers]
+symphony_plus_plus.url = "http://127.0.0.1:4057/mcp"
+'@
+      GlobalMcpEntry = $true
+    }
+  )
+
+  try {
+    [void](New-Item -ItemType Directory -Path $globalFootgunRoot -Force)
+
+    foreach ($case in $globalFootgunCases) {
+      $caseRoot = Join-Path $globalFootgunRoot $case.Name
+      $configPath = Join-Path $caseRoot "config.toml"
+      [void](New-Item -ItemType Directory -Path $caseRoot -Force)
+      [System.IO.File]::WriteAllText($configPath, [string]$case.Initial, (New-StrictUtf8NoBomEncoding))
+
+      $summary = Get-PluginConfigSummary $configPath "jonat-local"
+      if ([bool]$summary.global_sympp_mcp_entry -ne [bool]$case.GlobalMcpEntry) {
+        throw "Get-PluginConfigSummary global MCP detection mismatch for $($case.Name)."
+      }
+
+      $enableSummary = [pscustomobject]@{
+        installed_cache = @()
+        codex_config = $summary
+      }
+
+      $enableThrew = $false
+      try {
+        [void](Invoke-McpCompanionEnable $enableSummary "jonat-local" $caseRoot)
+      } catch {
+        $enableThrew = $true
+        if ($_.Exception.Message -notmatch "Codex config already contains \[mcp_servers\.symphony_plus_plus\]") {
+          throw "Invoke-McpCompanionEnable returned the wrong global MCP error for $($case.Name): $($_.Exception.Message)"
+        }
+      }
+
+      if (-not $enableThrew) {
+        throw "Invoke-McpCompanionEnable did not reject global MCP config for $($case.Name)."
+      }
+
+      if ([System.IO.File]::ReadAllText($configPath) -cne [string]$case.Initial) {
+        throw "Invoke-McpCompanionEnable mutated global MCP config for $($case.Name)."
+      }
+
+      if (@(Get-ChildItem -LiteralPath $caseRoot -Filter "config.toml.sympp-backup-*" -Force -ErrorAction SilentlyContinue).Count -ne 0) {
+        throw "Invoke-McpCompanionEnable created a backup for rejected global MCP config $($case.Name)."
+      }
+    }
+  } finally {
+    Remove-Item -LiteralPath $globalFootgunRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
   $linkTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("sympp-diagnose-path-selftest-" + [guid]::NewGuid().ToString("N"))
   $targetPath = Join-Path $linkTestRoot "target"
   $targetChildPath = Join-Path $targetPath ".codex"
