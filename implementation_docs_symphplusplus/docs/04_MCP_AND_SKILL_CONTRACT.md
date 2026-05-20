@@ -299,17 +299,18 @@ review packages reject new writes for the ready package while preserving
 idempotent replay behavior for already-recorded operations.
 
 For non-merge-gated policies such as `quick_fix`, workers may satisfy focused
-test and review-lane readiness with ordinary generic `append_progress` statuses:
-`tests_passed` and `<review_lane>_green` such as `review_t1_green`. Tool-owned
-metadata, blocker, status, and scope events do not satisfy those gates. These
-non-merge policies may also count explicit-head `submit_review_package` evidence
-without branch metadata when branch metadata is not a required gate. Merge-gated
-packages still require current-head review package evidence and artifacts. If a
-branch head is attached, generic fallback evidence and review-package evidence
-must be current to the latest branch head. Generic fallback gates use the latest
-relevant status after that branch head: later `tests_failed`,
-`<review_lane>_red`, or `<review_lane>_failed` supersedes earlier green evidence
-until a newer pass/green status is recorded.
+test and review-profile readiness with ordinary generic `append_progress`
+statuses: `tests_passed` and `review_<profile>_green`, such as
+`review_brief_green`. Tool-owned metadata, blocker, status, and scope events do
+not satisfy those gates. These non-merge policies may also count explicit-head
+`submit_review_package` evidence without branch metadata when branch metadata is
+not a required gate. Merge-gated packages still require current-head review
+package evidence and artifacts. If a branch head is attached, generic fallback
+evidence and review-package evidence must be current to the latest branch head.
+Generic fallback gates use the latest relevant status after that branch head:
+later `tests_failed`, `review_<profile>_red`, or
+`review_<profile>_failed` supersedes earlier green evidence until a newer
+pass/green status is recorded.
 
 For investigation policies that require a scope recommendation,
 `request_scope_expansion` records the worker's recommendation evidence and

@@ -18,8 +18,8 @@ for readiness policies that require `review_suite_result`:
   "anchor": "phase_gate-abc123",
   "status": "passed",
   "verdict": "green",
-  "summary": "T1/T2/GitHub review requirements passed.",
-  "lane": "review_t2",
+  "summary": "Required Review Suite profile passed for the current head.",
+  "lane": "normal",
   "reviewer": "review-suite",
   "round_id": "phase_gate-abc123"
 }

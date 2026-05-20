@@ -279,7 +279,7 @@ The architect plan records:
 The slice plan records:
 
 - WorkPackage candidates with titles, goals, owned files, acceptance criteria,
-  validation, review lanes, and stop conditions.
+  validation, review profiles, and stop conditions.
 - Parent/child relationships when an architect-led phase is needed.
 - The intended PR target for each slice.
 - Any package that should be investigation-only or reviewer-only.
@@ -288,7 +288,7 @@ Runtime planned-slice records belong to the WorkRequest until dispatch. Their
 canonical statuses are `planned`, `approved`, `dispatched`, and `skipped`.
 The dashboard manual authoring path stores title, goal, WorkPackage kind,
 target base branch, branch pattern, owned files, forbidden files, acceptance
-criteria, validation steps, review lanes, and stop conditions. List fields are
+criteria, validation steps, review profiles, and stop conditions. List fields are
 entered as newline-delimited text and stored as ordered string lists.
 Planned-slice persistence and approval do not themselves create WorkPackages or
 mint worker grants. The create path starts rows as `planned`, approve moves
@@ -457,9 +457,11 @@ guidance-created blocker is part of that same local-operator action.
 
 ## Review Responsibility
 
-Implementing workers run review-suite T1, T2, and GitHub review by default
-unless the package policy explicitly says otherwise. Review evidence must be
-current for the attached branch head.
+Implementing workers use the current Review Suite orchestrator profile when it
+is installed, or another approved review provider when it is not. In both
+cases, review evidence must be current for the attached branch head and
+reported through Symphony++ MCP. GitHub review can be required as an additional
+anchored step by package policy.
 
 A dedicated reviewer package is optional. Use it when high-risk business logic,
 security-sensitive behavior, live smoke-test ownership, or cross-package release

@@ -392,7 +392,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     assert creation.work_package.parent_id == nil
     assert creation.work_package.status == "ready_for_worker"
     assert creation.policy.template == "quick_fix"
-    assert creation.policy.review_suite.required == ["review_t1"]
+    assert creation.policy.review_suite.required == ["brief"]
     assert creation.virtual_files["context.md"] =~ "- Status: `ready_for_worker`"
     assert creation.virtual_files["handoff.md"] =~ "- Status: `ready_for_worker`"
     refute creation.virtual_files["context.md"] =~ "- Status: `created`"
@@ -753,7 +753,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     assert creation.work_package.parent_id == nil
     assert creation.work_package.status == "ready_for_worker"
     assert creation.policy.template == "hotfix"
-    assert creation.policy.review_suite.required == ["review_t1", "review_t2"]
+    assert creation.policy.review_suite.required == ["emergency"]
 
     server = Server.new(Config.default(repo: repo), initialized: true)
 
@@ -964,7 +964,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
       "tests" => ["mix test test/symphony_elixir/symphony_plus_plus/create_work_test.exs"],
       "artifacts" => ["review-suite/SYMPP-P4-003-fake-hotfix-review.json"],
       "head_sha" => head_sha,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "emergency", "verdict" => "green"}]
     })
 
     ready_response =

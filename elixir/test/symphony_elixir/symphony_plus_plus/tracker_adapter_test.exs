@@ -406,7 +406,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
   test "adapter work packages have a policy template" do
     assert {:ok, template} = Templates.expand("adapter")
     assert template.template == "adapter"
-    assert template.review_suite.required == ["review_t1", "review_t2"]
+    assert template.review_suite.required == ["normal"]
   end
 
   test "configured Symphony++ Repo database paths are canonicalized" do

@@ -66,11 +66,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     assert quick_fix.constraints.expiry_seconds == nil
     assert quick_fix.constraints.planning_depth == "brief"
     assert quick_fix.constraints.terminal_readiness_status == "ready_for_human_merge"
-    assert "review_t1_green" in quick_fix.readiness_requirements
+    assert "review_brief_green" in quick_fix.readiness_requirements
 
     assert {:ok, hotfix} = Templates.expand("hotfix")
     assert hotfix.constraints.expiry_seconds == nil
-    assert hotfix.review_suite.required == ["review_t1", "review_t2"]
+    assert hotfix.review_suite.required == ["emergency"]
     assert hotfix.constraints.terminal_readiness_status == "ready_for_human_merge"
 
     assert {:ok, phase_child} = Templates.expand("phase_child")
@@ -88,7 +88,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     for kind <- ["mcp", "skill", "hooks"] do
       assert {:ok, policy} = Templates.expand(kind)
       assert policy.template == "worker_package"
-      assert policy.review_suite.required == ["review_t1", "review_t2"]
+      assert policy.review_suite.required == ["normal"]
       assert policy.constraints.terminal_readiness_status == "ready_for_human_merge"
     end
 

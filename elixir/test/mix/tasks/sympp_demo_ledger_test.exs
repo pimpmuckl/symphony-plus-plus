@@ -133,8 +133,7 @@ defmodule Mix.Tasks.Sympp.DemoLedgerTest do
         review = Enum.find(cards, &(&1.id == "SYMPP-DEMO-WP-REVIEW"))
 
         assert get_in(review.metadata, [:review_package, "reviews"]) == [
-                 %{"lane" => "review_t1", "verdict" => "green"},
-                 %{"lane" => "review_t2", "verdict" => "green"}
+                 %{"lane" => "normal", "verdict" => "green"}
                ]
       end)
     after

@@ -44,9 +44,10 @@ questions and slices the work.
    ambiguity appears. The architect may use ask-pro for hard calls. Unresolved
    product ambiguity becomes `human_info_needed`; the local operator answers it
    from the package cockpit, which clears the matching readiness blocker.
-6. Implementing workers run review-suite T1, T2, and GitHub review by default
-   unless the package policy says otherwise. A dedicated reviewer package is
-   optional for high-risk business logic or live smoke-test ownership.
+6. Implementing workers use the current Review Suite orchestrator profile when
+   it is installed, or another approved review provider with Symphony++ MCP
+   progress/evidence when it is not. A dedicated reviewer package is optional
+   for high-risk business logic or live smoke-test ownership.
 
 This flow preserves existing WorkPackage grants, virtual planning resources,
 readiness gates, review evidence, PR evidence, and human merge controls. The
@@ -230,7 +231,7 @@ identifiers and handoff coordinates for operator recovery.
    secrets, private-store handoff targets, bearer tokens, or operator-local
    secret material.
 6. Dispatch the worker with package id, base/target branch guidance, owned
-   paths, acceptance criteria, test plan, review lanes, handoff target, stable
+   paths, acceptance criteria, test plan, review profiles, handoff target, stable
    `claimed_by`, and stop conditions.
 7. Monitor claim, plan, findings, progress, blockers, branch/PR attachment,
    validation, and review evidence through Symphony++ state.
@@ -263,7 +264,7 @@ Worker handoffs may include:
 
 - WorkPackage id, branch guidance, owned files, acceptance criteria, and tests.
 - Handoff target and stable `claimed_by` identity.
-- Required review lanes and stop conditions.
+- Required review profiles and stop conditions.
 - Links to non-secret docs, templates, and MCP wiring instructions.
 
 Worker handoffs must not include raw grant secrets, bearer tokens, GitHub

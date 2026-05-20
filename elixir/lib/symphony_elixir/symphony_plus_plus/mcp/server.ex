@@ -7312,7 +7312,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp readiness_failure_message("review_suite_result"), do: "Current-head review-suite result evidence is missing."
   defp readiness_failure_message("review_package_submitted"), do: "Current-head review package is missing."
   defp readiness_failure_message("review_artifacts_attached"), do: "Current-head review artifacts are missing."
-  defp readiness_failure_message("review_lanes_complete"), do: "Required review lanes are not green."
+  defp readiness_failure_message("review_lanes_complete"), do: "Required review profiles are not green."
   defp readiness_failure_message("findings_documented"), do: "Investigation findings are missing."
   defp readiness_failure_message("recommendation_artifact_recorded"), do: "Investigation recommendation artifact is missing."
   defp readiness_failure_message("phase_active"), do: "Phase must be active before phase child readiness."
@@ -7457,9 +7457,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     head_boundary_sequence = latest_branch_event_sequence(progress_events)
 
     Enum.all?(required_lanes, fn lane ->
-      latest_generic_progress_status(progress_events, head_boundary_sequence, ["#{lane}_green", "#{lane}_red", "#{lane}_failed"]) == "#{lane}_green"
+      latest_generic_progress_status(progress_events, head_boundary_sequence, review_progress_statuses(lane)) ==
+        review_progress_green_status(lane)
     end)
   end
+
+  defp review_progress_statuses(lane),
+    do: [review_progress_green_status(lane), "review_#{lane}_red", "review_#{lane}_failed"]
+
+  defp review_progress_green_status(lane), do: "review_#{lane}_green"
 
   defp generic_append_progress_event?(%ProgressEvent{payload: payload}) when is_map(payload) do
     Map.get(payload, "source_tool") == nil

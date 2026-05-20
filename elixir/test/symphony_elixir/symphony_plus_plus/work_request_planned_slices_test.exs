@@ -97,14 +97,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
              Service.add_planned_slice(
                repo,
                work_request.id,
-               planned_slice_attrs(id: "WRS-002", title: "Implement persistence", review_lanes: ["review_t1", "review_t2"])
+               planned_slice_attrs(id: "WRS-002", title: "Implement persistence", review_lanes: ["normal"])
              )
 
     assert first.work_request_id == work_request.id
     assert first.sequence == 1
     assert first.title == "Implement persistence"
     assert first.status == "planned"
-    assert first.review_lanes == ["review_t1", "review_t2"]
+    assert first.review_lanes == ["normal"]
 
     assert {:ok, second} =
              Repository.add_planned_slice(
@@ -455,7 +455,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
       assert create_work.work_package.acceptance_criteria == approved.acceptance_criteria
       assert create_work.work_package.engineering_scope =~ approved.goal
       assert create_work.work_package.engineering_scope =~ "Validation steps:"
-      assert create_work.work_package.engineering_scope =~ "Review lanes:"
+      assert create_work.work_package.engineering_scope =~ "Review profiles:"
       assert create_work.work_package.engineering_scope =~ "Forbidden file globs:"
       assert create_work.work_package.engineering_scope =~ "Stop conditions:"
 
@@ -693,7 +693,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
     assert "is invalid" in errors_on(list_changeset).owned_file_globs
 
     assert {:error, %Ecto.Changeset{} = non_list_changeset} =
-             Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(review_lanes: "review_t1"))
+             Repository.add_planned_slice(repo, work_request.id, planned_slice_attrs(review_lanes: "normal"))
 
     assert "is invalid" in errors_on(non_list_changeset).review_lanes
   end
@@ -898,7 +898,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
       forbidden_file_globs: ["elixir/lib/symphony_elixir/symphony_plus_plus/mcp/**"],
       acceptance_criteria: ["Planned slices persist and list in sequence order."],
       validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/work_request_planned_slices_test.exs"],
-      review_lanes: ["review_t1", "review_t2"],
+      review_lanes: ["normal"],
       stop_conditions: ["Stop before dashboard or MCP tool wiring."]
     }
 

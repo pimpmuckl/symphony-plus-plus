@@ -231,7 +231,7 @@ not spawn Codex agents and does not call Linear.
 Give each worker:
 
 - The WorkPackage id, target branch, base branch, owned paths, acceptance
-  criteria, required validation, review lanes, and stop conditions.
+  criteria, required validation, review profiles, and stop conditions.
 - The non-secret private-store handoff metadata or generated MCP bootstrap
   shape.
 - The stable `claimed_by` identity for that package.

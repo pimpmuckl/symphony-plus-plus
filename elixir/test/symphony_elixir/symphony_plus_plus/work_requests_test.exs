@@ -139,7 +139,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     constraints = %{
       allowed_paths: ["elixir/lib/symphony_elixir"],
       stop_conditions: %{needs_human: true},
-      review: [%{lane: "review_t2"}]
+      review: [%{lane: "normal"}]
     }
 
     assert {:ok, request} = Repository.create(repo, attrs(constraints: constraints))
@@ -147,7 +147,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert request.constraints == %{
              "allowed_paths" => ["elixir/lib/symphony_elixir"],
              "stop_conditions" => %{"needs_human" => true},
-             "review" => [%{"lane" => "review_t2"}]
+             "review" => [%{"lane" => "normal"}]
            }
   end
 
