@@ -16,9 +16,11 @@ The launcher binds to `127.0.0.1:4057` by default, prints
 `http://127.0.0.1:4057/sympp/board`, enables `sympp_local_operator: true`, and
 serves Streamable HTTP MCP at `http://127.0.0.1:4057/mcp`. Pass `--port 0` for
 an OS-assigned port during manual or test runs, or `--port <n>` for a different
-stable port. Omit `--database` to use the shared machine-local Symphony++
-ledger; pass `--database <ledger.sqlite3>` only for isolation, tests, or manual
-experiments.
+stable port. Omit `--database` to use the shared local ledger at
+the preferred `$HOME/.agents/splusplus/symphony_plus_plus.sqlite3` or
+`%USERPROFILE%\.agents\splusplus\symphony_plus_plus.sqlite3` home, falling back
+under a temp/relative `.agents/splusplus` root if home is unavailable; pass
+`--database <ledger.sqlite3>` only for isolation, tests, or manual experiments.
 
 When the Phoenix endpoint is configured with `sympp_local_operator: true`, the
 local browser dashboard can open `/sympp/board` as the operator cockpit without

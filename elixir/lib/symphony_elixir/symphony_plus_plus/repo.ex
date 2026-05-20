@@ -5,8 +5,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo do
     otp_app: :symphony_elixir,
     adapter: Ecto.Adapters.SQLite3
 
-  @data_dir ".symphony_plus_plus"
+  @data_dir Path.join([".agents", "splusplus"])
   @default_database_file "symphony_plus_plus.sqlite3"
+  @default_database_display_path "$HOME/.agents/splusplus/symphony_plus_plus.sqlite3"
+  @default_database_help_text "Default ledger: preferred #{@default_database_display_path}; falls back under temp/relative .agents/splusplus if home is unavailable. Use --database only for isolation."
 
   @spec child_options(keyword()) :: keyword()
   def child_options(opts \\ []) do
@@ -22,6 +24,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo do
     configured_database_path()
     |> normalize_database_path()
   end
+
+  @doc false
+  @spec default_database_help_text() :: String.t()
+  def default_database_help_text, do: @default_database_help_text
 
   @doc false
   @spec database_path_if_present() :: String.t() | term() | nil

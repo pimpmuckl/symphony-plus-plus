@@ -16,7 +16,7 @@ review evidence. For role context, start with
 
 ```powershell
 Set-Location elixir
-mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../scratch/hotfix-request.yaml --claimed-by <stable-worker-id>
+mise exec -- mix sympp.create_work --file ../scratch/hotfix-request.yaml --claimed-by <stable-worker-id>
 ```
 
 5. Confirm command output returns only non-secret handoff metadata. It must not
@@ -57,7 +57,7 @@ New-Item -ItemType Directory -Force scratch
 Copy-Item implementation_docs_symphplusplus/templates/create_work_package.quick_fix.example.yaml scratch/quick-fix-request.yaml
 # Edit scratch/quick-fix-request.yaml before running create-work.
 Set-Location elixir
-mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../scratch/quick-fix-request.yaml --claimed-by <stable-worker-id>
+mise exec -- mix sympp.create_work --file ../scratch/quick-fix-request.yaml --claimed-by <stable-worker-id>
 ```
 
 Quick-fix packages still need truthful acceptance and review evidence, but may
@@ -72,7 +72,7 @@ New-Item -ItemType Directory -Force scratch
 Copy-Item implementation_docs_symphplusplus/templates/create_work_package.investigation.example.yaml scratch/investigation-request.yaml
 # Edit scratch/investigation-request.yaml before running create-work.
 Set-Location elixir
-mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../scratch/investigation-request.yaml --claimed-by <stable-worker-id>
+mise exec -- mix sympp.create_work --file ../scratch/investigation-request.yaml --claimed-by <stable-worker-id>
 ```
 
 The investigation policy does not require a PR unless the package says so. It

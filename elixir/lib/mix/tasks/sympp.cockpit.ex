@@ -36,13 +36,11 @@ defmodule Mix.Tasks.Sympp.Cockpit do
   @spec usage() :: String.t()
   def usage do
     [
-      "Usage: mix sympp.cockpit",
-      "[--database <sqlite-path>]",
-      "[--host <loopback-host>]",
-      "[--port <port>]",
-      "[--dashboard-origin <vite-origin>]"
+      "Usage: mix sympp.cockpit [--host <loopback-host>] [--port <port>] " <>
+        "[--database <sqlite-path>] [--dashboard-origin <vite-origin>]",
+      Repo.default_database_help_text()
     ]
-    |> Enum.join(" ")
+    |> Enum.join("\n")
   end
 
   @doc false

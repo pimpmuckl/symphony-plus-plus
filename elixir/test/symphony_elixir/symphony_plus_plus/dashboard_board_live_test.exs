@@ -545,7 +545,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
     original_workflow_path = Application.get_env(:symphony_elixir, :workflow_file_path)
     workflow_id = "sympp-dashboard-stale-db-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
     workflow_path = Path.join([System.tmp_dir!(), workflow_id, "WORKFLOW.md"])
-    default_database_root = Path.join([System.tmp_dir!(), workflow_id, ".symphony_plus_plus"])
+    default_database_root = Path.join([System.tmp_dir!(), workflow_id, ".agents", "splusplus"])
 
     on_exit(fn ->
       restore_database_env(original_database)

@@ -10,8 +10,12 @@ product clarification or slicing. In local operator mode, the browser cockpit is
 the preferred front door for this flow.
 
 1. Start the local operator cockpit from `elixir/` with `mix sympp.cockpit` and
-   open the printed local `/sympp/board` URL. Omit `--database` for the shared
-   machine-local ledger; use `--database <ledger.sqlite3>` only for isolation.
+   open the printed local `/sympp/board` URL. Omitted database options use the
+   shared local ledger, preferring
+   `$HOME/.agents/splusplus/symphony_plus_plus.sqlite3` on POSIX-style shells or
+   `%USERPROFILE%\.agents\splusplus\symphony_plus_plus.sqlite3` on Windows and
+   falling back under a temp/relative `.agents/splusplus` root if home is
+   unavailable; use `--database <ledger.sqlite3>` only for isolation.
 2. Open `/sympp/work-requests` and choose `New WorkRequest`.
 3. Enter repo and base branch explicitly, then set work type, desired dispatch
    shape, human description, and the structured constraint fields for paths,
@@ -70,11 +74,11 @@ mix sympp.cockpit
 
 The command binds to `127.0.0.1:4057` by default, prints
 `http://127.0.0.1:4057/sympp/board`, serves MCP at
-`http://127.0.0.1:4057/mcp`, initializes the shared machine-local SQLite
-ledger through the existing dashboard path, and blocks until interrupted. Use
-`--database <ledger.sqlite3>` only when you intentionally need an isolated
-ledger. Use `--port 0` only when you intentionally need a dynamic local URL;
-public bind hosts are rejected.
+`http://127.0.0.1:4057/mcp`, initializes the shared local SQLite ledger in the
+preferred `$HOME/.agents/splusplus/` home or the existing fallback root, and
+blocks until interrupted. Use `--database <ledger.sqlite3>` only when you
+intentionally need an isolated ledger. Use `--port 0` only when you
+intentionally need a dynamic local URL; public bind hosts are rejected.
 
 1. Choose `quick_fix`, `hotfix`, `investigation`, or another package policy
    that matches the work. Keep repo, base branch, owned paths, acceptance
@@ -82,8 +86,9 @@ public bind hosts are rejected.
 2. Copy the nearest request template from `../templates/` into scratch space and
    edit the copy. Do not edit shared templates for one incident.
 3. From `elixir/`, run
-   `mise exec -- mix sympp.create_work --database <ledger.sqlite3> --file ../scratch/<request>.yaml --claimed-by <worker-id>`
-   with the edited request path and stable worker identity.
+   `mise exec -- mix sympp.create_work --file ../scratch/<request>.yaml --claimed-by <worker-id>`
+   with the edited request path and stable worker identity. Add `--database`
+   only for an intentionally isolated ledger.
 4. Confirm normal command output contains only non-secret handoff metadata. The
    worker grant secret must be stored in the private local handoff store, not
    printed into stdout, prompts, PR text, or logs.

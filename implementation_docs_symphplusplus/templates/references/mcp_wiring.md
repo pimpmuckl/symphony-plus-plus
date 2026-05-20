@@ -42,15 +42,20 @@ Start one local cockpit/daemon before launching the dedicated Codex session
 that enables the opt-in MCP plugin:
 
 ```bash
-mix sympp.cockpit --database <ledger-path>
+mix sympp.cockpit
 ```
 
 By default it binds `127.0.0.1:4057`, prints
 `http://127.0.0.1:4057/sympp/board`, and serves MCP at
-`http://127.0.0.1:4057/mcp`. Pass `--port 0` for dynamic-port manual tests, or
-`--port <n>` for a different explicit port. The bundled opt-in plugin targets
-the stable default URL; if you use another port, configure that session
-explicitly.
+`http://127.0.0.1:4057/mcp`, backed by the default local ledger. The preferred
+home is
+`$HOME/.agents/splusplus/symphony_plus_plus.sqlite3`
+(`%USERPROFILE%\.agents\splusplus\symphony_plus_plus.sqlite3` on Windows);
+if that home is unavailable, Symphony++ falls back under a temp/relative
+`.agents/splusplus` root. Pass
+`--port 0` for dynamic-port manual tests, or `--port <n>` for a different
+explicit port. The bundled opt-in plugin targets the stable default URL; if you
+use another port, configure that session explicitly.
 
 Starting the legacy stdio process from a shell does not register tools with an
 already-running model session. S++ MCP opt-in should use a one-session top-level
@@ -85,11 +90,11 @@ claims exactly one WorkPackage with the configured `claimed_by` identity.
 Run the local daemon from `elixir/`:
 
 ```bash
-mix sympp.cockpit --database <ledger-path>
+mix sympp.cockpit
 ```
 
-Use `--database <path>` when the daemon must connect to a specific Symphony++
-SQLite ledger instead of the default repo database.
+Use `--database <path>` only when the daemon must connect to a specific
+isolated Symphony++ SQLite ledger instead of the default local ledger.
 
 ## Codex MCP Dependency
 

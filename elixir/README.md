@@ -100,11 +100,15 @@ Supported entry kinds are `task_plan`, `finding`, `progress`, `blocker`,
 `repo`, `base_branch`, `workspace_path`, `caller_id`, and `status`, plus
 `pause`, `resume`, `complete`, and `archive` lifecycle aliases. If
 `--database` is omitted, the task uses the shared machine-local Symphony++
-default ledger, matching cockpit and WorkRequest/WorkPackage CLI defaults. The
-database must be a durable local filesystem path; `:memory:` and SQLite `file:`
-URIs are rejected because Solo Sessions must persist across CLI invocations.
-`attach` may create the ledger database; other commands require the resolved
-local database file to already exist. Pass `--database <sqlite-path>` for
+default ledger, preferring `$HOME/.agents/splusplus/symphony_plus_plus.sqlite3`
+(`%USERPROFILE%\.agents\splusplus\symphony_plus_plus.sqlite3` on Windows) and
+falling back under a temp/relative `.agents/splusplus` root if home is
+unavailable,
+matching cockpit and WorkRequest/WorkPackage CLI defaults. The database must be
+a durable local filesystem path; `:memory:` and SQLite `file:` URIs are
+rejected because Solo Sessions must persist across CLI invocations. `attach`
+may create the ledger database; other commands require the resolved local
+database file to already exist. Pass `--database <sqlite-path>` only for
 intentional isolation in tests, development, or manual experiments.
 
 ## Configuration

@@ -102,7 +102,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     template_wiring = File.read!(Path.join(@template_references_dir, "mcp_wiring.md"))
 
     assert wiring =~ "http://127.0.0.1:4057/mcp"
-    assert wiring =~ "mix sympp.cockpit --database <ledger-path>"
+    assert wiring =~ "mix sympp.cockpit"
+    assert wiring =~ "$HOME/.agents/splusplus/symphony_plus_plus.sqlite3"
     assert wiring =~ "--port 0"
     assert wiring =~ "[mcp_servers.symphony_plus_plus]"
     assert wiring =~ "url = \"http://127.0.0.1:4057/mcp\""
