@@ -217,6 +217,7 @@ type BlockerItem = {
   status?: string | null;
   blockerCount: number;
   detail: string;
+  selection: CardDetailSelection;
 };
 
 type FinishedHighlight = {
@@ -226,6 +227,7 @@ type FinishedHighlight = {
   kind: FinishedHighlightKind;
   status?: string | null;
   at?: string | null;
+  selection: CardDetailSelection;
 };
 
 type FinishedHighlightKind = "Request" | "Slice" | "Work Package";
@@ -412,7 +414,7 @@ export default function App() {
   const requests = dashboard?.work_requests?.work_requests ?? [];
   const requestDetails = dashboard?.work_request_details ?? [];
   const guidanceItems = useMemo(() => allGuidanceItems(dashboard), [dashboard]);
-  const blockerItems = useMemo(() => activeBlockerItems(packages), [packages]);
+  const blockerItems = useMemo(() => activeBlockerItems(packages, requestDetails), [packages, requestDetails]);
   const finishedHighlights = useMemo(() => recentFinishedHighlights(packages, requests, requestDetails), [packages, requests, requestDetails]);
   const soloSessions = dashboard?.solo_sessions?.solo_sessions ?? [];
   const repos = useMemo(() => repoSummaries(packages, requests, guidanceItems, soloSessions, requestDetails), [
@@ -495,6 +497,7 @@ export default function App() {
             blockerItems={blockerItems}
             finishedHighlights={finishedHighlights}
             onSelectGuidance={setSelectedGuidance}
+            onSelectCard={setSelectedCardDetail}
             updateAnimations={updateAnimations}
           />
 
@@ -623,7 +626,7 @@ function useDashboardUpdateAnimations({
     if (!ready) {
       latestSnapshotRef.current = new Map();
       previousSnapshotRef.current = null;
-      setMotions({});
+      setMotions((current) => (Object.keys(current).length > 0 ? {} : current));
       return;
     }
 
@@ -1145,17 +1148,20 @@ function StatusRail({
   blockerItems,
   finishedHighlights,
   onSelectGuidance,
+  onSelectCard,
   updateAnimations,
 }: {
   guidanceItems: GuidanceItem[];
   blockerItems: BlockerItem[];
   finishedHighlights: FinishedHighlight[];
   onSelectGuidance: (item: GuidanceItem) => void;
+  onSelectCard: CardDetailSelect;
   updateAnimations: DashboardUpdateAnimations;
 }) {
   const [openPanel, setOpenPanel] = useState<TopPanelKey | null>(readStoredTopPanel);
+  const selectCardFromPanel = useCallback((selection: CardDetailSelection) => onSelectCard(selection), [onSelectCard]);
   const renderPanel = useCallback(
-    (panel: TopPanelKey) => {
+    (panel: TopPanelKey, interactive = true) => {
       if (panel === "guidance") {
         return (
           <TopTray title="Decisions and input needed to keep work moving">
@@ -1186,7 +1192,13 @@ function StatusRail({
             ) : (
               <AnimatedTopGrid className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
                 {blockerItems.map((item, index) => (
-                  <BlockerPreviewCard key={item.id} item={item} index={index} motion={updateAnimations.motionFor(blockerUpdateKey(item))} />
+                  <BlockerPreviewCard
+                    key={item.id}
+                    item={item}
+                    index={index}
+                    onSelectCard={interactive ? () => selectCardFromPanel(item.selection) : undefined}
+                    motion={updateAnimations.motionFor(blockerUpdateKey(item))}
+                  />
                 ))}
               </AnimatedTopGrid>
             )}
@@ -1199,12 +1211,16 @@ function StatusRail({
           {finishedHighlights.length === 0 ? (
             <EmptyPanel title="Nothing finished yet" compact />
           ) : (
-            <FinishedHighlightsBoard items={finishedHighlights} updateAnimations={updateAnimations} />
+            <FinishedHighlightsBoard
+              items={finishedHighlights}
+              onSelectCard={interactive ? selectCardFromPanel : undefined}
+              updateAnimations={updateAnimations}
+            />
           )}
         </TopTray>
       );
     },
-    [blockerItems, finishedHighlights, guidanceItems, onSelectGuidance, updateAnimations],
+    [blockerItems, finishedHighlights, guidanceItems, onSelectGuidance, selectCardFromPanel, updateAnimations],
   );
 
   useEffect(() => {
@@ -1256,7 +1272,7 @@ function TopPanelCarousel({
   renderPanel,
 }: {
   activePanel: TopPanelKey | null;
-  renderPanel: (panel: TopPanelKey) => React.ReactNode;
+  renderPanel: (panel: TopPanelKey, interactive?: boolean) => React.ReactNode;
 }) {
   const [visiblePanel, setVisiblePanel] = useState<TopPanelKey | null>(activePanel);
   const [previousPanel, setPreviousPanel] = useState<TopPanelKey | null>(null);
@@ -1391,7 +1407,7 @@ function TopPanelCarousel({
   return (
     <>
       <div className="top-panel-measure" ref={measureRef} aria-hidden="true">
-        {activePanel ? renderPanel(activePanel) : null}
+        {activePanel ? renderPanel(activePanel, false) : null}
       </div>
       <div
         ref={viewportRef}
@@ -1600,20 +1616,40 @@ function GuidancePreviewCard({
   );
 }
 
-function BlockerPreviewCard({ item, index, motion }: { item: BlockerItem; index: number; motion?: UpdateMotion }) {
+function blockerBadgeLabel(item: BlockerItem) {
+  return item.blockerCount > 1 ? `${item.blockerCount} blockers` : "Blocked";
+}
+
+function cardDetailDataKind(selection: CardDetailSelection) {
+  return selection.kind;
+}
+
+function BlockerPreviewCard({
+  item,
+  index,
+  onSelectCard,
+  motion,
+}: {
+  item: BlockerItem;
+  index: number;
+  onSelectCard?: () => void;
+  motion?: UpdateMotion;
+}) {
   return (
     <div
-      className={stateCardClassName("blocked", "stagger-item p-4")}
+      className={stateCardClassName("blocked", cn("stagger-item p-4", onSelectCard && "card-detail-trigger"))}
       style={stateCardStyle("blocked", { animationDelay: `${index * 45}ms` })}
       data-flip-id={blockerUpdateKey(item)}
+      data-card-detail-kind={cardDetailDataKind(item.selection)}
       {...updateMotionAttributes(motion)}
+      {...interactiveCardProps(onSelectCard)}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold">{item.title}</p>
           <p className="mt-1 truncate text-xs text-muted-foreground">{item.repo}</p>
         </div>
-        <AnimatedBadge label={formatStatus(item.status)} variant="danger" />
+        <AnimatedBadge label={blockerBadgeLabel(item)} variant="danger" className="shrink-0" />
       </div>
       <p className="mt-4 line-clamp-3 text-sm text-muted-foreground">{item.detail}</p>
       <div className="mt-4 flex items-center gap-2 text-xs text-amber-800 dark:text-amber-200">
@@ -1630,7 +1666,15 @@ const finishedHighlightLanes: { kind: FinishedHighlightKind; title: string; empt
   { kind: "Work Package", title: "Work Packages", empty: "No finished packages" },
 ];
 
-function FinishedHighlightsBoard({ items, updateAnimations }: { items: FinishedHighlight[]; updateAnimations: DashboardUpdateAnimations }) {
+function FinishedHighlightsBoard({
+  items,
+  onSelectCard,
+  updateAnimations,
+}: {
+  items: FinishedHighlight[];
+  onSelectCard?: CardDetailSelect;
+  updateAnimations: DashboardUpdateAnimations;
+}) {
   const flipRef = useFlipList(finishedHighlightsListKey(items));
 
   return (
@@ -1654,6 +1698,7 @@ function FinishedHighlightsBoard({ items, updateAnimations }: { items: FinishedH
                       key={`${item.kind}-${item.id}`}
                       item={item}
                       index={index}
+                      onSelectCard={onSelectCard ? () => onSelectCard(item.selection) : undefined}
                       motion={updateAnimations.motionFor(finishedHighlightUpdateKey(item))}
                     />
                   ))
@@ -1667,13 +1712,25 @@ function FinishedHighlightsBoard({ items, updateAnimations }: { items: FinishedH
   );
 }
 
-function FinishedHighlightCard({ item, index, motion }: { item: FinishedHighlight; index: number; motion?: UpdateMotion }) {
+function FinishedHighlightCard({
+  item,
+  index,
+  onSelectCard,
+  motion,
+}: {
+  item: FinishedHighlight;
+  index: number;
+  onSelectCard?: () => void;
+  motion?: UpdateMotion;
+}) {
   return (
     <div
-      className={stateCardClassName("finished", "stagger-item p-3")}
+      className={stateCardClassName("finished", cn("stagger-item p-3", onSelectCard && "card-detail-trigger"))}
       style={stateCardStyle("finished", { animationDelay: `${index * 30}ms` })}
       data-flip-id={finishedHighlightUpdateKey(item)}
+      data-card-detail-kind={cardDetailDataKind(item.selection)}
       {...updateMotionAttributes(motion)}
+      {...interactiveCardProps(onSelectCard)}
     >
       <div className="flex min-w-0 items-start gap-2">
         <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
@@ -5442,7 +5499,7 @@ function clarificationGuidanceItem(detail: WorkRequestDetail, question: Clarific
   };
 }
 
-function activeBlockerItems(packages: WorkPackageCard[]): BlockerItem[] {
+function activeBlockerItems(packages: WorkPackageCard[], details: WorkRequestDetail[] = []): BlockerItem[] {
   return packages
     .filter((pkg) => pkg.status === "blocked" || (pkg.active_blocker_count || 0) > 0)
     .map((pkg) => ({
@@ -5455,6 +5512,7 @@ function activeBlockerItems(packages: WorkPackageCard[]): BlockerItem[] {
         pkg.status === "blocked"
           ? "This work package is blocked and needs another condition or dependency cleared before it can move."
           : "This work package has active blockers attached to its execution path.",
+      selection: packageBoardSelection(pkg, details),
     }));
 }
 
@@ -5463,6 +5521,9 @@ function recentFinishedHighlights(
   requests: WorkRequestCard[],
   details: WorkRequestDetail[],
 ): FinishedHighlight[] {
+  const detailByRequestId = new Map(details.map((detail) => [detail.work_request.id, detail]));
+  const packageById = new Map(packages.map((pkg) => [pkg.id, pkg]));
+
   const packageHighlights = packages
     .filter((pkg) => packageLane(pkg) === "finished")
     .map<FinishedHighlight>((pkg) => ({
@@ -5472,30 +5533,43 @@ function recentFinishedHighlights(
       kind: "Work Package",
       status: pkg.status,
       at: pkg.latest_progress_at,
+      selection: packageBoardSelection(pkg, details),
     }));
 
   const requestHighlights = requests
     .filter((request) => requestLane(request) === "finished")
-    .map<FinishedHighlight>((request) => ({
-      id: request.id,
-      title: request.title || request.id,
-      repo: repoName(request.repo),
-      kind: "Request",
-      status: request.status,
-      at: request.updated_at || request.inserted_at,
-    }));
+    .map<FinishedHighlight | null>((request) => {
+      const detail = detailByRequestId.get(request.id);
+      if (!detail) return null;
+
+      return {
+        id: request.id,
+        title: request.title || request.id,
+        repo: repoName(request.repo),
+        kind: "Request",
+        status: request.status,
+        at: request.updated_at || request.inserted_at,
+        selection: { kind: "request", detail },
+      };
+    })
+    .filter((item): item is FinishedHighlight => Boolean(item));
 
   const sliceHighlights = details.flatMap<FinishedHighlight>((detail) =>
     (detail.planned_slices || [])
       .filter((slice) => sliceLane(slice) === "finished")
-      .map((slice) => ({
-        id: slice.id,
-        title: slice.title || slice.id,
-        repo: repoName(detail.work_request.repo),
-        kind: "Slice",
-        status: slice.work_package_status || slice.status,
-        at: detail.work_request.updated_at || detail.work_request.inserted_at,
-      })),
+      .map((slice) => {
+        const pkg = slice.work_package_id ? packageById.get(slice.work_package_id) : undefined;
+
+        return {
+          id: slice.id,
+          title: slice.title || slice.id,
+          repo: repoName(detail.work_request.repo),
+          kind: "Slice",
+          status: slice.work_package_status || slice.status,
+          at: detail.work_request.updated_at || detail.work_request.inserted_at,
+          selection: pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice },
+        };
+      }),
   );
 
   return [...packageHighlights, ...requestHighlights, ...sliceHighlights].sort((a, b) => {
@@ -5503,6 +5577,17 @@ function recentFinishedHighlights(
     const right = b.at ? Date.parse(b.at) : 0;
     return right - left;
   });
+}
+
+function packageBoardSelection(pkg: WorkPackageCard, details: WorkRequestDetail[]): CardDetailSelection {
+  for (const detail of details) {
+    const slice = (detail.planned_slices || []).find((candidate) => candidate.work_package_id === pkg.id);
+    if (slice) {
+      return sliceLane(slice) === "slices" ? { kind: "slice", detail, slice, pkg } : { kind: "package", pkg, detail, slice };
+    }
+  }
+
+  return { kind: "package", pkg };
 }
 
 function repoSummaries(
