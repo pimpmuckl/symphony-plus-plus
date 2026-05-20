@@ -991,6 +991,11 @@
     fill: var(--wire-color, rgb(148 163 184));
   }
 
+  .board-wire-node-blocker-target {
+    stroke: hsl(var(--background));
+    stroke-width: 1.75;
+  }
+
   .dialog-overlay[data-state="open"] {
     animation: dialog-overlay-open 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }

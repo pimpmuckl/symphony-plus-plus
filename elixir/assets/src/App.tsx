@@ -2545,12 +2545,20 @@ function BoardWireLayer({ paths, width, height }: { paths: BoardWirePath[]; widt
             data-wire-track-count={wire.trackCount}
             style={wireToneStyle(wire.tone)}
           >
-            <circle className="board-wire-node board-wire-node-target" cx={wire.targetX} cy={wire.targetY} r={wire.kind === "blocker" ? 4.5 : 4} />
+            {wire.kind === "blocker" ? (
+              <path className="board-wire-node board-wire-node-target board-wire-node-blocker-target" d={diamondPath(wire.targetX, wire.targetY, 5.25)} />
+            ) : (
+              <circle className="board-wire-node board-wire-node-target" cx={wire.targetX} cy={wire.targetY} r={4} />
+            )}
           </g>
         ))}
       </svg>
     </>
   );
+}
+
+function diamondPath(x: number, y: number, radius: number) {
+  return `M ${x} ${y - radius} L ${x + radius} ${y} L ${x} ${y + radius} L ${x - radius} ${y} Z`;
 }
 
 function useBoardWirePaths(boardRef: React.RefObject<HTMLDivElement | null>, wires: BoardWire[], measureKey: string) {
