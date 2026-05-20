@@ -72,6 +72,7 @@
     {
       "name": "mark_ready",
       "purpose": "Move to ready state only if gates pass.",
+      "ci_policy": "CI readiness is required only when the package policy required_gates includes ci_waiting. Without that gate, mark_ready may move directly from reviewing to the terminal ready status after the remaining readiness gates pass. The mcp_ci_required policy template explicitly requires the CI wait for MCP packages.",
       "post_ready_policy": "After mark_ready succeeds, new worker evidence writes are rejected as already_ready while idempotent replays remain available."
     }
   ],

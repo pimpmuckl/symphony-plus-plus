@@ -320,6 +320,12 @@ progress, finding, blocker, branch/PR, scope-request, and review-package writes
 return `already_ready`, while idempotent replays of previously recorded writes
 remain available.
 
+CI readiness is controlled by policy `required_gates`. If `ci_waiting` is
+present, `mark_ready` requires the package to be in `ci_waiting`. If it is
+absent, `mark_ready` may move the package directly from `reviewing` to its
+terminal ready status once the remaining readiness gates pass. Use
+`mcp_ci_required` for MCP packages that explicitly require the CI wait.
+
 For non-merge-gated policies such as `quick_fix`, generic `append_progress`
 events can satisfy focused-test and review-profile readiness by recording
 statuses `tests_passed` and `review_<profile>_green`, for example

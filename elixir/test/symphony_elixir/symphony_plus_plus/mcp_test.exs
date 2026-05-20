@@ -9969,6 +9969,105 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert ready_package.status == "ready_for_human_merge"
   end
 
+  test "mark_ready does not require ci_waiting when package policy omits CI", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-READY-NO-CI", kind: "mcp", status: "reviewing"))
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    missing_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-no-ci-missing", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    missing = get_in(missing_response, ["error", "data", "missing"])
+    refute "status_ci_waiting" in missing
+    assert "plan_complete" in missing
+    assert "acceptance_criteria_met" in missing
+    assert "tests_passed" in missing
+    assert "pr_attached" in missing
+    assert "review_package_submitted" in missing
+    assert "review_lanes_complete" in missing
+
+    append_merge_ready_evidence(repo, session, package.id, "head-no-ci")
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-no-ci", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+    assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
+  end
+
+  test "mark_ready still requires ci_waiting when package policy requires CI", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-READY-CI-REQUIRED", kind: "mcp", status: "reviewing", policy_template: "mcp_ci_required")
+             )
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    append_merge_ready_evidence(repo, session, package.id, "head-ci-required")
+
+    reviewing_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-ci-required-reviewing", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(reviewing_response, ["error", "data", "reason"]) == "readiness_failed"
+    assert get_in(reviewing_response, ["error", "data", "missing"]) == ["status_ci_waiting"]
+
+    transition_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "ci-required-transition",
+          "method" => "tools/call",
+          "params" => %{"name" => "set_status", "arguments" => %{"expected_status" => "reviewing", "status" => "ci_waiting"}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(transition_response, ["result", "structuredContent", "work_package", "status"]) == "ci_waiting"
+
+    ready_response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "ready-ci-required", "method" => "tools/call", "params" => %{"name" => "mark_ready"}},
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(ready_response, ["result", "structuredContent", "ready"]) == true
+    assert get_in(ready_response, ["result", "structuredContent", "work_package", "status"]) == "ready_for_human_merge"
+  end
+
+  test "state machine blocks ready transitions from reviewing when package policy requires CI", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-READY-CI-STATE-MACHINE", kind: "mcp", status: "reviewing", policy_template: "mcp_ci_required")
+             )
+
+    actor = %{grant_role: "worker", capabilities: ["worker:lifecycle.transition"], work_package_id: package.id}
+
+    assert {:error, :invalid_transition} =
+             StateMachine.validate_ready_transition(package, "ready_for_human_merge", actor)
+
+    ci_waiting_package = %{package | status: "ci_waiting"}
+    assert :ok = StateMachine.validate_ready_transition(ci_waiting_package, "ready_for_human_merge", actor)
+  end
+
   test "review package submitted before PR attach does not satisfy later PR readiness", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-PRE-PR-REVIEW", kind: "mcp", status: "ci_waiting"))
     append_done_plan(repo, package.id)
@@ -13482,6 +13581,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
                "title" => "Complete implementation",
                "status" => "done"
              })
+  end
+
+  defp append_merge_ready_evidence(repo, session, work_package_id, head_sha) do
+    append_done_plan(repo, work_package_id)
+    pr_url = "https://github.com/example/repo/pull/#{System.unique_integer([:positive])}"
+
+    attach_tool(repo, session, "attach_branch", %{"branch" => "agent/#{work_package_id}/worker", "head_sha" => head_sha})
+    attach_tool(repo, session, "attach_pr", %{"url" => pr_url, "head_sha" => head_sha})
+
+    attach_tool(repo, session, "submit_review_package", %{
+      "summary" => "Ready",
+      "tests" => ["mix test"],
+      "artifacts" => ["review-log.txt"],
+      "head_sha" => head_sha,
+      "acceptance_criteria_met" => true,
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
+    })
   end
 
   defp review_suite_artifact_id(work_package_id, head_sha) do

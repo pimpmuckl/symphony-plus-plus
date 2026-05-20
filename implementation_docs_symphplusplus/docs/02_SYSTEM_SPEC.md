@@ -169,6 +169,11 @@ blocked
 abandoned
 ```
 
+`mark_ready` may move a package directly from `reviewing` to its terminal ready
+status when that package policy does not require CI. Generic lifecycle updates
+must still use `mark_ready` for ready statuses; `ci_waiting` remains required
+when the package policy includes the `ci_waiting` required gate.
+
 ## Permission rule
 
 A grant may only mint child grants narrower than itself.
@@ -222,7 +227,7 @@ A package cannot be marked ready if:
 - Required plan nodes are incomplete.
 - Required review-suite artifacts are missing.
 - Required PR is missing.
-- CI is required and not green.
+- CI is required by package policy and the package is not in `ci_waiting`.
 - Changed files violate allowed scope.
 - Acceptance evidence is missing.
 
