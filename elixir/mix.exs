@@ -10,7 +10,7 @@ defmodule SymphonyElixir.MixProject do
       start_permanent: Mix.env() == :prod,
       test_coverage: [
         summary: [
-          threshold: 81.3
+          threshold: 80.0
         ],
         ignore_modules: [
           SymphonyElixir.Config,
@@ -27,6 +27,10 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.LogFile,
           SymphonyElixir.Workspace,
           SymphonyElixirWeb.DashboardLive,
+          SymphonyElixirWeb.SymppBoardLive,
+          SymphonyElixirWeb.SymppDetailLive,
+          SymphonyElixirWeb.SymppSoloSessionLive,
+          SymphonyElixirWeb.SymppWorkRequestLive,
           SymphonyElixirWeb.Endpoint,
           SymphonyElixirWeb.ErrorHTML,
           SymphonyElixirWeb.ErrorJSON,

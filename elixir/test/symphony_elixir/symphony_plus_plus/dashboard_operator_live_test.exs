@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.DashboardOperatorLiveTest do
   use ExUnit.Case, async: false
 
+  @moduletag skip: "The human-facing operator cockpit is now served by the Vite React shell and operator API tests."
+
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 

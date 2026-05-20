@@ -22,6 +22,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   @mcp_plugin_start_script_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/start-sympp-mcp.ps1")
   @mcp_plugin_solo_script_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/scripts/sympp-solo.ps1")
   @marketplace_path Path.join(@repo_root, ".agents/plugins/marketplace.json")
+  @plugin_marketplace_name "symphony-plus-plus"
   @plugin_readme_path Path.join(@repo_root, "plugins/symphony-plus-plus/README.md")
   @refresh_script_path Path.join(@repo_root, "scripts/refresh-local-plugin.ps1")
   @worker_secret_script_path Path.join(@repo_root, "scripts/sympp-worker-secret.ps1")
@@ -3038,11 +3039,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         assert status == 0, output
 
         for cache_name <- ["local", @plugin_version] do
-          refreshed_manifest_path = plugin_cache_path(temp_codex_home, [cache_name, ".codex-plugin", "plugin.json"])
-          refreshed_mcp_path = plugin_cache_path(temp_codex_home, [cache_name, ".mcp.json"])
-          default_skill_path = plugin_cache_path(temp_codex_home, [cache_name, "skills-default", "symphony-solo-session", "SKILL.md"])
-          root_skills_path = plugin_cache_path(temp_codex_home, [cache_name, "skills"])
-          source_hint_path = plugin_cache_path(temp_codex_home, [cache_name, ".sympp-source-root"])
+          refreshed_manifest_path = published_plugin_cache_path(temp_codex_home, [cache_name, ".codex-plugin", "plugin.json"])
+          refreshed_mcp_path = published_plugin_cache_path(temp_codex_home, [cache_name, ".mcp.json"])
+          default_skill_path = published_plugin_cache_path(temp_codex_home, [cache_name, "skills-default", "symphony-solo-session", "SKILL.md"])
+          root_skills_path = published_plugin_cache_path(temp_codex_home, [cache_name, "skills"])
+          source_hint_path = published_plugin_cache_path(temp_codex_home, [cache_name, ".sympp-source-root"])
 
           refreshed_manifest = refreshed_manifest_path |> File.read!() |> Jason.decode!()
           assert refreshed_manifest["name"] == "symphony-plus-plus"
@@ -3057,12 +3058,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         for cache_name <- ["local", @plugin_version] do
           mcp_manifest_path =
-            plugin_cache_path(temp_codex_home, [cache_name, ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
+            published_plugin_cache_path(temp_codex_home, [cache_name, ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
 
-          mcp_config_path = plugin_cache_path(temp_codex_home, [cache_name, ".mcp.json"], "symphony-plus-plus-mcp")
-          mcp_solo_skill_path = plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-solo-session", "SKILL.md"], "symphony-plus-plus-mcp")
-          mcp_worker_skill_path = plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-work-package", "SKILL.md"], "symphony-plus-plus-mcp")
-          mcp_architect_skill_path = plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-architect", "SKILL.md"], "symphony-plus-plus-mcp")
+          mcp_config_path = published_plugin_cache_path(temp_codex_home, [cache_name, ".mcp.json"], "symphony-plus-plus-mcp")
+          mcp_solo_skill_path = published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-solo-session", "SKILL.md"], "symphony-plus-plus-mcp")
+          mcp_worker_skill_path = published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-work-package", "SKILL.md"], "symphony-plus-plus-mcp")
+          mcp_architect_skill_path = published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-architect", "SKILL.md"], "symphony-plus-plus-mcp")
           mcp_manifest = mcp_manifest_path |> File.read!() |> Jason.decode!()
           mcp_config = mcp_config_path |> File.read!() |> Jason.decode!()
           assert mcp_manifest["name"] == "symphony-plus-plus-mcp"
@@ -3118,7 +3119,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         assert output =~ "cache: #{expected_version}"
 
         for cache_name <- ["local", expected_version] do
-          source_hint_path = plugin_cache_path(temp_codex_home, [cache_name, ".sympp-source-root"])
+          source_hint_path = published_plugin_cache_path(temp_codex_home, [cache_name, ".sympp-source-root"])
           assert same_path?(String.trim(File.read!(source_hint_path)), @repo_root)
         end
       after
@@ -3162,17 +3163,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         for cache_name <- ["local", @plugin_version] do
           manifest_path =
-            plugin_cache_path(temp_codex_home, [cache_name, ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
+            published_plugin_cache_path(temp_codex_home, [cache_name, ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
 
-          source_hint_path = plugin_cache_path(temp_codex_home, [cache_name, ".sympp-source-root"], "symphony-plus-plus-mcp")
+          source_hint_path = published_plugin_cache_path(temp_codex_home, [cache_name, ".sympp-source-root"], "symphony-plus-plus-mcp")
 
           manifest = manifest_path |> File.read!() |> Jason.decode!()
           assert manifest["name"] == "symphony-plus-plus-mcp"
           assert manifest["version"] == @plugin_version
           assert manifest["mcpServers"] == "./.mcp.json"
-          refute File.exists?(plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-solo-session"], "symphony-plus-plus-mcp"))
-          assert File.exists?(plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-work-package", "SKILL.md"], "symphony-plus-plus-mcp"))
-          assert File.exists?(plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-architect", "SKILL.md"], "symphony-plus-plus-mcp"))
+          refute File.exists?(published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-solo-session"], "symphony-plus-plus-mcp"))
+          assert File.exists?(published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-work-package", "SKILL.md"], "symphony-plus-plus-mcp"))
+          assert File.exists?(published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-architect", "SKILL.md"], "symphony-plus-plus-mcp"))
           assert same_path?(String.trim(File.read!(source_hint_path)), @repo_root)
         end
       after
@@ -3187,12 +3188,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
     if powershell do
       for cache_name <- ["local", @plugin_version] do
-        stale_manifest_path = plugin_cache_path(temp_codex_home, [cache_name, ".codex-plugin", "plugin.json"])
-        stale_mcp_path = plugin_cache_path(temp_codex_home, [cache_name, ".mcp.json"])
-        stale_root_solo_skill_path = plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-solo-session", "SKILL.md"])
-        stale_root_architect_skill_path = plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-architect", "SKILL.md"])
-        stale_mcp_solo_skill_path = plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-solo-session", "SKILL.md"], "symphony-plus-plus-mcp")
-        marker_path = plugin_cache_path(temp_codex_home, [cache_name, "operator-marker", "keep.txt"])
+        stale_manifest_path = published_plugin_cache_path(temp_codex_home, [cache_name, ".codex-plugin", "plugin.json"])
+        stale_mcp_path = published_plugin_cache_path(temp_codex_home, [cache_name, ".mcp.json"])
+        stale_root_solo_skill_path = published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-solo-session", "SKILL.md"])
+        stale_root_architect_skill_path = published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-architect", "SKILL.md"])
+        stale_mcp_solo_skill_path = published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-solo-session", "SKILL.md"], "symphony-plus-plus-mcp")
+        marker_path = published_plugin_cache_path(temp_codex_home, [cache_name, "operator-marker", "keep.txt"])
 
         File.mkdir_p!(Path.dirname(stale_manifest_path))
         File.write!(stale_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "stale"}))
@@ -3228,19 +3229,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         for cache_name <- ["local", @plugin_version] do
           manifest =
             temp_codex_home
-            |> plugin_cache_path([cache_name, ".codex-plugin", "plugin.json"])
+            |> published_plugin_cache_path([cache_name, ".codex-plugin", "plugin.json"])
             |> File.read!()
             |> Jason.decode!()
 
           assert manifest["version"] == @plugin_version
           refute Map.has_key?(manifest, "mcpServers")
-          refute File.exists?(plugin_cache_path(temp_codex_home, [cache_name, ".mcp.json"]))
-          refute File.exists?(plugin_cache_path(temp_codex_home, [cache_name, "skills"]))
-          refute File.exists?(plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-solo-session"], "symphony-plus-plus-mcp"))
-          assert File.exists?(plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-work-package", "SKILL.md"], "symphony-plus-plus-mcp"))
-          assert File.exists?(plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-architect", "SKILL.md"], "symphony-plus-plus-mcp"))
+          refute File.exists?(published_plugin_cache_path(temp_codex_home, [cache_name, ".mcp.json"]))
+          refute File.exists?(published_plugin_cache_path(temp_codex_home, [cache_name, "skills"]))
+          refute File.exists?(published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-solo-session"], "symphony-plus-plus-mcp"))
+          assert File.exists?(published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-work-package", "SKILL.md"], "symphony-plus-plus-mcp"))
+          assert File.exists?(published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-architect", "SKILL.md"], "symphony-plus-plus-mcp"))
 
-          assert File.read!(plugin_cache_path(temp_codex_home, [cache_name, "operator-marker", "keep.txt"])) ==
+          assert File.read!(published_plugin_cache_path(temp_codex_home, [cache_name, "operator-marker", "keep.txt"])) ==
                    "preserve #{cache_name}"
         end
       after
@@ -3356,21 +3357,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     temp_codex_home = unique_temp_path("sympp-plugin-refresh")
 
     if powershell do
-      stale_manifest_path = plugin_cache_path(temp_codex_home, ["0.0.9", ".codex-plugin", "plugin.json"])
-      sentinel_path = plugin_cache_path(temp_codex_home, ["0.0.9", "already-open.txt"])
-      incompatible_manifest_path = plugin_cache_path(temp_codex_home, ["0.1.1", ".codex-plugin", "plugin.json"])
-      incompatible_mcp_path = plugin_cache_path(temp_codex_home, ["0.1.1", ".mcp.json"])
-      incompatible_hint_path = plugin_cache_path(temp_codex_home, ["0.1.1", ".sympp-source-root"])
-      malformed_manifest_path = plugin_cache_path(temp_codex_home, ["malformed-old", ".codex-plugin", "plugin.json"])
-      malformed_mcp_path = plugin_cache_path(temp_codex_home, ["malformed-old", ".mcp.json"])
-      malformed_hint_path = plugin_cache_path(temp_codex_home, ["malformed-old", ".sympp-source-root"])
-      missing_manifest_mcp_path = plugin_cache_path(temp_codex_home, ["missing-manifest", ".mcp.json"])
-      missing_manifest_hint_path = plugin_cache_path(temp_codex_home, ["missing-manifest", ".sympp-source-root"])
-      manual_semver_mcp_path = plugin_cache_path(temp_codex_home, ["1.2.3", ".mcp.json"])
-      manual_manifest_path = plugin_cache_path(temp_codex_home, ["manual-default", ".codex-plugin", "plugin.json"])
-      manual_manifest_mcp_path = plugin_cache_path(temp_codex_home, ["manual-default", ".mcp.json"])
-      scratch_path = plugin_cache_path(temp_codex_home, ["scratch", "note.txt"])
-      scratch_mcp_path = plugin_cache_path(temp_codex_home, ["scratch", ".mcp.json"])
+      stale_manifest_path = published_plugin_cache_path(temp_codex_home, ["0.0.9", ".codex-plugin", "plugin.json"])
+      sentinel_path = published_plugin_cache_path(temp_codex_home, ["0.0.9", "already-open.txt"])
+      incompatible_manifest_path = published_plugin_cache_path(temp_codex_home, ["0.1.1", ".codex-plugin", "plugin.json"])
+      incompatible_mcp_path = published_plugin_cache_path(temp_codex_home, ["0.1.1", ".mcp.json"])
+      incompatible_hint_path = published_plugin_cache_path(temp_codex_home, ["0.1.1", ".sympp-source-root"])
+      malformed_manifest_path = published_plugin_cache_path(temp_codex_home, ["malformed-old", ".codex-plugin", "plugin.json"])
+      malformed_mcp_path = published_plugin_cache_path(temp_codex_home, ["malformed-old", ".mcp.json"])
+      malformed_hint_path = published_plugin_cache_path(temp_codex_home, ["malformed-old", ".sympp-source-root"])
+      missing_manifest_mcp_path = published_plugin_cache_path(temp_codex_home, ["missing-manifest", ".mcp.json"])
+      missing_manifest_hint_path = published_plugin_cache_path(temp_codex_home, ["missing-manifest", ".sympp-source-root"])
+      manual_semver_mcp_path = published_plugin_cache_path(temp_codex_home, ["1.2.3", ".mcp.json"])
+      manual_manifest_path = published_plugin_cache_path(temp_codex_home, ["manual-default", ".codex-plugin", "plugin.json"])
+      manual_manifest_mcp_path = published_plugin_cache_path(temp_codex_home, ["manual-default", ".mcp.json"])
+      scratch_path = published_plugin_cache_path(temp_codex_home, ["scratch", "note.txt"])
+      scratch_mcp_path = published_plugin_cache_path(temp_codex_home, ["scratch", ".mcp.json"])
       File.mkdir_p!(Path.dirname(stale_manifest_path))
       File.write!(stale_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "0.0.9"}))
       File.write!(sentinel_path, "preserve")
@@ -3460,26 +3461,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         assert output =~ "Repaired incompatible default Symphony++ plugin cache"
 
         versioned_manifest =
-          plugin_cache_path(temp_codex_home, [@plugin_version, ".codex-plugin", "plugin.json"])
+          published_plugin_cache_path(temp_codex_home, [@plugin_version, ".codex-plugin", "plugin.json"])
           |> File.read!()
           |> Jason.decode!()
 
         refute Map.has_key?(versioned_manifest, "mcpServers")
-        refute File.exists?(plugin_cache_path(temp_codex_home, [@plugin_version, ".mcp.json"]))
-        assert plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"]) |> File.exists?()
+        refute File.exists?(published_plugin_cache_path(temp_codex_home, [@plugin_version, ".mcp.json"]))
+        assert published_plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"]) |> File.exists?()
 
         repaired_manifest =
-          plugin_cache_path(temp_codex_home, ["0.1.1", ".codex-plugin", "plugin.json"])
+          published_plugin_cache_path(temp_codex_home, ["0.1.1", ".codex-plugin", "plugin.json"])
           |> File.read!()
           |> Jason.decode!()
 
         refute Map.has_key?(repaired_manifest, "mcpServers")
-        refute File.exists?(plugin_cache_path(temp_codex_home, ["0.1.1", ".mcp.json"]))
-        assert File.exists?(plugin_cache_path(temp_codex_home, ["malformed-old"]))
-        refute File.exists?(plugin_cache_path(temp_codex_home, ["malformed-old", ".mcp.json"]))
-        assert File.exists?(plugin_cache_path(temp_codex_home, ["missing-manifest"]))
-        refute File.exists?(plugin_cache_path(temp_codex_home, ["missing-manifest", ".mcp.json"]))
-        refute File.exists?(plugin_cache_path(temp_codex_home, ["0.0.9", ".mcp.json"]))
+        refute File.exists?(published_plugin_cache_path(temp_codex_home, ["0.1.1", ".mcp.json"]))
+        assert File.exists?(published_plugin_cache_path(temp_codex_home, ["malformed-old"]))
+        refute File.exists?(published_plugin_cache_path(temp_codex_home, ["malformed-old", ".mcp.json"]))
+        assert File.exists?(published_plugin_cache_path(temp_codex_home, ["missing-manifest"]))
+        refute File.exists?(published_plugin_cache_path(temp_codex_home, ["missing-manifest", ".mcp.json"]))
+        refute File.exists?(published_plugin_cache_path(temp_codex_home, ["0.0.9", ".mcp.json"]))
         assert File.exists?(manual_semver_mcp_path)
         manual_manifest = manual_manifest_path |> File.read!() |> Jason.decode!()
         assert Map.has_key?(manual_manifest, "mcpServers")
@@ -3498,9 +3499,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     temp_codex_home = unique_temp_path("sympp-plugin-refresh-mcp-only")
 
     if powershell do
-      stale_manifest_path = plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"])
-      stale_mcp_path = plugin_cache_path(temp_codex_home, ["local", ".mcp.json"])
-      stale_hint_path = plugin_cache_path(temp_codex_home, ["local", ".sympp-source-root"])
+      stale_manifest_path = published_plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"])
+      stale_mcp_path = published_plugin_cache_path(temp_codex_home, ["local", ".mcp.json"])
+      stale_hint_path = published_plugin_cache_path(temp_codex_home, ["local", ".sympp-source-root"])
 
       try do
         File.mkdir_p!(Path.dirname(stale_manifest_path))
@@ -3536,7 +3537,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         repaired_manifest = stale_manifest_path |> File.read!() |> Jason.decode!()
         refute Map.has_key?(repaired_manifest, "mcpServers")
         refute File.exists?(stale_mcp_path)
-        assert File.exists?(plugin_cache_path(temp_codex_home, ["local", ".mcp.json"], "symphony-plus-plus-mcp"))
+        assert File.exists?(published_plugin_cache_path(temp_codex_home, ["local", ".mcp.json"], "symphony-plus-plus-mcp"))
       after
         File.rm_rf(temp_codex_home)
       end
@@ -3706,6 +3707,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
   defp documented_mcp_server_map(%{"mcp_servers" => server_map}), do: server_map
   defp documented_mcp_server_map(server_map), do: server_map
+
+  defp published_plugin_cache_path(codex_home, suffix, plugin_name \\ "symphony-plus-plus") do
+    plugin_cache_path(codex_home, suffix, plugin_name, @plugin_marketplace_name)
+  end
 
   defp plugin_cache_path(codex_home, suffix, plugin_name \\ "symphony-plus-plus", marketplace_name \\ "jonat-local") do
     Path.join([codex_home, "plugins", "cache", marketplace_name, plugin_name] ++ suffix)

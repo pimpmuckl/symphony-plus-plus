@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
   use ExUnit.Case, async: false
 
+  @moduletag skip: "The human-facing dashboard is now served by the Vite React shell and operator API tests."
+
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
   import Plug.Conn, only: [get_resp_header: 2, put_req_header: 3]

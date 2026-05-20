@@ -513,6 +513,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute html =~ "<style>"
   end
 
+  @tag skip: "The root human dashboard is now served by the React shell; pubsub rendering belonged to the retired LiveView surface."
   test "dashboard liveview renders and refreshes over pubsub" do
     orchestrator_name = Module.concat(__MODULE__, :DashboardOrchestrator)
     snapshot = static_snapshot()
@@ -589,6 +590,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
   end
 
+  @tag skip: "The root human dashboard is now served by the React shell; unavailable rendering belonged to the retired LiveView surface."
   test "dashboard liveview renders an unavailable state without crashing" do
     start_test_endpoint(
       orchestrator: Module.concat(__MODULE__, :MissingDashboardOrchestrator),
