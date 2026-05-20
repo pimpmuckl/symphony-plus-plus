@@ -9,7 +9,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
-  alias SymphonyElixir.SymphonyPlusPlus.GitHub.{Client, DryClient, PullRequest}
+  alias SymphonyElixir.SymphonyPlusPlus.GitHub.{Client, DryClient, PullRequest, PullRequestArtifact}
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service, as: GuidanceRequestService
   alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
@@ -5391,51 +5391,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp maybe_upsert_pr_artifact(_repo, %Session{}, _payload, true), do: :ok
-  defp maybe_upsert_pr_artifact(repo, %Session{} = session, payload, false), do: upsert_pr_artifact(repo, session, payload)
 
-  defp upsert_pr_artifact(repo, %Session{} = session, payload) do
-    attrs = %{
-      "id" => pr_artifact_id(session.assignment.work_package_id),
-      "work_package_id" => session.assignment.work_package_id,
-      "path" => "github-pr.json",
-      "title" => pr_artifact_title(payload),
-      "kind" => "github_pr",
-      "uri" => Map.get(payload, "url")
-    }
-
-    case PlanningRepository.get_artifact(repo, attrs["id"]) do
-      {:ok, nil} -> append_pr_artifact(repo, attrs)
-      {:ok, %Artifact{} = artifact} -> update_pr_artifact(repo, artifact, attrs)
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp append_pr_artifact(repo, attrs) do
-    case PlanningService.append_artifact(repo, attrs) do
-      {:ok, _artifact} -> :ok
-      {:error, :id_already_exists} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp update_pr_artifact(repo, %Artifact{} = artifact, attrs) do
-    attrs = Map.new(attrs, fn {key, value} -> {String.to_existing_atom(key), value} end)
-
-    case PlanningRepository.update_artifact(repo, artifact, attrs) do
-      {:ok, _artifact} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp pr_artifact_title(%{"repository" => repository, "number" => number}) when is_binary(repository) and is_integer(number) do
-    "GitHub PR #{repository}##{number}"
-  end
-
-  defp pr_artifact_title(_payload), do: "GitHub PR metadata"
-
-  defp pr_artifact_id(work_package_id) do
-    material = [work_package_id, "github-pr.json"] |> Enum.join(":")
-    "artifact_" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
+  defp maybe_upsert_pr_artifact(repo, %Session{} = session, payload, false) do
+    PullRequestArtifact.upsert(repo, session.assignment.work_package_id, payload)
   end
 
   defp request_scope_expansion_payload(repo, %Session{} = session) do
