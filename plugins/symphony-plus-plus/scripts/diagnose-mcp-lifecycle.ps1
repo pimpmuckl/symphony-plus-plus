@@ -3,6 +3,7 @@ param(
   [string]$MarketplaceName = "*",
   [string]$RepoRoot,
   [switch]$EnableMcpCompanion,
+  [switch]$SkipProcessScan,
   [switch]$SelfTest,
   [switch]$Doctor,
   [switch]$Json
@@ -2900,7 +2901,9 @@ $processScanScope = if ($repoRootFilter) {
   "skipped_no_repo_root_scope"
 }
 $processScanSupported = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
-$processScanNote = if (-not $processScanSupported) {
+$processScanNote = if ($SkipProcessScan) {
+  "Skipped live process scan because -SkipProcessScan was supplied."
+} elseif (-not $processScanSupported) {
   "Win32_Process process inventory is only available on Windows."
 } elseif ($cacheRepoRootFilters.Count -gt 1 -and $processRepoRootFilters.Count -eq 0) {
   "Skipped scoped live process scan because selected installed caches point at multiple source roots; pass -RepoRoot to audit one checkout."
@@ -2909,7 +2912,7 @@ $processScanNote = if (-not $processScanSupported) {
 } else {
   $null
 }
-$shouldScanProcesses = $processScanSupported -and $processRepoRootFilters.Count -gt 0
+$shouldScanProcesses = $null -eq $processScanNote -and $processScanSupported -and $processRepoRootFilters.Count -gt 0
 $allProcesses = if ($shouldScanProcesses) {
   @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, CommandLine, CreationDate)
 } else {
@@ -2996,6 +2999,7 @@ $summary = [pscustomobject]@{
   marketplace_name = $MarketplaceName
   repo_root_filter = $RepoRoot
   process_scan_supported = $processScanSupported
+  process_scan_performed = $shouldScanProcesses
   process_scan_scope = $processScanScope
   process_repo_root_filters = @($processRepoRootFilters)
   process_scan_note = $processScanNote

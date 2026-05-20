@@ -168,6 +168,7 @@ plugin root:
 .\scripts\diagnose-mcp-lifecycle.ps1 -Json
 .\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName jonat-local -Json
 .\scripts\diagnose-mcp-lifecycle.ps1 -RepoRoot C:\Code\symphony-plus-plus -Json
+.\scripts\diagnose-mcp-lifecycle.ps1 -SkipProcessScan -Json
 .\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName jonat-local -EnableMcpCompanion
 .\scripts\diagnose-mcp-lifecycle.ps1 -SelfTest
 ```
@@ -247,6 +248,10 @@ checkout. The diagnostic rejects `-RepoRoot` values that do not resolve to a
 checkout with `elixir/mix.exs`.
 The live count includes the default direct `mix.bat` path and the opt-in
 `mise exec -- mix` launcher path.
+Use `-SkipProcessScan` when the operator or test only needs cache, config, and
+readiness output and does not need a live `Win32_Process` inventory. Diagnostic
+JSON sets `process_scan_performed` so skipped scans are explicit even though
+live count fields remain numeric.
 Malformed installed cache JSON is reported on the affected cache entry instead
 of aborting the whole diagnostic.
 On non-Windows hosts, the diagnostic still reports cache/config state and marks
