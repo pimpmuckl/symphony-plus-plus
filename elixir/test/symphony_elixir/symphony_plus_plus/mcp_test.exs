@@ -17,6 +17,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Server, Session, Stdio}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.Repository, as: MCPRepository
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
@@ -30,6 +31,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository, as: SoloSessionRepository
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
+  alias SymphonyElixir.SymphonyPlusPlus.TrackerAdapter
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
@@ -322,7 +324,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Session.from_map(%{attrs | "claimed_at" => 123}) == {:error, {:invalid, "claimed_at"}}
   end
 
-  test "session grant validation rejects inactive or unclaimed grants" do
+  test "session grant validation accepts nil expiry and rejects inactive or unclaimed grants" do
     now = ~U[2026-05-04 12:00:00Z]
 
     grant = %AccessGrant{
@@ -341,7 +343,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert Session.from_grant(%{grant | revoked_at: now}, now) == {:error, :revoked}
     assert Session.from_grant(%{grant | expires_at: now}, now) == {:error, :expired}
-    assert Session.from_grant(%{grant | expires_at: nil}, now) == {:error, :missing_expiry}
+    assert {:ok, nil_expiry_session} = Session.from_grant(%{grant | expires_at: nil}, now)
+    assert nil_expiry_session.assignment.grant_id == grant.id
     assert Session.from_grant(%{grant | claimed_at: nil}, now) == {:error, :unclaimed}
     assert Session.from_grant(%{grant | claimed_by: " "}, now) == {:error, :missing_claim_identity}
   end
@@ -364,6 +367,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert Auth.require_work_package(session, "SYMPP-OTHER", UnexpectedAuthRepo) ==
              {:error, {:service_unavailable, {:unexpected_grant_lookup_result, :tuple}}}
+  end
+
+  test "auth helpers reject sessions after package authority reaches a terminal state", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-AUTH-TERMINAL", kind: "mcp", status: "ready_for_worker"))
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    assert {:ok, _terminal_package} = WorkPackageRepository.update(repo, package.id, %{status: "merged"})
+
+    assert Auth.require_session(session, repo) == {:error, {:unauthorized, :work_package_terminal}}
+  end
+
+  test "auth helpers preserve live architect sessions and retire them with their anchor package", %{repo: repo} do
+    {package, session, _grant} = create_phase_architect_session(repo, "SYMPP-AUTH-ARCH-TERMINAL", ["read:phase"])
+
+    assert {:ok, live_session} = Auth.require_session(session, repo)
+    assert live_session.assignment.grant_role == "architect"
+    assert live_session.assignment.work_package_id == package.id
+    assert live_session.assignment.phase_id == package.phase_id
+
+    assert {:ok, _terminal_package} = WorkPackageRepository.update(repo, package.id, %{status: "merged"})
+
+    assert Auth.require_session(session, repo) == {:error, {:unauthorized, :work_package_terminal}}
   end
 
   test "config parser defaults to stdio and rejects unsupported modes" do
@@ -607,6 +636,112 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       assert claimed_grant.claimed_by == "worker-env-1"
     after
       System.delete_env(env_var)
+      Repo.put_dynamic_repo(original_repo)
+      GenServer.stop(pid)
+      File.rm(database_path)
+    end
+  end
+
+  test "mix task migrates legacy access grant expiry before env secret claim" do
+    database_path = WorkPackageFactory.database_path()
+    original_repo = Repo.get_dynamic_repo()
+    env_var = "SYMPP_MCP_TEST_SECRET_#{System.unique_integer([:positive])}"
+
+    {:ok, pid} =
+      Repo.start_link(database: database_path, name: Repo.process_name(database_path), pool_size: 1, log: false)
+
+    try do
+      Repo.put_dynamic_repo(pid)
+      assert :ok = WorkPackageRepository.migrate(Repo)
+      assert {:ok, package} = WorkPackageRepository.create(Repo, WorkPackageFactory.attrs(id: "SYMPP-MCP-LEGACY-ENV"))
+
+      assert {:ok, minted} =
+               AccessGrantService.mint_worker_grant(Repo, package.id, expires_at: ~U[2030-01-01 00:00:00Z])
+
+      rebuild_access_grants_with_not_null_expiry!(pid)
+      remove_null_expiry_migration_version!(pid)
+      assert access_grant_expiry_not_null?(pid)
+
+      System.put_env(env_var, minted.work_key.secret)
+
+      input =
+        [
+          Jason.encode!(%{"jsonrpc" => "2.0", "id" => "init", "method" => "initialize", "params" => initialize_params()}),
+          Jason.encode!(%{
+            "jsonrpc" => "2.0",
+            "id" => 1,
+            "method" => "resources/read",
+            "params" => %{"uri" => "sympp://assignment/current"}
+          })
+        ]
+        |> Enum.join("\n")
+        |> Kernel.<>("\n")
+
+      output =
+        capture_io(input, fn ->
+          McpTask.run(["--database", database_path, "--work-key-secret-env", env_var, "--claimed-by", "worker-legacy-env"])
+        end)
+
+      refute output =~ minted.work_key.secret
+      [_init_response, response] = decode_json_lines(output)
+      assignment = Jason.decode!(get_in(response, ["result", "contents", Access.at(0), "text"]))
+
+      assert assignment["work_package_id"] == "SYMPP-MCP-LEGACY-ENV"
+      assert assignment["claimed_by"] == "worker-legacy-env"
+      refute access_grant_expiry_not_null?(pid)
+      assert schema_migration_recorded?(pid, 20_260_519_120_000)
+    after
+      System.delete_env(env_var)
+      Repo.put_dynamic_repo(original_repo)
+      GenServer.stop(pid)
+      File.rm(database_path)
+    end
+  end
+
+  test "MCP repository preparation is cached after a successful migration" do
+    database_path = WorkPackageFactory.database_path()
+    original_repo = Repo.get_dynamic_repo()
+
+    {:ok, pid} =
+      Repo.start_link(database: database_path, name: Repo.process_name(database_path), pool_size: 1, log: false)
+
+    try do
+      Repo.put_dynamic_repo(pid)
+      assert :ok = MCPRepository.ensure_migrated(Repo)
+
+      parent = self()
+
+      lock_task =
+        Task.async(fn ->
+          TrackerAdapter.migration_file_lock_for_test(database_path, fn ->
+            send(parent, :migration_file_lock_acquired)
+
+            receive do
+              :release_migration_file_lock -> :ok
+            end
+          end)
+        end)
+
+      assert_receive :migration_file_lock_acquired, 1_000
+
+      ensure_task =
+        Task.async(fn ->
+          task_original_repo = Repo.get_dynamic_repo()
+
+          try do
+            Repo.put_dynamic_repo(pid)
+            MCPRepository.ensure_migrated(Repo)
+          after
+            Repo.put_dynamic_repo(task_original_repo)
+          end
+        end)
+
+      ensure_result = Task.yield(ensure_task, 500) || Task.shutdown(ensure_task, :brutal_kill)
+
+      send(lock_task.pid, :release_migration_file_lock)
+      assert :ok = Task.await(lock_task)
+      assert {:ok, :ok} = ensure_result
+    after
       Repo.put_dynamic_repo(original_repo)
       GenServer.stop(pid)
       File.rm(database_path)
@@ -2395,6 +2530,71 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(stale_status_response, ["error", "data", "reason"]) == "stale_status"
   end
 
+  test "claim_work_key tool migrates legacy access grant expiry before unbound claim" do
+    database_path = WorkPackageFactory.database_path()
+    original_repo = Repo.get_dynamic_repo()
+
+    {:ok, pid} =
+      Repo.start_link(database: database_path, name: Repo.process_name(database_path), pool_size: 1, log: false)
+
+    try do
+      Repo.put_dynamic_repo(pid)
+      assert :ok = WorkPackageRepository.migrate(Repo)
+      assert {:ok, package} = WorkPackageRepository.create(Repo, WorkPackageFactory.attrs(id: "SYMPP-MCP-LEGACY-TOOL"))
+
+      assert {:ok, minted} =
+               AccessGrantService.mint_worker_grant(Repo, package.id, expires_at: ~U[2030-01-01 00:00:00Z])
+
+      rebuild_access_grants_with_not_null_expiry!(pid)
+      remove_null_expiry_migration_version!(pid)
+      assert access_grant_expiry_not_null?(pid)
+
+      response =
+        mcp_tool(
+          Repo,
+          nil,
+          "claim_work_key",
+          %{"secret" => minted.work_key.secret, "claimed_by" => "worker-legacy-tool"},
+          config: Config.default(repo: Repo, repo_root: test_repo_root(), database: database_path)
+        )
+
+      refute inspect(response) =~ minted.work_key.secret
+      assert get_in(response, ["result", "structuredContent", "assignment", "work_package_id"]) == "SYMPP-MCP-LEGACY-TOOL"
+      assert get_in(response, ["result", "structuredContent", "assignment", "claimed_by"]) == "worker-legacy-tool"
+      refute access_grant_expiry_not_null?(pid)
+      assert schema_migration_recorded?(pid, 20_260_519_120_000)
+    after
+      Repo.put_dynamic_repo(original_repo)
+      GenServer.stop(pid)
+      File.rm(database_path)
+    end
+  end
+
+  test "claim_work_key rejects terminal package grants without mutating them", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-P3-TERMINAL-CLAIM", kind: "mcp", status: "merged"))
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-terminal-package",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_001
+    assert get_in(response, ["error", "data", "reason"]) == "work_package_terminal"
+
+    assert {:ok, grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert grant.claimed_at == nil
+    assert grant.claimed_by == nil
+  end
+
   test "response-only handle preserves claimed session for sequential calls", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-HANDLE-CLAIM", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
@@ -3663,6 +3863,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert refreshed_server.session.assignment.work_package_id == "SYMPP-WORKER-CLAIM-REFRESH"
   end
 
+  test "bound MCP sessions fail closed after package authority reaches a terminal state", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WORKER-CLAIM-TERMINAL", kind: "mcp", status: "ready_for_worker"))
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+    assert {:ok, _terminal_package} = WorkPackageRepository.update(repo, package.id, %{status: "merged"})
+
+    assignment_response =
+      Server.handle(
+        %{"jsonrpc" => "2.0", "id" => "assignment-after-terminal", "method" => "tools/call", "params" => %{"name" => "get_current_assignment"}},
+        claimed_server
+      )
+
+    assert get_in(assignment_response, ["error", "code"]) == -32_001
+    assert get_in(assignment_response, ["error", "data", "reason"]) == "work_package_terminal"
+
+    reconnect_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-reconnect-after-terminal",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_work_key", "arguments" => %{"secret" => minted.work_key.secret, "claimed_by" => "worker-1"}}
+        },
+        Server.new(Config.default(repo: repo), initialized: true, state_key: make_ref())
+      )
+
+    assert get_in(reconnect_response, ["error", "code"]) == -32_001
+    assert get_in(reconnect_response, ["error", "data", "reason"]) == "work_package_terminal"
+  end
+
   test "claim_work_key rejects non-worker non-architect grant roles", %{repo: repo} do
     assert {:ok, package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-UNSUPPORTED-CLAIM-ROLE", kind: "mcp", status: "ready_for_worker"))
@@ -4074,7 +4318,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Enum.map(read_payload["decision_log_entries"], & &1["id"]) == ["WRD-MCP-WR-1"]
     assert Enum.at(read_payload["decision_log_entries"], 0)["decision"] =~ "[REDACTED]"
     assert Enum.map(read_payload["planned_slices"], & &1["id"]) == ["WRS-MCP-WR-PLANNED", "WRS-MCP-WR-APPROVED", "WRS-MCP-WR-SKIPPED"]
-    assert Enum.at(read_payload["planned_slices"], 0)["review_lanes"] == ["review_t1", "[REDACTED]", "review_t2"]
+    assert Enum.at(read_payload["planned_slices"], 0)["review_lanes"] == ["brief", "[REDACTED]", "normal"]
 
     assert read_payload["summary"] == %{
              "open_question_count" => 1,
@@ -4604,7 +4848,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "forbidden_file_globs" => [],
       "acceptance_criteria" => ["MCP planned-slice mutation succeeds."],
       "validation_steps" => ["mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs"],
-      "review_lanes" => ["review_t1", "raw_secret_review_lane", "review_t2"],
+      "review_lanes" => ["brief", "raw_secret_review_lane", "normal"],
       "stop_conditions" => ["Stop before dispatch."]
     }
 
@@ -4649,7 +4893,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(add_payload, ["planned_slice", "owned_file_globs"]) == ["elixir/lib/symphony_elixir/symphony_plus_plus/mcp/server.ex"]
     assert get_in(add_payload, ["planned_slice", "forbidden_file_globs"]) == []
     assert get_in(add_payload, ["planned_slice", "branch_pattern"]) == nil
-    assert get_in(add_payload, ["planned_slice", "review_lanes"]) == ["review_t1", "[REDACTED]", "review_t2"]
+    assert get_in(add_payload, ["planned_slice", "review_lanes"]) == ["brief", "[REDACTED]", "normal"]
     assert add_payload["status"] == %{"work_request_status" => "ready_for_slicing", "planned_slice_status" => "planned"}
     refute inspect(add_response) =~ "raw_secret_value"
 
@@ -5153,7 +5397,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "forbidden_file_globs" => [],
       "acceptance_criteria" => ["WorkRequest is sliceable."],
       "validation_steps" => ["mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs"],
-      "review_lanes" => ["review_t2"],
+      "review_lanes" => ["normal"],
       "stop_conditions" => ["Stop before dispatch."]
     }
 
@@ -7196,6 +7440,56 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(broader_response, ["error", "data", "reason"]) == "broader_child_grant"
   end
 
+  test "child worker key minting defaults to no expiry for non-expiring architect grants", %{repo: repo} do
+    {_anchor, architect_session} =
+      create_non_expiring_architect_session(repo, "SYMPP-P7-002-MINT-NO-EXPIRY-ANCHOR", [
+        "create:child_work_package",
+        "mint:child_worker_key",
+        "read:phase"
+      ])
+
+    child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-NO-EXPIRY-CHILD")
+
+    response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => child_id,
+        "template" => child_worker_template()
+      })
+
+    assert get_in(response, ["result", "structuredContent", "worker_grant", "work_package_id"]) == child_id
+    assert get_in(response, ["result", "structuredContent", "worker_grant", "expires_at"]) == nil
+
+    grant_id = get_in(response, ["result", "structuredContent", "worker_grant", "id"])
+    assert {:ok, grant} = AccessGrantRepository.get(repo, grant_id)
+    assert grant.expires_at == nil
+
+    explicit_child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-NO-EXPIRY-EXPLICIT")
+    explicit_expires_at = DateTime.utc_now(:microsecond) |> DateTime.add(3_600, :second) |> DateTime.truncate(:microsecond)
+
+    explicit_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => explicit_child_id,
+        "template" => Map.put(child_worker_template(), "expires_at", DateTime.to_iso8601(explicit_expires_at))
+      })
+
+    assert get_in(explicit_response, ["result", "structuredContent", "worker_grant", "work_package_id"]) == explicit_child_id
+    minted_expires_at = get_in(explicit_response, ["result", "structuredContent", "worker_grant", "expires_at"])
+    assert {:ok, minted_expires_at, _offset} = DateTime.from_iso8601(minted_expires_at)
+    assert DateTime.compare(DateTime.truncate(minted_expires_at, :microsecond), explicit_expires_at) == :eq
+
+    expired_child_id = create_child_work_package(repo, architect_session, "SYMPP-P7-002-MINT-NO-EXPIRY-PAST")
+    expired_expires_at = DateTime.utc_now(:microsecond) |> DateTime.add(-60, :second) |> DateTime.truncate(:microsecond)
+
+    expired_response =
+      mcp_tool(repo, architect_session, "mint_child_worker_key", %{
+        "work_package_id" => expired_child_id,
+        "template" => Map.put(child_worker_template(), "expires_at", DateTime.to_iso8601(expired_expires_at))
+      })
+
+    assert get_in(expired_response, ["error", "code"]) == -32_602
+    assert get_in(expired_response, ["error", "data", "reason"]) == "invalid_expires_at"
+  end
+
   test "phase architect cannot mint or read child worker key for sibling anchor, sibling phase, or mismatched base branch", %{repo: repo} do
     {_anchor, architect_session} =
       create_architect_session(repo, "SYMPP-P7-002-MINT-SCOPE-ANCHOR", [
@@ -7615,7 +7909,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "idempotency_key" => "post-merge-worker-blocker"
       })
 
-    assert get_in(post_merge_worker_report_blocker_response, ["error", "data", "reason"]) == "child_under_architect_control"
+    assert get_in(post_merge_worker_report_blocker_response, ["error", "data", "reason"]) == "work_package_terminal"
 
     merge_replay_response =
       mcp_tool(repo, architect_session, "merge_child_into_phase", %{
@@ -9113,11 +9407,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Ready",
-      "tests" => ["mix test", "review_t1 green", "review_t2 green"],
-      "artifacts" => ["review-t1-log.txt"],
+      "tests" => ["mix test", "brief green"],
+      "artifacts" => ["review-brief-log.txt"],
       "head_sha" => "abc123",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "brief", "verdict" => "green"}]
     })
 
     repo.delete_all(Artifact)
@@ -9132,11 +9426,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert "review_lanes_complete" in get_in(missing_review_lanes_response, ["error", "data", "missing"])
 
     attach_tool(repo, session, "submit_review_package", %{
-      "summary" => "Ready after T2",
-      "tests" => ["mix test", "review_t2 green"],
-      "artifacts" => ["review-t2-log.txt"],
+      "summary" => "Ready after normal",
+      "tests" => ["mix test", "normal green"],
+      "artifacts" => ["review-normal-log.txt"],
       "head_sha" => "abc123",
-      "reviews" => [%{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     incremental_review_lanes_response =
@@ -9147,7 +9441,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     incremental_missing = get_in(incremental_review_lanes_response, ["error", "data", "missing"])
-    assert "review_lanes_complete" in incremental_missing
+    refute "review_lanes_complete" in incremental_missing
     assert "acceptance_criteria_met" in incremental_missing
     refute "review_artifacts_attached" in incremental_missing
     assert "plan_complete" in incremental_missing
@@ -9166,7 +9460,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "artifacts" => ["review-log.txt"],
               "head_sha" => "abc123",
               "acceptance_criteria_met" => true,
-              "reviews" => [%{"lane" => 1, "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => nil}]
+              "reviews" => [%{"lane" => 1, "verdict" => "green"}, %{"lane" => "normal", "verdict" => nil}]
             }
           }
         },
@@ -9190,7 +9484,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "artifacts" => ["review-log.txt"],
               "head_sha" => "abc123",
               "acceptance_criteria_met" => true,
-              "reviews" => [%{"lane" => "review_t1", "verdict" => "green", "note" => "typo"}]
+              "reviews" => [%{"lane" => "brief", "verdict" => "green", "note" => "typo"}]
             }
           }
         },
@@ -9215,8 +9509,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "head_sha" => "abc123",
               "acceptance_criteria_met" => true,
               "reviews" => [
-                %{"lane" => " review_t1 ", "verdict" => "red"},
-                %{"lane" => "review_t1", "verdict" => "green"}
+                %{"lane" => " brief ", "verdict" => "red"},
+                %{"lane" => "brief", "verdict" => "green"}
               ]
             }
           }
@@ -9240,7 +9534,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "tests" => ["mix test"],
               "artifacts" => [],
               "head_sha" => "abc123",
-              "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+              "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
             }
           }
         },
@@ -9263,7 +9557,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "tests" => ["mix test"],
               "artifacts" => [" "],
               "head_sha" => "abc123",
-              "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+              "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
             }
           }
         },
@@ -9287,7 +9581,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "artifacts" => ["review-log.txt"],
               "head_sha" => "abc123",
               "acceptance_criteria_met" => true,
-              "reviews" => %{"lane" => "review_t1", "verdict" => "green"}
+              "reviews" => %{"lane" => "brief", "verdict" => "green"}
             }
           }
         },
@@ -9311,7 +9605,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "artifacts" => ["review-log.txt"],
               "head_sha" => "abc123",
               "acceptance_criteria_met" => "true",
-              "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+              "reviews" => [%{"lane" => "brief", "verdict" => "green"}]
             }
           }
         },
@@ -9382,7 +9676,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "artifacts" => ["review-log.txt"],
               "head_sha" => "abc123",
               "acceptance_criteria_met" => true,
-              "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+              "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
             }
           }
         },
@@ -9398,7 +9692,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-log.txt"],
       "head_sha" => "abc123",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     handoff_response =
@@ -9421,7 +9715,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-log.txt"],
       "head_sha" => "abc123",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "brief", "verdict" => "green"}]
     })
 
     latest_missing_lane_response =
@@ -9441,7 +9735,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-log.txt"],
       "head_sha" => "abc123",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "findings"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "findings"}]
     })
 
     latest_findings_response =
@@ -9471,7 +9765,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "artifacts" => ["review-log.txt"],
               "head_sha" => "abc123",
               "acceptance_criteria_met" => true,
-              "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+              "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
             }
           }
         },
@@ -9498,7 +9792,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-log.txt"],
       "head_sha" => "def456",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => " review_t1 ", "verdict" => " green "}, %{"lane" => " review_t2 ", "verdict" => " green "}]
+      "reviews" => [%{"lane" => " review_t2 ", "verdict" => " green "}]
     })
 
     empty_plan_response =
@@ -9562,7 +9856,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "artifacts" => ["red-after-ready.txt"],
               "head_sha" => "def456",
               "acceptance_criteria_met" => false,
-              "reviews" => [%{"lane" => "review_t1", "verdict" => "red"}]
+              "reviews" => [%{"lane" => "brief", "verdict" => "red"}]
             }
           }
         },
@@ -9690,7 +9984,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["pre-pr-review.txt"],
       "head_sha" => "pre-pr-head",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/456", "head_sha" => "later-head"})
@@ -9722,7 +10016,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "tests" => ["mix test"],
       "artifacts" => ["old-head-review.txt"],
       "head_sha" => "old-head",
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "brief", "verdict" => "green"}]
     })
 
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-BRANCH-HEAD-REVIEW/worker", "head_sha" => "new-head"})
@@ -9755,7 +10049,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-head-a.txt"],
       "head_sha" => "head-a",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     }
 
     first_response = attach_tool(repo, session, "submit_review_package", review_arguments)
@@ -9805,7 +10099,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-head-a.txt"],
       "head_sha" => "head-a",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     }
 
     first_response = attach_tool(repo, session, "submit_review_package", review_arguments)
@@ -10041,7 +10335,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => head_sha,
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     ready_response =
@@ -10408,7 +10702,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "tests" => ["mix test"],
               "artifacts" => ["old-pr-head-review.txt"],
               "head_sha" => "head-a",
-              "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+              "reviews" => [%{"lane" => "brief", "verdict" => "green"}]
             }
           }
         },
@@ -10423,7 +10717,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "tests" => ["mix test"],
       "artifacts" => ["latest-branch-head-review.txt"],
       "head_sha" => "head-b",
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "brief", "verdict" => "green"}]
     })
 
     ready_response =
@@ -10453,7 +10747,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["latest-branch-head-review.txt"],
       "head_sha" => "head-b",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     ready_response =
@@ -10483,7 +10777,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => "head-a",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     attach_only_response =
@@ -10512,7 +10806,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => "legacy-head",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     ready_response =
@@ -10551,7 +10845,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => "head-a",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     missing_state_response =
@@ -10633,7 +10927,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-head-b.txt"],
       "head_sha" => "head-b",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     ready_response =
@@ -10677,7 +10971,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => "head-a",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     ready_response =
@@ -10727,7 +11021,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-head-b.txt"],
       "head_sha" => "head-b",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     ready_response =
@@ -10775,7 +11069,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => "head-a",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     missing_sync_response =
@@ -10816,7 +11110,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["short-head-review.txt"],
       "head_sha" => "abcdef1",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     ready_response =
@@ -10850,7 +11144,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["tiny-head-review.txt"],
       "head_sha" => "abc",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     ready_response =
@@ -10889,7 +11183,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => "suite-head",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     missing_response =
@@ -10907,10 +11201,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "head_sha" => "suite-head",
         "suite" => "review-suite",
         "anchor" => "phase_gate-suite-head",
-        "summary" => "T1 and T2 are green",
+        "summary" => "normal is green",
         "status" => "passed",
         "verdict" => "green",
-        "lane" => "review_t2",
+        "lane" => "normal",
         "round_id" => "phase_gate-suite-head"
       })
 
@@ -11002,7 +11296,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => head_sha,
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     attach_tool(repo, session, "attach_review_suite_result", %{
@@ -11010,7 +11304,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "head_sha" => head_sha,
       "suite" => "review-suite",
       "anchor" => "phase_gate-scope-head-a",
-      "summary" => "T1 and T2 are green",
+      "summary" => "normal is green",
       "status" => "passed",
       "verdict" => "green"
     })
@@ -11311,7 +11605,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => head_sha,
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     attach_tool(repo, session, "attach_review_suite_result", %{
@@ -11319,7 +11613,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "head_sha" => head_sha,
       "suite" => "review-suite",
       "anchor" => "phase_gate-scope-docs-head-a",
-      "summary" => "T1 and T2 are green",
+      "summary" => "normal is green",
       "status" => "passed",
       "verdict" => "green"
     })
@@ -11575,7 +11869,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "summary" => "Review suite result",
       "status" => "passed",
       "verdict" => "green",
-      "lane" => "review_t2",
+      "lane" => "normal",
       "reviewer" => "review-suite",
       "round_id" => "phase_gate-head-a",
       "idempotency_key" => "review-suite-head-a"
@@ -11629,7 +11923,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => "head-a",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     assert {:ok, _artifact} =
@@ -11729,7 +12023,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => "head-b",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     attach_tool(repo, session, "append_progress", %{
@@ -11822,7 +12116,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-log.txt"],
       "head_sha" => "abc125",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     blocked_response =
@@ -11887,7 +12181,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     attach_tool(repo, session, "request_scope_expansion", %{
       "summary" => "Unrelated scope request",
       "status" => "tests_passed",
-      "payload" => %{"lane" => "review_t1", "verdict" => "green"},
+      "payload" => %{"lane" => "brief", "verdict" => "green"},
       "idempotency_key" => "quick-fix-unrelated-status"
     })
 
@@ -11909,9 +12203,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     })
 
     attach_tool(repo, session, "append_progress", %{
-      "summary" => "T1 review green",
-      "status" => "review_t1_green",
-      "idempotency_key" => "quick-fix-review-t1"
+      "summary" => "brief review green",
+      "status" => "review_brief_green",
+      "idempotency_key" => "quick-fix-review-brief"
     })
 
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-QUICK-FIX/worker", "head_sha" => "quick-fix-head-b"})
@@ -11934,9 +12228,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     })
 
     attach_tool(repo, session, "append_progress", %{
-      "summary" => "T1 review green for latest head",
-      "status" => "review_t1_green",
-      "idempotency_key" => "quick-fix-review-t1-head-b"
+      "summary" => "brief review green for latest head",
+      "status" => "review_brief_green",
+      "idempotency_key" => "quick-fix-review-brief-head-b"
     })
 
     attach_tool(repo, session, "append_progress", %{
@@ -11946,9 +12240,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     })
 
     attach_tool(repo, session, "append_progress", %{
-      "summary" => "T1 review red after latest green",
-      "status" => "review_t1_red",
-      "idempotency_key" => "quick-fix-review-t1-head-b-red"
+      "summary" => "brief review red after latest green",
+      "status" => "review_brief_red",
+      "idempotency_key" => "quick-fix-review-brief-head-b-red"
     })
 
     stale_green_response =
@@ -11969,9 +12263,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     })
 
     attach_tool(repo, session, "append_progress", %{
-      "summary" => "T1 review green after red",
-      "status" => "review_t1_green",
-      "idempotency_key" => "quick-fix-review-t1-head-b-regreen"
+      "summary" => "brief review green after red",
+      "status" => "review_brief_green",
+      "idempotency_key" => "quick-fix-review-brief-head-b-regreen"
     })
 
     ready_response =
@@ -11996,7 +12290,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "tests" => ["mix test"],
       "artifacts" => ["branchless-review.txt"],
       "head_sha" => "standalone-head",
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "brief", "verdict" => "green"}]
     })
 
     ready_response =
@@ -12024,7 +12318,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "tests" => ["mix test"],
       "artifacts" => ["hotfix-review.txt"],
       "head_sha" => "hotfix-head",
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "emergency", "verdict" => "green"}]
     })
 
     ready_response =
@@ -12637,7 +12931,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-log.txt"],
       "head_sha" => "abc124",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     response =
@@ -13249,7 +13543,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       forbidden_file_globs: ["elixir/lib/symphony_elixir_web/live/**"],
       acceptance_criteria: ["WorkRequest MCP reads are scoped and redacted."],
       validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs"],
-      review_lanes: ["review_t1", "raw_secret_review_lane", "review_t2"],
+      review_lanes: ["brief", "raw_secret_review_lane", "normal"],
       stop_conditions: ["Stop before mutation or dispatch wiring."]
     }
 
@@ -13358,12 +13652,154 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     {package, session}
   end
 
+  defp create_non_expiring_architect_session(repo, work_package_id, capabilities) do
+    phase_id = ensure_architect_phase(repo)
+
+    package_attrs =
+      [
+        id: work_package_id,
+        kind: "mcp",
+        base_branch: "symphony-plus-plus/beta",
+        repo: "nextide/symphony-plus-plus",
+        allowed_file_globs: ["elixir/lib/**"],
+        status: "planning",
+        phase_id: phase_id
+      ]
+      |> WorkPackageFactory.attrs()
+
+    assert {:ok, package} = WorkPackageRepository.create(repo, package_attrs)
+
+    assert {:ok, minted} =
+             AccessGrantService.mint_architect_grant(repo, phase_id,
+               work_package_id: package.id,
+               capabilities: capabilities
+             )
+
+    assert minted.grant.expires_at == nil
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, minted.work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(minted.work_key.secret))
+    {:ok, package} = WorkPackageRepository.get(repo, package.id)
+
+    {package, session}
+  end
+
   defp active_worker_grants(grants) do
     now = DateTime.utc_now(:microsecond)
 
     Enum.filter(grants, fn grant ->
-      grant.grant_role == "worker" and is_nil(grant.revoked_at) and DateTime.compare(grant.expires_at, now) == :gt
+      grant.grant_role == "worker" and is_nil(grant.revoked_at) and live_expires_at?(grant.expires_at, now)
     end)
+  end
+
+  defp live_expires_at?(nil, %DateTime{}), do: true
+  defp live_expires_at?(%DateTime{} = expires_at, %DateTime{} = now), do: DateTime.compare(expires_at, now) == :gt
+
+  defp rebuild_access_grants_with_not_null_expiry!(repo_or_pid) do
+    query!(repo_or_pid, "PRAGMA foreign_keys = OFF")
+
+    try do
+      query!(repo_or_pid, "DROP TABLE IF EXISTS sympp_access_grants_legacy_expiry")
+
+      query!(repo_or_pid, """
+      CREATE TABLE sympp_access_grants_legacy_expiry (
+        id TEXT PRIMARY KEY NOT NULL,
+        work_package_id TEXT NOT NULL REFERENCES sympp_work_packages(id) ON DELETE CASCADE,
+        display_key TEXT NOT NULL,
+        secret_hash TEXT NOT NULL,
+        grant_role TEXT NOT NULL,
+        capabilities TEXT NOT NULL DEFAULT '[]',
+        expires_at TEXT NOT NULL,
+        revoked_at TEXT,
+        claimed_at TEXT,
+        claimed_by TEXT,
+        inserted_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        phase_id TEXT REFERENCES sympp_phases(id) ON DELETE CASCADE,
+        scope_repo TEXT,
+        scope_base_branch TEXT,
+        provenance TEXT
+      )
+      """)
+
+      query!(repo_or_pid, """
+      INSERT INTO sympp_access_grants_legacy_expiry (
+        id,
+        work_package_id,
+        display_key,
+        secret_hash,
+        grant_role,
+        capabilities,
+        expires_at,
+        revoked_at,
+        claimed_at,
+        claimed_by,
+        inserted_at,
+        updated_at,
+        phase_id,
+        scope_repo,
+        scope_base_branch,
+        provenance
+      )
+      SELECT
+        id,
+        work_package_id,
+        display_key,
+        secret_hash,
+        grant_role,
+        capabilities,
+        expires_at,
+        revoked_at,
+        claimed_at,
+        claimed_by,
+        inserted_at,
+        updated_at,
+        phase_id,
+        scope_repo,
+        scope_base_branch,
+        provenance
+      FROM sympp_access_grants
+      """)
+
+      query!(repo_or_pid, "DROP TABLE sympp_access_grants")
+      query!(repo_or_pid, "ALTER TABLE sympp_access_grants_legacy_expiry RENAME TO sympp_access_grants")
+      recreate_access_grant_indexes!(repo_or_pid)
+    after
+      query!(repo_or_pid, "PRAGMA foreign_keys = ON")
+    end
+  end
+
+  defp recreate_access_grant_indexes!(repo_or_pid) do
+    query!(repo_or_pid, "CREATE UNIQUE INDEX sympp_access_grants_id_unique_index ON sympp_access_grants (id)")
+    query!(repo_or_pid, "CREATE UNIQUE INDEX sympp_access_grants_secret_hash_unique_index ON sympp_access_grants (secret_hash)")
+    query!(repo_or_pid, "CREATE INDEX sympp_access_grants_work_package_id_index ON sympp_access_grants (work_package_id)")
+    query!(repo_or_pid, "CREATE INDEX sympp_access_grants_display_key_index ON sympp_access_grants (display_key)")
+    query!(repo_or_pid, "CREATE INDEX sympp_access_grants_grant_role_index ON sympp_access_grants (grant_role)")
+    query!(repo_or_pid, "CREATE INDEX sympp_access_grants_phase_id_index ON sympp_access_grants (phase_id)")
+  end
+
+  defp remove_null_expiry_migration_version!(repo_or_pid) do
+    query!(repo_or_pid, "DELETE FROM schema_migrations WHERE version = ?", [20_260_519_120_000])
+  end
+
+  defp access_grant_expiry_not_null?(repo_or_pid) do
+    %{rows: rows} = query!(repo_or_pid, "PRAGMA table_info(sympp_access_grants)")
+
+    Enum.any?(rows, fn
+      [_cid, "expires_at", _type, not_null, _default_value, _primary_key] -> not_null in [1, true]
+      _column -> false
+    end)
+  end
+
+  defp schema_migration_recorded?(repo_or_pid, version) do
+    %{rows: [[count]]} = query!(repo_or_pid, "SELECT COUNT(*) FROM schema_migrations WHERE version = ?", [version])
+    count == 1
+  end
+
+  defp query!(repo_or_pid, sql, params \\ []) do
+    SQL.query!(repo_or_pid, sql, params, log: false)
   end
 
   defp mcp_tool(repo, session, name, arguments, opts \\ []) do
@@ -13667,7 +14103,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-log.txt"],
       "head_sha" => head_sha,
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     }
   end
 

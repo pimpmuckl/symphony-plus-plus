@@ -15,7 +15,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
-  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Session}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Repository, Session}
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
@@ -26,6 +26,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
   alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.ReviewProfiles
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Repository, as: SoloSessionRepository
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service, as: SoloSessionService
@@ -813,50 +814,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          %{"name" => "read_guidance_request"} = params,
          %__MODULE__{session: %Session{assignment: %{grant_role: "architect"}}} = server
        ) do
-    with :ok <- authorize_architect_tool_call(server, "read_guidance_request"),
-         {:ok, arguments} <- architect_tool_arguments(params, "read_guidance_request") do
-      read_guidance_request_tool(arguments, server)
-    else
+    case prepare_architect_tool_call(server, params, "read_guidance_request") do
+      {:ok, arguments} -> read_guidance_request_tool(arguments, server)
       {:error, code, message, data} -> {:error, code, message, data}
       {:error, reason} -> architect_error(reason, "read_guidance_request")
     end
   end
 
   defp dispatch("tools/call", %{"name" => "read_guidance_request"} = params, %__MODULE__{session: nil} = server) do
-    with :ok <- authorize_architect_tool_call(server, "read_guidance_request"),
-         {:ok, arguments} <- architect_tool_arguments(params, "read_guidance_request") do
-      read_guidance_request_tool(arguments, server)
-    else
+    case prepare_architect_tool_call(server, params, "read_guidance_request") do
+      {:ok, arguments} -> read_guidance_request_tool(arguments, server)
       {:error, code, message, data} -> {:error, code, message, data}
       {:error, reason} -> architect_error(reason, "read_guidance_request")
     end
   end
 
   defp dispatch("tools/call", %{"name" => "read_guidance_request"} = params, %__MODULE__{} = server) do
-    with :ok <- authorize_worker_tool_call(server, "read_guidance_request"),
-         {:ok, arguments} <- worker_tool_arguments(params, "read_guidance_request") do
-      read_guidance_request_tool(arguments, server)
-    else
+    case prepare_worker_tool_call(server, params, "read_guidance_request") do
+      {:ok, arguments} -> read_guidance_request_tool(arguments, server)
       {:error, code, message, data} -> {:error, code, message, data}
       {:error, reason} -> worker_error(reason, "read_guidance_request")
     end
   end
 
   defp dispatch("tools/call", %{"name" => name} = params, %__MODULE__{} = server) when name in @worker_tools do
-    with :ok <- authorize_worker_tool_call(server, name),
-         {:ok, arguments} <- worker_tool_arguments(params, name) do
-      worker_tool(name, arguments, server)
-    else
+    case prepare_worker_tool_call(server, params, name) do
+      {:ok, arguments} -> worker_tool(name, arguments, server)
       {:error, code, message, data} -> {:error, code, message, data}
       {:error, reason} -> worker_error(reason, name)
     end
   end
 
   defp dispatch("tools/call", %{"name" => name} = params, %__MODULE__{} = server) when name in @architect_tools do
-    with :ok <- authorize_architect_tool_call(server, name),
-         {:ok, arguments} <- architect_tool_arguments(params, name) do
-      architect_tool(name, arguments, server)
-    else
+    case prepare_architect_tool_call(server, params, name) do
+      {:ok, arguments} -> architect_tool(name, arguments, server)
       {:error, code, message, data} -> {:error, code, message, data}
       {:error, reason} -> architect_error(reason, name)
     end
@@ -1558,21 +1549,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp tool_specs_for_session(%Config{repo: repo}, session) do
-    case Auth.require_session(session, repo) do
-      {:ok, %Session{assignment: %{grant_role: "architect"}}} ->
-        {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs()]}
+    with :ok <- prepare_mcp_repository(repo) do
+      case Auth.require_session(session, repo) do
+        {:ok, %Session{assignment: %{grant_role: "architect"}}} ->
+          {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs()]}
 
-      {:ok, %Session{assignment: %{grant_role: "worker"}}} ->
-        {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
+        {:ok, %Session{assignment: %{grant_role: "worker"}}} ->
+          {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
 
-      {:ok, %Session{}} ->
-        {:error, {:unauthorized, :unsupported_grant_role}}
+        {:ok, %Session{}} ->
+          {:error, {:unauthorized, :unsupported_grant_role}}
 
-      {:error, {:service_unavailable, _reason} = reason} ->
-        {:error, reason}
+        {:error, {:service_unavailable, _reason} = reason} ->
+          {:error, reason}
 
-      {:error, _reason} ->
-        {:ok, claimable_tool_specs()}
+        {:error, _reason} ->
+          {:ok, claimable_tool_specs()}
+      end
     end
   end
 
@@ -1867,7 +1860,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, arguments} <- worker_tool_arguments(params, "claim_work_key"),
          {:ok, secret} <- required_argument(arguments, "secret"),
          {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
-         :ok <- require_full_secret(secret) do
+         :ok <- require_full_secret(secret),
+         :ok <- prepare_mcp_repository(config.repo) do
       proof_hash = WorkKey.secret_hash(secret)
 
       case claim_work_key_with_bound_session(config.repo, session, secret, proof_hash, claimed_by) do
@@ -1887,7 +1881,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, arguments} <- worker_tool_arguments(params, "claim_work_key"),
          {:ok, secret} <- required_argument(arguments, "secret"),
          {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
-         :ok <- require_full_secret(secret) do
+         :ok <- require_full_secret(secret),
+         :ok <- prepare_mcp_repository(config.repo) do
       proof_hash = WorkKey.secret_hash(secret)
 
       case claim_unbound_work_key(config.repo, secret, proof_hash, claimed_by) do
@@ -1927,6 +1922,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp revalidate_bound_session(repo, %Session{} = session, proof_hash) do
     with {:ok, grant} <- AccessGrantRepository.get(repo, session.assignment.grant_id),
+         :ok <- AccessGrantService.require_live_package_authority(repo, grant),
          {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash),
          :ok <- require_mcp_claimable_assignment(session.assignment) do
       {:ok, session}
@@ -1956,6 +1952,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp reconnect_claimed_session(repo, proof_hash, claimed_by) do
     with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, proof_hash),
          :ok <- require_same_claim_owner(grant, claimed_by),
+         :ok <- AccessGrantService.require_live_package_authority(repo, grant),
          {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: proof_hash),
          :ok <- require_mcp_claimable_assignment(session.assignment) do
       {:ok, session}
@@ -1975,7 +1972,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_mcp_claimable_secret(repo, proof_hash) do
     with {:ok, grant} <- AccessGrantRepository.find_by_secret_hash(repo, proof_hash) do
-      require_mcp_claimable_assignment(grant)
+      with :ok <- AccessGrantService.require_live_package_authority(repo, grant) do
+        require_mcp_claimable_assignment(grant)
+      end
     end
   end
 
@@ -2018,6 +2017,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp claim_error({:storage_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
   defp claim_error({:migration_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
   defp claim_error(reason), do: {:error, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => reason_text(reason)}}
+
+  defp prepare_worker_tool_call(%__MODULE__{} = server, params, name) do
+    with :ok <- require_tool_arguments_object(params, name),
+         :ok <- preauthorize_worker_tool_call(server, name),
+         :ok <- prepare_mcp_repository_for_tool(server.config.repo, name),
+         :ok <- authorize_worker_tool_call(server, name) do
+      worker_tool_arguments(params, name)
+    end
+  end
+
+  defp prepare_architect_tool_call(%__MODULE__{} = server, params, name) do
+    with :ok <- require_tool_arguments_object(params, name),
+         :ok <- preauthorize_architect_tool_call(server, name),
+         :ok <- prepare_mcp_repository_for_tool(server.config.repo, name),
+         :ok <- authorize_architect_tool_call(server, name) do
+      architect_tool_arguments(params, name)
+    end
+  end
+
+  defp require_tool_arguments_object(params, name) do
+    case Map.get(params, "arguments", %{}) do
+      arguments when is_map(arguments) -> :ok
+      _arguments -> {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "invalid_tool_arguments"}}
+    end
+  end
+
+  defp preauthorize_worker_tool_call(%__MODULE__{session: session}, "get_current_assignment") do
+    with {:ok, session} <- Auth.require_session(session) do
+      require_assignment_introspection(session.assignment)
+    end
+  end
+
+  defp preauthorize_worker_tool_call(%__MODULE__{session: session}, _name) do
+    with {:ok, session} <- Auth.require_session(session) do
+      require_worker_assignment(session.assignment)
+    end
+  end
+
+  defp preauthorize_architect_tool_call(%__MODULE__{session: nil} = server, name) do
+    authorize_architect_tool_call(server, name)
+  end
+
+  defp preauthorize_architect_tool_call(%__MODULE__{session: session}, name) do
+    with {:ok, session} <- Auth.require_session(session),
+         :ok <- require_architect_assignment(session.assignment) do
+      require_architect_capabilities(session.assignment, architect_tool_required_capabilities(name))
+    end
+  end
+
+  defp prepare_mcp_repository(repo), do: Repository.ensure_migrated(repo)
+
+  defp prepare_mcp_repository_for_tool(repo, tool) do
+    case prepare_mcp_repository(repo) do
+      :ok -> :ok
+      {:error, reason} -> service_error(reason, tool)
+    end
+  end
 
   defp architect_tool("list_work_requests", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- architect_session(config.repo, session, "read:work_request"),
@@ -3371,10 +3427,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       match?(%DateTime{}, grant.revoked_at) ->
         {:tool_error, "child_worker_grant_already_revoked"}
 
-      not match?(%DateTime{}, grant.expires_at) ->
-        {:tool_error, "child_worker_grant_expired"}
-
-      DateTime.compare(grant.expires_at, now) != :gt ->
+      not live_expires_at?(grant.expires_at, now) ->
         {:tool_error, "child_worker_grant_expired"}
 
       true ->
@@ -3399,7 +3452,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         where:
           access_grant.id == ^grant.id and access_grant.work_package_id == ^grant.work_package_id and
             access_grant.grant_role == "worker" and access_grant.provenance == ^@child_worker_grant_provenance and
-            is_nil(access_grant.revoked_at) and access_grant.expires_at > ^now
+            is_nil(access_grant.revoked_at) and (is_nil(access_grant.expires_at) or access_grant.expires_at > ^now)
       )
 
     case repo.update_all(query, set: [revoked_at: now, updated_at: now]) do
@@ -4121,7 +4174,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       from(grant in AccessGrant,
         where:
           grant.work_package_id == ^work_package_id and grant.grant_role == "worker" and is_nil(grant.revoked_at) and
-            grant.provenance == ^@child_worker_grant_provenance and grant.expires_at > ^now,
+            grant.provenance == ^@child_worker_grant_provenance and
+            (is_nil(grant.expires_at) or grant.expires_at > ^now),
         select: count(grant.id)
       )
 
@@ -4664,7 +4718,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp child_worker_expires_at(_template, _architect_grant), do: {:error, :phase_scope_not_available}
+  defp child_worker_expires_at(template, %{expires_at: nil}) do
+    with {:ok, expires_at} <- optional_child_worker_expires_at(template, nil),
+         :ok <- require_child_expiry_live(expires_at) do
+      {:ok, expires_at}
+    end
+  end
 
   defp optional_child_worker_expires_at(template, default) do
     case Map.fetch(template, "expires_at") do
@@ -4690,10 +4749,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_child_expires_before_architect(expires_at, architect_expires_at) do
     cond do
+      is_nil(expires_at) -> {:tool_error, "broader_child_grant"}
       DateTime.compare(expires_at, architect_expires_at) == :gt -> {:tool_error, "broader_child_grant"}
       DateTime.compare(expires_at, DateTime.utc_now(:microsecond)) != :gt -> {:tool_error, "invalid_expires_at"}
       true -> :ok
     end
+  end
+
+  defp require_child_expiry_live(nil), do: :ok
+
+  defp require_child_expiry_live(%DateTime{} = expires_at) do
+    if DateTime.compare(expires_at, DateTime.utc_now(:microsecond)) == :gt,
+      do: :ok,
+      else: {:tool_error, "invalid_expires_at"}
   end
 
   defp solo_tool("solo_attach", arguments, %__MODULE__{config: config}) do
@@ -5835,7 +5903,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp require_live_grant(%AccessGrant{}, _now), do: {:error, :phase_scope_not_available}
+  defp require_live_grant(%AccessGrant{expires_at: nil}, %DateTime{}), do: :ok
 
   defp require_architect_capabilities(assignment, capabilities) do
     Enum.reduce_while(capabilities, :ok, fn capability, :ok ->
@@ -7296,7 +7364,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp readiness_failure_message("review_suite_result"), do: "Current-head review-suite result evidence is missing."
   defp readiness_failure_message("review_package_submitted"), do: "Current-head review package is missing."
   defp readiness_failure_message("review_artifacts_attached"), do: "Current-head review artifacts are missing."
-  defp readiness_failure_message("review_lanes_complete"), do: "Required review lanes are not green."
+  defp readiness_failure_message("review_lanes_complete"), do: "Required review profiles are not green."
   defp readiness_failure_message("findings_documented"), do: "Investigation findings are missing."
   defp readiness_failure_message("recommendation_artifact_recorded"), do: "Investigation recommendation artifact is missing."
   defp readiness_failure_message("phase_active"), do: "Phase must be active before phase child readiness."
@@ -7394,8 +7462,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp required_review_lanes(%WorkPackage{} = work_package) do
     case LifecycleService.policy_for(work_package) do
-      {:ok, policy} -> get_in(policy, [:review_suite, :required]) || []
-      {:error, _reason} -> []
+      {:ok, policy} ->
+        policy
+        |> get_in([:review_suite, :required])
+        |> ReviewProfiles.normalize_profiles()
+
+      {:error, _reason} ->
+        []
     end
   end
 
@@ -7426,7 +7499,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         %ProgressEvent{} = event ->
           event
           |> review_package_reviews(readiness_head_sha)
-          |> Enum.reduce(%{}, fn review, verdicts -> Map.put(verdicts, Map.get(review, "lane"), Map.get(review, "verdict")) end)
+          |> Enum.reduce(%{}, fn review, verdicts ->
+            Map.put(verdicts, ReviewProfiles.normalize_profile(Map.get(review, "lane")), Map.get(review, "verdict"))
+          end)
 
         nil ->
           %{}
@@ -7441,7 +7516,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     head_boundary_sequence = latest_branch_event_sequence(progress_events)
 
     Enum.all?(required_lanes, fn lane ->
-      latest_generic_progress_status(progress_events, head_boundary_sequence, ["#{lane}_green", "#{lane}_red", "#{lane}_failed"]) == "#{lane}_green"
+      green_statuses = ReviewProfiles.green_statuses(lane)
+
+      latest_generic_progress_status(progress_events, head_boundary_sequence, ReviewProfiles.statuses(lane)) in green_statuses
     end)
   end
 
@@ -8658,7 +8735,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "display_key" => grant.display_key,
       "grant_role" => grant.grant_role,
       "capabilities" => grant.capabilities || [],
-      "expires_at" => DateTime.to_iso8601(grant.expires_at),
+      "expires_at" => timestamp(grant.expires_at),
       "secret_in_response" => false,
       "secret_handoff" => secret_handoff
     }
@@ -8671,10 +8748,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "display_key" => grant.display_key,
       "grant_role" => grant.grant_role,
       "capabilities" => grant.capabilities || [],
-      "expires_at" => DateTime.to_iso8601(grant.expires_at),
+      "expires_at" => timestamp(grant.expires_at),
       "secret" => work_key.secret
     }
   end
+
+  defp live_expires_at?(nil, %DateTime{}), do: true
+  defp live_expires_at?(%DateTime{} = expires_at, %DateTime{} = now), do: DateTime.compare(expires_at, now) == :gt
 
   defp redacted_child_worker_grant(worker_grant) when is_map(worker_grant) do
     Map.delete(worker_grant, "secret")

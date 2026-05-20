@@ -66,9 +66,13 @@ For every worker PR, check:
   it.
 - Findings, progress, blocker resolution, branch, PR, and readiness evidence
   are updated through the MCP-backed WorkPackage state.
-- Implementing workers ran the required review-suite ladder. T1 comes before
-  T2, but once T2 is reached the lane does not step down to T1; after
-  GitHub-review fixes, rerun T2 plus GitHub review only.
+- Implementing workers ran the required current-head review profile. When
+  Review Suite is installed, that means the current orchestrator profile
+  (`brief`, `normal`, `deep`, or `emergency`). When it is not installed,
+  workers must still report review progress and final evidence through
+  Symphony++ MCP. After material changes, rerun the same required review
+  profile. GitHub review remains an additional anchored step only when package
+  policy requires it.
 
 ## Stop Conditions
 

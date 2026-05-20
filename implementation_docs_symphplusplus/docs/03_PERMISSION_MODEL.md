@@ -44,7 +44,7 @@ Never log:
 4. Worker MCP starts through the private-store bootstrap, which injects the
    secret only into the MCP child process environment and passes the stable
    `claimed_by` owner identity.
-5. Server validates hash, expiry, revocation, claimed owner, and not already bound to a different owner.
+5. Server validates hash, explicit expiry when present, revocation, claimed owner, and not already bound to a different owner.
 6. Server binds grant to the worker session with the claimed_by owner identity.
 7. Reconnects are accepted only for the same owner identity and secret proof.
 8. Subsequent calls use bound session/grant identity.
@@ -100,6 +100,12 @@ non-secret bootstrap fields, including the resolved `claimed_by` identity and
 the raw worker secret. Optional handoff settings are limited to
 `template.secret_handoff.mode`, `store_dir`, and `claimed_by`; they do not
 change the child grant capability or expiry boundaries.
+
+Default local Symphony++ worker and architect grants do not expire. Grant
+authority is lifecycle-driven: explicit revoke, package completion/merge/archive,
+and child-worker recycle retire authority. `expires_at: null` is the no-expiry
+state. Callers may still pass an explicit future `expires_at` when they want a
+dated grant; once that timestamp is in the past, the grant is not live.
 
 ## Worker capabilities
 
@@ -174,11 +180,16 @@ Approval updates the grant constraints. Denial records an event and the worker m
 
 | Grant kind | Default expiry |
 |---|---:|
-| quick fix worker | 24h |
-| hotfix worker | 6h |
-| investigation worker | 12h |
-| phase child worker | 48h |
-| architect phase grant | explicit phase duration |
+| quick fix worker | none |
+| hotfix worker | none |
+| investigation worker | none |
+| phase child worker | none, unless parent architect grant has explicit expiry |
+| architect phase grant | none |
+
+If an architect grant has an explicit expiry, child worker grants default to
+that same timestamp and may not exceed it. If the architect grant is
+non-expiring, child worker grants default to non-expiring and may optionally use
+a future explicit expiry.
 
 ## Enforcement location
 

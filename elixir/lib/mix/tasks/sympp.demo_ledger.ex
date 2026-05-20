@@ -509,7 +509,7 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
       forbidden_file_globs: ["config/runtime.exs", ".env"],
       acceptance_criteria: ["Slice #{sequence_hint} is visible with deterministic content."],
       validation_steps: ["mix test test/mix/tasks/sympp_demo_ledger_test.exs"],
-      review_lanes: ["review_t1", "review_t2"],
+      review_lanes: ["normal"],
       stop_conditions: ["Stop before runtime defaults or auth changes."]
     }
   end
@@ -551,7 +551,15 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
        %{
          plan: [{"Review prompt copy", "done"}, {"Run local signoff", "pending"}],
          progress: [
-           {"Review lane opened", "reviewing", %{"review_lanes" => ["T1", "T2"]}},
+           {"Review profile opened", "reviewing",
+            %{
+              "type" => "review_progress",
+              "provider" => "review-suite",
+              "profile" => "normal",
+              "step_current" => 1,
+              "step_total" => 3,
+              "step_name" => "discovery"
+            }},
            {"Review branch attached", "branch_attached",
             %{
               "type" => "branch",
@@ -568,10 +576,7 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
               "artifacts" => ["implementation_docs_symphplusplus/runbooks/LOCAL_OPERATOR_GOLDEN_PATH.md"],
               "head_sha" => "2222222222222222222222222222222222222222",
               "acceptance_criteria_met" => true,
-              "reviews" => [
-                %{"lane" => "review_t1", "verdict" => "green"},
-                %{"lane" => "review_t2", "verdict" => "green"}
-              ]
+              "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
             }}
          ],
          findings: [{"Copy needs operator confirmation", "medium"}],

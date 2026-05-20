@@ -407,7 +407,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
           "idempotency_key" => "guidance-ineligible-#{status}"
         })
 
-      assert get_in(response, ["error", "data", "reason"]) == "work_package_not_worker_active"
+      assert get_in(response, ["error", "data", "reason"]) == expected_guidance_denial_reason(status)
     end
   end
 
@@ -538,6 +538,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPGuidanceRequestsTest do
 
     {package, MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)}
   end
+
+  defp expected_guidance_denial_reason(status) when status in ["merged_into_phase", "merged", "closed", "abandoned"],
+    do: "work_package_terminal"
+
+  defp expected_guidance_denial_reason(_status), do: "work_package_not_worker_active"
 
   defp create_worker_session_for_package(repo, %WorkPackage{} = package, claimed_by) do
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)

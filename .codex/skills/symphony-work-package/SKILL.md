@@ -76,10 +76,14 @@ process aids when the operator explicitly asks for them.
   current PR state is required; `sync_pr` must target the already attached PR.
 - Submit review evidence with
   `submit_review_package(summary, tests, artifacts, head_sha)`.
-- Include review lane verdicts in the review package when the package policy
+- If Review Suite is installed, run the current orchestrator with the required
+  profile: `review.py --mode brief|normal|deep|emergency`.
+- If Review Suite is not installed, use the package-approved review provider
+  and record review progress through `append_progress`; include a payload such
+  as `type=review_progress`, `provider`, `profile`, `step_current`,
+  `step_total`, and `step_name` when available.
+- Include review profile verdicts in the review package when the package policy
   requires them.
-- Implementing workers run review-suite T1, T2, and GitHub review by default
-  unless the package policy explicitly says otherwise.
 - Always use the current branch head SHA. Older review evidence can replay for
   lost-response stability, but readiness evaluates against the current head.
 
@@ -88,7 +92,7 @@ process aids when the operator explicitly asks for them.
 Before calling `mark_ready()`:
 
 - Acceptance criteria are satisfied or explicitly blocked.
-- Required tests and review lanes are complete.
+- Required tests and review profile evidence are complete.
 - Virtual task plan, findings, and progress are current.
 - Branch, PR, and review artifacts are attached when the policy requires them.
 - No active blocker remains.

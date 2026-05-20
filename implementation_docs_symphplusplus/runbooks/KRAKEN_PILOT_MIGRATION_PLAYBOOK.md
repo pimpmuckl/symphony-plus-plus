@@ -247,7 +247,7 @@ engineering_scope: Narrow fix plus focused regression on the approved Kraken pil
 acceptance_criteria:
   - Defect is reproduced or proven on the approved pilot base.
   - Focused regression passes after the fix.
-  - PR, review_t1, and review_t2 evidence are recorded.
+  - PR and current-head Review Suite `emergency` profile evidence are recorded.
 policy_template: hotfix
 allowed_file_globs:
   - README.md
@@ -915,7 +915,7 @@ claim_work_key(secret: <architect_work_key_secret>, claimed_by: "kraken-pilot-ar
       "Child stays inside docs/runbooks-only scope.",
       "Focused docs validation passes.",
       "Current-head attach_branch and attach_pr metadata are recorded.",
-      "review_t1 and review_t2 evidence are recorded."
+      "Current-head Review Suite `normal` profile evidence is recorded."
     ]
   }
 }
@@ -939,7 +939,7 @@ claim_work_key(secret: <architect_work_key_secret>, claimed_by: "kraken-pilot-ar
       "Child stays outside docs-only child scope.",
       "Focused regression or validation check passes.",
       "Current-head attach_branch and attach_pr metadata are recorded.",
-      "review_t1 and review_t2 evidence are recorded."
+      "Current-head Review Suite `normal` profile evidence is recorded."
     ]
   }
 }
@@ -1117,12 +1117,12 @@ if ($childHead -ne $phaseParentHead) {
 
 8. Mint a child worker key only for the next child that is about to be
    dispatched. Do not mint both child keys up front: `mint_child_worker_key`
-   inherits the architect grant expiry when no explicit expiry is supplied, and
-   a sequential or review-heavy pilot can otherwise strand the second child
-   before it starts. For first dispatch, step 7 must already have proven that
-   no leftover remote child branch exists. Do not document or attempt a normal
-   replacement-key reassignment after a child has already been claimed or
-   started without an explicit recycle decision. If a child worker is
+   defaults to a non-expiring child grant when the architect grant is
+   non-expiring, while explicit architect expiry still bounds child expiry. For
+   first dispatch, step 7 must already have proven that no leftover remote child
+   branch exists. Do not document or attempt a normal replacement-key
+   reassignment after a child has already been claimed or started without an
+   explicit recycle decision. If a child worker is
    interrupted, record the package as blocked, preserve branch/PR evidence, and
    have the architect use `revoke_child_worker_key` only for the target live
    child-worker grant inside the same frozen phase scope. A successful revoke
@@ -1134,11 +1134,10 @@ if ($childHead -ne $phaseParentHead) {
    the MCP call, keep worker secret material in the approved private store, and
    print only non-secret grant metadata before that child
    worker is dispatched. If the wrapper cannot confirm storage, do not dispatch
-   the worker; record the live child grant as residual access risk until expiry
-   or approved admin revocation and do not call `mark_ready` for the child. If
-   the architect grant has too little remaining lifetime for the child
-   implementation plus review window, rotate/recreate the grant through an
-   approved operator path before minting the child key.
+   the worker; record the live child grant as residual access risk until
+   explicit revocation, child-worker recycle, terminal package lifecycle, or an
+   explicit grant expiry when one was deliberately supplied. Do not call
+   `mark_ready` for the child while that residual risk is unresolved.
 
    Example Child A wrapper input, run only immediately before dispatching
    Child A:
@@ -1214,8 +1213,8 @@ update_task_plan(
       },
       {
         "id": "child-a-review",
-        "title": "Complete Child A review gates",
-        "body": "Attach current branch/PR metadata and record review_t1 and review_t2 evidence for the same head.",
+        "title": "Complete Child A review profile",
+        "body": "Attach current branch/PR metadata and record current-head Review Suite `normal` profile evidence.",
         "status": "pending"
       }
     ]
@@ -1238,8 +1237,8 @@ update_task_plan(
       },
       {
         "id": "child-b-review",
-        "title": "Complete Child B review gates",
-        "body": "Attach current branch/PR metadata and record review_t1 and review_t2 evidence for the same head.",
+        "title": "Complete Child B review profile",
+        "body": "Attach current branch/PR metadata and record current-head Review Suite `normal` profile evidence.",
         "status": "pending"
       }
     ]
@@ -1323,8 +1322,7 @@ Then call `submit_review_package` with:
   "head_sha": "<child-a-head-sha>",
   "acceptance_criteria_met": true,
   "reviews": [
-    {"lane": "review_t1", "verdict": "green"},
-    {"lane": "review_t2", "verdict": "green"}
+    {"lane": "normal", "verdict": "green"}
   ]
 }
 ```
@@ -1417,8 +1415,7 @@ Then call `submit_review_package` with:
   "head_sha": "<child-b-head-sha>",
   "acceptance_criteria_met": true,
   "reviews": [
-    {"lane": "review_t1", "verdict": "green"},
-    {"lane": "review_t2", "verdict": "green"}
+    {"lane": "normal", "verdict": "green"}
   ]
 }
 ```
@@ -1490,7 +1487,7 @@ counts alone.
   withhold approval and require the child to refresh onto the current phase
   parent, rerun validation/reviews, call `sync_pr` with the new
   `reviewed_base_sha`, and submit a fresh review package.
-- `review_t1` and `review_t2` artifacts match that same commit.
+- Review Suite `normal` artifacts match that same commit.
 - Changed files stay inside the child's intended globs.
 
 Run this phase-parent freshness check for each child before approval. Replace
@@ -1583,7 +1580,7 @@ Only after the checklist passes, approve each child with
 ```json
 {
   "work_package_id": "KRAKEN-PILOT-MP-001A",
-  "rationale": "Child A has current-head branch, PR, validation, review_t1, and review_t2 evidence.",
+  "rationale": "Child A has current-head branch, PR, validation, and Review Suite `normal` profile evidence.",
   "request_id": "kraken-pilot-mp-001a-approve"
 }
 ```
@@ -1591,7 +1588,7 @@ Only after the checklist passes, approve each child with
 ```json
 {
   "work_package_id": "KRAKEN-PILOT-MP-001B",
-  "rationale": "Child B has current-head branch, PR, validation, review_t1, and review_t2 evidence.",
+  "rationale": "Child B has current-head branch, PR, validation, and Review Suite `normal` profile evidence.",
   "request_id": "kraken-pilot-mp-001b-approve"
 }
 ```
@@ -1891,7 +1888,7 @@ Before ready:
 1. Run focused local validation.
 2. Attach branch metadata for the current head.
 3. Record focused validation evidence after the branch attachment with status `tests_passed`.
-4. Record review_t1 evidence after the branch attachment with status `review_t1_green`.
+4. Record Review Suite `brief` profile evidence after the branch attachment with status `review_brief_green`.
 5. Run the quick-fix changed-file scope check from the playbook and block instead of readying if any path is outside scope.
 6. Call `read_task_plan`, then complete the worker-owned plan nodes with `update_task_plan(patch: {"nodes": [{"id": "qf-candidate", "status": "done"}, {"id": "qf-review", "status": "done"}]}, expected_version: <current_task_plan_version_from_read_task_plan>)`.
 7. Call `set_status(expected_status: "implementing", status: "reviewing", reason: "Quick-fix implementation is complete; collecting validation and review evidence.")`.
@@ -1939,9 +1936,9 @@ Required evidence:
   showing the PR base is `<approved-pilot-base-branch>` plus current semantic
   PR state for that head, such as `check_summary.conclusion=success`,
   `review_state.state=approved`, and `merge_state.state=clean`.
-- review_t1 and review_t2 evidence.
+- Review Suite `emergency` profile evidence.
 - Current-head review package attached before ready:
-  `submit_review_package(summary: "Hotfix validation and reviews are green for the current head.", tests: ["<hotfix-focused-regression-command>", "uv run ruff format --check <touched-files>", "uv run ruff check <touched-files>", "uv run pytest <focused-test-selector>"], artifacts: ["<review_t1-artifact>", "<review_t2-artifact>", "<pr-url-or-ci-log>"], head_sha: "<hotfix-head-sha>", acceptance_criteria_met: true, reviews: [{"lane": "review_t1", "verdict": "green"}, {"lane": "review_t2", "verdict": "green"}])`.
+  `submit_review_package(summary: "Hotfix validation and Review Suite emergency profile are green for the current head.", tests: ["<hotfix-focused-regression-command>", "uv run ruff format --check <touched-files>", "uv run ruff check <touched-files>", "uv run pytest <focused-test-selector>"], artifacts: ["<review-emergency-artifact>", "<pr-url-or-ci-log>"], head_sha: "<hotfix-head-sha>", acceptance_criteria_met: true, reviews: [{"lane": "emergency", "verdict": "green"}])`.
 - Hotfix changed-file scope check passed from the playbook.
 - `read_task_plan` used to refresh the task-plan version.
 - Worker-owned plan nodes completed with `update_task_plan(patch: {"nodes": [{"id": "hf-reproduce", "status": "done"}, {"id": "hf-review", "status": "done"}]}, expected_version: <current_task_plan_version_from_read_task_plan>)`.
@@ -2015,10 +2012,10 @@ Minimum evidence by package:
 
 | Package | Required validation |
 |---|---|
-| `KRAKEN-PILOT-QF-001` | Focused docs/path/test command relevant to the diff, plus `review_t1` green |
-| `KRAKEN-PILOT-HF-001` | Focused regression, touched-file `uv run ruff format --check`, touched-file `uv run ruff check`, touched-file `uv run pytest`, PR, `sync_pr`, `review_t1`, `review_t2` |
-| `KRAKEN-PILOT-MP-001A` | Child-specific focused validation, `sync_pr`, `review_t1`, `review_t2`, `ready_for_architect_merge`, and architect-recorded manual branch/PR/head/scope checklist |
-| `KRAKEN-PILOT-MP-001B` | Child-specific focused validation, `sync_pr`, `review_t1`, `review_t2`, `ready_for_architect_merge`, and architect-recorded manual branch/PR/head/scope checklist |
+| `KRAKEN-PILOT-QF-001` | Focused docs/path/test command relevant to the diff, plus Review Suite `brief` profile evidence |
+| `KRAKEN-PILOT-HF-001` | Focused regression, touched-file `uv run ruff format --check`, touched-file `uv run ruff check`, touched-file `uv run pytest`, PR, `sync_pr`, and Review Suite `emergency` profile evidence |
+| `KRAKEN-PILOT-MP-001A` | Child-specific focused validation, `sync_pr`, Review Suite `normal` profile evidence, `ready_for_architect_merge`, and architect-recorded manual branch/PR/head/scope checklist |
+| `KRAKEN-PILOT-MP-001B` | Child-specific focused validation, `sync_pr`, Review Suite `normal` profile evidence, `ready_for_architect_merge`, and architect-recorded manual branch/PR/head/scope checklist |
 | `KRAKEN-PILOT-MP-001-ANCHOR` in phase `KRAKEN-PILOT-MP-001` | Parent integration summary, child evidence links, and no unresolved blockers |
 
 Optional stack validation, only when relevant:
@@ -2179,7 +2176,7 @@ Ledger: <pilot-ledger>
 Packages completed: <ids>
 Branches: <branch -> head SHA>
 PRs: <url list>
-Review evidence: <T1/T2/GitHub refs>
+Review evidence: <Review Suite profile/GitHub refs>
 Dashboard gaps: <none or list>
 Validation commands: <commands and results>
 Rollback tested: yes|no

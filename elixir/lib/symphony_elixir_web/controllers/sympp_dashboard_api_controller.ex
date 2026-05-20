@@ -8,6 +8,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   alias Plug.Conn
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
@@ -1125,7 +1126,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       with secret_hash <- WorkKey.secret_hash(secret),
            {:ok, %AccessGrant{} = grant} <- AccessGrantRepository.find_by_secret_hash(repo, secret_hash),
            true <- Plug.Crypto.secure_compare(secret_hash, grant.secret_hash),
-           :ok <- live_grant?(grant) do
+           :ok <- live_grant?(grant),
+           :ok <- require_dashboard_package_authority(repo, grant) do
         {:ok, {:grant, grant}}
       else
         false -> {:error, :unauthorized}
@@ -1136,16 +1138,18 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   @doc false
   @spec secret_auth_error(term()) :: {:error, term()}
-  def secret_auth_error(reason) when reason in [:invalid_secret, :not_found], do: {:error, :unauthorized}
+  def secret_auth_error(reason) when reason in [:invalid_secret, :not_found, :work_package_terminal], do: {:error, :unauthorized}
   def secret_auth_error(reason), do: {:error, reason}
 
   defp grant_id_auth_context(repo, grant_id) do
     normalize_storage_errors(fn ->
       with {:ok, %AccessGrant{} = grant} <- AccessGrantRepository.get(repo, grant_id),
-           :ok <- live_grant?(grant) do
+           :ok <- live_grant?(grant),
+           :ok <- require_dashboard_package_authority(repo, grant) do
         {:ok, {:grant, grant}}
       else
         {:error, :not_found} -> {:error, :unauthorized}
+        {:error, :work_package_terminal} -> {:error, :unauthorized}
         {:error, reason} -> {:error, reason}
       end
     end)
@@ -1180,6 +1184,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp live_grant?(%AccessGrant{revoked_at: %DateTime{}}), do: {:error, :unauthorized}
   defp live_grant?(%AccessGrant{claimed_at: nil}), do: {:error, :unauthorized}
   defp live_grant?(%AccessGrant{claimed_by: nil}), do: {:error, :unauthorized}
+  defp live_grant?(%AccessGrant{expires_at: nil}), do: :ok
 
   defp live_grant?(%AccessGrant{expires_at: %DateTime{} = expires_at}) do
     if DateTime.compare(expires_at, DateTime.utc_now(:microsecond)) == :gt do
@@ -1187,6 +1192,15 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     else
       {:error, :unauthorized}
     end
+  end
+
+  defp require_dashboard_package_authority(_repo, %AccessGrant{phase_id: phase_id})
+       when not is_binary(phase_id) and not is_nil(phase_id) do
+    :ok
+  end
+
+  defp require_dashboard_package_authority(repo, %AccessGrant{} = grant) do
+    AccessGrantService.require_live_package_authority(repo, grant)
   end
 
   defp board_payload(repo, {:grant, %AccessGrant{} = grant} = auth_context) do

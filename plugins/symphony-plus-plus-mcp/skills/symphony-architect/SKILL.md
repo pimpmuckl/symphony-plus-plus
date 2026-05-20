@@ -83,7 +83,7 @@ Each planned slice should include:
 - Owned files or globs and forbidden paths.
 - Acceptance criteria that the worker can prove.
 - Validation commands or blocked-validation owner.
-- Required review lanes.
+- Required review profile, provider expectations, and current-head review evidence.
 - Stop conditions and guidance routing.
 - Dependency order and target base branch.
 - Branch strategy, especially whether feature work targets a feature branch or
@@ -110,7 +110,7 @@ session with dispatch capability and a live file-backed ledger.
 Worker guidance must include:
 
 - WorkPackage id, branch/base guidance, owned paths, acceptance, validation,
-  review lanes, and stop conditions.
+  review profile/provider requirements, and stop conditions.
 - The plugin-installed `symphony-plus-plus-mcp:symphony-work-package` worker
   skill or the equivalent repo-local worker skill path.
 - A private-store MCP bootstrap or redacted handoff metadata, never the raw
@@ -119,10 +119,14 @@ Worker guidance must include:
 - Instruction to ask the architect first for product, architecture, dependency,
   or slice-boundary ambiguity.
 
-Implementing workers run review-suite T1, T2, and GitHub review by default
-unless package policy explicitly says otherwise. The review ladder is
-monotonic: after a branch reaches T2, do not step down to T1. After GitHub
-review fixes, rerun T2 plus GitHub review only.
+Implementing workers use the current Review Suite plugin/orchestrator when it
+is installed, choosing `brief`, `normal`, `deep`, or `emergency` from package
+policy and risk. If Review Suite is not installed, workers may use another
+approved review provider, but they must report review start/progress/final
+evidence through Symphony++ MCP. After a higher-confidence/current review has
+run, rerun the same required review profile after material changes. GitHub
+review can be required as an additional anchored step by package policy, but it
+is separate from the local review profile.
 
 Dedicated reviewer agents are optional for high-risk business logic,
 security-sensitive changes, live smoke ownership, or cross-package release

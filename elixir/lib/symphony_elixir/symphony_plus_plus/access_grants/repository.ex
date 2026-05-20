@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
   @moduledoc false
 
-  import Ecto.Query, only: [from: 2]
+  import Ecto.Query
 
   alias Ecto.Changeset
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
@@ -9,6 +9,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
   @type repo :: module()
 
@@ -22,6 +23,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
           | :missing_claim_identity
           | :not_found
           | :revoked
+          | :work_package_terminal
           | {:constraint_failed, String.t()}
           | {:migration_failed, term()}
           | {:storage_failed, String.t()}
@@ -104,15 +106,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
   @spec claim(repo(), String.t(), map(), DateTime.t()) :: {:ok, Assignment.t()} | {:error, error()}
   def claim(repo, secret, attrs, now)
       when is_atom(repo) and is_binary(secret) and is_map(attrs) and is_struct(now, DateTime) do
+    claim(repo, secret, attrs, now, [])
+  end
+
+  @spec claim(repo(), String.t(), map(), DateTime.t(), keyword()) :: {:ok, Assignment.t()} | {:error, error()}
+  def claim(repo, secret, attrs, now, opts)
+      when is_atom(repo) and is_binary(secret) and is_map(attrs) and is_struct(now, DateTime) and is_list(opts) do
     normalized_now = DateTime.truncate(now, :microsecond)
     secret_hash = WorkKey.secret_hash(secret)
+    terminal_statuses = Keyword.get(opts, :terminal_work_package_statuses, [])
 
     with :ok <- reject_display_key_only(secret),
          {:ok, access_grant} <- find_by_secret_hash(repo, secret_hash),
          true <- secure_equal?(secret_hash, access_grant.secret_hash),
          :ok <- claimable?(access_grant, normalized_now),
          {:ok, claimed_by} <- claimed_by(attrs),
-         {:ok, claimed} <- persist_claim(repo, access_grant, claimed_by, normalized_now) do
+         {:ok, claimed} <- persist_claim(repo, access_grant, claimed_by, normalized_now, terminal_statuses) do
       {:ok, assignment(claimed)}
     else
       false -> {:error, :invalid_secret}
@@ -159,6 +168,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
 
   defp claimable?(%AccessGrant{revoked_at: %DateTime{}}, _now), do: {:error, :revoked}
   defp claimable?(%AccessGrant{claimed_at: %DateTime{}}, _now), do: {:error, :already_claimed}
+  defp claimable?(%AccessGrant{expires_at: nil}, _now), do: :ok
 
   defp claimable?(%AccessGrant{expires_at: expires_at}, now) do
     if DateTime.compare(expires_at, now) == :gt do
@@ -168,28 +178,62 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     end
   end
 
-  defp persist_claim(repo, access_grant, claimed_by, now) do
+  defp persist_claim(repo, access_grant, claimed_by, now, terminal_statuses) do
     query =
       from(grant in AccessGrant,
         where:
           grant.id == ^access_grant.id and is_nil(grant.claimed_at) and is_nil(grant.revoked_at) and
-            grant.expires_at > ^now
+            (is_nil(grant.expires_at) or grant.expires_at > ^now)
       )
+      |> scope_live_package_authority(terminal_statuses)
 
     case repo.update_all(query, set: [claimed_at: now, claimed_by: claimed_by, updated_at: now]) do
       {1, _rows} -> get(repo, access_grant.id)
-      {0, _rows} -> reload_claim_error(repo, access_grant.id, now)
+      {0, _rows} -> reload_claim_error(repo, access_grant.id, now, terminal_statuses)
     end
   end
 
-  defp reload_claim_error(repo, grant_id, now) do
+  defp scope_live_package_authority(query, []), do: query
+
+  defp scope_live_package_authority(query, terminal_statuses) do
+    terminal_package_ids =
+      from(work_package in WorkPackage,
+        where: work_package.status in ^terminal_statuses,
+        select: work_package.id
+      )
+
+    from(grant in query,
+      where: is_nil(grant.work_package_id) or grant.work_package_id not in subquery(terminal_package_ids)
+    )
+  end
+
+  defp reload_claim_error(repo, grant_id, now, terminal_statuses) do
     with {:ok, access_grant} <- get(repo, grant_id) do
       case claimable?(access_grant, now) do
-        :ok -> {:error, :already_claimed}
+        :ok -> package_authority_claim_error(repo, access_grant, terminal_statuses)
         {:error, _reason} = error -> error
       end
     end
   end
+
+  defp package_authority_claim_error(_repo, _access_grant, []), do: {:error, :already_claimed}
+
+  defp package_authority_claim_error(repo, %AccessGrant{work_package_id: work_package_id}, terminal_statuses)
+       when is_binary(work_package_id) do
+    case WorkPackageRepository.get(repo, work_package_id) do
+      {:ok, %{status: status}} ->
+        if Enum.member?(terminal_statuses, status) do
+          {:error, :work_package_terminal}
+        else
+          {:error, :already_claimed}
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp package_authority_claim_error(_repo, %AccessGrant{}, _terminal_statuses), do: {:error, :already_claimed}
 
   defp claimed_by(attrs) do
     case Map.get(attrs, :claimed_by) || Map.get(attrs, "claimed_by") do

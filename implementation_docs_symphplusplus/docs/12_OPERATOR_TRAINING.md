@@ -44,9 +44,10 @@ questions and slices the work.
    ambiguity appears. The architect may use ask-pro for hard calls. Unresolved
    product ambiguity becomes `human_info_needed`; the local operator answers it
    from the package cockpit, which clears the matching readiness blocker.
-6. Implementing workers run review-suite T1, T2, and GitHub review by default
-   unless the package policy says otherwise. A dedicated reviewer package is
-   optional for high-risk business logic or live smoke-test ownership.
+6. Implementing workers use the current Review Suite orchestrator profile when
+   it is installed, or another approved review provider with Symphony++ MCP
+   progress/evidence when it is not. A dedicated reviewer package is optional
+   for high-risk business logic or live smoke-test ownership.
 
 This flow preserves existing WorkPackage grants, virtual planning resources,
 readiness gates, review evidence, PR evidence, and human merge controls. The
@@ -111,6 +112,12 @@ Reloading local-operator detail can show the already prepared handoff again when
 its active unclaimed metadata is safely readable and replayable; reload display
 is read-only and does not mint, renew, revoke, or clean up handoffs.
 Board-grant WorkRequest detail cannot create this handoff.
+
+Local worker and architect grants are non-expiring by default. Operators should
+recover stale or abandoned authority by revoking grants, completing/merging or
+archiving packages, or recycling child workers, not by waiting for default grant
+clocks. An explicit `expires_at` remains a deliberate narrowing constraint when
+a package or tool passes one.
 
 Explicit phase-scoped architect MCP sessions with `read:work_request` can call
 `list_work_requests(status?)` and `read_work_request(work_request_id)` for the
@@ -224,7 +231,7 @@ identifiers and handoff coordinates for operator recovery.
    secrets, private-store handoff targets, bearer tokens, or operator-local
    secret material.
 6. Dispatch the worker with package id, base/target branch guidance, owned
-   paths, acceptance criteria, test plan, review lanes, handoff target, stable
+   paths, acceptance criteria, test plan, review profiles, handoff target, stable
    `claimed_by`, and stop conditions.
 7. Monitor claim, plan, findings, progress, blockers, branch/PR attachment,
    validation, and review evidence through Symphony++ state.
@@ -257,7 +264,7 @@ Worker handoffs may include:
 
 - WorkPackage id, branch guidance, owned files, acceptance criteria, and tests.
 - Handoff target and stable `claimed_by` identity.
-- Required review lanes and stop conditions.
+- Required review profiles and stop conditions.
 - Links to non-secret docs, templates, and MCP wiring instructions.
 
 Worker handoffs must not include raw grant secrets, bearer tokens, GitHub

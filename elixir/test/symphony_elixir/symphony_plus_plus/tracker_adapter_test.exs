@@ -17,6 +17,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
 
+  @fast_lock_retry_delay_ms 1
+  @lock_wait_observer_key :sympp_tracker_adapter_lock_wait_observer
+  @lock_wait_probe_ms 250
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
     original_database_path = Application.get_env(:symphony_elixir, :sympp_repo_database)
@@ -402,7 +406,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
   test "adapter work packages have a policy template" do
     assert {:ok, template} = Templates.expand("adapter")
     assert template.template == "adapter"
-    assert template.review_suite.required == ["review_t1", "review_t2"]
+    assert template.review_suite.required == ["normal"]
   end
 
   test "configured Symphony++ Repo database paths are canonicalized" do
@@ -636,7 +640,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
       Application.put_env(:symphony_elixir, :sympp_repo_database, database_path)
 
       assert {:ok, []} = Tracker.fetch_candidate_issues()
-      Process.sleep(50)
       assert :undefined = adapter_repo_pid(database_path)
     after
       stop_adapter_repo(database_path)
@@ -788,36 +791,55 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
   end
 
   test "repo access waits for a live holder beyond the former short retry budget" do
+    original_retry_delay =
+      Application.fetch_env(:symphony_elixir, :sympp_tracker_adapter_local_lock_retry_delay_ms)
+
+    original_wait_observer = Application.fetch_env(:symphony_elixir, @lock_wait_observer_key)
+
     database_path = Repo.database_path()
     lock_id = {{TrackerAdapter, :repo_access}, Repo.database_key(database_path)}
     parent = self()
 
-    holder =
-      spawn(fn ->
-        result =
-          TrackerAdapter.global_transaction_for_test(
-            lock_id,
-            fn ->
-              send(parent, :repo_access_lock_acquired)
+    Application.put_env(:symphony_elixir, :sympp_tracker_adapter_local_lock_retry_delay_ms, @fast_lock_retry_delay_ms)
+    Application.put_env(:symphony_elixir, @lock_wait_observer_key, parent)
 
-              receive do
-                :release -> :released
-              end
-            end,
-            :infinity
-          )
+    try do
+      assert TrackerAdapter.repo_access_lock_retries_for_test() == :infinity
 
-        send(parent, {:repo_access_holder_result, result})
-      end)
+      holder =
+        spawn(fn ->
+          result =
+            TrackerAdapter.global_transaction_for_test(
+              lock_id,
+              fn ->
+                send(parent, :repo_access_lock_acquired)
 
-    assert_receive :repo_access_lock_acquired, 1_000
+                receive do
+                  :release -> :released
+                end
+              end,
+              :infinity
+            )
 
-    waiter = Task.async(fn -> Tracker.fetch_candidate_issues() end)
-    Process.sleep(3_200)
-    send(holder, :release)
+          send(parent, {:repo_access_holder_result, result})
+        end)
 
-    assert Task.await(waiter, 3_000) == {:ok, []}
-    assert_receive {:repo_access_holder_result, :released}, 1_000
+      assert_receive :repo_access_lock_acquired, 1_000
+
+      waiter = Task.async(fn -> Tracker.fetch_candidate_issues() end)
+
+      try do
+        assert_task_waiting_on_lock(waiter, :local_lock, lock_id)
+      after
+        send(holder, :release)
+      end
+
+      assert Task.await(waiter, 3_000) == {:ok, []}
+      assert_receive {:repo_access_holder_result, :released}, 1_000
+    after
+      restore_fetched_app_env(:sympp_tracker_adapter_local_lock_retry_delay_ms, original_retry_delay)
+      restore_fetched_app_env(@lock_wait_observer_key, original_wait_observer)
+    end
   end
 
   test "non-distributed tracker locks abort if the local table owner is not ready" do
@@ -850,14 +872,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     end
   end
 
-  test "first-use migration waits for a live file lock beyond the former short retry budget" do
-    original_database_path = Application.get_env(:symphony_elixir, :sympp_repo_database)
+  test "migration file lock waits for a live holder beyond the former short retry budget" do
+    original_retry_delay =
+      Application.fetch_env(:symphony_elixir, :sympp_tracker_adapter_migration_lock_retry_delay_ms)
+
+    original_wait_observer = Application.fetch_env(:symphony_elixir, @lock_wait_observer_key)
+
     database_path = WorkPackageFactory.database_path()
     lock_path = database_path <> ".migration.lock"
     parent = self()
 
+    Application.put_env(
+      :symphony_elixir,
+      :sympp_tracker_adapter_migration_lock_retry_delay_ms,
+      @fast_lock_retry_delay_ms
+    )
+
+    Application.put_env(:symphony_elixir, @lock_wait_observer_key, parent)
+
     try do
-      Application.put_env(:symphony_elixir, :sympp_repo_database, database_path)
+      assert TrackerAdapter.migration_lock_retries_for_test() == :infinity
+
       File.mkdir_p!(Path.dirname(database_path))
       File.rm(lock_path)
 
@@ -877,16 +912,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
 
       assert_receive :migration_file_lock_acquired, 1_000
 
-      waiter = Task.async(fn -> Tracker.fetch_candidate_issues() end)
-      Process.sleep(3_200)
-      send(holder, :release)
+      waiter =
+        Task.async(fn ->
+          TrackerAdapter.migration_file_lock_for_test(database_path, fn -> :waited end)
+        end)
 
-      assert Task.await(waiter, 5_000) == {:ok, []}
+      try do
+        assert_task_waiting_on_lock(waiter, :migration_file_lock, lock_path)
+      after
+        send(holder, :release)
+      end
+
+      assert Task.await(waiter, 1_000) == :waited
       assert_receive {:migration_file_lock_result, :released}, 1_000
       refute File.exists?(lock_path)
     after
-      stop_adapter_repo(database_path)
-      restore_app_env(:sympp_repo_database, original_database_path)
+      restore_fetched_app_env(:sympp_tracker_adapter_migration_lock_retry_delay_ms, original_retry_delay)
+      restore_fetched_app_env(@lock_wait_observer_key, original_wait_observer)
       File.rm(lock_path)
       File.rm(database_path)
     end
@@ -2001,6 +2043,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
   defp restore_fetched_app_env(key, :error), do: Application.delete_env(:symphony_elixir, key)
 
   defp adapter_repo_pid(database_path), do: :global.whereis_name(Repo.process_key(database_path))
+
+  defp assert_task_pending(task) do
+    assert is_nil(Task.yield(task, @lock_wait_probe_ms))
+  end
+
+  defp assert_task_waiting_on_lock(task, kind, identifier) do
+    waiter_pid = task.pid
+    assert_receive {:tracker_adapter_lock_wait, ^kind, ^identifier, ^waiter_pid}, 1_000
+    assert_task_pending(task)
+  end
 
   defp reset_local_lock_table do
     case :ets.whereis(:symphony_plus_plus_tracker_adapter_locks) do

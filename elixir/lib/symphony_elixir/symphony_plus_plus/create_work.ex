@@ -460,7 +460,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
       "Required gates:",
       gates_line(policy.required_gates),
       "",
-      "Required review lanes:",
+      "Required review profiles:",
       gates_line(policy.review_suite.required)
     ]
     |> Enum.join("\n")
@@ -484,9 +484,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
 
   defp nonblank_or(_value, fallback), do: fallback
 
-  defp mint_worker_grant(repo, work_package_id, policy) do
-    expires_at = DateTime.add(DateTime.utc_now(:microsecond), policy.constraints.expiry_seconds, :second)
-    AccessGrantService.mint_worker_grant(repo, work_package_id, expires_at: expires_at)
+  defp mint_worker_grant(repo, work_package_id, _policy) do
+    AccessGrantService.mint_worker_grant(repo, work_package_id)
   end
 
   defp worker_grant_payload(%{grant: grant, work_key: work_key}) do
@@ -495,10 +494,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
       display_key: grant.display_key,
       role: grant.grant_role,
       capabilities: grant.capabilities,
-      expires_at: DateTime.to_iso8601(grant.expires_at),
+      expires_at: timestamp(grant.expires_at),
       secret: work_key.secret
     }
   end
+
+  defp timestamp(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+  defp timestamp(nil), do: nil
 
   defp worker_grant_payload_for_response(worker_grant, nil), do: worker_grant
 

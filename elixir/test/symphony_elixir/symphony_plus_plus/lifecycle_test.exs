@@ -63,25 +63,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
 
   test "policy templates expand into deterministic constraints and readiness requirements" do
     assert {:ok, quick_fix} = Templates.expand("quick_fix")
-    assert quick_fix.constraints.expiry_seconds == 86_400
+    assert quick_fix.constraints.expiry_seconds == nil
     assert quick_fix.constraints.planning_depth == "brief"
     assert quick_fix.constraints.terminal_readiness_status == "ready_for_human_merge"
-    assert "review_t1_green" in quick_fix.readiness_requirements
+    assert "review_brief_green" in quick_fix.readiness_requirements
 
     assert {:ok, hotfix} = Templates.expand("hotfix")
-    assert hotfix.constraints.expiry_seconds == 21_600
-    assert hotfix.review_suite.required == ["review_t1", "review_t2"]
+    assert hotfix.constraints.expiry_seconds == nil
+    assert hotfix.review_suite.required == ["emergency"]
     assert hotfix.constraints.terminal_readiness_status == "ready_for_human_merge"
-    assert hotfix.constraints.expiry_seconds < quick_fix.constraints.expiry_seconds
 
     assert {:ok, phase_child} = Templates.expand("phase_child")
-    assert phase_child.constraints.expiry_seconds == 172_800
+    assert phase_child.constraints.expiry_seconds == nil
     assert phase_child.constraints.planning_depth == "package"
     assert phase_child.constraints.terminal_readiness_status == "ready_for_architect_merge"
     assert "architect_ready" in phase_child.readiness_requirements
 
     assert {:ok, investigation} = Templates.expand("investigation")
-    assert investigation.constraints.expiry_seconds == 43_200
+    assert investigation.constraints.expiry_seconds == nil
     assert investigation.constraints.planning_depth == "findings"
     assert investigation.required_gates == ["findings_documented", "recommendation_artifact_recorded"]
     assert investigation.readiness_requirements == ["findings_complete", "recommendation_artifact_recorded"]
@@ -89,7 +88,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
     for kind <- ["mcp", "skill", "hooks"] do
       assert {:ok, policy} = Templates.expand(kind)
       assert policy.template == "worker_package"
-      assert policy.review_suite.required == ["review_t1", "review_t2"]
+      assert policy.review_suite.required == ["normal"]
       assert policy.constraints.terminal_readiness_status == "ready_for_human_merge"
     end
 
@@ -115,7 +114,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
         [
           "| `#{kind}` ",
           "`#{policy.constraints.planning_depth}`",
-          "`#{policy.constraints.expiry_seconds}`",
+          "`#{expiry_label(policy)}`",
           "`#{policy.constraints.terminal_readiness_status}`",
           "`#{Enum.join(policy.required_gates, ", ")}`",
           "`#{Enum.join(policy.review_suite.required, ", ")}`"
@@ -424,4 +423,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.LifecycleTest do
 
     Map.from_struct(assignment)
   end
+
+  defp expiry_label(%{constraints: %{expiry_seconds: nil}}), do: "none"
+  defp expiry_label(%{constraints: %{expiry_seconds: expiry_seconds}}), do: Integer.to_string(expiry_seconds)
 end

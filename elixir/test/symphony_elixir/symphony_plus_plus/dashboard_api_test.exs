@@ -1490,8 +1490,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  anchor: "phase_gate-abc123",
                  status: "passed",
                  verdict: "green",
-                 summary: "T1 and T2 green",
-                 lane: "review_t2",
+                 summary: "brief and normal green",
+                 lane: "normal",
                  reviewer: "Bearer raw-review-token"
                }
              })
@@ -1591,8 +1591,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  tests: "mix test",
                  artifacts: ["review-log.txt"],
                  reviews: [
-                   %{lane: "review_t1", verdict: "green"},
-                   %{lane: "review_t2", verdict: "green"}
+                   %{lane: "brief", verdict: "green"},
+                   %{lane: "normal", verdict: "green"}
                  ],
                  head_sha: "abc123"
                },
@@ -1638,7 +1638,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              PlanningRepository.append_progress_event(repo, %{
                work_package_id: work_package.id,
                summary: "Old review green",
-               status: "review_t1_green",
+               status: "review_brief_green",
                payload: %{},
                created_at: DateTime.add(timestamp, 2, :second)
              })
@@ -2032,7 +2032,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  "tests" => ["mix test"],
                  "artifacts" => ["review.txt"],
                  "acceptance_criteria_met" => true,
-                 "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+                 "reviews" => [%{"lane" => "brief", "verdict" => "green"}, %{"lane" => "normal", "verdict" => "green"}]
                },
                created_at: DateTime.add(timestamp, 4, :second)
              })
@@ -3028,6 +3028,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
+  test "dashboard API rejects grants after package authority reaches terminal state", %{repo: repo} do
+    %{work_package: work_package, work_key_secret: secret} = create_dashboard_fixture(repo, status: "planning")
+
+    assert %{"work_package" => %{"id" => fetched_id}} =
+             json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+
+    assert fetched_id == work_package.id
+    assert {:ok, _terminal_package} = WorkPackageRepository.update(repo, work_package.id, %{status: "merged"})
+
+    assert %{"error" => %{"code" => "unauthorized"}} =
+             json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 401)
+  end
+
   test "dashboard browser sessions reject unknown work keys with login responses", %{repo: repo} do
     %{work_package: work_package} = create_dashboard_fixture(repo)
     unknown_secret = WorkKey.generate().secret
@@ -3528,7 +3541,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       forbidden_file_globs: ["elixir/lib/symphony_elixir_web/live/**"],
       acceptance_criteria: ["WorkRequest dashboard API reads are scoped and redacted."],
       validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/dashboard_api_test.exs"],
-      review_lanes: ["review_t1", "review_t2"],
+      review_lanes: ["brief", "normal"],
       stop_conditions: ["Stop before UI or dispatch wiring."]
     }
 
@@ -3752,8 +3765,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  tests: ["mix test test/symphony_elixir/symphony_plus_plus"],
                  artifacts: artifacts,
                  reviews: [
-                   %{lane: "review_t1", verdict: "green"},
-                   %{lane: "review_t2", verdict: "green"}
+                   %{lane: "brief", verdict: "green"},
+                   %{lane: "normal", verdict: "green"}
                  ],
                  head_sha: head_sha
                },

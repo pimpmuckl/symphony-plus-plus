@@ -28,7 +28,7 @@ for release-candidate evidence.
 
 ## Hotfix additional gates
 
-- Grant has not expired or package has been reauthorized.
+- Grant is live: not revoked, package authority is still valid, and any explicit `expires_at` is still in the future.
 - Human merge is required.
 - Hotfix review-suite profile passes.
 

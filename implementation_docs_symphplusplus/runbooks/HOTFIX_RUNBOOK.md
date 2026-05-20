@@ -29,7 +29,7 @@ Send the worker:
 - WorkPackage id, base branch, target branch convention, and PR title format.
 - Private handoff target and stable `claimed_by` identity.
 - Package scope, owned files, acceptance criteria, and stop conditions.
-- Validation target and required review lanes.
+- Validation target and required review profiles.
 - Reminder to use the `symphony-plus-plus` plugin or repo-local skill with MCP
   private-store bootstrap.
 

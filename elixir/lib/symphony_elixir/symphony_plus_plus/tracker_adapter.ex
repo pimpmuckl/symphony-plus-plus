@@ -30,10 +30,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
   @migration_lock_retries :infinity
   @migration_lock_retry_delay_ms 100
   @local_lock_retry_delay_ms 100
+  @lock_wait_observer_key :sympp_tracker_adapter_lock_wait_observer
   @local_lock_owner :symphony_plus_plus_tracker_adapter_lock_owner
   @local_lock_owner_timeout_ms 1_000
   @local_lock_table :symphony_plus_plus_tracker_adapter_locks
   @repo_access_lock_retries :infinity
+  @repo_shutdown_poll_ms 10
+  @repo_shutdown_timeout_ms 1_000
   @truncated_notice "[truncated]"
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
@@ -211,6 +214,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
   def global_transaction_for_test(lock_id, fun, retries) when is_function(fun, 0) do
     global_transaction(lock_id, fun, retries)
   end
+
+  @doc false
+  @spec repo_access_lock_retries_for_test() :: non_neg_integer() | :infinity
+  def repo_access_lock_retries_for_test, do: @repo_access_lock_retries
+
+  @doc false
+  @spec migration_lock_retries_for_test() :: non_neg_integer() | :infinity
+  def migration_lock_retries_for_test, do: @migration_lock_retries
 
   @doc false
   @spec migration_file_lock_for_test(Path.t(), (-> term())) :: term()
@@ -439,24 +450,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
     if Repo.memory_database?(database_path) do
       :ok
     else
-      stop_owned_repo(ownership)
+      stop_adapter_owned_repo(ownership, database_path)
     end
   end
 
-  defp stop_owned_repo(:existing), do: :ok
+  defp stop_adapter_owned_repo(:existing, _database_path), do: :ok
 
-  defp stop_owned_repo({:supervised, child_id, _pid}) do
-    if Process.whereis(SymphonyElixir.Supervisor) do
-      _ = Supervisor.terminate_child(SymphonyElixir.Supervisor, child_id)
-      _ = Supervisor.delete_child(SymphonyElixir.Supervisor, child_id)
+  defp stop_adapter_owned_repo({:supervised, child_id, pid}, database_path) do
+    case Process.whereis(SymphonyElixir.Supervisor) do
+      supervisor when is_pid(supervisor) ->
+        _ = Supervisor.terminate_child(supervisor, child_id)
+        _ = Supervisor.delete_child(supervisor, child_id)
+        wait_for_repo_unregistered(pid, database_path)
+
+      _no_supervisor ->
+        stop_direct_repo(pid, database_path)
     end
 
     :ok
   end
 
-  defp stop_owned_repo({:direct, pid}) when is_pid(pid), do: stop_direct_repo(pid)
+  defp stop_adapter_owned_repo({:direct, pid}, database_path) when is_pid(pid), do: stop_direct_repo(pid, database_path)
 
-  defp stop_direct_repo(pid) do
+  defp stop_direct_repo(pid, database_path) do
     ref = Process.monitor(pid)
     Process.exit(pid, :shutdown)
 
@@ -465,6 +481,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
     after
       1_000 ->
         Process.demonitor(ref, [:flush])
+        :ok
+    end
+
+    wait_for_repo_unregistered(pid, database_path)
+  end
+
+  defp wait_for_repo_unregistered(pid, database_path) do
+    deadline = System.monotonic_time(:millisecond) + @repo_shutdown_timeout_ms
+    wait_for_repo_unregistered(pid, database_path, deadline)
+  end
+
+  defp wait_for_repo_unregistered(pid, database_path, deadline) do
+    case global_repo_pid(database_path) do
+      ^pid ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          :ok
+        else
+          Process.sleep(@repo_shutdown_poll_ms)
+          wait_for_repo_unregistered(pid, database_path, deadline)
+        end
+
+      _unregistered_or_replaced ->
         :ok
     end
   end
@@ -514,7 +552,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
             with_migration_file_lock(database_path, fun, retries)
 
           :ok ->
-            Process.sleep(@migration_lock_retry_delay_ms)
+            notify_lock_wait(:migration_file_lock, lock_path)
+            Process.sleep(migration_lock_retry_delay_ms())
             with_migration_file_lock(database_path, fun, next_lock_retry(retries))
         end
 
@@ -525,6 +564,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
 
   defp next_lock_retry(:infinity), do: :infinity
   defp next_lock_retry(retries), do: retries - 1
+
+  defp migration_lock_retry_delay_ms do
+    configured_retry_delay_ms(
+      :sympp_tracker_adapter_migration_lock_retry_delay_ms,
+      @migration_lock_retry_delay_ms
+    )
+  end
+
+  defp local_lock_retry_delay_ms do
+    configured_retry_delay_ms(:sympp_tracker_adapter_local_lock_retry_delay_ms, @local_lock_retry_delay_ms)
+  end
+
+  defp notify_lock_wait(kind, identifier) do
+    case Application.get_env(:symphony_elixir, @lock_wait_observer_key) do
+      pid when is_pid(pid) ->
+        send(pid, {:tracker_adapter_lock_wait, kind, identifier, self()})
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp configured_retry_delay_ms(key, default) do
+    case Application.get_env(:symphony_elixir, key, default) do
+      value when is_integer(value) and value >= 0 -> value
+      _other -> default
+    end
+  end
 
   defp migration_file_lock_path(database_path) do
     if Repo.filesystem_database_path?(database_path) do
@@ -678,7 +745,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
         end
 
       :busy ->
-        Process.sleep(@local_lock_retry_delay_ms)
+        notify_lock_wait(:local_lock, lock_id)
+        Process.sleep(local_lock_retry_delay_ms())
         local_transaction(lock_id, fun, :infinity)
 
       :unavailable ->
@@ -696,7 +764,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
         end
 
       :busy ->
-        Process.sleep(@local_lock_retry_delay_ms)
+        notify_lock_wait(:local_lock, lock_id)
+        Process.sleep(local_lock_retry_delay_ms())
         local_transaction(lock_id, fun, retries - 1)
 
       :unavailable ->
@@ -1208,7 +1277,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
               where: grant.grant_role == "worker",
               where: not is_nil(grant.claimed_at),
               where: is_nil(grant.revoked_at),
-              where: grant.expires_at > ^now,
+              where: is_nil(grant.expires_at) or grant.expires_at > ^now,
               order_by: [desc: grant.claimed_at, asc: grant.id]
             )
           )
@@ -1233,7 +1302,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapter do
           where: grant.work_package_id == ^work_package_id,
           where: not is_nil(grant.claimed_at),
           where: is_nil(grant.revoked_at),
-          where: grant.expires_at > ^now,
+          where: is_nil(grant.expires_at) or grant.expires_at > ^now,
           order_by: [desc: grant.claimed_at, asc: grant.id]
         )
       )

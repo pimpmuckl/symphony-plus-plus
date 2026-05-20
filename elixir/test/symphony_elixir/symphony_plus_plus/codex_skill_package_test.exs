@@ -559,299 +559,167 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
-  test "enable command safely mutates only the MCP companion plugin config" do
+  test "lifecycle diagnostic self-test covers enable command TOML mutation shapes" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
 
-    cases = [
-      {"missing_config", nil, "created_config", false},
-      {"absent_section",
-       """
-       [plugins."symphony-plus-plus@jonat-local"]
-       enabled = true
-       note = "caf\u00e9"
+    if powershell do
+      {output, status} =
+        System.cmd(
+          powershell,
+          [
+            "-NoProfile",
+            "-File",
+            @plugin_lifecycle_diagnostic_path,
+            "-SelfTest"
+          ],
+          stderr_to_stdout: true
+        )
 
-       [plugins."unrelated@jonat-local"]
-       enabled = false
+      assert status == 0, output
+      assert output =~ "diagnose-mcp-lifecycle self-test passed."
+    end
+  end
 
-       [mcp_servers.other]
-       url = "http://127.0.0.1:9999/mcp"
-       """, "added_section", true},
-      {"disabled_section",
-       """
-       [plugins."symphony-plus-plus-mcp@jonat-local"]
-       enabled = false # dedicated only
-       """, "enabled_existing_section", true},
-      {"quoted_enabled_section",
-       """
-       [plugins."symphony-plus-plus-mcp@jonat-local"]
-       "enabled" = false # dedicated only
-       """, "enabled_existing_section", true},
-      {"missing_enabled",
-       """
-       [plugins."symphony-plus-plus-mcp@jonat-local"]
-       note = "dedicated only"
-       """, "added_enabled", true},
-      {"literal_quoted_section",
-       """
-       ["plugins" . 'symphony-plus-plus-mcp@jonat-local' ]
-       enabled = false
-       """, "enabled_existing_section", true},
-      {"spaced_section_with_array",
-       """
-        [ plugins."symphony-plus-plus-mcp@jonat-local" ]
-        matrix = [
-          ["a"]
-        ]
-        enabled = false
-       """, "enabled_existing_section", true},
-      {"section_with_same_line_multiline_string_in_array", ~s([plugins."symphony-plus-plus-mcp@jonat-local"]\nnotes = [\"\"\"hello\"\"\"]\nenabled = false\n), "enabled_existing_section", true},
-      {"section_with_multiline_string_array",
-       ~s([plugins."symphony-plus-plus-mcp@jonat-local"]\n) <>
-         ~s(notes = [\"\"\"\nhello\n\"\"\"]\n) <>
-         ~s(enabled = false\n), "enabled_existing_section", true},
-      {"dotted_key",
-       """
-       plugins."symphony-plus-plus-mcp@jonat-local".enabled = false # dedicated only
-       """, "enabled_existing_dotted_key", true},
-      {"plugins_table_dotted_key",
-       """
-       [plugins]
-       "symphony-plus-plus-mcp@jonat-local".enabled = false # dedicated only
-       """, "enabled_existing_dotted_key", true},
-      {"plugins_table_inline_table",
-       """
-       [plugins]
-       "symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", enabled = false }
-       """, "enabled_existing_inline_table", true},
-      {"plugins_table_inline_table_quoted_enabled",
-       """
-       [plugins]
-       "symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", "enabled" = false }
-       """, "enabled_existing_inline_table", true},
-      {"root_inline_table",
-       """
-       plugins."symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", enabled = false }
-       """, "enabled_existing_inline_table", true},
-      {"root_inline_table_quoted_enabled",
-       """
-       plugins."symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", "enabled" = false }
-       """, "enabled_existing_inline_table", true},
-      {"profile_relative_dotted_key_ignored",
-       """
-       [profiles.spp]
-       plugins."symphony-plus-plus-mcp@jonat-local".enabled = true
-       """, "added_section", true},
-      {"profile_relative_other_market_dotted_key_ignored",
-       """
-       [profiles.spp]
-       plugins."symphony-plus-plus-mcp@other-market".enabled = true
-       """, "added_section", true},
-      {"multiline_string_section",
-       ~s([plugins."symphony-plus-plus-mcp@jonat-local"]\nnote = \"\"\"\nenabled = false\n[plugins."not-a-real-section@jonat-local"]\n[mcp_servers.symphony_plus_plus]\n\"\"\"\n), "added_enabled",
-       true},
-      {"already_enabled",
-       """
-       [plugins."symphony-plus-plus-mcp@jonat-local"]
-       enabled = true
-       """, "already_enabled", false}
-    ]
+  test "enable command safely mutates only the MCP companion plugin config" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-enable-#{System.unique_integer([:positive])}")
+
+    initial_config = """
+    [plugins."symphony-plus-plus@jonat-local"]
+    enabled = true
+    note = "caf\u00e9"
+
+    [plugins."unrelated@jonat-local"]
+    enabled = false
+
+    [mcp_servers.other]
+    url = "http://127.0.0.1:9999/mcp"
+    """
 
     if powershell do
-      for {case_name, initial_config, expected_status, expect_backup} <- cases do
-        temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-enable-#{case_name}-#{System.unique_integer([:positive])}")
+      try do
+        write_activation_cache(temp_codex_home, "jonat-local")
+        File.mkdir_p!(temp_codex_home)
+        File.write!(Path.join(temp_codex_home, "config.toml"), initial_config)
 
-        try do
-          write_activation_cache(temp_codex_home, "jonat-local")
+        {json_output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              @plugin_lifecycle_diagnostic_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              "jonat-local",
+              "-EnableMcpCompanion",
+              "-Json"
+            ],
+            stderr_to_stdout: true
+          )
 
-          if initial_config do
-            File.mkdir_p!(temp_codex_home)
-            File.write!(Path.join(temp_codex_home, "config.toml"), initial_config)
-          end
+        assert status == 0, json_output
+        result = Jason.decode!(json_output)
+        assert result["status"] == "added_section"
+        assert result["changed"] == true
+        assert result["plugin_key"] == "symphony-plus-plus-mcp@jonat-local"
+        assert result["restart_action"] =~ "Restart or reload"
+        assert result["smoke_command"] =~ "smoke-sympp-mcp-http.ps1"
+        assert result["boundary"] =~ "generic worker"
 
-          if case_name == "missing_config" do
-            {doctor_json, doctor_status} =
-              System.cmd(
-                powershell,
-                [
-                  "-NoProfile",
-                  "-File",
-                  @plugin_lifecycle_diagnostic_path,
-                  "-CodexHome",
-                  temp_codex_home,
-                  "-MarketplaceName",
-                  "jonat-local",
-                  "-Json"
-                ],
-                stderr_to_stdout: true
-              )
+        config = File.read!(Path.join(temp_codex_home, "config.toml"))
+        assert companion_plugin_section_present?(config)
+        assert normalize_newlines(config) =~ ~s([plugins."symphony-plus-plus-mcp@jonat-local"]\nenabled = true)
+        assert config =~ ~s([plugins."symphony-plus-plus@jonat-local"])
+        assert config =~ ~s([plugins."unrelated@jonat-local"])
+        assert config =~ "[mcp_servers.other]"
+        assert config =~ "caf\u00e9"
+        refute config =~ "[mcp_servers.symphony_plus_plus]"
 
-            assert doctor_status == 0, doctor_json
-            readiness = doctor_json |> Jason.decode!() |> Map.fetch!("readiness")
-            create_config = Enum.find(readiness["next_actions"], &(&1["code"] == "create_codex_config"))
-            enable_action = Enum.find(readiness["next_actions"], &(&1["code"] == "enable_mcp_companion"))
-            assert create_config["message"] =~ "enable command"
-            assert enable_action["command"] =~ "-EnableMcpCompanion"
-          end
+        backups = config_backups(temp_codex_home)
+        assert length(backups) == 1
+        assert same_path?(result["backup_path"], List.first(backups))
+        assert normalize_newlines(File.read!(List.first(backups))) == normalize_newlines(initial_config)
+      after
+        File.rm_rf(temp_codex_home)
+      end
+    end
+  end
 
-          {json_output, status} =
-            System.cmd(
-              powershell,
-              [
-                "-NoProfile",
-                "-File",
-                @plugin_lifecycle_diagnostic_path,
-                "-CodexHome",
-                temp_codex_home,
-                "-MarketplaceName",
-                "jonat-local",
-                "-EnableMcpCompanion",
-                "-Json"
-              ],
-              stderr_to_stdout: true
-            )
+  test "enable command keeps parser-sensitive embedded TOML text inert" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-enable-parser-sensitive-#{System.unique_integer([:positive])}")
 
-          assert status == 0, "#{case_name}: #{json_output}"
-          result = Jason.decode!(json_output)
-          assert result["status"] == expected_status
-          assert result["plugin_key"] == "symphony-plus-plus-mcp@jonat-local"
-          assert result["restart_action"] =~ "Restart or reload"
-          assert result["smoke_command"] =~ "smoke-sympp-mcp-http.ps1"
-          assert result["boundary"] =~ "generic worker"
+    initial_config =
+      ~s([plugins."symphony-plus-plus-mcp@jonat-local"]\n) <>
+        ~s(note = \"\"\"\n) <>
+        ~s(enabled = false\n) <>
+        ~s([plugins."not-a-real-section@jonat-local"]\n) <>
+        ~s([mcp_servers.symphony_plus_plus]\n) <>
+        ~s(\"\"\"\n)
 
-          config = File.read!(Path.join(temp_codex_home, "config.toml"))
+    if powershell do
+      try do
+        write_activation_cache(temp_codex_home, "jonat-local")
+        File.mkdir_p!(temp_codex_home)
+        File.write!(Path.join(temp_codex_home, "config.toml"), initial_config)
 
-          if case_name == "dotted_key" do
-            assert config =~ ~s(plugins."symphony-plus-plus-mcp@jonat-local".enabled = true # dedicated only)
-            refute companion_plugin_section_present?(config)
-          else
-            if case_name == "plugins_table_dotted_key" do
-              assert config =~ ~s("symphony-plus-plus-mcp@jonat-local".enabled = true # dedicated only)
-              refute companion_plugin_section_present?(config)
-            end
-          end
+        {json_output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              @plugin_lifecycle_diagnostic_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              "jonat-local",
+              "-EnableMcpCompanion",
+              "-Json"
+            ],
+            stderr_to_stdout: true
+          )
 
-          if case_name == "plugins_table_inline_table" do
-            assert config =~ ~s("symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", enabled = true })
-            refute companion_plugin_section_present?(config)
-          end
+        assert status == 0, json_output
+        result = Jason.decode!(json_output)
+        assert result["status"] == "added_enabled"
+        assert result["changed"] == true
 
-          if case_name == "plugins_table_inline_table_quoted_enabled" do
-            assert config =~ ~s("symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", "enabled" = true })
-            refute companion_plugin_section_present?(config)
-          end
+        config = File.read!(Path.join(temp_codex_home, "config.toml"))
 
-          if case_name == "root_inline_table" do
-            assert config =~ ~s(plugins."symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", enabled = true })
-            refute companion_plugin_section_present?(config)
-          end
+        assert normalize_newlines(config) =~
+                 ~s(note = \"\"\"\nenabled = false\n[plugins."not-a-real-section@jonat-local"]\n[mcp_servers.symphony_plus_plus]\n\"\"\")
 
-          if case_name == "root_inline_table_quoted_enabled" do
-            assert config =~ ~s(plugins."symphony-plus-plus-mcp@jonat-local" = { note = "dedicated", "enabled" = true })
-            refute companion_plugin_section_present?(config)
-          end
+        {doctor_json, doctor_status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              @plugin_lifecycle_diagnostic_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              "jonat-local",
+              "-Json"
+            ],
+            stderr_to_stdout: true
+          )
 
-          if case_name == "quoted_enabled_section" do
-            assert config =~ ~s("enabled" = true # dedicated only)
-          end
+        assert doctor_status == 0, doctor_json
+        doctor_summary = Jason.decode!(doctor_json)
+        assert doctor_summary["codex_config"]["symphony_mcp_companion_plugin_enabled"] == true
+        assert doctor_summary["codex_config"]["global_sympp_mcp_entry"] == false
+        assert doctor_summary["readiness"]["workrequest_mcp"]["companion_plugin_enabled"] == true
 
-          if case_name in [
-               "dotted_key",
-               "plugins_table_dotted_key",
-               "plugins_table_inline_table",
-               "plugins_table_inline_table_quoted_enabled",
-               "root_inline_table",
-               "root_inline_table_quoted_enabled"
-             ] do
-            refute companion_plugin_section_present?(config)
-          else
-            assert companion_plugin_section_present?(config)
-          end
-
-          assert config =~ "enabled = true" or config =~ ~s("enabled" = true)
-
-          unless case_name == "multiline_string_section" do
-            refute config =~ "[mcp_servers.symphony_plus_plus]"
-          end
-
-          if initial_config && initial_config =~ "[mcp_servers.other]" do
-            assert config =~ "[mcp_servers.other]"
-            assert config =~ "caf\u00e9"
-          end
-
-          if case_name == "multiline_string_section" do
-            assert normalize_newlines(config) =~
-                     ~s(note = \"\"\"\nenabled = false\n[plugins."not-a-real-section@jonat-local"]\n[mcp_servers.symphony_plus_plus]\n\"\"\")
-
-            {doctor_json, doctor_status} =
-              System.cmd(
-                powershell,
-                [
-                  "-NoProfile",
-                  "-File",
-                  @plugin_lifecycle_diagnostic_path,
-                  "-CodexHome",
-                  temp_codex_home,
-                  "-MarketplaceName",
-                  "jonat-local",
-                  "-Json"
-                ],
-                stderr_to_stdout: true
-              )
-
-            assert doctor_status == 0, doctor_json
-            doctor_summary = Jason.decode!(doctor_json)
-            assert doctor_summary["codex_config"]["symphony_mcp_companion_plugin_enabled"] == true
-            assert doctor_summary["codex_config"]["global_sympp_mcp_entry"] == false
-            assert doctor_summary["readiness"]["workrequest_mcp"]["companion_plugin_enabled"] == true
-
-            refute Enum.any?(
-                     doctor_summary["readiness"]["next_actions"],
-                     &(&1["code"] == "enable_mcp_companion")
-                   )
-          end
-
-          if case_name == "spaced_section_with_array" do
-            assert normalize_newlines(config) =~ ~r/matrix = \[\n\s+\["a"\]\n\s+\]/
-            refute normalize_newlines(config) =~ "enabled = false"
-          end
-
-          if case_name == "section_with_same_line_multiline_string_in_array" do
-            assert normalize_newlines(config) =~ ~s(notes = [\"\"\"hello\"\"\"])
-            refute normalize_newlines(config) =~ "enabled = false"
-          end
-
-          if case_name == "section_with_multiline_string_array" do
-            assert normalize_newlines(config) =~ ~s(notes = [\"\"\"\nhello\n\"\"\"])
-            refute normalize_newlines(config) =~ "enabled = false"
-          end
-
-          if case_name in [
-               "profile_relative_dotted_key_ignored",
-               "profile_relative_other_market_dotted_key_ignored"
-             ] do
-            assert config =~ "[profiles.spp]"
-            assert length(Regex.scan(~r/\[plugins\."symphony-plus-plus-mcp@jonat-local"\]/, config)) == 1
-          end
-
-          backups = config_backups(temp_codex_home)
-
-          if expect_backup do
-            assert length(backups) == 1
-            assert same_path?(result["backup_path"], List.first(backups))
-            assert normalize_newlines(File.read!(List.first(backups))) == normalize_newlines(initial_config)
-          else
-            assert backups == []
-            assert is_nil(result["backup_path"])
-          end
-
-          if expected_status == "already_enabled" do
-            assert result["changed"] == false
-          else
-            assert result["changed"] == true
-          end
-        after
-          File.rm_rf(temp_codex_home)
-        end
+        refute Enum.any?(
+                 doctor_summary["readiness"]["next_actions"],
+                 &(&1["code"] == "enable_mcp_companion")
+               )
+      after
+        File.rm_rf(temp_codex_home)
       end
     end
   end
@@ -3148,7 +3016,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
   test "refresh script installs the repo-local plugin into the requested Codex home" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
-    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-refresh-#{System.unique_integer([:positive])}")
+    temp_codex_home = unique_temp_path("sympp-plugin-refresh")
 
     if powershell do
       try do
@@ -3214,9 +3082,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
   test "refresh script validates installed cache MCP config and wrapper from cache roots" do
     powershell = System.find_executable("pwsh")
-    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-refresh-#{System.unique_integer([:positive])}")
+    temp_codex_home = unique_temp_path("sympp-plugin-refresh")
 
     if powershell do
+      fake_mix = fake_mix_executable(temp_codex_home)
+
       try do
         expected_version =
           @plugin_manifest_path
@@ -3235,10 +3105,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-ValidateInstalledCache"
             ],
-            stderr_to_stdout: true
+            stderr_to_stdout: true,
+            env: [{"SYMPP_LAUNCHER", "direct"}, {"SYMPP_MIX", fake_mix}]
           )
 
         assert status == 0, output
+        assert output =~ "Mix 1.99.0 test"
+        assert output =~ "Symphony++ Solo Session wrapper validation passed."
+        assert output =~ "Symphony++ generic MCP wrapper validation passed."
         assert output =~ "Validated installed Symphony++ plugin cache:"
         assert output =~ "cache: local"
         assert output =~ "cache: #{expected_version}"
@@ -3255,9 +3129,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
   test "refresh script installs and validates the opt-in MCP plugin" do
     powershell = System.find_executable("pwsh")
-    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-mcp-refresh-#{System.unique_integer([:positive])}")
+    temp_codex_home = unique_temp_path("sympp-plugin-mcp-refresh")
 
     if powershell do
+      fake_mix = fake_mix_executable(temp_codex_home)
+
       try do
         {output, status} =
           System.cmd(
@@ -3272,10 +3148,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-ValidateInstalledCache"
             ],
-            stderr_to_stdout: true
+            stderr_to_stdout: true,
+            env: [{"SYMPP_LAUNCHER", "direct"}, {"SYMPP_MIX", fake_mix}]
           )
 
         assert status == 0, output
+        assert output =~ "Mix 1.99.0 test"
+        assert output =~ "Symphony++ Solo Session wrapper validation passed."
+        assert output =~ "Symphony++ generic MCP wrapper validation passed."
         assert output =~ "Validated installed Symphony++ plugin cache:"
         assert output =~ "cache: local"
         assert output =~ "cache: #{@plugin_version}"
@@ -3303,7 +3183,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
   test "refresh script overlays local and manifest-version caches without deleting unrelated entries" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
-    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-refresh-#{System.unique_integer([:positive])}")
+    temp_codex_home = unique_temp_path("sympp-plugin-refresh")
 
     if powershell do
       for cache_name <- ["local", @plugin_version] do
@@ -3371,8 +3251,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
   test "refresh script rejects unresolved marketplace source paths" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
-    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-refresh-#{System.unique_integer([:positive])}")
-    marketplace_path = Path.join(System.tmp_dir!(), "sympp-marketplace-#{System.unique_integer([:positive])}.json")
+    temp_codex_home = unique_temp_path("sympp-plugin-refresh")
+    marketplace_path = unique_temp_path("sympp-marketplace") <> ".json"
 
     if powershell do
       marketplace = %{
@@ -3419,10 +3299,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
   test "refresh script resolves repo-root relative source paths from marketplace file" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
-    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-refresh-#{System.unique_integer([:positive])}")
+    temp_codex_home = unique_temp_path("sympp-plugin-refresh")
 
     marketplace_path =
-      Path.join(@repo_root, "plugins/symphony-plus-plus/sympp-marketplace-test-#{System.unique_integer([:positive])}.json")
+      Path.join(@repo_root, "plugins/symphony-plus-plus/sympp-marketplace-test-#{unique_id()}.json")
 
     if powershell do
       marketplace = %{
@@ -3473,7 +3353,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
   test "refresh script repairs incompatible generated default caches only" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
-    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-refresh-#{System.unique_integer([:positive])}")
+    temp_codex_home = unique_temp_path("sympp-plugin-refresh")
 
     if powershell do
       stale_manifest_path = plugin_cache_path(temp_codex_home, ["0.0.9", ".codex-plugin", "plugin.json"])
@@ -3615,7 +3495,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
   test "refresh script repairs stale default MCP artifacts during MCP-only refresh" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
-    temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-refresh-mcp-only-#{System.unique_integer([:positive])}")
+    temp_codex_home = unique_temp_path("sympp-plugin-refresh-mcp-only")
 
     if powershell do
       stale_manifest_path = plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"])
@@ -3730,6 +3610,54 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
   defp normalize_newlines(value) do
     String.replace(value, "\r\n", "\n")
+  end
+
+  defp fake_mix_executable(temp_root) do
+    path = Path.join(temp_root, if(windows?(), do: "mix.cmd", else: "mix"))
+    File.mkdir_p!(Path.dirname(path))
+
+    File.write!(path, fake_mix_script())
+
+    unless windows?() do
+      File.chmod!(path, 0o755)
+    end
+
+    path
+  end
+
+  defp fake_mix_script do
+    if windows?() do
+      """
+      @echo off
+      if "%~1"=="--version" (
+        echo Mix 1.99.0 test
+        exit /b 0
+      )
+      echo unexpected mix args: %*
+      exit /b 2
+      """
+    else
+      """
+      #!/usr/bin/env sh
+      if [ "$1" = "--version" ]; then
+        echo "Mix 1.99.0 test"
+        exit 0
+      fi
+      echo "unexpected mix args: $*" >&2
+      exit 2
+      """
+    end
+  end
+
+  defp windows?, do: match?({:win32, _name}, :os.type())
+
+  defp unique_temp_path(prefix) do
+    Path.join(System.tmp_dir!(), "#{prefix}-#{unique_id()}")
+  end
+
+  defp unique_id do
+    id = "#{System.pid()}-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+    String.replace(id, ~r/[^A-Za-z0-9_.-]/, "-")
   end
 
   defp companion_plugin_section_present?(config) do
