@@ -15,7 +15,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
-  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Session}
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Repository, Session}
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
   alias SymphonyElixir.SymphonyPlusPlus.Planning.PlanNode
@@ -813,50 +813,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          %{"name" => "read_guidance_request"} = params,
          %__MODULE__{session: %Session{assignment: %{grant_role: "architect"}}} = server
        ) do
-    with :ok <- authorize_architect_tool_call(server, "read_guidance_request"),
-         {:ok, arguments} <- architect_tool_arguments(params, "read_guidance_request") do
-      read_guidance_request_tool(arguments, server)
-    else
+    case prepare_architect_tool_call(server, params, "read_guidance_request") do
+      {:ok, arguments} -> read_guidance_request_tool(arguments, server)
       {:error, code, message, data} -> {:error, code, message, data}
       {:error, reason} -> architect_error(reason, "read_guidance_request")
     end
   end
 
   defp dispatch("tools/call", %{"name" => "read_guidance_request"} = params, %__MODULE__{session: nil} = server) do
-    with :ok <- authorize_architect_tool_call(server, "read_guidance_request"),
-         {:ok, arguments} <- architect_tool_arguments(params, "read_guidance_request") do
-      read_guidance_request_tool(arguments, server)
-    else
+    case prepare_architect_tool_call(server, params, "read_guidance_request") do
+      {:ok, arguments} -> read_guidance_request_tool(arguments, server)
       {:error, code, message, data} -> {:error, code, message, data}
       {:error, reason} -> architect_error(reason, "read_guidance_request")
     end
   end
 
   defp dispatch("tools/call", %{"name" => "read_guidance_request"} = params, %__MODULE__{} = server) do
-    with :ok <- authorize_worker_tool_call(server, "read_guidance_request"),
-         {:ok, arguments} <- worker_tool_arguments(params, "read_guidance_request") do
-      read_guidance_request_tool(arguments, server)
-    else
+    case prepare_worker_tool_call(server, params, "read_guidance_request") do
+      {:ok, arguments} -> read_guidance_request_tool(arguments, server)
       {:error, code, message, data} -> {:error, code, message, data}
       {:error, reason} -> worker_error(reason, "read_guidance_request")
     end
   end
 
   defp dispatch("tools/call", %{"name" => name} = params, %__MODULE__{} = server) when name in @worker_tools do
-    with :ok <- authorize_worker_tool_call(server, name),
-         {:ok, arguments} <- worker_tool_arguments(params, name) do
-      worker_tool(name, arguments, server)
-    else
+    case prepare_worker_tool_call(server, params, name) do
+      {:ok, arguments} -> worker_tool(name, arguments, server)
       {:error, code, message, data} -> {:error, code, message, data}
       {:error, reason} -> worker_error(reason, name)
     end
   end
 
   defp dispatch("tools/call", %{"name" => name} = params, %__MODULE__{} = server) when name in @architect_tools do
-    with :ok <- authorize_architect_tool_call(server, name),
-         {:ok, arguments} <- architect_tool_arguments(params, name) do
-      architect_tool(name, arguments, server)
-    else
+    case prepare_architect_tool_call(server, params, name) do
+      {:ok, arguments} -> architect_tool(name, arguments, server)
       {:error, code, message, data} -> {:error, code, message, data}
       {:error, reason} -> architect_error(reason, name)
     end
@@ -1558,21 +1548,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp tool_specs_for_session(%Config{repo: repo}, session) do
-    case Auth.require_session(session, repo) do
-      {:ok, %Session{assignment: %{grant_role: "architect"}}} ->
-        {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs()]}
+    with :ok <- prepare_mcp_repository(repo) do
+      case Auth.require_session(session, repo) do
+        {:ok, %Session{assignment: %{grant_role: "architect"}}} ->
+          {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs()]}
 
-      {:ok, %Session{assignment: %{grant_role: "worker"}}} ->
-        {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
+        {:ok, %Session{assignment: %{grant_role: "worker"}}} ->
+          {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
 
-      {:ok, %Session{}} ->
-        {:error, {:unauthorized, :unsupported_grant_role}}
+        {:ok, %Session{}} ->
+          {:error, {:unauthorized, :unsupported_grant_role}}
 
-      {:error, {:service_unavailable, _reason} = reason} ->
-        {:error, reason}
+        {:error, {:service_unavailable, _reason} = reason} ->
+          {:error, reason}
 
-      {:error, _reason} ->
-        {:ok, claimable_tool_specs()}
+        {:error, _reason} ->
+          {:ok, claimable_tool_specs()}
+      end
     end
   end
 
@@ -1867,7 +1859,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, arguments} <- worker_tool_arguments(params, "claim_work_key"),
          {:ok, secret} <- required_argument(arguments, "secret"),
          {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
-         :ok <- require_full_secret(secret) do
+         :ok <- require_full_secret(secret),
+         :ok <- prepare_mcp_repository(config.repo) do
       proof_hash = WorkKey.secret_hash(secret)
 
       case claim_work_key_with_bound_session(config.repo, session, secret, proof_hash, claimed_by) do
@@ -1887,7 +1880,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, arguments} <- worker_tool_arguments(params, "claim_work_key"),
          {:ok, secret} <- required_argument(arguments, "secret"),
          {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
-         :ok <- require_full_secret(secret) do
+         :ok <- require_full_secret(secret),
+         :ok <- prepare_mcp_repository(config.repo) do
       proof_hash = WorkKey.secret_hash(secret)
 
       case claim_unbound_work_key(config.repo, secret, proof_hash, claimed_by) do
@@ -2022,6 +2016,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp claim_error({:storage_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
   defp claim_error({:migration_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
   defp claim_error(reason), do: {:error, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => reason_text(reason)}}
+
+  defp prepare_worker_tool_call(%__MODULE__{} = server, params, name) do
+    with :ok <- require_tool_arguments_object(params, name),
+         :ok <- preauthorize_worker_tool_call(server, name),
+         :ok <- prepare_mcp_repository_for_tool(server.config.repo, name),
+         :ok <- authorize_worker_tool_call(server, name) do
+      worker_tool_arguments(params, name)
+    end
+  end
+
+  defp prepare_architect_tool_call(%__MODULE__{} = server, params, name) do
+    with :ok <- require_tool_arguments_object(params, name),
+         :ok <- preauthorize_architect_tool_call(server, name),
+         :ok <- prepare_mcp_repository_for_tool(server.config.repo, name),
+         :ok <- authorize_architect_tool_call(server, name) do
+      architect_tool_arguments(params, name)
+    end
+  end
+
+  defp require_tool_arguments_object(params, name) do
+    case Map.get(params, "arguments", %{}) do
+      arguments when is_map(arguments) -> :ok
+      _arguments -> {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "invalid_tool_arguments"}}
+    end
+  end
+
+  defp preauthorize_worker_tool_call(%__MODULE__{session: session}, "get_current_assignment") do
+    with {:ok, session} <- Auth.require_session(session) do
+      require_assignment_introspection(session.assignment)
+    end
+  end
+
+  defp preauthorize_worker_tool_call(%__MODULE__{session: session}, _name) do
+    with {:ok, session} <- Auth.require_session(session) do
+      require_worker_assignment(session.assignment)
+    end
+  end
+
+  defp preauthorize_architect_tool_call(%__MODULE__{session: nil} = server, name) do
+    authorize_architect_tool_call(server, name)
+  end
+
+  defp preauthorize_architect_tool_call(%__MODULE__{session: session}, name) do
+    with {:ok, session} <- Auth.require_session(session),
+         :ok <- require_architect_assignment(session.assignment) do
+      require_architect_capabilities(session.assignment, architect_tool_required_capabilities(name))
+    end
+  end
+
+  defp prepare_mcp_repository(repo), do: Repository.ensure_migrated(repo)
+
+  defp prepare_mcp_repository_for_tool(repo, tool) do
+    case prepare_mcp_repository(repo) do
+      :ok -> :ok
+      {:error, reason} -> service_error(reason, tool)
+    end
+  end
 
   defp architect_tool("list_work_requests", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- architect_session(config.repo, session, "read:work_request"),
