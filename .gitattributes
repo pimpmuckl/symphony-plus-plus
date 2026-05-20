@@ -1,0 +1,22 @@
+* text=auto eol=lf
+
+# Windows command launchers are safest with CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets and local database artifacts.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.mp4 binary
+*.mov binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.sqlite3 binary
+*.sqlite3-* binary
+*.db binary
+*.db-* binary

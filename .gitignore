@@ -1,0 +1,42 @@
+# Local agent/runtime artifacts.
+.ask-pro/
+generated/
+scratch/
+
+# Local environment and secret files.
+.env
+.env.*
+*.local
+.secrets
+.credentials
+
+# Logs and temporary output.
+*.log
+log/
+logs/
+tmp/
+temp/
+
+# Local database files and SQLite sidecars.
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+
+# Build outputs and dependency caches.
+node_modules/
+_build/
+deps/
+cover/
+dist/
+.cache/
+.elixir_ls/
+
+# Editor / OS temporary files.
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
