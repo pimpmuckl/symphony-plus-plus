@@ -475,6 +475,17 @@ function Invoke-SelfTest {
     throw "Resolve-OptionalFullPath did not expand a leading home-directory tilde."
   }
 
+  $defaultCodexHome = Join-Path $HOME ".codex"
+  if (-not (Test-DefaultCodexHome $defaultCodexHome)) {
+    throw "Test-DefaultCodexHome did not recognize the absolute default Codex home."
+  }
+  if (-not (Test-DefaultCodexHome "~/.codex")) {
+    throw "Test-DefaultCodexHome did not recognize the tilde default Codex home."
+  }
+  if (Test-DefaultCodexHome (Join-Path $HOME ".codex-sympp-test")) {
+    throw "Test-DefaultCodexHome treated a sibling path as the default Codex home."
+  }
+
   if (Test-PathComparisonCaseInsensitive) {
     if (-not (Test-ComparablePathEqual "SymphonyCodexHome" "symphonycodexhome")) {
       throw "Test-ComparablePathEqual should ignore case on case-insensitive platforms."
