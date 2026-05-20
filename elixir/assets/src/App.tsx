@@ -82,6 +82,7 @@ const WORKSPACE_TAB_SLIDE_MS = 360;
 const BADGE_TEXT_PUSH_MS = 220;
 const BADGE_RESIZE_MS = 150;
 const DEFAULT_DASHBOARD_API_BASE = "/api/v1/sympp/operator";
+const PR_SYNC_INTERVAL_MS = 60_000;
 
 type DashboardRuntimeConfig = {
   apiBase?: string;
@@ -354,6 +355,27 @@ export default function App() {
   const [workstreamLayout, setWorkstreamLayout] = useState<WorkstreamLayoutMode>(readStoredWorkstreamLayout);
   const [theme, setTheme] = useState<DashboardTheme>(readStoredTheme);
   const loadInFlightRef = useRef(false);
+  const prSyncInFlightRef = useRef(false);
+  const lastPrSyncAtRef = useRef(Date.now());
+
+  const applyDashboardResponse = useCallback(
+    async (response: Response, fallbackMessage: string, selectDashboard: (payload: any) => DashboardPayload = (payload) => payload) => {
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload?.error?.message || fallbackMessage);
+      }
+
+      const nextDashboard = selectDashboard(payload);
+      if (!nextDashboard) {
+        throw new Error(fallbackMessage);
+      }
+
+      setDashboard(nextDashboard);
+      setError(null);
+    },
+    [],
+  );
 
   const loadDashboard = useCallback(async (mode: "initial" | "refresh" | "silent" = "refresh") => {
     if (loadInFlightRef.current && mode === "silent") return;
@@ -367,14 +389,7 @@ export default function App() {
 
     try {
       const response = await fetch(operatorApiUrl("/dashboard"), { headers: jsonHeaders() });
-      const payload = await response.json();
-
-      if (!response.ok) {
-        throw new Error(payload?.error?.message || "Dashboard API unavailable");
-      }
-
-      setDashboard(payload);
-      setError(null);
+      await applyDashboardResponse(response, "Dashboard API unavailable");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Dashboard API unavailable");
     } finally {
@@ -382,7 +397,26 @@ export default function App() {
       setLoading(false);
       if (mode === "refresh") setRefreshing(false);
     }
-  }, []);
+  }, [applyDashboardResponse]);
+
+  const syncPullRequests = useCallback(async () => {
+    if (prSyncInFlightRef.current) return;
+    prSyncInFlightRef.current = true;
+
+    try {
+      const headers = await mutationHeaders();
+      const response = await fetch(operatorApiUrl("/github/sync-prs"), {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ mode: "auto" }),
+      });
+      await applyDashboardResponse(response, "GitHub PR sync unavailable", (payload) => payload.dashboard);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "GitHub PR sync unavailable");
+    } finally {
+      prSyncInFlightRef.current = false;
+    }
+  }, [applyDashboardResponse]);
 
   useEffect(() => {
     void loadDashboard("initial");
@@ -390,13 +424,21 @@ export default function App() {
 
   useEffect(() => {
     const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") {
+      if (document.visibilityState !== "visible" || loadInFlightRef.current || prSyncInFlightRef.current) {
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastPrSyncAtRef.current >= PR_SYNC_INTERVAL_MS) {
+        lastPrSyncAtRef.current = now;
+        void syncPullRequests();
+      } else {
         void loadDashboard("silent");
       }
     }, DASHBOARD_POLL_INTERVAL_MS);
 
     return () => window.clearInterval(interval);
-  }, [loadDashboard]);
+  }, [loadDashboard, syncPullRequests]);
 
   useEffect(() => {
     writeDashboardUiStateValue("workspaceTab", workspaceTab);

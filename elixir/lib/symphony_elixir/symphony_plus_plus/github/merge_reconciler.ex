@@ -1,0 +1,391 @@
+defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.MergeReconciler do
+  @moduledoc false
+
+  alias SymphonyElixir.SymphonyPlusPlus.GitHub.{Client, HttpClient, PullRequest, PullRequestArtifact}
+  alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+
+  @operator_actor %{grant_role: "architect", capabilities: ["architect:lifecycle.transition"]}
+  @operator_source_tool "operator_sync_prs"
+
+  @type repo :: module()
+  @type result :: map()
+
+  @spec reconcile(repo(), keyword()) :: {:ok, map()} | {:error, term()}
+  def reconcile(repo, opts \\ []) when is_atom(repo) and is_list(opts) do
+    client = Keyword.get(opts, :client, github_client())
+    client_opts = Keyword.drop(opts, [:client])
+
+    with :ok <- validate_periodic_auth(client, opts),
+         {:ok, work_packages} <- WorkPackageRepository.list(repo) do
+      work_packages
+      |> Enum.filter(&merge_ready_candidate?/1)
+      |> Enum.flat_map(&reconcile_work_package_result(repo, &1, client, client_opts))
+      |> summary()
+      |> then(&{:ok, &1})
+    else
+      {:skip, reason} -> {:ok, skipped_summary(reason)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp reconcile_work_package_result(repo, work_package, client, client_opts) do
+    case reconcile_work_package(repo, work_package, client, client_opts) do
+      :ignore -> []
+      result -> [result]
+    end
+  end
+
+  defp reconcile_work_package(repo, %WorkPackage{} = work_package, client, client_opts) do
+    with {:ok, state} <- PlanningRepository.get_state(repo, work_package.id),
+         {:ok, pr_context} <- current_pr_context(state.progress_events) do
+      fetch_and_reconcile(repo, work_package, pr_context, client, client_opts)
+    else
+      {:error, :missing_attached_pr} -> :ignore
+      {:error, reason} -> error_result(work_package, nil, reason)
+    end
+  end
+
+  defp merge_ready_candidate?(%WorkPackage{status: "ready_for_human_merge", kind: kind}) do
+    kind in StateMachine.standalone_kinds()
+  end
+
+  defp merge_ready_candidate?(%WorkPackage{}), do: false
+
+  defp fetch_and_reconcile(repo, %WorkPackage{} = work_package, pr_context, client, client_opts) do
+    with {:ok, metadata} <- Client.fetch_pull_request(client, pr_context.ref, client_opts),
+         {:ok, payload} <- PullRequest.metadata(metadata, pr_context.ref, nil) do
+      payload = Map.put(payload, "source_tool", "sync_pr")
+
+      with {:ok, _event} <- append_sync_snapshot(repo, work_package, payload),
+           :ok <-
+             PullRequestArtifact.upsert(repo, work_package.id, payload, metadata: %{"source_tool" => @operator_source_tool}) do
+        maybe_transition_merged(repo, work_package, pr_context, payload, metadata)
+      else
+        {:error, reason} -> error_result(work_package, payload, reason)
+      end
+    else
+      {:error, reason} -> error_result(work_package, pr_ref_payload(pr_context.ref), reason)
+    end
+  end
+
+  defp maybe_transition_merged(repo, %WorkPackage{} = work_package, pr_context, payload, metadata) do
+    cond do
+      not merged_pull_request?(payload) ->
+        synced_result(work_package, payload, "pr_not_merged")
+
+      missing_base_branch?(work_package, payload) ->
+        skipped_result(work_package, payload, "missing_base_branch")
+
+      not base_branch_matches?(work_package, payload) ->
+        skipped_result(work_package, payload, "base_branch_mismatch",
+          expected_base_branch: work_package.base_branch,
+          actual_base_branch: payload["base_branch"]
+        )
+
+      is_nil(pr_context.expected_head_sha) ->
+        skipped_result(work_package, payload, "missing_head_evidence")
+
+      not PullRequest.head_sha_matches?(payload["head_sha"], pr_context.expected_head_sha) ->
+        skipped_result(work_package, payload, "head_mismatch", expected_head_sha: pr_context.expected_head_sha)
+
+      true ->
+        transition_merged(repo, work_package, payload, metadata)
+    end
+  end
+
+  defp transition_merged(repo, %WorkPackage{} = work_package, payload, metadata) do
+    with :ok <- StateMachine.validate_transition(work_package, "merged", @operator_actor),
+         {:ok, updated} <- transition_merged_transaction(repo, work_package, payload, metadata) do
+      work_package
+      |> base_result(payload)
+      |> Map.merge(%{
+        status: "merged",
+        reason: "github_pr_merged",
+        before_status: work_package.status,
+        after_status: updated.status,
+        merged_at: Map.get(metadata, "merged_at"),
+        merge_commit_sha: Map.get(metadata, "merge_commit_sha")
+      })
+    else
+      {:error, :stale_status} -> skipped_result(work_package, payload, "stale_status")
+      {:error, reason} -> error_result(work_package, payload, reason)
+    end
+  end
+
+  defp transition_merged_transaction(repo, %WorkPackage{} = work_package, payload, metadata) do
+    repo
+    |> transaction_with_rollback(fn -> persist_merged_transition(repo, work_package, payload, metadata) end)
+    |> normalize_transaction_result()
+  end
+
+  defp transaction_with_rollback(repo, fun) do
+    repo.transaction(fn ->
+      case fun.() do
+        {:ok, value} -> value
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp normalize_transaction_result({:ok, value}), do: {:ok, value}
+  defp normalize_transaction_result({:error, reason}), do: {:error, reason}
+
+  defp persist_merged_transition(repo, %WorkPackage{} = work_package, payload, metadata) do
+    with {:ok, updated} <- WorkPackageRepository.update_status(repo, work_package.id, work_package.status, "merged"),
+         {:ok, _event} <- append_merge_evidence(repo, work_package, updated, payload, metadata) do
+      {:ok, updated}
+    end
+  end
+
+  defp append_sync_snapshot(repo, %WorkPackage{} = work_package, payload) do
+    PlanningRepository.append_progress_event(repo, %{
+      "work_package_id" => work_package.id,
+      "summary" => "GitHub PR synced by local operator",
+      "status" => "pr_synced",
+      "idempotency_key" => "operator_sync_pr:#{work_package.id}:#{metadata_idempotency_key(payload)}",
+      "payload" => Map.put(payload, "operator_source_tool", @operator_source_tool)
+    })
+  end
+
+  defp append_merge_evidence(repo, %WorkPackage{} = before_package, %WorkPackage{} = after_package, payload, metadata) do
+    attrs = %{
+      "work_package_id" => before_package.id,
+      "summary" => "GitHub PR merge reconciled",
+      "body" => "Local operator reconciled the WorkPackage status from fetched GitHub PR merge state.",
+      "status" => "github_pr_merged",
+      "idempotency_key" => "operator_github_merge:#{before_package.id}:#{payload["head_sha"] || payload["url"]}",
+      "payload" => %{
+        "type" => "github_pr_merge_reconciliation",
+        "source_tool" => @operator_source_tool,
+        "url" => payload["url"],
+        "repository" => payload["repository"],
+        "number" => payload["number"],
+        "head_sha" => payload["head_sha"],
+        "before_status" => before_package.status,
+        "after_status" => after_package.status,
+        "merged" => true,
+        "merged_at" => Map.get(metadata, "merged_at"),
+        "merge_commit_sha" => Map.get(metadata, "merge_commit_sha")
+      }
+    }
+
+    with {:ok, event} <- PlanningRepository.append_progress_event(repo, attrs),
+         :ok <- validate_merge_evidence(event, after_package, payload) do
+      {:ok, event}
+    end
+  end
+
+  defp validate_merge_evidence(
+         %ProgressEvent{status: "github_pr_merged", payload: %{} = event_payload},
+         %WorkPackage{} = after_package,
+         payload
+       ) do
+    event_payload = stringify_keys(event_payload)
+
+    cond do
+      event_payload["source_tool"] != @operator_source_tool -> {:error, :merge_evidence_conflict}
+      event_payload["after_status"] != after_package.status -> {:error, :merge_evidence_conflict}
+      clean_head_sha(event_payload["head_sha"]) != clean_head_sha(payload["head_sha"]) -> {:error, :merge_evidence_conflict}
+      true -> :ok
+    end
+  end
+
+  defp validate_merge_evidence(%ProgressEvent{}, %WorkPackage{}, _payload), do: {:error, :merge_evidence_conflict}
+
+  defp current_pr_context(progress_events) do
+    events = chronological_progress_events(progress_events)
+
+    with {:ok, payload} <- latest_attached_pr_payload(events),
+         {:ok, ref} <- PullRequest.parse(payload, nil) do
+      {:ok,
+       %{
+         ref: ref,
+         expected_head_sha: latest_head_sha(events, ref)
+       }}
+    end
+  end
+
+  defp latest_attached_pr_payload(events) do
+    events
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      %ProgressEvent{payload: payload} when is_map(payload) ->
+        payload = stringify_keys(payload)
+        if attached_pr_payload?(payload), do: {:ok, payload}
+
+      %ProgressEvent{} ->
+        nil
+    end)
+    |> case do
+      nil -> {:error, :missing_attached_pr}
+      result -> result
+    end
+  end
+
+  defp latest_head_sha(events, ref) do
+    events
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      %ProgressEvent{payload: payload} when is_map(payload) ->
+        payload
+        |> stringify_keys()
+        |> head_evidence_sha(ref)
+
+      %ProgressEvent{} ->
+        nil
+    end)
+  end
+
+  defp attached_pr_payload?(%{"type" => "pr", "source_tool" => "attach_pr"}), do: true
+  defp attached_pr_payload?(_payload), do: false
+
+  defp head_evidence_sha(%{"type" => "branch", "source_tool" => "attach_branch"} = payload, _ref), do: clean_head_sha(payload["head_sha"])
+
+  defp head_evidence_sha(%{"type" => "pr", "source_tool" => "attach_pr"} = payload, ref) do
+    if same_pr_payload?(payload, ref), do: clean_head_sha(payload["head_sha"])
+  end
+
+  defp head_evidence_sha(_payload, _ref), do: nil
+
+  defp same_pr_payload?(payload, ref) do
+    case PullRequest.parse(payload, nil) do
+      {:ok, payload_ref} -> same_pr_ref?(payload_ref, ref)
+      {:error, _reason} -> false
+    end
+  end
+
+  defp same_pr_ref?(left, right) do
+    left.repository == right.repository and left.number == right.number
+  end
+
+  defp chronological_progress_events(progress_events) do
+    Enum.sort_by(progress_events, fn %ProgressEvent{created_at: created_at, sequence: sequence, id: id} ->
+      {created_at || DateTime.from_unix!(0), sequence || 0, id || ""}
+    end)
+  end
+
+  defp merged_pull_request?(payload) do
+    case Map.get(payload, "merge_state", %{}) do
+      %{} = merge_state -> Map.get(merge_state, "merged") == true
+      _merge_state -> false
+    end
+  end
+
+  defp synced_result(%WorkPackage{} = work_package, payload, reason) do
+    work_package
+    |> base_result(payload)
+    |> Map.merge(%{status: "synced", reason: reason, before_status: work_package.status, after_status: work_package.status})
+  end
+
+  defp skipped_result(%WorkPackage{} = work_package, payload, reason, extras \\ []) do
+    work_package
+    |> base_result(payload)
+    |> Map.merge(%{status: "skipped", reason: reason, before_status: work_package.status, after_status: work_package.status})
+    |> Map.merge(Map.new(extras))
+  end
+
+  defp error_result(%WorkPackage{} = work_package, payload, reason) do
+    work_package
+    |> base_result(payload || %{})
+    |> Map.merge(%{
+      status: "error",
+      reason: error_reason(reason),
+      before_status: work_package.status,
+      after_status: work_package.status
+    })
+  end
+
+  defp base_result(%WorkPackage{} = work_package, payload) do
+    %{
+      work_package_id: work_package.id,
+      work_package_status: work_package.status,
+      kind: work_package.kind,
+      pr_url: payload["url"],
+      repository: payload["repository"],
+      number: payload["number"],
+      head_sha: payload["head_sha"]
+    }
+  end
+
+  defp summary(results) do
+    %{
+      total_count: length(results),
+      synced_count: Enum.count(results, &(&1.status in ["synced", "skipped", "merged"])),
+      merged_count: Enum.count(results, &(&1.status == "merged")),
+      skipped_count: Enum.count(results, &(&1.status == "skipped")),
+      error_count: Enum.count(results, &(&1.status == "error")),
+      results: results
+    }
+  end
+
+  defp skipped_summary(reason) do
+    %{
+      total_count: 0,
+      synced_count: 0,
+      merged_count: 0,
+      skipped_count: 0,
+      error_count: 0,
+      reason: reason,
+      results: []
+    }
+  end
+
+  defp pr_ref_payload(ref) do
+    %{
+      "url" => ref.url,
+      "repository" => ref.repository,
+      "number" => ref.number
+    }
+  end
+
+  defp metadata_idempotency_key(payload) do
+    "operator:" <> Base.url_encode64(:erlang.term_to_binary(payload), padding: false)
+  end
+
+  defp error_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp error_reason({reason, status}) when is_atom(reason) and is_integer(status), do: "#{reason}:#{status}"
+  defp error_reason({reason, _detail}) when is_atom(reason), do: Atom.to_string(reason)
+  defp error_reason(reason), do: inspect(reason)
+
+  defp stringify_keys(%{} = map), do: Map.new(map, fn {key, value} -> {to_string(key), value} end)
+
+  defp validate_periodic_auth(HttpClient, opts) do
+    if Keyword.get(opts, :require_authenticated_client?, false) and not HttpClient.authenticated?() do
+      {:skip, "github_token_required_for_periodic_sync"}
+    else
+      :ok
+    end
+  end
+
+  defp validate_periodic_auth(_client, _opts), do: :ok
+
+  defp missing_base_branch?(%WorkPackage{base_branch: package_base_branch}, payload) do
+    is_nil(clean_branch(package_base_branch)) or is_nil(clean_branch(payload["base_branch"]))
+  end
+
+  defp base_branch_matches?(%WorkPackage{base_branch: package_base_branch}, payload) do
+    clean_branch(package_base_branch) == clean_branch(payload["base_branch"])
+  end
+
+  defp clean_head_sha(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
+
+  defp clean_head_sha(_value), do: nil
+
+  defp clean_branch(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
+
+  defp clean_branch(_value), do: nil
+
+  defp github_client do
+    Application.get_env(:symphony_elixir, :sympp_github_client, HttpClient)
+  end
+end

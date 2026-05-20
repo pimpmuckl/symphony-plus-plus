@@ -4,6 +4,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   import Phoenix.ConnTest
   import Plug.Conn, only: [put_req_header: 3]
 
+  alias SymphonyElixir.FakeGitHubClient
+  alias SymphonyElixir.GitHubPullRequestFixtures
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
@@ -3004,6 +3006,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
+  test "local operator can sync GitHub PR merge state and receive refreshed dashboard", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      with_operator_github_client(fn ->
+        work_package =
+          create_work_package!(repo,
+            id: "SYMPP-LOCAL-OPERATOR-GH-SYNC",
+            kind: "hotfix",
+            repo: "nextide/repo",
+            status: "ready_for_human_merge"
+          )
+
+        assert {:ok, _branch} =
+                 PlanningRepository.append_progress_event(repo, %{
+                   work_package_id: work_package.id,
+                   summary: "Branch attached",
+                   status: "branch_attached",
+                   payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "head-a"}
+                 })
+
+        assert {:ok, _pr} =
+                 PlanningRepository.append_progress_event(repo, %{
+                   work_package_id: work_package.id,
+                   summary: "PR attached",
+                   status: "pr_attached",
+                   payload: %{type: "pr", source_tool: "attach_pr", url: "https://github.com/nextide/repo/pull/22", head_sha: "head-a"}
+                 })
+
+        FakeGitHubClient.put_response("nextide/repo", 22, GitHubPullRequestFixtures.metadata(22, "head-a", merged?: true))
+
+        payload =
+          local_operator_csrf_conn()
+          |> post("/api/v1/sympp/operator/github/sync-prs", %{})
+          |> json_response(200)
+
+        assert payload["sync"]["merged_count"] == 1
+        assert [%{"work_package_id" => "SYMPP-LOCAL-OPERATOR-GH-SYNC", "status" => "merged"}] = payload["sync"]["results"]
+        assert payload["dashboard"]["generated_at"]
+
+        assert {:ok, updated} = WorkPackageRepository.get(repo, work_package.id)
+        assert updated.status == "merged"
+      end)
+    end)
+  end
+
   test "local operator can fetch Solo Session detail through the dashboard API", %{repo: repo} do
     with_local_operator_endpoint(fn ->
       assert {:ok, session} =
@@ -4041,6 +4087,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     |> Map.put(:host, "localhost")
     |> Map.put(:remote_ip, {127, 0, 0, 1})
     |> put_req_header("origin", origin)
+  end
+
+  defp with_operator_github_client(fun) when is_function(fun, 0) do
+    original = Application.get_env(:symphony_elixir, :sympp_github_client)
+    Application.put_env(:symphony_elixir, :sympp_github_client, FakeGitHubClient)
+
+    try do
+      fun.()
+    after
+      FakeGitHubClient.clear()
+
+      case original do
+        nil -> Application.delete_env(:symphony_elixir, :sympp_github_client)
+        value -> Application.put_env(:symphony_elixir, :sympp_github_client, value)
+      end
+    end
   end
 
   defp with_static_dashboard_file(file_name, contents, fun) when is_function(fun, 0) do

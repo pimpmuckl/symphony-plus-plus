@@ -12,6 +12,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.GitHub.MergeReconciler
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service, as: GuidanceRequestService
   alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
   alias SymphonyElixir.SymphonyPlusPlus.Repo
@@ -514,6 +515,16 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end)
   end
 
+  @spec operator_sync_github_prs(Conn.t(), map()) :: Conn.t()
+  def operator_sync_github_prs(conn, params) do
+    send_local_operator_response(conn, fn repo ->
+      with {:ok, sync} <- MergeReconciler.reconcile(repo, github_sync_opts(params)),
+           {:ok, dashboard} <- operator_dashboard_payload(repo) do
+        json(conn, %{sync: sync, dashboard: dashboard})
+      end
+    end)
+  end
+
   @spec operator_solo_session_detail(Conn.t(), map()) :: Conn.t()
   def operator_solo_session_detail(conn, %{"solo_session_id" => solo_session_id}) do
     send_local_operator_response(conn, fn repo ->
@@ -780,6 +791,9 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp text_value(value) when is_binary(value), do: String.trim(value)
   defp text_value(nil), do: ""
   defp text_value(value), do: to_string(value)
+
+  defp github_sync_opts(%{"mode" => "auto"}), do: [require_authenticated_client?: true]
+  defp github_sync_opts(_params), do: []
 
   defp blank_param?(value) when is_binary(value), do: String.trim(value) == ""
   defp blank_param?(value) when is_list(value), do: value |> Enum.map(&text_value/1) |> Enum.all?(&(&1 == ""))

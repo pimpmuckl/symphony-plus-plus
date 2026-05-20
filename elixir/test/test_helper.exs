@@ -5,6 +5,7 @@ if System.get_env("SYMPHONY_RUN_LIVE_E2E") != "1" do
   ExUnit.configure(exclude: Enum.uniq(existing_excludes ++ [:live_e2e]))
 end
 
+Code.require_file("support/github_test_support.exs", __DIR__)
 Code.require_file("support/snapshot_support.exs", __DIR__)
 Code.require_file("support/test_support.exs", __DIR__)
 Code.require_file("support/work_package_factory.exs", __DIR__)
