@@ -157,7 +157,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Renderer do
           "## Readiness Requirements",
           "",
           list_or_empty(template.readiness_requirements),
-          "## Review Lanes",
+          "## Review Profiles",
           "",
           "- Required: #{inline_list(template.review_suite.required)}",
           "- Optional: #{inline_list(template.review_suite.optional)}"

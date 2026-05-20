@@ -696,10 +696,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.PlanningTest do
 
     assert hotfix_markdown =~ "Policy template: `hotfix`"
     assert hotfix_markdown =~ "human_merge"
-    assert hotfix_markdown =~ "- Required: review_t1, review_t2"
+    assert hotfix_markdown =~ "- Required: emergency"
     assert phase_child_markdown =~ "Policy template: `phase_child`"
     assert phase_child_markdown =~ "package_acceptance"
-    assert phase_child_markdown =~ "- Optional: review_github"
+    assert phase_child_markdown =~ "- Optional: deep"
   end
 
   test "rendering does not mutate canonical planning state", %{repo: repo} do

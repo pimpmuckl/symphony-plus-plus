@@ -4318,7 +4318,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Enum.map(read_payload["decision_log_entries"], & &1["id"]) == ["WRD-MCP-WR-1"]
     assert Enum.at(read_payload["decision_log_entries"], 0)["decision"] =~ "[REDACTED]"
     assert Enum.map(read_payload["planned_slices"], & &1["id"]) == ["WRS-MCP-WR-PLANNED", "WRS-MCP-WR-APPROVED", "WRS-MCP-WR-SKIPPED"]
-    assert Enum.at(read_payload["planned_slices"], 0)["review_lanes"] == ["review_t1", "[REDACTED]", "review_t2"]
+    assert Enum.at(read_payload["planned_slices"], 0)["review_lanes"] == ["brief", "[REDACTED]", "normal"]
 
     assert read_payload["summary"] == %{
              "open_question_count" => 1,
@@ -4848,7 +4848,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "forbidden_file_globs" => [],
       "acceptance_criteria" => ["MCP planned-slice mutation succeeds."],
       "validation_steps" => ["mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs"],
-      "review_lanes" => ["review_t1", "raw_secret_review_lane", "review_t2"],
+      "review_lanes" => ["brief", "raw_secret_review_lane", "normal"],
       "stop_conditions" => ["Stop before dispatch."]
     }
 
@@ -4893,7 +4893,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(add_payload, ["planned_slice", "owned_file_globs"]) == ["elixir/lib/symphony_elixir/symphony_plus_plus/mcp/server.ex"]
     assert get_in(add_payload, ["planned_slice", "forbidden_file_globs"]) == []
     assert get_in(add_payload, ["planned_slice", "branch_pattern"]) == nil
-    assert get_in(add_payload, ["planned_slice", "review_lanes"]) == ["review_t1", "[REDACTED]", "review_t2"]
+    assert get_in(add_payload, ["planned_slice", "review_lanes"]) == ["brief", "[REDACTED]", "normal"]
     assert add_payload["status"] == %{"work_request_status" => "ready_for_slicing", "planned_slice_status" => "planned"}
     refute inspect(add_response) =~ "raw_secret_value"
 
@@ -5397,7 +5397,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "forbidden_file_globs" => [],
       "acceptance_criteria" => ["WorkRequest is sliceable."],
       "validation_steps" => ["mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs"],
-      "review_lanes" => ["review_t2"],
+      "review_lanes" => ["normal"],
       "stop_conditions" => ["Stop before dispatch."]
     }
 
@@ -9407,11 +9407,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Ready",
-      "tests" => ["mix test", "review_t1 green", "review_t2 green"],
-      "artifacts" => ["review-t1-log.txt"],
+      "tests" => ["mix test", "brief green"],
+      "artifacts" => ["review-brief-log.txt"],
       "head_sha" => "abc123",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "brief", "verdict" => "green"}]
     })
 
     repo.delete_all(Artifact)
@@ -9426,11 +9426,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert "review_lanes_complete" in get_in(missing_review_lanes_response, ["error", "data", "missing"])
 
     attach_tool(repo, session, "submit_review_package", %{
-      "summary" => "Ready after T2",
-      "tests" => ["mix test", "review_t2 green"],
-      "artifacts" => ["review-t2-log.txt"],
+      "summary" => "Ready after normal",
+      "tests" => ["mix test", "normal green"],
+      "artifacts" => ["review-normal-log.txt"],
       "head_sha" => "abc123",
-      "reviews" => [%{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     incremental_review_lanes_response =
@@ -9441,7 +9441,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     incremental_missing = get_in(incremental_review_lanes_response, ["error", "data", "missing"])
-    assert "review_lanes_complete" in incremental_missing
+    refute "review_lanes_complete" in incremental_missing
     assert "acceptance_criteria_met" in incremental_missing
     refute "review_artifacts_attached" in incremental_missing
     assert "plan_complete" in incremental_missing
@@ -9460,7 +9460,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "artifacts" => ["review-log.txt"],
               "head_sha" => "abc123",
               "acceptance_criteria_met" => true,
-              "reviews" => [%{"lane" => 1, "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => nil}]
+              "reviews" => [%{"lane" => 1, "verdict" => "green"}, %{"lane" => "normal", "verdict" => nil}]
             }
           }
         },
@@ -9484,7 +9484,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "artifacts" => ["review-log.txt"],
               "head_sha" => "abc123",
               "acceptance_criteria_met" => true,
-              "reviews" => [%{"lane" => "review_t1", "verdict" => "green", "note" => "typo"}]
+              "reviews" => [%{"lane" => "brief", "verdict" => "green", "note" => "typo"}]
             }
           }
         },
@@ -9509,8 +9509,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "head_sha" => "abc123",
               "acceptance_criteria_met" => true,
               "reviews" => [
-                %{"lane" => " review_t1 ", "verdict" => "red"},
-                %{"lane" => "review_t1", "verdict" => "green"}
+                %{"lane" => " brief ", "verdict" => "red"},
+                %{"lane" => "brief", "verdict" => "green"}
               ]
             }
           }
@@ -9534,7 +9534,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "tests" => ["mix test"],
               "artifacts" => [],
               "head_sha" => "abc123",
-              "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+              "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
             }
           }
         },
@@ -9557,7 +9557,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "tests" => ["mix test"],
               "artifacts" => [" "],
               "head_sha" => "abc123",
-              "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+              "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
             }
           }
         },
@@ -9581,7 +9581,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "artifacts" => ["review-log.txt"],
               "head_sha" => "abc123",
               "acceptance_criteria_met" => true,
-              "reviews" => %{"lane" => "review_t1", "verdict" => "green"}
+              "reviews" => %{"lane" => "brief", "verdict" => "green"}
             }
           }
         },
@@ -9605,7 +9605,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "artifacts" => ["review-log.txt"],
               "head_sha" => "abc123",
               "acceptance_criteria_met" => "true",
-              "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+              "reviews" => [%{"lane" => "brief", "verdict" => "green"}]
             }
           }
         },
@@ -9676,7 +9676,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "artifacts" => ["review-log.txt"],
               "head_sha" => "abc123",
               "acceptance_criteria_met" => true,
-              "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+              "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
             }
           }
         },
@@ -9692,7 +9692,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-log.txt"],
       "head_sha" => "abc123",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     handoff_response =
@@ -9715,7 +9715,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-log.txt"],
       "head_sha" => "abc123",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "brief", "verdict" => "green"}]
     })
 
     latest_missing_lane_response =
@@ -9735,7 +9735,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-log.txt"],
       "head_sha" => "abc123",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "findings"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "findings"}]
     })
 
     latest_findings_response =
@@ -9765,7 +9765,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "artifacts" => ["review-log.txt"],
               "head_sha" => "abc123",
               "acceptance_criteria_met" => true,
-              "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+              "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
             }
           }
         },
@@ -9792,7 +9792,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-log.txt"],
       "head_sha" => "def456",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => " review_t1 ", "verdict" => " green "}, %{"lane" => " review_t2 ", "verdict" => " green "}]
+      "reviews" => [%{"lane" => " review_t2 ", "verdict" => " green "}]
     })
 
     empty_plan_response =
@@ -9856,7 +9856,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "artifacts" => ["red-after-ready.txt"],
               "head_sha" => "def456",
               "acceptance_criteria_met" => false,
-              "reviews" => [%{"lane" => "review_t1", "verdict" => "red"}]
+              "reviews" => [%{"lane" => "brief", "verdict" => "red"}]
             }
           }
         },
@@ -9984,7 +9984,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["pre-pr-review.txt"],
       "head_sha" => "pre-pr-head",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/456", "head_sha" => "later-head"})
@@ -10016,7 +10016,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "tests" => ["mix test"],
       "artifacts" => ["old-head-review.txt"],
       "head_sha" => "old-head",
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "brief", "verdict" => "green"}]
     })
 
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-BRANCH-HEAD-REVIEW/worker", "head_sha" => "new-head"})
@@ -10049,7 +10049,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-head-a.txt"],
       "head_sha" => "head-a",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     }
 
     first_response = attach_tool(repo, session, "submit_review_package", review_arguments)
@@ -10099,7 +10099,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-head-a.txt"],
       "head_sha" => "head-a",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     }
 
     first_response = attach_tool(repo, session, "submit_review_package", review_arguments)
@@ -10335,7 +10335,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => head_sha,
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     ready_response =
@@ -10702,7 +10702,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
               "tests" => ["mix test"],
               "artifacts" => ["old-pr-head-review.txt"],
               "head_sha" => "head-a",
-              "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+              "reviews" => [%{"lane" => "brief", "verdict" => "green"}]
             }
           }
         },
@@ -10717,7 +10717,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "tests" => ["mix test"],
       "artifacts" => ["latest-branch-head-review.txt"],
       "head_sha" => "head-b",
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "brief", "verdict" => "green"}]
     })
 
     ready_response =
@@ -10747,7 +10747,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["latest-branch-head-review.txt"],
       "head_sha" => "head-b",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     ready_response =
@@ -10777,7 +10777,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => "head-a",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     attach_only_response =
@@ -10806,7 +10806,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => "legacy-head",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     ready_response =
@@ -10845,7 +10845,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => "head-a",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     missing_state_response =
@@ -10927,7 +10927,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-head-b.txt"],
       "head_sha" => "head-b",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     ready_response =
@@ -10971,7 +10971,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => "head-a",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     ready_response =
@@ -11021,7 +11021,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-head-b.txt"],
       "head_sha" => "head-b",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     ready_response =
@@ -11069,7 +11069,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => "head-a",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     missing_sync_response =
@@ -11110,7 +11110,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["short-head-review.txt"],
       "head_sha" => "abcdef1",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     ready_response =
@@ -11144,7 +11144,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["tiny-head-review.txt"],
       "head_sha" => "abc",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     ready_response =
@@ -11183,7 +11183,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => "suite-head",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     missing_response =
@@ -11201,10 +11201,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "head_sha" => "suite-head",
         "suite" => "review-suite",
         "anchor" => "phase_gate-suite-head",
-        "summary" => "T1 and T2 are green",
+        "summary" => "normal is green",
         "status" => "passed",
         "verdict" => "green",
-        "lane" => "review_t2",
+        "lane" => "normal",
         "round_id" => "phase_gate-suite-head"
       })
 
@@ -11296,7 +11296,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => head_sha,
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     attach_tool(repo, session, "attach_review_suite_result", %{
@@ -11304,7 +11304,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "head_sha" => head_sha,
       "suite" => "review-suite",
       "anchor" => "phase_gate-scope-head-a",
-      "summary" => "T1 and T2 are green",
+      "summary" => "normal is green",
       "status" => "passed",
       "verdict" => "green"
     })
@@ -11605,7 +11605,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => head_sha,
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     attach_tool(repo, session, "attach_review_suite_result", %{
@@ -11613,7 +11613,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "head_sha" => head_sha,
       "suite" => "review-suite",
       "anchor" => "phase_gate-scope-docs-head-a",
-      "summary" => "T1 and T2 are green",
+      "summary" => "normal is green",
       "status" => "passed",
       "verdict" => "green"
     })
@@ -11869,7 +11869,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "summary" => "Review suite result",
       "status" => "passed",
       "verdict" => "green",
-      "lane" => "review_t2",
+      "lane" => "normal",
       "reviewer" => "review-suite",
       "round_id" => "phase_gate-head-a",
       "idempotency_key" => "review-suite-head-a"
@@ -11923,7 +11923,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => "head-a",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     assert {:ok, _artifact} =
@@ -12023,7 +12023,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review.txt"],
       "head_sha" => "head-b",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     attach_tool(repo, session, "append_progress", %{
@@ -12116,7 +12116,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-log.txt"],
       "head_sha" => "abc125",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     blocked_response =
@@ -12181,7 +12181,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     attach_tool(repo, session, "request_scope_expansion", %{
       "summary" => "Unrelated scope request",
       "status" => "tests_passed",
-      "payload" => %{"lane" => "review_t1", "verdict" => "green"},
+      "payload" => %{"lane" => "brief", "verdict" => "green"},
       "idempotency_key" => "quick-fix-unrelated-status"
     })
 
@@ -12203,9 +12203,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     })
 
     attach_tool(repo, session, "append_progress", %{
-      "summary" => "T1 review green",
-      "status" => "review_t1_green",
-      "idempotency_key" => "quick-fix-review-t1"
+      "summary" => "brief review green",
+      "status" => "review_brief_green",
+      "idempotency_key" => "quick-fix-review-brief"
     })
 
     attach_tool(repo, session, "attach_branch", %{"branch" => "agent/SYMPP-READY-QUICK-FIX/worker", "head_sha" => "quick-fix-head-b"})
@@ -12228,9 +12228,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     })
 
     attach_tool(repo, session, "append_progress", %{
-      "summary" => "T1 review green for latest head",
-      "status" => "review_t1_green",
-      "idempotency_key" => "quick-fix-review-t1-head-b"
+      "summary" => "brief review green for latest head",
+      "status" => "review_brief_green",
+      "idempotency_key" => "quick-fix-review-brief-head-b"
     })
 
     attach_tool(repo, session, "append_progress", %{
@@ -12240,9 +12240,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     })
 
     attach_tool(repo, session, "append_progress", %{
-      "summary" => "T1 review red after latest green",
-      "status" => "review_t1_red",
-      "idempotency_key" => "quick-fix-review-t1-head-b-red"
+      "summary" => "brief review red after latest green",
+      "status" => "review_brief_red",
+      "idempotency_key" => "quick-fix-review-brief-head-b-red"
     })
 
     stale_green_response =
@@ -12263,9 +12263,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     })
 
     attach_tool(repo, session, "append_progress", %{
-      "summary" => "T1 review green after red",
-      "status" => "review_t1_green",
-      "idempotency_key" => "quick-fix-review-t1-head-b-regreen"
+      "summary" => "brief review green after red",
+      "status" => "review_brief_green",
+      "idempotency_key" => "quick-fix-review-brief-head-b-regreen"
     })
 
     ready_response =
@@ -12290,7 +12290,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "tests" => ["mix test"],
       "artifacts" => ["branchless-review.txt"],
       "head_sha" => "standalone-head",
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "brief", "verdict" => "green"}]
     })
 
     ready_response =
@@ -12318,7 +12318,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "tests" => ["mix test"],
       "artifacts" => ["hotfix-review.txt"],
       "head_sha" => "hotfix-head",
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "emergency", "verdict" => "green"}]
     })
 
     ready_response =
@@ -12931,7 +12931,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-log.txt"],
       "head_sha" => "abc124",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     })
 
     response =
@@ -13543,7 +13543,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       forbidden_file_globs: ["elixir/lib/symphony_elixir_web/live/**"],
       acceptance_criteria: ["WorkRequest MCP reads are scoped and redacted."],
       validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs"],
-      review_lanes: ["review_t1", "raw_secret_review_lane", "review_t2"],
+      review_lanes: ["brief", "raw_secret_review_lane", "normal"],
       stop_conditions: ["Stop before mutation or dispatch wiring."]
     }
 
@@ -14103,7 +14103,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-log.txt"],
       "head_sha" => head_sha,
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => [%{"lane" => "normal", "verdict" => "green"}]
     }
   end
 

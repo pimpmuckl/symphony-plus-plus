@@ -82,7 +82,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
     attach_branch(repo, session, "agent/SYMPP-P8-001/hotfix", head_sha)
     attach_pr(repo, session, "https://github.com/nextide/symphony-plus-plus/pull/8001", head_sha)
     sync_fake_github(repo, session, 8001, head_sha, ["elixir/lib/symphony_elixir/cache.ex"])
-    submit_fake_review_package(repo, session, head_sha)
+    submit_fake_review_package(repo, session, head_sha, ["emergency"])
 
     response = mcp_tool(repo, session, "mark_ready", %{})
 
@@ -457,14 +457,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
     })
   end
 
-  defp submit_fake_review_package(repo, session, head_sha) do
+  defp submit_fake_review_package(repo, session, head_sha, lanes \\ ["normal"]) do
     attach_tool(repo, session, "submit_review_package", %{
       "summary" => "Deterministic local review evidence for P8 integration harness.",
       "tests" => ["mix sympp.integration"],
       "artifacts" => ["review-suite/p8-001-local.json"],
       "head_sha" => head_sha,
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => "review_t1", "verdict" => "green"}, %{"lane" => "review_t2", "verdict" => "green"}]
+      "reviews" => Enum.map(lanes, &%{"lane" => &1, "verdict" => "green"})
     })
   end
 
@@ -474,10 +474,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.IntegrationHarnessTest do
       "head_sha" => head_sha,
       "suite" => "review-suite",
       "anchor" => "phase_gate-p8-001-local",
-      "summary" => "T1 and T2 are green in the deterministic harness.",
+      "summary" => "normal profile is green in the deterministic harness.",
       "status" => "passed",
       "verdict" => "green",
-      "lane" => "review_t2",
+      "lane" => "normal",
       "round_id" => "phase_gate-p8-001-local"
     })
   end

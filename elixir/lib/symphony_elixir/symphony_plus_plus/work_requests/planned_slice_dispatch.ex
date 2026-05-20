@@ -265,7 +265,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
     [
       String.trim(planned_slice.goal || ""),
       list_section("Validation steps", planned_slice.validation_steps),
-      list_section("Review lanes", planned_slice.review_lanes),
+      list_section("Review profiles", planned_slice.review_lanes),
       list_section("Forbidden file globs", forbidden_file_globs(work_request, planned_slice)),
       list_section("Stop conditions", planned_slice.stop_conditions)
     ]

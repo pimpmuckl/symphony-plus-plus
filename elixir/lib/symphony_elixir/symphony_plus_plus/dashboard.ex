@@ -19,6 +19,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.State
   alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.ReviewProfiles
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service, as: SoloSessionsService
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
@@ -1650,7 +1651,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp readiness_failure_message("review_suite_result"), do: "Current-head review-suite result evidence is missing."
   defp readiness_failure_message("review_package_submitted"), do: "Current-head review package is missing."
   defp readiness_failure_message("review_artifacts_attached"), do: "Current-head review artifacts are missing."
-  defp readiness_failure_message("review_lanes_complete"), do: "Required review lanes are not green."
+  defp readiness_failure_message("review_lanes_complete"), do: "Required review profiles are not green."
   defp readiness_failure_message("findings_documented"), do: "Investigation findings are missing."
   defp readiness_failure_message("recommendation_artifact_recorded"), do: "Investigation recommendation artifact is missing."
   defp readiness_failure_message(_gate), do: "Readiness gate is not satisfied."
@@ -1764,8 +1765,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp required_review_lanes(%WorkPackage{} = work_package) do
     case policy_for(work_package) do
-      {:ok, policy} -> get_in(policy, [:review_suite, :required]) || []
-      {:error, _reason} -> []
+      {:ok, policy} ->
+        policy
+        |> get_in([:review_suite, :required])
+        |> ReviewProfiles.normalize_profiles()
+
+      {:error, _reason} ->
+        []
     end
   end
 
@@ -1861,7 +1867,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
         %ProgressEvent{} = event ->
           event
           |> review_package_reviews(readiness_head_sha)
-          |> Enum.reduce(%{}, fn review, verdicts -> Map.put(verdicts, Map.get(review, "lane"), Map.get(review, "verdict")) end)
+          |> Enum.reduce(%{}, fn review, verdicts ->
+            Map.put(verdicts, ReviewProfiles.normalize_profile(Map.get(review, "lane")), Map.get(review, "verdict"))
+          end)
 
         nil ->
           %{}
@@ -1872,8 +1880,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp progress_review_lanes_present?(progress_events, required_lanes) do
     Enum.all?(required_lanes, fn lane ->
-      latest_generic_progress_status(progress_events, ["#{lane}_green", "#{lane}_red", "#{lane}_failed"]) ==
-        "#{lane}_green"
+      green_statuses = ReviewProfiles.green_statuses(lane)
+
+      latest_generic_progress_status(progress_events, ReviewProfiles.statuses(lane)) in green_statuses
     end)
   end
 

@@ -19,8 +19,9 @@ Rules:
 4. Require every worker to provide test results.
 5. Record clarification answers, decisions, assumptions, and `human_info_needed`
    instead of inventing product behavior.
-6. Require implementing workers to run review-suite T1, T2, and GitHub review
-   unless package policy explicitly says otherwise; do not step down to T1
-   after T2 is reached.
+6. Require implementing workers to use the current Review Suite orchestrator
+   profile when installed, or another approved review provider with Symphony++
+   MCP progress/evidence when it is not. Rerun the same required profile after
+   material changes.
 7. Pause the train on permission leaks, raw secret exposure, or broken upstream behavior.
 8. Keep a running status summary after every accepted package.

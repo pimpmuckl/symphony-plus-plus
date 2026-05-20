@@ -460,7 +460,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
       "Required gates:",
       gates_line(policy.required_gates),
       "",
-      "Required review lanes:",
+      "Required review profiles:",
       gates_line(policy.review_suite.required)
     ]
     |> Enum.join("\n")

@@ -187,7 +187,7 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSliceTest do
       forbidden_file_globs: ["elixir/lib/symphony_elixir/symphony_plus_plus/mcp/**"],
       acceptance_criteria: ["Dispatch creates and links the WorkPackage."],
       validation_steps: ["mix test test/mix/tasks/sympp_dispatch_planned_slice_test.exs"],
-      review_lanes: ["review_t1", "review_t2"],
+      review_lanes: ["normal"],
       stop_conditions: ["Stop before dashboard buttons."]
     }
   end

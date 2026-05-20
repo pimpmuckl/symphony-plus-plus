@@ -50,8 +50,9 @@ Before ready:
    policy requires current PR state; `sync_pr` must target the attached PR.
 5. Submit review evidence when available with
    `submit_review_package(summary, tests, artifacts, head_sha)`.
-6. Call `mark_ready()` only after acceptance criteria, tests, review gates,
-   progress, findings, branch/PR evidence, and blockers are settled.
+6. Call `mark_ready()` only after acceptance criteria, tests, required review
+   profile evidence, progress, findings, branch/PR evidence, and blockers are
+   settled.
 
 Final output:
 - PR URL and final head SHA.

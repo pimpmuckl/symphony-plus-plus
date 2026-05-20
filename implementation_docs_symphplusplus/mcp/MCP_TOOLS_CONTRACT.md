@@ -321,18 +321,19 @@ return `already_ready`, while idempotent replays of previously recorded writes
 remain available.
 
 For non-merge-gated policies such as `quick_fix`, generic `append_progress`
-events can satisfy focused-test and review-lane readiness by recording statuses
-`tests_passed` and `<review_lane>_green`, for example `review_t1_green`.
-Tool-owned metadata, blocker, status, and scope events are ignored for these
-fallback gates. Non-merge policies that do not require branch metadata may also
-count explicit-head `submit_review_package` evidence before a branch head is
-attached. Once a branch head is attached, readiness is evaluated against that
-current head and older review-package evidence is stale. Fallback progress gates
-use the latest relevant generic status after the current branch head attachment:
-later `tests_failed`, `<review_lane>_red`, or `<review_lane>_failed` evidence
-supersedes earlier green evidence until a newer pass/green status is recorded.
-Merge-gated packages still use current-head `submit_review_package` evidence and
-persisted review artifacts.
+events can satisfy focused-test and review-profile readiness by recording
+statuses `tests_passed` and `review_<profile>_green`, for example
+`review_brief_green`. Tool-owned metadata, blocker, status, and scope events
+are ignored for these fallback gates. Non-merge policies that do not require
+branch metadata may also count explicit-head `submit_review_package` evidence
+before a branch head is attached. Once a branch head is attached, readiness is
+evaluated against that current head and older review-package evidence is stale.
+Fallback progress gates use the latest relevant generic status after the
+current branch head attachment: later `tests_failed`,
+`review_<profile>_red`, or `review_<profile>_failed` evidence supersedes
+earlier green evidence until a newer pass/green status is recorded. Merge-gated
+packages still use current-head `submit_review_package` evidence and persisted
+review artifacts.
 
 For investigation policies, `request_scope_expansion` records the required
 scope recommendation evidence but never approves the expansion itself. Generic
