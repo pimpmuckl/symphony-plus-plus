@@ -28,7 +28,7 @@ defmodule SymphonyElixirWeb.Endpoint do
   plug(Plug.Static,
     at: "/",
     from: {:symphony_elixir, "priv/static"},
-    only: ~w(assets favicon.ico)
+    only: ~w(assets favicon.ico splusplus-logo.png)
   )
 
   plug(Plug.Parsers,

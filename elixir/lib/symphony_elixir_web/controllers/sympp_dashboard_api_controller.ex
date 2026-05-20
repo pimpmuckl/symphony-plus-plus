@@ -493,6 +493,17 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end)
   end
 
+  @spec operator_config(Conn.t(), map()) :: Conn.t()
+  def operator_config(conn, _params) do
+    conn = maybe_refresh_local_operator_session(conn)
+
+    if local_operator_api_request?(conn) do
+      json(conn, operator_runtime_config(conn))
+    else
+      error_response(conn, :unauthorized)
+    end
+  end
+
   @spec operator_package_detail(Conn.t(), map()) :: Conn.t()
   def operator_package_detail(conn, %{"work_package_id" => work_package_id}) do
     send_local_operator_response(conn, fn repo ->
@@ -517,10 +528,11 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       attrs = work_request_attrs(params)
 
       with {:ok, work_request} <- WorkRequestService.create(repo, attrs),
-           {:ok, detail} <- Dashboard.work_request_detail(repo, work_request.id) do
+           {:ok, detail} <- Dashboard.work_request_detail(repo, work_request.id),
+           {:ok, dashboard} <- operator_dashboard_payload(repo) do
         conn
         |> put_status(201)
-        |> json(%{work_request: detail, dashboard: operator_dashboard_payload!(repo)})
+        |> json(%{work_request: detail, dashboard: dashboard})
       end
     end)
   end
@@ -532,8 +544,9 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
            :ok <- require_open_question(question),
            {:ok, attrs} <- local_operator_question_answer_attrs(question, params),
            {:ok, _answered} <- WorkRequestService.answer_question(repo, question.id, question.status, attrs),
-           {:ok, detail} <- Dashboard.work_request_detail(repo, work_request_id) do
-        json(conn, %{work_request: detail, dashboard: operator_dashboard_payload!(repo)})
+           {:ok, detail} <- Dashboard.work_request_detail(repo, work_request_id),
+           {:ok, dashboard} <- operator_dashboard_payload(repo) do
+        json(conn, %{work_request: detail, dashboard: dashboard})
       end
     end)
   end
@@ -549,8 +562,9 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
                :local_operator,
                guidance_request_id,
                attrs
-             ) do
-        json(conn, %{guidance_request_id: result.guidance_request.id, dashboard: operator_dashboard_payload!(repo)})
+             ),
+           {:ok, dashboard} <- operator_dashboard_payload(repo) do
+        json(conn, %{guidance_request_id: result.guidance_request.id, dashboard: dashboard})
       end
     end)
   end
@@ -562,8 +576,9 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
              ArchitectHandoff.create_or_replay(repo, work_request_id,
                local_operator?: true,
                secret_handoff_opts: architect_handoff_opts(repo)
-             ) do
-        json(conn, %{architect_handoff: handoff, dashboard: operator_dashboard_payload!(repo)})
+             ),
+           {:ok, dashboard} <- operator_dashboard_payload(repo) do
+        json(conn, %{architect_handoff: handoff, dashboard: dashboard})
       end
     end)
   end
@@ -571,8 +586,9 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @spec operator_dispatch_planned_slice(Conn.t(), map()) :: Conn.t()
   def operator_dispatch_planned_slice(conn, %{"work_request_id" => work_request_id, "planned_slice_id" => planned_slice_id}) do
     send_local_operator_response(conn, fn repo ->
-      with {:ok, dispatch} <- PlannedSliceDispatch.dispatch(repo, work_request_id, planned_slice_id, dispatch_handoff_opts(repo)) do
-        json(conn, %{dispatch: PlannedSliceDispatch.response_payload(dispatch), dashboard: operator_dashboard_payload!(repo)})
+      with {:ok, dispatch} <- PlannedSliceDispatch.dispatch(repo, work_request_id, planned_slice_id, dispatch_handoff_opts(repo)),
+           {:ok, dashboard} <- operator_dashboard_payload(repo) do
+        json(conn, %{dispatch: PlannedSliceDispatch.response_payload(dispatch), dashboard: dashboard})
       end
     end)
   end
@@ -626,6 +642,18 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     local_operator_browser?(conn) or fetched_active_local_operator_session?(conn)
   end
 
+  defp operator_runtime_config(conn) do
+    %{
+      apiBase: prefixed_path(conn, "/api/v1/sympp/operator"),
+      basePath: script_name_prefix(conn),
+      csrfToken: Plug.CSRFProtection.get_csrf_token(),
+      logoUrl: prefixed_path(conn, "/splusplus-logo.png")
+    }
+  end
+
+  defp script_name_prefix(%Conn{script_name: []}), do: ""
+  defp script_name_prefix(%Conn{script_name: script_name}), do: "/" <> Enum.join(script_name, "/")
+
   defp fetched_active_local_operator_session?(conn) do
     conn
     |> Conn.fetch_session()
@@ -663,13 +691,6 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     |> case do
       {:ok, details} -> {:ok, Enum.reverse(details)}
       {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp operator_dashboard_payload!(repo) do
-    case operator_dashboard_payload(repo) do
-      {:ok, payload} -> payload
-      {:error, reason} -> %{error: inspect(reason)}
     end
   end
 
@@ -1766,7 +1787,6 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     status = Keyword.get(opts, :status, 401)
     message = Keyword.get(opts, :message, "Enter a board work key to continue.")
     csrf_token = Plug.CSRFProtection.get_csrf_token()
-    dashboard_css_path = prefixed_path(conn, "/dashboard.css")
     board_session_path = prefixed_path(conn, "/sympp/board/session")
 
     body = """
@@ -1776,7 +1796,6 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1">
       <title>Symphony++ board access</title>
-      <link rel="stylesheet" href="#{dashboard_css_path}">
     </head>
     <body>
       <main class="sympp-board-shell sympp-auth-shell">
@@ -1808,7 +1827,6 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     message = Keyword.get(opts, :message, "Enter a package work key to continue.")
     work_package_id = Keyword.fetch!(opts, :work_package_id)
     csrf_token = Plug.CSRFProtection.get_csrf_token()
-    dashboard_css_path = prefixed_path(conn, "/dashboard.css")
     package_session_path = package_session_path(conn, work_package_id)
 
     body = """
@@ -1818,7 +1836,6 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1">
       <title>Symphony++ package access</title>
-      <link rel="stylesheet" href="#{html_escape(dashboard_css_path)}">
     </head>
     <body>
       <main class="sympp-board-shell sympp-auth-shell">
@@ -1846,8 +1863,6 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp package_not_found_response(conn) do
-    dashboard_css_path = prefixed_path(conn, "/dashboard.css")
-
     body = """
     <!doctype html>
     <html lang="en">
@@ -1855,7 +1870,6 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1">
       <title>Symphony++ package not found</title>
-      <link rel="stylesheet" href="#{html_escape(dashboard_css_path)}">
     </head>
     <body>
       <main class="sympp-board-shell sympp-auth-shell">

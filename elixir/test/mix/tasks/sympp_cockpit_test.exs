@@ -38,8 +38,8 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
       assert {:ok, default_opts} = CockpitTask.parse_args_for_test([])
       assert Keyword.fetch!(default_opts, :host) == "127.0.0.1"
       assert Keyword.fetch!(default_opts, :port) == 4057
-      assert Keyword.fetch!(default_opts, :dashboard_origin) == "http://127.0.0.1:5173"
-      assert CockpitTask.cockpit_url_for_test(default_opts, 4057) == "http://127.0.0.1:5173/sympp/board"
+      refute Keyword.has_key?(default_opts, :dashboard_origin)
+      assert CockpitTask.cockpit_url_for_test(default_opts, 4057) == "http://127.0.0.1:4057/sympp/board"
 
       assert {:ok, opts} =
                CockpitTask.parse_args_for_test([
@@ -67,7 +67,7 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
       assert CockpitTask.cockpit_url_for_test(opts, 4567) == "http://127.0.0.1:5174/sympp/board"
 
       assert {:ok, ipv6_opts} = CockpitTask.parse_args_for_test(["--host", "[::1]"])
-      assert CockpitTask.cockpit_url_for_test(ipv6_opts, 4567) == "http://127.0.0.1:5173/sympp/board"
+      assert CockpitTask.cockpit_url_for_test(ipv6_opts, 4567) == "http://[::1]:4567/sympp/board"
     after
       File.rm(Path.expand(relative_database))
     end
@@ -82,6 +82,7 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
     assert no_database_config[:sympp_local_operator] == true
     assert no_database_config[:sympp_repo] == custom_repo
     assert no_database_config[:other] == :kept
+    refute Keyword.has_key?(no_database_config, :sympp_dashboard_origin)
 
     database_config = CockpitTask.endpoint_config_for_test(endpoint_config: original_config, database: ":memory:")
 
@@ -128,11 +129,11 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
       end)
 
       assert_received {:mix_shell, :info, [url]}
-      assert url == "Symphony++ local operator dashboard: http://127.0.0.1:5173/sympp/board"
+      assert url =~ ~r{Symphony\+\+ local operator dashboard: http://127\.0\.0\.1:\d+/sympp/board}
       assert_received {:mix_shell, :info, [bridge]}
       assert bridge =~ ~r{Symphony\+\+ API bridge: http://127\.0\.0\.1:\d+}
       assert_received {:mix_shell, :info, ["Press Ctrl+C to stop."]}
-      assert_received {:cockpit_response, 302, ["http://127.0.0.1:5173/sympp/board"], 200, payload}
+      assert_received {:cockpit_response, 200, nil, 200, payload}
       assert payload["board"]["total_count"] == 0
       assert File.exists?(database_path)
     after

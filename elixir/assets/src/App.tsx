@@ -57,8 +57,18 @@ import type {
   WorkRequestDetail,
 } from "@/types/dashboard";
 
+declare global {
+  interface Window {
+    SYMPP_DASHBOARD_CONFIG?: {
+      apiBase?: string;
+      basePath?: string;
+      csrfToken?: string;
+      logoUrl?: string;
+    };
+  }
+}
+
 const CUSTOM_CHOICE = "__custom_redirect__";
-const DASHBOARD_URL = "/api/v1/sympp/operator/dashboard";
 const DASHBOARD_UI_STATE_KEY = "symphony-plus-plus.dashboard.ui-state.v1";
 const DASHBOARD_THEME_KEY = "symphony-plus-plus.dashboard.theme.v1";
 const ALIGNED_ROW_MIN_HEIGHT = 112;
@@ -69,6 +79,20 @@ const TOP_PANEL_RESIZE_MS = 210;
 const TOP_PANEL_SLIDE_MS = 360;
 const UPDATE_ANIMATION_TTL_MS = 1800;
 const WORKSPACE_TAB_SLIDE_MS = 360;
+const BADGE_TEXT_PUSH_MS = 220;
+const BADGE_RESIZE_MS = 150;
+const DEFAULT_DASHBOARD_API_BASE = "/api/v1/sympp/operator";
+
+type DashboardRuntimeConfig = {
+  apiBase?: string;
+  basePath?: string;
+  csrfToken?: string;
+  logoUrl?: string;
+};
+
+let dashboardRuntimeConfig: DashboardRuntimeConfig | undefined = typeof window === "undefined" ? undefined : window.SYMPP_DASHBOARD_CONFIG;
+let dashboardRuntimeConfigPromise: Promise<DashboardRuntimeConfig | undefined> | null = null;
+const DASHBOARD_LOGO_URL = dashboardRuntimeConfig?.logoUrl || "/splusplus-logo.png";
 
 type GuidanceItem =
   | {
@@ -111,6 +135,7 @@ type WorkstreamLayoutMode = "jira" | "aligned";
 type DashboardTheme = "light" | "dark";
 type UpdateMotionKind = "added" | "changed" | "guidance" | "blocker" | "finished";
 type UpdateMotion = { kind: UpdateMotionKind | "settled"; token: number };
+type BadgePushPhase = "idle" | "measure" | "resize-first" | "push" | "resize-last";
 type UpdateAnimationEntity = {
   signature: string;
   status?: string | null;
@@ -135,6 +160,55 @@ type DashboardUiState = {
   repoWorkstreams?: Record<string, boolean>;
   workstreamLayout?: WorkstreamLayoutMode;
 };
+
+function normalizeRuntimeBase(value: string | undefined, fallback: string) {
+  const base = value?.trim() || fallback;
+  return base.replace(/\/+$/, "");
+}
+
+function operatorApiUrl(path: string) {
+  const base = normalizeRuntimeBase(dashboardRuntimeConfig?.apiBase, DEFAULT_DASHBOARD_API_BASE);
+  const suffix = path.startsWith("/") ? path : `/${path}`;
+  return `${base}${suffix}`;
+}
+
+function jsonHeaders({ csrf = false, content = false }: { csrf?: boolean; content?: boolean } = {}) {
+  const headers: Record<string, string> = { accept: "application/json" };
+
+  if (content) {
+    headers["content-type"] = "application/json";
+  }
+
+  if (csrf && dashboardRuntimeConfig?.csrfToken) {
+    headers["x-csrf-token"] = dashboardRuntimeConfig.csrfToken;
+  }
+
+  return headers;
+}
+
+async function ensureDashboardRuntimeConfig() {
+  if (dashboardRuntimeConfig?.csrfToken) return dashboardRuntimeConfig;
+
+  dashboardRuntimeConfigPromise ??= fetch(operatorApiUrl("/config"), { headers: jsonHeaders() })
+    .then(async (response) => {
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload?.error?.message || "Dashboard runtime config unavailable");
+      }
+      dashboardRuntimeConfig = payload;
+      return dashboardRuntimeConfig;
+    })
+    .finally(() => {
+      dashboardRuntimeConfigPromise = null;
+    });
+
+  return dashboardRuntimeConfigPromise;
+}
+
+async function mutationHeaders() {
+  await ensureDashboardRuntimeConfig();
+  return jsonHeaders({ csrf: true, content: true });
+}
 
 type BlockerItem = {
   id: string;
@@ -290,7 +364,7 @@ export default function App() {
     }
 
     try {
-      const response = await fetch(DASHBOARD_URL, { headers: { accept: "application/json" } });
+      const response = await fetch(operatorApiUrl("/dashboard"), { headers: jsonHeaders() });
       const payload = await response.json();
 
       if (!response.ok) {
@@ -371,12 +445,12 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={150}>
-      <main className="min-h-screen bg-background">
+      <main className="dashboard-shell min-h-screen bg-background">
         <header className="dashboard-header-glass sticky top-0 z-20">
           <div className="mx-auto flex max-w-[1500px] flex-col gap-4 px-4 py-4 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
             <div className="flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border bg-card shadow-sm motion-pop">
-                <img src="/splusplus-logo.png" alt="Symphony++" className="h-full w-full scale-[1.34] object-contain" />
+                <img src={DASHBOARD_LOGO_URL} alt="Symphony++" className="h-full w-full scale-[1.34] object-contain" />
               </div>
               <div>
                 <h1 className="text-xl font-semibold">Symphony++</h1>
@@ -1517,9 +1591,10 @@ function GuidancePreviewCard({
           <p className="mt-4 text-sm font-medium">Description</p>
           <p className="mt-1 line-clamp-3 text-sm text-muted-foreground">{item.prompt?.details || item.detail}</p>
         </div>
-        <Badge variant={item.source === "guidance" ? "danger" : "warning"} className="state-update-badge">
-          {item.source === "guidance" ? "Guidance" : "Clarify"}
-        </Badge>
+        <AnimatedBadge
+          label={item.source === "guidance" ? "Guidance" : "Clarify"}
+          variant={item.source === "guidance" ? "danger" : "warning"}
+        />
       </div>
     </button>
   );
@@ -1538,9 +1613,7 @@ function BlockerPreviewCard({ item, index, motion }: { item: BlockerItem; index:
           <p className="truncate text-sm font-semibold">{item.title}</p>
           <p className="mt-1 truncate text-xs text-muted-foreground">{item.repo}</p>
         </div>
-        <Badge variant="danger" className="state-update-badge">
-          {formatStatus(item.status)}
-        </Badge>
+        <AnimatedBadge label={formatStatus(item.status)} variant="danger" />
       </div>
       <p className="mt-4 line-clamp-3 text-sm text-muted-foreground">{item.detail}</p>
       <div className="mt-4 flex items-center gap-2 text-xs text-amber-800 dark:text-amber-200">
@@ -1610,9 +1683,7 @@ function FinishedHighlightCard({ item, index, motion }: { item: FinishedHighligh
         </div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Badge variant="success" className="state-update-badge">
-          {formatStatus(item.status)}
-        </Badge>
+        <AnimatedBadge label={formatStatus(item.status)} variant="success" />
         {item.at ? (
           <span className="flex items-center gap-1 text-xs text-muted-foreground">
             <Clock3 className="h-3.5 w-3.5" />
@@ -1806,6 +1877,103 @@ function RepoSummaryPlate({
       <span className="whitespace-nowrap">{label}</span>
     </div>
   );
+}
+
+function AnimatedBadge({
+  label,
+  variant,
+  className,
+}: {
+  label: string;
+  variant?: React.ComponentProps<typeof Badge>["variant"];
+  className?: string;
+}) {
+  const [currentLabel, setCurrentLabel] = useState(label);
+  const [previousLabel, setPreviousLabel] = useState<string | null>(null);
+  const [phase, setPhase] = useState<BadgePushPhase>("idle");
+  const [width, setWidth] = useState<number | null>(null);
+  const badgeRef = useRef<HTMLDivElement | null>(null);
+  const currentTextRef = useRef<HTMLSpanElement | null>(null);
+  const measureRef = useRef<HTMLSpanElement | null>(null);
+  const timersRef = useRef<number[]>([]);
+  const framesRef = useRef<number[]>([]);
+
+  useEffect(
+    () => () => {
+      clearTopPanelTimers(timersRef, framesRef);
+    },
+    [],
+  );
+
+  useLayoutEffect(() => {
+    if (label === currentLabel) return;
+
+    clearTopPanelTimers(timersRef, framesRef);
+
+    const oldWidth = measureElementWidth(badgeRef.current);
+    const oldTextWidth = measureElementWidth(currentTextRef.current);
+    const chromeWidth = Math.max(0, oldWidth - oldTextWidth);
+
+    setPreviousLabel(currentLabel);
+    setCurrentLabel(label);
+    setPhase("measure");
+    setWidth(oldWidth);
+
+    nextFrame(framesRef, () => {
+      const newTextWidth = measureElementWidth(measureRef.current);
+      const newWidth = Math.ceil(newTextWidth + chromeWidth);
+      const wider = newWidth > oldWidth + 1;
+
+      if (wider) {
+        setPhase("resize-first");
+        setWidth(newWidth);
+
+        later(timersRef, BADGE_RESIZE_MS, () => {
+          setPhase("push");
+          later(timersRef, BADGE_TEXT_PUSH_MS, () => settleAnimatedBadge(setPhase, setPreviousLabel, setWidth));
+        });
+      } else {
+        setPhase("push");
+
+        later(timersRef, BADGE_TEXT_PUSH_MS, () => {
+          setPhase("resize-last");
+          setWidth(newWidth);
+          later(timersRef, BADGE_RESIZE_MS, () => settleAnimatedBadge(setPhase, setPreviousLabel, setWidth));
+        });
+      }
+    });
+  }, [currentLabel, label]);
+
+  return (
+    <Badge
+      ref={badgeRef}
+      variant={variant}
+      className={cn("state-update-badge", className)}
+      data-badge-phase={phase}
+      data-badge-has-previous={previousLabel ? "true" : "false"}
+      style={width === null ? undefined : { width: `${Math.max(width, 0)}px` }}
+    >
+      <span ref={measureRef} className="badge-push-measure">
+        {currentLabel}
+      </span>
+      <span className="badge-push-stack">
+        {previousLabel ? <span className="badge-push-old">{previousLabel}</span> : null}
+        <span ref={currentTextRef} className="badge-push-new">
+          {currentLabel}
+        </span>
+      </span>
+    </Badge>
+  );
+}
+
+function settleAnimatedBadge(
+  setPhase: React.Dispatch<React.SetStateAction<BadgePushPhase>>,
+  setPreviousLabel: React.Dispatch<React.SetStateAction<string | null>>,
+  setWidth: React.Dispatch<React.SetStateAction<number | null>>,
+) {
+  setPreviousLabel(null);
+  setPhase("idle");
+  setWidth(null);
 }
 
 function stateCardClassName(tone: StateCardTone, className?: string) {
@@ -2995,9 +3163,7 @@ function RequestCard({
           <p className="truncate text-sm font-semibold">{request.title || request.id}</p>
           <p className="mt-1 text-xs text-muted-foreground">{request.work_type || "feature"}</p>
         </div>
-        <Badge variant={requestStatusVariant(request.status)} className="state-update-badge shrink-0">
-          {formatStatus(request.status)}
-        </Badge>
+        <AnimatedBadge label={formatStatus(request.status)} variant={requestStatusVariant(request.status)} className="shrink-0" />
       </div>
       {questionCount > 0 ? (
         <CardSignal
@@ -3045,9 +3211,11 @@ function SliceCard({
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <p className="min-w-0 truncate text-sm font-medium">{slice.title || pkg?.title || slice.id}</p>
-        <Badge variant={statusVariant(slice.work_package_status || slice.status)} className="state-update-badge shrink-0">
-          {statusLabel(slice.work_package_status || slice.status)}
-        </Badge>
+        <AnimatedBadge
+          label={statusLabel(slice.work_package_status || slice.status)}
+          variant={statusVariant(slice.work_package_status || slice.status)}
+          className="shrink-0"
+        />
       </div>
       {detail ? <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{detail}</p> : null}
     </div>
@@ -3080,9 +3248,7 @@ function PackageCard({
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <p className="min-w-0 truncate text-sm font-medium">{pkg.title || pkg.id}</p>
-        <Badge variant={statusVariant(pkg.status)} className="state-update-badge shrink-0">
-          {statusLabel(pkg.status)}
-        </Badge>
+        <AnimatedBadge label={statusLabel(pkg.status)} variant={statusVariant(pkg.status)} className="shrink-0" />
       </div>
       {attention ? <CardSignal className="mt-3" label={attention.label} value={attention.value} tone={attention.tone} /> : null}
     </div>
@@ -3521,9 +3687,7 @@ function SoloSessionCard({
           <p className="truncate text-sm font-semibold">{session.title || session.id}</p>
           <p className="mt-1 truncate text-xs text-muted-foreground">{session.caller_id || "Solo session"}</p>
         </div>
-        <Badge variant={soloSessionStatusVariant(session.status)} className="state-update-badge shrink-0">
-          {formatStatus(session.status)}
-        </Badge>
+        <AnimatedBadge label={formatStatus(session.status)} variant={soloSessionStatusVariant(session.status)} className="shrink-0" />
       </div>
 
       {attention.guidanceCount > 0 || attention.blockerCount > 0 ? (
@@ -3886,7 +4050,7 @@ function GuidanceDialog({
 
       const response = await fetch(guidanceAnswerUrl(item), {
         method: "POST",
-        headers: { "content-type": "application/json", accept: "application/json" },
+        headers: await mutationHeaders(),
         body,
       });
       const payload = await response.json();
@@ -4089,9 +4253,9 @@ function NewRequestDialog({
     setError(null);
 
     try {
-      const response = await fetch("/api/v1/sympp/operator/work-requests", {
+      const response = await fetch(operatorApiUrl("/work-requests"), {
         method: "POST",
-        headers: { "content-type": "application/json", accept: "application/json" },
+        headers: await mutationHeaders(),
         body: JSON.stringify({
           title: form.title,
           repo: form.repo,
@@ -4247,8 +4411,8 @@ function CardDetailDialog({
     setPackageDetail(null);
     setPackageError(null);
 
-    fetch(`/api/v1/sympp/operator/work-packages/${encodeURIComponent(packageId)}`, {
-      headers: { accept: "application/json" },
+    fetch(operatorApiUrl(`/work-packages/${encodeURIComponent(packageId)}`), {
+      headers: jsonHeaders(),
       signal: controller.signal,
     })
       .then(async (response) => {
@@ -4284,8 +4448,8 @@ function CardDetailDialog({
     setSoloDetail(null);
     setSoloError(null);
 
-    fetch(`/api/v1/sympp/operator/solo-sessions/${encodeURIComponent(soloSessionId)}`, {
-      headers: { accept: "application/json" },
+    fetch(operatorApiUrl(`/solo-sessions/${encodeURIComponent(soloSessionId)}`), {
+      headers: jsonHeaders(),
       signal: controller.signal,
     })
       .then(async (response) => {
@@ -5304,10 +5468,10 @@ function guidanceOptions(prompt?: DecisionPrompt | null): DecisionOption[] {
 
 function guidanceAnswerUrl(item: GuidanceItem) {
   if (item.source === "guidance") {
-    return `/api/v1/sympp/operator/work-packages/${encodeURIComponent(item.packageId)}/guidance/${encodeURIComponent(item.id)}/answer`;
+    return operatorApiUrl(`/work-packages/${encodeURIComponent(item.packageId)}/guidance/${encodeURIComponent(item.id)}/answer`);
   }
 
-  return `/api/v1/sympp/operator/work-requests/${encodeURIComponent(item.workRequestId)}/questions/${encodeURIComponent(item.id)}/answer`;
+  return operatorApiUrl(`/work-requests/${encodeURIComponent(item.workRequestId)}/questions/${encodeURIComponent(item.id)}/answer`);
 }
 
 function requestLane(request: WorkRequestCard): "requested" | "slices" | "finished" {
@@ -5670,6 +5834,10 @@ function workspaceTabDirection(from: WorkspaceTab, to: WorkspaceTab): TopPanelDi
 
 function measureElementHeight(element: HTMLElement | null) {
   return element?.getBoundingClientRect().height || 0;
+}
+
+function measureElementWidth(element: HTMLElement | null) {
+  return element?.getBoundingClientRect().width || 0;
 }
 
 function nextFrame(refs: React.MutableRefObject<number[]>, callback: () => void) {

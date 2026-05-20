@@ -20,6 +20,8 @@
 /priv/static/assets/
 /priv/static/index.html
 /priv/static/splusplus-logo.png
+/priv/demo/*.sqlite3
+/priv/demo/*.sqlite3-*
 
 # Local runtime logs.
 /log/

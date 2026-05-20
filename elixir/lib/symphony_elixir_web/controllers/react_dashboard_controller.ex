@@ -35,7 +35,7 @@ defmodule SymphonyElixirWeb.ReactDashboardController do
       {:ok, body} ->
         conn
         |> put_resp_content_type("text/html")
-        |> send_resp(200, body)
+        |> send_resp(200, prepare_dashboard_shell(conn, body))
 
       {:error, _reason} ->
         conn
@@ -55,6 +55,47 @@ defmodule SymphonyElixirWeb.ReactDashboardController do
     |> :code.priv_dir()
     |> Path.join("static/index.html")
   end
+
+  defp prepare_dashboard_shell(conn, body) do
+    conn
+    |> prefix_dashboard_assets(body)
+    |> inject_dashboard_config(conn)
+  end
+
+  defp prefix_dashboard_assets(conn, body) do
+    case script_name_prefix(conn) do
+      "" ->
+        body
+
+      prefix ->
+        body
+        |> String.replace(~s(href="/), ~s(href="#{prefix}/))
+        |> String.replace(~s(src="/), ~s(src="#{prefix}/))
+    end
+  end
+
+  defp inject_dashboard_config(body, conn) do
+    config = %{
+      "apiBase" => prefixed_path(conn, "/api/v1/sympp/operator"),
+      "basePath" => script_name_prefix(conn),
+      "csrfToken" => Plug.CSRFProtection.get_csrf_token(),
+      "logoUrl" => prefixed_path(conn, "/splusplus-logo.png")
+    }
+
+    script = ~s(<script>window.SYMPP_DASHBOARD_CONFIG = #{Jason.encode!(config)};</script>)
+
+    String.replace(body, "</head>", "    #{script}\n  </head>", global: false)
+  end
+
+  defp prefixed_path(%Conn{} = conn, path) when is_binary(path) do
+    case script_name_prefix(conn) do
+      "" -> path
+      prefix -> prefix <> "/" <> String.trim_leading(path, "/")
+    end
+  end
+
+  defp script_name_prefix(%Conn{script_name: []}), do: ""
+  defp script_name_prefix(%Conn{script_name: script_name}), do: "/" <> Enum.join(script_name, "/")
 
   defp dashboard_origin do
     :symphony_elixir

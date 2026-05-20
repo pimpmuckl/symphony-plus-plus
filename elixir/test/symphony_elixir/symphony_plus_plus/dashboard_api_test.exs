@@ -32,6 +32,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
   alias SymphonyElixir.WorkPackageFactory
+  alias SymphonyElixirWeb.ReactDashboardController
   alias SymphonyElixirWeb.SymppDashboardApiController
 
   @endpoint SymphonyElixirWeb.Endpoint
@@ -2882,6 +2883,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
+  test "local operator config returns runtime csrf and asset paths" do
+    with_local_operator_endpoint(fn ->
+      payload = json_response(get(local_operator_conn(), "/api/v1/sympp/operator/config"), 200)
+
+      assert payload["apiBase"] == "/api/v1/sympp/operator"
+      assert payload["basePath"] == ""
+      assert payload["logoUrl"] == "/splusplus-logo.png"
+      assert is_binary(payload["csrfToken"])
+      assert byte_size(payload["csrfToken"]) > 20
+    end)
+  end
+
   test "local operator can fetch package detail through the dashboard API", %{repo: repo} do
     with_local_operator_endpoint(fn ->
       %{work_package: work_package} = create_dashboard_fixture(repo, id: "SYMPP-LOCAL-OPERATOR-DETAIL")
@@ -2932,7 +2945,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   test "local operator can create a WorkRequest through the dashboard API", %{repo: repo} do
     with_local_operator_endpoint(fn ->
       payload =
-        local_operator_conn()
+        local_operator_csrf_conn()
         |> post("/api/v1/sympp/operator/work-requests", %{
           "title" => "Fresh dashboard request",
           "repo" => "symphony-plus-plus",
@@ -2949,6 +2962,69 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
       assert {:ok, [stored]} = WorkRequestRepository.list(repo)
       assert stored.title == "Fresh dashboard request"
+    end)
+  end
+
+  test "local operator mutations require CSRF protection" do
+    with_local_operator_endpoint(fn ->
+      index = "<!doctype html><html><head></head><body><div id=\"root\"></div></body></html>"
+
+      with_static_dashboard_file("index.html", index, fn ->
+        shell_conn =
+          local_operator_conn()
+          |> Plug.Test.init_test_session(%{})
+          |> ReactDashboardController.index(%{})
+
+        assert html_response(shell_conn, 200) =~ "csrfToken"
+
+        assert_raise Plug.CSRFProtection.InvalidCSRFTokenError, fn ->
+          shell_conn
+          |> recycle_local_operator_conn("http://evil.example")
+          |> post("/api/v1/sympp/operator/work-requests", %{
+            "title" => "Cross-site dashboard request",
+            "repo" => "symphony-plus-plus",
+            "base_branch" => "main",
+            "work_type" => "feature",
+            "human_description" => "This should not reach the local ledger.",
+            "desired_dispatch_shape" => "architect_led_feature_branch"
+          })
+        end
+      end)
+    end)
+  end
+
+  test "react dashboard shell injects prefix-aware runtime config" do
+    index = """
+    <!doctype html>
+    <html>
+      <head>
+        <link rel="icon" href="/splusplus-logo.png">
+        <script type="module" src="/assets/index.js"></script>
+      </head>
+      <body><div id="root"></div></body>
+    </html>
+    """
+
+    with_static_dashboard_file("index.html", index, fn ->
+      html =
+        build_conn(:get, "/sympp/board")
+        |> Plug.Test.init_test_session(%{})
+        |> Map.put(:script_name, ["app"])
+        |> ReactDashboardController.index(%{})
+        |> html_response(200)
+
+      assert html =~ ~s(href="/app/splusplus-logo.png")
+      assert html =~ ~s(src="/app/assets/index.js")
+      assert html =~ "window.SYMPP_DASHBOARD_CONFIG"
+      assert html =~ ~s("apiBase":"/app/api/v1/sympp/operator")
+      assert html =~ ~s("logoUrl":"/app/splusplus-logo.png")
+      assert html =~ ~s("csrfToken":)
+    end)
+  end
+
+  test "endpoint serves the built dashboard logo asset" do
+    with_static_dashboard_file("splusplus-logo.png", "logo-bytes", fn ->
+      assert response(get(build_conn(), "/splusplus-logo.png"), 200) == "logo-bytes"
     end)
   end
 
@@ -3796,6 +3872,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     |> Map.put(:host, "localhost")
     |> Map.put(:remote_ip, {127, 0, 0, 1})
     |> put_req_header("origin", "http://localhost")
+  end
+
+  defp local_operator_csrf_conn do
+    csrf_token = Plug.CSRFProtection.get_csrf_token()
+
+    local_operator_conn()
+    |> Plug.Test.init_test_session(%{})
+    |> put_req_header("x-csrf-token", csrf_token)
+  end
+
+  defp recycle_local_operator_conn(conn, origin) do
+    conn
+    |> recycle()
+    |> Map.put(:host, "localhost")
+    |> Map.put(:remote_ip, {127, 0, 0, 1})
+    |> put_req_header("origin", origin)
+  end
+
+  defp with_static_dashboard_file(file_name, contents, fun) when is_function(fun, 0) do
+    static_dir =
+      :symphony_elixir
+      |> :code.priv_dir()
+      |> Path.join("static")
+
+    path = Path.join(static_dir, file_name)
+    original = File.read(path)
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, contents)
+
+    try do
+      fun.()
+    after
+      case original do
+        {:ok, previous} -> File.write!(path, previous)
+        {:error, _reason} -> File.rm(path)
+      end
+    end
   end
 
   defp start_test_endpoint do

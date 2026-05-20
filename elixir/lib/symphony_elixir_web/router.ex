@@ -11,6 +11,13 @@ defmodule SymphonyElixirWeb.Router do
     plug(:put_secure_browser_headers)
   end
 
+  pipeline :operator_dashboard_api do
+    plug(:fetch_session)
+    plug(:protect_from_forgery)
+    plug(:require_operator_csrf_header)
+    plug(:put_secure_browser_headers)
+  end
+
   scope "/", SymphonyElixirWeb do
     pipe_through(:browser)
 
@@ -23,7 +30,9 @@ defmodule SymphonyElixirWeb.Router do
   end
 
   scope "/", SymphonyElixirWeb do
-    get("/api/v1/state", ObservabilityApiController, :state)
+    pipe_through(:operator_dashboard_api)
+
+    get("/api/v1/sympp/operator/config", SymppDashboardApiController, :operator_config)
     get("/api/v1/sympp/operator/dashboard", SymppDashboardApiController, :operator_dashboard)
     get("/api/v1/sympp/operator/work-packages/:work_package_id", SymppDashboardApiController, :operator_package_detail)
     get("/api/v1/sympp/operator/solo-sessions/:solo_session_id", SymppDashboardApiController, :operator_solo_session_detail)
@@ -52,6 +61,10 @@ defmodule SymphonyElixirWeb.Router do
       SymppDashboardApiController,
       :operator_dispatch_planned_slice
     )
+  end
+
+  scope "/", SymphonyElixirWeb do
+    get("/api/v1/state", ObservabilityApiController, :state)
 
     get("/api/v1/sympp/board", SymppDashboardApiController, :board)
     get("/api/v1/sympp/work-requests", SymppDashboardApiController, :work_requests)
@@ -65,6 +78,7 @@ defmodule SymphonyElixirWeb.Router do
 
     match(:*, "/", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/state", ObservabilityApiController, :method_not_allowed)
+    match(:*, "/api/v1/sympp/operator/config", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/sympp/board", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/sympp/operator/dashboard", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/sympp/operator/work-packages/:work_package_id", ObservabilityApiController, :method_not_allowed)
@@ -85,4 +99,14 @@ defmodule SymphonyElixirWeb.Router do
     match(:*, "/api/v1/:issue_identifier", ObservabilityApiController, :method_not_allowed)
     match(:*, "/*path", ObservabilityApiController, :not_found)
   end
+
+  defp require_operator_csrf_header(%Plug.Conn{method: method} = conn, _opts)
+       when method in ["POST", "PUT", "PATCH", "DELETE"] do
+    case Plug.Conn.get_req_header(conn, "x-csrf-token") do
+      [_token | _rest] -> conn
+      [] -> raise Plug.CSRFProtection.InvalidCSRFTokenError
+    end
+  end
+
+  defp require_operator_csrf_header(conn, _opts), do: conn
 end
