@@ -136,6 +136,34 @@ PR metadata while a package remains open or merge-ready, ready packages missing
 readiness evidence, or `ready_for_worker` packages with delivery activity, are
 reported as `attention_items` instead of changing raw lifecycle status.
 
+WorkPackage card and detail payloads also include a backend-derived `lineage`
+projection. It is recorded as explicit operational lineage evidence, not inferred
+from titles or prose. The v1 payload includes:
+
+```text
+original_work
+successor_work
+superseded_by
+recut_as
+oracle_for
+oracle_work
+oracle_status
+available
+unavailable
+cleanup_attention
+```
+
+Lineage relationships are limited to `superseded_by`, `recut_as`, and
+`oracle_for`. Each entry carries source and target WorkPackage ids, branch
+snapshots, current package statuses when available, reason text, decision
+linkage, recorded event id/time, and the oracle-preserved flag. Cleanup
+attention is projected when original work that points to a successor still has
+an open raw lifecycle status, including from the successor side. If lineage
+storage cannot be read, the backend reports an explicit unavailable lineage
+payload and warning attention instead of returning the empty no-lineage shape.
+Scoped board payloads only serialize relationships where both the source and
+target WorkPackage are already visible in that board scope.
+
 Planned-slice payloads include `operational_state` only when dispatch linkage is
 included. Approved slices without linked delivery activity can project as
 `ready_for_worker`; linked slices promote the linked WorkPackage operational

@@ -9,6 +9,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository, as: GuidanceRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
+  alias SymphonyElixir.SymphonyPlusPlus.OperationalLineage
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
@@ -321,6 +322,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
         {:ok,
          %{
            work_package: work_package_detail(state.work_package),
+           lineage: package_lineage(repo, work_package_id),
            summary: summary,
            plan: Enum.map(state.plan_nodes, &plan_node/1),
            findings: Enum.map(state.findings, &finding/1),
@@ -400,6 +402,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp card_context(repo, %WorkPackage{} = work_package) do
+    card_context(repo, work_package, package_lineage(repo, work_package.id))
+  end
+
+  defp card_context(repo, %WorkPackage{} = work_package, lineage) do
     with {:ok, status_summary} <- PlanningRepository.get_status_summary(repo, work_package.id),
          {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, work_package.id),
          {:ok, readiness_collections} <- readiness_collections(repo, work_package),
@@ -419,7 +425,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
         )
 
       metadata = metadata(progress_events, artifacts, work_package.id)
-      operational_state = work_package_operational_state(work_package, progress_events, blockers, runtime, metadata, readiness_context, grants)
+
+      operational_state =
+        work_package_operational_state(work_package, %{
+          progress_events: progress_events,
+          blockers: blockers,
+          runtime: runtime,
+          metadata: metadata,
+          readiness_context: readiness_context,
+          grants: grants,
+          lineage: lineage
+        })
 
       {:ok,
        %{
@@ -443,6 +459,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            finding_count: status_summary.finding_count,
            plan: plan_summary(status_summary.plan_nodes),
            metadata: metadata,
+           lineage: lineage,
            operational_state: operational_state,
            alert_indicators: alert_indicators(readiness_context, blockers, runtime),
            inserted_at: timestamp(work_package.inserted_at),
@@ -785,8 +802,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp card_contexts_for_packages(repo, work_packages) do
+    lineages_by_id = package_lineages(repo, work_packages)
+
     work_packages
-    |> Enum.map(&card_context(repo, &1))
+    |> Enum.map(&card_context(repo, &1, Map.get(lineages_by_id, &1.id, empty_lineage(&1.id))))
     |> collect_or_error()
   end
 
@@ -1426,6 +1445,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     findings_by_id = grouped_findings(repo, work_package_ids)
     agent_runs_by_id = grouped_agent_runs(repo, work_package_ids)
     grants_by_id = grouped_access_grants(repo, work_package_ids)
+    lineages_by_id = package_lineages(repo, work_packages)
 
     Map.new(work_packages, fn %WorkPackage{} = work_package ->
       progress_events = Map.get(progress_events_by_id, work_package.id, [])
@@ -1438,7 +1458,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       runtime = runtime_summary(agent_runs)
       metadata = metadata(progress_events, artifacts, work_package.id)
       readiness_context = readiness_context(work_package, plan_nodes, progress_events, artifacts, findings)
-      operational_state = work_package_operational_state(work_package, progress_events, blockers, runtime, metadata, readiness_context, grants)
+      lineage = Map.get(lineages_by_id, work_package.id, empty_lineage(work_package.id))
+
+      operational_state =
+        work_package_operational_state(work_package, %{
+          progress_events: progress_events,
+          blockers: blockers,
+          runtime: runtime,
+          metadata: metadata,
+          readiness_context: readiness_context,
+          grants: grants,
+          lineage: lineage
+        })
 
       {work_package.id, %{work_package: work_package, card: %{operational_state: operational_state}}}
     end)
@@ -1707,10 +1738,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     }
   end
 
-  defp work_package_operational_state(%WorkPackage{} = work_package, progress_events, blockers, runtime, metadata, readiness_context, grants) do
+  defp work_package_operational_state(%WorkPackage{} = work_package, context) do
+    progress_events = Map.fetch!(context, :progress_events)
+    blockers = Map.fetch!(context, :blockers)
+    runtime = Map.fetch!(context, :runtime)
+    metadata = Map.fetch!(context, :metadata)
+    readiness_context = Map.fetch!(context, :readiness_context)
+    grants = Map.fetch!(context, :grants)
+    lineage = Map.fetch!(context, :lineage)
     missing_readiness = if work_package.status in @ready_statuses, do: missing_readiness_evidence(readiness_context), else: []
     delivery_started = delivery_started?(work_package, progress_events, runtime, metadata, grants)
-    attention_items = work_package_attention_items(work_package, blockers, metadata, missing_readiness, delivery_started)
+
+    attention_items =
+      work_package_attention_items(work_package, blockers, %{
+        metadata: metadata,
+        missing_readiness: missing_readiness,
+        delivery_started: delivery_started,
+        lineage: lineage
+      })
 
     work_package
     |> base_work_package_operational_state(blockers, metadata, missing_readiness, delivery_started)
@@ -1894,15 +1939,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp promoted_linked_operational_state?(_state), do: false
 
-  defp work_package_attention_items(%WorkPackage{} = work_package, blockers, metadata, missing_readiness, delivery_started) do
-    [
-      active_blocker_attention_item(blockers),
-      pr_merged_attention_item(work_package, metadata),
-      missing_readiness_attention_item(work_package, missing_readiness),
-      ready_status_with_activity_attention_item(work_package, delivery_started)
-    ]
-    |> Enum.reject(&is_nil/1)
+  defp work_package_attention_items(%WorkPackage{} = work_package, blockers, context) do
+    metadata = Map.fetch!(context, :metadata)
+    missing_readiness = Map.fetch!(context, :missing_readiness)
+    delivery_started = Map.fetch!(context, :delivery_started)
+    lineage = Map.fetch!(context, :lineage)
+
+    single_items =
+      [
+        active_blocker_attention_item(blockers),
+        pr_merged_attention_item(work_package, metadata),
+        missing_readiness_attention_item(work_package, missing_readiness),
+        ready_status_with_activity_attention_item(work_package, delivery_started)
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    single_items ++ lineage_cleanup_attention_items(lineage)
   end
+
+  defp lineage_cleanup_attention_items(%{cleanup_attention: items}) when is_list(items), do: items
+  defp lineage_cleanup_attention_items(_lineage), do: []
 
   defp active_blocker_attention_item(blockers) do
     case active_blockers(blockers) do
@@ -2818,6 +2874,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       review_package: latest_current_payload(progress_events, "review_package", "submit_review_package", head_filter),
       review_suite_result: review_suite_result_payload(progress_events, artifacts, work_package_id, head_filter)
     }
+  end
+
+  defp package_lineage(repo, work_package_id) do
+    case OperationalLineage.get(repo, work_package_id) do
+      {:ok, lineage} -> lineage
+      {:error, reason} -> OperationalLineage.unavailable_lineage(work_package_id, reason)
+    end
+  end
+
+  defp package_lineages(_repo, []), do: %{}
+
+  defp package_lineages(repo, work_packages) do
+    case OperationalLineage.for_work_packages(repo, work_packages) do
+      {:ok, lineages_by_id} -> lineages_by_id
+      {:error, reason} -> unavailable_lineages(work_packages, reason)
+    end
+  end
+
+  defp empty_lineage(work_package_id), do: OperationalLineage.empty_lineage(work_package_id)
+
+  defp unavailable_lineages(work_packages, reason) do
+    Map.new(work_packages, fn %WorkPackage{} = work_package ->
+      {work_package.id, OperationalLineage.unavailable_lineage(work_package.id, reason)}
+    end)
   end
 
   defp review_suite_result_payload(progress_events, artifacts, work_package_id, {:head, head_sha}) do
