@@ -542,44 +542,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp dashboard_ledger_database(repo) do
-    configured_ledger_database() || live_ledger_database(repo) || Repo.database_path_if_present()
-  end
-
-  defp live_ledger_database(repo) do
-    case repo.query("PRAGMA database_list", []) do
-      {:ok, %{rows: rows}} -> persistent_main_database_path(rows) || configured_ledger_database()
-      {:error, _reason} -> configured_ledger_database()
-      _result -> configured_ledger_database()
-    end
-  rescue
-    _error in [Exqlite.Error, UndefinedFunctionError] -> configured_ledger_database()
-  end
-
-  defp persistent_main_database_path(rows) do
-    Enum.find_value(rows, fn
-      [_seq, "main", path] when is_binary(path) and path != "" -> path
-      _row -> nil
-    end)
-  end
-
-  defp configured_ledger_database do
-    case Application.get_env(:symphony_elixir, :sympp_repo_database) do
-      database when is_binary(database) ->
-        configured_ledger_database_path(database)
-
-      database ->
-        database
-    end
-  end
-
-  defp configured_ledger_database_path(database) do
-    database = String.trim(database)
-
-    cond do
-      database == "" -> nil
-      Repo.filesystem_database_path?(database) -> Path.expand(database)
-      true -> database
-    end
+    Repo.operator_database_path(repo)
   end
 
   defp put_optional_handoff_opt(opts, _key, nil), do: opts
@@ -1765,6 +1728,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp base_work_package_operational_state(%WorkPackage{status: status}, blockers, metadata, missing_readiness, delivery_started) do
     active_blocker_count = blockers |> active_blockers() |> length()
 
+    blocking_or_terminal_operational_state(status, active_blocker_count, metadata) ||
+      delivery_operational_state(status, metadata, missing_readiness, delivery_started)
+  end
+
+  defp blocking_or_terminal_operational_state(status, active_blocker_count, metadata) do
     cond do
       active_blocker_count > 0 ->
         operational_state("blocked", "Blocked", "critical", blocker_detail(active_blocker_count), status)
@@ -1781,6 +1749,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       status in @closed_package_statuses ->
         operational_state(status, status_label(status), "neutral", "Raw lifecycle status is #{status}.", status)
 
+      true ->
+        nil
+    end
+  end
+
+  defp delivery_operational_state(status, metadata, missing_readiness, delivery_started) do
+    validation_operational_state(status, metadata, missing_readiness) ||
+      pickup_operational_state(status, delivery_started)
+  end
+
+  defp validation_operational_state(status, metadata, missing_readiness) do
+    cond do
       status == "merging_into_phase" ->
         operational_state("merging", "Merging", "info", "Package is being merged into its phase.", status)
 
@@ -1795,6 +1775,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       status == "reviewing" or review_activity?(metadata) ->
         operational_state("reviewing", "Reviewing", "info", "Review evidence or lifecycle status indicates review is active.", status)
 
+      true ->
+        nil
+    end
+  end
+
+  defp pickup_operational_state(status, delivery_started) do
+    cond do
       delivery_started ->
         operational_state("in_progress", "In Progress", "info", "Worker, runtime, progress, PR, review, or lifecycle evidence indicates work has started.", status)
 
@@ -1819,19 +1806,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     linked_state = Map.fetch!(card, :operational_state)
     attention_items = planned_slice_attention_items(planned_slice, work_package, linked_state)
 
-    cond do
-      promoted_linked_operational_state?(linked_state) ->
-        operational_state(
-          linked_state.key,
-          linked_state.label,
-          linked_state.tone,
-          "Linked WorkPackage #{work_package.id} is #{linked_state.label}.",
-          planned_slice.status,
-          attention_items
-        )
-
-      true ->
-        linked_idle_planned_slice_operational_state(planned_slice, work_package, attention_items)
+    if promoted_linked_operational_state?(linked_state) do
+      operational_state(
+        linked_state.key,
+        linked_state.label,
+        linked_state.tone,
+        "Linked WorkPackage #{work_package.id} is #{linked_state.label}.",
+        planned_slice.status,
+        attention_items
+      )
+    else
+      linked_idle_planned_slice_operational_state(planned_slice, work_package, attention_items)
     end
   end
 
@@ -2035,23 +2020,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end)
   end
 
-  defp runtime_activity?(runtime) when is_map(runtime) do
+  defp runtime_activity?(runtime) do
     Enum.any?([:active_count, :queued_count, :stopped_count, :failed_count, :completed_count, :terminal_count], &(Map.get(runtime, &1, 0) > 0))
   end
 
-  defp runtime_activity?(_runtime), do: false
-
-  defp metadata_activity?(metadata) when is_map(metadata) do
+  defp metadata_activity?(metadata) do
     Enum.any?([:branch, :pr, :review_progress, :review_package, :review_suite_result], &present_metadata_value?(Map.get(metadata, &1)))
   end
 
-  defp metadata_activity?(_metadata), do: false
-
-  defp review_activity?(metadata) when is_map(metadata) do
+  defp review_activity?(metadata) do
     Enum.any?([:review_progress, :review_package, :review_suite_result], &present_metadata_value?(Map.get(metadata, &1)))
   end
-
-  defp review_activity?(_metadata), do: false
 
   defp present_metadata_value?(nil), do: false
   defp present_metadata_value?(value) when is_map(value), do: map_size(value) > 0
@@ -2060,7 +2039,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp pr_merged?(%{pr: %{"stale" => true}}), do: false
   defp pr_merged?(%{pr: pr}), do: pr_merged_payload?(pr)
-  defp pr_merged?(_metadata), do: false
 
   defp pr_merged_payload?(%{} = pr) do
     merged_value?(map_value(pr, "merged")) or

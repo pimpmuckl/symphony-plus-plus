@@ -42,6 +42,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo do
   end
 
   @doc false
+  @spec operator_database_path(module()) :: String.t() | term() | nil
+  def operator_database_path(repo \\ __MODULE__) do
+    configured_database_path_for_handoff() || live_database_path(repo) || database_path_if_present()
+  end
+
+  @doc false
   @spec child_id(term()) :: term()
   def child_id(database_path), do: {__MODULE__, :database, database_key(database_path)}
 
@@ -164,6 +170,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo do
   end
 
   defp configured_database_value_without_side_effects(database_path), do: database_path
+
+  defp configured_database_path_for_handoff do
+    case Application.get_env(:symphony_elixir, :sympp_repo_database) do
+      database_path when is_binary(database_path) -> configured_binary_database_path_for_handoff(database_path)
+      database_path -> database_path
+    end
+  end
+
+  defp configured_binary_database_path_for_handoff(database_path) do
+    database_path = String.trim(database_path)
+
+    cond do
+      database_path == "" -> nil
+      filesystem_database_path?(database_path) -> Path.expand(database_path)
+      true -> database_path
+    end
+  end
+
+  defp live_database_path(repo) do
+    case repo.query("PRAGMA database_list", []) do
+      {:ok, %{rows: rows}} -> persistent_main_database_path(rows) || configured_database_path_for_handoff()
+      {:error, _reason} -> configured_database_path_for_handoff()
+      _result -> configured_database_path_for_handoff()
+    end
+  rescue
+    _error in [Exqlite.Error, UndefinedFunctionError] -> configured_database_path_for_handoff()
+  end
+
+  defp persistent_main_database_path(rows) do
+    Enum.find_value(rows, fn
+      [_seq, "main", path] when is_binary(path) and path != "" -> path
+      _row -> nil
+    end)
+  end
 
   defp normalize_database_path(database_path) when is_binary(database_path) do
     if filesystem_database_path?(database_path) do

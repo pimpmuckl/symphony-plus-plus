@@ -833,6 +833,19 @@
     animation: board-wire-enter 340ms cubic-bezier(0.16, 1, 0.3, 1) 70ms both;
   }
 
+  @media (prefers-reduced-motion: reduce) {
+    .workstream-board,
+    .workstream-board .jira-lane,
+    .workstream-board .stagger-item,
+    .workstream-board .board-wire-layer,
+    .workstream-board .board-wire-node-layer {
+      animation: none !important;
+      filter: none !important;
+      transform: none !important;
+      will-change: auto;
+    }
+  }
+
   .jira-board-solo {
     grid-template-columns: minmax(0, 1fr);
   }
