@@ -191,9 +191,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     repo.delete_all(SoloSessionEntry)
     repo.delete_all(SoloSession)
     repo.delete_all(AccessGrant)
+    repo.delete_all(PlannedSlice)
     repo.delete_all(WorkPackage)
     repo.delete_all(Phase)
-    repo.delete_all(PlannedSlice)
     repo.delete_all(DecisionLogEntry)
     repo.delete_all(ClarificationQuestion)
     repo.delete_all(WorkRequest)
@@ -2883,6 +2883,100 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
+  test "local operator dashboard exposes active blocking edges", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      work_request =
+        create_work_request!(
+          repo,
+          id: "WR-ACTIVE-BLOCKING-EDGES",
+          status: "ready_for_slicing",
+          repo: "nextide/symphony-plus-plus",
+          base_branch: "main"
+        )
+
+      assert {:ok, planned_slice} =
+               WorkRequestRepository.add_planned_slice(
+                 repo,
+                 work_request.id,
+                 planned_slice_attrs(id: "WRS-ACTIVE-BLOCKING-EDGES")
+               )
+
+      assert {:ok, approved_slice} =
+               WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+      linked_package =
+        create_matching_work_package!(
+          repo,
+          work_request,
+          approved_slice,
+          id: "SYMPP-ACTIVE-BLOCKING-LINKED",
+          status: "planning"
+        )
+
+      assert {:ok, _dispatched_slice} =
+               WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", linked_package.id)
+
+      unlinked_package =
+        create_work_package!(
+          repo,
+          id: "SYMPP-ACTIVE-BLOCKING-UNLINKED",
+          status: "planning"
+        )
+
+      timestamp = ~U[2026-05-20 10:00:00Z]
+
+      append_blocker_event!(repo, linked_package.id, "blocker-linked", true,
+        summary: "Blocked by sk-secret123",
+        body: "Bearer raw-secret-value",
+        created_at: DateTime.add(timestamp, 1, :second)
+      )
+
+      append_blocker_event!(repo, linked_package.id, "blocker-resolved", true,
+        summary: "Temporary blocker",
+        created_at: DateTime.add(timestamp, 2, :second)
+      )
+
+      append_blocker_event!(repo, linked_package.id, "blocker-resolved", false,
+        summary: "Resolved blocker",
+        created_at: DateTime.add(timestamp, 3, :second)
+      )
+
+      append_blocker_event!(repo, unlinked_package.id, "blocker-unlinked", true,
+        summary: "Blocked on review",
+        created_at: DateTime.add(timestamp, 4, :second)
+      )
+
+      payload = json_response(get(local_operator_conn(), "/api/v1/sympp/operator/dashboard"), 200)
+      edges = payload["active_blocking_edges"]
+
+      assert Enum.map(edges, & &1["blocker_id"]) == ["blocker-linked", "blocker-unlinked"]
+      refute Enum.any?(edges, &(&1["blocker_id"] == "blocker-resolved"))
+
+      assert [linked_edge, unlinked_edge] = edges
+      assert linked_edge["from"] == %{"kind" => "slice", "id" => approved_slice.id}
+      assert linked_edge["to"] == %{"kind" => "work_package", "id" => linked_package.id}
+      assert linked_edge["work_request_id"] == work_request.id
+      assert linked_edge["planned_slice_id"] == approved_slice.id
+      assert linked_edge["work_package_id"] == linked_package.id
+      assert linked_edge["summary"] == "[REDACTED]"
+      assert linked_edge["body"] == "[REDACTED]"
+
+      assert unlinked_edge["from"] == %{"kind" => "work_package", "id" => unlinked_package.id}
+      assert unlinked_edge["to"] == %{"kind" => "work_package", "id" => unlinked_package.id}
+      assert unlinked_edge["work_package_id"] == unlinked_package.id
+      refute Map.has_key?(unlinked_edge, "planned_slice_id")
+
+      linked_card =
+        payload["board"]["groups"]["planning"]
+        |> Enum.find(&(&1["id"] == linked_package.id))
+
+      assert linked_card["active_blocker_count"] == 1
+
+      repeated_payload = json_response(get(local_operator_conn(), "/api/v1/sympp/operator/dashboard"), 200)
+      assert Enum.map(repeated_payload["active_blocking_edges"], & &1["id"]) == Enum.map(edges, & &1["id"])
+    end)
+  end
+
   test "local operator config returns runtime csrf and asset paths" do
     with_local_operator_endpoint(fn ->
       payload = json_response(get(local_operator_conn(), "/api/v1/sympp/operator/config"), 200)
@@ -3491,6 +3585,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert {:ok, work_request} = WorkRequestRepository.create(repo, work_request_attrs(overrides))
     work_request
   end
+
+  defp create_work_package!(repo, overrides) do
+    overrides
+    |> WorkPackageFactory.attrs()
+    |> then(&WorkPackageRepository.create(repo, &1))
+    |> case do
+      {:ok, work_package} -> work_package
+      {:error, reason} -> flunk("failed to create WorkPackage: #{inspect(reason)}")
+    end
+  end
+
+  defp create_matching_work_package!(repo, work_request, planned_slice, overrides) do
+    attrs =
+      [
+        kind: planned_slice.work_package_kind,
+        title: planned_slice.title,
+        repo: work_request.repo,
+        base_branch: planned_slice.target_base_branch,
+        branch_pattern: planned_slice.branch_pattern,
+        product_description: work_request.human_description,
+        allowed_file_globs: planned_slice.owned_file_globs,
+        acceptance_criteria: planned_slice.acceptance_criteria
+      ]
+      |> Keyword.merge(overrides)
+
+    create_work_package!(repo, attrs)
+  end
+
+  defp append_blocker_event!(repo, work_package_id, blocker_id, active, overrides) do
+    attrs =
+      [
+        work_package_id: work_package_id,
+        summary: "Blocked",
+        status: if(active, do: "blocked", else: "unblocked"),
+        idempotency_key: "#{blocker_id}-#{active}-#{System.unique_integer([:positive])}",
+        payload: %{type: "blocker", source_tool: blocker_source_tool(active), blocker_id: blocker_id, active: active}
+      ]
+      |> Keyword.merge(overrides)
+      |> Map.new()
+
+    assert {:ok, event} = PlanningRepository.append_progress_event(repo, attrs)
+    event
+  end
+
+  defp blocker_source_tool(true), do: "report_blocker"
+  defp blocker_source_tool(false), do: "resolve_blocker"
 
   defp work_request_attrs(overrides) do
     defaults = %{

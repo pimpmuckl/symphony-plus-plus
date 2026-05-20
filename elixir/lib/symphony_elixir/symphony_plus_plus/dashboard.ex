@@ -55,6 +55,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     safe_read(fn -> build_board(repo) end)
   end
 
+  @spec operator_board(repo()) :: {:ok, map()} | {:error, dashboard_error()}
+  def operator_board(repo) when is_atom(repo) do
+    safe_read(fn -> build_board(repo, active_blocking_edges?: true) end)
+  end
+
   @spec phase_board(repo(), String.t()) :: {:ok, map()} | {:error, dashboard_error()}
   def phase_board(repo, phase_id) when is_atom(repo) and is_binary(phase_id) do
     phase_board(repo, phase_id, [])
@@ -384,25 +389,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   @spec card(repo(), WorkPackage.t()) :: {:ok, map()} | {:error, dashboard_error()}
   def card(repo, %WorkPackage{} = work_package) when is_atom(repo) do
     safe_read(fn ->
-      with {:ok, status_summary} <- PlanningRepository.get_status_summary(repo, work_package.id),
-           {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, work_package.id),
-           {:ok, readiness_collections} <- readiness_collections(repo, work_package),
-           {:ok, agent_runs} <- AgentRunRepository.list_for_work_package(repo, work_package.id) do
-        %{artifacts: artifacts, findings: findings} = readiness_collections
-        blockers = blockers(progress_events)
-        runtime = runtime_summary(agent_runs)
+      with {:ok, context} <- card_context(repo, work_package) do
+        {:ok, context.card}
+      end
+    end)
+  end
 
-        readiness_context =
-          readiness_context(
-            work_package,
-            status_summary.plan_nodes,
-            progress_events,
-            artifacts,
-            findings
-          )
+  defp card_context(repo, %WorkPackage{} = work_package) do
+    with {:ok, status_summary} <- PlanningRepository.get_status_summary(repo, work_package.id),
+         {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, work_package.id),
+         {:ok, readiness_collections} <- readiness_collections(repo, work_package),
+         {:ok, agent_runs} <- AgentRunRepository.list_for_work_package(repo, work_package.id) do
+      %{artifacts: artifacts, findings: findings} = readiness_collections
+      blockers = blockers(progress_events)
+      runtime = runtime_summary(agent_runs)
 
-        {:ok,
-         %{
+      readiness_context =
+        readiness_context(
+          work_package,
+          status_summary.plan_nodes,
+          progress_events,
+          artifacts,
+          findings
+        )
+
+      {:ok,
+       %{
+         work_package: work_package,
+         blockers: blockers,
+         card: %{
            id: work_package.id,
            title: redacted_text(work_package.title),
            kind: work_package.kind,
@@ -423,9 +438,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            alert_indicators: alert_indicators(readiness_context, blockers, runtime),
            inserted_at: timestamp(work_package.inserted_at),
            updated_at: timestamp(work_package.updated_at)
-         }}
-      end
-    end)
+         }
+       }}
+    end
   end
 
   defp readiness_collections(repo, %WorkPackage{} = work_package) do
@@ -600,15 +615,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
-  defp build_board(repo) do
+  defp build_board(repo, opts \\ []) do
     with {:ok, work_packages} <- WorkPackageRepository.list(repo),
-         {:ok, cards} <- cards_for_packages(repo, work_packages) do
-      {:ok,
-       %{
-         groups: group_cards(cards),
-         statuses: WorkPackage.statuses(),
-         total_count: length(cards)
-       }}
+         {:ok, contexts} <- card_contexts_for_packages(repo, work_packages) do
+      cards = Enum.map(contexts, & &1.card)
+
+      board = %{
+        groups: group_cards(cards),
+        statuses: WorkPackage.statuses(),
+        total_count: length(cards)
+      }
+
+      maybe_put_active_blocking_edges(repo, board, contexts, opts)
+    end
+  end
+
+  defp maybe_put_active_blocking_edges(repo, board, contexts, opts) do
+    if Keyword.get(opts, :active_blocking_edges?, false) do
+      put_active_blocking_edges(repo, board, contexts)
+    else
+      {:ok, board}
+    end
+  end
+
+  defp put_active_blocking_edges(repo, board, contexts) do
+    with {:ok, active_blocking_edges} <- active_blocking_edges_from_card_contexts(repo, contexts) do
+      {:ok, Map.put(board, :active_blocking_edges, active_blocking_edges)}
     end
   end
 
@@ -738,9 +770,111 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp cards_for_packages(repo, work_packages) do
+    with {:ok, contexts} <- card_contexts_for_packages(repo, work_packages) do
+      {:ok, Enum.map(contexts, & &1.card)}
+    end
+  end
+
+  defp card_contexts_for_packages(repo, work_packages) do
     work_packages
-    |> Enum.map(&card(repo, &1))
+    |> Enum.map(&card_context(repo, &1))
     |> collect_or_error()
+  end
+
+  defp active_blocking_edges_from_card_contexts(_repo, []), do: {:ok, []}
+
+  defp active_blocking_edges_from_card_contexts(repo, contexts) do
+    work_package_ids = Enum.map(contexts, & &1.work_package.id)
+
+    with {:ok, planned_slices_by_work_package_id} <- linked_planned_slices_by_work_package_id(repo, work_package_ids) do
+      edges =
+        contexts
+        |> Enum.flat_map(fn %{work_package: work_package, blockers: blockers} ->
+          linked_planned_slice = Map.get(planned_slices_by_work_package_id, work_package.id)
+
+          blockers
+          |> Enum.filter(& &1.active)
+          |> Enum.map(&active_blocking_edge(&1, work_package, linked_planned_slice))
+        end)
+        |> sort_active_blocking_edges()
+
+      {:ok, edges}
+    end
+  end
+
+  defp linked_planned_slices_by_work_package_id(_repo, []), do: {:ok, %{}}
+
+  defp linked_planned_slices_by_work_package_id(repo, work_package_ids) do
+    planned_slices =
+      repo.all(
+        from(planned_slice in PlannedSlice,
+          where: planned_slice.work_package_id in ^work_package_ids,
+          order_by: [asc: planned_slice.work_package_id, asc: planned_slice.sequence, asc: planned_slice.id]
+        )
+      )
+
+    planned_slices_by_work_package_id =
+      planned_slices
+      |> Enum.group_by(& &1.work_package_id)
+      |> Map.new(fn
+        {work_package_id, [planned_slice]} ->
+          {work_package_id, planned_slice}
+
+        {work_package_id, _duplicates} ->
+          {work_package_id, nil}
+      end)
+
+    {:ok, planned_slices_by_work_package_id}
+  end
+
+  defp active_blocking_edge(blocker, %WorkPackage{} = work_package, %PlannedSlice{} = planned_slice) do
+    from = %{kind: "slice", id: planned_slice.id}
+
+    blocker
+    |> build_active_blocking_edge(work_package, from)
+    |> Map.put(:work_request_id, planned_slice.work_request_id)
+    |> Map.put(:planned_slice_id, planned_slice.id)
+  end
+
+  defp active_blocking_edge(blocker, %WorkPackage{} = work_package, _linked_planned_slice) do
+    build_active_blocking_edge(blocker, work_package, %{kind: "work_package", id: work_package.id})
+  end
+
+  defp build_active_blocking_edge(blocker, %WorkPackage{} = work_package, from) do
+    to = %{kind: "work_package", id: work_package.id}
+
+    %{
+      id: active_blocking_edge_id(blocker.id, from, to),
+      blocker_id: blocker.id,
+      from: from,
+      to: to,
+      summary: blocker.summary,
+      body: blocker.body,
+      updated_at: blocker.updated_at,
+      work_package_id: work_package.id
+    }
+  end
+
+  defp active_blocking_edge_id(blocker_id, from, to) do
+    material = [blocker_id, from.kind, from.id, to.kind, to.id]
+
+    "active_blocking_edge_" <> Base.url_encode64(:crypto.hash(:sha256, Enum.join(material, ":")), padding: false)
+  end
+
+  defp sort_active_blocking_edges(edges) do
+    Enum.sort_by(edges, fn edge ->
+      from = Map.fetch!(edge, :from)
+      to = Map.fetch!(edge, :to)
+
+      {
+        edge.updated_at || "",
+        edge.id || "",
+        from.kind || "",
+        from.id || "",
+        to.kind || "",
+        to.id || ""
+      }
+    end)
   end
 
   defp work_request_cards(repo, work_requests) do
