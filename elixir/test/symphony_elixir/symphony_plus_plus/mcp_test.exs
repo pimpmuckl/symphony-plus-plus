@@ -8363,6 +8363,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert repo.get_by(Artifact, work_package_id: child.id, kind: "phase_merge") == nil
   end
 
+  test "read_phase_board validates required phase_id before dashboard access", %{repo: repo} do
+    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-STUB-ARGS", kind: "mcp"))
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])
+
+    assert {:ok, architect_assignment} =
+             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
+
+    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "phase-board-missing-args",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_phase_board", "arguments" => %{}}
+        },
+        repo: repo,
+        session: session
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_602
+    assert get_in(response, ["error", "data", "reason"]) == "missing_phase_id"
+  end
+
   test "remaining Phase 7 architect stubs return explicit not-yet-implemented errors", %{repo: repo} do
     {_package, session} =
       create_architect_session(repo, "SYMPP-ARCHITECT-PHASE7", [
@@ -8443,31 +8468,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(stale_mint_response, ["error", "code"]) == -32_003
     assert get_in(stale_mint_response, ["error", "data", "reason"]) == "outside_session_scope"
-  end
-
-  test "Phase 7 architect stubs validate required arguments before not-implemented", %{repo: repo} do
-    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-STUB-ARGS", kind: "mcp"))
-    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])
-
-    assert {:ok, architect_assignment} =
-             AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
-
-    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
-
-    response =
-      MCPHarness.request(
-        %{
-          "jsonrpc" => "2.0",
-          "id" => "phase-board-missing-args",
-          "method" => "tools/call",
-          "params" => %{"name" => "read_phase_board", "arguments" => %{}}
-        },
-        repo: repo,
-        session: session
-      )
-
-    assert get_in(response, ["error", "code"]) == -32_602
-    assert get_in(response, ["error", "data", "reason"]) == "missing_phase_id"
   end
 
   test "single-item batch preserves claim_work_key session for later requests", %{repo: repo} do
