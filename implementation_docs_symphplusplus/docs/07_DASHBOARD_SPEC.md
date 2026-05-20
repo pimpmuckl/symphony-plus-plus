@@ -115,6 +115,34 @@ Scope guard status
 Plan completion
 ```
 
+WorkPackage card payloads preserve the raw lifecycle `status` for backend
+control and board grouping. They also include a read-only `operational_state`
+projection for human delivery truth:
+
+```text
+key
+label
+tone
+reason
+raw_status
+attention_items
+```
+
+The projection is derived from raw package status, active blockers, worker or
+runtime activity, progress events, PR/review/readiness evidence, and merge
+metadata. Active blockers override otherwise healthy-looking cards to blocked
+operational truth and add an attention item. Contradictions, including merged
+PR metadata while a package remains open or merge-ready, ready packages missing
+readiness evidence, or `ready_for_worker` packages with delivery activity, are
+reported as `attention_items` instead of changing raw lifecycle status.
+
+Planned-slice payloads include `operational_state` only when dispatch linkage is
+included. Approved slices without linked delivery activity can project as
+`ready_for_worker`; linked slices promote the linked WorkPackage operational
+truth once the package has started, is reviewing, is merge-ready, is merged, is
+blocked, or has active runtime evidence. If a slice still appears idle while
+the linked package has started, the slice projection includes an attention item.
+
 Local operator cockpit stream rail:
 
 - Local operator mode renders a compact Projects / Work Streams rail above the
