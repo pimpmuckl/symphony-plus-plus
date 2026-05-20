@@ -3,6 +3,7 @@ param(
   [string]$MarketplaceName = "*",
   [string]$RepoRoot,
   [switch]$EnableMcpCompanion,
+  [switch]$SkipProcessScan,
   [switch]$SelfTest,
   [switch]$Doctor,
   [switch]$Json
@@ -475,6 +476,17 @@ function Invoke-SelfTest {
     throw "Resolve-OptionalFullPath did not expand a leading home-directory tilde."
   }
 
+  $defaultCodexHome = Join-Path $HOME ".codex"
+  if (-not (Test-DefaultCodexHome $defaultCodexHome)) {
+    throw "Test-DefaultCodexHome did not recognize the absolute default Codex home."
+  }
+  if (-not (Test-DefaultCodexHome "~/.codex")) {
+    throw "Test-DefaultCodexHome did not recognize the tilde default Codex home."
+  }
+  if (Test-DefaultCodexHome (Join-Path $HOME ".codex-sympp-test")) {
+    throw "Test-DefaultCodexHome treated a sibling path as the default Codex home."
+  }
+
   if (Test-PathComparisonCaseInsensitive) {
     if (-not (Test-ComparablePathEqual "SymphonyCodexHome" "symphonycodexhome")) {
       throw "Test-ComparablePathEqual should ignore case on case-insensitive platforms."
@@ -850,6 +862,64 @@ enabled = true
         }
       } elseif (-not [string]::IsNullOrWhiteSpace([string]$result.backup_path)) {
         throw "Set-PluginEnabledInConfig unexpectedly created a backup for $($case.Name)."
+      }
+    }
+
+    $unsupportedMutationCases = @(
+      @{
+        Name = "nested_inline_no_enabled"
+        Initial = @'
+[plugins]
+"symphony-plus-plus-mcp@jonat-local" = { note = { enabled = false } }
+'@
+      },
+      @{
+        Name = "bare_key_suffix_no_enabled"
+        Initial = @'
+[plugins]
+"symphony-plus-plus-mcp@jonat-local" = { noteenabled = false }
+'@
+      }
+    )
+
+    foreach ($case in $unsupportedMutationCases) {
+      $caseRoot = Join-Path $mutationRoot $case.Name
+      $configPath = Join-Path $caseRoot "config.toml"
+      [void](New-Item -ItemType Directory -Path $caseRoot -Force)
+      [System.IO.File]::WriteAllText($configPath, [string]$case.Initial, (New-StrictUtf8NoBomEncoding))
+
+      $summary = Get-PluginConfigSummary $configPath "jonat-local"
+      $matchingEntries = @(
+        $summary.symphony_plugin_entries |
+          Where-Object { $_.plugin_name -eq "symphony-plus-plus-mcp" -and $_.marketplace_name -eq "jonat-local" }
+      )
+      if ($matchingEntries.Count -ne 1) {
+        throw "Get-PluginConfigSummary did not retain one unsupported companion entry for $($case.Name)."
+      }
+      if ($null -ne $matchingEntries[0].enabled -or $null -ne $summary.symphony_mcp_companion_plugin_enabled) {
+        throw "Get-PluginConfigSummary treated unsupported inline table $($case.Name) as enabled or disabled."
+      }
+
+      $enableThrew = $false
+      try {
+        [void](Set-PluginEnabledInConfig $configPath $pluginKey)
+      } catch {
+        $enableThrew = $true
+        if ($_.Exception.Message -notmatch "Target plugin inline table contains no supported enabled = true/false entry") {
+          throw "Set-PluginEnabledInConfig returned the wrong unsupported inline table error for $($case.Name): $($_.Exception.Message)"
+        }
+      }
+
+      if (-not $enableThrew) {
+        throw "Set-PluginEnabledInConfig did not reject unsupported inline table $($case.Name)."
+      }
+
+      if ([System.IO.File]::ReadAllText($configPath) -cne [string]$case.Initial) {
+        throw "Set-PluginEnabledInConfig mutated unsupported inline table $($case.Name)."
+      }
+
+      if (@(Get-ChildItem -LiteralPath $caseRoot -Filter "config.toml.sympp-backup-*" -Force -ErrorAction SilentlyContinue).Count -ne 0) {
+        throw "Set-PluginEnabledInConfig created a backup for rejected unsupported inline table $($case.Name)."
       }
     }
   } finally {
@@ -2831,7 +2901,9 @@ $processScanScope = if ($repoRootFilter) {
   "skipped_no_repo_root_scope"
 }
 $processScanSupported = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
-$processScanNote = if (-not $processScanSupported) {
+$processScanNote = if ($SkipProcessScan) {
+  "Skipped live process scan because -SkipProcessScan was supplied."
+} elseif (-not $processScanSupported) {
   "Win32_Process process inventory is only available on Windows."
 } elseif ($cacheRepoRootFilters.Count -gt 1 -and $processRepoRootFilters.Count -eq 0) {
   "Skipped scoped live process scan because selected installed caches point at multiple source roots; pass -RepoRoot to audit one checkout."
@@ -2840,7 +2912,7 @@ $processScanNote = if (-not $processScanSupported) {
 } else {
   $null
 }
-$shouldScanProcesses = $processScanSupported -and $processRepoRootFilters.Count -gt 0
+$shouldScanProcesses = $null -eq $processScanNote -and $processScanSupported -and $processRepoRootFilters.Count -gt 0
 $allProcesses = if ($shouldScanProcesses) {
   @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, CommandLine, CreationDate)
 } else {
@@ -2927,6 +2999,7 @@ $summary = [pscustomobject]@{
   marketplace_name = $MarketplaceName
   repo_root_filter = $RepoRoot
   process_scan_supported = $processScanSupported
+  process_scan_performed = $shouldScanProcesses
   process_scan_scope = $processScanScope
   process_repo_root_filters = @($processRepoRootFilters)
   process_scan_note = $processScanNote

@@ -728,80 +728,69 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   test "enable command refuses unsupported inline-table enabled shapes without config mutation" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
 
-    cases = [
-      {"nested_inline",
-       """
-       [plugins]
-       "symphony-plus-plus-mcp@jonat-local" = { note = { enabled = false } }
-       """},
-      {"bare_key_suffix",
-       """
-       [plugins]
-       "symphony-plus-plus-mcp@jonat-local" = { noteenabled = false }
-       """}
-    ]
+    config = """
+    [plugins]
+    "symphony-plus-plus-mcp@jonat-local" = { note = { enabled = false } }
+    """
 
     if powershell do
-      for {case_name, config} <- cases do
-        temp_codex_home =
-          Path.join(System.tmp_dir!(), "sympp-plugin-enable-unsupported-inline-#{case_name}-#{System.unique_integer([:positive])}")
+      temp_codex_home = unique_temp_path("sympp-plugin-enable-unsupported-inline")
 
-        try do
-          write_activation_cache(temp_codex_home, "jonat-local")
-          File.mkdir_p!(temp_codex_home)
-          File.write!(Path.join(temp_codex_home, "config.toml"), config)
+      try do
+        write_activation_cache(temp_codex_home, "jonat-local")
+        File.mkdir_p!(temp_codex_home)
+        File.write!(Path.join(temp_codex_home, "config.toml"), config)
 
-          {doctor_output, doctor_status} =
-            System.cmd(
-              powershell,
-              [
-                "-NoProfile",
-                "-File",
-                @plugin_lifecycle_diagnostic_path,
-                "-CodexHome",
-                temp_codex_home,
-                "-MarketplaceName",
-                "jonat-local",
-                "-Json"
-              ],
-              stderr_to_stdout: true
-            )
+        {doctor_output, doctor_status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              @plugin_lifecycle_diagnostic_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              "jonat-local",
+              "-Json"
+            ],
+            stderr_to_stdout: true
+          )
 
-          assert doctor_status == 0, doctor_output
-          readiness = doctor_output |> Jason.decode!() |> Map.fetch!("readiness")
-          assert readiness["overall_status"] == "mcp_companion_config_entry_unsupported"
-          assert readiness["workrequest_mcp"]["status"] == "companion_config_entry_unsupported"
+        assert doctor_status == 0, doctor_output
+        readiness = doctor_output |> Jason.decode!() |> Map.fetch!("readiness")
+        assert readiness["overall_status"] == "mcp_companion_config_entry_unsupported"
+        assert readiness["workrequest_mcp"]["status"] == "companion_config_entry_unsupported"
 
-          assert Enum.any?(
-                   readiness["next_actions"],
-                   &(&1["code"] == "rewrite_mcp_companion_config_entry")
-                 )
+        assert Enum.any?(
+                 readiness["next_actions"],
+                 &(&1["code"] == "rewrite_mcp_companion_config_entry")
+               )
 
-          refute Enum.any?(readiness["next_actions"], &(&1["code"] == "enable_mcp_companion"))
+        refute Enum.any?(readiness["next_actions"], &(&1["code"] == "enable_mcp_companion"))
 
-          {output, status} =
-            System.cmd(
-              powershell,
-              [
-                "-NoProfile",
-                "-File",
-                @plugin_lifecycle_diagnostic_path,
-                "-CodexHome",
-                temp_codex_home,
-                "-MarketplaceName",
-                "jonat-local",
-                "-EnableMcpCompanion"
-              ],
-              stderr_to_stdout: true
-            )
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-File",
+              @plugin_lifecycle_diagnostic_path,
+              "-CodexHome",
+              temp_codex_home,
+              "-MarketplaceName",
+              "jonat-local",
+              "-EnableMcpCompanion"
+            ],
+            stderr_to_stdout: true
+          )
 
-          assert status != 0
-          assert output =~ "Target plugin inline table contains no supported enabled = true/false entry"
-          assert normalize_newlines(File.read!(Path.join(temp_codex_home, "config.toml"))) == normalize_newlines(config)
-          assert config_backups(temp_codex_home) == []
-        after
-          File.rm_rf(temp_codex_home)
-        end
+        assert status != 0
+        assert output =~ "Target plugin inline table contains no supported enabled = true/false entry"
+        assert normalize_newlines(File.read!(Path.join(temp_codex_home, "config.toml"))) == normalize_newlines(config)
+        assert config_backups(temp_codex_home) == []
+      after
+        File.rm_rf(temp_codex_home)
       end
     end
   end
@@ -880,7 +869,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
 
     if powershell do
-      for default_codex_home <- [Path.join(System.user_home!(), ".codex"), "~/.codex"] do
+      fake_home = unique_temp_path("sympp-plugin-enable-default-home")
+      fake_default_codex_home = Path.join(fake_home, ".codex")
+      fake_home_env = [{"HOME", fake_home}, {"USERPROFILE", fake_home}, {"HOMEDRIVE", ""}, {"HOMEPATH", ""}]
+
+      try do
+        File.mkdir_p!(fake_default_codex_home)
+
         {output, status} =
           System.cmd(
             powershell,
@@ -889,16 +884,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               "-File",
               @plugin_lifecycle_diagnostic_path,
               "-CodexHome",
-              default_codex_home,
+              fake_default_codex_home,
               "-MarketplaceName",
               "jonat-local",
               "-EnableMcpCompanion"
             ],
-            stderr_to_stdout: true
+            stderr_to_stdout: true,
+            env: fake_home_env
           )
 
         assert status != 0
         assert output =~ "Refusing to enable symphony-plus-plus-mcp in the default Codex home"
+      after
+        File.rm_rf(fake_home)
       end
     end
   end
@@ -1652,6 +1650,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
             temp_codex_home,
             "-MarketplaceName",
             "jonat-local",
+            "-SkipProcessScan",
             "-Json"
           ],
           stderr_to_stdout: true,
@@ -1836,6 +1835,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true,
@@ -1911,6 +1911,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true,
@@ -2172,6 +2173,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         assert Enum.any?(config_entries, &(&1["plugin_name"] == "symphony-plus-plus-mcp" and &1["enabled"] == true))
 
         assert report["process_scan_scope"] == "installed_cache_source_root_hints"
+        assert report["process_scan_performed"] == true
         assert [repo_filter] = report["process_repo_root_filters"]
         assert String.replace(repo_filter, "\\", "/") == "c:/sympp/repo-one"
         assert report["live_process_counts"]["erl_sympp_mcp"] == 0
@@ -2249,6 +2251,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true
@@ -2259,8 +2262,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         report = Jason.decode!(output)
         caches = Map.fetch!(report, "installed_cache")
         assert report["process_scan_scope"] == "installed_cache_source_root_hints"
+        assert report["process_scan_performed"] == false
+        assert report["process_scan_note"] =~ "-SkipProcessScan"
         assert [repo_filter] = report["process_repo_root_filters"]
         assert String.replace(repo_filter, "\\", "/") == "c:/sympp/repo-one"
+        assert report["live_process_counts"]["erl_sympp_mcp"] == 0
 
         assert Enum.any?(
                  caches,
@@ -2534,6 +2540,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true
@@ -2614,6 +2621,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true
@@ -2819,6 +2827,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true
@@ -2886,6 +2895,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true
@@ -2998,6 +3008,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true
