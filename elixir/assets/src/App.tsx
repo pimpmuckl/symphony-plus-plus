@@ -48,6 +48,7 @@ import type {
   DecisionOption,
   DecisionPrompt,
   GuidanceRequest,
+  PackageAlertIndicator,
   PlannedSlice,
   SoloSession,
   SoloSessionDetailPayload,
@@ -76,6 +77,7 @@ const DASHBOARD_DEBUG_ANIMATIONS_KEY = "symphony-plus-plus.dashboard.debug-anima
 const ALIGNED_ROW_MIN_HEIGHT = 112;
 const BOARD_WIRE_TRACK_CLEARANCE = 40;
 const DASHBOARD_POLL_INTERVAL_MS = 7000;
+const LOCAL_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 const TOP_PANEL_ORDER: TopPanelKey[] = ["guidance", "blockers", "finished"];
 const TOP_PANEL_RESIZE_MS = 210;
 const TOP_PANEL_SLIDE_MS = 360;
@@ -453,7 +455,7 @@ export default function App() {
     return (
       <main className="flex min-h-screen items-center justify-center">
         <div className="flex items-center gap-3 rounded-lg border bg-card px-5 py-4 text-sm text-muted-foreground shadow-sm">
-          <Loader2 className="h-4 w-4 animate-spin" />
+          <Loader2 className="size-4 animate-spin" />
           Loading Symphony++
         </div>
       </main>
@@ -466,7 +468,7 @@ export default function App() {
         <header className="dashboard-header-glass sticky top-0 z-20">
           <div className="mx-auto flex max-w-[1500px] flex-col gap-4 px-4 py-4 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
             <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border bg-card shadow-sm motion-pop">
+              <div className="flex size-10 items-center justify-center overflow-hidden rounded-lg border bg-card shadow-sm motion-pop">
                 <img src={DASHBOARD_LOGO_URL} alt="Symphony++" className="h-full w-full scale-[1.34] object-contain" />
               </div>
               <div>
@@ -480,7 +482,7 @@ export default function App() {
               <LiveLedgerBadge error={error} databasePath={dashboard?.ledger?.database} />
               <ThemeToggle theme={theme} onToggle={toggleTheme} />
               <Button variant="outline" size="sm" onClick={() => void loadDashboard()} disabled={refreshing} className="button-lift">
-                {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                {refreshing ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                 Refresh
               </Button>
               <NewRequestDialog
@@ -501,7 +503,7 @@ export default function App() {
           {error ? (
             <Card className="dashboard-glass-surface border-rose-200 bg-rose-50 motion-card dark:border-rose-700/70 dark:bg-rose-950/45">
               <CardContent className="flex items-center gap-3 p-4 text-sm text-rose-800 dark:text-rose-200">
-                <AlertCircle className="h-4 w-4" />
+                <AlertCircle className="size-4" />
                 {error}
               </CardContent>
             </Card>
@@ -1250,7 +1252,7 @@ function StatusRail({
           panel="guidance"
           title="Human Guidance Needed"
           value={guidanceItems.length}
-          icon={<MessageSquareText className="h-6 w-6" />}
+          icon={<MessageSquareText className="size-6" />}
           tone="violet"
           openPanel={openPanel}
           onToggle={setOpenPanel}
@@ -1260,7 +1262,7 @@ function StatusRail({
           panel="blockers"
           title="Active Blockers"
           value={blockerItems.length}
-          icon={<AlertTriangle className="h-6 w-6" />}
+          icon={<AlertTriangle className="size-6" />}
           tone="amber"
           openPanel={openPanel}
           onToggle={setOpenPanel}
@@ -1270,7 +1272,7 @@ function StatusRail({
           panel="finished"
           title="Finished"
           value={finishedHighlights.length}
-          icon={<CheckCircle2 className="h-6 w-6" />}
+          icon={<CheckCircle2 className="size-6" />}
           tone="emerald"
           openPanel={openPanel}
           onToggle={setOpenPanel}
@@ -1518,7 +1520,7 @@ function StatusTile({
       aria-expanded={open}
     >
       <div className="flex items-center gap-4">
-        <div className={cn("flex h-12 w-12 items-center justify-center rounded-full border", tones[tone].icon)}>{icon}</div>
+        <div className={cn("flex size-12 items-center justify-center rounded-full border", tones[tone].icon)}>{icon}</div>
         <div>
           <p className="text-base font-semibold">{title}</p>
           <p className={cn("mt-2 text-3xl font-semibold", tones[tone].value)}>
@@ -1528,8 +1530,8 @@ function StatusTile({
       </div>
       <Tooltip>
         <TooltipTrigger asChild>
-          <span className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors group-hover:bg-muted group-hover:text-foreground">
-            <ChevronDown className={cn("h-4 w-4 transition-transform duration-200", open && "rotate-180")} />
+          <span className="flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors group-hover:bg-muted group-hover:text-foreground">
+            <ChevronDown className={cn("size-4 transition-transform duration-200", open && "rotate-180")} />
           </span>
         </TooltipTrigger>
         <TooltipContent>{open ? "Collapse" : "Open"}</TooltipContent>
@@ -1556,10 +1558,10 @@ function UpdateSimulationControls({ updateAnimations }: { updateAnimations: Dash
     icon: React.ReactNode;
     tooltip: string;
   }> = [
-    { kind: "guidance", label: "G", icon: <MessageSquareText className="h-3.5 w-3.5" />, tooltip: "Simulate new human guidance" },
-    { kind: "blocker", label: "B", icon: <AlertTriangle className="h-3.5 w-3.5" />, tooltip: "Simulate a fresh blocker" },
-    { kind: "finished", label: "F", icon: <CheckCircle2 className="h-3.5 w-3.5" />, tooltip: "Simulate finished work" },
-    { kind: "changed", label: "U", icon: <RefreshCw className="h-3.5 w-3.5" />, tooltip: "Simulate a card update" },
+    { kind: "guidance", label: "G", icon: <MessageSquareText className="size-3.5" />, tooltip: "Simulate new human guidance" },
+    { kind: "blocker", label: "B", icon: <AlertTriangle className="size-3.5" />, tooltip: "Simulate a fresh blocker" },
+    { kind: "finished", label: "F", icon: <CheckCircle2 className="size-3.5" />, tooltip: "Simulate finished work" },
+    { kind: "changed", label: "U", icon: <RefreshCw className="size-3.5" />, tooltip: "Simulate a card update" },
   ];
 
   return (
@@ -1633,8 +1635,8 @@ function GuidancePreviewCard({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-violet-50 text-violet-700 dark:bg-violet-950/70 dark:text-violet-200">
-              <Route className="h-4 w-4" />
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-violet-50 text-violet-700 dark:bg-violet-950/70 dark:text-violet-200">
+              <Route className="size-4" />
             </div>
             <p className="truncate text-sm font-semibold">{item.repo}</p>
             <Badge variant="secondary">{item.source === "guidance" ? "Package" : "Request"}</Badge>
@@ -1690,7 +1692,7 @@ function BlockerPreviewCard({
       </div>
       <p className="mt-4 line-clamp-3 text-sm text-muted-foreground">{item.detail}</p>
       <div className="mt-4 flex items-center gap-2 text-xs text-amber-800 dark:text-amber-200">
-        <AlertTriangle className="h-4 w-4" />
+        <AlertTriangle className="size-4" />
         {item.blockerCount} active blocker{item.blockerCount === 1 ? "" : "s"}
       </div>
     </div>
@@ -1770,7 +1772,7 @@ function FinishedHighlightCard({
       {...interactiveCardProps(onSelectCard)}
     >
       <div className="flex min-w-0 items-start gap-2">
-        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+        <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600" />
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold">{item.title}</p>
           <p className="mt-1 truncate text-xs text-muted-foreground">{item.repo}</p>
@@ -1780,7 +1782,7 @@ function FinishedHighlightCard({
         <AnimatedBadge label={formatStatus(item.status)} variant="success" />
         {item.at ? (
           <span className="flex items-center gap-1 text-xs text-muted-foreground">
-            <Clock3 className="h-3.5 w-3.5" />
+            <Clock3 className="size-3.5" />
             {formatDate(item.at)}
           </span>
         ) : null}
@@ -1828,13 +1830,13 @@ function RepoWorkstream({
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="flex min-w-0 items-center gap-3">
               <CollapsibleTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" aria-label={`${open ? "Collapse" : "Open"} ${repo.repo}`}>
-                  <ChevronRight className={cn("h-4 w-4 transition-transform duration-200", open && "rotate-90")} />
+                <Button variant="ghost" size="icon" className="size-8 shrink-0" aria-label={`${open ? "Collapse" : "Open"} ${repo.repo}`}>
+                  <ChevronRight className={cn("size-4 transition-transform duration-200", open && "rotate-90")} />
                 </Button>
               </CollapsibleTrigger>
               <div className="min-w-0">
                 <CardTitle className="flex items-center gap-2">
-                  <GitBranch className="h-4 w-4 text-primary" />
+                  <GitBranch className="size-4 text-primary" />
                   <span className="truncate">{repo.repo}</span>
                 </CardTitle>
                 <p className="mt-1 truncate text-sm text-muted-foreground">{repo.baseBranches.join(", ") || "main"}</p>
@@ -1930,13 +1932,13 @@ function ThemeToggle({ theme, onToggle }: { theme: DashboardTheme; onToggle: () 
         >
           <Sun
             className={cn(
-              "absolute h-4 w-4 transition-all duration-200",
+              "absolute size-4 transition-all duration-200",
               dark ? "rotate-45 scale-0 opacity-0" : "rotate-0 scale-100 opacity-100",
             )}
           />
           <Moon
             className={cn(
-              "absolute h-4 w-4 transition-all duration-200",
+              "absolute size-4 transition-all duration-200",
               dark ? "rotate-0 scale-100 opacity-100" : "-rotate-45 scale-0 opacity-0",
             )}
           />
@@ -2480,7 +2482,7 @@ function FeatureLaneRow({
 function LaneGroupLabel({ label }: { label: string }) {
   return (
     <div className="flex items-center gap-2 px-1 pt-1 text-xs font-medium text-muted-foreground">
-      <Route className="h-3.5 w-3.5" />
+      <Route className="size-3.5" />
       {label}
     </div>
   );
@@ -2489,9 +2491,12 @@ function LaneGroupLabel({ label }: { label: string }) {
 function BoardWireLayer({ paths, width, height }: { paths: BoardWirePath[]; width: number; height: number }) {
   const layerId = useId().replace(/:/g, "");
   if (paths.length === 0 || width <= 0 || height <= 0) return null;
-  const maskedPaths = paths
-    .map((wire, index) => ({ wire, maskId: `${layerId}-board-wire-mask-${index}` }))
-    .filter(({ wire }) => wire.hiddenRects.length > 0);
+  const maskedPaths = paths.reduce<Array<{ wire: BoardWirePath; maskId: string }>>((result, wire, index) => {
+    if (wire.hiddenRects.length > 0) {
+      result.push({ wire, maskId: `${layerId}-board-wire-mask-${index}` });
+    }
+    return result;
+  }, []);
 
   return (
     <>
@@ -2762,8 +2767,7 @@ function applyBoardWireAnchorSlots(wires: MeasuredBoardWire[]) {
 
   groupedWires(next, (wire) => wire.from).forEach((group) => {
     if (group.length <= 1) return;
-    [...group]
-      .sort((left, right) => left.targetY - right.targetY)
+    sortedCopy(group, (left, right) => left.targetY - right.targetY)
       .forEach((wire, index) => {
         wire.sourceY = edgeSlotY(wire.sourceRect, index, group.length);
       });
@@ -2771,8 +2775,7 @@ function applyBoardWireAnchorSlots(wires: MeasuredBoardWire[]) {
 
   groupedWires(next, (wire) => wire.to).forEach((group) => {
     if (group.length <= 1) return;
-    [...group]
-      .sort((left, right) => left.sourceY - right.sourceY)
+    sortedCopy(group, (left, right) => left.sourceY - right.sourceY)
       .forEach((wire, index) => {
         wire.targetY = edgeSlotY(wire.targetRect, index, group.length);
       });
@@ -2810,7 +2813,7 @@ function assignBoardWireTracks(wires: MeasuredBoardWire[], lanes: Array<{ node: 
 
   groups.forEach((group) => {
     const tracks: number[] = [];
-    const sorted = [...group].sort((left, right) => {
+    const sorted = sortedCopy(group, (left, right) => {
       const leftSpan = boardWireVerticalSpan(left);
       const rightSpan = boardWireVerticalSpan(right);
       if (leftSpan.start !== rightSpan.start) return leftSpan.start - rightSpan.start;
@@ -2845,8 +2848,7 @@ function reorderSpreadTracks(wires: MeasuredBoardWire[], lanes: Array<{ node: HT
   if (wires.length <= 1) return;
 
   const trackCount = wires.length;
-  const sorted = [...wires]
-    .sort((left, right) => {
+  const sorted = sortedCopy(wires, (left, right) => {
       if (left.targetY !== right.targetY) return left.targetY - right.targetY;
       return left.sourceY - right.sourceY;
     });
@@ -3003,7 +3005,7 @@ function reorderSameSourceFanoutTracks(wires: MeasuredBoardWire[], lanes: Array<
   groupedWires(wires, (wire) => wire.from).forEach((group) => {
     if (group.length <= 1) return;
 
-    const indices = [...new Set(group.map((wire) => wire.trackIndex))].sort((left, right) => left - right);
+    const indices = sortedCopy([...new Set(group.map((wire) => wire.trackIndex))], (left, right) => left - right);
     if (indices.length <= 1) return;
     const sample = group[0];
 
@@ -3012,8 +3014,14 @@ function reorderSameSourceFanoutTracks(wires: MeasuredBoardWire[], lanes: Array<
       const leftToRight = Array.from({ length: trackCount }, (_, index) => index);
       const rightToLeft = [...leftToRight].reverse();
       const forward = sample.targetLane >= sample.sourceLane;
-      const aboveSource = [...group].filter((wire) => wire.targetY < wire.sourceY).sort((left, right) => left.targetY - right.targetY);
-      const belowSource = [...group].filter((wire) => wire.targetY >= wire.sourceY).sort((left, right) => left.targetY - right.targetY);
+      const aboveSource = sortedCopy(
+        group.filter((wire) => wire.targetY < wire.sourceY),
+        (left, right) => left.targetY - right.targetY,
+      );
+      const belowSource = sortedCopy(
+        group.filter((wire) => wire.targetY >= wire.sourceY),
+        (left, right) => left.targetY - right.targetY,
+      );
       const aboveIndices = (forward ? leftToRight : rightToLeft).slice(0, aboveSource.length);
       const belowIndices = (forward ? rightToLeft : leftToRight).slice(0, belowSource.length);
 
@@ -3034,8 +3042,7 @@ function reorderSameSourceFanoutTracks(wires: MeasuredBoardWire[], lanes: Array<
       return rightDistance - leftDistance;
     });
 
-    [...group]
-      .sort((left, right) => {
+    sortedCopy(group, (left, right) => {
         const leftDistance = Math.abs(left.targetY - left.sourceY);
         const rightDistance = Math.abs(right.targetY - right.sourceY);
         if (leftDistance !== rightDistance) return leftDistance - rightDistance;
@@ -3637,7 +3644,11 @@ function reviewPackageSignal(reviewPackage: WorkPackageCard["metadata"] extends 
   if (!reviewPackage) return null;
 
   const reviews = Array.isArray(reviewPackage.reviews) ? reviewPackage.reviews : [];
-  const signals = reviews.map(reviewPayloadSignal).filter((signal): signal is NonNullable<ReturnType<typeof reviewPayloadSignal>> => Boolean(signal));
+  const signals = reviews.reduce<NonNullable<ReturnType<typeof reviewPayloadSignal>>[]>((result, review) => {
+    const signal = reviewPayloadSignal(review);
+    if (signal) result.push(signal);
+    return result;
+  }, []);
 
   if (signals.length > 0) {
     return signals[signals.length - 1];
@@ -3808,7 +3819,7 @@ function SoloSessionGroup({
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="min-w-0">
             <CardTitle className="flex items-center gap-2">
-              <GitBranch className="h-4 w-4 text-primary" />
+              <GitBranch className="size-4 text-primary" />
               <span className="truncate">{group.repo}</span>
             </CardTitle>
             <p className="mt-1 truncate text-sm text-muted-foreground">{group.baseBranch}</p>
@@ -3989,7 +4000,7 @@ function soloSessionGroups(sessions: SoloSession[]) {
 }
 
 function sortSoloSessions(sessions: SoloSession[]) {
-  return [...sessions].sort((left, right) => soloSessionTime(right) - soloSessionTime(left));
+  return sortedCopy(sessions, (left, right) => soloSessionTime(right) - soloSessionTime(left));
 }
 
 function soloSessionTime(session: SoloSession) {
@@ -4089,7 +4100,7 @@ function soloSessionLatestIsRedundant(session: SoloSession, latestText: string) 
 }
 
 function sortSoloEntries(entries: SoloSessionEntry[]) {
-  return [...entries].sort((left, right) => {
+  return sortedCopy(entries, (left, right) => {
     const leftSequence = left.sequence ?? 0;
     const rightSequence = right.sequence ?? 0;
     if (leftSequence !== rightSequence) return leftSequence - rightSequence;
@@ -4098,8 +4109,7 @@ function sortSoloEntries(entries: SoloSessionEntry[]) {
 }
 
 function latestSoloEntries(entries: SoloSessionEntry[]) {
-  return [...entries]
-    .sort((left, right) => {
+  return sortedCopy(entries, (left, right) => {
       const timeDelta = sortableTime(right.created_at || right.updated_at) - sortableTime(left.created_at || left.updated_at);
       if (timeDelta !== 0) return timeDelta;
       return (right.sequence ?? 0) - (left.sequence ?? 0);
@@ -4119,8 +4129,7 @@ function soloPlanningGroups(entries: SoloSessionEntry[]) {
     grouped.set(kind, [...(grouped.get(kind) || []), entry]);
   });
 
-  return [...grouped.entries()]
-    .sort(([left], [right]) => soloEntryKindRank(left) - soloEntryKindRank(right))
+  return sortedCopy([...grouped.entries()], ([left], [right]) => soloEntryKindRank(left) - soloEntryKindRank(right))
     .map(([kind, groupEntries]) => ({
       kind,
       title: soloPlanningTitle(kind),
@@ -4329,7 +4338,7 @@ function GuidanceDialog({
                       style={{ animationDelay: `${index * 35}ms` }}
                     >
                       <div className="flex items-start gap-3">
-                        <CircleDot className={cn("mt-0.5 h-4 w-4", selected ? "text-primary" : "text-muted-foreground")} />
+                        <CircleDot className={cn("mt-0.5 size-4", selected ? "text-primary" : "text-muted-foreground")} />
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                             <div className="min-w-0">
@@ -4348,7 +4357,7 @@ function GuidanceDialog({
                                   toggleNote(option.id);
                                 }}
                               >
-                                <ChevronDown className={cn("h-3.5 w-3.5 transition-transform duration-200", noteOpen && "rotate-180")} />
+                                <ChevronDown className={cn("size-3.5 transition-transform duration-200", noteOpen && "rotate-180")} />
                                 Add Extra Note
                               </Button>
                             ) : null}
@@ -4387,7 +4396,7 @@ function GuidanceDialog({
                 Cancel
               </Button>
               <Button onClick={submitAnswer} disabled={submitting || (selectedChoice === CUSTOM_CHOICE && !notes[selectedChoice]?.trim())}>
-                {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                {submitting ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
                 Answer
               </Button>
             </DialogFooter>
@@ -4501,7 +4510,7 @@ function NewRequestDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
         <Button size="sm">
-          <Plus className="h-4 w-4" />
+          <Plus className="size-4" />
           New Request
         </Button>
       </DialogTrigger>
@@ -4587,7 +4596,7 @@ function NewRequestDialog({
               Cancel
             </Button>
             <Button type="submit" disabled={submitting}>
-              {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              {submitting ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
               Create
             </Button>
           </DialogFooter>
@@ -4964,7 +4973,7 @@ function PackageDetailContent({
         </DetailSection>
         <DetailSection title="Progress">
           {loading ? (
-            <p>Loading latest package activity...</p>
+            <p>Loading latest package activity&hellip;</p>
           ) : progress.length > 0 ? (
             <DetailActivityList items={progress.map((item) => ({ title: item.summary || item.status || "Progress", body: item.body, at: item.created_at }))} />
           ) : (
@@ -5001,7 +5010,7 @@ function PackageDetailContent({
             ]}
           />
           <DetailList title="Acceptance" items={pkg.acceptance_criteria || selection.slice?.acceptance_criteria || []} empty="No acceptance criteria recorded." />
-          <DetailList title="Alerts" items={(detailPayload?.alert_indicators || pkg.alert_indicators || []).filter((item) => item.active !== false).map((item) => item.detail || item.label || item.type || "Alert")} empty="No active alerts." />
+          <DetailList title="Alerts" items={activeAlertLabels(detailPayload?.alert_indicators || pkg.alert_indicators || [])} empty="No active alerts." />
         </DetailDisclosure>
       </div>
     </>
@@ -5047,7 +5056,7 @@ function SoloSessionDetailContent({
         </DetailSection>
         <DetailSection title="Progress">
           {loading ? (
-            <p>Loading the Solo Session ledger...</p>
+            <p>Loading the Solo Session ledger&hellip;</p>
           ) : error ? (
             <p>{error}</p>
           ) : latestEntries.length > 0 ? (
@@ -5079,7 +5088,7 @@ function SoloSessionDetailContent({
         </DetailSection>
         <DetailDisclosure title="Planning Files" meta={soloPlanningMeta(planningGroups, loading, error)} defaultOpen>
           {loading ? (
-            <p className="text-sm text-muted-foreground">Loading planning entries...</p>
+            <p className="text-sm text-muted-foreground">Loading planning entries&hellip;</p>
           ) : error ? (
             <p className="text-sm text-muted-foreground">{error}</p>
           ) : planningGroups.length > 0 ? (
@@ -5120,7 +5129,7 @@ function SoloPlanningGroup({
     <Collapsible defaultOpen={defaultOpen} className="solo-planning-group">
       <CollapsibleTrigger className="solo-planning-trigger">
         <span className="flex min-w-0 items-center gap-2">
-          <ChevronRight className="solo-planning-chevron h-4 w-4 shrink-0 transition-transform duration-150" />
+          <ChevronRight className="solo-planning-chevron size-4 shrink-0 transition-transform duration-150" />
           <span className="truncate">{group.title}</span>
         </span>
         <span className="shrink-0 text-xs text-muted-foreground">{group.entries.length}</span>
@@ -5199,7 +5208,7 @@ function DetailDisclosure({
     <Collapsible defaultOpen={defaultOpen} className="detail-disclosure" data-guidance-section style={{ animationDelay: "120ms" }}>
       <CollapsibleTrigger className="detail-disclosure-trigger">
         <span className="flex min-w-0 items-center gap-2">
-          <ChevronRight className="detail-disclosure-chevron h-4 w-4 shrink-0 transition-transform duration-150" />
+          <ChevronRight className="detail-disclosure-chevron size-4 shrink-0 transition-transform duration-150" />
           <span className="truncate">{title}</span>
         </span>
         {meta ? <span className="truncate text-xs text-muted-foreground">{meta}</span> : null}
@@ -5490,7 +5499,7 @@ function sliceProgressText(slice: PlannedSlice, pkg?: WorkPackageCard) {
 }
 
 function latestPackageProgress(payload: WorkPackageDetailPayload | null) {
-  return [...(payload?.progress || [])].sort((left, right) => {
+  return sortedCopy(payload?.progress || [], (left, right) => {
     const sequenceDelta = (right.sequence || 0) - (left.sequence || 0);
     if (sequenceDelta !== 0) return sequenceDelta;
     return sortableTime(right.created_at) - sortableTime(left.created_at);
@@ -5523,8 +5532,15 @@ function packagePurpose(pkg: WorkPackageCard | NonNullable<WorkPackageDetailPayl
   return firstParagraph(richPackage.engineering_scope) || firstParagraph(richPackage.product_description) || pkg.kind || "No package description has been recorded yet.";
 }
 
+function activeAlertLabels(alerts: PackageAlertIndicator[]) {
+  return alerts.reduce<string[]>((items, item) => {
+    if (item.active !== false) items.push(item.detail || item.label || item.type || "Alert");
+    return items;
+  }, []);
+}
+
 function latestDecisionLogs(detail: WorkRequestDetail) {
-  return [...(detail.decision_logs || [])].sort((left, right) => {
+  return sortedCopy(detail.decision_logs || [], (left, right) => {
     const sequenceDelta = (right.sequence || 0) - (left.sequence || 0);
     if (sequenceDelta !== 0) return sequenceDelta;
     return sortableTime(right.created_at || right.inserted_at) - sortableTime(left.created_at || left.inserted_at);
@@ -5589,11 +5605,13 @@ function allGuidanceItems(dashboard: DashboardPayload | null): GuidanceItem[] {
   }));
 
   const details = dashboard?.work_request_details || [];
-  const clarifications = details.flatMap<GuidanceItem>((detail) =>
-    (detail.clarification_questions || [])
-      .filter((question) => question.status === "open")
-      .map((question) => clarificationGuidanceItem(detail, question)),
-  );
+  const clarifications = details.flatMap<GuidanceItem>((detail) => {
+    const items: GuidanceItem[] = [];
+    (detail.clarification_questions || []).forEach((question) => {
+      if (question.status === "open") items.push(clarificationGuidanceItem(detail, question));
+    });
+    return items;
+  });
 
   return [...guidance, ...clarifications];
 }
@@ -5613,9 +5631,9 @@ function clarificationGuidanceItem(detail: WorkRequestDetail, question: Clarific
 }
 
 function activeBlockerItems(packages: WorkPackageCard[], details: WorkRequestDetail[] = []): BlockerItem[] {
-  return packages
-    .filter((pkg) => pkg.status === "blocked" || (pkg.active_blocker_count || 0) > 0)
-    .map((pkg) => ({
+  return packages.reduce<BlockerItem[]>((items, pkg) => {
+    if (pkg.status === "blocked" || (pkg.active_blocker_count || 0) > 0) {
+      items.push({
       id: pkg.id,
       title: pkg.title || pkg.id,
       repo: repoName(pkg.repo),
@@ -5626,7 +5644,11 @@ function activeBlockerItems(packages: WorkPackageCard[], details: WorkRequestDet
           ? "This work package is blocked and needs another condition or dependency cleared before it can move."
           : "This work package has active blockers attached to its execution path.",
       selection: packageBoardSelection(pkg, details),
-    }));
+      });
+    }
+
+    return items;
+  }, []);
 }
 
 function recentFinishedHighlights(
@@ -5637,9 +5659,9 @@ function recentFinishedHighlights(
   const detailByRequestId = new Map(details.map((detail) => [detail.work_request.id, detail]));
   const packageById = new Map(packages.map((pkg) => [pkg.id, pkg]));
 
-  const packageHighlights = packages
-    .filter((pkg) => packageLane(pkg) === "finished")
-    .map<FinishedHighlight>((pkg) => ({
+  const packageHighlights = packages.reduce<FinishedHighlight[]>((items, pkg) => {
+    if (packageLane(pkg) === "finished") {
+      items.push({
       id: pkg.id,
       title: pkg.title || pkg.id,
       repo: repoName(pkg.repo),
@@ -5647,15 +5669,18 @@ function recentFinishedHighlights(
       status: pkg.status,
       at: pkg.latest_progress_at,
       selection: packageBoardSelection(pkg, details),
-    }));
+      });
+    }
 
-  const requestHighlights = requests
-    .filter((request) => requestLane(request) === "finished")
-    .map<FinishedHighlight | null>((request) => {
+    return items;
+  }, []);
+
+  const requestHighlights = requests.reduce<FinishedHighlight[]>((items, request) => {
+    if (requestLane(request) === "finished") {
       const detail = detailByRequestId.get(request.id);
-      if (!detail) return null;
+      if (!detail) return items;
 
-      return {
+      items.push({
         id: request.id,
         title: request.title || request.id,
         repo: repoName(request.repo),
@@ -5663,17 +5688,19 @@ function recentFinishedHighlights(
         status: request.status,
         at: request.updated_at || request.inserted_at,
         selection: { kind: "request", detail },
-      };
-    })
-    .filter((item): item is FinishedHighlight => Boolean(item));
+      });
+    }
 
-  const sliceHighlights = details.flatMap<FinishedHighlight>((detail) =>
-    (detail.planned_slices || [])
-      .filter((slice) => sliceLane(slice) === "finished")
-      .map((slice) => {
+    return items;
+  }, []);
+
+  const sliceHighlights = details.flatMap<FinishedHighlight>((detail) => {
+    const items: FinishedHighlight[] = [];
+    (detail.planned_slices || []).forEach((slice) => {
+      if (sliceLane(slice) === "finished") {
         const pkg = slice.work_package_id ? packageById.get(slice.work_package_id) : undefined;
 
-        return {
+        items.push({
           id: slice.id,
           title: slice.title || slice.id,
           repo: repoName(detail.work_request.repo),
@@ -5681,11 +5708,13 @@ function recentFinishedHighlights(
           status: slice.work_package_status || slice.status,
           at: detail.work_request.updated_at || detail.work_request.inserted_at,
           selection: pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice },
-        };
-      }),
-  );
+        });
+      }
+    });
+    return items;
+  });
 
-  return [...packageHighlights, ...requestHighlights, ...sliceHighlights].sort((a, b) => {
+  return sortedCopy([...packageHighlights, ...requestHighlights, ...sliceHighlights], (a, b) => {
     const left = a.at ? Date.parse(a.at) : 0;
     const right = b.at ? Date.parse(b.at) : 0;
     return right - left;
@@ -5694,9 +5723,10 @@ function recentFinishedHighlights(
 
 function packageBoardSelection(pkg: WorkPackageCard, details: WorkRequestDetail[]): CardDetailSelection {
   for (const detail of details) {
-    const slice = (detail.planned_slices || []).find((candidate) => candidate.work_package_id === pkg.id);
-    if (slice) {
-      return sliceLane(slice) === "slices" ? { kind: "slice", detail, slice, pkg } : { kind: "package", pkg, detail, slice };
+    for (const slice of detail.planned_slices || []) {
+      if (slice.work_package_id === pkg.id) {
+        return sliceLane(slice) === "slices" ? { kind: "slice", detail, slice, pkg } : { kind: "package", pkg, detail, slice };
+      }
     }
   }
 
@@ -5759,18 +5789,18 @@ function repoSummaries(
     summary.implementing = summary.packages.filter((pkg) => packageLane(pkg) === "implementing").length;
     summary.finished = summary.packages.filter((pkg) => packageLane(pkg) === "finished").length;
     summary.blockerCount = activeBlockerItems(summary.packages).length;
-    details
-      .filter((detail) => repoName(detail.work_request.repo) === summary.repo)
-      .flatMap((detail) => detail.planned_slices || [])
-      .forEach((slice) => {
+    details.forEach((detail) => {
+      if (repoName(detail.work_request.repo) !== summary.repo) return;
+      (detail.planned_slices || []).forEach((slice) => {
         const lane = sliceLane(slice);
         if (lane === "slices") summary.active += 1;
         if (lane === "implementing") summary.implementing += 1;
         if (lane === "finished") summary.finished += 1;
       });
+    });
   });
 
-  return [...repos.values()].sort((a, b) => a.repo.localeCompare(b.repo));
+  return sortedCopy([...repos.values()], (a, b) => a.repo.localeCompare(b.repo));
 }
 
 function dashboardTotals(packages: WorkPackageCard[], requests: WorkRequestCard[], guidance: GuidanceItem[]) {
@@ -5853,7 +5883,7 @@ function packageLinkedToRequest(pkg: WorkPackageCard, details: WorkRequestDetail
 }
 
 function sortWorkRequestDetails(details: WorkRequestDetail[]) {
-  return [...details].sort((left, right) => {
+  return sortedCopy(details, (left, right) => {
     const leftTime = sortableTime(left.work_request.inserted_at || left.work_request.updated_at);
     const rightTime = sortableTime(right.work_request.inserted_at || right.work_request.updated_at);
     if (leftTime !== rightTime) return leftTime - rightTime;
@@ -5862,7 +5892,7 @@ function sortWorkRequestDetails(details: WorkRequestDetail[]) {
 }
 
 function sortPackages(packages: WorkPackageCard[]) {
-  return [...packages].sort((left, right) => {
+  return sortedCopy(packages, (left, right) => {
     const leftTime = sortableTime(left.latest_progress_at || left.updated_at);
     const rightTime = sortableTime(right.latest_progress_at || right.updated_at);
     if (leftTime !== rightTime) return rightTime - leftTime;
@@ -5873,6 +5903,10 @@ function sortPackages(packages: WorkPackageCard[]) {
 function sortableTime(value?: string | null) {
   const timestamp = value ? Date.parse(value) : 0;
   return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function sortedCopy<T>(values: readonly T[], compare: (left: T, right: T) => number) {
+  return values.slice().sort(compare);
 }
 
 function workstreamRows(
@@ -6090,7 +6124,7 @@ function formatDate(value: string) {
     return "recent";
   }
 
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(timestamp);
+  return LOCAL_DATE_FORMATTER.format(timestamp);
 }
 
 function repoName(value?: string | null) {
@@ -6124,7 +6158,12 @@ function baseBranchOptionsForRepo(repos: RepoSummary[], repo: string) {
 }
 
 function uniqueNonEmpty(values: Array<string | undefined | null>) {
-  return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))];
+  const unique = new Set<string>();
+  values.forEach((value) => {
+    const trimmed = value?.trim();
+    if (trimmed) unique.add(trimmed);
+  });
+  return [...unique];
 }
 
 function readStoredWorkspaceTab(): WorkspaceTab {
