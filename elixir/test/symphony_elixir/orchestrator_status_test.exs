@@ -790,7 +790,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     send(pid, {:DOWN, process_ref, :process, self(), :boom})
-    Process.sleep(50)
 
     state = :sys.get_state(pid)
 
