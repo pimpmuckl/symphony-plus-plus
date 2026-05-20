@@ -2,7 +2,6 @@ defmodule SymphonyElixir.ExtensionsTest do
   use SymphonyElixir.TestSupport
 
   import Phoenix.ConnTest
-  import Phoenix.LiveViewTest
 
   alias SymphonyElixir.Linear.Adapter
   alias SymphonyElixir.Tracker.Memory
@@ -488,118 +487,17 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   test "dashboard root shell does not reference legacy static assets" do
-    orchestrator_name = Module.concat(__MODULE__, :AssetOrchestrator)
+    with_static_dashboard_file("index.html", File.read!(dashboard_source_index_path()), fn ->
+      start_test_endpoint(snapshot_timeout_ms: 50)
 
-    {:ok, _pid} =
-      StaticOrchestrator.start_link(
-        name: orchestrator_name,
-        snapshot: static_snapshot(),
-        refresh: %{
-          queued: true,
-          coalesced: false,
-          requested_at: DateTime.utc_now(),
-          operations: ["poll"]
-        }
-      )
-
-    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
-
-    html = html_response(get(build_conn(), "/"), 200)
-    refute html =~ "/dashboard.css"
-    refute html =~ "/vendor/phoenix_html/phoenix_html.js"
-    refute html =~ "/vendor/phoenix/phoenix.js"
-    refute html =~ "/vendor/phoenix_live_view/phoenix_live_view.js"
-    refute html =~ "/assets/app.js"
-    refute html =~ "<style>"
-  end
-
-  @tag skip: "The root human dashboard is now served by the React shell; pubsub rendering belonged to the retired LiveView surface."
-  test "dashboard liveview renders and refreshes over pubsub" do
-    orchestrator_name = Module.concat(__MODULE__, :DashboardOrchestrator)
-    snapshot = static_snapshot()
-
-    {:ok, orchestrator_pid} =
-      StaticOrchestrator.start_link(
-        name: orchestrator_name,
-        snapshot: snapshot,
-        refresh: %{
-          queued: true,
-          coalesced: true,
-          requested_at: DateTime.utc_now(),
-          operations: ["poll"]
-        }
-      )
-
-    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
-
-    {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ "Operations Dashboard"
-    assert html =~ "MT-HTTP"
-    assert html =~ "MT-RETRY"
-    assert html =~ "rendered"
-    assert html =~ "Runtime"
-    assert html =~ "Live"
-    assert html =~ "Offline"
-    assert html =~ "Copy ID"
-    assert html =~ "Codex update"
-    refute html =~ "data-runtime-clock="
-    refute html =~ "setInterval(refreshRuntimeClocks"
-    refute html =~ "Refresh now"
-    refute html =~ "Transport"
-    assert html =~ "status-badge-live"
-    assert html =~ "status-badge-offline"
-
-    updated_snapshot =
-      put_in(snapshot.running, [
-        %{
-          issue_id: "issue-http",
-          identifier: "MT-HTTP",
-          state: "In Progress",
-          session_id: "thread-http",
-          turn_count: 8,
-          last_codex_event: :notification,
-          last_codex_message: %{
-            event: :notification,
-            message: %{
-              payload: %{
-                "method" => "codex/event/agent_message_content_delta",
-                "params" => %{
-                  "msg" => %{
-                    "content" => "structured update"
-                  }
-                }
-              }
-            }
-          },
-          last_codex_timestamp: DateTime.utc_now(),
-          codex_input_tokens: 10,
-          codex_output_tokens: 12,
-          codex_total_tokens: 22,
-          started_at: DateTime.utc_now()
-        }
-      ])
-
-    :sys.replace_state(orchestrator_pid, fn state ->
-      Keyword.put(state, :snapshot, updated_snapshot)
+      html = html_response(get(build_conn(), "/"), 200)
+      refute html =~ "/dashboard.css"
+      refute html =~ "/vendor/phoenix_html/phoenix_html.js"
+      refute html =~ "/vendor/phoenix/phoenix.js"
+      refute html =~ "/vendor/phoenix_live_view/phoenix_live_view.js"
+      refute html =~ "/assets/app.js"
+      refute html =~ "<style>"
     end)
-
-    StatusDashboard.notify_update()
-
-    assert_eventually(fn ->
-      render(view) =~ "agent message content streaming: structured update"
-    end)
-  end
-
-  @tag skip: "The root human dashboard is now served by the React shell; unavailable rendering belonged to the retired LiveView surface."
-  test "dashboard liveview renders an unavailable state without crashing" do
-    start_test_endpoint(
-      orchestrator: Module.concat(__MODULE__, :MissingDashboardOrchestrator),
-      snapshot_timeout_ms: 5
-    )
-
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "Snapshot unavailable"
-    assert html =~ "snapshot_unavailable"
   end
 
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do
@@ -668,6 +566,33 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
     start_supervised!({SymphonyElixirWeb.Endpoint, []})
+  end
+
+  defp with_static_dashboard_file(file_name, contents, fun) when is_function(fun, 0) do
+    static_dir =
+      :symphony_elixir
+      |> :code.priv_dir()
+      |> Path.join("static")
+
+    path = Path.join(static_dir, file_name)
+    original = File.read(path)
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, contents)
+
+    try do
+      fun.()
+    after
+      case original do
+        {:ok, previous} -> File.write!(path, previous)
+        {:error, _reason} -> File.rm(path)
+      end
+    end
+  end
+
+  defp dashboard_source_index_path do
+    __DIR__
+    |> Path.join("../../assets/index.html")
+    |> Path.expand()
   end
 
   defp static_snapshot do
