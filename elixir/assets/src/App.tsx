@@ -130,6 +130,9 @@ type FeatureLane = "requested" | "slices" | "packages";
 type SignalTone = "muted" | "info" | "warning" | "danger" | "success";
 type StateCardTone = "request" | "queued" | "slice" | "implementing" | "review" | "merge" | "guidance" | "blocked" | "finished" | "muted";
 type BoardWireTone = StateCardTone;
+type OperationalState = NonNullable<WorkPackageCard["operational_state"]>;
+type OperationalAttention = NonNullable<OperationalState["attention_items"]>[number];
+type PackageLineageProjection = NonNullable<WorkPackageCard["lineage"]>;
 type StateToneStyle = {
   card: string;
   accent: string;
@@ -950,17 +953,21 @@ function requestAnimationEntity(detail: WorkRequestDetail): UpdateAnimationEntit
 }
 
 function sliceAnimationEntity(slice: PlannedSlice, pkg?: WorkPackageCard): UpdateAnimationEntity {
-  const status = slice.work_package_status || slice.status;
-  const blockerCount = pkg?.active_blocker_count || (pkg?.status === "blocked" ? 1 : 0);
+  const operational = sliceOperationalState(slice, pkg);
+  const status = operational?.key || slice.work_package_status || slice.status;
+  const blockerCount = pkg?.active_blocker_count || (pkg?.status === "blocked" || operational?.key === "blocked" ? 1 : 0);
 
   return {
     signature: stableSignature([
       slice.status,
       slice.work_package_id,
       slice.work_package_status,
+      slice.operational_state,
       slice.updated_at,
       slice.dispatched_at,
       pkg?.status,
+      pkg?.operational_state,
+      pkg?.lineage,
       pkg?.active_blocker_count,
       pkg?.latest_progress_at,
       pkg?.updated_at,
@@ -974,11 +981,14 @@ function sliceAnimationEntity(slice: PlannedSlice, pkg?: WorkPackageCard): Updat
 }
 
 function packageAnimationEntity(pkg: WorkPackageCard): UpdateAnimationEntity {
-  const blockerCount = pkg.active_blocker_count || (pkg.status === "blocked" ? 1 : 0);
+  const operational = packageOperationalState(pkg);
+  const blockerCount = pkg.active_blocker_count || (pkg.status === "blocked" || operational?.key === "blocked" ? 1 : 0);
 
   return {
     signature: stableSignature([
       pkg.status,
+      pkg.operational_state,
+      pkg.lineage,
       pkg.updated_at,
       pkg.latest_progress_at,
       pkg.active_blocker_count,
@@ -991,7 +1001,7 @@ function packageAnimationEntity(pkg: WorkPackageCard): UpdateAnimationEntity {
       pkg.active_agent_run,
       pkg.runtime,
     ]),
-    status: pkg.status,
+    status: operational?.key || pkg.status,
     guidanceCount: 0,
     blockerCount,
     finished: packageLane(pkg) === "finished",
@@ -3657,6 +3667,8 @@ function SliceCard({
 }) {
   const tone = sliceCardTone(slice, pkg, lane);
   const detail = slice.goal || pkg?.kind || slice.work_package_kind;
+  const operational = sliceOperationalState(slice, pkg);
+  const status = slice.work_package_status || slice.status;
 
   return (
     <div
@@ -3670,8 +3682,8 @@ function SliceCard({
       <div className="flex min-w-0 items-start justify-between gap-2">
         <p className="min-w-0 truncate text-sm font-medium">{slice.title || pkg?.title || slice.id}</p>
         <AnimatedBadge
-          label={statusLabel(slice.work_package_status || slice.status)}
-          variant={statusVariant(slice.work_package_status || slice.status)}
+          label={operationalLabel(operational, status)}
+          variant={operationalBadgeVariant(operational, status)}
           className="shrink-0"
         />
       </div>
@@ -3697,6 +3709,7 @@ function PackageCard({
 }) {
   const tone = packageCardTone(pkg, lane);
   const attention = packageAttentionSignal(pkg);
+  const operational = packageOperationalState(pkg);
 
   return (
     <div
@@ -3709,7 +3722,7 @@ function PackageCard({
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <p className="min-w-0 truncate text-sm font-medium">{pkg.title || pkg.id}</p>
-        <AnimatedBadge label={statusLabel(pkg.status)} variant={statusVariant(pkg.status)} className="shrink-0" />
+        <AnimatedBadge label={operationalLabel(operational, pkg.status)} variant={operationalBadgeVariant(operational, pkg.status)} className="shrink-0" />
       </div>
       {attention ? <CardSignal className="mt-3" label={attention.label} value={attention.value} tone={attention.tone} /> : null}
     </div>
@@ -3780,6 +3793,10 @@ function requestCardTone(detail: WorkRequestDetail, questionCount?: number): Sta
 }
 
 function sliceCardTone(slice: PlannedSlice, pkg: WorkPackageCard | undefined, lane: BoardLane): StateCardTone {
+  const operational = slice.operational_state;
+  const tone = operationalCardTone(operational, slice.status);
+  if (tone) return tone;
+
   if (pkg) return packageCardTone(pkg, lane);
   if (lane === "finished") return "finished";
 
@@ -3797,28 +3814,149 @@ function sliceCardTone(slice: PlannedSlice, pkg: WorkPackageCard | undefined, la
 
 function packageCardTone(pkg: WorkPackageCard, lane?: BoardLane): StateCardTone {
   const status = pkg.status || "";
-
   if ((pkg.active_blocker_count || 0) > 0 || status === "blocked") return "blocked";
-  if ((lane === "finished" && packageLane(pkg) === "finished") || ["merged_into_phase", "merged", "closed"].includes(status)) return "finished";
-  if (status === "abandoned") return "muted";
-  if (status === "reviewing" || status === "ci_waiting") return "review";
-  if (["ready_for_human_merge", "ready_for_architect_merge", "merging_into_phase"].includes(status)) return "merge";
-  if (status === "implementing") return "implementing";
-  if (["created", "ready_for_worker", "claimed", "planning"].includes(status)) return "queued";
+
+  const operational = packageOperationalState(pkg);
+  const tone = operationalCardTone(operational, pkg.status);
+  if (tone) return tone;
+
+  if (lane === "finished" && packageLane(pkg) === "finished") return "finished";
   return lane === "implementing" ? "implementing" : "slice";
+}
+
+function operationalCardTone(operational?: WorkPackageCard["operational_state"], fallbackStatus?: string | null): StateCardTone | null {
+  const key = operationalKey(operational) || fallbackStatus || "";
+
+  switch (key) {
+    case "blocked":
+      return "blocked";
+    case "merged":
+    case "merged_into_phase":
+    case "closed":
+      return "finished";
+    case "abandoned":
+    case "skipped":
+      return "muted";
+    case "reviewing":
+    case "ci_waiting":
+      return "review";
+    case "merge_ready":
+    case "ready_for_human_merge":
+    case "ready_for_architect_merge":
+    case "merging":
+    case "merging_into_phase":
+      return "merge";
+    case "in_progress":
+    case "implementing":
+      return "implementing";
+    case "ready_for_worker":
+    case "created":
+    case "claimed":
+    case "planning":
+      return "queued";
+    case "planned":
+    case "dispatched":
+      return "slice";
+    default:
+      return null;
+  }
+}
+
+function packageOperationalState(pkg: WorkPackageCard): WorkPackageCard["operational_state"] {
+  return pkg.operational_state || null;
+}
+
+function sliceOperationalState(slice: PlannedSlice, pkg?: WorkPackageCard): WorkPackageCard["operational_state"] {
+  return slice.operational_state || pkg?.operational_state || null;
+}
+
+function operationalKey(operational?: WorkPackageCard["operational_state"]) {
+  return operational?.key || "";
+}
+
+function operationalLabel(operational?: WorkPackageCard["operational_state"], fallbackStatus?: string | null) {
+  return operational?.label || statusLabel(fallbackStatus);
+}
+
+function operationalSignalTone(operational?: WorkPackageCard["operational_state"]): SignalTone {
+  switch (operational?.tone) {
+    case "critical":
+      return "danger";
+    case "warning":
+      return "warning";
+    case "success":
+      return "success";
+    case "info":
+      return "info";
+    default:
+      return "muted";
+  }
+}
+
+function operationalBadgeVariant(operational?: WorkPackageCard["operational_state"], fallbackStatus?: string | null): BadgeTone {
+  if (!operational) return statusVariant(fallbackStatus);
+  const key = operational.key || "";
+
+  if (key === "merge_ready") return operational.tone === "warning" ? "warning" : "ready";
+  if (key === "blocked" || operational.tone === "critical") return "danger";
+  if (["merged", "merged_into_phase", "closed"].includes(key) || operational.tone === "success") return "success";
+  if (["abandoned", "skipped"].includes(key)) return "secondary";
+  if (operational.tone === "warning") return "warning";
+  if (operational.tone === "info") return "info";
+  return statusVariant(key || operational.raw_status || fallbackStatus);
 }
 
 function packageAttentionSignal(pkg: WorkPackageCard): { label: string; value: string; tone: SignalTone } | null {
   const blockerCount = pkg.active_blocker_count || 0;
+  const operational = packageOperationalState(pkg);
+  const firstAttention = firstOperationalAttention(operational);
 
-  if (blockerCount > 0 || pkg.status === "blocked") {
+  if (blockerCount > 0 || pkg.status === "blocked" || operational?.key === "blocked") {
     return { label: "Blockers", value: `${blockerCount || 1} ${plural("blocker", blockerCount || 1)}`, tone: "danger" };
+  }
+
+  if (firstAttention) {
+    return {
+      label: "Attention",
+      value: firstAttention.label || formatStatus(firstAttention.key),
+      tone: attentionTone(firstAttention),
+    };
   }
 
   return null;
 }
 
+function firstOperationalAttention(operational?: WorkPackageCard["operational_state"]) {
+  return (operational?.attention_items || [])[0] || null;
+}
+
+function attentionTone(attention?: OperationalAttention | null): SignalTone {
+  switch (attention?.tone) {
+    case "critical":
+      return "danger";
+    case "warning":
+      return "warning";
+    case "success":
+      return "success";
+    case "info":
+      return "info";
+    default:
+      return "muted";
+  }
+}
+
 function sliceSignal(slice: PlannedSlice, pkg: WorkPackageCard | undefined, lane: BoardLane) {
+  const operational = slice.operational_state;
+  const attention = firstOperationalAttention(operational);
+
+  if (operational && attention) {
+    return { label: "Attention", value: attention.label || operational.label || formatStatus(attention.key), tone: attentionTone(attention) };
+  }
+
+  if (operational && operational.key && operational.key !== "planned") {
+    return { label: "State", value: operational.label || formatStatus(operational.key), tone: operationalSignalTone(operational) };
+  }
+
   if (pkg) {
     return packageSignal(pkg, lane);
   }
@@ -3845,13 +3983,35 @@ function sliceSignal(slice: PlannedSlice, pkg: WorkPackageCard | undefined, lane
 function packageSignal(pkg: WorkPackageCard, lane: BoardLane): { label: string; value: string; tone: SignalTone } {
   const status = pkg.status || "";
   const blockerCount = pkg.active_blocker_count || 0;
+  const operational = packageOperationalState(pkg);
+  const attention = firstOperationalAttention(operational);
 
-  if (lane === "finished" || packageLane(pkg) === "finished") {
-    return { label: "Finished", value: terminalPackageLabel(pkg), tone: "success" };
+  if (operational?.key === "blocked" || blockerCount > 0 || status === "blocked") {
+    return { label: "Blockers", value: `${blockerCount || 1} ${plural("blocker", blockerCount || 1)}`, tone: "danger" };
   }
 
-  if (blockerCount > 0 || status === "blocked") {
-    return { label: "Blockers", value: `${blockerCount || 1} ${plural("blocker", blockerCount || 1)}`, tone: "danger" };
+  if (operational?.key === "merged" || lane === "finished" || packageLane(pkg) === "finished") {
+    return { label: "Finished", value: operationalLabel(operational, status), tone: operational ? operationalSignalTone(operational) : "success" };
+  }
+
+  if (attention) {
+    return { label: "Attention", value: attention.label || formatStatus(attention.key), tone: attentionTone(attention) };
+  }
+
+  if (operational?.key === "merge_ready") {
+    return { label: "Merge", value: packagePrLabel(pkg) || operational.label || "Ready for merge", tone: operationalSignalTone(operational) };
+  }
+
+  if (operational?.key === "in_progress") {
+    return packageRuntimeSignal(pkg) || { label: "Implementation", value: planProgressLabel(pkg) || "In progress", tone: "info" };
+  }
+
+  if (operational?.key === "ready_for_worker" && status === "ready_for_worker") {
+    return { label: "Worker", value: "Queued for worker", tone: "muted" };
+  }
+
+  if (operational?.key && operational.key !== status) {
+    return { label: "State", value: operational.label || formatStatus(operational.key), tone: operationalSignalTone(operational) };
   }
 
   if (status === "reviewing") {
@@ -5237,20 +5397,23 @@ function RequestDetailContent({ detail, onSelectGuidance }: { detail: WorkReques
 
 function SliceDetailContent({ detail, slice, pkg }: { detail: WorkRequestDetail; slice: PlannedSlice; pkg?: WorkPackageCard }) {
   const status = slice.work_package_status || slice.status;
-  const blockerCount = pkg ? Math.max(pkg.active_blocker_count || 0, pkg.status === "blocked" ? 1 : 0) : 0;
+  const operational = sliceOperationalState(slice, pkg);
+  const blockerCount = Math.max(pkg?.active_blocker_count || 0, pkg?.status === "blocked" || operational?.key === "blocked" ? 1 : 0);
   const reviewLanes = slice.review_lanes || [];
+  const attentionItems = operational?.attention_items || [];
 
   return (
     <>
       <DetailHeader
         title={slice.title || pkg?.title || slice.id}
         eyebrow={`${repoName(detail.work_request.repo)} / ${detail.work_request.title || detail.work_request.id}`}
-        badge={<Badge variant={statusVariant(status)}>{statusLabel(status)}</Badge>}
+        badge={<Badge variant={operationalBadgeVariant(operational, status)}>{operationalLabel(operational, status)}</Badge>}
       />
       <div className="grid gap-4">
         <DetailStatGrid
           stats={[
-            { label: "Package", value: pkg ? statusLabel(pkg.status) : "Not dispatched" },
+            { label: "State", value: operationalLabel(operational, status) },
+            { label: "Package", value: pkg ? operationalLabel(packageOperationalState(pkg), pkg.status) : "Not dispatched" },
             { label: "Review", value: reviewLanes.length > 0 ? reviewLanes.map(reviewLaneLabel).join(", ") : "Not recorded" },
             { label: "Blockers", value: String(blockerCount) },
             { label: "Updated", value: detailDate(slice.updated_at || slice.dispatched_at || slice.inserted_at) },
@@ -5260,7 +5423,10 @@ function SliceDetailContent({ detail, slice, pkg }: { detail: WorkRequestDetail;
           <p>{slice.goal || pkg?.kind || "No slice goal has been recorded yet."}</p>
         </DetailSection>
         <DetailSection title="Progress">
-          <p>{sliceProgressText(slice, pkg)}</p>
+          <div className="grid gap-2">
+            <p>{operational?.reason || sliceProgressText(slice, pkg)}</p>
+            {attentionItems.length > 0 ? <DetailAttentionList items={attentionItems} /> : null}
+          </div>
         </DetailSection>
         <DetailSection title="Blocked By">
           {blockerCount > 0 ? (
@@ -5300,28 +5466,33 @@ function PackageDetailContent({
   loading: boolean;
   error: string | null;
 }) {
-  const pkg = (detailPayload?.work_package || selection.pkg) as WorkPackageCard & {
+  const pkg = { ...selection.pkg, ...(detailPayload?.work_package || {}) } as WorkPackageCard & {
     branch_pattern?: string | null;
     product_description?: string | null;
     engineering_scope?: string | null;
     acceptance_criteria?: string[];
+    policy_template?: string | null;
   };
   const summary = detailPayload?.summary;
   const blockers = (detailPayload?.blockers || []).filter((blocker) => blocker.active !== false);
   const progress = latestPackageProgress(detailPayload);
   const plan = summary?.plan || pkg.plan;
-  const blockerCount = blockers.length || summary?.active_blocker_count || pkg.active_blocker_count || (pkg.status === "blocked" ? 1 : 0);
+  const operational = packageOperationalState(pkg);
+  const lineage = detailPayload?.lineage || pkg.lineage || null;
+  const attentionItems = operational?.attention_items || [];
+  const blockerCount = blockers.length || summary?.active_blocker_count || pkg.active_blocker_count || (operational?.key === "blocked" || pkg.status === "blocked" ? 1 : 0);
 
   return (
     <>
       <DetailHeader
         title={pkg.title || pkg.id}
         eyebrow={`${repoName(pkg.repo)} / ${pkg.base_branch || "main"} / ${pkg.kind || "work package"}`}
-        badge={<Badge variant={statusVariant(pkg.status)}>{statusLabel(pkg.status)}</Badge>}
+        badge={<Badge variant={operationalBadgeVariant(operational, pkg.status)}>{operationalLabel(operational, pkg.status)}</Badge>}
       />
       <div className="grid gap-4">
         <DetailStatGrid
           stats={[
+            { label: "State", value: operationalLabel(operational, pkg.status) },
             { label: "Plan", value: planSummaryText(plan) },
             { label: "Runtime", value: packageRuntimeText(summary, pkg) },
             { label: "Blockers", value: String(blockerCount) },
@@ -5330,6 +5501,12 @@ function PackageDetailContent({
         />
         <DetailSection title="What It Does">
           <p>{packagePurpose(pkg)}</p>
+        </DetailSection>
+        <DetailSection title="Operational Truth">
+          <div className="grid gap-2">
+            <p>{operational?.reason || packageOperationalFallbackText(pkg)}</p>
+            {attentionItems.length > 0 ? <DetailAttentionList items={attentionItems} /> : null}
+          </div>
         </DetailSection>
         <DetailSection title="Progress">
           {loading ? (
@@ -5354,11 +5531,14 @@ function PackageDetailContent({
           )}
         </DetailSection>
         {selection.detail ? <RecentDecisionsDisclosure detail={selection.detail} /> : null}
+        {lineageHasSignal(lineage) ? <LineageDisclosure lineage={lineage} /> : null}
         <DetailDisclosure title="Details" meta="PR, review, artifacts, and raw identifiers">
           <DetailFacts
             facts={[
               ["Package ID", pkg.id],
               ["Parent", pkg.parent_id || selection.slice?.work_request_id || "Not linked"],
+              ["Raw Status", statusLabel(operational?.raw_status || pkg.status)],
+              ["Policy", pkg.policy_template || pkg.kind || "Not recorded"],
               ["Branch", pkg.metadata?.branch?.branch || pkg.branch_pattern || "Not recorded"],
               ["PR", packagePrLabel(pkg) || pkg.metadata?.pr?.url || "Not attached"],
               [
@@ -5668,6 +5848,50 @@ function DetailList({ title, items, empty }: { title: string; items: string[]; e
   );
 }
 
+function DetailAttentionList({ items }: { items: OperationalAttention[] }) {
+  const visibleItems = items.slice(0, 3);
+
+  return (
+    <div className="grid gap-2">
+      {visibleItems.map((item) => (
+        <div key={item.key || item.label || item.reason} className={cn("detail-list-item border-l-4", attentionBorderClassName(item))}>
+          <div className="flex min-w-0 items-center justify-between gap-3">
+            <span className="min-w-0 text-sm font-medium">{item.label || formatStatus(item.key)}</span>
+            {item.missing?.length ? <span className="shrink-0 text-xs text-muted-foreground">{item.missing.length} missing</span> : null}
+          </div>
+          {item.reason ? <p className="mt-1 text-xs text-muted-foreground">{item.reason}</p> : null}
+        </div>
+      ))}
+      {items.length > visibleItems.length ? <p className="text-xs text-muted-foreground">+{items.length - visibleItems.length} more attention item{items.length - visibleItems.length === 1 ? "" : "s"}</p> : null}
+    </div>
+  );
+}
+
+function LineageDisclosure({ lineage }: { lineage: WorkPackageCard["lineage"] }) {
+  const entries = lineageDetailRows(lineage);
+  const attentionItems = lineage?.cleanup_attention || [];
+
+  return (
+    <DetailDisclosure title="Operational Lineage" meta={lineageSummary(lineage)} defaultOpen={Boolean(lineage?.unavailable || attentionItems.length)}>
+      <div className="grid gap-3">
+        {lineage?.unavailable ? <p className="text-sm text-muted-foreground">Lineage could not be read{lineage.error ? `: ${lineage.error}` : "."}</p> : null}
+        {entries.length > 0 ? (
+          <DetailActivityList
+            items={entries.map((entry) => ({
+              title: entry.title,
+              body: entry.body,
+              at: entry.at,
+            }))}
+          />
+        ) : lineage?.unavailable ? null : (
+          <p className="text-sm text-muted-foreground">No lineage relationships recorded.</p>
+        )}
+        {attentionItems.length > 0 ? <DetailAttentionList items={attentionItems} /> : null}
+      </div>
+    </DetailDisclosure>
+  );
+}
+
 function JsonDetail({ label, value }: { label: string; value?: Record<string, unknown> }) {
   if (!value || Object.keys(value).length === 0) return null;
 
@@ -5968,11 +6192,98 @@ function packagePurpose(pkg: WorkPackageCard | NonNullable<WorkPackageDetailPayl
   return firstParagraph(richPackage.engineering_scope) || firstParagraph(richPackage.product_description) || pkg.kind || "No package description has been recorded yet.";
 }
 
+function packageOperationalFallbackText(pkg: WorkPackageCard) {
+  const review = packageReviewSignal(pkg)?.value;
+  if (review) return `Review signal: ${review}.`;
+
+  const progress = planProgressLabel(pkg);
+  if (progress) return `Plan is ${progress.toLowerCase()}.`;
+
+  return `Raw lifecycle status is ${statusLabel(pkg.status)}.`;
+}
+
+function attentionBorderClassName(attention: OperationalAttention) {
+  switch (attentionTone(attention)) {
+    case "danger":
+      return "border-l-rose-400";
+    case "warning":
+      return "border-l-amber-400";
+    case "success":
+      return "border-l-emerald-400";
+    case "info":
+      return "border-l-sky-400";
+    default:
+      return "border-l-slate-300";
+  }
+}
+
 function activeAlertLabels(alerts: PackageAlertIndicator[]) {
   return alerts.reduce<string[]>((items, item) => {
     if (item.active !== false) items.push(item.detail || item.label || item.type || "Alert");
     return items;
   }, []);
+}
+
+function lineageHasSignal(lineage?: WorkPackageCard["lineage"] | null) {
+  if (!lineage) return false;
+  const rows = lineageDetailRows(lineage);
+  return (
+    Boolean(lineage.unavailable) ||
+    (lineage.cleanup_attention || []).length > 0 ||
+    rows.length > 0 ||
+    Boolean(lineage.oracle_status?.preserved || lineage.oracle_status?.has_oracle)
+  );
+}
+
+function lineageSummary(lineage?: WorkPackageCard["lineage"] | null) {
+  if (!lineage) return "None recorded";
+  if (lineage.unavailable) return lineage.error ? `Unavailable: ${lineage.error}` : "Unavailable";
+
+  const rows = lineageDetailRows(lineage);
+  if (rows.length === 0) return "None recorded";
+
+  const parts = [
+    lineage.recut_as?.length ? `${lineage.recut_as.length} recut` : null,
+    lineage.superseded_by?.length ? `${lineage.superseded_by.length} superseded` : null,
+    lineage.original_work?.length ? `${lineage.original_work.length} original` : null,
+    lineage.oracle_for?.length || lineage.oracle_work?.length ? "oracle" : null,
+  ].filter(Boolean);
+
+  return parts.length > 0 ? parts.join(" / ") : `${rows.length} relationship${rows.length === 1 ? "" : "s"}`;
+}
+
+function lineageDetailRows(lineage?: WorkPackageCard["lineage"] | null) {
+  if (!lineage) return [];
+  const explicitSuccessorKeys = new Set([...(lineage.recut_as || []), ...(lineage.superseded_by || [])].map(lineageEntryKey));
+  const genericSuccessors = (lineage.successor_work || []).filter((entry) => !explicitSuccessorKeys.has(lineageEntryKey(entry)));
+
+  return [
+    ...lineageEntries("Recut as", lineage.recut_as),
+    ...lineageEntries("Superseded by", lineage.superseded_by),
+    ...lineageEntries("Successor work", genericSuccessors),
+    ...lineageEntries("Original work", lineage.original_work),
+    ...lineageEntries("Oracle for", lineage.oracle_for),
+    ...lineageEntries("Oracle work", lineage.oracle_work),
+  ];
+}
+
+function lineageEntryKey(entry: NonNullable<PackageLineageProjection["successor_work"]>[number]) {
+  return [entry.relationship, entry.work_package_id, entry.target_work_package_id, entry.source_work_package_id, entry.event_id].filter(Boolean).join(":");
+}
+
+function lineageEntries(label: string, entries?: PackageLineageProjection["successor_work"]) {
+  return (entries || []).map((entry) => ({
+    title: `${label} ${entry.work_package_id || entry.target_work_package_id || entry.source_work_package_id || "work package"}`,
+    body: lineageEntryBody(entry),
+    at: entry.recorded_at,
+  }));
+}
+
+function lineageEntryBody(entry: NonNullable<PackageLineageProjection["successor_work"]>[number]) {
+  const status = entry.status || entry.target_status || entry.source_status;
+  const branch = entry.branch || entry.target_branch || entry.source_branch;
+  const details = [status ? statusLabel(status) : null, branch, entry.oracle_preserved ? "oracle preserved" : null, entry.reason].filter(Boolean);
+  return details.join(" / ");
 }
 
 function latestDecisionLogs(detail: WorkRequestDetail) {
@@ -6068,18 +6379,20 @@ function clarificationGuidanceItem(detail: WorkRequestDetail, question: Clarific
 
 function activeBlockerItems(packages: WorkPackageCard[], details: WorkRequestDetail[] = []): BlockerItem[] {
   return packages.reduce<BlockerItem[]>((items, pkg) => {
-    if (pkg.status === "blocked" || (pkg.active_blocker_count || 0) > 0) {
+    const operational = packageOperationalState(pkg);
+    if (operational?.key === "blocked" || pkg.status === "blocked" || (pkg.active_blocker_count || 0) > 0) {
       items.push({
-      id: pkg.id,
-      title: pkg.title || pkg.id,
-      repo: repoName(pkg.repo),
-      status: pkg.status,
-      blockerCount: Math.max(pkg.active_blocker_count || 0, pkg.status === "blocked" ? 1 : 0),
-      detail:
-        pkg.status === "blocked"
-          ? "This work package is blocked and needs another condition or dependency cleared before it can move."
-          : "This work package has active blockers attached to its execution path.",
-      selection: packageBoardSelection(pkg, details),
+        id: pkg.id,
+        title: pkg.title || pkg.id,
+        repo: repoName(pkg.repo),
+        status: operational?.key || pkg.status,
+        blockerCount: Math.max(pkg.active_blocker_count || 0, pkg.status === "blocked" || operational?.key === "blocked" ? 1 : 0),
+        detail:
+          operational?.reason ||
+          (pkg.status === "blocked"
+            ? "This work package is blocked and needs another condition or dependency cleared before it can move."
+            : "This work package has active blockers attached to its execution path."),
+        selection: packageBoardSelection(pkg, details),
       });
     }
 
@@ -6294,10 +6607,26 @@ function requestLane(request: WorkRequestCard): "requested" | "slices" | "finish
 }
 
 function packageLane(pkg: WorkPackageCard): BoardLane {
-  if (["merged_into_phase", "merged", "closed"].includes(pkg.status || "")) return "finished";
+  const status = pkg.status || "";
+
+  if (["merged", "merged_into_phase", "closed"].includes(status)) return "finished";
   if (
-    ["implementing", "reviewing", "ci_waiting", "ready_for_human_merge", "ready_for_architect_merge", "merging_into_phase"].includes(
-      pkg.status || "",
+    [
+      "claimed",
+      "planning",
+      "in_progress",
+      "implementing",
+      "reviewing",
+      "ci_waiting",
+      "merge_ready",
+      "merging",
+      "merging_into_phase",
+      "ready_for_human_merge",
+      "ready_for_architect_merge",
+      "blocked",
+      "abandoned",
+    ].includes(
+      status,
     )
   ) {
     return "implementing";
@@ -6307,8 +6636,24 @@ function packageLane(pkg: WorkPackageCard): BoardLane {
 
 function sliceLane(slice: PlannedSlice): BoardLane {
   const status = slice.work_package_status || slice.status || "";
-  if (["merged_into_phase", "merged", "closed"].includes(status)) return "finished";
-  if (["implementing", "reviewing", "ci_waiting", "ready_for_human_merge", "ready_for_architect_merge", "merging_into_phase"].includes(status)) {
+  if (["merged", "merged_into_phase", "closed"].includes(status)) return "finished";
+  if (
+    [
+      "claimed",
+      "planning",
+      "in_progress",
+      "implementing",
+      "reviewing",
+      "ci_waiting",
+      "merge_ready",
+      "merging",
+      "merging_into_phase",
+      "ready_for_human_merge",
+      "ready_for_architect_merge",
+      "blocked",
+      "abandoned",
+    ].includes(status)
+  ) {
     return "implementing";
   }
   return "slices";
@@ -6528,10 +6873,14 @@ function wireToneForSlice(slice: PlannedSlice, pkg?: WorkPackageCard): BoardWire
 function statusVariant(status?: string | null): BadgeTone {
   if (["merged", "merged_into_phase", "closed", "answered"].includes(status || "")) return "success";
   if (["blocked", "human_info_needed"].includes(status || "")) return "danger";
-  if (["implementing", "reviewing", "ci_waiting", "ready_for_slicing", "approved", "created", "ready_for_worker", "claimed", "planning"].includes(status || "")) {
+  if (
+    ["in_progress", "implementing", "reviewing", "ci_waiting", "ready_for_slicing", "approved", "created", "ready_for_worker", "claimed", "planning"].includes(
+      status || "",
+    )
+  ) {
     return "info";
   }
-  if (["ready_for_human_merge", "ready_for_architect_merge", "merging_into_phase"].includes(status || "")) return "ready";
+  if (["merge_ready", "ready_for_human_merge", "ready_for_architect_merge", "merging", "merging_into_phase"].includes(status || "")) return "ready";
   return "secondary";
 }
 
@@ -6547,6 +6896,9 @@ function formatStatus(status?: string | null) {
 }
 
 function statusLabel(status?: string | null) {
+  if (status === "merge_ready") return "Ready For Merge";
+  if (status === "in_progress") return "In Progress";
+  if (status === "merging") return "Merging";
   if (status === "ready_for_human_merge" || status === "ready_for_architect_merge") return "Merge Ready";
   if (status === "merging_into_phase") return "Merging";
   if (status === "ci_waiting") return "CI Waiting";
