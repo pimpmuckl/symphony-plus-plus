@@ -1649,6 +1649,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
             temp_codex_home,
             "-MarketplaceName",
             "jonat-local",
+            "-SkipProcessScan",
             "-Json"
           ],
           stderr_to_stdout: true,
@@ -1833,6 +1834,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true,
@@ -1908,6 +1910,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true,
@@ -2169,6 +2172,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         assert Enum.any?(config_entries, &(&1["plugin_name"] == "symphony-plus-plus-mcp" and &1["enabled"] == true))
 
         assert report["process_scan_scope"] == "installed_cache_source_root_hints"
+        assert report["process_scan_performed"] == true
         assert [repo_filter] = report["process_repo_root_filters"]
         assert String.replace(repo_filter, "\\", "/") == "c:/sympp/repo-one"
         assert report["live_process_counts"]["erl_sympp_mcp"] == 0
@@ -2246,6 +2250,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true
@@ -2256,8 +2261,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         report = Jason.decode!(output)
         caches = Map.fetch!(report, "installed_cache")
         assert report["process_scan_scope"] == "installed_cache_source_root_hints"
+        assert report["process_scan_performed"] == false
+        assert report["process_scan_note"] =~ "-SkipProcessScan"
         assert [repo_filter] = report["process_repo_root_filters"]
         assert String.replace(repo_filter, "\\", "/") == "c:/sympp/repo-one"
+        assert report["live_process_counts"]["erl_sympp_mcp"] == 0
 
         assert Enum.any?(
                  caches,
@@ -2531,6 +2539,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true
@@ -2611,6 +2620,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true
@@ -2816,6 +2826,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true
@@ -2883,6 +2894,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true
@@ -2995,6 +3007,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
               temp_codex_home,
               "-MarketplaceName",
               "jonat-local",
+              "-SkipProcessScan",
               "-Json"
             ],
             stderr_to_stdout: true
