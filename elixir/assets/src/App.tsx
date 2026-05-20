@@ -6061,12 +6061,12 @@ function blockerEndpointNodeId(
   const slice = context.sliceById.get(endpoint.id);
   if (!slice) return undefined;
 
+  const pkg = context.packageById.get(slice.work_package_id || "");
+  if (pkg) return packageNodeId(pkg);
+
   if (sliceLane(slice) === "slices") {
     return sliceNodeId(slice);
   }
-
-  const pkg = context.packageById.get(slice.work_package_id || "");
-  if (pkg) return packageNodeId(pkg);
 
   return role === "target" ? sliceNodeId(slice) : undefined;
 }
