@@ -10,7 +10,7 @@ function Write-Usage {
   Write-Host ""
   Write-Host "Environment:"
   Write-Host "  SYMPP_REPO_ROOT   Optional repo checkout root. Required when the plugin runs from installed cache."
-  Write-Host "  SYMPP_DATABASE    Optional SQLite ledger path passed to mix sympp.mcp."
+  Write-Host "  SYMPP_DATABASE    Optional SQLite ledger override passed to mix sympp.mcp. When omitted, mix sympp.mcp prefers %USERPROFILE%\.agents\splusplus\symphony_plus_plus.sqlite3 and falls back under temp/relative .agents\splusplus if home is unavailable."
   Write-Host "  SYMPP_LAUNCHER    Optional launcher: 'direct' or 'mise'. Defaults to 'direct'."
   Write-Host "  SYMPP_MIX         Optional mix executable path or name for direct launcher. Defaults to 'mix'."
   Write-Host "  SYMPP_MISE        Optional mise executable path or name for mise launcher. Defaults to 'mise'."

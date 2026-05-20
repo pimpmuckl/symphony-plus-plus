@@ -261,6 +261,7 @@ defmodule Mix.Tasks.Sympp.CreateWorkTest do
       assert Application.get_env(:symphony_elixir, :sympp_repo_database) == unrelated_database
 
       assert Repo.same_database_path?(database_path, expected_database_path)
+      assert Path.split(database_path) |> Enum.take(-3) == [".agents", "splusplus", "symphony_plus_plus.sqlite3"]
       assert Path.basename(database_path) == "symphony_plus_plus.sqlite3"
     after
       if previous_workflow do

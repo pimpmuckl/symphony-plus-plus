@@ -514,10 +514,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
       Application.put_env(:symphony_elixir, :sympp_repo_database, " ")
 
       database_path = Repo.database_path()
-      assert database_path != Path.expand("")
-      assert database_path =~ ".symphony_plus_plus"
-      assert Path.basename(database_path) == "symphony_plus_plus.sqlite3"
-      refute "workflows" in Path.split(database_path)
+      assert_default_sympp_database_path(database_path)
     after
       restore_app_env(:sympp_repo_database, original_database_path)
     end
@@ -526,8 +523,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
   test "default Symphony++ Repo database root does not require an available user home" do
     home_dir = Path.join(System.tmp_dir!(), "sympp-home-root")
     temp_dir = Path.join(System.tmp_dir!(), "sympp-default-root")
-    home_root = Path.join(home_dir, ".symphony_plus_plus")
-    temp_root = Path.join(temp_dir, ".symphony_plus_plus")
+    home_root = Path.join([home_dir, ".agents", "splusplus"])
+    temp_root = Path.join([temp_dir, ".agents", "splusplus"])
 
     mkdir_fun = fn
       ^home_root -> {:error, :eacces}
@@ -542,7 +539,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     assert Repo.default_database_root_for_test(nil, temp_dir) ==
              temp_root
 
-    assert Repo.default_database_root_for_test(nil, nil) == ".symphony_plus_plus"
+    assert Repo.default_database_root_for_test(nil, nil) == Path.join([".agents", "splusplus"])
   end
 
   test "default Symphony++ Repo database path is shared across workflow files" do
@@ -561,12 +558,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
       second_database = Repo.database_path()
 
       assert first_database == second_database
-      assert first_database =~ ".symphony_plus_plus"
-      assert Path.basename(first_database) == "symphony_plus_plus.sqlite3"
-      refute "workflows" in Path.split(first_database)
-      assert second_database =~ ".symphony_plus_plus"
-      assert Path.basename(second_database) == "symphony_plus_plus.sqlite3"
-      refute "workflows" in Path.split(second_database)
+      assert_default_sympp_database_path(first_database)
+      assert_default_sympp_database_path(second_database)
     after
       if original_workflow_path do
         Workflow.set_workflow_file_path(original_workflow_path)
@@ -597,8 +590,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
       second_database = Repo.database_path()
 
       assert first_database == second_database
-      assert first_database =~ ".symphony_plus_plus"
-      refute "workflows" in Path.split(first_database)
+      assert_default_sympp_database_path(first_database)
     after
       if original_workflow_path do
         Workflow.set_workflow_file_path(original_workflow_path)
@@ -2059,6 +2051,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
       :undefined -> :ok
       table -> :ets.delete(table)
     end
+  end
+
+  defp assert_default_sympp_database_path(database_path) do
+    path_parts = Path.split(database_path)
+
+    assert database_path != Path.expand("")
+    assert Enum.take(path_parts, -3) == [".agents", "splusplus", "symphony_plus_plus.sqlite3"]
+    assert Path.basename(database_path) == "symphony_plus_plus.sqlite3"
+    refute "workflows" in path_parts
   end
 
   defp reset_local_lock_owner do

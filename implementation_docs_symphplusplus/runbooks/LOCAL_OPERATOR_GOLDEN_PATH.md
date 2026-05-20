@@ -60,14 +60,16 @@ and may not list plugin-scoped MCP servers from an enabled opt-in plugin. Use
 the doctor plus `smoke-sympp-mcp-http.ps1` as the repeatable proof, then verify
 tool availability in a newly started dedicated MCP-enabled session.
 
-For normal operator use, keep one durable SQLite ledger path handy:
-
-```powershell
-$ledger = "C:\path\to\sympp-local.sqlite3"
-```
-
-Use the same explicit ledger path for the cockpit, planned-slice dispatch, MCP
-handoffs, and Solo Session commands that should see the same local state.
+For normal operator use, omit `--database`. Cockpit, MCP, Solo Session,
+create-work, and planned-slice dispatch all use the same durable local ledger.
+The preferred home is `$HOME/.agents/splusplus/symphony_plus_plus.sqlite3` on
+POSIX-style shells and
+`%USERPROFILE%\.agents\splusplus\symphony_plus_plus.sqlite3` on Windows; if
+home is unavailable, Symphony++ falls back under a temp/relative
+`.agents/splusplus` root. Use `--database` or `SYMPP_DATABASE` only for
+isolated tests, manual experiments, or demo ledgers. Pre-production ledgers
+under the earlier `~/.symphony_plus_plus` default are not auto-migrated; pass
+that path with `--database` only when you need to inspect old dogfood state.
 
 ## Optional Demo Ledger
 
@@ -100,7 +102,7 @@ From the repository root, start the local operator cockpit:
 
 ```powershell
 Set-Location elixir
-mix sympp.cockpit --database $ledger
+mix sympp.cockpit
 ```
 
 The task binds to `127.0.0.1:4057` by default, prints
@@ -290,7 +292,6 @@ Or run the CLI directly from `elixir/`:
 
 ```powershell
 mix sympp.solo attach `
-  --database <solo-ledger.sqlite3> `
   --repo <repo> `
   --base-branch <branch> `
   --workspace-path <absolute-workspace-path> `

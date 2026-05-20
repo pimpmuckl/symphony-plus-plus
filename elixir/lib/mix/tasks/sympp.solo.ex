@@ -54,6 +54,7 @@ defmodule Mix.Tasks.Sympp.Solo do
   def usage do
     [
       "Usage: mix sympp.solo <command> [options]",
+      Repo.default_database_help_text(),
       "  mix sympp.solo attach --repo <repo> --base-branch <branch> --workspace-path <abs-path> --caller-id <id> [--title <title>] [--database <sqlite-path>]",
       "  mix sympp.solo append --session-id <id> --entry-kind <kind> --title <title> [--body <text>] [--status <status>] [--idempotency-key <key>] [--payload-json <json-object>] [--database <sqlite-path>]",
       "  mix sympp.solo show --session-id <id> [--database <sqlite-path>]",

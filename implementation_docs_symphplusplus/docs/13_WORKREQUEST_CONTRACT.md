@@ -364,10 +364,10 @@ containing the worker secret handoff script. It additionally requires a
 file-backed live ledger database so the worker handoff command
 reconnects to the same ledger; in-memory database configuration fails closed
 before WorkPackage or grant side effects. Blank database configuration is
-treated as absent and uses the live ledger. Matching
-configured SQLite file URI options are preserved for the worker command when they
-resolve to the same live ledger, including default repo database configuration;
-divergent explicit MCP database configuration fails closed, and matching
+treated as absent and uses the live local ledger. Matching configured SQLite
+file URI options are preserved for the worker command when they resolve to the
+same live ledger, including the default local ledger; divergent explicit MCP
+database configuration fails closed, and matching
 read-only SQLite URI options such as `mode=ro` or `immutable=1` are rejected
 before dispatch. Dispatch-link
 failures return sanitized recovery identifiers and redacted handoff metadata

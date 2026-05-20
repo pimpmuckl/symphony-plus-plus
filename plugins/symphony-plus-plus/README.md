@@ -283,9 +283,12 @@ mix sympp.cockpit
 
 By default it prints `http://127.0.0.1:4057/sympp/board` and serves MCP at
 `http://127.0.0.1:4057/mcp`, backed by the shared local Symphony++ default
-ledger. Pass `--database <ledger.sqlite3>` only for isolation. Codex must load
-an MCP server configuration before the model session starts for the tools to be
-registered in that session. The
+ledger, preferring `$HOME/.agents/splusplus/symphony_plus_plus.sqlite3`
+(`%USERPROFILE%\.agents\splusplus\symphony_plus_plus.sqlite3` on Windows) and
+falling back under a temp/relative `.agents/splusplus` root if home is
+unavailable. Pass `--database <ledger.sqlite3>` only for isolation. Codex must load an MCP server
+configuration before the model session starts for the tools to be registered in
+that session. The
 sibling `plugins/symphony-plus-plus-mcp` plugin is the bundled opt-in package
 for dedicated configs and points at that local HTTP daemon. If the daemon is not
 running, the tools may be unavailable, but the plugin should not spawn a
@@ -367,8 +370,8 @@ When the plugin is executed from this source checkout, the wrapper can infer the
 repository root. When it runs from an installed plugin cache, set
 `SYMPP_REPO_ROOT` to a Symphony++ checkout or refresh the local cache with
 `scripts/refresh-local-plugin.ps1`, which writes a non-secret source-root hint
-for the wrapper. Set `SYMPP_DATABASE` when the MCP server should use a specific
-SQLite ledger instead of the runtime default.
+for the wrapper. Set `SYMPP_DATABASE` only when the MCP server should use a
+specific SQLite ledger instead of the runtime default.
 
 The wrapper defaults to running `mix` directly from `PATH`, so the explicit MCP
 path does not require `mise trust` when `mix` resolves to a real
@@ -405,9 +408,10 @@ required.
 
 When neither `--database` nor `SYMPP_DATABASE` is supplied, the wrapper lets
 `mix sympp.solo` use the shared local Symphony++ default ledger, matching
-cockpit and WorkRequest/WorkPackage CLI defaults. The wrapper resolves relative
-database overrides against the caller workspace and restores the original
-current directory after invoking Mix.
+cockpit and WorkRequest/WorkPackage CLI defaults in the preferred
+`$HOME/.agents/splusplus/` home or the existing fallback root.
+The wrapper resolves relative database overrides against the caller workspace
+and restores the original current directory after invoking Mix.
 
 Solo Session planning is explicitly separate from WorkPackage orchestration.
 Use `symphony-plus-plus-mcp:symphony-work-package` for assigned WorkPackages or
