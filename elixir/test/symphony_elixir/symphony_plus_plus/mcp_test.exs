@@ -9792,7 +9792,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "artifacts" => ["review-log.txt"],
       "head_sha" => "def456",
       "acceptance_criteria_met" => true,
-      "reviews" => [%{"lane" => " normal ", "verdict" => " green "}]
+      "reviews" => [%{"lane" => " review_t2 ", "verdict" => " green "}]
     })
 
     empty_plan_response =

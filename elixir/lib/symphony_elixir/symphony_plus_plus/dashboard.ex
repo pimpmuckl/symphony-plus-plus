@@ -19,6 +19,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.State
   alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.ReviewProfiles
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service, as: SoloSessionsService
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
@@ -1764,8 +1765,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp required_review_lanes(%WorkPackage{} = work_package) do
     case policy_for(work_package) do
-      {:ok, policy} -> get_in(policy, [:review_suite, :required]) || []
-      {:error, _reason} -> []
+      {:ok, policy} ->
+        policy
+        |> get_in([:review_suite, :required])
+        |> ReviewProfiles.normalize_profiles()
+
+      {:error, _reason} ->
+        []
     end
   end
 
@@ -1861,7 +1867,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
         %ProgressEvent{} = event ->
           event
           |> review_package_reviews(readiness_head_sha)
-          |> Enum.reduce(%{}, fn review, verdicts -> Map.put(verdicts, Map.get(review, "lane"), Map.get(review, "verdict")) end)
+          |> Enum.reduce(%{}, fn review, verdicts ->
+            Map.put(verdicts, ReviewProfiles.normalize_profile(Map.get(review, "lane")), Map.get(review, "verdict"))
+          end)
 
         nil ->
           %{}
@@ -1872,10 +1880,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp progress_review_lanes_present?(progress_events, required_lanes) do
     Enum.all?(required_lanes, fn lane ->
-      green_status = "review_#{lane}_green"
-      statuses = [green_status, "review_#{lane}_red", "review_#{lane}_failed"]
+      green_statuses = ReviewProfiles.green_statuses(lane)
 
-      latest_generic_progress_status(progress_events, statuses) == green_status
+      latest_generic_progress_status(progress_events, ReviewProfiles.statuses(lane)) in green_statuses
     end)
   end
 
