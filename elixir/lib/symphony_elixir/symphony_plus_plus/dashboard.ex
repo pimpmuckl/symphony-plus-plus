@@ -828,21 +828,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp active_blocking_edge(blocker, %WorkPackage{} = work_package, %PlannedSlice{} = planned_slice) do
-    from = %{kind: "slice", id: planned_slice.id}
+    fallback_from = %{kind: "slice", id: planned_slice.id}
+    from = blocker.blocked_by || fallback_from
+    to = blocker.blocked_item || %{kind: "work_package", id: work_package.id}
 
     blocker
-    |> build_active_blocking_edge(work_package, from)
+    |> build_active_blocking_edge(work_package, from, to)
     |> Map.put(:work_request_id, planned_slice.work_request_id)
     |> Map.put(:planned_slice_id, planned_slice.id)
   end
 
   defp active_blocking_edge(blocker, %WorkPackage{} = work_package, _linked_planned_slice) do
-    build_active_blocking_edge(blocker, work_package, %{kind: "work_package", id: work_package.id})
+    from = blocker.blocked_by || %{kind: "work_package", id: work_package.id}
+    to = blocker.blocked_item || %{kind: "work_package", id: work_package.id}
+
+    build_active_blocking_edge(blocker, work_package, from, to)
   end
 
-  defp build_active_blocking_edge(blocker, %WorkPackage{} = work_package, from) do
-    to = %{kind: "work_package", id: work_package.id}
-
+  defp build_active_blocking_edge(blocker, %WorkPackage{} = work_package, from, to) do
     %{
       id: active_blocking_edge_id(blocker.id, from, to),
       blocker_id: blocker.id,
@@ -2649,6 +2652,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
         status: event.status,
         source_tool: Map.get(payload, "source_tool"),
         resolution: Map.get(payload, "resolution"),
+        blocked_by: blocker_endpoint(Map.get(payload, "blocked_by")),
+        blocked_item: blocker_endpoint(Map.get(payload, "blocked_item")),
         actor: actor(event),
         event_id: event.id,
         updated_at: timestamp(event.created_at)
@@ -2681,6 +2686,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp blocker_event?(%ProgressEvent{}), do: false
+
+  defp blocker_endpoint(%{} = value) do
+    kind = value |> Map.get("kind", Map.get(value, :kind)) |> normalize_blocker_endpoint_kind()
+    id = value |> Map.get("id", Map.get(value, :id)) |> normalize_blocker_endpoint_id()
+
+    if kind && id do
+      %{kind: kind, id: id}
+    end
+  end
+
+  defp blocker_endpoint(_value), do: nil
+
+  defp normalize_blocker_endpoint_kind(value) when is_binary(value) do
+    case String.trim(value) do
+      "planned_slice" -> "slice"
+      "slice" -> "slice"
+      "work_package" -> "work_package"
+      _other -> nil
+    end
+  end
+
+  defp normalize_blocker_endpoint_kind(_value), do: nil
+
+  defp normalize_blocker_endpoint_id(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      id -> id
+    end
+  end
+
+  defp normalize_blocker_endpoint_id(_value), do: nil
 
   defp actor(%ProgressEvent{} = event) do
     %{

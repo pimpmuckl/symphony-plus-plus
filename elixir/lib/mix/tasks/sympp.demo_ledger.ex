@@ -543,7 +543,19 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
       {"SYMPP-DEMO-WP-PLANNING",
        %{
          plan: [{"Architect scoped smoke path", "done"}, {"Worker plan pending", "pending"}],
-         progress: [{"Architecture planning started", "planning", %{"slice" => "api-bridge-smoke"}}],
+         progress: [
+           {"Architecture planning started", "planning", %{"slice" => "api-bridge-smoke"}},
+           {"Slice sequencing waits on handoff", "blocked",
+            %{
+              "type" => "blocker",
+              "source_tool" => "report_blocker",
+              "blocker_id" => "demo-slice-sequencing-dependency",
+              "active" => true,
+              "blocked_by" => %{"kind" => "slice", "id" => "SYMPP-DEMO-SLICE-QUEUED"},
+              "blocked_item" => %{"kind" => "slice", "id" => "SYMPP-DEMO-SLICE-PLANNING"},
+              "summary" => "Plan API bridge smoke coverage after the worker handoff slice is ready."
+            }}
+         ],
          findings: [{"API bridge path remains local-only", "info"}],
          artifacts: [{"Planning note", "implementation_docs_symphplusplus/runbooks/LOCAL_OPERATOR_GOLDEN_PATH.md"}]
        }},
@@ -585,7 +597,18 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
       {"SYMPP-DEMO-WP-CI",
        %{
          plan: [{"Open PR", "done"}, {"Wait for CI", "pending"}],
-         progress: [{"CI waiting on required checks", "ci_waiting", %{"checks" => ["unit", "ui-build"]}}],
+         progress: [
+           {"CI waiting on required checks", "ci_waiting", %{"checks" => ["unit", "ui-build"]}},
+           {"Dependency waiting on smoke coverage", "blocked",
+            %{
+              "type" => "blocker",
+              "source_tool" => "report_blocker",
+              "blocker_id" => "demo-ci-smoke-dependency",
+              "active" => true,
+              "blocked_by" => %{"kind" => "work_package", "id" => "SYMPP-DEMO-WP-REVIEW"},
+              "summary" => "Wait for API bridge smoke coverage before this package can clear CI."
+            }}
+         ],
          findings: [{"No live secrets needed for CI demo", "info"}],
          artifacts: [{"CI preview", "https://example.invalid/symphony-plus-plus/actions/runs/303"}]
        }},

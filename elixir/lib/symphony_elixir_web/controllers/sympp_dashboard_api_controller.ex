@@ -685,6 +685,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       {:ok,
        %{
          generated_at: DateTime.utc_now(:microsecond) |> DateTime.to_iso8601(),
+         ledger: %{database: dashboard_ledger_database(repo)},
          active_blocking_edges: active_blocking_edges,
          board: board,
          work_requests: work_requests,
