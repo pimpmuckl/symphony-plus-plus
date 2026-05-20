@@ -12,7 +12,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
-  alias SymphonyElixir.SymphonyPlusPlus.GitHub.MergeReconciler
+  alias SymphonyElixir.SymphonyPlusPlus.GitHub.{DefaultClient, MergeReconciler}
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service, as: GuidanceRequestService
   alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
   alias SymphonyElixir.SymphonyPlusPlus.Repo
@@ -793,7 +793,13 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp text_value(nil), do: ""
   defp text_value(value), do: to_string(value)
 
-  defp github_sync_opts(%{"mode" => "auto"}), do: [require_authenticated_client?: true]
+  defp github_sync_opts(%{"mode" => "auto"}) do
+    [
+      client: Application.get_env(:symphony_elixir, :sympp_github_client, DefaultClient),
+      require_authenticated_client?: true
+    ]
+  end
+
   defp github_sync_opts(_params), do: []
 
   defp blank_param?(value) when is_binary(value), do: String.trim(value) == ""

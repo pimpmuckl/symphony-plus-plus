@@ -1,11 +1,14 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
   use ExUnit.Case, async: false
 
+  alias SymphonyElixir.FakeAuthenticatedGitHubClient
+  alias SymphonyElixir.FakeGhCli
   alias SymphonyElixir.FakeGitHubClient
   alias SymphonyElixir.GitHubPullRequestFixtures
+  alias SymphonyElixir.GitHubTestSupport
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
-  alias SymphonyElixir.SymphonyPlusPlus.GitHub.{HttpClient, MergeReconciler}
+  alias SymphonyElixir.SymphonyPlusPlus.GitHub.{DefaultClient, GhCliClient, HttpClient, MergeReconciler}
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
@@ -35,6 +38,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
     repo.delete_all(WorkPackage)
     repo.delete_all(Phase)
     FakeGitHubClient.clear()
+    FakeGhCli.clear()
     :ok
   end
 
@@ -204,8 +208,105 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
     assert updated.status == "ready_for_architect_merge"
   end
 
-  test "periodic default HTTP sync skips when no GitHub token is configured", %{repo: repo} do
-    with_github_token_env(nil, fn ->
+  test "periodic default sync prefers gh CLI and does not require token env", %{repo: repo} do
+    with_github_client_env(nil, fn ->
+      GitHubTestSupport.with_github_token_env(nil, fn ->
+        assert {:ok, package} = create_package(repo, id: "SYMPP-GH-CLI-AUTO", status: "ready_for_human_merge")
+        append_pr_evidence(repo, package, 22, "head-a")
+        FakeGhCli.authenticate(:ok)
+        FakeGhCli.put_response("nextide/repo", 22, GitHubPullRequestFixtures.gh_view(22, "head-a", merged?: true))
+
+        assert {:ok, result} =
+                 MergeReconciler.reconcile(repo,
+                   client: DefaultClient,
+                   require_authenticated_client?: true,
+                   command_runner: &FakeGhCli.run/3
+                 )
+
+        assert result.merged_count == 1
+        assert [%{status: "merged", reason: "github_pr_merged", work_package_id: "SYMPP-GH-CLI-AUTO"}] = result.results
+        assert {:ok, updated} = WorkPackageRepository.get(repo, package.id)
+        assert updated.status == "merged"
+
+        assert [
+                 %{args: ["auth", "status", "--hostname", "github.com"]},
+                 %{args: ["pr", "view", "22", "--repo", "nextide/repo", "--json", _fields]}
+               ] = FakeGhCli.commands()
+      end)
+    end)
+  end
+
+  test "periodic gh CLI sync skips instead of returning polling errors when gh cannot authenticate", %{repo: repo} do
+    for {auth_status, reason} <- [
+          {:unavailable, "gh_cli_unavailable_for_periodic_sync"},
+          {:unauthorized, "gh_cli_auth_required_for_periodic_sync"}
+        ] do
+      FakeGhCli.clear()
+      FakeGhCli.authenticate(auth_status)
+
+      assert {:ok, result} =
+               MergeReconciler.reconcile(repo,
+                 client: GhCliClient,
+                 require_authenticated_client?: true,
+                 command_runner: &FakeGhCli.run/3
+               )
+
+      assert result.reason == reason
+      assert result.results == []
+      assert result.total_count == 0
+    end
+  end
+
+  test "default local client falls back to token client when gh cannot see the PR", %{repo: repo} do
+    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-CLI-FALLBACK", status: "ready_for_human_merge")
+    append_pr_evidence(repo, package, 24, "head-a")
+
+    FakeGhCli.authenticate(:ok)
+    FakeGhCli.put_error("nextide/repo", 24, :gh_not_found)
+    FakeGitHubClient.put_response("nextide/repo", 24, GitHubPullRequestFixtures.metadata(24, "head-a", merged?: true))
+
+    assert {:ok, result} =
+             MergeReconciler.reconcile(repo,
+               client: DefaultClient,
+               fallback_client: FakeAuthenticatedGitHubClient,
+               require_authenticated_client?: true,
+               command_runner: &FakeGhCli.run/3
+             )
+
+    assert result.merged_count == 1
+    assert [%{status: "merged", reason: "github_pr_merged", work_package_id: "SYMPP-GH-CLI-FALLBACK"}] = result.results
+  end
+
+  test "default local client auth guard honors configured fallback client", %{repo: repo} do
+    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-CLI-FALLBACK-AUTH", status: "ready_for_human_merge")
+    append_pr_evidence(repo, package, 25, "head-a")
+
+    FakeGhCli.authenticate(:unavailable)
+    FakeGitHubClient.put_response("nextide/repo", 25, GitHubPullRequestFixtures.metadata(25, "head-a", merged?: true))
+
+    assert {:ok, result} =
+             MergeReconciler.reconcile(repo,
+               client: DefaultClient,
+               fallback_client: FakeAuthenticatedGitHubClient,
+               require_authenticated_client?: true,
+               command_runner: &FakeGhCli.run/3
+             )
+
+    assert result.merged_count == 1
+    assert [%{status: "merged", reason: "github_pr_merged", work_package_id: "SYMPP-GH-CLI-FALLBACK-AUTH"}] = result.results
+  end
+
+  test "periodic sync skips custom clients without an auth probe", %{repo: repo} do
+    assert {:ok, result} =
+             MergeReconciler.reconcile(repo, client: FakeGitHubClient, require_authenticated_client?: true)
+
+    assert result.reason == "authenticated_client_required_for_periodic_sync"
+    assert result.results == []
+    assert result.total_count == 0
+  end
+
+  test "periodic HTTP sync skips when no GitHub token is configured", %{repo: repo} do
+    GitHubTestSupport.with_github_token_env(nil, fn ->
       assert {:ok, result} = MergeReconciler.reconcile(repo, client: HttpClient, require_authenticated_client?: true)
 
       assert result.reason == "github_token_required_for_periodic_sync"
@@ -259,20 +360,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
              })
   end
 
-  defp with_github_token_env(value, fun) do
-    original_github_token = System.get_env("GITHUB_TOKEN")
-    original_gh_token = System.get_env("GH_TOKEN")
+  defp with_github_client_env(value, fun) do
+    original = Application.get_env(:symphony_elixir, :sympp_github_client)
 
     try do
-      set_env("GITHUB_TOKEN", value)
-      set_env("GH_TOKEN", value)
+      case value do
+        nil -> Application.delete_env(:symphony_elixir, :sympp_github_client)
+        client -> Application.put_env(:symphony_elixir, :sympp_github_client, client)
+      end
+
       fun.()
     after
-      set_env("GITHUB_TOKEN", original_github_token)
-      set_env("GH_TOKEN", original_gh_token)
+      case original do
+        nil -> Application.delete_env(:symphony_elixir, :sympp_github_client)
+        client -> Application.put_env(:symphony_elixir, :sympp_github_client, client)
+      end
     end
   end
-
-  defp set_env(key, nil), do: System.delete_env(key)
-  defp set_env(key, value), do: System.put_env(key, value)
 end

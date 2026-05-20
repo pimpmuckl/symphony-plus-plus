@@ -4,8 +4,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   import Phoenix.ConnTest
   import Plug.Conn, only: [put_req_header: 3]
 
+  alias SymphonyElixir.FakeAuthenticatedGitHubClient
+  alias SymphonyElixir.FakeGhCli
   alias SymphonyElixir.FakeGitHubClient
   alias SymphonyElixir.GitHubPullRequestFixtures
+  alias SymphonyElixir.GitHubTestSupport
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
@@ -3050,6 +3053,101 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
+  test "local operator auto GitHub sync uses gh CLI without token env", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      with_operator_gh_cli_runner(fn ->
+        GitHubTestSupport.with_github_token_env(nil, fn ->
+          work_package =
+            create_work_package!(repo,
+              id: "SYMPP-LOCAL-OPERATOR-GH-CLI-AUTO",
+              kind: "hotfix",
+              repo: "nextide/repo",
+              status: "ready_for_human_merge"
+            )
+
+          assert {:ok, _branch} =
+                   PlanningRepository.append_progress_event(repo, %{
+                     work_package_id: work_package.id,
+                     summary: "Branch attached",
+                     status: "branch_attached",
+                     payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "head-a"}
+                   })
+
+          assert {:ok, _pr} =
+                   PlanningRepository.append_progress_event(repo, %{
+                     work_package_id: work_package.id,
+                     summary: "PR attached",
+                     status: "pr_attached",
+                     payload: %{type: "pr", source_tool: "attach_pr", url: "https://github.com/nextide/repo/pull/23", head_sha: "head-a"}
+                   })
+
+          FakeGhCli.authenticate(:ok)
+          FakeGhCli.put_response("nextide/repo", 23, GitHubPullRequestFixtures.gh_view(23, "head-a", merged?: true))
+
+          payload =
+            local_operator_csrf_conn()
+            |> post("/api/v1/sympp/operator/github/sync-prs", %{mode: "auto"})
+            |> json_response(200)
+
+          assert payload["sync"]["merged_count"] == 1
+          assert [%{"work_package_id" => "SYMPP-LOCAL-OPERATOR-GH-CLI-AUTO", "status" => "merged"}] = payload["sync"]["results"]
+          assert payload["dashboard"]["generated_at"]
+
+          assert {:ok, updated} = WorkPackageRepository.get(repo, work_package.id)
+          assert updated.status == "merged"
+
+          assert [
+                   %{args: ["auth", "status", "--hostname", "github.com"]},
+                   %{args: ["pr", "view", "23", "--repo", "nextide/repo", "--json", _fields]}
+                 ] = FakeGhCli.commands()
+        end)
+      end)
+    end)
+  end
+
+  test "local operator auto GitHub sync respects configured GitHub client", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      with_operator_authenticated_github_client(fn ->
+        GitHubTestSupport.with_github_token_env(nil, fn ->
+          work_package =
+            create_work_package!(repo,
+              id: "SYMPP-LOCAL-OPERATOR-GH-CONFIGURED-AUTO",
+              kind: "hotfix",
+              repo: "nextide/repo",
+              status: "ready_for_human_merge"
+            )
+
+          assert {:ok, _branch} =
+                   PlanningRepository.append_progress_event(repo, %{
+                     work_package_id: work_package.id,
+                     summary: "Branch attached",
+                     status: "branch_attached",
+                     payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: "head-a"}
+                   })
+
+          assert {:ok, _pr} =
+                   PlanningRepository.append_progress_event(repo, %{
+                     work_package_id: work_package.id,
+                     summary: "PR attached",
+                     status: "pr_attached",
+                     payload: %{type: "pr", source_tool: "attach_pr", url: "https://github.com/nextide/repo/pull/25", head_sha: "head-a"}
+                   })
+
+          FakeGitHubClient.put_response("nextide/repo", 25, GitHubPullRequestFixtures.metadata(25, "head-a", merged?: true))
+
+          payload =
+            local_operator_csrf_conn()
+            |> post("/api/v1/sympp/operator/github/sync-prs", %{mode: "auto"})
+            |> json_response(200)
+
+          assert payload["sync"]["merged_count"] == 1
+          assert [%{"work_package_id" => "SYMPP-LOCAL-OPERATOR-GH-CONFIGURED-AUTO", "status" => "merged"}] = payload["sync"]["results"]
+          assert FakeGhCli.commands() == []
+        end)
+      end)
+    end)
+  end
+
   test "local operator can fetch Solo Session detail through the dashboard API", %{repo: repo} do
     with_local_operator_endpoint(fn ->
       assert {:ok, session} =
@@ -4101,6 +4199,48 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       case original do
         nil -> Application.delete_env(:symphony_elixir, :sympp_github_client)
         value -> Application.put_env(:symphony_elixir, :sympp_github_client, value)
+      end
+    end
+  end
+
+  defp with_operator_authenticated_github_client(fun) when is_function(fun, 0) do
+    original = Application.get_env(:symphony_elixir, :sympp_github_client)
+    Application.put_env(:symphony_elixir, :sympp_github_client, FakeAuthenticatedGitHubClient)
+    FakeGhCli.clear()
+
+    try do
+      fun.()
+    after
+      FakeGitHubClient.clear()
+      FakeGhCli.clear()
+
+      case original do
+        nil -> Application.delete_env(:symphony_elixir, :sympp_github_client)
+        value -> Application.put_env(:symphony_elixir, :sympp_github_client, value)
+      end
+    end
+  end
+
+  defp with_operator_gh_cli_runner(fun) when is_function(fun, 0) do
+    original_client = Application.get_env(:symphony_elixir, :sympp_github_client)
+    original_runner = Application.get_env(:symphony_elixir, :sympp_gh_command_runner)
+
+    Application.delete_env(:symphony_elixir, :sympp_github_client)
+    Application.put_env(:symphony_elixir, :sympp_gh_command_runner, &FakeGhCli.run/3)
+
+    try do
+      fun.()
+    after
+      FakeGhCli.clear()
+
+      case original_client do
+        nil -> Application.delete_env(:symphony_elixir, :sympp_github_client)
+        value -> Application.put_env(:symphony_elixir, :sympp_github_client, value)
+      end
+
+      case original_runner do
+        nil -> Application.delete_env(:symphony_elixir, :sympp_gh_command_runner)
+        value -> Application.put_env(:symphony_elixir, :sympp_gh_command_runner, value)
       end
     end
   end
