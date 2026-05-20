@@ -355,6 +355,9 @@ export type WorkPackageDetailPayload = {
 
 export type DashboardPayload = {
   generated_at?: string;
+  ledger?: {
+    database?: string | null;
+  };
   active_blocking_edges?: ActiveBlockingEdge[];
   board?: {
     groups?: Record<string, WorkPackageCard[]>;

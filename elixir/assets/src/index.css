@@ -216,7 +216,10 @@
     opacity: 0.86;
   }
 
-  .dashboard-shell > header,
+  .dashboard-shell > header {
+    z-index: 20;
+  }
+
   .dashboard-shell > div {
     position: relative;
     z-index: 1;
@@ -225,9 +228,12 @@
   .dashboard-header-glass {
     isolation: isolate;
     overflow: clip;
-    border-bottom: 1px solid hsl(var(--border) / 0.46);
+    border-bottom: 1px solid hsl(190 90% 44% / 0.14);
     background: transparent;
-    box-shadow: 0 8px 22px hsl(224 27% 12% / 0.035);
+    box-shadow:
+      0 1px 0 hsl(0 0% 100% / 0.18) inset,
+      0 10px 24px -18px hsl(190 95% 38% / 0.28),
+      0 16px 28px -22px hsl(224 27% 12% / 0.2);
     transform: translateZ(0);
     backface-visibility: hidden;
     will-change: transform;
@@ -254,8 +260,11 @@
   }
 
   .dark .dashboard-header-glass {
-    border-bottom-color: hsl(var(--border) / 0.44);
-    box-shadow: 0 10px 26px hsl(0 0% 0% / 0.18);
+    border-bottom-color: hsl(190 90% 56% / 0.18);
+    box-shadow:
+      0 1px 0 hsl(0 0% 100% / 0.08) inset,
+      0 10px 24px -18px hsl(190 90% 56% / 0.34),
+      0 18px 32px -20px hsl(0 0% 0% / 0.58);
   }
 
   .dark .dashboard-header-glass::before {

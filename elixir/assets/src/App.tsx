@@ -72,6 +72,7 @@ declare global {
 const CUSTOM_CHOICE = "__custom_redirect__";
 const DASHBOARD_UI_STATE_KEY = "symphony-plus-plus.dashboard.ui-state.v1";
 const DASHBOARD_THEME_KEY = "symphony-plus-plus.dashboard.theme.v1";
+const DASHBOARD_DEBUG_ANIMATIONS_KEY = "symphony-plus-plus.dashboard.debug-animations";
 const ALIGNED_ROW_MIN_HEIGHT = 112;
 const BOARD_WIRE_TRACK_CLEARANCE = 40;
 const DASHBOARD_POLL_INTERVAL_MS = 7000;
@@ -160,6 +161,7 @@ type DashboardUiState = {
   topPanel?: TopPanelKey | null;
   repoWorkstreams?: Record<string, boolean>;
   workstreamLayout?: WorkstreamLayoutMode;
+  theme?: DashboardTheme;
 };
 
 function normalizeRuntimeBase(value: string | undefined, fallback: string) {
@@ -357,6 +359,7 @@ export default function App() {
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>(readStoredWorkspaceTab);
   const [workstreamLayout, setWorkstreamLayout] = useState<WorkstreamLayoutMode>(readStoredWorkstreamLayout);
   const [theme, setTheme] = useState<DashboardTheme>(readStoredTheme);
+  const [showUpdateSimulationControls] = useState(shouldShowUpdateSimulationControls);
   const loadInFlightRef = useRef(false);
 
   const loadDashboard = useCallback(async (mode: "initial" | "refresh" | "silent" = "refresh") => {
@@ -411,8 +414,16 @@ export default function App() {
   }, [workstreamLayout]);
 
   useEffect(() => {
-    writeStoredTheme(theme);
+    applyDashboardTheme(theme);
   }, [theme]);
+
+  const toggleTheme = useCallback(() => {
+    setTheme((currentTheme) => {
+      const nextTheme = currentTheme === "dark" ? "light" : "dark";
+      writeStoredTheme(nextTheme);
+      return nextTheme;
+    });
+  }, []);
 
   const packages = useMemo(() => allPackages(dashboard), [dashboard]);
   const requests = dashboard?.work_requests?.work_requests ?? [];
@@ -465,9 +476,9 @@ export default function App() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              <UpdateSimulationControls updateAnimations={updateAnimations} />
-              <Badge variant={error ? "danger" : "success"}>{error ? "API unavailable" : "Live ledger"}</Badge>
-              <ThemeToggle theme={theme} onToggle={() => setTheme((currentTheme) => (currentTheme === "dark" ? "light" : "dark"))} />
+              {showUpdateSimulationControls ? <UpdateSimulationControls updateAnimations={updateAnimations} /> : null}
+              <LiveLedgerBadge error={error} databasePath={dashboard?.ledger?.database} />
+              <ThemeToggle theme={theme} onToggle={toggleTheme} />
               <Button variant="outline" size="sm" onClick={() => void loadDashboard()} disabled={refreshing} className="button-lift">
                 {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                 Refresh
@@ -1573,6 +1584,27 @@ function UpdateSimulationControls({ updateAnimations }: { updateAnimations: Dash
   );
 }
 
+function LiveLedgerBadge({ error, databasePath }: { error: string | null; databasePath?: string | null }) {
+  const label = error ? "API unavailable" : "Live ledger";
+  const tooltip = error ? "Dashboard API unavailable." : databasePath || "Database path unavailable.";
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge variant={error ? "danger" : "success"} className="cursor-help">
+          {label}
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-[min(34rem,calc(100vw-2rem))]">
+        <div className="grid gap-1">
+          <span className="text-xs font-medium">{error ? "Status" : "Database"}</span>
+          <span className="break-all font-mono text-[11px] leading-relaxed text-muted-foreground">{tooltip}</span>
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function GuidancePreviewCard({
   item,
   index,
@@ -2666,9 +2698,10 @@ function measureBoardWires(board: HTMLDivElement, wires: BoardWire[]) {
 
     const sourceRect = layoutRectWithinBoard(source, board);
     const targetRect = layoutRectWithinBoard(target, board);
+    const sameLaneSide = sourceLane === targetLane ? sameLaneBoardWireSide(sourceLane, lanes) : undefined;
     const forward = targetLane >= sourceLane;
-    const sourceX = forward ? sourceRect.x + sourceRect.width : sourceRect.x;
-    const targetX = forward ? targetRect.x : targetRect.x + targetRect.width;
+    const sourceX = sameLaneSide === "left" ? sourceRect.x : sameLaneSide === "right" ? sourceRect.x + sourceRect.width : forward ? sourceRect.x + sourceRect.width : sourceRect.x;
+    const targetX = sameLaneSide === "left" ? targetRect.x : sameLaneSide === "right" ? targetRect.x + targetRect.width : forward ? targetRect.x : targetRect.x + targetRect.width;
     const sourceY = sourceRect.y + sourceRect.height / 2;
     const targetY = targetRect.y + targetRect.height / 2;
 
@@ -2685,10 +2718,10 @@ function measureBoardWires(board: HTMLDivElement, wires: BoardWire[]) {
         sourceY,
         targetX,
         targetY,
-        trackX: defaultBoardWireTrackX(sourceX, targetX),
+        trackX: sourceLane === targetLane ? sameLaneBoardWireTrackX(sourceLane, lanes, 0, 1) : defaultBoardWireTrackX(sourceX, targetX),
         trackIndex: 0,
         trackCount: 1,
-        trackSide: "source",
+        trackSide: sourceLane === targetLane ? "spread" : "source",
       },
     ];
   });
@@ -2747,6 +2780,7 @@ function assignBoardWireTracks(wires: MeasuredBoardWire[], lanes: Array<{ node: 
 
   wires.forEach((wire) => {
     const gapIndex = primaryBoardWireGapIndex(wire);
+    if (wire.sourceLane === wire.targetLane) return;
     if (gapIndex < 0 || gapIndex >= lanes.length - 1) return;
     const key = `${gapIndex}:${wire.from}`;
     fanoutSources.set(key, (fanoutSources.get(key) || 0) + 1);
@@ -2757,10 +2791,10 @@ function assignBoardWireTracks(wires: MeasuredBoardWire[], lanes: Array<{ node: 
 
   wires.forEach((wire) => {
     const gapIndex = primaryBoardWireGapIndex(wire);
-    if (gapIndex < 0 || gapIndex >= lanes.length - 1) return;
+    if (wire.sourceLane !== wire.targetLane && (gapIndex < 0 || gapIndex >= lanes.length - 1)) return;
 
     wire.trackSide = fanoutGaps.has(gapIndex) ? "spread" : boardWireTrackSide(wire);
-    const key = `${gapIndex}:${wire.trackSide}`;
+    const key = boardWireTrackGroupKey(wire, lanes);
     const group = groups.get(key) || [];
     group.push(wire);
     groups.set(key, group);
@@ -3029,7 +3063,17 @@ function primaryBoardWireGapIndex(wire: MeasuredBoardWire) {
 }
 
 function boardWireTrackSide(wire: MeasuredBoardWire): WireTrackSide {
+  if (wire.sourceLane === wire.targetLane) return "spread";
   return wire.targetY >= wire.sourceY ? "source" : "target";
+}
+
+function boardWireTrackGroupKey(wire: MeasuredBoardWire, lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>) {
+  if (wire.sourceLane === wire.targetLane) {
+    const side = sameLaneBoardWireSide(wire.sourceLane, lanes);
+    return `same-gap:${sameLaneBoardWireGapIndex(wire.sourceLane, side)}`;
+  }
+
+  return `${primaryBoardWireGapIndex(wire)}:${wire.trackSide}`;
 }
 
 function boardWireVerticalSpan(wire: MeasuredBoardWire) {
@@ -3045,6 +3089,10 @@ function boardWireTrackX(
   trackIndex = wire.trackIndex,
   trackCount = wire.trackCount,
 ) {
+  if (wire.sourceLane === wire.targetLane) {
+    return sameLaneBoardWireTrackX(wire.sourceLane, lanes, trackIndex, trackCount);
+  }
+
   const gapIndex = primaryBoardWireGapIndex(wire);
   const leftLane = lanes[gapIndex];
   const rightLane = lanes[gapIndex + 1];
@@ -3078,6 +3126,39 @@ function boardWireTrackX(
     : bandEnd - (bandEnd - bandStart) * trackRatio;
 
   return clampNumber(rawX, bandStart, bandEnd);
+}
+
+function sameLaneBoardWireSide(laneIndex: number, lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>) {
+  return laneIndex < lanes.length - 1 ? "right" : "left";
+}
+
+function sameLaneBoardWireGapIndex(laneIndex: number, side: "left" | "right") {
+  return side === "right" ? laneIndex : laneIndex - 1;
+}
+
+function sameLaneBoardWireTrackX(
+  laneIndex: number,
+  lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>,
+  trackIndex = 0,
+  trackCount = 1,
+) {
+  const lane = lanes[laneIndex];
+  if (!lane) return 0;
+
+  const side = sameLaneBoardWireSide(laneIndex, lanes);
+  const neighbor = side === "right" ? lanes[laneIndex + 1] : lanes[laneIndex - 1];
+  if (!neighbor) return side === "right" ? lane.rect.x + lane.rect.width + 12 : lane.rect.x - 12;
+
+  const gapStart = side === "right" ? lane.rect.x + lane.rect.width : neighbor.rect.x + neighbor.rect.width;
+  const gapEnd = side === "right" ? neighbor.rect.x : lane.rect.x;
+  const minX = Math.min(gapStart, gapEnd) + 4;
+  const maxX = Math.max(gapStart, gapEnd) - 4;
+  if (maxX <= minX) return side === "right" ? gapStart + 8 : gapEnd - 8;
+
+  const safeTrackCount = Math.max(1, trackCount);
+  const trackRatio = safeTrackCount === 1 ? 0.5 : trackIndex / (safeTrackCount - 1);
+  const rawX = minX + (maxX - minX) * trackRatio;
+  return clampNumber(rawX, minX, maxX);
 }
 
 function boardWireBendRadius(wire: MeasuredBoardWire, lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>) {
@@ -3148,15 +3229,15 @@ function skippedLaneRects(
 
 function boardWirePath(sourceX: number, sourceY: number, targetX: number, targetY: number, trackX = defaultBoardWireTrackX(sourceX, targetX), maxRadius = 14) {
   const deltaX = targetX - sourceX;
-  if (Math.abs(deltaX) <= 24 || Math.abs(targetY - sourceY) < 2) {
+  if (Math.abs(targetY - sourceY) < 2) {
     return `M ${sourceX} ${sourceY} H ${targetX}`;
   }
 
-  const xTurn = deltaX >= 0 ? 1 : -1;
+  const xTurn = Math.abs(deltaX) <= 2 ? (trackX >= sourceX ? 1 : -1) : deltaX >= 0 ? 1 : -1;
   const yTurn = targetY >= sourceY ? 1 : -1;
   const minBendX = Math.min(sourceX, targetX) + 10;
   const maxBendX = Math.max(sourceX, targetX) - 10;
-  const bendX = clampNumber(trackX, minBendX, maxBendX);
+  const bendX = minBendX <= maxBendX ? clampNumber(trackX, minBendX, maxBendX) : trackX;
   const radius = Math.min(maxRadius, Math.abs(targetY - sourceY) / 2, Math.abs(bendX - sourceX) / 2, Math.abs(targetX - bendX) / 2);
 
   if (radius < 1) {
@@ -5938,11 +6019,14 @@ function blockerEndpointNodeId(
   const slice = context.sliceById.get(endpoint.id);
   if (!slice) return undefined;
 
-  if (role === "target" || sliceLane(slice) === "slices") {
+  if (sliceLane(slice) === "slices") {
     return sliceNodeId(slice);
   }
 
-  return undefined;
+  const pkg = context.packageById.get(slice.work_package_id || "");
+  if (pkg) return packageNodeId(pkg);
+
+  return role === "target" ? sliceNodeId(slice) : undefined;
 }
 
 function blockerFallbackSourceNode(edge: ActiveBlockingEdge, context: ReturnType<typeof blockerWireContext>) {
@@ -6100,6 +6184,9 @@ function updateDashboardUiState(updater: (state: DashboardUiState) => DashboardU
 function readStoredTheme(): DashboardTheme {
   if (typeof window === "undefined") return "light";
 
+  const storedUiTheme = readDashboardUiState().theme;
+  if (isDashboardTheme(storedUiTheme)) return storedUiTheme;
+
   try {
     const storedTheme = window.localStorage.getItem(DASHBOARD_THEME_KEY);
     if (isDashboardTheme(storedTheme)) return storedTheme;
@@ -6113,13 +6200,31 @@ function readStoredTheme(): DashboardTheme {
 function writeStoredTheme(theme: DashboardTheme) {
   if (typeof window === "undefined") return;
 
+  updateDashboardUiState((state) => ({ ...state, theme }));
+
   try {
     window.localStorage.setItem(DASHBOARD_THEME_KEY, theme);
   } catch {
     // Theme persistence is best-effort; the class toggle still applies for the active session.
   }
 
+  applyDashboardTheme(theme);
+}
+
+function applyDashboardTheme(theme: DashboardTheme) {
+  if (typeof document === "undefined") return;
   document.documentElement.classList.toggle("dark", theme === "dark");
+}
+
+function shouldShowUpdateSimulationControls() {
+  if (typeof window === "undefined") return false;
+
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("debugAnimations") === "1" || window.localStorage.getItem(DASHBOARD_DEBUG_ANIMATIONS_KEY) === "true";
+  } catch {
+    return false;
+  }
 }
 
 function defaultRepoWorkstreamOpen(repo: Pick<RepoSummary, "requested" | "active" | "implementing" | "finished" | "guidanceCount" | "blockerCount">) {
