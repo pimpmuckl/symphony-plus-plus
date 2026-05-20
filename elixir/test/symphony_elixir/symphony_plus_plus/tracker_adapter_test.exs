@@ -18,6 +18,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
   alias SymphonyElixir.WorkPackageFactory
 
   @fast_lock_retry_delay_ms 1
+  @adapter_repo_cleanup_poll_ms 10
+  @adapter_repo_cleanup_timeout_ms 2_000
   @lock_wait_observer_key :sympp_tracker_adapter_lock_wait_observer
   @lock_wait_probe_ms 250
 
@@ -610,11 +612,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
     try do
       Application.put_env(:symphony_elixir, :sympp_repo_database, first_database)
       assert {:ok, []} = Tracker.fetch_candidate_issues()
-      assert :undefined = adapter_repo_pid(first_database)
+      assert_adapter_repo_unregistered(first_database)
 
       Application.put_env(:symphony_elixir, :sympp_repo_database, second_database)
       assert {:ok, []} = Tracker.fetch_candidate_issues()
-      assert :undefined = adapter_repo_pid(second_database)
+      assert_adapter_repo_unregistered(second_database)
     after
       stop_adapter_repo(first_database)
       stop_adapter_repo(second_database)
@@ -632,7 +634,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
       Application.put_env(:symphony_elixir, :sympp_repo_database, database_path)
 
       assert {:ok, []} = Tracker.fetch_candidate_issues()
-      assert :undefined = adapter_repo_pid(database_path)
+      assert_adapter_repo_unregistered(database_path)
     after
       stop_adapter_repo(database_path)
       restore_app_env(:sympp_repo_database, original_database_path)
@@ -704,7 +706,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
       Application.put_env(:symphony_elixir, :sympp_repo_migrated_keys, :corrupt_cache_state)
 
       assert {:ok, []} = Tracker.fetch_candidate_issues()
-      assert :undefined = adapter_repo_pid(database_path)
+      assert_adapter_repo_unregistered(database_path)
     after
       stop_adapter_repo(database_path)
       restore_app_env(:sympp_repo_database, original_database_path)
@@ -2035,6 +2037,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.TrackerAdapterTest do
   defp restore_fetched_app_env(key, :error), do: Application.delete_env(:symphony_elixir, key)
 
   defp adapter_repo_pid(database_path), do: :global.whereis_name(Repo.process_key(database_path))
+
+  defp assert_adapter_repo_unregistered(database_path) do
+    deadline = System.monotonic_time(:millisecond) + @adapter_repo_cleanup_timeout_ms
+
+    assert wait_for_adapter_repo_unregistered(database_path, deadline) == :undefined
+  end
+
+  defp wait_for_adapter_repo_unregistered(database_path, deadline) do
+    case adapter_repo_pid(database_path) do
+      :undefined ->
+        :undefined
+
+      pid when is_pid(pid) ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          pid
+        else
+          Process.sleep(@adapter_repo_cleanup_poll_ms)
+          wait_for_adapter_repo_unregistered(database_path, deadline)
+        end
+    end
+  end
 
   defp assert_task_pending(task) do
     assert is_nil(Task.yield(task, @lock_wait_probe_ms))
