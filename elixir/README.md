@@ -262,6 +262,10 @@ The observability UI now runs on a minimal Phoenix stack:
 make all
 ```
 
+`make all` is quiet by default. It prints one line per gate step and writes full
+logs to `_build/make-logs/`. Run `make all VERBOSE=1` to stream Mix output while
+debugging.
+
 Run the real external end-to-end test only when you want Symphony to create disposable Linear
 resources and launch a real `codex app-server` session:
 
