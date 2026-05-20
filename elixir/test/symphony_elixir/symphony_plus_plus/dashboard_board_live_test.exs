@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
   use ExUnit.Case, async: false
 
+  @moduletag skip: "The human-facing dashboard is now served by the Vite React shell and operator API tests."
+
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
   import Plug.Conn, only: [get_resp_header: 2, put_req_header: 3]
@@ -1226,7 +1228,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
 
     html = response(conn, 401)
 
-    assert html =~ ~s(href="/app/dashboard.css")
+    refute html =~ "dashboard.css"
     assert html =~ ~s(action="/app/sympp/board/session")
   end
 
@@ -1241,12 +1243,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardBoardLiveTest do
         inner_content: ""
       )
 
-    assert html =~ ~s(src="/app/vendor/phoenix_html/phoenix_html.js")
-    assert html =~ ~s(src="/app/vendor/phoenix/phoenix.js")
-    assert html =~ ~s(src="/app/vendor/phoenix_live_view/phoenix_live_view.js")
-    assert html =~ ~s(href="/app/dashboard.css")
-    assert html =~ ~s(content="/app/live")
-    assert html =~ ~s(var liveSocket = new window.LiveView.LiveSocket(liveSocketPath)
+    refute html =~ "/app/vendor/phoenix_html/phoenix_html.js"
+    refute html =~ "/app/vendor/phoenix/phoenix.js"
+    refute html =~ "/app/vendor/phoenix_live_view/phoenix_live_view.js"
+    refute html =~ "/app/dashboard.css"
+    refute html =~ "/app/live"
+    refute html =~ "window.LiveView.LiveSocket"
   end
 
   test "authorized board HTTP response includes package content before websocket connect" do

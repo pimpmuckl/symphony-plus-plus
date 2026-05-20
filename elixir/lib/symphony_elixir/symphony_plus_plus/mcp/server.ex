@@ -7519,7 +7519,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       green_statuses = ReviewProfiles.green_statuses(lane)
 
       latest_status =
-        latest_generic_progress_status(progress_events, head_boundary_sequence, ReviewProfiles.statuses(lane))
+        latest_generic_progress_status(
+          progress_events,
+          head_boundary_sequence,
+          ReviewProfiles.statuses(lane)
+        )
 
       latest_status in green_statuses
     end)

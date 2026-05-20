@@ -9,6 +9,8 @@
     "longDescription": "Use Symphony++ to maintain lightweight local Solo Session planning memory without starting MCP. Dedicated WorkPackage and architect orchestration should use the opt-in Symphony++ MCP plugin or explicit MCP startup config.",
     "developerName": "Jonathan",
     "category": "Coding",
-    "capabilities": ["Read", "Write"]
+    "capabilities": ["Read", "Write"],
+    "composerIcon": "./assets/splusplus-logo.png",
+    "logo": "./assets/splusplus-logo.png"
   }
 }

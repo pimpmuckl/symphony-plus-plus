@@ -25,6 +25,12 @@ defmodule SymphonyElixirWeb.Endpoint do
 
   plug(SymphonyElixirWeb.MCPHTTPPlug)
 
+  plug(Plug.Static,
+    at: "/",
+    from: {:symphony_elixir, "priv/static"},
+    only: ~w(assets favicon.ico splusplus-logo.png)
+  )
+
   plug(Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],

@@ -21,6 +21,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Service, as: PlanningService
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service, as: SoloSessionsService
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
+  alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
@@ -29,6 +32,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
   alias SymphonyElixir.WorkPackageFactory
+  alias SymphonyElixirWeb.ReactDashboardController
   alias SymphonyElixirWeb.SymppDashboardApiController
 
   @endpoint SymphonyElixirWeb.Endpoint
@@ -184,6 +188,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     repo.delete_all(ProgressEvent)
     repo.delete_all(Finding)
     repo.delete_all(PlanNode)
+    repo.delete_all(SoloSessionEntry)
+    repo.delete_all(SoloSession)
     repo.delete_all(AccessGrant)
     repo.delete_all(WorkPackage)
     repo.delete_all(Phase)
@@ -2855,6 +2861,173 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              json_response(get(unknown_work_key_conn, "/api/v1/sympp/board"), 401)
   end
 
+  test "local operator dashboard returns aggregate workflow state", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      assert {:ok, work_request} =
+               WorkRequestRepository.create(repo, %{
+                 title: "Operator intake",
+                 repo: "symphony-plus-plus",
+                 base_branch: "main",
+                 work_type: "feature",
+                 human_description: "Build the dashboard.",
+                 constraints: %{},
+                 desired_dispatch_shape: "architect_led_feature_branch",
+                 status: "ready_for_clarification"
+               })
+
+      payload = json_response(get(local_operator_conn(), "/api/v1/sympp/operator/dashboard"), 200)
+
+      assert payload["work_requests"]["total_count"] == 1
+      assert [%{"work_request" => %{"id" => work_request_id}}] = payload["work_request_details"]
+      assert work_request_id == work_request.id
+    end)
+  end
+
+  test "local operator config returns runtime csrf and asset paths" do
+    with_local_operator_endpoint(fn ->
+      payload = json_response(get(local_operator_conn(), "/api/v1/sympp/operator/config"), 200)
+
+      assert payload["apiBase"] == "/api/v1/sympp/operator"
+      assert payload["basePath"] == ""
+      assert payload["logoUrl"] == "/splusplus-logo.png"
+      assert is_binary(payload["csrfToken"])
+      assert byte_size(payload["csrfToken"]) > 20
+    end)
+  end
+
+  test "local operator can fetch package detail through the dashboard API", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      %{work_package: work_package} = create_dashboard_fixture(repo, id: "SYMPP-LOCAL-OPERATOR-DETAIL")
+
+      payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/work-packages/#{work_package.id}")
+        |> json_response(200)
+
+      assert payload["work_package"]["id"] == work_package.id
+      assert is_list(payload["progress"])
+      assert is_map(payload["summary"])
+    end)
+  end
+
+  test "local operator can fetch Solo Session detail through the dashboard API", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      assert {:ok, session} =
+               SoloSessionsService.create_or_attach_current(repo, %{
+                 repo: "nextide/demo-operator",
+                 base_branch: "main",
+                 workspace_path: @repo_root,
+                 caller_id: "local-dashboard-test",
+                 title: "Inspect solo modal"
+               })
+
+      assert {:ok, _entry} =
+               SoloSessionsService.append_entry(repo, session.id, %{
+                 entry_kind: "task_plan",
+                 title: "Plan the solo session card",
+                 body: "## Plan\n- Keep the card quiet.\n- Put the detail in the modal.",
+                 status: "in_progress",
+                 idempotency_key: "solo-dashboard-detail-test:plan"
+               })
+
+      payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/solo-sessions/#{session.id}")
+        |> json_response(200)
+
+      assert payload["solo_session"]["id"] == session.id
+      assert payload["entry_count"] == 1
+      assert [%{"kind" => "task_plan", "body" => body}] = payload["entries"]
+      assert body =~ "Keep the card quiet"
+    end)
+  end
+
+  test "local operator can create a WorkRequest through the dashboard API", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      payload =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/work-requests", %{
+          "title" => "Fresh dashboard request",
+          "repo" => "symphony-plus-plus",
+          "base_branch" => "main",
+          "work_type" => "feature",
+          "human_description" => "Create a first-class operator cockpit.",
+          "desired_dispatch_shape" => "architect_led_feature_branch",
+          "constraints" => %{"allowed_paths" => ["elixir"]}
+        })
+        |> json_response(201)
+
+      assert payload["work_request"]["work_request"]["status"] == "ready_for_clarification"
+      assert payload["dashboard"]["work_requests"]["total_count"] == 1
+
+      assert {:ok, [stored]} = WorkRequestRepository.list(repo)
+      assert stored.title == "Fresh dashboard request"
+    end)
+  end
+
+  test "local operator mutations require CSRF protection" do
+    with_local_operator_endpoint(fn ->
+      index = "<!doctype html><html><head></head><body><div id=\"root\"></div></body></html>"
+
+      with_static_dashboard_file("index.html", index, fn ->
+        shell_conn =
+          local_operator_conn()
+          |> Plug.Test.init_test_session(%{})
+          |> ReactDashboardController.index(%{})
+
+        assert html_response(shell_conn, 200) =~ "csrfToken"
+
+        assert_raise Plug.CSRFProtection.InvalidCSRFTokenError, fn ->
+          shell_conn
+          |> recycle_local_operator_conn("http://evil.example")
+          |> post("/api/v1/sympp/operator/work-requests", %{
+            "title" => "Cross-site dashboard request",
+            "repo" => "symphony-plus-plus",
+            "base_branch" => "main",
+            "work_type" => "feature",
+            "human_description" => "This should not reach the local ledger.",
+            "desired_dispatch_shape" => "architect_led_feature_branch"
+          })
+        end
+      end)
+    end)
+  end
+
+  test "react dashboard shell injects prefix-aware runtime config" do
+    index = """
+    <!doctype html>
+    <html>
+      <head>
+        <link rel="icon" href="/splusplus-logo.png">
+        <script type="module" src="/assets/index.js"></script>
+      </head>
+      <body><div id="root"></div></body>
+    </html>
+    """
+
+    with_static_dashboard_file("index.html", index, fn ->
+      html =
+        build_conn(:get, "/sympp/board")
+        |> Plug.Test.init_test_session(%{})
+        |> Map.put(:script_name, ["app"])
+        |> ReactDashboardController.index(%{})
+        |> html_response(200)
+
+      assert html =~ ~s(href="/app/splusplus-logo.png")
+      assert html =~ ~s(src="/app/assets/index.js")
+      assert html =~ "window.SYMPP_DASHBOARD_CONFIG"
+      assert html =~ ~s("apiBase":"/app/api/v1/sympp/operator")
+      assert html =~ ~s("logoUrl":"/app/splusplus-logo.png")
+      assert html =~ ~s("csrfToken":)
+    end)
+  end
+
+  test "endpoint serves the built dashboard logo asset" do
+    with_static_dashboard_file("splusplus-logo.png", "logo-bytes", fn ->
+      assert response(get(build_conn(), "/splusplus-logo.png"), 200) == "logo-bytes"
+    end)
+  end
+
   test "dashboard API rejects grants after package authority reaches terminal state", %{repo: repo} do
     %{work_package: work_package, work_key_secret: secret} = create_dashboard_fixture(repo, status: "planning")
 
@@ -3707,6 +3880,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     |> put_req_header("authorization", "Bearer #{secret}")
   end
 
+  defp local_operator_conn do
+    build_conn()
+    |> Map.put(:host, "localhost")
+    |> Map.put(:remote_ip, {127, 0, 0, 1})
+    |> put_req_header("origin", "http://localhost")
+  end
+
+  defp local_operator_csrf_conn do
+    csrf_token = Plug.CSRFProtection.get_csrf_token()
+
+    local_operator_conn()
+    |> Plug.Test.init_test_session(%{})
+    |> put_req_header("x-csrf-token", csrf_token)
+  end
+
+  defp recycle_local_operator_conn(conn, origin) do
+    conn
+    |> recycle()
+    |> Map.put(:host, "localhost")
+    |> Map.put(:remote_ip, {127, 0, 0, 1})
+    |> put_req_header("origin", origin)
+  end
+
+  defp with_static_dashboard_file(file_name, contents, fun) when is_function(fun, 0) do
+    static_dir =
+      :symphony_elixir
+      |> :code.priv_dir()
+      |> Path.join("static")
+
+    path = Path.join(static_dir, file_name)
+    original = File.read(path)
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, contents)
+
+    try do
+      fun.()
+    after
+      case original do
+        {:ok, previous} -> File.write!(path, previous)
+        {:error, _reason} -> File.rm(path)
+      end
+    end
+  end
+
   defp start_test_endpoint do
     endpoint_config =
       :symphony_elixir
@@ -3715,6 +3932,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
     start_supervised!({SymphonyElixirWeb.Endpoint, []})
+  end
+
+  defp with_local_operator_endpoint(fun) when is_function(fun, 0) do
+    endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
+
+    Application.put_env(
+      :symphony_elixir,
+      SymphonyElixirWeb.Endpoint,
+      Keyword.put(endpoint_config, :sympp_local_operator, true)
+    )
+
+    try do
+      fun.()
+    after
+      Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
+    end
   end
 
   defp with_endpoint_repo(repo, fun) when is_atom(repo) and is_function(fun, 0) do

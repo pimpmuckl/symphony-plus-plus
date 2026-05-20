@@ -15,6 +15,7 @@ defmodule Mix.Tasks.Sympp.Cockpit do
     database: :string,
     host: :string,
     port: :integer,
+    dashboard_origin: :string,
     help: :boolean
   ]
 
@@ -35,7 +36,8 @@ defmodule Mix.Tasks.Sympp.Cockpit do
   @spec usage() :: String.t()
   def usage do
     [
-      "Usage: mix sympp.cockpit [--host <loopback-host>] [--port <port>] [--database <sqlite-path>]",
+      "Usage: mix sympp.cockpit [--host <loopback-host>] [--port <port>] " <>
+        "[--database <sqlite-path>] [--dashboard-origin <vite-origin>]",
       Repo.default_database_help_text()
     ]
     |> Enum.join("\n")
@@ -74,6 +76,9 @@ defmodule Mix.Tasks.Sympp.Cockpit do
       has_blank_option?(opts, [:database, :host]) ->
         {:error, usage()}
 
+      has_blank_option?(opts, [:dashboard_origin]) ->
+        {:error, usage()}
+
       not loopback_host?(Keyword.get(opts, :host, @default_host)) ->
         {:error, "Symphony++ cockpit host must be loopback: #{@default_host}, localhost, ::1, or [::1]."}
 
@@ -89,7 +94,26 @@ defmodule Mix.Tasks.Sympp.Cockpit do
     opts
     |> Keyword.put_new(:host, @default_host)
     |> Keyword.put_new(:port, @default_port)
+    |> maybe_put_dashboard_origin_from_env()
     |> maybe_resolve_database()
+  end
+
+  defp maybe_put_dashboard_origin_from_env(opts) do
+    if Keyword.has_key?(opts, :dashboard_origin) do
+      opts
+    else
+      case dashboard_origin_from_env() do
+        nil -> opts
+        origin -> Keyword.put(opts, :dashboard_origin, origin)
+      end
+    end
+  end
+
+  defp dashboard_origin_from_env do
+    case System.get_env("SYMPP_DASHBOARD_ORIGIN") do
+      value when is_binary(value) and value != "" -> value
+      _value -> nil
+    end
   end
 
   defp maybe_resolve_database(opts) do
@@ -107,12 +131,14 @@ defmodule Mix.Tasks.Sympp.Cockpit do
     original_endpoint_config = Application.get_env(:symphony_elixir, Endpoint, [])
 
     try do
+      :ok = ensure_dashboard_assets(opts)
       configure_cockpit(opts, original_endpoint_config)
       {:ok, _started} = ensure_runtime_started()
       :ok = start_http_server_or_raise(opts)
       port = wait_for_bound_port()
 
-      Mix.shell().info("Symphony++ local operator cockpit: #{cockpit_url(opts, port)}")
+      Mix.shell().info("Symphony++ local operator dashboard: #{cockpit_url(opts, port)}")
+      Mix.shell().info("Symphony++ API bridge: #{api_url(opts, port)}")
       Mix.shell().info("Press Ctrl+C to stop.")
 
       wait_fun.()
@@ -171,10 +197,82 @@ defmodule Mix.Tasks.Sympp.Cockpit do
     Application.put_env(:symphony_elixir, Endpoint, endpoint_config(original_endpoint_config, opts))
   end
 
+  defp ensure_dashboard_assets(opts) do
+    if Keyword.has_key?(opts, :dashboard_origin) do
+      :ok
+    else
+      ensure_built_dashboard_assets()
+    end
+  end
+
+  defp ensure_built_dashboard_assets do
+    if File.exists?(runtime_dashboard_index_path()) do
+      :ok
+    else
+      build_dashboard_assets()
+    end
+  end
+
+  defp build_dashboard_assets do
+    assets_dir = Path.expand("assets", File.cwd!())
+    npm = System.find_executable("npm") || System.find_executable("npm.cmd")
+
+    cond do
+      not File.dir?(assets_dir) ->
+        Mix.raise("Symphony++ dashboard assets directory is missing: #{assets_dir}")
+
+      is_nil(npm) ->
+        Mix.raise("Symphony++ dashboard assets are missing and npm was not found. Run npm install/build in #{assets_dir}.")
+
+      true ->
+        case System.cmd(npm, ["run", "build"], cd: assets_dir, stderr_to_stdout: true) do
+          {_output, 0} ->
+            sync_dashboard_static_assets()
+
+          {output, status} ->
+            Mix.raise("Symphony++ dashboard asset build failed with exit #{status}:\n#{output}")
+        end
+    end
+  end
+
+  defp sync_dashboard_static_assets do
+    source_static_dir = Path.expand("priv/static", File.cwd!())
+    target_static_dir = :symphony_elixir |> :code.priv_dir() |> Path.join("static")
+
+    if Path.expand(source_static_dir) != Path.expand(target_static_dir) do
+      File.mkdir_p!(Path.dirname(target_static_dir))
+      File.cp_r!(source_static_dir, target_static_dir)
+    end
+
+    unless File.exists?(runtime_dashboard_index_path()) do
+      Mix.raise("Symphony++ dashboard asset build completed but #{runtime_dashboard_index_path()} was not created.")
+    end
+
+    :ok
+  end
+
+  defp runtime_dashboard_index_path do
+    :symphony_elixir
+    |> :code.priv_dir()
+    |> Path.join("static/index.html")
+  end
+
   defp endpoint_config(original_endpoint_config, opts) do
     original_endpoint_config
-    |> Keyword.merge(server: false, sympp_local_operator: true)
+    |> Keyword.merge(
+      server: false,
+      sympp_local_operator: true
+    )
+    |> Keyword.delete(:sympp_dashboard_origin)
+    |> maybe_put_dashboard_origin(opts)
     |> maybe_force_default_repo(opts)
+  end
+
+  defp maybe_put_dashboard_origin(endpoint_config, opts) do
+    case Keyword.get(opts, :dashboard_origin) do
+      origin when is_binary(origin) and origin != "" -> Keyword.put(endpoint_config, :sympp_dashboard_origin, origin)
+      _origin -> endpoint_config
+    end
   end
 
   defp maybe_force_default_repo(endpoint_config, opts) do
@@ -229,8 +327,17 @@ defmodule Mix.Tasks.Sympp.Cockpit do
   end
 
   defp cockpit_url(opts, port) do
+    dashboard_origin =
+      opts
+      |> Keyword.get(:dashboard_origin, api_url(opts, port))
+      |> String.trim_trailing("/")
+
+    "#{dashboard_origin}#{@board_path}"
+  end
+
+  defp api_url(opts, port) do
     host = opts |> Keyword.fetch!(:host) |> url_host()
-    "http://#{host}:#{port}#{@board_path}"
+    "http://#{host}:#{port}"
   end
 
   defp url_host("::1"), do: "[::1]"

@@ -487,7 +487,7 @@ defmodule SymphonyElixir.ExtensionsTest do
              }
   end
 
-  test "dashboard bootstraps liveview from embedded static assets" do
+  test "dashboard root shell does not reference legacy static assets" do
     orchestrator_name = Module.concat(__MODULE__, :AssetOrchestrator)
 
     {:ok, _pid} =
@@ -505,31 +505,15 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     html = html_response(get(build_conn(), "/"), 200)
-    assert html =~ "/dashboard.css"
-    assert html =~ "/vendor/phoenix_html/phoenix_html.js"
-    assert html =~ "/vendor/phoenix/phoenix.js"
-    assert html =~ "/vendor/phoenix_live_view/phoenix_live_view.js"
+    refute html =~ "/dashboard.css"
+    refute html =~ "/vendor/phoenix_html/phoenix_html.js"
+    refute html =~ "/vendor/phoenix/phoenix.js"
+    refute html =~ "/vendor/phoenix_live_view/phoenix_live_view.js"
     refute html =~ "/assets/app.js"
     refute html =~ "<style>"
-
-    dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
-    assert dashboard_css =~ ":root {"
-    assert dashboard_css =~ ".status-badge-live"
-    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
-    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
-
-    phoenix_html_js = response(get(build_conn(), "/vendor/phoenix_html/phoenix_html.js"), 200)
-    assert phoenix_html_js =~ "phoenix.link.click"
-
-    phoenix_js = response(get(build_conn(), "/vendor/phoenix/phoenix.js"), 200)
-    assert phoenix_js =~ "var Phoenix = (() => {"
-
-    live_view_js =
-      response(get(build_conn(), "/vendor/phoenix_live_view/phoenix_live_view.js"), 200)
-
-    assert live_view_js =~ "var LiveView = (() => {"
   end
 
+  @tag skip: "The root human dashboard is now served by the React shell; pubsub rendering belonged to the retired LiveView surface."
   test "dashboard liveview renders and refreshes over pubsub" do
     orchestrator_name = Module.concat(__MODULE__, :DashboardOrchestrator)
     snapshot = static_snapshot()
@@ -606,6 +590,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
   end
 
+  @tag skip: "The root human dashboard is now served by the React shell; unavailable rendering belonged to the retired LiveView surface."
   test "dashboard liveview renders an unavailable state without crashing" do
     start_test_endpoint(
       orchestrator: Module.concat(__MODULE__, :MissingDashboardOrchestrator),
@@ -652,14 +637,6 @@ defmodule SymphonyElixir.ExtensionsTest do
     response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
     assert response.status == 200
     assert response.body["counts"] == %{"running" => 1, "retrying" => 1}
-
-    dashboard_css = Req.get!("http://127.0.0.1:#{port}/dashboard.css")
-    assert dashboard_css.status == 200
-    assert dashboard_css.body =~ ":root {"
-
-    phoenix_js = Req.get!("http://127.0.0.1:#{port}/vendor/phoenix/phoenix.js")
-    assert phoenix_js.status == 200
-    assert phoenix_js.body =~ "var Phoenix = (() => {"
 
     refresh_response =
       Req.post!("http://127.0.0.1:#{port}/api/v1/refresh",
