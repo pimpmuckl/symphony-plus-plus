@@ -1252,9 +1252,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "created_by_name" => string_schema(),
         "created_via" => string_schema()
       },
-      ["repo", "base_branch", "title", "request_kind"]
+      ["repo", "base_branch", "title", "request_kind", "description"]
     )
-    |> Map.put("anyOf", [%{"required" => ["human_description"]}, %{"required" => ["description"]}])
   end
 
   defp worker_tool_input_schema("claim_work_key") do
@@ -2385,7 +2384,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_architect_capability(_assignment, _capability), do: {:error, :insufficient_capability}
 
   defp authorize_architect_tool_call(%__MODULE__{session: nil}, name) do
-    {:error, -32_001, "Unauthorized", %{"resource" => name, "reason" => "claim_required", "action" => "claim_private_handoff"}}
+    {:error, -32_001, "Unauthorized", %{"resource" => name, "reason" => "claim_required", "action" => "claim_work_key"}}
   end
 
   defp authorize_architect_tool_call(%__MODULE__{config: config, session: session}, name) do
@@ -2584,8 +2583,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
             "message" => ArchitectHandoff.error_message(reason)
           },
           "retry" => %{
-            "tool" => "create_work_request",
-            "work_request_id" => work_request.id
+            "type" => "manual_architect_handoff_replay",
+            "work_request_id" => work_request.id,
+            "operator_action" => "prepare_architect_handoff"
           }
         }
     end
@@ -8640,7 +8640,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if unexpected != [] do
       {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "unexpected_argument", "arguments" => unexpected}}
     else
-      case validate_tool_required_arguments(bootstrap_tool_input_schema(name), arguments) do
+      case validate_tool_required_arguments(bootstrap_tool_input_schema(name), bootstrap_validation_arguments(name, arguments)) do
         :ok -> {:ok, arguments}
         {:error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => reason}}
       end
@@ -8674,6 +8674,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> Map.get("properties", %{})
     |> Map.keys()
   end
+
+  defp bootstrap_validation_arguments("create_work_request", arguments) do
+    if blank_argument?(Map.get(arguments, "description")) and nonblank_argument?(Map.get(arguments, "human_description")) do
+      Map.put(arguments, "description", Map.get(arguments, "human_description"))
+    else
+      arguments
+    end
+  end
+
+  defp bootstrap_validation_arguments(_name, arguments), do: arguments
+
+  defp blank_argument?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank_argument?(nil), do: true
+  defp blank_argument?(_value), do: false
+
+  defp nonblank_argument?(value) when is_binary(value), do: String.trim(value) != ""
+  defp nonblank_argument?(_value), do: false
 
   defp validate_tool_required_arguments(schema, arguments) do
     properties = Map.get(schema, "properties", %{})

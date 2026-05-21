@@ -291,7 +291,8 @@ summary with creator provenance, redacted architect handoff metadata, and a
 copyable launch prompt that instructs the next architect agent to use
 `claim_private_handoff`. If architect handoff creation fails after the
 WorkRequest is created, the tool returns a partial-success shape with the
-WorkRequest id and retry context while still withholding raw secret material.
+WorkRequest id and a non-duplicating manual architect-handoff replay hint while
+still withholding raw secret material.
 
 Explicit `state_key` values retain initialized handshake continuity for
 stateless transports, but they do not restore claimed worker sessions. A

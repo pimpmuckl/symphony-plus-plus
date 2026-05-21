@@ -940,7 +940,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              "repo",
              "base_branch",
              "title",
-             "request_kind"
+             "request_kind",
+             "description"
            ]
 
     assert get_in(unbound_tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
@@ -1905,7 +1906,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(unbound_guidance_response, ["error", "code"]) == -32_001
     assert get_in(unbound_guidance_response, ["error", "data", "resource"]) == "read_guidance_request"
     assert get_in(unbound_guidance_response, ["error", "data", "reason"]) == "claim_required"
-    assert get_in(unbound_guidance_response, ["error", "data", "action"]) == "claim_private_handoff"
+    assert get_in(unbound_guidance_response, ["error", "data", "action"]) == "claim_work_key"
 
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-WORKER-CALL", kind: "mcp"))
     assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])
@@ -2746,6 +2747,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              "name" => "JJ",
              "via" => "cli"
            }
+
+    partial_response =
+      mcp_tool(
+        repo,
+        nil,
+        "create_work_request",
+        %{
+          "repo" => "nextide/symphony-plus-plus",
+          "base_branch" => "main",
+          "title" => "Partial handoff WorkRequest",
+          "description" => "Create succeeds even when handoff bootstrap is not configured.",
+          "request_kind" => "feature",
+          "claimed_by" => "partial-arch"
+        },
+        config: Config.default(repo: repo)
+      )
+
+    partial_payload = get_in(partial_response, ["result", "structuredContent"])
+    assert partial_payload["status"] == "partial_success"
+    assert partial_payload["architect_handoff"] == nil
+
+    assert partial_payload["retry"] == %{
+             "type" => "manual_architect_handoff_replay",
+             "work_request_id" => get_in(partial_payload, ["work_request", "id"]),
+             "operator_action" => "prepare_architect_handoff"
+           }
+
+    assert {:ok, %WorkRequest{}} = WorkRequestRepository.get(repo, get_in(partial_payload, ["work_request", "id"]))
   end
 
   test "claim_work_key tool migrates legacy access grant expiry before unbound claim" do
@@ -4295,7 +4324,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(missing_response, ["error", "code"]) == -32_001
     assert get_in(missing_response, ["error", "data", "reason"]) == "claim_required"
-    assert get_in(missing_response, ["error", "data", "action"]) == "claim_private_handoff"
+    assert get_in(missing_response, ["error", "data", "action"]) == "claim_work_key"
 
     assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])
 
@@ -5847,7 +5876,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(anonymous_response, ["error", "code"]) == -32_001
     assert get_in(anonymous_response, ["error", "data", "reason"]) == "claim_required"
-    assert get_in(anonymous_response, ["error", "data", "action"]) == "claim_private_handoff"
+    assert get_in(anonymous_response, ["error", "data", "action"]) == "claim_work_key"
 
     anonymous_slice_response =
       mcp_tool(repo, nil, "mark_work_request_sliced", %{
@@ -5857,7 +5886,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(anonymous_slice_response, ["error", "code"]) == -32_001
     assert get_in(anonymous_slice_response, ["error", "data", "reason"]) == "claim_required"
-    assert get_in(anonymous_slice_response, ["error", "data", "action"]) == "claim_private_handoff"
+    assert get_in(anonymous_slice_response, ["error", "data", "action"]) == "claim_work_key"
 
     anonymous_dispatch_response =
       mcp_tool(repo, nil, "dispatch_work_request_planned_slice", %{
@@ -5868,7 +5897,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(anonymous_dispatch_response, ["error", "code"]) == -32_001
     assert get_in(anonymous_dispatch_response, ["error", "data", "reason"]) == "claim_required"
-    assert get_in(anonymous_dispatch_response, ["error", "data", "action"]) == "claim_private_handoff"
+    assert get_in(anonymous_dispatch_response, ["error", "data", "action"]) == "claim_work_key"
   end
 
   test "WorkRequest MCP question mutations fail closed for sibling question ids", %{repo: repo} do

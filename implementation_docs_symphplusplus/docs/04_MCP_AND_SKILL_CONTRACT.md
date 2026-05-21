@@ -253,8 +253,8 @@ constraints, status, `claimed_by`, and provenance fields. Provenance supports
 response returns the WorkRequest summary, redacted architect handoff metadata,
 and a launch prompt that tells the next architect session to use
 `claim_private_handoff`. If handoff mint/replay fails after creation, the tool
-returns partial success with the WorkRequest id and retry context and still
-does not expose raw secret material.
+returns partial success with the WorkRequest id and a non-duplicating manual
+architect-handoff replay hint and still does not expose raw secret material.
 
 For Codex first-use worker dispatch, the preferred path is private-store MCP
 bootstrap rather than an explicit worker tool call containing the raw secret.

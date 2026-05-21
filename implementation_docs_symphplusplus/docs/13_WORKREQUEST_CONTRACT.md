@@ -125,8 +125,8 @@ provenance, and defaults omitted provenance to `agent` via `mcp` with
 the WorkRequest summary with provenance, a redacted local-private-file
 architect handoff, and a launch prompt for the owning architect agent. If the
 WorkRequest is created but architect handoff creation fails, the response must
-be an explicit partial success with the WorkRequest id and retry context, not a
-raw-secret fallback.
+be an explicit partial success with the WorkRequest id and a non-duplicating
+manual architect-handoff replay hint, not a raw-secret fallback.
 
 Explicit phase-scoped architect MCP sessions with `read:work_request` can read
 the same scoped WorkRequest surface through `list_work_requests(status?)` and
