@@ -8626,7 +8626,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if unexpected != [] do
       {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "unexpected_argument", "arguments" => unexpected}}
     else
-      case validate_architect_required_arguments(name, arguments) do
+      case validate_tool_required_arguments(architect_tool_input_schema(name), arguments) do
         :ok -> {:ok, arguments}
         {:error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => reason}}
       end
@@ -8640,7 +8640,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if unexpected != [] do
       {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "unexpected_argument", "arguments" => unexpected}}
     else
-      case validate_bootstrap_required_arguments(name, arguments) do
+      case validate_tool_required_arguments(bootstrap_tool_input_schema(name), arguments) do
         :ok -> {:ok, arguments}
         {:error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => reason}}
       end
@@ -8675,22 +8675,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> Map.keys()
   end
 
-  defp validate_bootstrap_required_arguments(name, arguments) do
-    schema = bootstrap_tool_input_schema(name)
-    properties = Map.get(schema, "properties", %{})
-
-    schema
-    |> Map.get("required", [])
-    |> Enum.find_value(:ok, fn key ->
-      case validate_required_architect_argument(arguments, properties, key) do
-        :ok -> nil
-        {:error, reason} -> {:error, reason}
-      end
-    end)
-  end
-
-  defp validate_architect_required_arguments(name, arguments) do
-    schema = architect_tool_input_schema(name)
+  defp validate_tool_required_arguments(schema, arguments) do
     properties = Map.get(schema, "properties", %{})
 
     schema

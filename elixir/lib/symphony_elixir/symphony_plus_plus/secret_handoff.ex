@@ -133,7 +133,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
       when is_map(grant) and is_map(handoff) and is_list(opts) do
     with {:ok, opts} <- require_handoff_namespace_opts(opts),
          :ok <- reject_metadata_location_overrides(opts),
-         :ok <- validate_private_handoff_claim_identity(handoff, work_package, grant),
          {:ok, display_handoff} <- read_worker_secret_metadata(work_package, grant, opts),
          :ok <- validate_private_handoff_claim_display(handoff, display_handoff),
          {:ok, path} <- private_handoff_claim_path(handoff, display_handoff),
@@ -886,18 +885,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
   defp maybe_put_handoff_value(map, _key, nil), do: map
   defp maybe_put_handoff_value(map, key, value), do: Map.put(map, key, value)
-
-  defp validate_private_handoff_claim_identity(handoff, %WorkPackage{} = work_package, grant) do
-    with {:ok, grant_identity} <- fetch_grant_identity(grant),
-         {:ok, display_key} <- fetch_grant_display_key(grant),
-         :ok <- expect_private_handoff_field(handoff, :mode, "local-private-file"),
-         :ok <- expect_private_handoff_field(handoff, :work_package_id, work_package.id),
-         :ok <- expect_private_handoff_field(handoff, :grant_id, grant_identity),
-         :ok <- expect_private_handoff_field(handoff, :display_key, display_key) do
-      target = credential_target(work_package, %{display_key: display_key, id: grant_identity})
-      expect_private_handoff_field(handoff, :target, target)
-    end
-  end
 
   defp validate_private_handoff_claim_display(handoff, display_handoff) do
     with :ok <- expect_private_handoff_field(handoff, :mode, handoff_value(display_handoff, :mode)),
