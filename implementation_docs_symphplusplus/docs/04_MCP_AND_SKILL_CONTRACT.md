@@ -27,8 +27,9 @@ endpoint contract:
 - A successful initialize response includes `Mcp-Session-Id`; subsequent
   requests must send that same header. Missing follow-up sessions fail with
   HTTP 400, and unknown sessions fail with HTTP 404.
-- After `claim_work_key` succeeds, the same local HTTP `Mcp-Session-Id`
-  retains the bound WorkPackage worker or WorkRequest architect session for
+- After `claim_work_key` or `claim_private_handoff` succeeds, the same local
+  HTTP `Mcp-Session-Id` retains the bound WorkPackage worker or WorkRequest
+  architect session for
   later `tools/list`, resource reads, and tool calls. Protected follow-ups use
   the live dashboard repo path and revalidate the stored session proof against
   the current grant before returning scoped data. For claimed sessions, treat
@@ -169,6 +170,7 @@ sympp://work-packages/{id}/handoff.md
 
 ```text
 claim_work_key(secret, claimed_by)
+claim_private_handoff(claimed_by, private_handoff | mode, path, target, grant_id, display_key, work_package_id, database?)
 get_current_assignment()
 read_context()
 read_task_plan()
@@ -216,10 +218,10 @@ WorkPackage sessions. Direct calls from a bound session fail with
 `solo_tools_require_unbound_session` before mutation so Solo planning cannot be
 confused with WorkPackage orchestration.
 
-Unbound/generic MCP sessions also advertise `sympp.health` and the temporary
-`claim_work_key` bootstrap/recovery tool for explicit stdio WorkPackage flows.
-They do not advertise any other worker mutation tools or architect tools until
-a valid grant is bound.
+Unbound/generic MCP sessions also advertise `sympp.health`, the recovery
+`claim_work_key` tool, `claim_private_handoff`, `create_work_request`, Solo
+Session tools, and static architect schemas. They do not advertise any other
+worker mutation tools until a valid grant is bound.
 
 `claim_work_key` intentionally requires both the one-time secret and a stable
 `claimed_by` owner identity. Symphony++ uses that identity as part of the MCP
@@ -228,6 +230,31 @@ architect grant and does not mint new grants. It remains available to unbound
 sessions only as a bootstrap/recovery bridge, not as a generic planning
 surface. Reconnects are accepted only when the same secret proof is presented
 by the same `claimed_by` owner.
+
+`claim_private_handoff` is the preferred local-private-file bootstrap path for
+agents. It accepts `claimed_by` and either a redacted `private_handoff` object
+or explicit redacted fields: `mode`, `path`, `target`, `grant_id`,
+`display_key`, `work_package_id`, and optional `database`. v1 supports only
+`mode: "local-private-file"`. The MCP server reads the secret server-side from
+the known Symphony++ private handoff store, requires the supplied path to match
+the managed metadata path, rejects arbitrary paths, traversal, directories,
+missing or oversized files, and mismatched grant/display/work-package metadata,
+then binds the current session the same way a successful `claim_work_key` call
+does. It never accepts or returns raw secrets, secret hashes, or secret-bearing
+commands.
+
+`create_work_request` is the local/operator-safe MCP intake tool for agent-led
+WorkRequest creation. It creates a WorkRequest in the local ledger from repo,
+base branch, title, request kind, description, optional workflow mode,
+constraints, status, `claimed_by`, and provenance fields. Provenance supports
+`creator_kind` values `human`, `agent`, `operator`, and `system`, optional
+`creator_name`, and optional `created_via`; omitted MCP provenance defaults to
+`agent`/`mcp`, using `claimed_by` as the maker display name when present. The
+response returns the WorkRequest summary, redacted architect handoff metadata,
+and a launch prompt that tells the next architect session to use
+`claim_private_handoff`. If handoff mint/replay fails after creation, the tool
+returns partial success with the WorkRequest id and retry context and still
+does not expose raw secret material.
 
 For Codex first-use worker dispatch, the preferred path is private-store MCP
 bootstrap rather than an explicit worker tool call containing the raw secret.
@@ -268,13 +295,13 @@ success; changed content or a changed
 caller-supplied finding id returns `idempotency_conflict`.
 
 JSON-RPC batch items are not an ordered session transaction. Each item is
-evaluated against the batch's initial server/session state, so a `claim_work_key`
-call inside one batch item does not authorize later items in that same batch.
+evaluated against the batch's initial server/session state, so a claim call
+inside one batch item does not authorize later items in that same batch.
 Workers should claim in a prior request, or run dependent worker tools outside
-the batch. A successful `claim_work_key` inside a batch still binds the returned
+the batch. A successful claim inside a batch still binds the returned
 server/session for later standalone requests. After one claim succeeds in a
-batch, later `claim_work_key` entries in that same batch are rejected as
-rebinding attempts so a connection cannot claim multiple assignments.
+batch, later claim entries in that same batch are rejected as rebinding attempts
+so a connection cannot claim multiple assignments.
 
 `attach_branch` intentionally requires both the branch name and the current
 branch `head_sha`. Branch-only review evidence is matched to that head so a
@@ -342,7 +369,7 @@ add_work_request_planned_slice(work_request_id, title, goal, work_package_kind, 
 approve_work_request_planned_slice(work_request_id, planned_slice_id, current_status)
 skip_work_request_planned_slice(work_request_id, planned_slice_id, current_status)
 mark_work_request_sliced(work_request_id, current_status)
-dispatch_work_request_planned_slice(work_request_id, planned_slice_id, claimed_by, secret_handoff?, secret_store_dir?)
+dispatch_work_request_planned_slice(work_request_id, planned_slice_id, claimed_by, secret_handoff?, secret_store_dir?, repo_root?)
 read_child_status(work_package_id)
 read_phase_board(phase_id)
 request_child_replan(work_package_id, reason)
@@ -358,13 +385,15 @@ grants cannot be minted with architect-only MCP capabilities, including
 unprefixed P3/P7 capability strings such as `read:phase` or
 `mint:child_worker_key`. `tools/list` uses static architect schema discovery:
 healthy unbound generic sessions advertise health, Solo Session tools,
-`claim_work_key`, and architect tool schemas so fresh Codex sessions can
-discover WorkRequest and architect flows before claim. Schema visibility is not
+`claim_work_key`, `claim_private_handoff`, `create_work_request`, and architect
+tool schemas so fresh Codex sessions can discover WorkRequest and architect
+flows before claim. Schema visibility is not
 authorization; calls still require a live claimed architect grant with the
 required capability and scope, and unclaimed architect calls return a
-claim-required denial. Stale bound sessions expose only health and
-`claim_work_key` for refresh; duplicate `initialize` on that same stale
-explicit MCP session does not downgrade it into generic unbound discovery.
+claim-required denial. Stale bound sessions expose only health,
+`claim_work_key`, and `claim_private_handoff` for refresh; duplicate
+`initialize` on that same stale explicit MCP session does not downgrade it into
+generic unbound discovery.
 Worker sessions keep the bound worker-facing discovery surface without Solo
 tools or architect-only schemas.
 Bound architect sessions advertise the static architect schema set and may call
@@ -440,11 +469,13 @@ change dashboard behavior.
 `dispatch_work_request_planned_slice` is an architect dispatch tool gated by
 `dispatch:work_request`, not by generic `write:work_request`. It uses the same
 explicit phase-scoped frozen repo/base-branch scope, requires `work_request_id`,
-`planned_slice_id`, and `claimed_by`, accepts optional `secret_handoff` and
-`secret_store_dir`, and calls the existing `PlannedSliceDispatch.dispatch`
+`planned_slice_id`, and `claimed_by`, accepts optional `secret_handoff`,
+`secret_store_dir`, and `repo_root`, and calls the existing
+`PlannedSliceDispatch.dispatch`
 orchestration. MCP dispatch has a statically discoverable schema, and direct
-calls fail closed if `repo_root`/`--repo-root` is missing, invalid, or does not
-point at a repository that contains the worker secret handoff script. MCP
+calls fail closed if the supplied `repo_root`, configured `repo_root`, or
+`--repo-root` is missing, invalid, or does not point at a repository that
+contains the worker secret handoff script. MCP
 dispatch requires a file-backed live ledger so the returned worker
 bootstrap command reconnects to the same ledger; in-memory database
 configuration fails closed before dispatch side effects. Blank database

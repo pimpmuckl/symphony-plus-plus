@@ -1056,6 +1056,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       base_branch: work_request.base_branch,
       work_type: work_request.work_type,
       desired_dispatch_shape: work_request.desired_dispatch_shape,
+      creator: work_request_creator(work_request),
       status: work_request.status,
       inserted_at: timestamp(work_request.inserted_at),
       updated_at: timestamp(work_request.updated_at)
@@ -1277,9 +1278,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       human_description: redacted_text(work_request.human_description),
       constraints: redacted_json(work_request.constraints || %{}),
       desired_dispatch_shape: work_request.desired_dispatch_shape,
+      creator: work_request_creator(work_request),
       status: work_request.status,
       inserted_at: timestamp(work_request.inserted_at),
       updated_at: timestamp(work_request.updated_at)
+    }
+  end
+
+  defp work_request_creator(%WorkRequest{} = work_request) do
+    %{
+      kind: work_request.creator_kind,
+      name: redacted_text(work_request.creator_name),
+      via: work_request.created_via
     }
   end
 

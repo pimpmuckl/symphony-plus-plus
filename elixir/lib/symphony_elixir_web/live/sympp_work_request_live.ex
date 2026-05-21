@@ -1464,6 +1464,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
         |> Map.put("repo", scope.repo)
         |> Map.put("base_branch", scope.base_branch)
         |> Map.put("constraints", constraints)
+        |> Map.merge(work_request_provenance("human", default_actor(grant), "cockpit"))
 
       case SymppBoardLive.with_dashboard_repo(&WorkRequestService.create(&1, attrs)) do
         {:ok, work_request} -> {:ok, work_request}
@@ -1486,6 +1487,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
         |> Map.put("repo", repo)
         |> Map.put("base_branch", base_branch)
         |> Map.put("constraints", constraints)
+        |> Map.merge(work_request_provenance("human", @local_operator_actor, "cockpit"))
 
       case SymppBoardLive.with_dashboard_repo(&WorkRequestService.create(&1, attrs)) do
         {:ok, work_request} -> {:ok, work_request}
@@ -1507,6 +1509,14 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   end
 
   defp mark_ready_for_clarification(_grant, _work_request_id), do: {:error, :not_found}
+
+  defp work_request_provenance(kind, name, via) do
+    %{
+      "creator_kind" => kind,
+      "creator_name" => name,
+      "created_via" => via
+    }
+  end
 
   defp ask_question(:local_operator, work_request_id, params)
        when is_binary(work_request_id) and is_map(params),
