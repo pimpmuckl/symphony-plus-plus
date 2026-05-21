@@ -390,6 +390,15 @@ function New-CockpitCommand([string]$SourceCheckoutRoot) {
   return "Set-Location $(Quote-PowerShellLiteral $elixirRoot); mix sympp.cockpit"
 }
 
+function New-VerifyHttpMcpCommand([string]$SourceCheckoutRoot) {
+  if ([string]::IsNullOrWhiteSpace($SourceCheckoutRoot)) {
+    return $null
+  }
+
+  $sourceCheckoutRoot = [System.IO.Path]::GetFullPath($SourceCheckoutRoot)
+  return New-SourceScriptCommand $sourceCheckoutRoot "scripts/smoke-sympp-mcp-http.ps1" "-RepoRoot $(Quote-PowerShellLiteral $sourceCheckoutRoot)"
+}
+
 function New-SourceCheckoutAction([string]$Code, [string]$Lane, [string]$Message, $SourceCheckout, [string]$Command) {
   if (-not [string]::IsNullOrWhiteSpace($Command)) {
     return New-ReadinessAction $Code $Lane $Message $Command
@@ -470,6 +479,12 @@ function Invoke-SelfTest {
   $expectedSourceCommand = "& $(Quote-PowerShellLiteral $expectedSourceCommandPath) -Json"
   if ($sourceCommand -ne $expectedSourceCommand) {
     throw "New-SourceScriptCommand did not emit an absolute PowerShell invocation."
+  }
+
+  $verifyCommand = New-VerifyHttpMcpCommand $sourceCommandRoot
+  $expectedVerifyCommand = "& $(Quote-PowerShellLiteral $expectedSourceCommandPath) -RepoRoot $(Quote-PowerShellLiteral (Resolve-OptionalFullPath $sourceCommandRoot))"
+  if ($verifyCommand -ne $expectedVerifyCommand) {
+    throw "New-VerifyHttpMcpCommand did not emit a repo-root-bound smoke invocation."
   }
 
   if ((Normalize-ComparablePath "~/.codex") -ne (Normalize-ComparablePath (Join-Path $HOME ".codex"))) {
@@ -2281,9 +2296,9 @@ function Invoke-McpCompanionEnable($Summary, [string]$RequestedMarketplaceName, 
   $configPath = Join-Path $CodexHomePath "config.toml"
   $mutation = Set-PluginEnabledInConfig $configPath $pluginKey
   $sourceRoot = if ($null -ne $Summary.source_checkout) { [string]$Summary.source_checkout.root } else { $null }
-  $smokeCommand = New-SourceScriptCommand $sourceRoot "scripts/smoke-sympp-mcp-http.ps1"
+  $smokeCommand = New-VerifyHttpMcpCommand $sourceRoot
   if ([string]::IsNullOrWhiteSpace($smokeCommand)) {
-    $smokeCommand = "Set-Location <path-to-symphony-plus-plus-checkout>; .\scripts\smoke-sympp-mcp-http.ps1"
+    $smokeCommand = "Set-Location <path-to-symphony-plus-plus-checkout>; .\scripts\smoke-sympp-mcp-http.ps1 -RepoRoot <path-to-symphony-plus-plus-checkout>"
   }
 
   return [pscustomobject]@{
@@ -2651,9 +2666,10 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     $actions += New-ReadinessAction "restart_codex_session" "workrequest_mcp" "Restart or reload that dedicated Codex session so plugin MCP servers register before the model starts."
   } elseif (-not $companionSelectionBlocked -and $companionStatus -eq "endpoint_unreachable") {
     $actions += New-SourceCheckoutAction "start_cockpit" "workrequest_mcp" "Start the local Symphony++ cockpit/HTTP MCP daemon." $SourceCheckout (New-CockpitCommand $sourceRoot)
-    $actions += New-SourceCheckoutAction "verify_http_mcp" "workrequest_mcp" "Verify the local HTTP MCP daemon independently of Codex plugin loading." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/smoke-sympp-mcp-http.ps1")
+    $actions += New-SourceCheckoutAction "verify_http_mcp" "workrequest_mcp" "Verify the local HTTP MCP daemon source revision independently of Codex plugin loading." $SourceCheckout (New-VerifyHttpMcpCommand $sourceRoot)
   } elseif (-not $companionSelectionBlocked -and $companionStatus -eq "ready") {
-    $actions += New-ReadinessAction "verify_codex_session" "workrequest_mcp" "If the current Codex session still lacks symphony_plus_plus tools, restart or reload the dedicated MCP-enabled session; this doctor verifies config, cache, and daemon readiness, not the already-open model tool list."
+    $actions += New-SourceCheckoutAction "verify_http_mcp" "workrequest_mcp" "Verify the local HTTP MCP daemon source revision independently of Codex plugin loading." $SourceCheckout (New-VerifyHttpMcpCommand $sourceRoot)
+    $actions += New-ReadinessAction "verify_codex_session" "workrequest_mcp" "If the current Codex session still lacks symphony_plus_plus tools, restart or reload the dedicated MCP-enabled session; this doctor verifies config, cache, and daemon reachability, not the already-open model tool list."
   }
 
   if ($Config.global_sympp_mcp_entry -eq $true) {

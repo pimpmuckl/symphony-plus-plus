@@ -4,6 +4,7 @@ defmodule Mix.Tasks.Sympp.Cockpit do
   use Mix.Task
 
   alias SymphonyElixir.HttpServer
+  alias SymphonyElixir.SymphonyPlusPlus.MCP.Config, as: MCPConfig
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixirWeb.Endpoint
 
@@ -132,6 +133,8 @@ defmodule Mix.Tasks.Sympp.Cockpit do
 
     try do
       :ok = ensure_dashboard_assets(opts)
+      # Freeze daemon source identity at startup so smoke checks can detect a later checkout update.
+      MCPConfig.source_revision()
       configure_cockpit(opts, original_endpoint_config)
       {:ok, _started} = ensure_runtime_started()
       :ok = start_http_server_or_raise(opts)

@@ -55,6 +55,15 @@ review-suite, or `codex review` configs.
 The doctor checks cache, config, and the local HTTP daemon; it cannot inspect
 the tool list already registered inside an open Codex model session. Treat
 session restart/reload as part of the repair after enablement or cache changes.
+Verify the daemon against the checkout before blaming Codex plugin visibility:
+
+```powershell
+.\scripts\smoke-sympp-mcp-http.ps1 -RepoRoot .
+```
+
+`stale_or_unverified_daemon` or `stale_daemon_source_revision_mismatch` means
+the cockpit HTTP daemon is not proving it is the current checkout; restart
+`mix sympp.cockpit` from this checkout and rerun the smoke.
 The Codex app MCP settings list may show only explicitly configured MCP servers
 and may not list plugin-scoped MCP servers from an enabled opt-in plugin. Use
 the doctor plus `smoke-sympp-mcp-http.ps1` as the repeatable proof, then verify

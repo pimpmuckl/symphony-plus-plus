@@ -3,13 +3,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Config do
 
   alias SymphonyElixir.SymphonyPlusPlus.Repo
 
+  @default_repo_root __DIR__ |> Path.join("../../../../..") |> Path.expand()
+  @source_revision_key {__MODULE__, :source_revision}
+
   @enforce_keys [:mode, :repo, :version]
-  defstruct [:mode, :repo, :version, :database, :repo_root, :work_key_secret_env, :claimed_by]
+  defstruct [:mode, :repo, :version, :source_revision, :database, :repo_root, :work_key_secret_env, :claimed_by]
 
   @type t :: %__MODULE__{
           mode: :stdio,
           repo: module(),
           version: String.t(),
+          source_revision: String.t() | nil,
           database: String.t() | nil,
           repo_root: String.t() | nil,
           work_key_secret_env: String.t() | nil,
@@ -31,11 +35,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Config do
       mode: Keyword.get(opts, :mode, :stdio),
       repo: Keyword.get(opts, :repo, Repo),
       version: Keyword.get(opts, :version, application_version()),
+      source_revision: Keyword.get_lazy(opts, :source_revision, &source_revision/0),
       database: Keyword.get(opts, :database),
       repo_root: Keyword.get(opts, :repo_root),
       work_key_secret_env: Keyword.get(opts, :work_key_secret_env),
       claimed_by: Keyword.get(opts, :claimed_by)
     }
+  end
+
+  @doc false
+  @spec source_revision() :: String.t() | nil
+  def source_revision do
+    case :persistent_term.get(@source_revision_key, :unset) do
+      :unset ->
+        revision = load_source_revision()
+        :persistent_term.put(@source_revision_key, revision)
+        revision
+
+      revision ->
+        revision
+    end
   end
 
   @spec parse([String.t()]) :: {:ok, t()} | {:error, String.t()} | :help
@@ -108,6 +127,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Config do
       version when is_list(version) -> List.to_string(version)
       version when is_binary(version) -> version
       _missing -> "0.1.0"
+    end
+  end
+
+  defp load_source_revision do
+    with git when is_binary(git) <- System.find_executable("git") || System.find_executable("git.exe"),
+         {revision, 0} <- System.cmd(git, ["-C", @default_repo_root, "rev-parse", "--verify", "HEAD"], stderr_to_stdout: true),
+         revision <- String.trim(revision),
+         true <- revision =~ ~r/\A[0-9a-f]{40}\z/i do
+      String.downcase(revision)
+    else
+      _missing_or_invalid -> nil
     end
   end
 end

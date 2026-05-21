@@ -50,15 +50,18 @@ Operators can verify the local HTTP contract from the repository root while
 `mix sympp.cockpit` is running:
 
 ```powershell
-.\scripts\smoke-sympp-mcp-http.ps1
+.\scripts\smoke-sympp-mcp-http.ps1 -RepoRoot .
 ```
 
 Pass `-Url http://127.0.0.1:<port>/mcp` for a cockpit started on a non-default
 port and `-Json` for machine-readable output. This check proves daemon
-handshake, session-header continuity, `tools/list`, and the expected unbound
-tool surface. It is intentionally separate from Codex app plugin visibility:
-if this smoke passes but MCP tools are absent in a Codex session, troubleshoot
-the opt-in plugin/config/session startup path rather than the daemon.
+handshake, session-header continuity, source-revision match against the
+checkout, `tools/list`, and the expected unbound tool surface. It is
+intentionally separate from Codex app plugin visibility: if this smoke passes
+but MCP tools are absent in a Codex session, troubleshoot the opt-in
+plugin/config/session startup path rather than the daemon. If the smoke reports
+`stale_or_unverified_daemon` or `stale_daemon_source_revision_mismatch`,
+restart `mix sympp.cockpit` from the current checkout and rerun it.
 
 The operator-safe diagnostic for that split-brain state is:
 
