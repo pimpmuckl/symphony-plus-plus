@@ -272,7 +272,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert ci_card.operational_state.key == "ci_waiting"
   end
 
-  test "package operational state surfaces merged PR and missing readiness contradictions", %{repo: repo} do
+  test "package operational state projects merged PRs while surfacing missing readiness contradictions", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(
                repo,
@@ -326,7 +326,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert card.operational_state.raw_status == "ready_for_human_merge"
 
     attention_by_key = Map.new(card.operational_state.attention_items, &{&1.key, &1})
-    assert attention_by_key["pr_merged_raw_status_open"].tone == "warning"
+    refute Map.has_key?(attention_by_key, "pr_merged_raw_status_open")
     assert "review_package_submitted" in attention_by_key["missing_readiness_evidence"].missing
 
     assert {:ok, _new_branch_head} =

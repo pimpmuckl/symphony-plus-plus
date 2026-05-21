@@ -32,7 +32,7 @@
 
   html {
     overflow-y: auto;
-    scrollbar-gutter: stable both-edges;
+    scrollbar-gutter: stable;
   }
 
   @supports not (scrollbar-gutter: stable) {
@@ -961,6 +961,23 @@
 
   .workstream-board-aligned .feature-lane-row {
     align-content: center;
+  }
+
+  .workstream-board-aligned .aligned-card-slot {
+    display: grid;
+    min-width: 0;
+    align-items: center;
+  }
+
+  .workstream-board-aligned .aligned-card-slot[data-empty="true"] {
+    pointer-events: none;
+  }
+
+  .request-card-description {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 10;
   }
 
   .workstream-board-aligned .feature-lane-row[data-empty="true"] {
