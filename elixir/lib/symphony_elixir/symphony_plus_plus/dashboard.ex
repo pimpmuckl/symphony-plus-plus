@@ -1925,7 +1925,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp promoted_linked_operational_state?(_state), do: false
 
   defp work_package_attention_items(%WorkPackage{} = work_package, blockers, context) do
-    metadata = Map.fetch!(context, :metadata)
     missing_readiness = Map.fetch!(context, :missing_readiness)
     delivery_started = Map.fetch!(context, :delivery_started)
     lineage = Map.fetch!(context, :lineage)
@@ -1933,7 +1932,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     single_items =
       [
         active_blocker_attention_item(blockers),
-        pr_merged_attention_item(work_package, metadata),
         missing_readiness_attention_item(work_package, missing_readiness),
         ready_status_with_activity_attention_item(work_package, delivery_started)
       ]
@@ -1958,17 +1956,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
           reason: blocker_detail(length(active)),
           blocker_ids: Enum.map(active, & &1.id)
         }
-    end
-  end
-
-  defp pr_merged_attention_item(%WorkPackage{status: status}, metadata) do
-    if pr_merged?(metadata) and open_package_status?(status) do
-      %{
-        key: "pr_merged_raw_status_open",
-        label: "Merged PR With Open Status",
-        tone: "warning",
-        reason: "PR metadata reports merged while raw package status remains #{status}."
-      }
     end
   end
 
@@ -2021,15 +2008,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp runtime_activity?(runtime) do
-    Enum.any?([:active_count, :queued_count, :stopped_count, :failed_count, :completed_count, :terminal_count], &(Map.get(runtime, &1, 0) > 0))
+    Enum.any?([:active_count, :queued_count, :stopped_count, :failed_count, :completed_count, :terminal_count], &(safe_map_get(runtime, &1, 0) > 0))
   end
 
   defp metadata_activity?(metadata) do
-    Enum.any?([:branch, :pr, :review_progress, :review_package, :review_suite_result], &present_metadata_value?(Map.get(metadata, &1)))
+    Enum.any?([:branch, :pr, :review_progress, :review_package, :review_suite_result], &present_metadata_value?(safe_map_get(metadata, &1)))
   end
 
   defp review_activity?(metadata) do
-    Enum.any?([:review_progress, :review_package, :review_suite_result], &present_metadata_value?(Map.get(metadata, &1)))
+    Enum.any?([:review_progress, :review_package, :review_suite_result], &present_metadata_value?(safe_map_get(metadata, &1)))
   end
 
   defp present_metadata_value?(nil), do: false
@@ -2037,8 +2024,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp present_metadata_value?(value) when is_list(value), do: value != []
   defp present_metadata_value?(_value), do: true
 
-  defp pr_merged?(%{pr: %{"stale" => true}}), do: false
-  defp pr_merged?(%{pr: pr}), do: pr_merged_payload?(pr)
+  defp pr_merged?(metadata) do
+    pr = safe_map_get(metadata, :pr) || safe_map_get(metadata, "pr")
+
+    case pr do
+      %{"stale" => true} -> false
+      pr -> pr_merged_payload?(pr)
+    end
+  end
+
+  defp safe_map_get(map, key, default \\ nil) do
+    Map.get(map, key, default)
+  rescue
+    BadMapError -> default
+  end
 
   defp pr_merged_payload?(%{} = pr) do
     merged_value?(map_value(pr, "merged")) or
