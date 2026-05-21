@@ -157,23 +157,27 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
 
     case stored_server(config, state_key) do
       nil ->
-        HTTPTransport.handle(config, payload, client_key: @client_key, state_key: state_key)
+        handle_with_live_repo_or_config(config, payload, state_key)
 
       %Server{} = server ->
         handle_stored_server_payload(config, payload, state_key, server)
     end
   end
 
+  defp handle_with_live_repo_or_config(config, payload, state_key) do
+    case handle_with_live_repo(payload, state_key) do
+      {:error, :ledger_unavailable, ^payload} ->
+        HTTPTransport.handle(config, payload, client_key: @client_key, state_key: state_key)
+
+      result ->
+        result
+    end
+  end
+
   defp handle_stored_server_payload(config, payload, state_key, %Server{} = server) do
     cond do
       health_followup?(payload) ->
-        case handle_with_live_repo(payload, state_key) do
-          {:error, :ledger_unavailable, ^payload} ->
-            HTTPTransport.handle(config, payload, client_key: @client_key, state_key: state_key)
-
-          result ->
-            result
-        end
+        handle_with_live_repo_or_config(config, payload, state_key)
 
       repo_backed_followup?(payload, server) ->
         handle_with_live_repo(payload, state_key)
