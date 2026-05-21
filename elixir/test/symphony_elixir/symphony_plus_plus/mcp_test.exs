@@ -8796,6 +8796,70 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
   end
 
+  test "single-item batch preserves claim_private_handoff session for later requests", %{repo: repo} do
+    store_dir = Path.join(test_handoff_store_dir(), "private-batch-claim")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+
+    on_exit(fn ->
+      restore_app_env(:sympp_worker_secret_store_dir, previous_store_dir)
+      File.rm_rf(store_dir)
+    end)
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-PRIVATE-BATCH-CLAIM",
+        status: "ready_for_clarification"
+      )
+
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: [
+                 mode: "local-private-file",
+                 repo_root: test_repo_root(),
+                 store_dir: store_dir,
+                 claimed_by: ArchitectHandoff.claimed_by()
+               ]
+             )
+
+    private_handoff = json_payload(handoff.secret_handoff)
+
+    {responses, claimed_server} =
+      Server.handle_state(
+        [
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "claim-private",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "claim_private_handoff",
+              "arguments" => %{"claimed_by" => "kraken-beta-arch", "private_handoff" => private_handoff}
+            }
+          }
+        ],
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    {read_response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "read-private-batch-work-request",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_work_request", "arguments" => %{"work_request_id" => work_request.id}}
+        },
+        claimed_server
+      )
+
+    assert Enum.map(responses, & &1["id"]) == ["claim-private"]
+    assert claimed_server.session.assignment.grant_role == "architect"
+    assert claimed_server.session.assignment.work_package_id == handoff.anchor_package.id
+    assert get_in(read_response, ["result", "structuredContent", "work_request", "id"]) == work_request.id
+    assert handoff_secret_absent?(private_handoff, inspect(responses))
+    assert handoff_secret_absent?(private_handoff, inspect(read_response))
+  end
+
   test "batch calls do not thread claim_work_key session to later worker tools", %{repo: repo} do
     assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-BATCH-CLAIM", kind: "mcp", status: "ready_for_worker"))
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)

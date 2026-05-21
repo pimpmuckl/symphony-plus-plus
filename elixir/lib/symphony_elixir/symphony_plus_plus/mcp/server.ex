@@ -277,6 +277,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  def handle_state(%{"jsonrpc" => "2.0", "id" => id, "method" => method} = payload, %__MODULE__{initialized: true} = server)
+      when is_binary(method) and valid_request_id(id) do
+    payload
+    |> request_params()
+    |> dispatch_request_state(method, id, server)
+  end
+
   def handle_state(payload, %__MODULE__{} = server), do: {do_handle(payload, server), server}
 
   defp restore_handle_state(payload, %__MODULE__{initialized: false, session: nil, state_key_explicit: true} = server) do
@@ -807,8 +814,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp dispatch("tools/call", %{"name" => "claim_work_key"} = params, %__MODULE__{} = server) do
     with {:ok, _arguments} <- worker_tool_arguments(params, "claim_work_key"),
-         {:ok, result, _session} <- claim_work_key(params, server) do
-      {:ok, tool_result(result)}
+         {:ok, result, session} <- claim_work_key(params, server) do
+      {:ok, tool_result(result), %{server | session: session, session_refresh_required: false}}
     else
       {:error, code, message, data} -> {:error, code, message, data}
     end
@@ -816,8 +823,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp dispatch("tools/call", %{"name" => "claim_private_handoff"} = params, %__MODULE__{} = server) do
     with {:ok, _arguments} <- bootstrap_tool_arguments(params, "claim_private_handoff"),
-         {:ok, result, _session} <- claim_private_handoff(params, server) do
-      {:ok, tool_result(result)}
+         {:ok, result, session} <- claim_private_handoff(params, server) do
+      {:ok, tool_result(result), %{server | session: session, session_refresh_required: false}}
     else
       {:error, code, message, data} -> {:error, code, message, data}
     end
@@ -9446,14 +9453,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp request_params(_request), do: {:ok, %{}}
 
   defp dispatch_request({:ok, params}, method, id, %__MODULE__{} = server) do
-    case dispatch(method, params, server) do
-      {:ok, result} -> response(id, result)
-      {:error, code, message, data} -> error_response(id, code, message, data)
-    end
+    dispatch_request_state({:ok, params}, method, id, server)
+    |> elem(0)
   end
 
   defp dispatch_request({:error, code, message, data}, _method, id, %__MODULE__{}) do
     error_response(id, code, message, data)
+  end
+
+  defp dispatch_request_state({:ok, params}, method, id, %__MODULE__{} = server) do
+    case dispatch(method, params, server) do
+      {:ok, result} -> {response(id, result), server}
+      {:ok, result, %__MODULE__{} = updated_server} -> {response(id, result), updated_server}
+      {:error, code, message, data} -> {error_response(id, code, message, data), server}
+    end
+  end
+
+  defp dispatch_request_state({:error, code, message, data}, _method, id, %__MODULE__{} = server) do
+    {error_response(id, code, message, data), server}
   end
 
   defp dispatch_notification({:ok, params}, method, %__MODULE__{} = server) do
