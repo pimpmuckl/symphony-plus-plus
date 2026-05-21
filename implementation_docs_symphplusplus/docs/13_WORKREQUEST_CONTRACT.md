@@ -118,12 +118,14 @@ handoffs.
 
 The local MCP `create_work_request` tool can create the same ledger-backed
 WorkRequest from an agent or operator session without a dashboard click. It
-requires repo, base branch, title, request kind, and description, accepts
-optional workflow mode, constraints, initial status, `claimed_by`, and creator
-provenance, and defaults omitted provenance to `agent` via `mcp` with
-`claimed_by` as the maker display name when available. The response includes
-the WorkRequest summary with provenance, a redacted local-private-file
-architect handoff, and a launch prompt for the owning architect agent. If the
+requires repo, base branch, title, request kind, and either `description` or
+`human_description`, accepts optional workflow mode, constraints, initial
+status, `claimed_by`, and creator provenance, and defaults omitted provenance
+to `agent` via `mcp` with caller-supplied `claimed_by` as the maker display
+name when available and `mcp-agent` otherwise. The response includes the
+WorkRequest summary with provenance, a redacted local-private-file architect
+handoff, a non-secret claim owner for `claim_private_handoff`, and a launch
+prompt for the owning architect agent. If the
 WorkRequest is created but architect handoff creation fails, the response must
 be an explicit partial success with the WorkRequest id and a non-duplicating
 manual architect-handoff replay hint, not a raw-secret fallback.

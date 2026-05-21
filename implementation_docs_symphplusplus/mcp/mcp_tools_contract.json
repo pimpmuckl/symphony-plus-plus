@@ -88,10 +88,11 @@
     {
       "name": "create_work_request",
       "purpose": "Create a local WorkRequest with creator provenance and return a redacted architect handoff/bootstrap payload.",
-      "required_arguments": ["repo", "base_branch", "title", "request_kind", "description"],
+      "required_arguments": ["repo", "base_branch", "title", "request_kind", "description_or_human_description"],
       "optional_arguments": ["human_description", "workflow_mode", "constraints", "status", "claimed_by", "creator_kind", "created_by_kind", "creator_name", "created_by_name", "created_via"],
-      "provenance_policy": "creator_kind must be human, agent, operator, or system when supplied. If omitted for this MCP tool, creator_kind defaults to agent, created_via defaults to mcp, and creator_name defaults from claimed_by when available.",
-      "response_policy": "On success, returns the WorkRequest summary/detail including provenance, redacted architect handoff metadata, and a launch prompt that uses claim_private_handoff. If handoff mint/replay fails after WorkRequest creation, returns partial_success with the WorkRequest id and a non-duplicating manual architect-handoff replay hint while still withholding raw secret material."
+      "description_policy": "description is canonical, but human_description is accepted as the same required WorkRequest description field for current local/operator callers.",
+      "provenance_policy": "creator_kind must be human, agent, operator, or system when supplied. If omitted for this MCP tool, creator_kind defaults to agent, created_via defaults to mcp, and creator_name defaults from caller-supplied claimed_by when available or mcp-agent otherwise.",
+      "response_policy": "On success, returns the WorkRequest summary/detail including provenance, redacted architect handoff metadata, a non-secret claim owner for claim_private_handoff, and a launch prompt. If handoff mint/replay fails after WorkRequest creation, returns partial_success with the WorkRequest id and a non-duplicating manual architect-handoff replay hint while still withholding raw secret material."
     }
   ],
   "architect_tools": [

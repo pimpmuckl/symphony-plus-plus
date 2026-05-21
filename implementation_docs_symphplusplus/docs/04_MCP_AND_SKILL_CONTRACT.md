@@ -245,14 +245,15 @@ commands.
 
 `create_work_request` is the local/operator-safe MCP intake tool for agent-led
 WorkRequest creation. It creates a WorkRequest in the local ledger from repo,
-base branch, title, request kind, description, optional workflow mode,
-constraints, status, `claimed_by`, and provenance fields. Provenance supports
-`creator_kind` values `human`, `agent`, `operator`, and `system`, optional
-`creator_name`, and optional `created_via`; omitted MCP provenance defaults to
-`agent`/`mcp`, using `claimed_by` as the maker display name when present. The
-response returns the WorkRequest summary, redacted architect handoff metadata,
-and a launch prompt that tells the next architect session to use
-`claim_private_handoff`. If handoff mint/replay fails after creation, the tool
+base branch, title, request kind, either `description` or `human_description`,
+optional workflow mode, constraints, status, `claimed_by`, and provenance
+fields. Provenance supports `creator_kind` values `human`, `agent`, `operator`,
+and `system`, optional `creator_name`, and optional `created_via`; omitted MCP
+provenance defaults to `agent`/`mcp`, using caller-supplied `claimed_by` as the
+maker display name when present and `mcp-agent` otherwise. The response returns
+the WorkRequest summary, redacted architect handoff metadata, a non-secret
+claim owner for `claim_private_handoff`, and a launch prompt. If handoff
+mint/replay fails after creation, the tool
 returns partial success with the WorkRequest id and a non-duplicating manual
 architect-handoff replay hint and still does not expose raw secret material.
 

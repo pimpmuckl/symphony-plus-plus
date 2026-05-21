@@ -282,14 +282,16 @@ secret-bearing commands, and private-store payloads are not accepted in
 arguments and are not returned in responses or errors.
 
 `create_work_request` is the local/operator-safe WorkRequest intake bootstrap.
-It accepts repo, base branch, title, request kind, description, optional
-workflow mode, constraints, status, `claimed_by`, and provenance fields
+It accepts repo, base branch, title, request kind, either `description` or
+`human_description`, optional workflow mode, constraints, status, `claimed_by`,
+and provenance fields
 `creator_kind`, `creator_name`, and `created_via`. When provenance is omitted,
-MCP-created requests default to `agent`/`mcp`, using `claimed_by` as the maker
-display name when available. A successful response includes the WorkRequest
-summary with creator provenance, redacted architect handoff metadata, and a
-copyable launch prompt that instructs the next architect agent to use
-`claim_private_handoff`. If architect handoff creation fails after the
+MCP-created requests default to `agent`/`mcp`, using caller-supplied
+`claimed_by` as the maker display name when available and `mcp-agent`
+otherwise. A successful response includes the WorkRequest summary with creator
+provenance, redacted architect handoff metadata, a non-secret claim owner for
+`claim_private_handoff`, and a copyable launch prompt. If architect handoff
+creation fails after the
 WorkRequest is created, the tool returns a partial-success shape with the
 WorkRequest id and a non-duplicating manual architect-handoff replay hint while
 still withholding raw secret material.

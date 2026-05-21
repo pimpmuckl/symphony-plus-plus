@@ -940,8 +940,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              "repo",
              "base_branch",
              "title",
-             "request_kind",
-             "description"
+             "request_kind"
+           ]
+
+    assert get_in(unbound_tools_by_name, ["create_work_request", "inputSchema", "anyOf"]) == [
+             %{"required" => ["description"]},
+             %{"required" => ["human_description"]}
            ]
 
     assert get_in(unbound_tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
@@ -2722,6 +2726,48 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(claim_response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
     assert handoff_secret_absent?(private_handoff, inspect(claim_response))
+
+    default_owner_response =
+      mcp_tool(
+        repo,
+        nil,
+        "create_work_request",
+        %{
+          "repo" => "nextide/symphony-plus-plus",
+          "base_branch" => "main",
+          "title" => "Default-owner WorkRequest",
+          "description" => "Create a WorkRequest without supplying a claim owner.",
+          "request_kind" => "feature"
+        },
+        config: Config.default(repo: repo, repo_root: test_repo_root())
+      )
+
+    default_owner_payload = get_in(default_owner_response, ["result", "structuredContent"])
+    assert default_owner_payload["work_request"]["creator"] == %{"kind" => "agent", "name" => "mcp-agent", "via" => "mcp"}
+    assert default_owner_payload["claim"] == %{"tool" => "claim_private_handoff", "claimed_by" => "symphony-architect"}
+
+    default_owner_handoff = get_in(default_owner_payload, ["architect_handoff", "secret_handoff"])
+
+    {default_claim_response, _default_claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-default-owner-work-request",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_private_handoff",
+            "arguments" => %{
+              "claimed_by" => default_owner_payload["claim"]["claimed_by"],
+              "private_handoff" => default_owner_handoff
+            }
+          }
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(default_claim_response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+    assert handoff_secret_absent?(default_owner_handoff, inspect(default_owner_response))
+    assert handoff_secret_absent?(default_owner_handoff, inspect(default_claim_response))
 
     operator_response =
       mcp_tool(

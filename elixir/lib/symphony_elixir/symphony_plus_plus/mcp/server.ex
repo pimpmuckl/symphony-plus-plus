@@ -1252,8 +1252,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "created_by_name" => string_schema(),
         "created_via" => string_schema()
       },
-      ["repo", "base_branch", "title", "request_kind", "description"]
+      ["repo", "base_branch", "title", "request_kind"]
     )
+    |> Map.put("anyOf", [
+      %{"required" => ["description"]},
+      %{"required" => ["human_description"]}
+    ])
   end
 
   defp worker_tool_input_schema("claim_work_key") do
@@ -2485,10 +2489,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp bootstrap_tool("create_work_request", arguments, %__MODULE__{config: config}) do
-    with {:ok, claimed_by} <- create_work_request_handoff_claimed_by(arguments),
-         {:ok, attrs} <- create_work_request_attrs(arguments, claimed_by),
+    with {:ok, requested_claimed_by} <- create_work_request_requested_claimed_by(arguments),
+         {:ok, attrs} <- create_work_request_attrs(arguments, requested_claimed_by),
          {:ok, work_request} <- WorkRequestService.create(config.repo, attrs) do
-      {:ok, tool_result(create_work_request_handoff_payload(config, work_request, claimed_by))}
+      effective_claimed_by = requested_claimed_by || ArchitectHandoff.claimed_by()
+
+      {:ok, tool_result(create_work_request_handoff_payload(config, work_request, effective_claimed_by))}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "create_work_request", "reason" => reason}}
       {:error, reason} -> create_work_request_error(reason)
@@ -2538,8 +2544,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp create_work_request_handoff_claimed_by(arguments) do
-    optional_string_argument(arguments, "claimed_by", ArchitectHandoff.claimed_by())
+  defp create_work_request_requested_claimed_by(arguments) do
+    optional_string_argument(arguments, "claimed_by")
   end
 
   defp create_work_request_creator_kind(arguments) do
@@ -2570,25 +2576,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
           "status" => "created",
           "work_request" => work_request_payload(work_request),
           "architect_handoff" => json_safe_payload(handoff),
+          "claim" => %{"tool" => "claim_private_handoff", "claimed_by" => claimed_by},
           "launch_prompt" => Map.get(handoff, :prompt)
         }
 
+      {:tool_error, reason} ->
+        create_work_request_partial_handoff_payload(work_request, reason)
+
       {:error, reason} ->
-        %{
-          "status" => "partial_success",
-          "work_request" => work_request_payload(work_request),
-          "architect_handoff" => nil,
-          "handoff_error" => %{
-            "reason" => reason_text(reason),
-            "message" => ArchitectHandoff.error_message(reason)
-          },
-          "retry" => %{
-            "type" => "manual_architect_handoff_replay",
-            "work_request_id" => work_request.id,
-            "operator_action" => "prepare_architect_handoff"
-          }
-        }
+        create_work_request_partial_handoff_payload(work_request, reason)
     end
+  end
+
+  defp create_work_request_partial_handoff_payload(%WorkRequest{} = work_request, reason) do
+    %{
+      "status" => "partial_success",
+      "work_request" => work_request_payload(work_request),
+      "architect_handoff" => nil,
+      "handoff_error" => %{
+        "reason" => reason_text(reason),
+        "message" => ArchitectHandoff.error_message(reason)
+      },
+      "retry" => %{
+        "type" => "manual_architect_handoff_replay",
+        "work_request_id" => work_request.id,
+        "operator_action" => "prepare_architect_handoff"
+      }
+    }
   end
 
   defp create_work_request_architect_handoff(%Config{} = config, %WorkRequest{} = work_request, claimed_by) do
