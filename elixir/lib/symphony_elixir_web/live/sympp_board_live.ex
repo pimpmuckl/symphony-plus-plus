@@ -1088,12 +1088,49 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     ]
   end
 
-  defp work_request_lane_key(%{status: "draft"}), do: :draft
-  defp work_request_lane_key(%{status: status}) when status in ["ready_for_clarification", "clarifying"], do: :clarifying
-  defp work_request_lane_key(%{status: "human_info_needed"}), do: :human_info_needed
-  defp work_request_lane_key(%{status: "ready_for_slicing"}), do: :ready_for_slicing
-  defp work_request_lane_key(%{status: "sliced"}), do: :sliced
-  defp work_request_lane_key(_request), do: :draft
+  defp work_request_lane_key(request) do
+    case work_request_operational_key(request) || Map.get(request, :status) do
+      "draft" ->
+        :draft
+
+      status when status in ["ready_for_clarification", "clarifying"] ->
+        :clarifying
+
+      "human_info_needed" ->
+        :human_info_needed
+
+      "ready_for_slicing" ->
+        :ready_for_slicing
+
+      status
+      when status in [
+             "sliced",
+             "planned",
+             "ready_for_worker",
+             "active",
+             "needs_attention",
+             "started_paused",
+             "reviewing",
+             "ci_waiting",
+             "merge_ready",
+             "merging",
+             "merged",
+             "closed",
+             "abandoned",
+             "skipped"
+           ] ->
+        :sliced
+
+      _status ->
+        :draft
+    end
+  end
+
+  defp work_request_operational_key(%{operational_state: %{key: key}}) when is_binary(key), do: key
+  defp work_request_operational_key(_request), do: nil
+
+  defp work_request_operational_label(%{operational_state: %{label: label}}) when is_binary(label), do: label
+  defp work_request_operational_label(request), do: status_label(Map.get(request, :status))
 
   defp work_request_items(work_requests, mode) when is_list(work_requests) do
     Enum.map(work_requests, &work_request_item(&1, mode))
@@ -1103,7 +1140,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     %{
       href: "work-requests/#{path_segment(Map.get(request, :id))}",
       title: Map.get(request, :title) || Map.get(request, :id) || "Untitled WorkRequest",
-      state: status_label(Map.get(request, :status)),
+      state: work_request_operational_label(request),
       repo_base: repo_base(request),
       questions: "#{Map.get(request, :open_question_count) || 0} Q",
       action_hint: work_request_action_hint(request, mode),
@@ -1123,6 +1160,16 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   defp work_request_action_hint(%{status: "draft"}, :local_operator), do: "Start agent questions"
   defp work_request_action_hint(%{status: "draft"}, _mode), do: "Prepare clarification"
   defp work_request_action_hint(%{status: "human_info_needed"}, _mode), do: "Provide product guidance"
+
+  defp work_request_action_hint(%{operational_state: %{key: key}}, _mode)
+       when key in ["active", "started_paused", "needs_attention"],
+       do: "Monitor active packages"
+
+  defp work_request_action_hint(%{operational_state: %{key: key}}, _mode)
+       when key in ["reviewing", "ci_waiting", "merge_ready", "merging"],
+       do: "Monitor validation and merge"
+
+  defp work_request_action_hint(%{operational_state: %{key: "merged"}}, _mode), do: "Review merged delivery"
 
   defp work_request_action_hint(%{status: "ready_for_slicing"} = request, _mode) do
     cond do
@@ -1152,7 +1199,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       %{
         href: "work-requests/#{path_segment(Map.get(request, :id))}",
         title: Map.get(request, :title) || Map.get(request, :id) || "Untitled WorkRequest",
-        state: status_label(Map.get(request, :status)),
+        state: work_request_operational_label(request),
         detail: "#{open_questions} open questions / #{slice_total(request)} slices"
       }
     end)

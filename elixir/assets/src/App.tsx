@@ -924,12 +924,14 @@ function topPanelForMotionKind(kind: UpdateMotionKind): TopPanelKey | null {
 
 function requestAnimationEntity(detail: WorkRequestDetail): UpdateAnimationEntity {
   const request = detail.work_request;
+  const operational = requestOperationalState(request);
   const openQuestions = detail.clarification_questions?.filter((question) => question.status === "open") ?? [];
   const guidanceCount = Math.max(openQuestions.length, request.open_question_count || 0, request.status === "human_info_needed" ? 1 : 0);
 
   return {
     signature: stableSignature([
       request.status,
+      request.operational_state,
       request.updated_at,
       request.open_question_count,
       request.answered_question_count,
@@ -946,7 +948,7 @@ function requestAnimationEntity(detail: WorkRequestDetail): UpdateAnimationEntit
         question.updated_at,
       ]),
     ]),
-    status: request.status,
+    status: operational?.key || request.status,
     guidanceCount,
     blockerCount: 0,
     finished: requestLane(request) === "finished",
@@ -3752,6 +3754,7 @@ function RequestCard({
       }
     : undefined;
   const tone = requestCardTone(detail, questionCount);
+  const operational = requestOperationalState(request);
 
   return (
     <div
@@ -3767,7 +3770,11 @@ function RequestCard({
           <p className="truncate text-sm font-semibold">{request.title || request.id}</p>
           <p className="mt-1 text-xs text-muted-foreground">{request.work_type || "feature"}</p>
         </div>
-        <AnimatedBadge label={formatStatus(request.status)} variant={requestStatusVariant(request.status)} className="shrink-0" />
+        <AnimatedBadge
+          label={operationalLabel(operational, request.status)}
+          variant={operationalBadgeVariant(operational, request.status)}
+          className="shrink-0"
+        />
       </div>
       {questionCount > 0 ? (
         <CardSignal
@@ -3964,9 +3971,12 @@ function CardSignal({
 function requestCardTone(detail: WorkRequestDetail, questionCount?: number): StateCardTone {
   const request = detail.work_request;
   const status = request.status || "";
+  const operational = requestOperationalState(request);
   const openQuestions = questionCount ?? request.open_question_count ?? 0;
 
   if (openQuestions > 0 || status === "human_info_needed") return "guidance";
+  const tone = operationalCardTone(operational, status);
+  if (tone) return tone;
   if (status === "ready_for_slicing") return "queued";
   if (status === "sliced") return "slice";
   if (status === "draft" || status === "clarifying" || status === "ready_for_clarification") return "request";
@@ -4027,9 +4037,13 @@ function operationalCardTone(operational?: WorkPackageCard["operational_state"],
     case "merging":
     case "merging_into_phase":
       return "merge";
+    case "active":
     case "in_progress":
     case "implementing":
       return "implementing";
+    case "needs_attention":
+    case "started_paused":
+      return "queued";
     case "ready_for_worker":
     case "created":
     case "claimed":
@@ -4041,6 +4055,10 @@ function operationalCardTone(operational?: WorkPackageCard["operational_state"],
     default:
       return null;
   }
+}
+
+function requestOperationalState(request: WorkRequestCard): WorkRequestCard["operational_state"] {
+  return request.operational_state || null;
 }
 
 function packageOperationalState(pkg: WorkPackageCard): WorkPackageCard["operational_state"] {
@@ -5506,6 +5524,7 @@ function detailLoadState(loading: boolean, payload: unknown, error: string | nul
 
 function RequestDetailContent({ detail, onSelectGuidance }: { detail: WorkRequestDetail; onSelectGuidance: (item: GuidanceItem) => void }) {
   const request = detail.work_request;
+  const operational = requestOperationalState(request);
   const openQuestions = requestOpenQuestions(detail);
   const sliceCounts = requestSliceCounts(detail);
 
@@ -5514,7 +5533,7 @@ function RequestDetailContent({ detail, onSelectGuidance }: { detail: WorkReques
       <DetailHeader
         title={request.title || request.id}
         eyebrow={`${repoName(request.repo)} / ${request.base_branch || "main"} / ${request.work_type || "feature"}`}
-        badge={<Badge variant={requestStatusVariant(request.status)}>{formatStatus(request.status)}</Badge>}
+        badge={<Badge variant={operationalBadgeVariant(operational, request.status)}>{operationalLabel(operational, request.status)}</Badge>}
       />
       <div className="grid gap-4">
         <DetailStatGrid
@@ -6289,6 +6308,7 @@ function requestSliceCounts(detail: WorkRequestDetail) {
 
 function requestProgressText(detail: WorkRequestDetail) {
   const request = detail.work_request;
+  const operational = requestOperationalState(request);
   const questions = requestOpenQuestions(detail);
   const slices = requestSliceCounts(detail);
 
@@ -6297,7 +6317,8 @@ function requestProgressText(detail: WorkRequestDetail) {
   }
 
   if (request.status === "sliced" || slices.total > 0) {
-    return `${slices.total} slice${slices.total === 1 ? "" : "s"} recorded: ${slices.approved} approved, ${slices.dispatched} dispatched, ${slices.skipped} skipped.`;
+    const state = operational?.key && operational.key !== request.status ? `${operational.label || statusLabel(operational.key)}. ` : "";
+    return `${state}${slices.total} slice${slices.total === 1 ? "" : "s"} recorded: ${slices.approved} approved, ${slices.dispatched} dispatched, ${slices.skipped} skipped.`;
   }
 
   if (request.status === "ready_for_slicing") {
@@ -6777,20 +6798,46 @@ function guidanceAnswerUrl(item: GuidanceItem) {
 }
 
 function requestLane(request: WorkRequestCard): "requested" | "slices" | "finished" {
-  if (request.status === "sliced" || request.status === "ready_for_slicing") return "slices";
+  const rawStatus = request.status || "";
+  const key = requestOperationalState(request)?.key || rawStatus;
+
+  if (FINISHED_BOARD_STATUSES.has(rawStatus)) return "finished";
+  if (FINISHED_BOARD_STATUSES.has(key)) return "slices";
+  if (
+    [
+      "sliced",
+      "ready_for_slicing",
+      "planned",
+      "ready_for_worker",
+      "active",
+      "needs_attention",
+      "started_paused",
+      "reviewing",
+      "ci_waiting",
+      "merge_ready",
+      "merging",
+      "blocked",
+    ].includes(key)
+  ) {
+    return "slices";
+  }
+
   return "requested";
 }
 
 const FINISHED_BOARD_STATUSES = new Set(["merged", "merged_into_phase", "closed", "abandoned", "skipped"]);
 const IMPLEMENTING_BOARD_STATUSES = new Set([
+  "active",
   "claimed",
   "planning",
   "in_progress",
   "implementing",
+  "needs_attention",
   "reviewing",
   "ci_waiting",
   "merge_ready",
   "merging",
+  "started_paused",
   "merging_into_phase",
   "ready_for_human_merge",
   "ready_for_architect_merge",
@@ -7026,22 +7073,26 @@ function wireToneForSlice(slice: PlannedSlice, pkg?: WorkPackageCard): BoardWire
 
 function statusVariant(status?: string | null): BadgeTone {
   if (["merged", "merged_into_phase", "closed", "answered"].includes(status || "")) return "success";
-  if (["blocked", "human_info_needed"].includes(status || "")) return "danger";
+  if (["blocked", "human_info_needed", "needs_attention"].includes(status || "")) return "danger";
   if (
-    ["in_progress", "implementing", "reviewing", "ci_waiting", "ready_for_slicing", "approved", "created", "ready_for_worker", "claimed", "planning"].includes(
-      status || "",
-    )
+    [
+      "active",
+      "in_progress",
+      "implementing",
+      "reviewing",
+      "ci_waiting",
+      "ready_for_slicing",
+      "approved",
+      "created",
+      "ready_for_worker",
+      "claimed",
+      "planning",
+      "started_paused",
+    ].includes(status || "")
   ) {
     return "info";
   }
   if (["merge_ready", "ready_for_human_merge", "ready_for_architect_merge", "merging", "merging_into_phase"].includes(status || "")) return "ready";
-  return "secondary";
-}
-
-function requestStatusVariant(status?: string | null): BadgeTone {
-  if (status === "sliced") return "success";
-  if (status === "human_info_needed") return "danger";
-  if (status === "ready_for_slicing") return "info";
   return "secondary";
 }
 
@@ -7050,8 +7101,11 @@ function formatStatus(status?: string | null) {
 }
 
 function statusLabel(status?: string | null) {
+  if (status === "active") return "Active";
   if (status === "merge_ready") return "Ready For Merge";
-  if (status === "in_progress") return "In Progress";
+  if (status === "in_progress") return "Active";
+  if (status === "needs_attention") return "Needs Attention";
+  if (status === "started_paused") return "Started / Paused";
   if (status === "merging") return "Merging";
   if (status === "ready_for_human_merge" || status === "ready_for_architect_merge") return "Merge Ready";
   if (status === "merging_into_phase") return "Merging";

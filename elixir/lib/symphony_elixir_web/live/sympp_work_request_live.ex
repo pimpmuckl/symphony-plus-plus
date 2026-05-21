@@ -165,7 +165,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
               <div class="sympp-work-request-row-main">
                 <div class="sympp-work-request-row-heading">
                   <span class="sympp-card-id"><%= value(request, :id) %></span>
-                  <span class={status_class(value(request, :status))}><%= status_label(value(request, :status)) %></span>
+                  <span class={status_class(operational_badge_key(request))}><%= operational_badge_label(request) %></span>
                 </div>
                 <h2><%= value(request, :title) || "Untitled WorkRequest" %></h2>
                 <dl class="sympp-work-request-meta">
@@ -385,7 +385,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
             <section class={detail_status_panel_class(@page)} aria-label="WorkRequest state">
               <div class="sympp-detail-status-main">
                 <div class="sympp-detail-signal-row">
-                  <span class={status_class(value(@page.work_request, :status))}><%= status_label(value(@page.work_request, :status)) %></span>
+                  <span class={status_class(operational_badge_key(@page.work_request))}><%= operational_badge_label(@page.work_request) %></span>
                   <span class="sympp-readiness"><%= label_value(value(@page.work_request, :work_type)) %></span>
                   <span class="sympp-readiness"><%= label_value(value(@page.work_request, :desired_dispatch_shape)) %></span>
                 </div>
@@ -868,7 +868,7 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
                 <div>
                   <div class="sympp-work-request-row-heading">
                     <span class="sympp-card-id"><%= sequence_label(slice) %></span>
-                    <span class={status_class(value(slice, :status))}><%= status_label(value(slice, :status)) %></span>
+                    <span class={status_class(operational_badge_key(slice))}><%= operational_badge_label(slice) %></span>
                   </div>
                   <p class="mono"><%= value(slice, :id) %></p>
                   <h3><%= value(slice, :title) %></h3>
@@ -3091,6 +3091,26 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp status_label(value) when is_binary(value), do: String.replace(value, "_", " ")
   defp status_label(value), do: label_value(value)
 
+  defp operational_badge_key(item), do: operational_state_key(item) || value(item, :status)
+
+  defp operational_badge_label(item), do: operational_state_label(item) || status_label(value(item, :status))
+
+  defp operational_state_key(item) do
+    case value(item, :operational_state) do
+      %{key: key} when is_binary(key) -> key
+      %{"key" => key} when is_binary(key) -> key
+      _state -> nil
+    end
+  end
+
+  defp operational_state_label(item) do
+    case value(item, :operational_state) do
+      %{label: label} when is_binary(label) -> label
+      %{"label" => label} when is_binary(label) -> label
+      _state -> nil
+    end
+  end
+
   defp work_type_label("bugfix"), do: "Bug fix"
   defp work_type_label("docs"), do: "Docs"
   defp work_type_label("hotfix"), do: "Hotfix"
@@ -3144,9 +3164,16 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
 
   defp status_class("open"), do: "state-badge state-badge-warning"
   defp status_class("human_info_needed"), do: "state-badge state-badge-warning"
+  defp status_class("needs_attention"), do: "state-badge state-badge-warning"
+  defp status_class("started_paused"), do: "state-badge state-badge-warning"
   defp status_class("ready_for_clarification"), do: "state-badge state-badge-warning"
   defp status_class("clarifying"), do: "state-badge state-badge-warning"
   defp status_class("ready_for_slicing"), do: "state-badge state-badge-active"
+  defp status_class("active"), do: "state-badge state-badge-active"
+  defp status_class("reviewing"), do: "state-badge state-badge-active"
+  defp status_class("ci_waiting"), do: "state-badge state-badge-active"
+  defp status_class("merge_ready"), do: "state-badge state-badge-active"
+  defp status_class("merged"), do: "state-badge state-badge-active"
   defp status_class("answered"), do: "state-badge state-badge-active"
   defp status_class("approved"), do: "state-badge state-badge-active"
   defp status_class("dispatched"), do: "state-badge state-badge-active"

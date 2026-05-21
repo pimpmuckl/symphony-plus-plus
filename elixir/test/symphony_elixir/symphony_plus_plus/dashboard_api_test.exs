@@ -239,13 +239,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
            } = json_response(get(auth_conn(architect_secret), "/api/v1/sympp/work-packages/SYMPP-DASH-2"), 200)
   end
 
-  test "package operational state only emits ready for worker before delivery activity starts", %{repo: repo} do
+  test "package operational state splits active work from historical activity", %{repo: repo} do
     assert {:ok, ready} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-OP-READY", status: "ready_for_worker"))
 
     assert {:ok, card} = Dashboard.card(repo, ready)
     assert card.operational_state.key == "ready_for_worker"
     assert card.operational_state.attention_items == []
+    assert card.operational_state.has_started == false
+    assert card.operational_state.has_active_worker == false
 
     assert {:ok, started} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-OP-READY-STARTED", status: "ready_for_worker"))
@@ -253,8 +255,106 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     create_claimed_worker_grant(repo, started.id, "worker-started")
 
     assert {:ok, started_card} = Dashboard.card(repo, started)
-    assert started_card.operational_state.key == "in_progress"
+    assert started_card.operational_state.key == "needs_attention"
+    assert started_card.operational_state.raw_status == "ready_for_worker"
+    assert started_card.operational_state.has_started == true
+    assert started_card.operational_state.has_active_worker == true
     assert [%{key: "ready_for_worker_with_activity"}] = started_card.operational_state.attention_items
+
+    assert {:ok, ready_with_history} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-OP-READY-HISTORY", status: "ready_for_worker"))
+
+    assert {:ok, _old_progress} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: ready_with_history.id,
+               summary: "Worker made progress earlier",
+               status: "progress",
+               created_at: ~U[2026-05-05 00:00:00Z]
+             })
+
+    assert {:ok, ready_history_card} = Dashboard.card(repo, ready_with_history)
+    assert ready_history_card.operational_state.key == "needs_attention"
+    assert ready_history_card.operational_state.has_started == true
+    assert ready_history_card.operational_state.has_active_worker == false
+    assert ready_history_card.operational_state.is_stale == true
+
+    assert {:ok, ready_with_run_history} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-OP-READY-RUN-HISTORY", status: "ready_for_worker"))
+
+    assert {:ok, ready_history_run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: ready_with_run_history.id,
+               status: "running",
+               attempt: 1,
+               worker_task_handle: "ready-history-run"
+             })
+
+    assert {:ok, _completed_ready_history_run} = AgentRunRepository.mark_completed(repo, ready_history_run.id, "done earlier")
+
+    assert {:ok, ready_run_history_card} = Dashboard.card(repo, ready_with_run_history)
+    assert ready_run_history_card.operational_state.key == "needs_attention"
+    assert ready_run_history_card.operational_state.has_started == true
+    assert ready_run_history_card.operational_state.has_active_worker == false
+    assert ready_run_history_card.operational_state.is_stale == true
+
+    assert {:ok, historical} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-OP-HISTORICAL", status: "implementing"))
+
+    assert {:ok, run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: historical.id,
+               status: "running",
+               attempt: 1,
+               worker_task_handle: "historical-run"
+             })
+
+    assert {:ok, _completed_run} = AgentRunRepository.mark_completed(repo, run.id, "done earlier")
+
+    assert {:ok, historical_card} = Dashboard.card(repo, historical)
+    assert historical_card.operational_state.key == "started_paused"
+    assert historical_card.operational_state.raw_status == "implementing"
+    assert historical_card.operational_state.has_started == true
+    assert historical_card.operational_state.has_active_worker == false
+    assert historical_card.operational_state.is_stale == true
+    assert is_binary(historical_card.operational_state.last_activity_at)
+
+    assert {:ok, active} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-OP-ACTIVE", status: "implementing"))
+
+    assert {:ok, _active_run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: active.id,
+               status: "running",
+               attempt: 1,
+               worker_task_handle: "active-run"
+             })
+
+    assert {:ok, active_card} = Dashboard.card(repo, active)
+    assert active_card.operational_state.key == "active"
+    assert active_card.operational_state.label == "Active"
+    assert active_card.operational_state.has_started == true
+    assert active_card.operational_state.has_active_worker == true
+
+    assert {:ok, stale_active} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-OP-STALE-ACTIVE", status: "implementing"))
+
+    stale_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -600, :second)
+
+    assert {:ok, _stale_run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: stale_active.id,
+               status: "running",
+               attempt: 1,
+               worker_task_handle: "stale-active-run",
+               last_seen_at: stale_seen_at
+             })
+
+    assert {:ok, stale_active_card} = Dashboard.card(repo, stale_active)
+    assert stale_active_card.active_agent_run == nil
+    assert stale_active_card.operational_state.key == "started_paused"
+    assert stale_active_card.operational_state.has_started == true
+    assert stale_active_card.operational_state.has_active_worker == false
+    assert stale_active_card.operational_state.is_stale == true
 
     assert {:ok, ci_waiting} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-OP-CI-WAITING", status: "ci_waiting"))
@@ -1074,7 +1174,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     linked_slice = Map.fetch!(slices_by_id, "WRS-OP-LINKED")
     assert linked_slice.work_package_id == linked_package.id
     assert linked_slice.work_package_status == "implementing"
-    assert linked_slice.operational_state.key == "in_progress"
+    assert linked_slice.operational_state.key == "started_paused"
     assert linked_slice.operational_state.raw_status == "approved"
 
     assert Enum.any?(
@@ -1085,6 +1185,144 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     terminal_slice = Map.fetch!(slices_by_id, "WRS-OP-TERMINAL")
     assert terminal_slice.work_package_status == "abandoned"
     assert terminal_slice.operational_state.key == "abandoned"
+  end
+
+  test "WorkRequest cards promote linked package operational state over raw ready-for-slicing", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-DASH-OP-REQUEST", status: "ready_for_slicing")
+
+    assert {:ok, active_slice} =
+             WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-OP-REQUEST-ACTIVE"))
+
+    assert {:ok, active_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, active_slice.id, "planned")
+
+    active_package =
+      create_matching_work_package!(repo, work_request, active_slice,
+        id: "SYMPP-OP-REQUEST-ACTIVE",
+        status: "implementing"
+      )
+
+    assert {:ok, _active_run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: active_package.id,
+               status: "running",
+               attempt: 1,
+               worker_task_handle: "request-active-run"
+             })
+
+    assert {:ok, _dispatched_active} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, active_slice.id, "approved", active_package.id)
+
+    assert {:ok, merged_slice} =
+             WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-OP-REQUEST-MERGED"))
+
+    assert {:ok, merged_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, merged_slice.id, "planned")
+
+    merged_package =
+      create_matching_work_package!(repo, work_request, merged_slice,
+        id: "SYMPP-OP-REQUEST-MERGED",
+        status: "merged"
+      )
+
+    assert {:ok, _dispatched_merged} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, merged_slice.id, "approved", merged_package.id)
+
+    assert {:ok, payload} = Dashboard.work_requests(repo)
+    request_card = Enum.find(payload.work_requests, &(&1.id == work_request.id))
+
+    assert request_card.status == "ready_for_slicing"
+    assert request_card.dispatched_slice_count == 2
+    assert request_card.operational_state.key == "active"
+    assert request_card.operational_state.label == "Active"
+    assert request_card.operational_state.raw_status == "ready_for_slicing"
+    assert request_card.operational_state.has_started == true
+    assert request_card.operational_state.has_active_worker == true
+  end
+
+  test "WorkRequest and dispatched slice show merged package truth without mutating raw lifecycle", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-DASH-OP-MERGED", status: "ready_for_slicing")
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-OP-MERGED"))
+
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+    merged_package =
+      create_matching_work_package!(repo, work_request, approved_slice,
+        id: "SYMPP-OP-MERGED",
+        status: "merged"
+      )
+
+    assert {:ok, dispatched_slice} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", merged_package.id)
+
+    assert dispatched_slice.status == "dispatched"
+
+    assert {:ok, payload} = Dashboard.work_request_detail(repo, work_request.id)
+    assert payload.work_request.status == "ready_for_slicing"
+    assert payload.work_request.operational_state.key == "merged"
+    assert payload.work_request.operational_state.raw_status == "ready_for_slicing"
+
+    [slice] = payload.planned_slices
+    assert slice.status == "dispatched"
+    assert slice.work_package_status == "merged"
+    assert slice.operational_state.key == "merged"
+    assert slice.operational_state.raw_status == "dispatched"
+  end
+
+  test "grant WorkRequest list and detail promote scoped linked packages consistently", %{repo: repo} do
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-OP-GRANT-ANCHOR",
+                 kind: "phase_child",
+                 status: "planning",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta"
+               )
+             )
+
+    work_request =
+      create_work_request!(
+        repo,
+        id: "WR-DASH-OP-GRANT-MERGED",
+        status: "ready_for_slicing",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch
+      )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-OP-GRANT-MERGED", target_base_branch: anchor.base_branch)
+             )
+
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+    merged_package =
+      create_matching_work_package!(repo, work_request, approved_slice,
+        id: "SYMPP-OP-GRANT-MERGED",
+        status: "merged"
+      )
+
+    assert {:ok, _dispatched_slice} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", merged_package.id)
+
+    secret = create_architect_grant_secret(repo, anchor.id)
+    list_payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-requests"), 200)
+    detail_payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-requests/#{work_request.id}"), 200)
+
+    [card] = Enum.filter(list_payload["work_requests"], &(&1["id"] == work_request.id))
+
+    assert card["status"] == "ready_for_slicing"
+    assert card["operational_state"]["key"] == "merged"
+    assert card["operational_state"]["raw_status"] == "ready_for_slicing"
+
+    assert detail_payload["work_request"]["operational_state"]["key"] == card["operational_state"]["key"]
+    assert [%{"status" => "dispatched"} = grant_slice] = detail_payload["planned_slices"]
+    refute Map.has_key?(grant_slice, "work_package_status")
+    refute Map.has_key?(grant_slice, "operational_state")
   end
 
   test "dashboard API WorkRequest endpoints enforce board reader authorization and scope", %{repo: repo} do
