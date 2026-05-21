@@ -834,7 +834,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case prepare_bootstrap_tool_call(server, params, "create_work_request") do
       {:ok, arguments} -> bootstrap_tool("create_work_request", arguments, server)
       {:error, code, message, data} -> {:error, code, message, data}
-      {:error, reason} -> bootstrap_error(reason, "create_work_request")
     end
   end
 
@@ -913,8 +912,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:error, -32_602, "Invalid params", %{"reason" => "params_must_be_object"}}
   end
 
-  defp dispatch("resources/read", %{"uri" => @version_resource}, %__MODULE__{} = server) do
-    payload = %{"version" => server.config.version, "mode" => Atom.to_string(server.config.mode)}
+  defp dispatch("resources/read", %{"uri" => @version_resource}, %__MODULE__{config: %Config{} = config}) do
+    payload = %{
+      "version" => config.version,
+      "source" => source_identity(config),
+      "mode" => Atom.to_string(config.mode)
+    }
+
     {:ok, json_resource(@version_resource, payload)}
   end
 
@@ -969,10 +973,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     %{
       "status" => if(ledger["reachable"], do: "ok", else: "degraded"),
       "version" => config.version,
+      "source" => source_identity(config),
       "mode" => Atom.to_string(config.mode),
       "ledger" => ledger
     }
   end
+
+  defp source_identity(%Config{source_revision: revision}) when is_binary(revision) and revision != "" do
+    %{"revision" => String.downcase(revision)}
+  end
+
+  defp source_identity(%Config{}), do: %{"revision" => nil}
 
   defp health_tool_spec do
     %{
@@ -8480,11 +8491,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp solo_error(:not_found, tool), do: {:error, -32_004, "Not found", %{"tool" => tool, "reason" => "not_found"}}
   defp solo_error(reason, tool), do: worker_error(reason, tool)
 
-  defp bootstrap_error(:database_busy, tool), do: service_error(:database_busy, tool)
-  defp bootstrap_error({:storage_failed, _reason} = reason, tool), do: service_error(reason, tool)
-  defp bootstrap_error({:migration_failed, _reason} = reason, tool), do: service_error(reason, tool)
-  defp bootstrap_error(reason, tool), do: {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason_text(reason)}}
-
   defp create_work_request_error(%Ecto.Changeset{}) do
     {:error, -32_602, "Invalid params", %{"tool" => "create_work_request", "reason" => "invalid_work_request"}}
   end
@@ -8495,7 +8501,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp create_work_request_error(:database_busy), do: service_error(:database_busy, "create_work_request")
   defp create_work_request_error({:storage_failed, _reason} = reason), do: service_error(reason, "create_work_request")
-  defp create_work_request_error({:migration_failed, _reason} = reason), do: service_error(reason, "create_work_request")
 
   defp create_work_request_error(reason) do
     {:error, -32_602, "Invalid params", %{"tool" => "create_work_request", "reason" => reason_text(reason)}}

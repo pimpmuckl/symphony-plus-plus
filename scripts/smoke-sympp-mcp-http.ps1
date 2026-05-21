@@ -4,6 +4,8 @@ param(
   [switch]$Bound,
   [string]$WorkKeySecretEnv,
   [string]$ClaimedBy,
+  [string]$RepoRoot,
+  [string]$ExpectedSourceRevision,
   [switch]$SkipUnboundTools,
   [switch]$SelfTest
 )
@@ -144,6 +146,89 @@ function ConvertTo-RedactedJson($Value) {
   return Protect-SensitiveText ($Value | ConvertTo-Json -Depth 12)
 }
 
+function Normalize-SourceRevision([string]$Revision) {
+  if ([string]::IsNullOrWhiteSpace($Revision)) {
+    return $null
+  }
+
+  $normalized = $Revision.Trim().ToLowerInvariant()
+  if ($normalized -notmatch "^[0-9a-f]{40}$") {
+    throw "Expected source revision must be a 40-character git SHA."
+  }
+
+  return $normalized
+}
+
+function Get-GitHeadRevision([string]$Root) {
+  if ([string]::IsNullOrWhiteSpace($Root)) {
+    return [pscustomobject]@{
+      ok = $false
+      result = New-SmokeResult "invalid_arguments" "RepoRoot must be non-empty when supplied."
+    }
+  }
+
+  $fullRoot = [System.IO.Path]::GetFullPath($Root)
+  if (-not (Test-Path -LiteralPath $fullRoot -PathType Container)) {
+    return [pscustomobject]@{
+      ok = $false
+      result = New-SmokeResult "invalid_repo_root" "RepoRoot does not exist: $fullRoot"
+    }
+  }
+
+  $git = Get-Command git -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $git) {
+    return [pscustomobject]@{
+      ok = $false
+      result = New-SmokeResult "source_revision_unavailable" "Could not find git to verify the daemon source revision for RepoRoot: $fullRoot"
+    }
+  }
+
+  $output = @(& $git.Source @("-C", $fullRoot, "rev-parse", "--verify", "HEAD") 2>&1)
+  if ($LASTEXITCODE -ne 0 -or $output.Count -eq 0) {
+    return [pscustomobject]@{
+      ok = $false
+      result = New-SmokeResult "source_revision_unavailable" "Could not resolve git HEAD for RepoRoot: $fullRoot"
+    }
+  }
+
+  try {
+    return [pscustomobject]@{
+      ok = $true
+      revision = Normalize-SourceRevision ([string]$output[0])
+    }
+  } catch {
+    return [pscustomobject]@{
+      ok = $false
+      result = New-SmokeResult "source_revision_unavailable" "Git returned an invalid HEAD revision for RepoRoot: $fullRoot"
+    }
+  }
+}
+
+function Resolve-ExpectedSourceRevision {
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedSourceRevision)) {
+    try {
+      return [pscustomobject]@{
+        ok = $true
+        revision = Normalize-SourceRevision $ExpectedSourceRevision
+      }
+    } catch {
+      return [pscustomobject]@{
+        ok = $false
+        result = New-SmokeResult "invalid_arguments" $_.Exception.Message
+      }
+    }
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($RepoRoot)) {
+    return Get-GitHeadRevision $RepoRoot
+  }
+
+  return [pscustomobject]@{
+    ok = $true
+    revision = $null
+  }
+}
+
 function Write-SmokeResult($Result, [int]$ExitCode) {
   if ($Json) {
     ConvertTo-RedactedJson $Result
@@ -155,6 +240,9 @@ function Write-SmokeResult($Result, [int]$ExitCode) {
     }
     if ($Result.PSObject.Properties["workPackageId"]) {
       Write-Host (Protect-SensitiveText "WorkPackage: $($Result.workPackageId)")
+    }
+    if ($Result.PSObject.Properties["daemonSourceRevision"] -and -not [string]::IsNullOrWhiteSpace([string]$Result.daemonSourceRevision)) {
+      Write-Host (Protect-SensitiveText "DaemonSourceRevision: $($Result.daemonSourceRevision)")
     }
     if ($Result.PSObject.Properties["tools"]) {
       Write-Host (Protect-SensitiveText "Tools: $($Result.tools -join ', ')")
@@ -446,6 +534,114 @@ function Get-AssignmentWorkPackageId($Payload) {
   return $workPackageId
 }
 
+function Get-HealthSourceRevision($Payload) {
+  if ($null -eq $Payload -or -not $Payload.PSObject.Properties["result"]) {
+    return $null
+  }
+
+  $structuredContent = $Payload.result.structuredContent
+  if ($null -eq $structuredContent -or -not $structuredContent.PSObject.Properties["source"]) {
+    return $null
+  }
+
+  $source = $structuredContent.source
+  if ($null -eq $source -or -not $source.PSObject.Properties["revision"]) {
+    return $null
+  }
+
+  try {
+    return Normalize-SourceRevision ([string]$source.revision)
+  } catch {
+    return $null
+  }
+}
+
+function Invoke-HealthSmoke([string]$SessionId, [string]$ExpectedRevision) {
+  $healthResponse = Invoke-McpPost $Url (New-ToolCallRequest "sympp-http-smoke-health" "sympp.health" @{}) $SessionId
+  if (-not $healthResponse.ok) {
+    $reason = if ($healthResponse.statusCode) { "HTTP $($healthResponse.statusCode)" } else { "request failed" }
+    $detail = Get-ResponseErrorDetail $healthResponse $healthResponse.error
+    return [pscustomobject]@{
+      ok = $false
+      result = New-SmokeResult "health_failed" "MCP sympp.health failed with initialized session ($reason): $detail"
+    }
+  }
+
+  $sessionCheck = Test-ResponseSessionHeader $healthResponse $SessionId "sympp.health"
+  if (-not $sessionCheck.ok) {
+    return $sessionCheck
+  }
+
+  $healthPayload = ConvertFrom-JsonResponse $healthResponse.content "sympp.health"
+  $healthError = Get-JsonRpcErrorMessage $healthPayload
+  if ($healthError) {
+    return [pscustomobject]@{
+      ok = $false
+      result = New-SmokeResult "health_failed" "MCP sympp.health returned JSON-RPC error: $healthError"
+    }
+  }
+
+  $actualRevision = Get-HealthSourceRevision $healthPayload
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedRevision)) {
+    if ([string]::IsNullOrWhiteSpace($actualRevision)) {
+      return [pscustomobject]@{
+        ok = $false
+        result = New-SmokeResult "stale_or_unverified_daemon" "MCP daemon did not report a source revision. Restart the local Symphony++ cockpit from the current checkout and rerun smoke." @{
+          expectedSourceRevision = $ExpectedRevision
+        }
+      }
+    }
+
+    if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($actualRevision, $ExpectedRevision)) {
+      return [pscustomobject]@{
+        ok = $false
+        result = New-SmokeResult "stale_daemon_source_revision_mismatch" "MCP daemon source revision does not match the expected checkout. Restart the local Symphony++ cockpit and rerun smoke." @{
+          expectedSourceRevision = $ExpectedRevision
+          daemonSourceRevision = $actualRevision
+        }
+      }
+    }
+  }
+
+  return [pscustomobject]@{
+    ok = $true
+    sourceRevision = $actualRevision
+  }
+}
+
+function Initialize-HealthyMcpSession([bool]$RedactSessionId) {
+  $expectedRevision = Resolve-ExpectedSourceRevision
+  if (-not $expectedRevision.ok) {
+    return [pscustomobject]@{
+      ok = $false
+      result = $expectedRevision.result
+    }
+  }
+
+  $init = Invoke-InitializeSession $RedactSessionId
+  if (-not $init.ok) {
+    return [pscustomobject]@{
+      ok = $false
+      result = $init.result
+    }
+  }
+
+  $health = Invoke-HealthSmoke $init.sessionId $expectedRevision.revision
+  if (-not $health.ok) {
+    return [pscustomobject]@{
+      ok = $false
+      result = $health.result
+    }
+  }
+
+  return [pscustomobject]@{
+    ok = $true
+    sessionId = $init.sessionId
+    expectedRevision = $expectedRevision.revision
+    sourceRevision = $health.sourceRevision
+  }
+}
+
 function Test-ResponseSessionHeader($Response, [string]$ExpectedSessionId, [string]$Stage) {
   $actualSessionId = Get-ResponseHeaderValue $Response.headers "Mcp-Session-Id"
   if ($actualSessionId -ne $ExpectedSessionId) {
@@ -636,61 +832,33 @@ function Invoke-ToolsListSmoke([string]$SessionId, [string[]]$Expected, [string]
 }
 
 function Invoke-McpSmoke {
-  $init = Invoke-InitializeSession $false
-  if (-not $init.ok) {
-    return $init.result
+  $session = Initialize-HealthyMcpSession $false
+  if (-not $session.ok) {
+    return $session.result
   }
 
-  $sessionId = $init.sessionId
-  $toolsResponse = Invoke-McpPost $Url (New-ToolsListRequest) $sessionId
-  if (-not $toolsResponse.ok) {
-    $reason = if ($toolsResponse.statusCode) { "HTTP $($toolsResponse.statusCode)" } else { "request failed" }
-    $detail = Get-ResponseErrorDetail $toolsResponse $toolsResponse.error
-    return New-SmokeResult "tools_list_failed" "MCP tools/list failed with initialized session ($reason): $detail"
-  }
-
-  $toolsSessionId = Get-ResponseHeaderValue $toolsResponse.headers "Mcp-Session-Id"
-  if ($toolsSessionId -ne $sessionId) {
-    $actual = if ([string]::IsNullOrWhiteSpace($toolsSessionId)) { "<missing>" } else { $toolsSessionId }
-    return New-SmokeResult "session_id_mismatch" "MCP tools/list did not echo the initialized Mcp-Session-Id. expected=$sessionId actual=$actual"
-  }
-
-  $toolsPayload = ConvertFrom-JsonResponse $toolsResponse.content "tools/list"
-  $toolsError = Get-JsonRpcErrorMessage $toolsPayload
-  if ($toolsError) {
-    return New-SmokeResult "tools_list_failed" "MCP tools/list returned JSON-RPC error: $toolsError"
-  }
-
-  $toolNames = Get-ToolNames $toolsPayload
-  $missingTools = @($ExpectedUnboundTools | Where-Object { $toolNames -notcontains $_ })
-  if ($missingTools.Count -gt 0) {
-    return New-SmokeResult "missing_expected_tools" "MCP tools/list is missing expected unbound tools: $($missingTools -join ', ')." @{
-      tools = $toolNames
-      missingTools = $missingTools
-    }
+  $toolsCheck = Invoke-ToolsListSmoke $session.sessionId $ExpectedUnboundTools "unbound"
+  if (-not $toolsCheck.ok) {
+    return $toolsCheck.result
   }
 
   return New-SmokeResult "ok" "Local Symphony++ HTTP MCP daemon is initialized and exposes the expected unbound tools." @{
-    sessionId = $sessionId
-    tools = $toolNames
+    sessionId = $session.sessionId
+    daemonSourceRevision = $session.sourceRevision
+    expectedSourceRevision = $session.expectedRevision
+    tools = $toolsCheck.tools
   }
 }
 
-function Invoke-BoundMcpSmoke {
-  $config = Resolve-BoundSmokeConfig $true $WorkKeySecretEnv $ClaimedBy
-  if (-not $config.ok) {
-    return $config.result
+function Invoke-BoundMcpSmoke($Config) {
+  $session = Initialize-HealthyMcpSession $true
+  if (-not $session.ok) {
+    return $session.result
   }
 
-  $init = Invoke-InitializeSession $true
-  if (-not $init.ok) {
-    return $init.result
-  }
-
-  $sessionId = $init.sessionId
   $unboundTools = @()
   if (-not $SkipUnboundTools) {
-    $unbound = Invoke-ToolsListSmoke $sessionId $ExpectedUnboundTools "unbound pre-claim" $ForbiddenUnboundTools
+    $unbound = Invoke-ToolsListSmoke $session.sessionId $ExpectedUnboundTools "unbound pre-claim" $ForbiddenUnboundTools
     if (-not $unbound.ok) {
       return $unbound.result
     }
@@ -699,9 +867,9 @@ function Invoke-BoundMcpSmoke {
   }
 
   $claimResponse = Invoke-McpPost $Url (New-ToolCallRequest "sympp-http-smoke-claim" "claim_work_key" @{
-      secret = $config.secret
-      claimed_by = $config.claimedBy
-    }) $sessionId
+      secret = $Config.secret
+      claimed_by = $Config.claimedBy
+    }) $session.sessionId
 
   if (-not $claimResponse.ok) {
     $reason = if ($claimResponse.statusCode) { "HTTP $($claimResponse.statusCode)" } else { "request failed" }
@@ -715,7 +883,7 @@ function Invoke-BoundMcpSmoke {
     return New-SmokeResult "missing_claimed_session_id" "MCP claim_work_key succeeded but did not return Mcp-Session-Id."
   }
 
-  if ($claimedSessionId -ne $sessionId) {
+  if ($claimedSessionId -ne $session.sessionId) {
     return New-SmokeResult "session_id_mismatch" "MCP claim_work_key did not preserve the initialized Mcp-Session-Id."
   }
 
@@ -815,10 +983,12 @@ function Invoke-BoundMcpSmoke {
 
   $data = @{
     mode = "bound_worker"
-    claimedBy = $config.claimedBy
-    workKeySecretEnv = $config.secretEnvName
+    claimedBy = $Config.claimedBy
+    workKeySecretEnv = $Config.secretEnvName
     sessionId = $RedactedValue
     sessionIdRedacted = $true
+    daemonSourceRevision = $session.sourceRevision
+    expectedSourceRevision = $session.expectedRevision
     workPackageId = $workPackageId
     tools = $boundTools.tools
     resources = $resourceUris
@@ -900,6 +1070,38 @@ function Invoke-SelfTest {
     throw "Expected shared worker guidance read tool to remain allowed for bound workers."
   }
 
+  $healthPayload = @{
+    result = @{
+      structuredContent = @{
+        source = @{
+          revision = "ABCDEF1234567890ABCDEF1234567890ABCDEF12"
+        }
+      }
+    }
+  } | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+  if ((Get-HealthSourceRevision $healthPayload) -ne "abcdef1234567890abcdef1234567890abcdef12") {
+    throw "Expected health source revision extraction to normalize daemon revisions."
+  }
+
+  $missingSourcePayload = @{ result = @{ structuredContent = @{} } } | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+  if ($null -ne (Get-HealthSourceRevision $missingSourcePayload)) {
+    throw "Expected missing health source revision to normalize to null."
+  }
+
+  if ((Normalize-SourceRevision "0123456789ABCDEF0123456789ABCDEF01234567") -ne "0123456789abcdef0123456789abcdef01234567") {
+    throw "Expected source revision normalization to lower-case valid git SHAs."
+  }
+
+  $invalidRevisionThrew = $false
+  try {
+    [void](Normalize-SourceRevision "not-a-sha")
+  } catch {
+    $invalidRevisionThrew = $true
+  }
+  if (-not $invalidRevisionThrew) {
+    throw "Expected invalid source revisions to fail validation."
+  }
+
   $script:SensitiveValues.Clear()
   Add-SensitiveValue "secret-value-for-self-test"
   Add-SensitiveValue "claimed-session-for-self-test"
@@ -942,7 +1144,7 @@ function Invoke-SelfTest {
     throw "Expected bound arguments without -Bound to fail validation."
   }
 
-  return New-SmokeResult "ok" "PowerShell header normalization, redaction, and bound argument validation self-test passed."
+  return New-SmokeResult "ok" "PowerShell header normalization, source revision, redaction, and bound argument validation self-test passed."
 }
 
 try {
@@ -955,7 +1157,7 @@ try {
     Write-SmokeResult $config.result 1
   }
 
-  $result = if ($config.bound) { Invoke-BoundMcpSmoke } else { Invoke-McpSmoke }
+  $result = if ($config.bound) { Invoke-BoundMcpSmoke $config } else { Invoke-McpSmoke }
   $exitCode = if ($result.status -eq "ok") { 0 } else { 1 }
   Write-SmokeResult $result $exitCode
 }

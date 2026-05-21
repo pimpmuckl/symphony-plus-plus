@@ -398,8 +398,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   test "config parser defaults to stdio and rejects unsupported modes" do
     assert {:ok, %Config{mode: :stdio, database: nil}} = Config.parse([])
-    assert %Config{mode: :stdio, repo: Repo, version: version, repo_root: nil} = Config.default()
+
+    assert %Config{
+             mode: :stdio,
+             repo: Repo,
+             version: version,
+             source_revision: source_revision,
+             repo_root: nil
+           } = Config.default()
+
     assert is_binary(version)
+    assert is_nil(source_revision) or source_revision =~ ~r/\A[0-9a-f]{40}\z/
     assert {:ok, %Config{mode: :stdio, database: "tmp/sympp.sqlite3"}} = Config.parse(["--database", "tmp/sympp.sqlite3"])
     assert {:ok, %Config{repo_root: repo_root}} = Config.parse(["--repo-root", " . "])
     assert repo_root == Path.expand(".")
@@ -1992,7 +2001,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "method" => "tools/call",
           "params" => %{"name" => "sympp.health", "arguments" => %{}}
         },
-        repo: repo
+        config: Config.default(repo: repo, source_revision: "ABCDEF1234567890ABCDEF1234567890ABCDEF12")
       )
 
     result = get_in(response, ["result", "structuredContent"])
@@ -2001,7 +2010,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert result["status"] == "ok"
     assert result["ledger"] == %{"reachable" => true}
     assert result["mode"] == "stdio"
+    assert result["source"] == %{"revision" => "abcdef1234567890abcdef1234567890abcdef12"}
     refute text =~ "SYMPP-P3-001"
+  end
+
+  test "version resource includes source revision for stale daemon diagnostics", %{repo: repo} do
+    response =
+      MCPHarness.request(
+        %{"jsonrpc" => "2.0", "id" => "version", "method" => "resources/read", "params" => %{"uri" => "sympp://health/version"}},
+        config: Config.default(repo: repo, source_revision: "0123456789abcdef0123456789abcdef01234567")
+      )
+
+    assert %{"result" => %{"contents" => [%{"text" => text}]}} = response
+    payload = Jason.decode!(text)
+
+    assert payload["mode"] == "stdio"
+    assert payload["source"] == %{"revision" => "0123456789abcdef0123456789abcdef01234567"}
   end
 
   test "health tool rejects arguments outside its empty schema", %{repo: repo} do

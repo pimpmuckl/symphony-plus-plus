@@ -77,10 +77,13 @@ To prove the daemon independently of Codex plugin loading, start
 helper is not copied into installed plugin cache directories:
 
 ```powershell
-.\scripts\smoke-sympp-mcp-http.ps1
+.\scripts\smoke-sympp-mcp-http.ps1 -RepoRoot .
 ```
 
 Passing this smoke confirms the local HTTP MCP endpoint handshakes and exposes
-the expected unbound tools. It does not confirm that a Codex app session has
-loaded this opt-in plugin; reload or start that dedicated MCP-enabled session
-after changing plugin config/cache state.
+the expected unbound tools from the same source revision as the checkout. It
+does not confirm that a Codex app session has loaded this opt-in plugin; reload
+or start that dedicated MCP-enabled session after changing plugin config/cache
+state. If the smoke reports `stale_or_unverified_daemon` or
+`stale_daemon_source_revision_mismatch`, restart `mix sympp.cockpit` from the
+current checkout and rerun the smoke.

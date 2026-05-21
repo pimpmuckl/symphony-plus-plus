@@ -25,6 +25,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   @plugin_marketplace_name "symphony-plus-plus"
   @plugin_readme_path Path.join(@repo_root, "plugins/symphony-plus-plus/README.md")
   @refresh_script_path Path.join(@repo_root, "scripts/refresh-local-plugin.ps1")
+  @smoke_script_path Path.join(@repo_root, "scripts/smoke-sympp-mcp-http.ps1")
   @worker_secret_script_path Path.join(@repo_root, "scripts/sympp-worker-secret.ps1")
   @worker_secret_shell_path Path.join(@repo_root, "scripts/sympp-worker-secret.sh")
   @prompt_path Path.join(@repo_root, ".codex/skills/symphony-work-package/references/worker_prompt.md")
@@ -299,6 +300,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@plugin_readme_path) =~ "refuses the default `~/.codex` home"
     assert File.read!(@plugin_readme_path) =~ "cannot inspect the tool list already registered"
     assert File.read!(@plugin_readme_path) =~ "source-only repair commands"
+    assert File.read!(@plugin_readme_path) =~ "smoke-sympp-mcp-http.ps1 -RepoRoot ."
 
     assert File.read!(@plugin_default_solo_skill_path) =~
              "default Symphony++ planning path for real agents"
@@ -445,6 +447,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@mcp_plugin_readme_path) =~ "refuses the default `~/.codex` home"
     assert File.read!(@mcp_plugin_readme_path) =~ "diagnose-mcp-lifecycle.ps1 -MarketplaceName jonat-local -Doctor"
     assert File.read!(@mcp_plugin_readme_path) =~ "cannot inspect"
+    assert File.read!(@mcp_plugin_readme_path) =~ "smoke-sympp-mcp-http.ps1 -RepoRoot ."
 
     assert File.read!(@mcp_plugin_skill_path) == File.read!(@skill_path)
     refute File.exists?(@mcp_plugin_solo_skill_path)
@@ -582,6 +585,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
+  test "HTTP MCP smoke self-test covers source revision validation" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+
+    if powershell do
+      {output, status} =
+        System.cmd(
+          powershell,
+          [
+            "-NoProfile",
+            "-File",
+            @smoke_script_path,
+            "-SelfTest"
+          ],
+          stderr_to_stdout: true
+        )
+
+      assert status == 0, output
+      assert output =~ "PowerShell header normalization, source revision, redaction, and bound argument validation self-test passed."
+    end
+  end
+
   test "enable command safely mutates only the MCP companion plugin config" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = Path.join(System.tmp_dir!(), "sympp-plugin-enable-#{System.unique_integer([:positive])}")
@@ -628,6 +652,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         assert result["plugin_key"] == "symphony-plus-plus-mcp@jonat-local"
         assert result["restart_action"] =~ "Restart or reload"
         assert result["smoke_command"] =~ "smoke-sympp-mcp-http.ps1"
+        assert result["smoke_command"] =~ "-RepoRoot"
         assert result["boundary"] =~ "generic worker"
 
         config = File.read!(Path.join(temp_codex_home, "config.toml"))
@@ -1172,6 +1197,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         assert output =~ "Next steps:"
         assert output =~ "Restart or reload the dedicated Symphony++ MCP Codex session"
         assert output =~ "smoke-sympp-mcp-http.ps1"
+        assert output =~ "-RepoRoot"
         assert output =~ "Keep symphony-plus-plus-mcp out of generic worker"
       after
         File.rm_rf(temp_codex_home)
