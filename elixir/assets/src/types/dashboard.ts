@@ -165,6 +165,31 @@ export type WorkRequestCard = {
   updated_at?: string | null;
 };
 
+export type ArchitectHandoff = {
+  status?: string | null;
+  prompt?: string | null;
+  work_request?: {
+    id?: string | null;
+    repo?: string | null;
+    base_branch?: string | null;
+    status?: string | null;
+  };
+  phase?: Record<string, unknown> | null;
+  anchor_package?: Record<string, unknown> | null;
+  grant?: Record<string, unknown> | null;
+  secret_handoff?: Record<string, unknown> | null;
+};
+
+export type ArchitectHandoffPayload = {
+  architect_handoff?: ArchitectHandoff;
+  dashboard?: DashboardPayload;
+};
+
+export type CreateWorkRequestPayload = {
+  work_request?: WorkRequestDetail;
+  dashboard?: DashboardPayload;
+};
+
 export type DecisionOption = {
   id: string;
   label: string;

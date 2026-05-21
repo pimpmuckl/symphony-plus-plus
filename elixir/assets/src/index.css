@@ -1270,8 +1270,89 @@
     will-change: height;
   }
 
+  .detail-modal-natural-frame {
+    min-width: 0;
+  }
+
   .detail-modal-size-inner {
     min-width: 0;
+  }
+
+  .handoff-success-panel,
+  .handoff-action-panel {
+    min-width: 0;
+    border: 1px solid hsl(var(--border) / 0.78);
+    border-radius: var(--radius);
+    background:
+      linear-gradient(135deg, hsl(var(--primary) / 0.09), hsl(var(--background) / 0.62)),
+      hsl(var(--card) / 0.74);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.58),
+      0 12px 30px hsl(224 27% 12% / 0.06);
+    backdrop-filter: blur(12px) saturate(1.08);
+    -webkit-backdrop-filter: blur(12px) saturate(1.08);
+  }
+
+  .handoff-success-panel {
+    padding: 1rem;
+  }
+
+  .handoff-action-panel {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.875rem;
+    padding: 0.875rem;
+  }
+
+  .handoff-action-panel > button {
+    flex-shrink: 0;
+  }
+
+  .handoff-action-panel-muted {
+    background:
+      linear-gradient(135deg, hsl(var(--muted) / 0.42), hsl(var(--background) / 0.62)),
+      hsl(var(--card) / 0.72);
+  }
+
+  .handoff-success-icon {
+    display: inline-flex;
+    height: 2.25rem;
+    width: 2.25rem;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid hsl(158 64% 48% / 0.28);
+    border-radius: 999px;
+    background: hsl(158 64% 48% / 0.12);
+    color: hsl(158 64% 34%);
+  }
+
+  .dark .handoff-success-panel,
+  .dark .handoff-action-panel {
+    background:
+      linear-gradient(135deg, hsl(var(--primary) / 0.12), hsl(var(--background) / 0.54)),
+      hsl(var(--card) / 0.66);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.055),
+      0 16px 36px hsl(0 0% 0% / 0.22);
+  }
+
+  .dark .handoff-action-panel-muted {
+    background:
+      linear-gradient(135deg, hsl(var(--muted) / 0.28), hsl(var(--background) / 0.5)),
+      hsl(var(--card) / 0.62);
+  }
+
+  .dark .handoff-success-icon {
+    color: hsl(158 64% 68%);
+  }
+
+  @media (max-width: 520px) {
+    .handoff-action-panel {
+      align-items: stretch;
+      flex-direction: column;
+    }
   }
 
   .detail-stat-grid {
