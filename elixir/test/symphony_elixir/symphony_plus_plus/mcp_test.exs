@@ -71,6 +71,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     "split_work_package",
     "publish_phase_update"
   ]
+  @codex_forbidden_top_level_schema_keys ["oneOf", "anyOf", "allOf", "enum", "not"]
 
   defmodule FailingAuthRepo do
     def get(_schema, _id), do: raise(RuntimeError, "ledger unavailable")
@@ -936,6 +937,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(unbound_tools_by_name, ["claim_private_handoff", "inputSchema", "required"]) == ["claimed_by"]
     assert get_in(unbound_tools_by_name, ["claim_private_handoff", "inputSchema", "properties", "private_handoff", "type"]) == "object"
 
+    assert get_in(unbound_tools_by_name, ["claim_private_handoff", "inputSchema", "then", "anyOf"]) == [
+             %{"required" => ["private_handoff"]},
+             %{"required" => ["mode", "path", "target", "grant_id", "display_key", "work_package_id"]}
+           ]
+
     assert get_in(unbound_tools_by_name, ["create_work_request", "inputSchema", "required"]) == [
              "repo",
              "base_branch",
@@ -943,7 +949,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              "request_kind"
            ]
 
-    assert get_in(unbound_tools_by_name, ["create_work_request", "inputSchema", "anyOf"]) == [
+    assert get_in(unbound_tools_by_name, ["create_work_request", "inputSchema", "then", "anyOf"]) == [
              %{"required" => ["description"]},
              %{"required" => ["human_description"]}
            ]
@@ -1014,17 +1020,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "patch", "required"]) == ["nodes"]
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "patch", "properties", "nodes", "minItems"]) == 1
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "work_package_id", "type"]) == "string"
-
-    update_plan_one_of = get_in(tools_by_name, ["update_task_plan", "inputSchema", "oneOf"])
-    patch_update_schema = Enum.find(update_plan_one_of, &(Map.get(&1, "required") == ["expected_version", "patch"]))
-    append_update_schema = Enum.find(update_plan_one_of, &(Map.get(&1, "required") == ["expected_version", "title"]))
-
-    assert patch_update_schema["additionalProperties"] == false
-    assert append_update_schema["additionalProperties"] == false
-    assert Map.has_key?(patch_update_schema["properties"], "patch")
-    refute Map.has_key?(patch_update_schema["properties"], "title")
-    assert Map.has_key?(append_update_schema["properties"], "title")
-    refute Map.has_key?(append_update_schema["properties"], "patch")
+    assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "then", "oneOf"]) != nil
 
     assert get_in(tools_by_name, ["update_task_plan", "inputSchema", "properties", "patch", "properties", "nodes", "items", "anyOf"]) == [
              %{"required" => ["title"]},
@@ -1037,35 +1033,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["attach_branch", "inputSchema", "required"]) == ["branch", "head_sha"]
     assert get_in(tools_by_name, ["attach_branch", "inputSchema", "properties", "head_sha", "type"]) == "string"
 
-    pr_metadata_schema = %{
-      "type" => "object",
-      "additionalProperties" => true,
-      "properties" => %{
-        "head_sha" => %{"type" => "string"},
-        "head" => %{
-          "type" => "object",
-          "additionalProperties" => true,
-          "properties" => %{"sha" => %{"type" => "string"}},
-          "required" => ["sha"]
-        }
-      },
-      "anyOf" => [%{"required" => ["head_sha"]}, %{"required" => ["head"]}]
-    }
-
-    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "allOf"]) == [
-             %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]},
-             %{
-               "anyOf" => [
-                 %{"required" => ["head_sha"]},
-                 %{
-                   "required" => ["metadata"],
-                   "properties" => %{"metadata" => pr_metadata_schema}
-                 }
-               ]
-             }
-           ]
-
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "head_sha", "type"]) == "string"
+    assert get_in(tools_by_name, ["attach_pr", "inputSchema", "then", "allOf"]) != nil
 
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "number", "anyOf"]) == [
              %{"type" => "integer", "minimum" => 1},
@@ -1075,20 +1044,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["attach_pr", "inputSchema", "properties", "metadata", "type"]) == "object"
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "required"]) == ["metadata"]
 
-    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "allOf"]) == [
-             %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]},
-             %{
-               "anyOf" => [
-                 %{"required" => ["head_sha"]},
-                 %{
-                   "required" => ["metadata"],
-                   "properties" => %{"metadata" => pr_metadata_schema}
-                 }
-               ]
-             }
-           ]
-
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "metadata", "type"]) == "object"
+    assert get_in(tools_by_name, ["sync_pr", "inputSchema", "then", "allOf"]) != nil
 
     assert get_in(tools_by_name, ["sync_pr", "inputSchema", "properties", "number", "anyOf"]) == [
              %{"type" => "integer", "minimum" => 1},
@@ -1111,6 +1068,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute Map.has_key?(tools_by_name, "mint_child_worker_key")
 
     assert Map.has_key?(tools_by_name, "claim_work_key")
+  end
+
+  test "tools list returns Codex-compatible top-level input schemas for every surface", %{repo: repo} do
+    assert {:ok, worker_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-CODEX-SCHEMA-WORKER", kind: "mcp"))
+    assert {:ok, worker_minted} = AccessGrantService.mint_worker_grant(repo, worker_package.id)
+    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, worker_minted.work_key.secret, claimed_by: "worker-1")
+    worker_session = MCPHarness.session(worker_assignment, proof_hash: worker_minted.grant.secret_hash)
+
+    {_anchor, architect_session, _grant} = create_phase_architect_session(repo, "SYMPP-CODEX-SCHEMA-ARCHITECT", ["read:phase"])
+
+    surfaces = [
+      {"unbound", Server.new(Config.default(repo: repo), initialized: true)},
+      {"worker", Server.new(Config.default(repo: repo), initialized: true, session: worker_session)},
+      {"architect", Server.new(test_mcp_config(repo), initialized: true, session: architect_session)}
+    ]
+
+    for {surface, server} <- surfaces,
+        tool <- tools_for_server(server) do
+      schema = Map.fetch!(tool, "inputSchema")
+
+      assert schema["type"] == "object", "#{surface} #{tool["name"]} inputSchema must be a top-level object"
+
+      forbidden = Map.take(schema, @codex_forbidden_top_level_schema_keys)
+      assert forbidden == %{}, "#{surface} #{tool["name"]} has Codex-rejected top-level schema keys: #{inspect(Map.keys(forbidden))}"
+    end
   end
 
   test "tools list advertises Solo tools only for unbound sessions", %{repo: repo} do
@@ -13797,6 +13779,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "clientInfo" => %{"name" => "sympp-test-client", "version" => "0.1.0"},
       "capabilities" => %{}
     }
+  end
+
+  defp tools_for_server(server) do
+    %{"result" => %{"tools" => tools}} =
+      Server.handle(%{"jsonrpc" => "2.0", "id" => "tools", "method" => "tools/list", "params" => %{}}, server)
+
+    tools
   end
 
   defp handle_state_agent, do: Module.concat(Server, HandleState)

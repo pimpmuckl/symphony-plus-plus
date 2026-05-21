@@ -1234,10 +1234,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       },
       ["claimed_by"]
     )
-    |> Map.put("anyOf", [
-      %{"required" => ["private_handoff"]},
-      %{"required" => ["mode", "path", "target", "grant_id", "display_key", "work_package_id"]}
-    ])
+    |> always_validate(%{
+      "anyOf" => [
+        %{"required" => ["private_handoff"]},
+        %{"required" => ["mode", "path", "target", "grant_id", "display_key", "work_package_id"]}
+      ]
+    })
   end
 
   defp bootstrap_tool_input_schema("create_work_request") do
@@ -1261,10 +1263,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       },
       ["repo", "base_branch", "title", "request_kind"]
     )
-    |> Map.put("anyOf", [
-      %{"required" => ["description"]},
-      %{"required" => ["human_description"]}
-    ])
+    |> always_validate(%{"anyOf" => [%{"required" => ["description"]}, %{"required" => ["human_description"]}]})
   end
 
   defp worker_tool_input_schema("claim_work_key") do
@@ -1276,20 +1275,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp worker_tool_input_schema("update_task_plan") do
-    patch_schema = schema(scoped_properties(%{"expected_version" => integer_schema(), "patch" => plan_patch_schema()}), ["expected_version", "patch"])
-
-    append_schema =
-      schema(
-        scoped_properties(%{
-          "body" => nullable_string_schema(),
-          "expected_version" => integer_schema(),
-          "id" => string_schema(),
-          "status" => string_schema(),
-          "title" => string_schema()
-        }),
-        ["expected_version", "title"]
-      )
-
     schema(
       scoped_properties(%{
         "body" => nullable_string_schema(),
@@ -1301,7 +1286,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       }),
       ["expected_version"]
     )
-    |> Map.put("oneOf", [patch_schema, append_schema])
+    |> always_validate(%{
+      "oneOf" => [
+        %{
+          "required" => ["patch"],
+          "not" => %{"anyOf" => [%{"required" => ["id"]}, %{"required" => ["title"]}, %{"required" => ["body"]}, %{"required" => ["status"]}]}
+        },
+        %{"required" => ["title"], "not" => %{"required" => ["patch"]}}
+      ]
+    })
   end
 
   defp worker_tool_input_schema("append_finding") do
@@ -1371,15 +1364,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       }),
       []
     )
-    |> Map.put("allOf", [
-      %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]},
-      %{
-        "anyOf" => [
-          %{"required" => ["head_sha"]},
-          %{"required" => ["metadata"], "properties" => %{"metadata" => metadata_head_schema()}}
-        ]
-      }
-    ])
+    |> require_pr_identity_and_head()
   end
 
   defp worker_tool_input_schema("sync_pr") do
@@ -1393,18 +1378,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       }),
       ["metadata"]
     )
-    |> Map.put("allOf", [
-      %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]},
-      %{
-        "anyOf" => [
-          %{"required" => ["head_sha"]},
-          %{
-            "required" => ["metadata"],
-            "properties" => %{"metadata" => metadata_head_schema()}
-          }
-        ]
-      }
-    ])
+    |> require_pr_identity_and_head()
   end
 
   defp worker_tool_input_schema("submit_review_package") do
@@ -1697,6 +1671,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     %{"type" => "object", "additionalProperties" => false, "properties" => properties, "required" => required}
   end
 
+  defp always_validate(schema, constraint), do: Map.merge(schema, %{"if" => %{}, "then" => constraint})
+
+  defp require_pr_identity_and_head(schema) do
+    always_validate(schema, %{
+      "allOf" => [
+        %{"anyOf" => [%{"required" => ["url"]}, %{"required" => ["number"]}]},
+        %{
+          "anyOf" => [
+            %{"required" => ["head_sha"]},
+            %{"required" => ["metadata"], "properties" => %{"metadata" => metadata_head_schema()}}
+          ]
+        }
+      ]
+    })
+  end
+
   defp scoped_properties(properties), do: Map.put(properties, "work_package_id", string_schema())
 
   defp progress_properties do
@@ -1765,6 +1755,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
+  defp nonempty_string_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => nonblank_string_schema()}
+  defp string_array_schema, do: %{"type" => "array", "items" => nonblank_string_schema()}
+  defp nonempty_object_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => object_schema()}
+
   defp metadata_head_schema do
     %{
       "type" => "object",
@@ -1781,10 +1775,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "anyOf" => [%{"required" => ["head_sha"]}, %{"required" => ["head"]}]
     }
   end
-
-  defp nonempty_string_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => nonblank_string_schema()}
-  defp string_array_schema, do: %{"type" => "array", "items" => nonblank_string_schema()}
-  defp nonempty_object_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => object_schema()}
 
   defp merge_artifact_schema do
     %{

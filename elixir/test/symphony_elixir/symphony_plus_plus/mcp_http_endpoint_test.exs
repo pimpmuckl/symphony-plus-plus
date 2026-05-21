@@ -143,6 +143,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
     refute "append_progress" in names
   end
 
+  test "POST /mcp tools/list follows a session initialized from the live dashboard repo" do
+    original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
+    Application.delete_env(:symphony_elixir, :sympp_repo_database)
+
+    on_exit(fn -> restore_sympp_repo_database(original_database) end)
+
+    init = post_json(initialize_request("live-init"))
+    [session_id] = get_resp_header(init, "mcp-session-id")
+
+    conn = post_json(tools_list_request("live-tools"), [{"mcp-session-id", session_id}])
+
+    assert [^session_id] = get_resp_header(conn, "mcp-session-id")
+    assert "sympp.health" in tool_names(json_response(conn, 200))
+  end
+
   test "POST /mcp persists claimed worker continuity over same Mcp-Session-Id" do
     assert {:ok, work_package} =
              WorkPackageRepository.create(
