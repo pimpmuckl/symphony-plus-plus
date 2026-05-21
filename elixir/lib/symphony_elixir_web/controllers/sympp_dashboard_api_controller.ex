@@ -721,6 +721,9 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       "human_description" => text_param(params, "human_description"),
       "desired_dispatch_shape" => text_param(params, "desired_dispatch_shape", "architect_led_feature_branch"),
       "status" => text_param(params, "status", "ready_for_clarification"),
+      "creator_kind" => text_param(params, "creator_kind", "human"),
+      "creator_name" => text_param(params, "creator_name", @local_operator_actor),
+      "created_via" => text_param(params, "created_via", "cockpit"),
       "constraints" => constraints_param(params)
     }
   end

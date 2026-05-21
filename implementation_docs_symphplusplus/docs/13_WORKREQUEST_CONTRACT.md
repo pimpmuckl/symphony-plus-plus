@@ -21,7 +21,8 @@ planned-slice dispatch exist. Package-scoped guidance request persistence and
 MCP worker/architect routing exist for dispatched packages. Local-operator
 dashboard handling for escalated `human_info_needed` package guidance also
 exists. The installable Codex plugin exposes current Symphony++ skills and a
-generic `symphony_plus_plus` MCP wrapper. MCP intake tools, automatic question
+generic `symphony_plus_plus` MCP wrapper. The MCP `create_work_request` intake
+tool exists for local/operator-safe agent creation. Automatic question
 generation, automatic slicing, Linear state creation, richer planner/intake
 plugin surfaces, and automatic Codex spawning remain future work.
 
@@ -45,6 +46,8 @@ Every WorkRequest records:
 - Base branch or branch constraint.
 - Work type, one of `feature`, `bugfix`, `hotfix`, `refactor`,
   `investigation`, `docs`, or `review`.
+- Creator provenance: `creator_kind` (`human`, `agent`, `operator`, or
+  `system`), optional maker display name, and optional created-via channel.
 - Human description of the desired outcome.
 - Constraints, including allowed paths, forbidden paths, compatibility stance,
   rollout limits, dependencies, secrets, validation limits, and stop conditions.
@@ -112,6 +115,20 @@ active unclaimed handoff metadata is safely readable and replayable; that
 load-time display path is read-only and does not mint, renew, revoke, or clean
 up handoffs. Board-grant detail views cannot mint or display architect
 handoffs.
+
+The local MCP `create_work_request` tool can create the same ledger-backed
+WorkRequest from an agent or operator session without a dashboard click. It
+requires repo, base branch, title, request kind, and either `description` or
+`human_description`, accepts optional workflow mode, constraints, initial
+status, `claimed_by`, and creator provenance, and defaults omitted provenance
+to `agent` via `mcp` with caller-supplied `claimed_by` as the maker display
+name when available and `mcp-agent` otherwise. The response includes the
+WorkRequest summary with provenance, a redacted local-private-file architect
+handoff, a non-secret claim owner for `claim_private_handoff`, and a launch
+prompt for the owning architect agent. If the
+WorkRequest is created but architect handoff creation fails, the response must
+be an explicit partial success with the WorkRequest id and a non-duplicating
+manual architect-handoff replay hint, not a raw-secret fallback.
 
 Explicit phase-scoped architect MCP sessions with `read:work_request` can read
 the same scoped WorkRequest surface through `list_work_requests(status?)` and
@@ -189,8 +206,9 @@ dispatch one approved planned slice through
 `write:work_request` because it creates WorkPackage, AccessGrant, and
 SecretHandoff side effects. It requires `work_request_id`, `planned_slice_id`,
 and `claimed_by`, supports the existing dispatch handoff options
-`secret_handoff` and `secret_store_dir`, verifies the WorkRequest and slice are
-inside the frozen repo/base-branch scope before mutation, and fails closed for
+`secret_handoff` and `secret_store_dir` plus optional `repo_root`, verifies the
+WorkRequest and slice are inside the frozen repo/base-branch scope before
+mutation, and fails closed for
 out-of-scope, missing, non-approved, invalid, unsupported-kind, or slice-scope
 violation cases. The response is safe JSON containing WorkRequest id,
 planned-slice linkage/status, WorkPackage id metadata, and redacted worker
@@ -359,8 +377,9 @@ options for material choices, record decisions, dispatch only approved slices,
 and stop/report a blocker instead of asking for raw secrets or inventing state
 when MCP/session/handoff or required references are missing.
 MCP dispatch has a statically discoverable schema, and direct calls fail closed
-unless the MCP server has `repo_root`/`--repo-root` configured to a repository
-containing the worker secret handoff script. It additionally requires a
+unless the supplied `repo_root`, configured `repo_root`, or `--repo-root`
+points to a repository containing the worker secret handoff script. It
+additionally requires a
 file-backed live ledger database so the worker handoff command
 reconnects to the same ledger; in-memory database configuration fails closed
 before WorkPackage or grant side effects. Blank database configuration is

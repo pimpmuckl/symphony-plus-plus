@@ -35,6 +35,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest do
     "review_only"
   ]
 
+  @creator_kinds ["human", "agent", "operator", "system"]
+
   @type t :: %__MODULE__{
           id: String.t() | nil,
           title: String.t() | nil,
@@ -44,6 +46,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest do
           human_description: String.t() | nil,
           constraints: map() | nil,
           desired_dispatch_shape: String.t() | nil,
+          creator_kind: String.t() | nil,
+          creator_name: String.t() | nil,
+          created_via: String.t() | nil,
           status: String.t() | nil,
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
@@ -57,6 +62,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest do
     field(:human_description, :string)
     field(:constraints, :map, default: %{})
     field(:desired_dispatch_shape, :string)
+    field(:creator_kind, :string)
+    field(:creator_name, :string)
+    field(:created_via, :string)
     field(:status, :string)
 
     timestamps(type: :utc_datetime_usec)
@@ -70,6 +78,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest do
 
   @spec dispatch_shapes() :: [String.t()]
   def dispatch_shapes, do: @dispatch_shapes
+
+  @spec creator_kinds() :: [String.t()]
+  def creator_kinds, do: @creator_kinds
 
   @spec create_changeset(map()) :: Ecto.Changeset.t()
   def create_changeset(attrs) do
@@ -97,7 +108,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest do
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(%__MODULE__{} = work_request, attrs) do
     work_request
-    |> cast(attrs |> normalize_keys() |> normalize_constraints(), [
+    |> cast(attrs |> normalize_keys() |> normalize_constraints() |> normalize_provenance(), [
       :id,
       :title,
       :repo,
@@ -106,6 +117,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest do
       :human_description,
       :constraints,
       :desired_dispatch_shape,
+      :creator_kind,
+      :creator_name,
+      :created_via,
       :status
     ])
     |> validate_required([
@@ -122,6 +136,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest do
     |> validate_inclusion(:status, @statuses)
     |> validate_inclusion(:work_type, @work_types)
     |> validate_inclusion(:desired_dispatch_shape, @dispatch_shapes)
+    |> validate_optional_inclusion(:creator_kind, @creator_kinds)
     |> validate_json_safe_constraints()
   end
 
@@ -138,6 +153,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest do
       {:ok, constraints} -> Map.put(attrs, "constraints", normalize_constraint_value(constraints))
       :error -> attrs
     end
+  end
+
+  defp normalize_provenance(attrs) do
+    Enum.reduce(["creator_kind", "creator_name", "created_via"], attrs, fn key, attrs ->
+      normalize_provenance_value(attrs, key, Map.get(attrs, key))
+    end)
+  end
+
+  defp normalize_provenance_value(attrs, key, value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> Map.put(attrs, key, nil)
+      value -> Map.put(attrs, key, value)
+    end
+  end
+
+  defp normalize_provenance_value(attrs, _key, _value), do: attrs
+
+  defp validate_optional_inclusion(changeset, field, values) do
+    validate_change(changeset, field, fn ^field, value ->
+      if is_nil(value) or value in values, do: [], else: [{field, "is invalid"}]
+    end)
   end
 
   defp normalize_constraint_value(%{__struct__: _} = value), do: value

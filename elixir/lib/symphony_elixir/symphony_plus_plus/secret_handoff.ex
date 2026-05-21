@@ -9,6 +9,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   @default_repo_root __DIR__ |> Path.join("../../../..") |> Path.expand()
   @metadata_version 1
   @metadata_lock_stale_seconds 300
+  @max_local_private_secret_bytes 16_384
   @valid_modes ["auto", "windows-credential-manager", "local-private-file"]
 
   @type error ::
@@ -31,6 +32,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
           | :windows_credential_manager_unavailable
           | {:local_private_file_failed, term()}
           | {:local_private_file_delete_failed, term()}
+          | :private_handoff_metadata_mismatch
+          | :private_handoff_missing_file
+          | :private_handoff_not_regular_file
+          | :private_handoff_path_mismatch
+          | :private_handoff_path_traversal
+          | :private_handoff_secret_mismatch
+          | :private_handoff_secret_too_large
+          | {:private_handoff_read_failed, term()}
           | {:windows_credential_manager_delete_failed, term()}
           | {:windows_credential_manager_failed, integer()}
 
@@ -119,6 +128,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
   def read_worker_secret_metadata(%{}, _worker_grant, _opts), do: {:error, :missing_work_package}
 
+  @spec read_local_private_file_secret(WorkPackage.t(), map(), map(), keyword()) ::
+          {:ok, String.t()} | {:error, error()}
+  def read_local_private_file_secret(%WorkPackage{} = work_package, grant, handoff, opts)
+      when is_map(grant) and is_map(handoff) and is_list(opts) do
+    with {:ok, opts} <- require_handoff_namespace_opts(opts),
+         :ok <- reject_metadata_location_overrides(opts),
+         {:ok, display_handoff} <- read_worker_secret_metadata(work_package, grant, opts),
+         :ok <- validate_private_handoff_claim_display(handoff, display_handoff),
+         {:ok, path} <- private_handoff_claim_path(handoff, display_handoff),
+         {:ok, secret} <- read_private_handoff_secret(path),
+         :ok <- validate_private_handoff_secret(secret, handoff_value(grant, :secret_hash)) do
+      {:ok, secret}
+    end
+  end
+
+  def read_local_private_file_secret(%WorkPackage{}, grant, _handoff, _opts) when not is_map(grant),
+    do: {:error, :missing_worker_grant}
+
+  def read_local_private_file_secret(%WorkPackage{}, _grant, _handoff, _opts),
+    do: {:error, {:handoff_metadata_invalid, :missing_handoff}}
+
+  def read_local_private_file_secret(%{}, _grant, _handoff, _opts), do: {:error, :missing_work_package}
+
   @spec worker_secret_available?(map(), keyword()) :: boolean()
   def worker_secret_available?(handoff, opts \\ []) when is_map(handoff) and is_list(opts) do
     worker_secret_availability(handoff, opts) == :available
@@ -183,6 +215,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
   def error_message({:local_private_file_delete_failed, reason}),
     do: "local private file handoff cleanup failed: #{inspect(reason)}"
+
+  def error_message(:private_handoff_metadata_mismatch), do: "private handoff metadata does not match the grant"
+  def error_message(:private_handoff_missing_file), do: "private handoff file was not found"
+  def error_message(:private_handoff_not_regular_file), do: "private handoff path is not a regular file"
+  def error_message(:private_handoff_path_mismatch), do: "private handoff path does not match the managed store"
+  def error_message(:private_handoff_path_traversal), do: "private handoff path traversal is not allowed"
+  def error_message(:private_handoff_secret_mismatch), do: "private handoff secret does not match the grant"
+  def error_message(:private_handoff_secret_too_large), do: "private handoff file is too large"
+  def error_message({:private_handoff_read_failed, reason}), do: "private handoff file could not be read: #{inspect(reason)}"
 
   def error_message({:windows_credential_manager_delete_failed, reason}),
     do: "Windows Credential Manager handoff cleanup failed: #{inspect(reason)}"
@@ -845,6 +886,91 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
   defp maybe_put_handoff_value(map, _key, nil), do: map
   defp maybe_put_handoff_value(map, key, value), do: Map.put(map, key, value)
+
+  defp validate_private_handoff_claim_display(handoff, display_handoff) do
+    with :ok <- expect_private_handoff_field(handoff, :mode, handoff_value(display_handoff, :mode)),
+         :ok <-
+           expect_private_handoff_field(
+             handoff,
+             :work_package_id,
+             handoff_value(display_handoff, :work_package_id)
+           ),
+         :ok <- expect_private_handoff_field(handoff, :grant_id, handoff_value(display_handoff, :grant_id)),
+         :ok <- expect_private_handoff_field(handoff, :display_key, handoff_value(display_handoff, :display_key)) do
+      expect_private_handoff_field(handoff, :target, handoff_value(display_handoff, :target))
+    end
+  end
+
+  defp expect_private_handoff_field(handoff, key, expected) when is_binary(expected) do
+    case handoff_value(handoff, key) do
+      ^expected -> :ok
+      _value -> {:error, :private_handoff_metadata_mismatch}
+    end
+  end
+
+  defp expect_private_handoff_field(_handoff, _key, _expected), do: {:error, :private_handoff_metadata_mismatch}
+
+  defp private_handoff_claim_path(handoff, display_handoff) do
+    expected_path = handoff_value(display_handoff, :path)
+
+    with path when is_binary(path) <- handoff_value(handoff, :path),
+         false <- private_handoff_path_traversal?(path),
+         expanded_path = Path.expand(path),
+         true <- is_binary(expected_path) and expanded_path == expected_path do
+      validate_private_handoff_file(expected_path)
+    else
+      true -> {:error, :private_handoff_path_traversal}
+      _value -> {:error, :private_handoff_path_mismatch}
+    end
+  end
+
+  defp private_handoff_path_traversal?(path) when is_binary(path) do
+    path
+    |> String.split(["/", "\\"], trim: false)
+    |> Enum.any?(&(&1 == ".."))
+  end
+
+  defp validate_private_handoff_file(path) when is_binary(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :regular, size: size}}
+      when is_integer(size) and size > 0 and size <= @max_local_private_secret_bytes ->
+        {:ok, path}
+
+      {:ok, %File.Stat{type: :regular}} ->
+        {:error, :private_handoff_secret_too_large}
+
+      {:ok, %File.Stat{}} ->
+        {:error, :private_handoff_not_regular_file}
+
+      {:error, reason} when reason in [:enoent, :enotdir] ->
+        {:error, :private_handoff_missing_file}
+
+      {:error, reason} ->
+        {:error, {:private_handoff_read_failed, reason}}
+    end
+  end
+
+  defp read_private_handoff_secret(path) when is_binary(path) do
+    case File.read(path) do
+      {:ok, secret} when byte_size(secret) > 0 and byte_size(secret) <= @max_local_private_secret_bytes ->
+        {:ok, secret}
+
+      {:ok, _secret} ->
+        {:error, :private_handoff_secret_too_large}
+
+      {:error, reason} when reason in [:enoent, :enotdir] ->
+        {:error, :private_handoff_missing_file}
+
+      {:error, reason} ->
+        {:error, {:private_handoff_read_failed, reason}}
+    end
+  end
+
+  defp validate_private_handoff_secret(secret, secret_hash) when is_binary(secret) and is_binary(secret_hash) do
+    if WorkKey.secret_hash(secret) == secret_hash, do: :ok, else: {:error, :private_handoff_secret_mismatch}
+  end
+
+  defp validate_private_handoff_secret(_secret, _secret_hash), do: {:error, :private_handoff_secret_mismatch}
 
   defp validate_handoff_metadata_identity(metadata, context) do
     with :ok <- expect_handoff_metadata_field(metadata, "version", @metadata_version),

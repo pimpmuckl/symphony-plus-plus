@@ -45,6 +45,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @protocol_version "2025-03-26"
   @health_tool "sympp.health"
   @solo_tools ["solo_attach", "solo_append", "solo_show", "solo_list", "solo_update_status"]
+  @bootstrap_tools ["claim_private_handoff", "create_work_request"]
+  @session_claim_tools ["claim_work_key", "claim_private_handoff"]
+  @private_handoff_claim_keys ["mode", "path", "target", "grant_id", "display_key", "work_package_id", "database"]
   @solo_show_entry_limit 50
   @worker_tools [
     "claim_work_key",
@@ -250,8 +253,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       )
       when valid_request_id(id) do
     case request_params(payload) do
-      {:ok, %{"name" => "claim_work_key"} = params} ->
-        handle_claim_work_key(params, id, server)
+      {:ok, %{"name" => name} = params} when name in @session_claim_tools ->
+        handle_session_claim_tool(name, params, id, server)
 
       _params ->
         {do_handle(payload, server), server}
@@ -265,13 +268,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   def handle_state(%{"jsonrpc" => "2.0", "method" => "tools/call"} = payload, %__MODULE__{initialized: true} = server) do
     case request_params(payload) do
-      {:ok, %{"name" => "claim_work_key"} = params} ->
-        handle_claim_work_key_notification(params, server)
+      {:ok, %{"name" => name} = params} when name in @session_claim_tools ->
+        handle_session_claim_tool_notification(name, params, server)
 
       params_result ->
         dispatch_notification(params_result, "tools/call", server)
         {nil, server}
     end
+  end
+
+  def handle_state(%{"jsonrpc" => "2.0", "id" => id, "method" => method} = payload, %__MODULE__{initialized: true} = server)
+      when is_binary(method) and valid_request_id(id) do
+    payload
+    |> request_params()
+    |> dispatch_request_state(method, id, server)
   end
 
   def handle_state(payload, %__MODULE__{} = server), do: {do_handle(payload, server), server}
@@ -699,25 +709,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp batch_claim_work_key_success?(_item, %__MODULE__{}), do: false
 
   defp batch_claim_work_key_request?(
-         %{"jsonrpc" => "2.0", "id" => id, "method" => "tools/call", "params" => %{"name" => "claim_work_key"}},
+         %{"jsonrpc" => "2.0", "id" => id, "method" => "tools/call", "params" => %{"name" => name}},
          %__MODULE__{initialized: true}
        )
-       when valid_request_id(id),
+       when name in @session_claim_tools and valid_request_id(id),
        do: true
 
   defp batch_claim_work_key_request?(%{"jsonrpc" => "2.0", "id" => _id, "method" => "tools/call"}, %__MODULE__{initialized: true}),
     do: false
 
   defp batch_claim_work_key_request?(
-         %{"jsonrpc" => "2.0", "method" => "tools/call", "params" => %{"name" => "claim_work_key"}},
+         %{"jsonrpc" => "2.0", "method" => "tools/call", "params" => %{"name" => name}},
          %__MODULE__{initialized: true}
-       ),
+       )
+       when name in @session_claim_tools,
        do: true
 
   defp batch_claim_work_key_request?(_payload, %__MODULE__{}), do: false
 
-  defp batch_claim_work_key_rebind_item(%{"id" => id}, %__MODULE__{} = server) when valid_request_id(id) do
-    {error_response(id, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => "session_already_bound"}), server}
+  defp batch_claim_work_key_rebind_item(%{"id" => id, "params" => %{"name" => name}}, %__MODULE__{} = server)
+       when valid_request_id(id) and name in @session_claim_tools do
+    {error_response(id, -32_001, "Unauthorized", %{"tool" => name, "reason" => "session_already_bound"}), server}
   end
 
   defp batch_claim_work_key_rebind_item(_payload, %__MODULE__{} = server), do: {nil, server}
@@ -802,10 +814,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp dispatch("tools/call", %{"name" => "claim_work_key"} = params, %__MODULE__{} = server) do
     with {:ok, _arguments} <- worker_tool_arguments(params, "claim_work_key"),
-         {:ok, result, _session} <- claim_work_key(params, server) do
-      {:ok, tool_result(result)}
+         {:ok, result, session} <- claim_work_key(params, server) do
+      {:ok, tool_result(result), %{server | session: session, session_refresh_required: false}}
     else
       {:error, code, message, data} -> {:error, code, message, data}
+    end
+  end
+
+  defp dispatch("tools/call", %{"name" => "claim_private_handoff"} = params, %__MODULE__{} = server) do
+    with {:ok, _arguments} <- bootstrap_tool_arguments(params, "claim_private_handoff"),
+         {:ok, result, session} <- claim_private_handoff(params, server) do
+      {:ok, tool_result(result), %{server | session: session, session_refresh_required: false}}
+    else
+      {:error, code, message, data} -> {:error, code, message, data}
+    end
+  end
+
+  defp dispatch("tools/call", %{"name" => "create_work_request"} = params, %__MODULE__{} = server) do
+    case prepare_bootstrap_tool_call(server, params, "create_work_request") do
+      {:ok, arguments} -> bootstrap_tool("create_work_request", arguments, server)
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:error, reason} -> bootstrap_error(reason, "create_work_request")
     end
   end
 
@@ -976,6 +1005,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
+  defp bootstrap_tool_spec(name) do
+    %{
+      "name" => name,
+      "title" => name,
+      "description" => bootstrap_tool_description(name),
+      "inputSchema" => bootstrap_tool_input_schema(name)
+    }
+  end
+
   defp solo_tool_description("solo_attach") do
     "Create or attach a local Solo Session for a repo, base branch, absolute workspace path, and caller id."
   end
@@ -994,6 +1032,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp solo_tool_description("solo_update_status") do
     "Move a local Solo Session between valid lifecycle statuses with optimistic current-status checking."
+  end
+
+  defp bootstrap_tool_description("claim_private_handoff") do
+    "Safely bind the MCP session from redacted local-private-file handoff metadata without passing a raw work key."
+  end
+
+  defp bootstrap_tool_description("create_work_request") do
+    "Create a local Symphony++ WorkRequest with creator provenance and return a redacted architect handoff."
   end
 
   defp architect_tool_spec(name) do
@@ -1157,6 +1203,68 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       },
       ["session_id", "current_status", "next_status"]
     )
+  end
+
+  defp bootstrap_tool_input_schema("claim_private_handoff") do
+    handoff_schema =
+      schema(
+        %{
+          "mode" => string_enum_schema(["local-private-file"]),
+          "path" => string_schema(),
+          "target" => string_schema(),
+          "grant_id" => string_schema(),
+          "display_key" => string_schema(),
+          "work_package_id" => string_schema(),
+          "database" => nullable_string_schema()
+        },
+        ["mode", "path", "target", "grant_id", "display_key", "work_package_id"]
+      )
+
+    schema(
+      %{
+        "claimed_by" => string_schema(),
+        "private_handoff" => handoff_schema,
+        "mode" => string_enum_schema(["local-private-file"]),
+        "path" => string_schema(),
+        "target" => string_schema(),
+        "grant_id" => string_schema(),
+        "display_key" => string_schema(),
+        "work_package_id" => string_schema(),
+        "database" => nullable_string_schema()
+      },
+      ["claimed_by"]
+    )
+    |> Map.put("anyOf", [
+      %{"required" => ["private_handoff"]},
+      %{"required" => ["mode", "path", "target", "grant_id", "display_key", "work_package_id"]}
+    ])
+  end
+
+  defp bootstrap_tool_input_schema("create_work_request") do
+    schema(
+      %{
+        "repo" => string_schema(),
+        "base_branch" => string_schema(),
+        "title" => string_schema(),
+        "description" => string_schema(),
+        "human_description" => string_schema(),
+        "request_kind" => string_enum_schema(WorkRequest.work_types()),
+        "workflow_mode" => string_enum_schema(WorkRequest.dispatch_shapes()),
+        "constraints" => object_schema(),
+        "status" => string_enum_schema(WorkRequest.statuses()),
+        "claimed_by" => string_schema(),
+        "creator_kind" => string_enum_schema(WorkRequest.creator_kinds()),
+        "created_by_kind" => string_enum_schema(WorkRequest.creator_kinds()),
+        "creator_name" => string_schema(),
+        "created_by_name" => string_schema(),
+        "created_via" => string_schema()
+      },
+      ["repo", "base_branch", "title", "request_kind"]
+    )
+    |> Map.put("anyOf", [
+      %{"required" => ["description"]},
+      %{"required" => ["human_description"]}
+    ])
   end
 
   defp worker_tool_input_schema("claim_work_key") do
@@ -1500,7 +1608,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "planned_slice_id" => string_schema(),
         "claimed_by" => string_schema(),
         "secret_handoff" => string_schema(),
-        "secret_store_dir" => string_schema()
+        "secret_store_dir" => string_schema(),
+        "repo_root" => string_schema()
       },
       ["work_request_id", "planned_slice_id", "claimed_by"]
     )
@@ -1569,10 +1678,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp claimable_tool_specs, do: [health_tool_spec(), worker_tool_spec("claim_work_key")]
+  defp claimable_tool_specs, do: [health_tool_spec(), worker_tool_spec("claim_work_key"), bootstrap_tool_spec("claim_private_handoff")]
 
   defp unbound_tool_specs do
-    [health_tool_spec()] ++ Enum.map(@solo_tools, &solo_tool_spec/1) ++ [worker_tool_spec("claim_work_key")] ++ architect_tool_specs()
+    [health_tool_spec()] ++
+      Enum.map(@solo_tools, &solo_tool_spec/1) ++
+      [worker_tool_spec("claim_work_key")] ++
+      Enum.map(@bootstrap_tools, &bootstrap_tool_spec/1) ++ architect_tool_specs()
   end
 
   defp architect_tool_specs, do: Enum.map(@architect_tools, &architect_tool_spec/1)
@@ -1839,6 +1951,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp handle_session_claim_tool("claim_work_key", params, id, %__MODULE__{} = server) do
+    handle_claim_work_key(params, id, server)
+  end
+
+  defp handle_session_claim_tool("claim_private_handoff", params, id, %__MODULE__{} = server) do
+    case claim_private_handoff(params, server) do
+      {:ok, result, session} ->
+        {response(id, tool_result(result)), %{server | session: session, session_refresh_required: false}}
+
+      {:error, code, message, data} ->
+        {error_response(id, code, message, data), server}
+    end
+  end
+
+  defp handle_session_claim_tool_notification("claim_work_key", params, %__MODULE__{} = server) do
+    handle_claim_work_key_notification(params, server)
+  end
+
+  defp handle_session_claim_tool_notification("claim_private_handoff", params, %__MODULE__{} = server) do
+    case claim_private_handoff(params, server) do
+      {:ok, _result, session} -> {nil, %{server | session: session, session_refresh_required: false}}
+      {:error, _code, _message, _data} -> {nil, server}
+    end
+  end
+
   defp handle_claim_work_key(params, id, %__MODULE__{} = server) do
     case claim_work_key(params, server) do
       {:ok, result, session} ->
@@ -1896,6 +2033,263 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   rescue
     _error -> {:error, -32_000, "Server error", %{"tool" => "claim_work_key", "reason" => "ledger_unavailable"}}
+  end
+
+  defp claim_private_handoff(params, %__MODULE__{config: config, session: %Session{} = session}) do
+    with {:ok, arguments} <- bootstrap_tool_arguments(params, "claim_private_handoff"),
+         {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
+         {:ok, handoff} <- private_handoff_argument(arguments),
+         :ok <- prepare_mcp_repository(config.repo),
+         {:ok, secret} <- private_handoff_secret(config, handoff, claimed_by) do
+      proof_hash = WorkKey.secret_hash(secret)
+
+      case claim_work_key_with_bound_session(config.repo, session, secret, proof_hash, claimed_by) do
+        {:ok, _result, _session} = success -> success
+        {:error, reason} -> private_handoff_claim_error(reason)
+      end
+    else
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "claim_private_handoff", "reason" => reason}}
+      {:error, reason} -> private_handoff_claim_error(reason)
+    end
+  rescue
+    _error -> {:error, -32_000, "Server error", %{"tool" => "claim_private_handoff", "reason" => "ledger_unavailable"}}
+  end
+
+  defp claim_private_handoff(params, %__MODULE__{config: config}) do
+    with {:ok, arguments} <- bootstrap_tool_arguments(params, "claim_private_handoff"),
+         {:ok, claimed_by} <- required_argument(arguments, "claimed_by"),
+         {:ok, handoff} <- private_handoff_argument(arguments),
+         :ok <- prepare_mcp_repository(config.repo),
+         {:ok, secret} <- private_handoff_secret(config, handoff, claimed_by) do
+      proof_hash = WorkKey.secret_hash(secret)
+
+      case claim_unbound_work_key(config.repo, secret, proof_hash, claimed_by) do
+        {:ok, _result, _session} = success -> success
+        {:error, reason} -> private_handoff_claim_error(reason)
+      end
+    else
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "claim_private_handoff", "reason" => reason}}
+      {:error, reason} -> private_handoff_claim_error(reason)
+    end
+  rescue
+    _error -> {:error, -32_000, "Server error", %{"tool" => "claim_private_handoff", "reason" => "ledger_unavailable"}}
+  end
+
+  defp private_handoff_argument(arguments) do
+    with :ok <- reject_private_handoff_secret_material(arguments),
+         {:ok, handoff} <- private_handoff_argument_payload(arguments),
+         :ok <- reject_private_handoff_secret_material(handoff),
+         :ok <- require_private_handoff_fields(handoff),
+         :ok <- require_private_handoff_mode(handoff) do
+      {:ok, handoff}
+    end
+  end
+
+  defp private_handoff_argument_payload(%{"private_handoff" => handoff} = arguments) when is_map(handoff) do
+    if Enum.any?(@private_handoff_claim_keys, &Map.has_key?(arguments, &1)) do
+      {:tool_error, "private_handoff_argument_conflict"}
+    else
+      {:ok, handoff}
+    end
+  end
+
+  defp private_handoff_argument_payload(%{"private_handoff" => _handoff}), do: {:tool_error, "invalid_private_handoff"}
+
+  defp private_handoff_argument_payload(arguments) do
+    handoff = Map.take(arguments, @private_handoff_claim_keys)
+    if map_size(handoff) == 0, do: {:tool_error, "missing_private_handoff"}, else: {:ok, handoff}
+  end
+
+  defp reject_private_handoff_secret_material(map) when is_map(map) do
+    forbidden = ["secret", "secret_hash", "run_mcp_command"]
+
+    if Enum.any?(forbidden, &private_handoff_key_present?(map, &1)) do
+      {:tool_error, "secret_material_not_allowed"}
+    else
+      :ok
+    end
+  end
+
+  defp private_handoff_key_present?(map, key) when is_map(map) do
+    Map.has_key?(map, key) or Map.has_key?(map, String.to_atom(key))
+  end
+
+  defp require_private_handoff_fields(handoff) do
+    Enum.find_value(["mode", "path", "target", "grant_id", "display_key", "work_package_id"], :ok, fn key ->
+      case private_handoff_string(handoff, key) do
+        {:ok, _value} -> nil
+        {:error, reason} -> {:tool_error, reason}
+      end
+    end)
+  end
+
+  defp require_private_handoff_mode(handoff) do
+    case private_handoff_string(handoff, "mode") do
+      {:ok, "local-private-file"} -> :ok
+      {:ok, _mode} -> {:tool_error, "unsupported_private_handoff_mode"}
+      {:error, reason} -> {:tool_error, reason}
+    end
+  end
+
+  defp private_handoff_secret(%Config{} = config, handoff, claimed_by) do
+    with {:ok, work_package_id} <- private_handoff_string(handoff, "work_package_id"),
+         {:ok, grant_id} <- private_handoff_string(handoff, "grant_id"),
+         {:ok, display_key} <- private_handoff_string(handoff, "display_key"),
+         {:ok, target} <- private_handoff_string(handoff, "target"),
+         {:ok, grant} <- AccessGrantRepository.get(config.repo, grant_id),
+         {:ok, work_package} <- WorkPackageRepository.get(config.repo, work_package_id),
+         :ok <- validate_private_handoff_grant(grant, work_package, display_key, target),
+         :ok <- AccessGrantService.require_live_package_authority(config.repo, grant) do
+      read_private_handoff_secret_from_known_store(work_package, grant, handoff, config, claimed_by)
+    end
+  end
+
+  defp validate_private_handoff_grant(%AccessGrant{} = grant, %WorkPackage{} = work_package, display_key, target) do
+    expected_target = "SymphonyPlusPlus:worker:#{work_package.id}:#{grant.display_key}:#{grant.id}"
+
+    cond do
+      grant.work_package_id != work_package.id -> {:error, :private_handoff_metadata_mismatch}
+      grant.display_key != display_key -> {:error, :private_handoff_metadata_mismatch}
+      target != expected_target -> {:error, :private_handoff_metadata_mismatch}
+      true -> :ok
+    end
+  end
+
+  defp read_private_handoff_secret_from_known_store(%WorkPackage{} = work_package, %AccessGrant{} = grant, handoff, %Config{} = config, claimed_by) do
+    config
+    |> private_handoff_read_opts(handoff, claimed_by)
+    |> Enum.reduce_while({:error, :private_handoff_missing_file}, fn opts, last_error ->
+      case SecretHandoff.read_local_private_file_secret(work_package, grant, handoff, opts) do
+        {:ok, secret} -> {:halt, {:ok, secret}}
+        {:error, reason} -> {:cont, last_private_handoff_error(last_error, reason)}
+      end
+    end)
+  end
+
+  defp last_private_handoff_error({:error, :private_handoff_missing_file}, reason), do: {:error, reason}
+
+  defp last_private_handoff_error({:error, reason} = last_error, _reason)
+       when reason in [
+              :private_handoff_metadata_mismatch,
+              :private_handoff_not_regular_file,
+              :private_handoff_path_mismatch,
+              :private_handoff_path_traversal,
+              :private_handoff_secret_mismatch,
+              :private_handoff_secret_too_large
+            ],
+       do: last_error
+
+  defp last_private_handoff_error({:error, _reason} = last_error, :missing_repo_root), do: last_error
+  defp last_private_handoff_error({:error, _reason} = last_error, {:handoff_metadata_invalid, _metadata_reason}), do: last_error
+  defp last_private_handoff_error(_last_error, reason), do: {:error, reason}
+
+  defp private_handoff_read_opts(%Config{} = config, handoff, claimed_by) do
+    repo_roots = private_handoff_repo_roots(config)
+    databases = private_handoff_databases(config, handoff)
+    store_dirs = private_handoff_store_dirs()
+
+    for repo_root <- repo_roots,
+        database <- databases,
+        store_dir <- store_dirs do
+      [
+        mode: "local-private-file",
+        namespace_repo_root: repo_root,
+        repo_root: repo_root,
+        claimed_by: claimed_by
+      ]
+      |> put_optional_handoff_opt(:database, database)
+      |> put_optional_handoff_opt(:store_dir, store_dir)
+    end
+  end
+
+  defp private_handoff_repo_roots(%Config{repo_root: repo_root}) do
+    [repo_root, SecretHandoff.local_operator_repo_root() | SecretHandoff.local_operator_namespace_repo_roots()]
+    |> nonblank_unique_paths()
+  end
+
+  defp private_handoff_databases(%Config{} = config, handoff) do
+    case private_handoff_optional_string(handoff, "database") do
+      {:ok, database} when is_binary(database) ->
+        [database]
+
+      {:ok, nil} ->
+        [config.database, live_dispatch_database_or_nil(config.repo), nil]
+        |> unique_optional_values()
+
+      {:error, _reason} ->
+        [config.database, live_dispatch_database_or_nil(config.repo), nil]
+        |> unique_optional_values()
+    end
+  end
+
+  defp live_dispatch_database_or_nil(repo) do
+    case live_file_backed_dispatch_database(repo) do
+      {:ok, database} -> database
+      _result -> nil
+    end
+  end
+
+  defp private_handoff_store_dirs do
+    [Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir), nil]
+    |> unique_optional_values()
+  end
+
+  defp nonblank_unique_paths(values) do
+    values
+    |> Enum.filter(&filled_string?/1)
+    |> Enum.map(&Path.expand(String.trim(&1)))
+    |> Enum.uniq()
+  end
+
+  defp unique_optional_values(values) do
+    values
+    |> Enum.map(&normalize_optional_value/1)
+    |> Enum.uniq()
+  end
+
+  defp normalize_optional_value(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_optional_value(nil), do: nil
+  defp normalize_optional_value(value), do: value
+
+  defp private_handoff_string(handoff, key) do
+    case private_handoff_fetch(handoff, key) do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> {:error, "missing_#{key}"}
+          trimmed -> {:ok, trimmed}
+        end
+
+      _value ->
+        {:error, "missing_#{key}"}
+    end
+  end
+
+  defp private_handoff_optional_string(handoff, key) do
+    case private_handoff_fetch(handoff, key) do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> {:ok, nil}
+          trimmed -> {:ok, trimmed}
+        end
+
+      nil ->
+        {:ok, nil}
+
+      _value ->
+        {:error, "invalid_#{key}"}
+    end
+  end
+
+  defp private_handoff_fetch(handoff, key) when is_map(handoff) do
+    Map.get(handoff, key) || Map.get(handoff, String.to_atom(key))
   end
 
   defp claim_work_key_with_bound_session(repo, %Session{} = session, secret, proof_hash, claimed_by) do
@@ -2018,6 +2412,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp claim_error({:migration_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
   defp claim_error(reason), do: {:error, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => reason_text(reason)}}
 
+  defp private_handoff_claim_error(:database_busy), do: service_error(:database_busy, "claim_private_handoff")
+  defp private_handoff_claim_error({:storage_failed, _reason} = reason), do: service_error(reason, "claim_private_handoff")
+  defp private_handoff_claim_error({:migration_failed, _reason} = reason), do: service_error(reason, "claim_private_handoff")
+
+  defp private_handoff_claim_error(reason) do
+    {:error, -32_001, "Unauthorized", %{"tool" => "claim_private_handoff", "reason" => reason_text(reason)}}
+  end
+
   defp prepare_worker_tool_call(%__MODULE__{} = server, params, name) do
     with :ok <- require_tool_arguments_object(params, name),
          :ok <- preauthorize_worker_tool_call(server, name),
@@ -2033,6 +2435,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          :ok <- prepare_mcp_repository_for_tool(server.config.repo, name),
          :ok <- authorize_architect_tool_call(server, name) do
       architect_tool_arguments(params, name)
+    end
+  end
+
+  defp prepare_bootstrap_tool_call(%__MODULE__{} = server, params, name) do
+    with :ok <- require_tool_arguments_object(params, name),
+         :ok <- authorize_bootstrap_tool_call(server, name),
+         :ok <- prepare_mcp_repository_for_tool(server.config.repo, name) do
+      bootstrap_tool_arguments(params, name)
     end
   end
 
@@ -2066,12 +2476,170 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp authorize_bootstrap_tool_call(%__MODULE__{session_refresh_required: true}, tool) do
+    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "claim_required", "action" => "claim_private_handoff"}}
+  end
+
+  defp authorize_bootstrap_tool_call(%__MODULE__{session: nil}, _tool), do: :ok
+
+  defp authorize_bootstrap_tool_call(%__MODULE__{}, tool) do
+    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "bootstrap_tools_require_unbound_session"}}
+  end
+
   defp prepare_mcp_repository(repo), do: Repository.ensure_migrated(repo)
 
   defp prepare_mcp_repository_for_tool(repo, tool) do
     case prepare_mcp_repository(repo) do
       :ok -> :ok
       {:error, reason} -> service_error(reason, tool)
+    end
+  end
+
+  defp bootstrap_tool("create_work_request", arguments, %__MODULE__{config: config}) do
+    with {:ok, requested_claimed_by} <- create_work_request_requested_claimed_by(arguments),
+         {:ok, attrs} <- create_work_request_attrs(arguments, requested_claimed_by),
+         {:ok, work_request} <- WorkRequestService.create(config.repo, attrs) do
+      effective_claimed_by = requested_claimed_by || ArchitectHandoff.claimed_by()
+
+      {:ok, tool_result(create_work_request_handoff_payload(config, work_request, effective_claimed_by))}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "create_work_request", "reason" => reason}}
+      {:error, reason} -> create_work_request_error(reason)
+    end
+  end
+
+  defp create_work_request_attrs(arguments, claimed_by) do
+    with {:ok, repo} <- required_argument(arguments, "repo"),
+         {:ok, base_branch} <- required_argument(arguments, "base_branch"),
+         {:ok, title} <- required_argument(arguments, "title"),
+         {:ok, request_kind} <- required_argument(arguments, "request_kind"),
+         {:ok, description} <- create_work_request_description(arguments),
+         {:ok, workflow_mode} <- optional_string_argument(arguments, "workflow_mode", "architect_led_feature_branch"),
+         {:ok, constraints} <- optional_object_argument(arguments, "constraints"),
+         {:ok, status} <- optional_string_argument(arguments, "status", "ready_for_clarification"),
+         {:ok, creator_kind} <- create_work_request_creator_kind(arguments),
+         {:ok, creator_name} <- create_work_request_creator_name(arguments, claimed_by),
+         {:ok, created_via} <- optional_string_argument(arguments, "created_via", "mcp") do
+      {:ok,
+       %{
+         "repo" => repo,
+         "base_branch" => base_branch,
+         "title" => title,
+         "work_type" => request_kind,
+         "human_description" => description,
+         "desired_dispatch_shape" => workflow_mode,
+         "constraints" => constraints || %{},
+         "status" => status,
+         "creator_kind" => creator_kind,
+         "creator_name" => creator_name,
+         "created_via" => created_via
+       }}
+    end
+  end
+
+  defp create_work_request_description(arguments) do
+    result =
+      case optional_string_argument(arguments, "human_description") do
+        {:ok, nil} -> optional_string_argument(arguments, "description")
+        {:ok, description} -> {:ok, description}
+        {:tool_error, reason} -> {:tool_error, reason}
+      end
+
+    case result do
+      {:ok, nil} -> {:tool_error, "missing_description"}
+      other -> other
+    end
+  end
+
+  defp create_work_request_requested_claimed_by(arguments) do
+    optional_string_argument(arguments, "claimed_by")
+  end
+
+  defp create_work_request_creator_kind(arguments) do
+    case optional_string_argument(arguments, "creator_kind") do
+      {:ok, nil} -> optional_string_argument(arguments, "created_by_kind", "agent")
+      {:ok, kind} -> {:ok, kind}
+      {:tool_error, reason} -> {:tool_error, reason}
+    end
+  end
+
+  defp create_work_request_creator_name(arguments, claimed_by) do
+    case optional_string_argument(arguments, "creator_name") do
+      {:ok, nil} ->
+        case optional_string_argument(arguments, "created_by_name") do
+          {:ok, nil} -> {:ok, claimed_by || "mcp-agent"}
+          result -> result
+        end
+
+      result ->
+        result
+    end
+  end
+
+  defp create_work_request_handoff_payload(%Config{} = config, %WorkRequest{} = work_request, claimed_by) do
+    case create_work_request_architect_handoff(config, work_request, claimed_by) do
+      {:ok, handoff} ->
+        %{
+          "status" => "created",
+          "work_request" => work_request_payload(work_request),
+          "architect_handoff" => json_safe_payload(handoff),
+          "claim" => %{"tool" => "claim_private_handoff", "claimed_by" => claimed_by},
+          "launch_prompt" => Map.get(handoff, :prompt)
+        }
+
+      {:tool_error, reason} ->
+        create_work_request_partial_handoff_payload(work_request, reason)
+
+      {:error, reason} ->
+        create_work_request_partial_handoff_payload(work_request, reason)
+    end
+  end
+
+  defp create_work_request_partial_handoff_payload(%WorkRequest{} = work_request, reason) do
+    %{
+      "status" => "partial_success",
+      "work_request" => work_request_payload(work_request),
+      "architect_handoff" => nil,
+      "handoff_error" => %{
+        "reason" => reason_text(reason),
+        "message" => ArchitectHandoff.error_message(reason)
+      },
+      "retry" => %{
+        "type" => "manual_architect_handoff_replay",
+        "work_request_id" => work_request.id,
+        "operator_action" => "prepare_architect_handoff"
+      }
+    }
+  end
+
+  defp create_work_request_architect_handoff(%Config{} = config, %WorkRequest{} = work_request, claimed_by) do
+    with {:ok, handoff_opts} <- create_work_request_handoff_opts(config, claimed_by) do
+      ArchitectHandoff.create_or_replay(config.repo, work_request.id,
+        local_operator?: true,
+        secret_handoff_opts: handoff_opts
+      )
+    end
+  end
+
+  defp create_work_request_handoff_opts(%Config{} = config, claimed_by) do
+    with {:ok, repo_root} <- config_repo_root(config),
+         :ok <- validate_child_secret_handoff_repo_root(repo_root, "local-private-file") do
+      opts =
+        [
+          mode: "local-private-file",
+          repo_root: repo_root,
+          claimed_by: claimed_by
+        ]
+        |> put_optional_handoff_opt(:store_dir, Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir))
+
+      {:ok, put_optional_handoff_opt(opts, :database, create_work_request_handoff_database(config))}
+    end
+  end
+
+  defp create_work_request_handoff_database(%Config{} = config) do
+    case dispatch_handoff_database(config.database, config.repo) do
+      {:ok, database} -> database
+      _result -> nil
     end
   end
 
@@ -2635,7 +3203,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp dispatch_planned_slice_handoff_opts(%Config{} = config, arguments, claimed_by) do
-    with {:ok, repo_root} <- config_repo_root(config),
+    with {:ok, repo_root} <- dispatch_planned_slice_repo_root(config, arguments),
          {:ok, secret_handoff} <- optional_string_argument(arguments, "secret_handoff", "auto"),
          {:ok, secret_store_dir} <- optional_string_argument(arguments, "secret_store_dir"),
          :ok <- validate_child_secret_handoff_mode(secret_handoff),
@@ -2649,6 +3217,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        |> put_optional_handoff_opt(:database, database)
        |> put_optional_handoff_opt(:mode, normalize_child_secret_handoff_mode(secret_handoff))
        |> put_optional_handoff_opt(:store_dir, secret_store_dir)}
+    end
+  end
+
+  defp dispatch_planned_slice_repo_root(%Config{} = config, arguments) do
+    case optional_string_argument(arguments, "repo_root") do
+      {:ok, nil} -> config_repo_root(config)
+      {:ok, repo_root} -> {:ok, Path.expand(repo_root)}
+      {:tool_error, reason} -> {:tool_error, reason}
     end
   end
 
@@ -7914,6 +8490,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp solo_error(:not_found, tool), do: {:error, -32_004, "Not found", %{"tool" => tool, "reason" => "not_found"}}
   defp solo_error(reason, tool), do: worker_error(reason, tool)
 
+  defp bootstrap_error(:database_busy, tool), do: service_error(:database_busy, tool)
+  defp bootstrap_error({:storage_failed, _reason} = reason, tool), do: service_error(reason, tool)
+  defp bootstrap_error({:migration_failed, _reason} = reason, tool), do: service_error(reason, tool)
+  defp bootstrap_error(reason, tool), do: {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason_text(reason)}}
+
+  defp create_work_request_error(%Ecto.Changeset{}) do
+    {:error, -32_602, "Invalid params", %{"tool" => "create_work_request", "reason" => "invalid_work_request"}}
+  end
+
+  defp create_work_request_error(:id_already_exists) do
+    {:error, -32_602, "Invalid params", %{"tool" => "create_work_request", "reason" => "id_already_exists"}}
+  end
+
+  defp create_work_request_error(:database_busy), do: service_error(:database_busy, "create_work_request")
+  defp create_work_request_error({:storage_failed, _reason} = reason), do: service_error(reason, "create_work_request")
+  defp create_work_request_error({:migration_failed, _reason} = reason), do: service_error(reason, "create_work_request")
+
+  defp create_work_request_error(reason) do
+    {:error, -32_602, "Invalid params", %{"tool" => "create_work_request", "reason" => reason_text(reason)}}
+  end
+
   defp worker_error(:unauthorized, resource), do: auth_error(:unauthorized, resource)
   defp worker_error({:unauthorized, _reason} = reason, resource), do: auth_error(reason, resource)
   defp worker_error(:expired, resource), do: auth_error({:unauthorized, :expired}, resource)
@@ -8011,6 +8608,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp bootstrap_tool_arguments(params, name) do
+    case Map.get(params, "arguments", %{}) do
+      arguments when is_map(arguments) ->
+        validate_bootstrap_arguments(name, arguments)
+
+      _arguments ->
+        {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "invalid_tool_arguments"}}
+    end
+  end
+
   defp validate_worker_arguments(name, arguments) do
     allowed = MapSet.new(allowed_worker_argument_keys(name))
     unexpected = arguments |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1))
@@ -8040,7 +8647,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if unexpected != [] do
       {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "unexpected_argument", "arguments" => unexpected}}
     else
-      case validate_architect_required_arguments(name, arguments) do
+      case validate_tool_required_arguments(architect_tool_input_schema(name), arguments) do
+        :ok -> {:ok, arguments}
+        {:error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => reason}}
+      end
+    end
+  end
+
+  defp validate_bootstrap_arguments(name, arguments) do
+    allowed = MapSet.new(allowed_bootstrap_argument_keys(name))
+    unexpected = arguments |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1))
+
+    if unexpected != [] do
+      {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "unexpected_argument", "arguments" => unexpected}}
+    else
+      validation_arguments = bootstrap_validation_arguments(name, arguments)
+
+      case validate_tool_required_arguments(bootstrap_tool_input_schema(name), validation_arguments) do
         :ok -> {:ok, arguments}
         {:error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => reason}}
       end
@@ -8068,8 +8691,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> Map.keys()
   end
 
-  defp validate_architect_required_arguments(name, arguments) do
-    schema = architect_tool_input_schema(name)
+  defp allowed_bootstrap_argument_keys(name) do
+    name
+    |> bootstrap_tool_input_schema()
+    |> Map.get("properties", %{})
+    |> Map.keys()
+  end
+
+  defp bootstrap_validation_arguments("create_work_request", arguments) do
+    if blank_argument?(Map.get(arguments, "description")) and nonblank_argument?(Map.get(arguments, "human_description")) do
+      Map.put(arguments, "description", Map.get(arguments, "human_description"))
+    else
+      arguments
+    end
+  end
+
+  defp bootstrap_validation_arguments(_name, arguments), do: arguments
+
+  defp blank_argument?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank_argument?(nil), do: true
+  defp blank_argument?(_value), do: false
+
+  defp nonblank_argument?(value) when is_binary(value), do: String.trim(value) != ""
+  defp nonblank_argument?(_value), do: false
+
+  defp validate_tool_required_arguments(schema, arguments) do
     properties = Map.get(schema, "properties", %{})
 
     schema
@@ -8354,6 +9000,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "base_branch" => work_request.base_branch,
       "work_type" => work_request.work_type,
       "desired_dispatch_shape" => work_request.desired_dispatch_shape,
+      "creator" => work_request_creator_payload(work_request),
       "status" => work_request.status,
       "inserted_at" => timestamp(work_request.inserted_at),
       "updated_at" => timestamp(work_request.updated_at)
@@ -8424,9 +9071,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "human_description" => Redactor.redact_text(work_request.human_description),
       "constraints" => Redactor.redact_output(work_request.constraints || %{}),
       "desired_dispatch_shape" => work_request.desired_dispatch_shape,
+      "creator" => work_request_creator_payload(work_request),
       "status" => work_request.status,
       "inserted_at" => timestamp(work_request.inserted_at),
       "updated_at" => timestamp(work_request.updated_at)
+    }
+  end
+
+  defp work_request_creator_payload(%WorkRequest{} = work_request) do
+    %{
+      "kind" => work_request.creator_kind,
+      "name" => Redactor.redact_text(work_request.creator_name),
+      "via" => work_request.created_via
     }
   end
 
@@ -8797,14 +9453,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp request_params(_request), do: {:ok, %{}}
 
   defp dispatch_request({:ok, params}, method, id, %__MODULE__{} = server) do
-    case dispatch(method, params, server) do
-      {:ok, result} -> response(id, result)
-      {:error, code, message, data} -> error_response(id, code, message, data)
-    end
+    dispatch_request_state({:ok, params}, method, id, server)
+    |> elem(0)
   end
 
   defp dispatch_request({:error, code, message, data}, _method, id, %__MODULE__{}) do
     error_response(id, code, message, data)
+  end
+
+  defp dispatch_request_state({:ok, params}, method, id, %__MODULE__{} = server) do
+    case dispatch(method, params, server) do
+      {:ok, result} -> {response(id, result), server}
+      {:ok, result, %__MODULE__{} = updated_server} -> {response(id, result), updated_server}
+      {:error, code, message, data} -> {error_response(id, code, message, data), server}
+    end
+  end
+
+  defp dispatch_request_state({:error, code, message, data}, _method, id, %__MODULE__{} = server) do
+    {error_response(id, code, message, data), server}
   end
 
   defp dispatch_notification({:ok, params}, method, %__MODULE__{} = server) do

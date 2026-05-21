@@ -919,7 +919,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert Map.keys(unbound_tools_by_name) |> Enum.sort() ==
              Enum.sort([
+               "claim_private_handoff",
                "claim_work_key",
+               "create_work_request",
                "solo_append",
                "solo_attach",
                "solo_list",
@@ -931,6 +933,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(unbound_tools_by_name, ["claim_work_key", "inputSchema", "required"]) == ["secret", "claimed_by"]
     assert get_in(unbound_tools_by_name, ["claim_work_key", "inputSchema", "properties", "secret", "type"]) == "string"
+    assert get_in(unbound_tools_by_name, ["claim_private_handoff", "inputSchema", "required"]) == ["claimed_by"]
+    assert get_in(unbound_tools_by_name, ["claim_private_handoff", "inputSchema", "properties", "private_handoff", "type"]) == "object"
+
+    assert get_in(unbound_tools_by_name, ["create_work_request", "inputSchema", "required"]) == [
+             "repo",
+             "base_branch",
+             "title",
+             "request_kind"
+           ]
+
+    assert get_in(unbound_tools_by_name, ["create_work_request", "inputSchema", "anyOf"]) == [
+             %{"required" => ["description"]},
+             %{"required" => ["human_description"]}
+           ]
+
     assert get_in(unbound_tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
     assert get_in(unbound_tools_by_name, ["list_guidance_requests", "inputSchema", "required"]) == []
 
@@ -1596,6 +1613,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_handoff", "type"]) == "string"
     assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_store_dir", "type"]) == "string"
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "repo_root", "type"]) == "string"
     assert get_in(tools_by_name, ["read_child_status", "inputSchema", "required"]) == ["work_package_id"]
     assert get_in(tools_by_name, ["read_child_status", "inputSchema", "properties", "work_package_id", "type"]) == "string"
     assert get_in(tools_by_name, ["read_phase_board", "inputSchema", "required"]) == ["phase_id"]
@@ -1754,7 +1772,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     response = Server.handle(%{"jsonrpc" => "2.0", "id" => "revoked-architect-tools", "method" => "tools/list", "params" => %{}}, server)
     tools_by_name = response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
 
-    assert Map.keys(tools_by_name) |> Enum.sort() == ["claim_work_key", "sympp.health"]
+    assert Map.keys(tools_by_name) |> Enum.sort() == ["claim_private_handoff", "claim_work_key", "sympp.health"]
   end
 
   test "tools list preserves ledger failures while revalidating bound sessions" do
@@ -2530,6 +2548,281 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(stale_status_response, ["error", "data", "reason"]) == "stale_status"
   end
 
+  test "claim_private_handoff binds an architect session from redacted local-private-file metadata", %{repo: repo} do
+    store_dir = Path.join(test_handoff_store_dir(), "private-architect-claim")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+
+    on_exit(fn ->
+      restore_app_env(:sympp_worker_secret_store_dir, previous_store_dir)
+      File.rm_rf(store_dir)
+    end)
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-PRIVATE-HANDOFF-CLAIM",
+        status: "ready_for_clarification"
+      )
+
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: [
+                 mode: "local-private-file",
+                 repo_root: test_repo_root(),
+                 store_dir: store_dir,
+                 claimed_by: ArchitectHandoff.claimed_by()
+               ]
+             )
+
+    private_handoff = json_payload(handoff.secret_handoff)
+    assert private_handoff["mode"] == "local-private-file"
+    refute Map.has_key?(private_handoff, "secret")
+    refute Map.has_key?(private_handoff, "secret_hash")
+    refute Map.has_key?(private_handoff, "run_mcp_command")
+
+    {claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-private-handoff",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_private_handoff",
+            "arguments" => %{"claimed_by" => "kraken-beta-arch", "private_handoff" => private_handoff}
+          }
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == handoff.anchor_package.id
+    assert claimed_server.session.assignment.grant_role == "architect"
+    assert handoff_secret_absent?(private_handoff, inspect(claim_response))
+
+    read_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "read-claimed-work-request",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_work_request", "arguments" => %{"work_request_id" => work_request.id}}
+        },
+        claimed_server
+      )
+
+    assert get_in(read_response, ["result", "structuredContent", "work_request", "id"]) == work_request.id
+    assert handoff_secret_absent?(private_handoff, inspect(read_response))
+  end
+
+  test "claim_private_handoff rejects arbitrary paths and mismatched metadata without leaking secrets", %{repo: repo} do
+    store_dir = Path.join(test_handoff_store_dir(), "private-architect-reject")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+
+    on_exit(fn ->
+      restore_app_env(:sympp_worker_secret_store_dir, previous_store_dir)
+      File.rm_rf(store_dir)
+    end)
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-PRIVATE-HANDOFF-REJECT",
+        status: "ready_for_clarification"
+      )
+
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: [
+                 mode: "local-private-file",
+                 repo_root: test_repo_root(),
+                 store_dir: store_dir,
+                 claimed_by: ArchitectHandoff.claimed_by()
+               ]
+             )
+
+    private_handoff = json_payload(handoff.secret_handoff)
+    arbitrary_path = Path.join(System.tmp_dir!(), "sympp-unmanaged-private-handoff-#{System.unique_integer([:positive])}.secret")
+    File.write!(arbitrary_path, "not-a-work-key")
+
+    on_exit(fn -> File.rm(arbitrary_path) end)
+
+    arbitrary_response =
+      mcp_tool(repo, nil, "claim_private_handoff", %{
+        "claimed_by" => "kraken-beta-arch",
+        "private_handoff" => Map.put(private_handoff, "path", arbitrary_path)
+      })
+
+    assert get_in(arbitrary_response, ["error", "code"]) == -32_001
+    assert get_in(arbitrary_response, ["error", "data", "reason"]) == "private_handoff_path_mismatch"
+    assert handoff_secret_absent?(private_handoff, inspect(arbitrary_response))
+
+    mismatch_response =
+      mcp_tool(repo, nil, "claim_private_handoff", %{
+        "claimed_by" => "kraken-beta-arch",
+        "private_handoff" => Map.put(private_handoff, "display_key", "FFFF")
+      })
+
+    assert get_in(mismatch_response, ["error", "code"]) == -32_001
+    assert get_in(mismatch_response, ["error", "data", "reason"]) == "private_handoff_metadata_mismatch"
+    assert handoff_secret_absent?(private_handoff, inspect(mismatch_response))
+  end
+
+  test "create_work_request creates provenance and a claimable redacted architect handoff", %{repo: repo} do
+    store_dir = Path.join(test_handoff_store_dir(), "create-work-request")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+
+    on_exit(fn ->
+      restore_app_env(:sympp_worker_secret_store_dir, previous_store_dir)
+      File.rm_rf(store_dir)
+    end)
+
+    response =
+      mcp_tool(
+        repo,
+        nil,
+        "create_work_request",
+        %{
+          "repo" => "nextide/symphony-plus-plus",
+          "base_branch" => "main",
+          "title" => "Agent-created WorkRequest",
+          "description" => "Create a WorkRequest and continue as architect.",
+          "request_kind" => "feature",
+          "claimed_by" => "kraken-beta-arch"
+        },
+        config: Config.default(repo: repo, repo_root: test_repo_root())
+      )
+
+    payload = get_in(response, ["result", "structuredContent"])
+    assert payload["status"] == "created"
+    assert payload["work_request"]["creator"] == %{"kind" => "agent", "name" => "kraken-beta-arch", "via" => "mcp"}
+    assert payload["work_request"]["status"] == "ready_for_clarification"
+    assert is_binary(payload["launch_prompt"])
+    assert payload["launch_prompt"] =~ "claim_private_handoff"
+
+    private_handoff = get_in(payload, ["architect_handoff", "secret_handoff"])
+    assert private_handoff["mode"] == "local-private-file"
+    assert private_handoff["secret_in_stdout"] == false
+    refute Map.has_key?(private_handoff, "secret")
+    refute Map.has_key?(private_handoff, "secret_hash")
+    refute Map.has_key?(private_handoff, "run_mcp_command")
+    assert handoff_secret_absent?(private_handoff, inspect(response))
+
+    {claim_response, _claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-created-work-request",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_private_handoff",
+            "arguments" => %{"claimed_by" => "kraken-beta-arch", "private_handoff" => private_handoff}
+          }
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+    assert handoff_secret_absent?(private_handoff, inspect(claim_response))
+
+    default_owner_response =
+      mcp_tool(
+        repo,
+        nil,
+        "create_work_request",
+        %{
+          "repo" => "nextide/symphony-plus-plus",
+          "base_branch" => "main",
+          "title" => "Default-owner WorkRequest",
+          "description" => "Create a WorkRequest without supplying a claim owner.",
+          "request_kind" => "feature"
+        },
+        config: Config.default(repo: repo, repo_root: test_repo_root())
+      )
+
+    default_owner_payload = get_in(default_owner_response, ["result", "structuredContent"])
+    assert default_owner_payload["work_request"]["creator"] == %{"kind" => "agent", "name" => "mcp-agent", "via" => "mcp"}
+    assert default_owner_payload["claim"] == %{"tool" => "claim_private_handoff", "claimed_by" => "symphony-architect"}
+
+    default_owner_handoff = get_in(default_owner_payload, ["architect_handoff", "secret_handoff"])
+
+    {default_claim_response, _default_claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-default-owner-work-request",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_private_handoff",
+            "arguments" => %{
+              "claimed_by" => default_owner_payload["claim"]["claimed_by"],
+              "private_handoff" => default_owner_handoff
+            }
+          }
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(default_claim_response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+    assert handoff_secret_absent?(default_owner_handoff, inspect(default_owner_response))
+    assert handoff_secret_absent?(default_owner_handoff, inspect(default_claim_response))
+
+    operator_response =
+      mcp_tool(
+        repo,
+        nil,
+        "create_work_request",
+        %{
+          "repo" => "nextide/symphony-plus-plus",
+          "base_branch" => "main",
+          "title" => "Operator-created WorkRequest",
+          "human_description" => "Record supplied operator provenance.",
+          "request_kind" => "investigation",
+          "creator_kind" => "operator",
+          "creator_name" => "JJ",
+          "created_via" => "cli",
+          "claimed_by" => "operator-arch"
+        },
+        config: Config.default(repo: repo, repo_root: test_repo_root())
+      )
+
+    assert get_in(operator_response, ["result", "structuredContent", "work_request", "creator"]) == %{
+             "kind" => "operator",
+             "name" => "JJ",
+             "via" => "cli"
+           }
+
+    partial_response =
+      mcp_tool(
+        repo,
+        nil,
+        "create_work_request",
+        %{
+          "repo" => "nextide/symphony-plus-plus",
+          "base_branch" => "main",
+          "title" => "Partial handoff WorkRequest",
+          "description" => "Create succeeds even when handoff bootstrap is not configured.",
+          "request_kind" => "feature",
+          "claimed_by" => "partial-arch"
+        },
+        config: Config.default(repo: repo)
+      )
+
+    partial_payload = get_in(partial_response, ["result", "structuredContent"])
+    assert partial_payload["status"] == "partial_success"
+    assert partial_payload["architect_handoff"] == nil
+
+    assert partial_payload["retry"] == %{
+             "type" => "manual_architect_handoff_replay",
+             "work_request_id" => get_in(partial_payload, ["work_request", "id"]),
+             "operator_action" => "prepare_architect_handoff"
+           }
+
+    assert {:ok, %WorkRequest{}} = WorkRequestRepository.get(repo, get_in(partial_payload, ["work_request", "id"]))
+  end
+
   test "claim_work_key tool migrates legacy access grant expiry before unbound claim" do
     database_path = WorkPackageFactory.database_path()
     original_repo = Repo.get_dynamic_repo()
@@ -2960,13 +3253,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(reinit_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
-    assert Map.keys(tools_by_name) |> Enum.sort() == ["claim_work_key", "sympp.health"]
-    assert Map.keys(repeat_tools_by_name) |> Enum.sort() == ["claim_work_key", "sympp.health"]
+    assert Map.keys(tools_by_name) |> Enum.sort() == ["claim_private_handoff", "claim_work_key", "sympp.health"]
+    assert Map.keys(repeat_tools_by_name) |> Enum.sort() == ["claim_private_handoff", "claim_work_key", "sympp.health"]
     assert get_in(reused_init_response, ["error", "data", "reason"]) == "already_initialized"
-    assert Map.keys(reused_tools_by_name) |> Enum.sort() == ["claim_work_key", "sympp.health"]
+    assert Map.keys(reused_tools_by_name) |> Enum.sort() == ["claim_private_handoff", "claim_work_key", "sympp.health"]
     assert get_in(stale_solo_response, ["error", "data", "reason"]) == "claim_required"
     assert get_in(stale_solo_response, ["error", "data", "action"]) == "claim_work_key"
-    assert Map.keys(stateless_tools_by_name) |> Enum.sort() == ["claim_work_key", "sympp.health"]
+    assert Map.keys(stateless_tools_by_name) |> Enum.sort() == ["claim_private_handoff", "claim_work_key", "sympp.health"]
     assert get_in(stateless_solo_response, ["error", "data", "reason"]) == "claim_required"
     assert get_in(stateless_solo_response, ["error", "data", "action"]) == "claim_work_key"
     assert get_in(fresh_init_response, ["result", "serverInfo", "name"]) == "symphony-plus-plus"
@@ -5002,10 +5295,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "work_request_id" => work_request.id,
           "planned_slice_id" => approved_slice.id,
           "claimed_by" => "worker-dispatch-1",
-          "secret_handoff" => test_secret_handoff_mode(),
-          "secret_store_dir" => test_dispatch_handoff_store_dir()
+          "secret_handoff" => "local-private-file",
+          "secret_store_dir" => test_dispatch_handoff_store_dir(),
+          "repo_root" => test_repo_root()
         },
-        config: Config.default(repo: repo, repo_root: test_repo_root(), database: configured_database)
+        config: Config.default(repo: repo, database: configured_database)
       )
 
     payload = get_in(response, ["result", "structuredContent"])
@@ -5024,6 +5318,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "secret_handoff")
     refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "secret")
     assert payload["worker_handoff"]["secret_handoff"]["claimed_by"] == "worker-dispatch-1"
+    assert payload["worker_handoff"]["secret_handoff"]["mode"] == "local-private-file"
     assert payload["worker_handoff"]["secret_handoff"]["secret_in_stdout"] == false
     refute Map.has_key?(payload["worker_handoff"]["secret_handoff"], "display_key")
     assert String.downcase(handoff_command) =~ String.downcase(configured_database)
@@ -8499,6 +8794,70 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Enum.map(responses, & &1["id"]) == ["claim"]
     assert claimed_server.session.assignment.work_package_id == package.id
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+  end
+
+  test "single-item batch preserves claim_private_handoff session for later requests", %{repo: repo} do
+    store_dir = Path.join(test_handoff_store_dir(), "private-batch-claim")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+
+    on_exit(fn ->
+      restore_app_env(:sympp_worker_secret_store_dir, previous_store_dir)
+      File.rm_rf(store_dir)
+    end)
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-PRIVATE-BATCH-CLAIM",
+        status: "ready_for_clarification"
+      )
+
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: [
+                 mode: "local-private-file",
+                 repo_root: test_repo_root(),
+                 store_dir: store_dir,
+                 claimed_by: ArchitectHandoff.claimed_by()
+               ]
+             )
+
+    private_handoff = json_payload(handoff.secret_handoff)
+
+    {responses, claimed_server} =
+      Server.handle_state(
+        [
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "claim-private",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "claim_private_handoff",
+              "arguments" => %{"claimed_by" => "kraken-beta-arch", "private_handoff" => private_handoff}
+            }
+          }
+        ],
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    {read_response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "read-private-batch-work-request",
+          "method" => "tools/call",
+          "params" => %{"name" => "read_work_request", "arguments" => %{"work_request_id" => work_request.id}}
+        },
+        claimed_server
+      )
+
+    assert Enum.map(responses, & &1["id"]) == ["claim-private"]
+    assert claimed_server.session.assignment.grant_role == "architect"
+    assert claimed_server.session.assignment.work_package_id == handoff.anchor_package.id
+    assert get_in(read_response, ["result", "structuredContent", "work_request", "id"]) == work_request.id
+    assert handoff_secret_absent?(private_handoff, inspect(responses))
+    assert handoff_secret_absent?(private_handoff, inspect(read_response))
   end
 
   test "batch calls do not thread claim_work_key session to later worker tools", %{repo: repo} do
@@ -14160,6 +14519,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   defp cleanup_child_worker_handoff(handoff, claimed_by) do
     assert :ok = SecretHandoff.delete_worker_secret(handoff, test_handoff_opts(claimed_by))
+  end
+
+  defp json_payload(payload) do
+    payload
+    |> Jason.encode!()
+    |> Jason.decode!()
   end
 
   defp handoff_secret_absent?(%{"mode" => "local-private-file", "path" => path}, text) when is_binary(text) do
