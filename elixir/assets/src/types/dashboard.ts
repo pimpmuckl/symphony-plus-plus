@@ -63,6 +63,10 @@ export type PackageOperationalState = {
   tone?: string | null;
   reason?: string | null;
   raw_status?: string | null;
+  has_started?: boolean;
+  has_active_worker?: boolean;
+  last_activity_at?: string | null;
+  is_stale?: boolean;
   attention_items?: PackageOperationalAttention[];
 };
 
@@ -150,6 +154,7 @@ export type WorkRequestCard = {
   work_type?: string | null;
   desired_dispatch_shape?: string | null;
   status?: string | null;
+  operational_state?: PackageOperationalState | null;
   open_question_count?: number;
   answered_question_count?: number;
   planned_slice_count?: number;

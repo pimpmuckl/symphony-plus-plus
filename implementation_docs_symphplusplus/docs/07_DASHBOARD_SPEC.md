@@ -125,6 +125,10 @@ label
 tone
 reason
 raw_status
+has_started
+has_active_worker
+last_activity_at
+is_stale
 attention_items
 ```
 
@@ -135,6 +139,10 @@ operational truth and add an attention item. Contradictions, including merged
 PR metadata while a package remains open or merge-ready, ready packages missing
 readiness evidence, or `ready_for_worker` packages with delivery activity, are
 reported as `attention_items` instead of changing raw lifecycle status.
+Historical activity is separate from currently active work: terminal AgentRun
+or runtime history, old progress, or metadata evidence may set `has_started`
+and project as `Started / Paused` or `Needs Attention`, while `Active` is
+reserved for visible active worker, AgentRun, or runtime evidence.
 
 WorkPackage card and detail payloads also include a backend-derived `lineage`
 projection. It is recorded as explicit operational lineage evidence, not inferred
@@ -167,9 +175,12 @@ target WorkPackage are already visible in that board scope.
 Planned-slice payloads include `operational_state` only when dispatch linkage is
 included. Approved slices without linked delivery activity can project as
 `ready_for_worker`; linked slices promote the linked WorkPackage operational
-truth once the package has started, is reviewing, is merge-ready, is merged, is
-blocked, or has active runtime evidence. If a slice still appears idle while
-the linked package has started, the slice projection includes an attention item.
+truth once the package is active, started/paused, needs attention, reviewing,
+merge-ready, merged, blocked, or has active runtime evidence. The raw slice
+`status` remains the authoring/dispatch lifecycle, so a dispatched slice linked
+to a merged package still reports raw `status: dispatched` while its operational
+state reports `Merged`. If a slice still appears idle while the linked package
+has started, the slice projection includes an attention item.
 
 Local operator cockpit stream rail:
 
@@ -242,6 +253,17 @@ submit guidance answers.
 `/sympp/work-requests` lists visible WorkRequests. In local operator mode it
 shows all local WorkRequests plus a `New WorkRequest` action. In board-grant
 mode it remains filtered by the grant's board scope.
+
+WorkRequest cards and detail payloads preserve raw lifecycle `status` and also
+include `operational_state` with the same projection shape as WorkPackages.
+The WorkRequest projection aggregates planned-slice and linked WorkPackage
+truth so a request with active, reviewing, merge-ready, merged, blocked, or
+paused package work no longer presents `ready_for_slicing` as its primary human
+state. Raw WorkRequest status remains available for controls and lifecycle
+transitions. Grant-scoped WorkRequest list and detail responses promote only
+linked WorkPackages that remain inside the grant's frozen repo/base scope;
+out-of-scope links are treated as unavailable instead of leaking hidden package
+state.
 
 `/sympp/work-requests/new` behaves differently by mode:
 
