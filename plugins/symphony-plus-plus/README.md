@@ -304,14 +304,17 @@ source repository checkout root. This helper is not copied into installed
 plugin cache directories:
 
 ```powershell
-.\scripts\smoke-sympp-mcp-http.ps1
+.\scripts\smoke-sympp-mcp-http.ps1 -RepoRoot .
 ```
 
 Use `-Url http://127.0.0.1:<port>/mcp` for a non-default cockpit port and
 `-Json` for structured output. Passing this smoke means the local HTTP MCP
-daemon initialized, preserved the returned `Mcp-Session-Id`, and advertised the
-expected generic tools; Codex app plugin enabling/visibility is a separate
-startup/config step.
+daemon initialized, preserved the returned `Mcp-Session-Id`, reported the same
+source revision as the checkout, and advertised the expected generic tools.
+Codex app plugin enabling/visibility is a separate startup/config step. If the
+smoke reports `stale_or_unverified_daemon` or
+`stale_daemon_source_revision_mismatch`, restart the local cockpit from the
+current checkout before debugging Codex plugin visibility.
 If this smoke passes but a Codex session still lacks S++ MCP tools, run:
 
 ```powershell
