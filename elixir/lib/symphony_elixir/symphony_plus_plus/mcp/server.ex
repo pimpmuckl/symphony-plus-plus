@@ -8640,7 +8640,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     if unexpected != [] do
       {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "unexpected_argument", "arguments" => unexpected}}
     else
-      case validate_tool_required_arguments(bootstrap_tool_input_schema(name), bootstrap_validation_arguments(name, arguments)) do
+      validation_arguments = bootstrap_validation_arguments(name, arguments)
+
+      case validate_tool_required_arguments(bootstrap_tool_input_schema(name), validation_arguments) do
         :ok -> {:ok, arguments}
         {:error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => reason}}
       end

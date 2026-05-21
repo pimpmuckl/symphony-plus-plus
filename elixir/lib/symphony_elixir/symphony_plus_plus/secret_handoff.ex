@@ -128,7 +128,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
   def read_worker_secret_metadata(%{}, _worker_grant, _opts), do: {:error, :missing_work_package}
 
-  @spec read_local_private_file_secret(WorkPackage.t(), map(), map(), keyword()) :: {:ok, String.t()} | {:error, error()}
+  @spec read_local_private_file_secret(WorkPackage.t(), map(), map(), keyword()) ::
+          {:ok, String.t()} | {:error, error()}
   def read_local_private_file_secret(%WorkPackage{} = work_package, grant, handoff, opts)
       when is_map(grant) and is_map(handoff) and is_list(opts) do
     with {:ok, opts} <- require_handoff_namespace_opts(opts),
@@ -888,7 +889,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
   defp validate_private_handoff_claim_display(handoff, display_handoff) do
     with :ok <- expect_private_handoff_field(handoff, :mode, handoff_value(display_handoff, :mode)),
-         :ok <- expect_private_handoff_field(handoff, :work_package_id, handoff_value(display_handoff, :work_package_id)),
+         :ok <-
+           expect_private_handoff_field(
+             handoff,
+             :work_package_id,
+             handoff_value(display_handoff, :work_package_id)
+           ),
          :ok <- expect_private_handoff_field(handoff, :grant_id, handoff_value(display_handoff, :grant_id)),
          :ok <- expect_private_handoff_field(handoff, :display_key, handoff_value(display_handoff, :display_key)) do
       expect_private_handoff_field(handoff, :target, handoff_value(display_handoff, :target))
@@ -926,7 +932,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
   defp validate_private_handoff_file(path) when is_binary(path) do
     case File.stat(path) do
-      {:ok, %File.Stat{type: :regular, size: size}} when is_integer(size) and size > 0 and size <= @max_local_private_secret_bytes ->
+      {:ok, %File.Stat{type: :regular, size: size}}
+      when is_integer(size) and size > 0 and size <= @max_local_private_secret_bytes ->
         {:ok, path}
 
       {:ok, %File.Stat{type: :regular}} ->

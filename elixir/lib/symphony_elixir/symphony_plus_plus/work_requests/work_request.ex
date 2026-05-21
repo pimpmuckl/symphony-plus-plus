@@ -157,16 +157,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest do
 
   defp normalize_provenance(attrs) do
     Enum.reduce(["creator_kind", "creator_name", "created_via"], attrs, fn key, attrs ->
-      case Map.get(attrs, key) do
-        value when is_binary(value) ->
-          value = String.trim(value)
-          if value == "", do: Map.put(attrs, key, nil), else: Map.put(attrs, key, value)
-
-        _value ->
-          attrs
-      end
+      normalize_provenance_value(attrs, key, Map.get(attrs, key))
     end)
   end
+
+  defp normalize_provenance_value(attrs, key, value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> Map.put(attrs, key, nil)
+      value -> Map.put(attrs, key, value)
+    end
+  end
+
+  defp normalize_provenance_value(attrs, _key, _value), do: attrs
 
   defp validate_optional_inclusion(changeset, field, values) do
     validate_change(changeset, field, fn ^field, value ->
