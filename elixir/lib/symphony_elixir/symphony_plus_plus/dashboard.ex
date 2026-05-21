@@ -42,6 +42,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   @merge_required_gates ["human_merge", "architect_merge"]
   @runtime_merge_required_kinds ["hotfix", "adapter", "mcp", "skill", "hooks", "phase_child"]
   @started_package_statuses ["claimed", "planning", "implementing"]
+  @work_request_slice_state_priority [
+    "blocked",
+    "active",
+    "needs_attention",
+    "started_paused",
+    "reviewing",
+    "ci_waiting",
+    "merge_ready",
+    "merging",
+    "ready_for_worker",
+    "planned",
+    "merged",
+    "closed",
+    "abandoned",
+    "skipped"
+  ]
   @merged_package_statuses ["merged", "merged_into_phase"]
   @closed_package_statuses ["closed", "abandoned"]
   @scope_guard_gate "scope_guard"
@@ -87,7 +103,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     safe_read(fn ->
       with {:ok, filters} <- work_request_filters_for_grant(repo, grant),
            {:ok, work_requests} <- WorkRequestRepository.list(repo, Map.new(filters)),
-           {:ok, cards} <- work_request_cards(repo, ordered_work_requests(work_requests)) do
+           {:ok, cards} <- work_request_cards(repo, ordered_work_requests(work_requests), grant: grant) do
         {:ok,
          %{
            work_requests: cards,
@@ -215,14 +231,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            :ok <- require_visible_work_request_scope(repo, work_request, grant),
            {:ok, questions} <- WorkRequestRepository.list_questions(repo, work_request_id),
            {:ok, decisions} <- WorkRequestRepository.list_decisions(repo, work_request_id),
-           {:ok, planned_slices} <- WorkRequestRepository.list_planned_slices(repo, work_request_id) do
+           {:ok, planned_slices} <- WorkRequestRepository.list_planned_slices(repo, work_request_id),
+           {:ok, work_package_contexts} <- planned_slice_work_package_contexts_for_grant(repo, planned_slices, grant) do
         questions = ordered_sequence_records(questions)
         decisions = ordered_sequence_records(decisions)
         planned_slices = ordered_sequence_records(planned_slices)
 
         {:ok,
          %{
-           work_request: work_request_detail(work_request),
+           work_request: work_request_detail(work_request, planned_slices, work_package_contexts),
            clarification_questions: Enum.map(questions, &clarification_question/1),
            decision_logs: Enum.map(decisions, &decision_log_entry/1),
            planned_slices: Enum.map(planned_slices, &planned_slice(&1, %{}, include_dispatch_linkage?: false)),
@@ -246,7 +263,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
         {:ok,
          %{
-           work_request: work_request_detail(work_request),
+           work_request: work_request_detail(work_request, planned_slices, work_package_contexts),
            clarification_questions: Enum.map(questions, &clarification_question/1),
            decision_logs: Enum.map(decisions, &decision_log_entry/1),
            planned_slices: Enum.map(planned_slices, &planned_slice(&1, work_package_contexts, include_dispatch_linkage?: true)),
@@ -428,6 +445,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
       operational_state =
         work_package_operational_state(work_package, %{
+          agent_runs: agent_runs,
           progress_events: progress_events,
           blockers: blockers,
           runtime: runtime,
@@ -871,8 +889,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end)
   end
 
-  defp work_request_cards(repo, work_requests) do
-    with {:ok, summaries} <- work_request_card_summaries(repo, work_requests) do
+  defp work_request_cards(repo, work_requests, opts \\ []) do
+    with {:ok, summaries} <- work_request_card_summaries(repo, work_requests, opts) do
       {:ok, Enum.map(work_requests, &work_request_card(&1, summaries))}
     end
   end
@@ -958,30 +976,48 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     }
   end
 
-  defp work_request_card_summaries(_repo, []), do: {:ok, %{}}
+  defp work_request_card_summaries(_repo, [], _opts), do: {:ok, %{}}
 
-  defp work_request_card_summaries(repo, work_requests) do
+  defp work_request_card_summaries(repo, work_requests, opts) do
     work_request_ids = Enum.map(work_requests, & &1.id)
 
     with {:ok, question_counts} <- work_request_question_counts(repo, work_request_ids),
          {:ok, decision_counts} <- work_request_decision_counts(repo, work_request_ids),
-         {:ok, planned_slice_counts} <- work_request_planned_slice_counts(repo, work_request_ids) do
+         {:ok, planned_slices} <- work_request_planned_slices(repo, work_request_ids),
+         {:ok, work_package_contexts} <- work_request_card_work_package_contexts(repo, planned_slices, opts) do
+      planned_slice_counts =
+        planned_slices
+        |> Enum.map(&{&1.work_request_id, &1.status})
+        |> status_counts()
+
+      planned_slices_by_request = Enum.group_by(planned_slices, & &1.work_request_id)
+
       summaries =
-        Map.new(work_request_ids, fn work_request_id ->
-          {work_request_id,
+        Map.new(work_requests, fn %WorkRequest{} = work_request ->
+          planned_slices = Map.get(planned_slices_by_request, work_request.id, [])
+
+          {work_request.id,
            %{
-             open_question_count: status_count(question_counts, work_request_id, "open"),
-             answered_question_count: status_count(question_counts, work_request_id, "answered"),
-             closed_question_count: status_count(question_counts, work_request_id, "closed"),
-             decision_count: Map.get(decision_counts, work_request_id, 0),
-             planned_slice_count: status_count(planned_slice_counts, work_request_id, "planned"),
-             approved_slice_count: status_count(planned_slice_counts, work_request_id, "approved"),
-             dispatched_slice_count: status_count(planned_slice_counts, work_request_id, "dispatched"),
-             skipped_slice_count: status_count(planned_slice_counts, work_request_id, "skipped")
+             open_question_count: status_count(question_counts, work_request.id, "open"),
+             answered_question_count: status_count(question_counts, work_request.id, "answered"),
+             closed_question_count: status_count(question_counts, work_request.id, "closed"),
+             decision_count: Map.get(decision_counts, work_request.id, 0),
+             planned_slice_count: status_count(planned_slice_counts, work_request.id, "planned"),
+             approved_slice_count: status_count(planned_slice_counts, work_request.id, "approved"),
+             dispatched_slice_count: status_count(planned_slice_counts, work_request.id, "dispatched"),
+             skipped_slice_count: status_count(planned_slice_counts, work_request.id, "skipped"),
+             operational_state: work_request_operational_state(work_request, planned_slices, work_package_contexts)
            }}
         end)
 
       {:ok, summaries}
+    end
+  end
+
+  defp work_request_card_work_package_contexts(repo, planned_slices, opts) do
+    case Keyword.get(opts, :grant) do
+      %AccessGrant{} = grant -> planned_slice_work_package_contexts_for_grant(repo, planned_slices, grant)
+      _grant -> planned_slice_work_package_contexts(repo, planned_slices)
     end
   end
 
@@ -1015,17 +1051,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
-  defp work_request_planned_slice_counts(repo, work_request_ids) do
+  defp work_request_planned_slices(repo, work_request_ids) do
     rows =
       chunked_work_request_rows(work_request_ids, fn chunk ->
         from(planned_slice in PlannedSlice,
           where: planned_slice.work_request_id in ^chunk,
-          select: {planned_slice.work_request_id, planned_slice.status}
+          order_by: [asc: planned_slice.work_request_id, asc: planned_slice.sequence, asc: planned_slice.inserted_at]
         )
         |> repo.all()
       end)
 
-    {:ok, status_counts(rows)}
+    {:ok, rows}
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
@@ -1293,6 +1329,109 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     }
   end
 
+  defp work_request_detail(%WorkRequest{} = work_request, planned_slices, work_package_contexts) do
+    work_request
+    |> work_request_detail()
+    |> Map.put(:operational_state, work_request_operational_state(work_request, planned_slices, work_package_contexts))
+  end
+
+  defp work_request_operational_state(%WorkRequest{} = work_request, planned_slices, work_package_contexts) do
+    slice_states = planned_slice_operational_states(planned_slices, work_package_contexts)
+    attention_items = aggregate_operational_attention(slice_states)
+
+    cond do
+      work_request.status == "human_info_needed" ->
+        base_work_request_operational_state("human_info_needed", attention_items)
+
+      work_request.status in ["ready_for_clarification", "clarifying"] ->
+        base_work_request_operational_state(work_request.status, attention_items)
+
+      promoted_state = primary_work_request_slice_state(slice_states) ->
+        promoted_work_request_operational_state(work_request, promoted_state, planned_slices, attention_items)
+
+      true ->
+        base_work_request_operational_state(work_request.status, attention_items)
+    end
+  end
+
+  defp base_work_request_operational_state("human_info_needed" = status, attention_items) do
+    operational_state(
+      "human_info_needed",
+      "Human Info Needed",
+      "warning",
+      "WorkRequest is waiting for a human answer before architecture can proceed.",
+      status,
+      attention_items
+    )
+  end
+
+  defp base_work_request_operational_state("ready_for_clarification" = status, attention_items) do
+    operational_state("clarifying", "Clarifying", "warning", "WorkRequest is still in clarification.", status, attention_items)
+  end
+
+  defp base_work_request_operational_state("clarifying" = status, attention_items) do
+    operational_state("clarifying", "Clarifying", "warning", "WorkRequest is still in clarification.", status, attention_items)
+  end
+
+  defp base_work_request_operational_state("draft" = status, attention_items) do
+    operational_state("not_started", "Not Started", "neutral", "WorkRequest is still a draft.", status, attention_items)
+  end
+
+  defp base_work_request_operational_state("ready_for_slicing" = status, attention_items) do
+    operational_state(
+      "ready_for_slicing",
+      "Ready For Slicing",
+      "neutral",
+      "WorkRequest is ready for an architect to author planned slices.",
+      status,
+      attention_items
+    )
+  end
+
+  defp base_work_request_operational_state("sliced" = status, attention_items) do
+    operational_state("sliced", "Sliced", "neutral", "WorkRequest has been marked sliced.", status, attention_items)
+  end
+
+  defp base_work_request_operational_state(status, attention_items) do
+    key = status || "unknown"
+    operational_state(key, status_label(key), "neutral", "Raw WorkRequest lifecycle status is #{key}.", status, attention_items)
+  end
+
+  defp planned_slice_operational_states(planned_slices, work_package_contexts) do
+    Enum.map(planned_slices, fn %PlannedSlice{} = planned_slice ->
+      planned_slice_operational_state(planned_slice, Map.get(work_package_contexts, planned_slice.work_package_id))
+    end)
+  end
+
+  defp primary_work_request_slice_state([]), do: nil
+
+  defp primary_work_request_slice_state(slice_states) do
+    Enum.find_value(@work_request_slice_state_priority, fn key ->
+      Enum.find(slice_states, &(Map.get(&1, :key) == key))
+    end)
+  end
+
+  defp promoted_work_request_operational_state(%WorkRequest{} = work_request, promoted_state, planned_slices, attention_items) do
+    promoted_state
+    |> operational_activity_fields()
+    |> Map.merge(
+      operational_state(
+        promoted_state.key,
+        promoted_state.label,
+        promoted_state.tone,
+        "Most actionable planned-slice or linked-package state is #{promoted_state.label} across #{length(planned_slices)} slice(s).",
+        work_request.status,
+        attention_items
+      )
+    )
+  end
+
+  defp aggregate_operational_attention(operational_states) do
+    operational_states
+    |> Enum.flat_map(&Map.get(&1, :attention_items, []))
+    |> Enum.uniq_by(&Map.get(&1, :key))
+  end
+
   defp guidance_request(%GuidanceRequest{} = guidance_request) do
     %{
       id: guidance_request.id,
@@ -1408,6 +1547,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
+  defp planned_slice_work_package_contexts_for_grant(repo, planned_slices, %AccessGrant{} = grant) do
+    with {:ok, filters} <- work_request_filters_for_grant(repo, grant),
+         {:ok, work_package_contexts} <- planned_slice_work_package_contexts(repo, planned_slices) do
+      {:ok,
+       Map.filter(work_package_contexts, fn
+         {_work_package_id, %{work_package: %WorkPackage{} = work_package}} ->
+           phase_work_package_matches_filters?(work_package, filters)
+
+         _context ->
+           false
+       end)}
+    end
+  end
+
   defp linked_work_package_contexts(_repo, []), do: %{}
 
   defp linked_work_package_contexts(repo, work_packages) do
@@ -1435,6 +1588,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
       operational_state =
         work_package_operational_state(work_package, %{
+          agent_runs: agent_runs,
           progress_events: progress_events,
           blockers: blockers,
           runtime: runtime,
@@ -1687,7 +1841,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp latest_active_run(agent_runs) do
     agent_runs
-    |> Enum.filter(&(runtime_state(&1) in ["active", "queued"]))
+    |> Enum.filter(&(runtime_state(&1) in ["active", "queued"] and not stale_agent_run?(&1)))
     |> List.last()
   end
 
@@ -1712,6 +1866,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp work_package_operational_state(%WorkPackage{} = work_package, context) do
+    agent_runs = Map.fetch!(context, :agent_runs)
     progress_events = Map.fetch!(context, :progress_events)
     blockers = Map.fetch!(context, :blockers)
     runtime = Map.fetch!(context, :runtime)
@@ -1720,26 +1875,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     grants = Map.fetch!(context, :grants)
     lineage = Map.fetch!(context, :lineage)
     missing_readiness = if work_package.status in @ready_statuses, do: missing_readiness_evidence(readiness_context), else: []
-    delivery_started = delivery_started?(work_package, progress_events, runtime, metadata, grants)
+    activity = work_package_activity(work_package, progress_events, agent_runs, runtime, metadata, grants)
 
     attention_items =
       work_package_attention_items(work_package, blockers, %{
         metadata: metadata,
         missing_readiness: missing_readiness,
-        delivery_started: delivery_started,
+        activity: activity,
         lineage: lineage
       })
 
     work_package
-    |> base_work_package_operational_state(blockers, metadata, missing_readiness, delivery_started)
+    |> base_work_package_operational_state(blockers, metadata, missing_readiness, activity)
+    |> Map.merge(operational_activity_fields(activity))
     |> Map.put(:attention_items, attention_items)
   end
 
-  defp base_work_package_operational_state(%WorkPackage{status: status}, blockers, metadata, missing_readiness, delivery_started) do
+  defp base_work_package_operational_state(%WorkPackage{status: status}, blockers, metadata, missing_readiness, activity) do
     active_blocker_count = blockers |> active_blockers() |> length()
 
     blocking_or_terminal_operational_state(status, active_blocker_count, metadata) ||
-      delivery_operational_state(status, metadata, missing_readiness, delivery_started)
+      delivery_operational_state(status, metadata, missing_readiness, activity)
   end
 
   defp blocking_or_terminal_operational_state(status, active_blocker_count, metadata) do
@@ -1764,9 +1920,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
-  defp delivery_operational_state(status, metadata, missing_readiness, delivery_started) do
+  defp delivery_operational_state(status, metadata, missing_readiness, activity) do
     validation_operational_state(status, metadata, missing_readiness) ||
-      pickup_operational_state(status, delivery_started)
+      pickup_operational_state(status, activity)
   end
 
   defp validation_operational_state(status, metadata, missing_readiness) do
@@ -1790,20 +1946,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
-  defp pickup_operational_state(status, delivery_started) do
-    cond do
-      delivery_started ->
-        operational_state("in_progress", "In Progress", "info", "Worker, runtime, progress, PR, review, or lifecycle evidence indicates work has started.", status)
+  defp pickup_operational_state("ready_for_worker" = status, %{has_started: true}) do
+    operational_state(
+      "needs_attention",
+      "Needs Attention",
+      "warning",
+      "Raw status is ready_for_worker but worker, runtime, progress, PR, review, or merge activity is recorded.",
+      status
+    )
+  end
 
-      status == "ready_for_worker" ->
-        operational_state("ready_for_worker", "Ready For Worker", "neutral", "No linked delivery, worker, runtime, progress, blocker, review, PR, or merge activity is recorded.", status)
+  defp pickup_operational_state(status, %{has_active_worker: true}) when status != "ready_for_worker" do
+    operational_state("active", "Active", "info", "Worker grant or runtime evidence indicates work is active now.", status)
+  end
 
-      status == "created" ->
-        operational_state("created", "Created", "neutral", "Package has been created but is not ready for worker pickup.", status)
+  defp pickup_operational_state(status, %{has_started: true}) do
+    operational_state(
+      "started_paused",
+      "Started / Paused",
+      "warning",
+      "Historical lifecycle, runtime, progress, PR, or review evidence exists, but no active worker or runtime is visible now.",
+      status
+    )
+  end
 
-      true ->
-        operational_state(status || "unknown", status_label(status), "neutral", "Raw lifecycle status is #{status || "unknown"}.", status)
-    end
+  defp pickup_operational_state("ready_for_worker" = status, _activity) do
+    operational_state(
+      "ready_for_worker",
+      "Ready For Worker",
+      "neutral",
+      "No linked delivery, worker, runtime, progress, blocker, review, PR, or merge activity is recorded.",
+      status
+    )
+  end
+
+  defp pickup_operational_state("created" = status, _activity) do
+    operational_state("created", "Created", "neutral", "Package has been created but is not ready for worker pickup.", status)
+  end
+
+  defp pickup_operational_state(status, _activity) do
+    key = status || "unknown"
+    operational_state(key, status_label(key), "neutral", "Raw lifecycle status is #{key}.", status)
   end
 
   defp planned_slice_operational_state(%PlannedSlice{} = planned_slice, nil) do
@@ -1817,13 +2000,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     attention_items = planned_slice_attention_items(planned_slice, work_package, linked_state)
 
     if promoted_linked_operational_state?(linked_state) do
-      operational_state(
-        linked_state.key,
-        linked_state.label,
-        linked_state.tone,
-        "Linked WorkPackage #{work_package.id} is #{linked_state.label}.",
-        planned_slice.status,
-        attention_items
+      linked_state
+      |> operational_activity_fields()
+      |> Map.merge(
+        operational_state(
+          linked_state.key,
+          linked_state.label,
+          linked_state.tone,
+          "Linked WorkPackage #{work_package.id} is #{linked_state.label}.",
+          planned_slice.status,
+          attention_items
+        )
       )
     else
       linked_idle_planned_slice_operational_state(planned_slice, work_package, attention_items)
@@ -1929,23 +2116,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp linked_work_package_status(_work_package_context), do: nil
 
   defp promoted_linked_operational_state?(%{key: key}) do
-    key in ["blocked", "in_progress", "reviewing", "ci_waiting", "merge_ready", "merging", "merged", "closed", "abandoned"]
+    key in [
+      "blocked",
+      "active",
+      "needs_attention",
+      "started_paused",
+      "reviewing",
+      "ci_waiting",
+      "merge_ready",
+      "merging",
+      "merged",
+      "closed",
+      "abandoned"
+    ]
   end
 
   defp promoted_linked_operational_state?(_state), do: false
 
   defp work_package_attention_items(%WorkPackage{} = work_package, blockers, context) do
-    metadata = Map.fetch!(context, :metadata)
     missing_readiness = Map.fetch!(context, :missing_readiness)
-    delivery_started = Map.fetch!(context, :delivery_started)
+    activity = Map.fetch!(context, :activity)
     lineage = Map.fetch!(context, :lineage)
 
     single_items =
       [
         active_blocker_attention_item(blockers),
-        pr_merged_attention_item(work_package, metadata),
         missing_readiness_attention_item(work_package, missing_readiness),
-        ready_status_with_activity_attention_item(work_package, delivery_started)
+        ready_status_with_activity_attention_item(work_package, activity)
       ]
       |> Enum.reject(&is_nil/1)
 
@@ -1971,17 +2168,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
-  defp pr_merged_attention_item(%WorkPackage{status: status}, metadata) do
-    if pr_merged?(metadata) and open_package_status?(status) do
-      %{
-        key: "pr_merged_raw_status_open",
-        label: "Merged PR With Open Status",
-        tone: "warning",
-        reason: "PR metadata reports merged while raw package status remains #{status}."
-      }
-    end
-  end
-
   defp missing_readiness_attention_item(%WorkPackage{status: status}, missing_readiness) when status in @ready_statuses do
     case missing_readiness do
       [] ->
@@ -2000,8 +2186,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp missing_readiness_attention_item(%WorkPackage{}, _missing_readiness), do: nil
 
-  defp ready_status_with_activity_attention_item(%WorkPackage{status: "ready_for_worker"}, delivery_started) do
-    if delivery_started do
+  defp ready_status_with_activity_attention_item(%WorkPackage{status: "ready_for_worker"}, activity) do
+    if activity.has_started do
       %{
         key: "ready_for_worker_with_activity",
         label: "Ready Status With Activity",
@@ -2015,12 +2201,67 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp active_blockers(blockers), do: Enum.filter(blockers, & &1.active)
 
-  defp delivery_started?(%WorkPackage{status: status}, progress_events, runtime, metadata, grants) do
-    status in @started_package_statuses or
-      active_worker_grant?(grants) or
-      runtime_activity?(runtime) or
-      progress_events != [] or
-      metadata_activity?(metadata)
+  defp work_package_activity(%WorkPackage{status: status} = work_package, progress_events, agent_runs, runtime, metadata, grants) do
+    has_active_worker =
+      active_worker_grant?(grants) or active_agent_run?(agent_runs) or runtime_current_activity?(runtime)
+
+    has_started =
+      status in @started_package_statuses or
+        has_active_worker or
+        agent_run_activity?(agent_runs) or
+        runtime_activity?(runtime) or
+        progress_events != [] or
+        metadata_activity?(metadata)
+
+    %{
+      has_started: has_started,
+      has_active_worker: has_active_worker,
+      last_activity_at: latest_package_activity_at(work_package, progress_events, agent_runs, grants, has_started),
+      is_stale: has_started and not has_active_worker
+    }
+  end
+
+  defp operational_activity_fields(activity) do
+    Map.take(activity, [:has_started, :has_active_worker, :last_activity_at, :is_stale])
+  end
+
+  defp latest_package_activity_at(_work_package, _progress_events, _agent_runs, _grants, false), do: nil
+
+  defp latest_package_activity_at(%WorkPackage{} = work_package, progress_events, agent_runs, grants, true) do
+    [
+      work_package.updated_at,
+      latest_progress_datetime(progress_events),
+      latest_agent_run_datetime(agent_runs),
+      latest_grant_activity_datetime(grants)
+    ]
+    |> latest_datetime()
+    |> timestamp()
+  end
+
+  defp latest_progress_datetime(progress_events) do
+    progress_events
+    |> Enum.map(& &1.created_at)
+    |> latest_datetime()
+  end
+
+  defp latest_agent_run_datetime(agent_runs) do
+    agent_runs
+    |> Enum.flat_map(fn %AgentRun{} = run ->
+      [run.last_seen_at, run.finished_at, run.started_at, run.updated_at, run.inserted_at]
+    end)
+    |> latest_datetime()
+  end
+
+  defp latest_grant_activity_datetime(grants) do
+    grants
+    |> Enum.flat_map(fn %AccessGrant{} = grant -> [grant.claimed_at, grant.updated_at, grant.inserted_at] end)
+    |> latest_datetime()
+  end
+
+  defp latest_datetime(values) do
+    values
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max_by(&DateTime.to_unix(&1, :microsecond), fn -> nil end)
   end
 
   defp active_worker_grant?(grants) do
@@ -2030,16 +2271,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end)
   end
 
+  defp active_agent_run?(agent_runs) do
+    Enum.any?(agent_runs, fn
+      %AgentRun{status: status} = run -> status in AgentRun.active_statuses() and not stale_agent_run?(run)
+      _run -> false
+    end)
+  end
+
+  defp agent_run_activity?(agent_runs), do: agent_runs != []
+
   defp runtime_activity?(runtime) do
-    Enum.any?([:active_count, :queued_count, :stopped_count, :failed_count, :completed_count, :terminal_count], &(Map.get(runtime, &1, 0) > 0))
+    Enum.any?([:active_count, :queued_count, :stopped_count, :failed_count, :completed_count, :terminal_count], &(safe_map_get(runtime, &1, 0) > 0))
+  end
+
+  defp runtime_current_activity?(runtime) do
+    current_count = Map.get(runtime, :active_count, 0) + Map.get(runtime, :queued_count, 0)
+    stale_count = Map.get(runtime, :stale_count, 0)
+
+    current_count > stale_count
   end
 
   defp metadata_activity?(metadata) do
-    Enum.any?([:branch, :pr, :review_progress, :review_package, :review_suite_result], &present_metadata_value?(Map.get(metadata, &1)))
+    Enum.any?([:branch, :pr, :review_progress, :review_package, :review_suite_result], &present_metadata_value?(safe_map_get(metadata, &1)))
   end
 
   defp review_activity?(metadata) do
-    Enum.any?([:review_progress, :review_package, :review_suite_result], &present_metadata_value?(Map.get(metadata, &1)))
+    Enum.any?([:review_progress, :review_package, :review_suite_result], &present_metadata_value?(safe_map_get(metadata, &1)))
   end
 
   defp present_metadata_value?(nil), do: false
@@ -2047,8 +2304,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp present_metadata_value?(value) when is_list(value), do: value != []
   defp present_metadata_value?(_value), do: true
 
-  defp pr_merged?(%{pr: %{"stale" => true}}), do: false
-  defp pr_merged?(%{pr: pr}), do: pr_merged_payload?(pr)
+  defp pr_merged?(metadata) do
+    pr = safe_map_get(metadata, :pr) || safe_map_get(metadata, "pr")
+
+    case pr do
+      %{"stale" => true} -> false
+      pr -> pr_merged_payload?(pr)
+    end
+  end
+
+  defp safe_map_get(map, key, default \\ nil) do
+    Map.get(map, key, default)
+  rescue
+    BadMapError -> default
+  end
 
   defp pr_merged_payload?(%{} = pr) do
     merged_value?(map_value(pr, "merged")) or

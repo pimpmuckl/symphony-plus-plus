@@ -75,6 +75,7 @@ const DASHBOARD_UI_STATE_KEY = "symphony-plus-plus.dashboard.ui-state.v1";
 const DASHBOARD_THEME_KEY = "symphony-plus-plus.dashboard.theme.v1";
 const DASHBOARD_DEBUG_ANIMATIONS_KEY = "symphony-plus-plus.dashboard.debug-animations";
 const ALIGNED_ROW_MIN_HEIGHT = 112;
+const ALIGNED_SLOT_MIN_HEIGHT = 76;
 const BOARD_WIRE_TRACK_CLEARANCE = 40;
 const BOARD_LAYOUT_MOTION_MS = 360;
 const DASHBOARD_POLL_INTERVAL_MS = 7000;
@@ -924,12 +925,14 @@ function topPanelForMotionKind(kind: UpdateMotionKind): TopPanelKey | null {
 
 function requestAnimationEntity(detail: WorkRequestDetail): UpdateAnimationEntity {
   const request = detail.work_request;
+  const operational = requestOperationalState(request);
   const openQuestions = detail.clarification_questions?.filter((question) => question.status === "open") ?? [];
   const guidanceCount = Math.max(openQuestions.length, request.open_question_count || 0, request.status === "human_info_needed" ? 1 : 0);
 
   return {
     signature: stableSignature([
       request.status,
+      request.operational_state,
       request.updated_at,
       request.open_question_count,
       request.answered_question_count,
@@ -946,7 +949,7 @@ function requestAnimationEntity(detail: WorkRequestDetail): UpdateAnimationEntit
         question.updated_at,
       ]),
     ]),
-    status: request.status,
+    status: operational?.key || request.status,
     guidanceCount,
     blockerCount: 0,
     finished: requestLane(request) === "finished",
@@ -2444,7 +2447,7 @@ function WorkstreamBoard({
   const sliceEntries = useMemo(
     () =>
       sortedDetails.flatMap((detail, requestIndex) =>
-        (detail.planned_slices ?? []).map((slice) => ({
+        sortPlannedSlices(detail.planned_slices ?? []).map((slice) => ({
           detail,
           slice,
           pkg: slice.work_package_id ? packageById.get(slice.work_package_id) : undefined,
@@ -2453,21 +2456,20 @@ function WorkstreamBoard({
       ),
     [packageById, sortedDetails],
   );
-  const active = useMemo(() => sliceEntries.filter((entry) => sliceLane(entry.slice, entry.pkg) === "slices"), [sliceEntries]);
-  const implementing = useMemo(() => sliceEntries.filter((entry) => sliceLane(entry.slice, entry.pkg) === "implementing"), [sliceEntries]);
-  const finished = useMemo(() => sliceEntries.filter((entry) => sliceLane(entry.slice, entry.pkg) === "finished"), [sliceEntries]);
+  const active = useMemo(() => sortSliceEntries(sliceEntries), [sliceEntries]);
+  const packageEntries = useMemo(() => sortSliceEntries(sliceEntries.filter((entry) => entry.pkg)), [sliceEntries]);
+  const implementing = useMemo(() => packageEntries.filter((entry) => sliceLane(entry.slice, entry.pkg) !== "finished"), [packageEntries]);
+  const finished = useMemo(() => packageEntries.filter((entry) => sliceLane(entry.slice, entry.pkg) === "finished"), [packageEntries]);
   const sortedUnlinkedPackages = useMemo(() => sortPackages(unlinkedPackages), [unlinkedPackages]);
-  const activePackages = useMemo(() => sortedUnlinkedPackages.filter((pkg) => packageLane(pkg) === "slices"), [sortedUnlinkedPackages]);
-  const implementingPackages = useMemo(
-    () => sortedUnlinkedPackages.filter((pkg) => packageLane(pkg) === "implementing"),
-    [sortedUnlinkedPackages],
-  );
+  const activePackages = useMemo<WorkPackageCard[]>(() => [], []);
+  const implementingPackages = useMemo(() => sortedUnlinkedPackages.filter((pkg) => packageLane(pkg) !== "finished"), [sortedUnlinkedPackages]);
   const finishedPackages = useMemo(() => sortedUnlinkedPackages.filter((pkg) => packageLane(pkg) === "finished"), [sortedUnlinkedPackages]);
   const alignedRows = useMemo(
     () => workstreamRows(sortedDetails, sliceEntries, activePackages, implementingPackages, finishedPackages),
     [activePackages, finishedPackages, implementingPackages, sliceEntries, sortedDetails],
   );
-  const rowTemplate = useAlignedRowTemplate(boardRef, alignedRows, layoutMode);
+  const { templates: alignedSlotTemplates, key: alignedSlotTemplateKey } = useAlignedSlotTemplates(boardRef, alignedRows, layoutMode);
+  const rowTemplate = useAlignedRowTemplate(boardRef, alignedRows, layoutMode, alignedSlotTemplateKey);
   const wires = useMemo(() => workstreamWires(sortedDetails, packages, activeBlockingEdges), [activeBlockingEdges, sortedDetails, packages]);
   const { paths: wirePaths, size: wireSize } = useBoardWirePaths(boardRef, wires, layoutMode);
   const layoutMotion = useBoardLayoutMotion(shellRef, boardRef, layoutMode);
@@ -2491,6 +2493,7 @@ function WorkstreamBoard({
             onSelectGuidance={onSelectGuidance}
             onSelectCard={onSelectCard}
             updateAnimations={updateAnimations}
+            slotTemplates={alignedSlotTemplates}
           />
         ) : (
           <StackedWorkstreamColumns
@@ -2534,6 +2537,8 @@ function StackedWorkstreamColumns({
   onSelectCard: CardDetailSelect;
   updateAnimations: DashboardUpdateAnimations;
 }) {
+  const workPackageEntries = sortSliceEntries([...implementing, ...finished]);
+
   return (
     <>
       <BoardLaneColumn title="Requests" count={requested.length} emptyLabel="No requested work">
@@ -2576,29 +2581,17 @@ function StackedWorkstreamColumns({
         ))}
       </BoardLaneColumn>
       <BoardLaneColumn title="Work Packages" count={implementing.length + finished.length + implementingPackages.length + finishedPackages.length} emptyLabel="No work packages yet">
-        {implementing.map(({ detail, slice, pkg }, index) => (
-          <SliceCard
-            key={slice.id}
-            slice={slice}
+        {workPackageEntries.map(({ detail, slice, pkg }, index) => (
+          pkg ? <PackageCard
+            key={pkg.id}
             pkg={pkg}
-            lane="implementing"
+            lane={sliceLane(slice, pkg)}
             index={index}
-            nodeId={pkg ? packageNodeId(pkg) : sliceNodeId(slice)}
-            onSelectCard={() => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice })}
-            motion={updateAnimations.motionFor(pkg ? packageUpdateKey(pkg) : sliceUpdateKey(slice))}
-          />
-        ))}
-        {finished.map(({ detail, slice, pkg }, index) => (
-          <SliceCard
-            key={slice.id}
-            slice={slice}
-            pkg={pkg}
-            lane="finished"
-            index={implementing.length + index}
-            nodeId={pkg ? packageNodeId(pkg) : sliceNodeId(slice)}
-            onSelectCard={() => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice })}
-            motion={updateAnimations.motionFor(pkg ? packageUpdateKey(pkg) : sliceUpdateKey(slice))}
-          />
+            nodeId={packageNodeId(pkg)}
+            sequence={slice.sequence}
+            onSelectCard={() => onSelectCard({ kind: "package", pkg, detail, slice })}
+            motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
+          /> : null
         ))}
         {implementingPackages.length + finishedPackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
         {implementingPackages.map((pkg, index) => (
@@ -2631,6 +2624,7 @@ function StackedWorkstreamColumns({
 function AlignedWorkstreamColumns({
   rows,
   rowTemplate,
+  slotTemplates,
   requestedCount,
   sliceCount,
   workPackageCount,
@@ -2640,6 +2634,7 @@ function AlignedWorkstreamColumns({
 }: {
   rows: WorkstreamRow[];
   rowTemplate: string;
+  slotTemplates: Record<string, string>;
   requestedCount: number;
   sliceCount: number;
   workPackageCount: number;
@@ -2669,18 +2664,19 @@ function AlignedWorkstreamColumns({
       </BoardLaneColumn>
       <BoardLaneColumn title="Slices" count={sliceCount} emptyLabel="No slices ready" bodyStyle={rowStyle} aligned>
         {rows.map((row, index) => (
-          <FeatureLaneRow key={workstreamRowKey(row, index)} row={row} lane="slices" index={index}>
+          <FeatureLaneRow key={workstreamRowKey(row, index)} row={row} lane="slices" index={index} slotTemplate={slotTemplates[workstreamRowKey(row, index)]}>
             {row.active.map(({ detail, slice, pkg }, sliceIndex) => (
-              <SliceCard
-                key={slice.id}
-                slice={slice}
-                pkg={pkg}
-                lane="slices"
-                index={sliceIndex}
-                nodeId={sliceNodeId(slice)}
-                onSelectCard={() => onSelectCard({ kind: "slice", detail, slice, pkg })}
-                motion={updateAnimations.motionFor(sliceUpdateKey(slice))}
-              />
+              <AlignedCardSlot key={slice.id} row={row} rowIndex={index} slotKey={slice.id} lane="slices">
+                <SliceCard
+                  slice={slice}
+                  pkg={pkg}
+                  lane="slices"
+                  index={sliceIndex}
+                  nodeId={sliceNodeId(slice)}
+                  onSelectCard={() => onSelectCard({ kind: "slice", detail, slice, pkg })}
+                  motion={updateAnimations.motionFor(sliceUpdateKey(slice))}
+                />
+              </AlignedCardSlot>
             ))}
             {row.activePackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
             {row.activePackages.map((pkg, packageIndex) => (
@@ -2699,30 +2695,28 @@ function AlignedWorkstreamColumns({
       </BoardLaneColumn>
       <BoardLaneColumn title="Work Packages" count={workPackageCount} emptyLabel="No work packages yet" bodyStyle={rowStyle} aligned>
         {rows.map((row, index) => (
-          <FeatureLaneRow key={workstreamRowKey(row, index)} row={row} lane="packages" index={index}>
-            {row.implementing.map(({ detail, slice, pkg }, sliceIndex) => (
-              <SliceCard
-                key={slice.id}
-                slice={slice}
-                pkg={pkg}
-                lane="implementing"
-                index={sliceIndex}
-                nodeId={pkg ? packageNodeId(pkg) : sliceNodeId(slice)}
-                onSelectCard={() => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice })}
-                motion={updateAnimations.motionFor(pkg ? packageUpdateKey(pkg) : sliceUpdateKey(slice))}
-              />
-            ))}
-            {row.finished.map(({ detail, slice, pkg }, sliceIndex) => (
-              <SliceCard
-                key={slice.id}
-                slice={slice}
-                pkg={pkg}
-                lane="finished"
-                index={row.implementing.length + sliceIndex}
-                nodeId={pkg ? packageNodeId(pkg) : sliceNodeId(slice)}
-                onSelectCard={() => onSelectCard(pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice })}
-                motion={updateAnimations.motionFor(pkg ? packageUpdateKey(pkg) : sliceUpdateKey(slice))}
-              />
+          <FeatureLaneRow
+            key={workstreamRowKey(row, index)}
+            row={row}
+            lane="packages"
+            index={index}
+            slotTemplate={slotTemplates[workstreamRowKey(row, index)]}
+            emptyOverride={!row.active.some(({ pkg }) => pkg) && row.implementingPackages.length + row.finishedPackages.length === 0}
+          >
+            {row.active.map(({ detail, slice, pkg }, sliceIndex) => (
+              <AlignedCardSlot key={slice.id} row={row} rowIndex={index} slotKey={slice.id} lane="packages" empty={!pkg}>
+                {pkg ? (
+                  <PackageCard
+                    pkg={pkg}
+                    lane={sliceLane(slice, pkg)}
+                    index={sliceIndex}
+                    nodeId={packageNodeId(pkg)}
+                    sequence={slice.sequence}
+                    onSelectCard={() => onSelectCard({ kind: "package", pkg, detail, slice })}
+                    motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
+                  />
+                ) : null}
+              </AlignedCardSlot>
             ))}
             {row.implementingPackages.length + row.finishedPackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
             {row.implementingPackages.map((pkg, packageIndex) => (
@@ -2790,20 +2784,58 @@ function FeatureLaneRow({
   row,
   lane,
   index,
+  slotTemplate,
+  emptyOverride,
   children,
 }: {
   row: WorkstreamRow;
   lane: FeatureLane;
   index: number;
+  slotTemplate?: string;
+  emptyOverride?: boolean;
   children: React.ReactNode;
 }) {
   const renderedChildren = Children.toArray(children);
-  const empty = renderedChildren.length === 0;
+  const empty = emptyOverride ?? renderedChildren.length === 0;
 
   return (
-    <div className="feature-lane-row" data-feature-row={workstreamRowKey(row, index)} data-lane={lane} data-empty={empty ? "true" : undefined}>
+    <div
+      className="feature-lane-row"
+      data-feature-row={workstreamRowKey(row, index)}
+      data-lane={lane}
+      data-empty={empty ? "true" : undefined}
+      style={slotTemplate ? { gridTemplateRows: slotTemplate } : undefined}
+    >
       {renderedChildren}
-      {empty ? <div className="feature-lane-empty" /> : null}
+      {empty && renderedChildren.length === 0 ? <div className="feature-lane-empty" /> : null}
+    </div>
+  );
+}
+
+function AlignedCardSlot({
+  row,
+  rowIndex,
+  slotKey,
+  lane,
+  empty = false,
+  children,
+}: {
+  row: WorkstreamRow;
+  rowIndex: number;
+  slotKey: string;
+  lane: FeatureLane;
+  empty?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className="aligned-card-slot"
+      data-feature-row={workstreamRowKey(row, rowIndex)}
+      data-slot-key={slotKey}
+      data-lane={lane}
+      data-empty={empty ? "true" : undefined}
+    >
+      {children}
     </div>
   );
 }
@@ -2896,7 +2928,7 @@ function useBoardLayoutMotion(
   boardRef: React.RefObject<HTMLDivElement | null>,
   motionKey: string,
 ) {
-  const [active, setActive] = useState(false);
+  const [active, dispatchLayoutActive] = useReducer((_: boolean, next: boolean) => next, false);
   const previousKeyRef = useRef(motionKey);
   const lastHeightRef = useRef<number | null>(null);
   const timersRef = useRef<number[]>([]);
@@ -2924,7 +2956,7 @@ function useBoardLayoutMotion(
     if (dashboardPrefersReducedMotion()) {
       lastHeightRef.current = measuredHeight;
       previousKeyRef.current = motionKey;
-      setActive(false);
+      dispatchLayoutActive(false);
       return;
     }
 
@@ -2943,14 +2975,12 @@ function useBoardLayoutMotion(
     timersRef.current = [];
 
     const startHeight = lastHeightRef.current;
+    const previousStyleText = shell.getAttribute("style");
     previousKeyRef.current = motionKey;
     lastHeightRef.current = measuredHeight;
-    setActive(true);
+    dispatchLayoutActive(true);
 
-    shell.style.height = `${startHeight}px`;
-    shell.style.overflow = "clip";
-    shell.style.transition = `height ${BOARD_LAYOUT_MOTION_MS}ms cubic-bezier(0.16, 1, 0.3, 1)`;
-    shell.style.willChange = "height";
+    applyBoardShellMotionStyle(shell, previousStyleText, startHeight);
 
     const syncHeight = () => {
       const nextHeight = measureBoardHeight(board);
@@ -2965,19 +2995,24 @@ function useBoardLayoutMotion(
     void shell.offsetHeight;
     syncHeight();
 
+    let settled = false;
     const settleTimer = window.setTimeout(() => {
+      settled = true;
       observer.disconnect();
+      timersRef.current = timersRef.current.filter((timer) => timer !== settleTimer);
       lastHeightRef.current = measureBoardHeight(board);
-      shell.style.height = "";
-      shell.style.overflow = "";
-      shell.style.transition = "";
-      shell.style.willChange = "";
-      setActive(false);
+      restoreElementStyle(shell, previousStyleText);
+      dispatchLayoutActive(false);
     }, BOARD_LAYOUT_MOTION_MS + 90);
     timersRef.current.push(settleTimer);
 
     return () => {
       observer.disconnect();
+      if (settled) return;
+      window.clearTimeout(settleTimer);
+      timersRef.current = timersRef.current.filter((timer) => timer !== settleTimer);
+      restoreElementStyle(shell, previousStyleText);
+      dispatchLayoutActive(false);
     };
   }, [boardRef, motionKey, shellRef]);
 
@@ -2986,6 +3021,19 @@ function useBoardLayoutMotion(
 
 function measureBoardHeight(board: HTMLDivElement) {
   return Math.max(0, Math.ceil(board.getBoundingClientRect().height));
+}
+
+function applyBoardShellMotionStyle(shell: HTMLDivElement, previousStyleText: string | null, height: number) {
+  const base = previousStyleText ? `${previousStyleText}; ` : "";
+  shell.style.cssText = `${base}height: ${height}px; overflow: clip; transition: height ${BOARD_LAYOUT_MOTION_MS}ms cubic-bezier(0.16, 1, 0.3, 1); will-change: height;`;
+}
+
+function restoreElementStyle(element: HTMLElement, previousStyleText: string | null) {
+  if (previousStyleText) {
+    element.setAttribute("style", previousStyleText);
+  } else {
+    element.removeAttribute("style");
+  }
 }
 
 function dashboardPrefersReducedMotion() {
@@ -3037,12 +3085,104 @@ function useBoardWirePaths(boardRef: React.RefObject<HTMLDivElement | null>, wir
   return { paths, size };
 }
 
-function useAlignedRowTemplate(boardRef: React.RefObject<HTMLDivElement | null>, rows: WorkstreamRow[], layoutMode: WorkstreamLayoutMode) {
+function useAlignedSlotTemplates(boardRef: React.RefObject<HTMLDivElement | null>, rows: WorkstreamRow[], layoutMode: WorkstreamLayoutMode) {
+  const rowSlots = useMemo(
+    () =>
+      rows.map((row, index) => ({
+        rowKey: workstreamRowKey(row, index),
+        slotKeys: row.active.map(({ slice }) => slice.id),
+      })),
+    [rows],
+  );
+  const measurementKey = rowSlots.map(({ rowKey, slotKeys }) => `${rowKey}:${slotKeys.join(",")}`).join("|");
+  const [measuredTemplates, setMeasuredTemplates] = useState<{ key: string; templates: Record<string, string> }>({ key: "", templates: {} });
+
+  useLayoutEffect(() => {
+    const board = boardRef.current;
+    if (!board || layoutMode !== "aligned") return;
+
+    let frame: number | null = null;
+    const timers: number[] = [];
+
+    const measure = () => {
+      frame = null;
+      const heightsByRow = new Map<string, Map<string, number>>();
+
+      board.querySelectorAll<HTMLElement>(".aligned-card-slot[data-feature-row][data-slot-key]").forEach((slotNode) => {
+        const rowKey = slotNode.dataset.featureRow;
+        const slotKey = slotNode.dataset.slotKey;
+        if (!rowKey || !slotKey) return;
+
+        const height = alignedSlotContentHeight(slotNode);
+        if (height <= 0) return;
+
+        const rowHeights = heightsByRow.get(rowKey) || new Map<string, number>();
+        rowHeights.set(slotKey, Math.max(rowHeights.get(slotKey) || 0, height));
+        heightsByRow.set(rowKey, rowHeights);
+      });
+
+      const templates = rowSlots.reduce<Record<string, string>>((result, { rowKey, slotKeys }) => {
+        if (slotKeys.length === 0) return result;
+
+        const rowHeights = heightsByRow.get(rowKey);
+        result[rowKey] = slotKeys
+          .map((slotKey) => `${Math.max(ALIGNED_SLOT_MIN_HEIGHT, Math.ceil(rowHeights?.get(slotKey) || 0))}px`)
+          .join(" ");
+        return result;
+      }, {});
+
+      setMeasuredTemplates((previous) =>
+        previous.key === measurementKey && sameStringRecords(previous.templates, templates)
+          ? previous
+          : { key: measurementKey, templates },
+      );
+    };
+
+    const schedule = () => {
+      if (frame !== null) return;
+      frame = window.requestAnimationFrame(measure);
+    };
+
+    schedule();
+    timers.push(window.setTimeout(schedule, 160), window.setTimeout(schedule, 420));
+
+    const observer = new ResizeObserver(schedule);
+    observer.observe(board);
+    board.querySelectorAll<HTMLElement>(".aligned-card-slot, .aligned-card-slot > .stagger-item").forEach((node) => {
+      observer.observe(node);
+    });
+    window.addEventListener("resize", schedule);
+
+    return () => {
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+      }
+      timers.forEach((timer) => window.clearTimeout(timer));
+      observer.disconnect();
+      window.removeEventListener("resize", schedule);
+    };
+  }, [boardRef, layoutMode, measurementKey, rowSlots]);
+
+  return measuredTemplates.key === measurementKey ? measuredTemplates : { key: measurementKey, templates: {} };
+}
+
+function alignedSlotContentHeight(slotNode: HTMLElement) {
+  return Array.from(slotNode.children)
+    .filter((child): child is HTMLElement => child instanceof HTMLElement)
+    .reduce((height, child) => Math.max(height, child.offsetHeight), 0);
+}
+
+function useAlignedRowTemplate(
+  boardRef: React.RefObject<HTMLDivElement | null>,
+  rows: WorkstreamRow[],
+  layoutMode: WorkstreamLayoutMode,
+  slotTemplateKey = "",
+) {
   const baseHeights = useMemo(() => rows.map((row) => row.minHeight), [rows]);
   const rowKeys = useMemo(() => rows.map((row, index) => workstreamRowKey(row, index)), [rows]);
   const baseKey = baseHeights.join(",");
   const rowKey = rowKeys.join("|");
-  const measurementKey = `${baseKey}|${rowKey}`;
+  const measurementKey = `${baseKey}|${rowKey}|${slotTemplateKey}`;
   const [measuredRows, setMeasuredRows] = useState<{ key: string; heights: number[] }>({ key: "", heights: [] });
 
   useLayoutEffect(() => {
@@ -3113,6 +3253,12 @@ function cssPixelValue(value: string) {
 
 function sameNumbers(left: number[], right: number[]) {
   return left.length === right.length && left.every((value, index) => Math.abs(value - right[index]) < 1);
+}
+
+function sameStringRecords(left: Record<string, string>, right: Record<string, string>) {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length && leftKeys.every((key) => left[key] === right[key]);
 }
 
 function measureBoardWires(board: HTMLDivElement, wires: BoardWire[]) {
@@ -3745,6 +3891,7 @@ function RequestCard({
   const openQuestions = detail.clarification_questions?.filter((question) => question.status === "open") ?? [];
   const questionCount = openQuestions.length || request.open_question_count || 0;
   const question = openQuestions[0];
+  const description = firstParagraph(request.human_description);
   const answerQuestion = question
     ? (event: React.MouseEvent<HTMLButtonElement>) => {
         event.stopPropagation();
@@ -3752,6 +3899,7 @@ function RequestCard({
       }
     : undefined;
   const tone = requestCardTone(detail, questionCount);
+  const operational = requestOperationalState(request);
 
   return (
     <div
@@ -3767,8 +3915,13 @@ function RequestCard({
           <p className="truncate text-sm font-semibold">{request.title || request.id}</p>
           <p className="mt-1 text-xs text-muted-foreground">{request.work_type || "feature"}</p>
         </div>
-        <AnimatedBadge label={formatStatus(request.status)} variant={requestStatusVariant(request.status)} className="shrink-0" />
+        <AnimatedBadge
+          label={operationalLabel(operational, request.status)}
+          variant={operationalBadgeVariant(operational, request.status)}
+          className="shrink-0"
+        />
       </div>
+      {description ? <p className="request-card-description mt-3 text-xs leading-relaxed text-muted-foreground">{description}</p> : null}
       {questionCount > 0 ? (
         <CardSignal
           className="mt-3"
@@ -3801,11 +3954,11 @@ function SliceCard({
   onSelectCard?: () => void;
   motion?: UpdateMotion;
 }) {
-  const tone = sliceCardTone(slice, pkg, lane);
-  const operational = sliceOperationalState(slice, pkg);
-  const status = slice.work_package_status || slice.status;
-  const detail = sliceCardSubtitle(slice, pkg, operational, status);
-  const blockerSignal = cardBlockerSignal(pkg, operational);
+  const tone = lane === "slices" ? sliceContractTone(slice) : sliceCardTone(slice, pkg, lane);
+  const operational = lane === "slices" ? null : sliceOperationalState(slice, pkg);
+  const status = lane === "slices" ? slice.status : slice.work_package_status || slice.status;
+  const detail = slice.status === "skipped" ? null : sliceCardSubtitle(slice, pkg, operational, status);
+  const blockerSignal = lane === "slices" ? null : cardBlockerSignal(pkg, operational);
 
   return (
     <div
@@ -3817,7 +3970,10 @@ function SliceCard({
       {...interactiveCardProps(onSelectCard)}
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
-        <p className="min-w-0 truncate text-sm font-medium">{slice.title || pkg?.title || slice.id}</p>
+        <div className="flex min-w-0 items-center gap-2">
+          <SequenceBadge sequence={slice.sequence} />
+          <p className="min-w-0 truncate text-sm font-medium">{slice.title || pkg?.title || slice.id}</p>
+        </div>
         <AnimatedBadge
           label={operationalLabel(operational, status)}
           variant={operationalBadgeVariant(operational, status)}
@@ -3842,6 +3998,19 @@ function SliceCard({
   );
 }
 
+function SequenceBadge({ sequence }: { sequence?: number | null }) {
+  if (!sequence) return null;
+
+  return (
+    <span
+      className="inline-flex h-5 shrink-0 items-center rounded-md border border-border/70 bg-background/70 px-1.5 text-[11px] font-semibold leading-none text-muted-foreground shadow-sm"
+      title={`Slice ${sequence}`}
+    >
+      S{sequence}
+    </span>
+  );
+}
+
 function sliceCardSubtitle(
   slice: PlannedSlice,
   pkg: WorkPackageCard | undefined,
@@ -3849,7 +4018,19 @@ function sliceCardSubtitle(
   status?: string | null,
 ) {
   if (quietTerminalCard(operational, status, pkg?.status)) return null;
-  return slice.goal || pkg?.kind || slice.work_package_kind;
+  if (pkg) return `Linked package: ${operationalLabel(pkg.operational_state, pkg.status)}.`;
+  return slice.goal || slice.work_package_kind;
+}
+
+function sliceContractTone(slice: PlannedSlice): StateCardTone {
+  switch (slice.status) {
+    case "approved":
+      return "queued";
+    case "skipped":
+      return "muted";
+    default:
+      return "slice";
+  }
 }
 
 function quietTerminalCard(operational?: WorkPackageCard["operational_state"], ...statuses: Array<string | null | undefined>) {
@@ -3878,6 +4059,7 @@ function PackageCard({
   lane,
   index = 0,
   nodeId,
+  sequence,
   onSelectCard,
   motion,
 }: {
@@ -3885,6 +4067,7 @@ function PackageCard({
   lane: BoardLane;
   index?: number;
   nodeId?: string;
+  sequence?: number | null;
   onSelectCard?: () => void;
   motion?: UpdateMotion;
 }) {
@@ -3902,7 +4085,10 @@ function PackageCard({
       {...interactiveCardProps(onSelectCard)}
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
-        <p className="min-w-0 truncate text-sm font-medium">{pkg.title || pkg.id}</p>
+        <div className="flex min-w-0 items-center gap-2">
+          <SequenceBadge sequence={sequence} />
+          <p className="min-w-0 truncate text-sm font-medium">{pkg.title || pkg.id}</p>
+        </div>
         <AnimatedBadge label={operationalLabel(operational, pkg.status)} variant={operationalBadgeVariant(operational, pkg.status)} className="shrink-0" />
       </div>
       {attention ? <CardSignal className="mt-3" label={attention.label} value={attention.value} tone={attention.tone} /> : null}
@@ -3964,9 +4150,12 @@ function CardSignal({
 function requestCardTone(detail: WorkRequestDetail, questionCount?: number): StateCardTone {
   const request = detail.work_request;
   const status = request.status || "";
+  const operational = requestOperationalState(request);
   const openQuestions = questionCount ?? request.open_question_count ?? 0;
 
   if (openQuestions > 0 || status === "human_info_needed") return "guidance";
+  const tone = operationalCardTone(operational, status);
+  if (tone) return tone;
   if (status === "ready_for_slicing") return "queued";
   if (status === "sliced") return "slice";
   if (status === "draft" || status === "clarifying" || status === "ready_for_clarification") return "request";
@@ -4027,9 +4216,13 @@ function operationalCardTone(operational?: WorkPackageCard["operational_state"],
     case "merging":
     case "merging_into_phase":
       return "merge";
+    case "active":
     case "in_progress":
     case "implementing":
       return "implementing";
+    case "needs_attention":
+    case "started_paused":
+      return "queued";
     case "ready_for_worker":
     case "created":
     case "claimed":
@@ -4041,6 +4234,10 @@ function operationalCardTone(operational?: WorkPackageCard["operational_state"],
     default:
       return null;
   }
+}
+
+function requestOperationalState(request: WorkRequestCard): WorkRequestCard["operational_state"] {
+  return request.operational_state || null;
 }
 
 function packageOperationalState(pkg: WorkPackageCard): WorkPackageCard["operational_state"] {
@@ -5506,6 +5703,7 @@ function detailLoadState(loading: boolean, payload: unknown, error: string | nul
 
 function RequestDetailContent({ detail, onSelectGuidance }: { detail: WorkRequestDetail; onSelectGuidance: (item: GuidanceItem) => void }) {
   const request = detail.work_request;
+  const operational = requestOperationalState(request);
   const openQuestions = requestOpenQuestions(detail);
   const sliceCounts = requestSliceCounts(detail);
 
@@ -5514,7 +5712,7 @@ function RequestDetailContent({ detail, onSelectGuidance }: { detail: WorkReques
       <DetailHeader
         title={request.title || request.id}
         eyebrow={`${repoName(request.repo)} / ${request.base_branch || "main"} / ${request.work_type || "feature"}`}
-        badge={<Badge variant={requestStatusVariant(request.status)}>{formatStatus(request.status)}</Badge>}
+        badge={<Badge variant={operationalBadgeVariant(operational, request.status)}>{operationalLabel(operational, request.status)}</Badge>}
       />
       <div className="grid gap-4">
         <DetailStatGrid
@@ -6289,6 +6487,7 @@ function requestSliceCounts(detail: WorkRequestDetail) {
 
 function requestProgressText(detail: WorkRequestDetail) {
   const request = detail.work_request;
+  const operational = requestOperationalState(request);
   const questions = requestOpenQuestions(detail);
   const slices = requestSliceCounts(detail);
 
@@ -6297,7 +6496,8 @@ function requestProgressText(detail: WorkRequestDetail) {
   }
 
   if (request.status === "sliced" || slices.total > 0) {
-    return `${slices.total} slice${slices.total === 1 ? "" : "s"} recorded: ${slices.approved} approved, ${slices.dispatched} dispatched, ${slices.skipped} skipped.`;
+    const state = operational?.key && operational.key !== request.status ? `${operational.label || statusLabel(operational.key)}. ` : "";
+    return `${state}${slices.total} slice${slices.total === 1 ? "" : "s"} recorded: ${slices.approved} approved, ${slices.dispatched} dispatched, ${slices.skipped} skipped.`;
   }
 
   if (request.status === "ready_for_slicing") {
@@ -6777,20 +6977,46 @@ function guidanceAnswerUrl(item: GuidanceItem) {
 }
 
 function requestLane(request: WorkRequestCard): "requested" | "slices" | "finished" {
-  if (request.status === "sliced" || request.status === "ready_for_slicing") return "slices";
+  const rawStatus = request.status || "";
+  const key = requestOperationalState(request)?.key || rawStatus;
+
+  if (FINISHED_BOARD_STATUSES.has(rawStatus)) return "finished";
+  if (FINISHED_BOARD_STATUSES.has(key)) return "slices";
+  if (
+    [
+      "sliced",
+      "ready_for_slicing",
+      "planned",
+      "ready_for_worker",
+      "active",
+      "needs_attention",
+      "started_paused",
+      "reviewing",
+      "ci_waiting",
+      "merge_ready",
+      "merging",
+      "blocked",
+    ].includes(key)
+  ) {
+    return "slices";
+  }
+
   return "requested";
 }
 
 const FINISHED_BOARD_STATUSES = new Set(["merged", "merged_into_phase", "closed", "abandoned", "skipped"]);
 const IMPLEMENTING_BOARD_STATUSES = new Set([
+  "active",
   "claimed",
   "planning",
   "in_progress",
   "implementing",
+  "needs_attention",
   "reviewing",
   "ci_waiting",
   "merge_ready",
   "merging",
+  "started_paused",
   "merging_into_phase",
   "ready_for_human_merge",
   "ready_for_architect_merge",
@@ -6835,6 +7061,33 @@ function sortPackages(packages: WorkPackageCard[]) {
   });
 }
 
+function sortPlannedSlices(slices: PlannedSlice[]) {
+  return sortedCopy(slices, comparePlannedSlices);
+}
+
+function sortSliceEntries(entries: SliceEntry[]) {
+  return sortedCopy(entries, (left, right) => {
+    const requestDelta = left.requestIndex - right.requestIndex;
+    if (requestDelta !== 0) return requestDelta;
+    return comparePlannedSlices(left.slice, right.slice);
+  });
+}
+
+function comparePlannedSlices(left: PlannedSlice, right: PlannedSlice) {
+  const sequenceDelta = sortableSequence(left.sequence) - sortableSequence(right.sequence);
+  if (sequenceDelta !== 0) return sequenceDelta;
+
+  const leftTime = sortableTime(left.inserted_at || left.updated_at);
+  const rightTime = sortableTime(right.inserted_at || right.updated_at);
+  if (leftTime !== rightTime) return leftTime - rightTime;
+
+  return (left.title || left.id).localeCompare(right.title || right.id);
+}
+
+function sortableSequence(sequence?: number | null) {
+  return typeof sequence === "number" && Number.isFinite(sequence) ? sequence : Number.MAX_SAFE_INTEGER;
+}
+
 function sortableTime(value?: string | null) {
   const timestamp = value ? Date.parse(value) : 0;
   return Number.isNaN(timestamp) ? 0 : timestamp;
@@ -6853,9 +7106,10 @@ function workstreamRows(
 ): WorkstreamRow[] {
   const rows: WorkstreamRow[] = details.map((detail, index) => {
     const entries = sliceEntries.filter((entry) => entry.requestIndex === index);
-    const active = entries.filter((entry) => sliceLane(entry.slice, entry.pkg) === "slices");
-    const implementing = entries.filter((entry) => sliceLane(entry.slice, entry.pkg) === "implementing");
-    const finished = entries.filter((entry) => sliceLane(entry.slice, entry.pkg) === "finished");
+    const active = sortSliceEntries(entries);
+    const packageEntries = sortSliceEntries(entries.filter((entry) => entry.pkg));
+    const implementing = packageEntries.filter((entry) => sliceLane(entry.slice, entry.pkg) !== "finished");
+    const finished = packageEntries.filter((entry) => sliceLane(entry.slice, entry.pkg) === "finished");
 
     return {
       detail,
@@ -6893,40 +7147,31 @@ function workstreamRowKey(row: WorkstreamRow, index: number) {
 function workstreamWires(details: WorkRequestDetail[], packages: WorkPackageCard[], activeBlockingEdges: ActiveBlockingEdge[] = []): BoardWire[] {
   const packageMap = new Map(packages.map((pkg) => [pkg.id, pkg]));
   const progressWires = details.flatMap((detail) => {
-    const wires: BoardWire[] = [];
-    const slices = detail.planned_slices || [];
-    const sliceTargets = slices.filter((slice) => sliceLane(slice, packageMap.get(slice.work_package_id || "")) === "slices");
-    const packageTargets = slices.filter((slice) => sliceLane(slice, packageMap.get(slice.work_package_id || "")) !== "slices");
-    let packageSources = [requestNodeId(detail)];
+    const source = requestNodeId(detail);
+    const slices = sortPlannedSlices(detail.planned_slices || []);
 
-    sliceTargets.forEach((target, index) => {
-      const source = requestNodeId(detail);
-      const targetNode = sliceNodeId(target);
-      wires.push({
-        id: `${source}->${targetNode}:${index}`,
-        from: source,
-        to: targetNode,
-        tone: wireToneForSlice(target, packageMap.get(target.work_package_id || "")),
-      });
-    });
-
-    if (sliceTargets.length > 0) {
-      packageSources = sliceTargets.map(sliceNodeId);
-    }
-
-    packageTargets.forEach((target, index) => {
-      const source = packageSources[Math.min(index, packageSources.length - 1)];
+    return slices.flatMap((target, index) => {
       const pkg = packageMap.get(target.work_package_id || "");
-      const targetNode = pkg ? packageNodeId(pkg) : sliceNodeId(target);
-      wires.push({
-        id: `${source}->${targetNode}:${index}`,
+      const targetNode = sliceNodeId(target);
+      const wires: BoardWire[] = [{
+        id: `${source}->${targetNode}:${index}:slice`,
         from: source,
         to: targetNode,
         tone: wireToneForSlice(target, pkg),
-      });
-    });
+      }];
 
-    return wires;
+      if (pkg) {
+        const packageTargetNode = packageNodeId(pkg);
+        wires.push({
+          id: `${targetNode}->${packageTargetNode}:${index}:package`,
+          from: targetNode,
+          to: packageTargetNode,
+          tone: wireToneForSlice(target, pkg),
+        });
+      }
+
+      return wires;
+    });
   });
 
   return [...progressWires, ...activeBlockingWires(details, packages, activeBlockingEdges)];
@@ -7026,22 +7271,26 @@ function wireToneForSlice(slice: PlannedSlice, pkg?: WorkPackageCard): BoardWire
 
 function statusVariant(status?: string | null): BadgeTone {
   if (["merged", "merged_into_phase", "closed", "answered"].includes(status || "")) return "success";
-  if (["blocked", "human_info_needed"].includes(status || "")) return "danger";
+  if (["blocked", "human_info_needed", "needs_attention"].includes(status || "")) return "danger";
   if (
-    ["in_progress", "implementing", "reviewing", "ci_waiting", "ready_for_slicing", "approved", "created", "ready_for_worker", "claimed", "planning"].includes(
-      status || "",
-    )
+    [
+      "active",
+      "in_progress",
+      "implementing",
+      "reviewing",
+      "ci_waiting",
+      "ready_for_slicing",
+      "approved",
+      "created",
+      "ready_for_worker",
+      "claimed",
+      "planning",
+      "started_paused",
+    ].includes(status || "")
   ) {
     return "info";
   }
   if (["merge_ready", "ready_for_human_merge", "ready_for_architect_merge", "merging", "merging_into_phase"].includes(status || "")) return "ready";
-  return "secondary";
-}
-
-function requestStatusVariant(status?: string | null): BadgeTone {
-  if (status === "sliced") return "success";
-  if (status === "human_info_needed") return "danger";
-  if (status === "ready_for_slicing") return "info";
   return "secondary";
 }
 
@@ -7050,8 +7299,11 @@ function formatStatus(status?: string | null) {
 }
 
 function statusLabel(status?: string | null) {
+  if (status === "active") return "Active";
   if (status === "merge_ready") return "Ready For Merge";
-  if (status === "in_progress") return "In Progress";
+  if (status === "in_progress") return "Active";
+  if (status === "needs_attention") return "Needs Attention";
+  if (status === "started_paused") return "Started / Paused";
   if (status === "merging") return "Merging";
   if (status === "ready_for_human_merge" || status === "ready_for_architect_merge") return "Merge Ready";
   if (status === "merging_into_phase") return "Merging";
