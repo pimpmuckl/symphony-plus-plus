@@ -6,6 +6,7 @@ import {
   ChevronRight,
   CircleDot,
   Clock3,
+  Copy,
   GitBranch,
   Loader2,
   MessageSquareText,
@@ -43,7 +44,10 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { cn } from "@/lib/utils";
 import type {
   ActiveBlockingEdge,
+  ArchitectHandoff,
+  ArchitectHandoffPayload,
   ClarificationQuestion,
+  CreateWorkRequestPayload,
   DashboardPayload,
   DecisionOption,
   DecisionPrompt,
@@ -158,12 +162,19 @@ type DashboardUpdateAnimations = {
   motionFor: (key?: string | null) => UpdateMotion | undefined;
   simulate: (kind: UpdateMotionKind) => void;
 };
+type ArchitectHandoffCopyResult = {
+  handoff: ArchitectHandoff;
+  copied: boolean;
+  copyError?: string;
+};
+type CopyArchitectHandoff = (workRequestId: string, cachedHandoff?: ArchitectHandoff | null) => Promise<ArchitectHandoffCopyResult>;
 type CardDetailSelection =
   | { kind: "request"; detail: WorkRequestDetail }
   | { kind: "slice"; detail: WorkRequestDetail; slice: PlannedSlice; pkg?: WorkPackageCard }
   | { kind: "package"; pkg: WorkPackageCard; detail?: WorkRequestDetail; slice?: PlannedSlice }
   | { kind: "solo"; session: SoloSession };
 type CardDetailSelect = (selection: CardDetailSelection) => void;
+type HandoffCopyState = "idle" | "copying" | "copied" | "error";
 type DashboardUiState = {
   workspaceTab?: WorkspaceTab;
   topPanel?: TopPanelKey | null;
@@ -219,6 +230,27 @@ async function ensureDashboardRuntimeConfig() {
 async function mutationHeaders() {
   await ensureDashboardRuntimeConfig();
   return jsonHeaders({ csrf: true, content: true });
+}
+
+async function copyTextToClipboard(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const textArea = document.createElement("textarea");
+  textArea.value = value;
+  textArea.setAttribute("readonly", "");
+  textArea.style.cssText = "position: fixed; left: -9999px; top: 0;";
+  document.body.appendChild(textArea);
+  textArea.select();
+
+  try {
+    const copied = document.execCommand("copy");
+    if (!copied) throw new Error("Clipboard copy unavailable");
+  } finally {
+    document.body.removeChild(textArea);
+  }
 }
 
 type BlockerItem = {
@@ -415,6 +447,55 @@ const initialRequestForm: NewRequestForm = {
   human_description: "",
 };
 
+type NewRequestDialogState = {
+  submitting: boolean;
+  createdRequest: WorkRequestDetail | null;
+  architectHandoff: ArchitectHandoff | null;
+  handoffCopyState: HandoffCopyState;
+  error: string | null;
+};
+
+type NewRequestDialogAction =
+  | { type: "reset" }
+  | { type: "startSubmit" }
+  | { type: "created"; request: WorkRequestDetail }
+  | { type: "failed"; error: string }
+  | { type: "newRequest" }
+  | { type: "startCopy" }
+  | { type: "copyResult"; result: ArchitectHandoffCopyResult };
+
+const initialNewRequestDialogState: NewRequestDialogState = {
+  submitting: false,
+  createdRequest: null,
+  architectHandoff: null,
+  handoffCopyState: "idle",
+  error: null,
+};
+
+function newRequestDialogReducer(state: NewRequestDialogState, action: NewRequestDialogAction): NewRequestDialogState {
+  switch (action.type) {
+    case "reset":
+      return initialNewRequestDialogState;
+    case "startSubmit":
+      return { ...state, submitting: true, error: null };
+    case "created":
+      return { ...state, submitting: false, createdRequest: action.request, architectHandoff: null, handoffCopyState: "idle", error: null };
+    case "failed":
+      return { ...state, submitting: false, handoffCopyState: "error", error: action.error };
+    case "newRequest":
+      return { ...initialNewRequestDialogState, createdRequest: null };
+    case "startCopy":
+      return { ...state, handoffCopyState: "copying", error: null };
+    case "copyResult":
+      return {
+        ...state,
+        architectHandoff: action.result.handoff,
+        handoffCopyState: action.result.copied ? "copied" : "error",
+        error: action.result.copyError ? `Handoff is ready, but clipboard copy failed: ${action.result.copyError}` : null,
+      };
+  }
+}
+
 export default function App() {
   const [appState, dispatchApp] = useReducer(appStateReducer, null, createInitialAppState);
   const { dashboard, error, loading, refreshing, theme, workspaceTab, workstreamLayout } = appState;
@@ -511,6 +592,45 @@ export default function App() {
     }
   }, [applyDashboardResponse]);
 
+  const copyArchitectHandoff = useCallback<CopyArchitectHandoff>(async (workRequestId, cachedHandoff) => {
+    let handoff = cachedHandoff || null;
+
+    if (!handoff) {
+      const response = await fetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/architect-handoff`), {
+        method: "POST",
+        headers: await mutationHeaders(),
+        body: JSON.stringify({}),
+      });
+      const payload: ArchitectHandoffPayload & { error?: { message?: string } } = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload?.error?.message || "Architect handoff unavailable");
+      }
+
+      handoff = payload.architect_handoff || null;
+
+      if (payload.dashboard) {
+        setDashboard(payload.dashboard);
+      }
+    }
+
+    const prompt = handoff?.prompt?.trim();
+    if (!handoff || !prompt) {
+      throw new Error("Architect handoff did not include a copyable prompt");
+    }
+
+    try {
+      await copyTextToClipboard(prompt);
+      return { handoff, copied: true };
+    } catch (caught) {
+      return {
+        handoff,
+        copied: false,
+        copyError: caught instanceof Error ? caught.message : "Clipboard copy unavailable",
+      };
+    }
+  }, [setDashboard]);
+
   useEffect(() => {
     void loadDashboard("initial");
   }, [loadDashboard]);
@@ -583,13 +703,14 @@ export default function App() {
           activeBlockingEdges={dashboard?.active_blocking_edges ?? []}
           onSelectGuidance={setSelectedGuidance}
           onSelectCard={setSelectedCardDetail}
+          onCopyArchitectHandoff={copyArchitectHandoff}
           layoutMode={workstreamLayout}
           updateAnimations={updateAnimations}
         />
       ),
       solo: <SoloSessions sessions={soloSessions} onSelectCard={setSelectedCardDetail} updateAnimations={updateAnimations} />,
     }),
-    [dashboard?.active_blocking_edges, repos, requestDetails, soloSessions, updateAnimations, workstreamLayout],
+    [copyArchitectHandoff, dashboard?.active_blocking_edges, repos, requestDetails, soloSessions, updateAnimations, workstreamLayout],
   );
 
   if (loading) {
@@ -631,8 +752,8 @@ export default function App() {
                 onOpenChange={setNewRequestOpen}
                 onCreated={(payload) => {
                   setDashboard(payload);
-                  setNewRequestOpen(false);
                 }}
+                onCopyArchitectHandoff={copyArchitectHandoff}
                 defaultRepo={repos[0]?.repo}
                 repos={repos}
               />
@@ -692,6 +813,7 @@ export default function App() {
             if (!open) setSelectedCardDetail(null);
           }}
           onSelectGuidance={setSelectedGuidance}
+          onCopyArchitectHandoff={copyArchitectHandoff}
         />
       </main>
     </TooltipProvider>
@@ -1192,6 +1314,7 @@ function WorkstreamsPane({
   activeBlockingEdges,
   onSelectGuidance,
   onSelectCard,
+  onCopyArchitectHandoff,
   layoutMode,
   updateAnimations,
 }: {
@@ -1200,6 +1323,7 @@ function WorkstreamsPane({
   activeBlockingEdges: ActiveBlockingEdge[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
+  onCopyArchitectHandoff: CopyArchitectHandoff;
   layoutMode: WorkstreamLayoutMode;
   updateAnimations: DashboardUpdateAnimations;
 }) {
@@ -1215,6 +1339,7 @@ function WorkstreamsPane({
           activeBlockingEdges={activeBlockingEdges}
           onSelectGuidance={onSelectGuidance}
           onSelectCard={onSelectCard}
+          onCopyArchitectHandoff={onCopyArchitectHandoff}
           layoutMode={layoutMode}
           updateAnimations={updateAnimations}
         />
@@ -2081,6 +2206,7 @@ function RepoWorkstream({
   activeBlockingEdges,
   onSelectGuidance,
   onSelectCard,
+  onCopyArchitectHandoff,
   layoutMode,
   updateAnimations,
 }: {
@@ -2089,6 +2215,7 @@ function RepoWorkstream({
   activeBlockingEdges: ActiveBlockingEdge[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
+  onCopyArchitectHandoff: CopyArchitectHandoff;
   layoutMode: WorkstreamLayoutMode;
   updateAnimations: DashboardUpdateAnimations;
 }) {
@@ -2171,6 +2298,7 @@ function RepoWorkstream({
               activeBlockingEdges={activeBlockingEdges}
               onSelectGuidance={onSelectGuidance}
               onSelectCard={onSelectCard}
+              onCopyArchitectHandoff={onCopyArchitectHandoff}
               layoutMode={layoutMode}
               updateAnimations={updateAnimations}
             />
@@ -2427,6 +2555,7 @@ function WorkstreamBoard({
   activeBlockingEdges,
   onSelectGuidance,
   onSelectCard,
+  onCopyArchitectHandoff,
   layoutMode,
   updateAnimations,
 }: {
@@ -2436,6 +2565,7 @@ function WorkstreamBoard({
   activeBlockingEdges: ActiveBlockingEdge[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
+  onCopyArchitectHandoff: CopyArchitectHandoff;
   layoutMode: WorkstreamLayoutMode;
   updateAnimations: DashboardUpdateAnimations;
 }) {
@@ -2492,6 +2622,7 @@ function WorkstreamBoard({
             workPackageCount={implementing.length + finished.length + implementingPackages.length + finishedPackages.length}
             onSelectGuidance={onSelectGuidance}
             onSelectCard={onSelectCard}
+            onCopyArchitectHandoff={onCopyArchitectHandoff}
             updateAnimations={updateAnimations}
             slotTemplates={alignedSlotTemplates}
           />
@@ -2506,6 +2637,7 @@ function WorkstreamBoard({
             finishedPackages={finishedPackages}
             onSelectGuidance={onSelectGuidance}
             onSelectCard={onSelectCard}
+            onCopyArchitectHandoff={onCopyArchitectHandoff}
             updateAnimations={updateAnimations}
           />
         )}
@@ -2524,6 +2656,7 @@ function StackedWorkstreamColumns({
   finishedPackages,
   onSelectGuidance,
   onSelectCard,
+  onCopyArchitectHandoff,
   updateAnimations,
 }: {
   requested: WorkRequestDetail[];
@@ -2535,6 +2668,7 @@ function StackedWorkstreamColumns({
   finishedPackages: WorkPackageCard[];
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
+  onCopyArchitectHandoff: CopyArchitectHandoff;
   updateAnimations: DashboardUpdateAnimations;
 }) {
   const workPackageEntries = sortSliceEntries([...implementing, ...finished]);
@@ -2548,6 +2682,7 @@ function StackedWorkstreamColumns({
             detail={detail}
             onSelectGuidance={onSelectGuidance}
             onSelectCard={() => onSelectCard({ kind: "request", detail })}
+            onCopyArchitectHandoff={onCopyArchitectHandoff}
             index={index}
             nodeId={requestNodeId(detail)}
             motion={updateAnimations.motionFor(requestUpdateKey(detail))}
@@ -2630,6 +2765,7 @@ function AlignedWorkstreamColumns({
   workPackageCount,
   onSelectGuidance,
   onSelectCard,
+  onCopyArchitectHandoff,
   updateAnimations,
 }: {
   rows: WorkstreamRow[];
@@ -2640,6 +2776,7 @@ function AlignedWorkstreamColumns({
   workPackageCount: number;
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
+  onCopyArchitectHandoff: CopyArchitectHandoff;
   updateAnimations: DashboardUpdateAnimations;
 }) {
   const rowStyle = { gridTemplateRows: rowTemplate } as React.CSSProperties;
@@ -2654,6 +2791,7 @@ function AlignedWorkstreamColumns({
                 detail={row.detail}
                 onSelectGuidance={onSelectGuidance}
                 onSelectCard={() => onSelectCard({ kind: "request", detail: row.detail! })}
+                onCopyArchitectHandoff={onCopyArchitectHandoff}
                 index={index}
                 nodeId={requestNodeId(row.detail)}
                 motion={updateAnimations.motionFor(requestUpdateKey(row.detail))}
@@ -3876,6 +4014,7 @@ function RequestCard({
   detail,
   onSelectGuidance,
   onSelectCard,
+  onCopyArchitectHandoff,
   index = 0,
   nodeId,
   motion,
@@ -3883,6 +4022,7 @@ function RequestCard({
   detail: WorkRequestDetail;
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard?: () => void;
+  onCopyArchitectHandoff?: CopyArchitectHandoff;
   index?: number;
   nodeId?: string;
   motion?: UpdateMotion;
@@ -3892,10 +4032,34 @@ function RequestCard({
   const questionCount = openQuestions.length || request.open_question_count || 0;
   const question = openQuestions[0];
   const description = firstParagraph(request.human_description);
+  const handoffEligible = architectHandoffEligibleRequest(request);
+  const handoffHasOpenQuestions = questionCount > 0;
+  const [handoffCopyState, setHandoffCopyState] = useState<HandoffCopyState>("idle");
+  const architectHandoffRef = useRef<ArchitectHandoff | null>(null);
+
+  useEffect(() => {
+    setHandoffCopyState("idle");
+    architectHandoffRef.current = null;
+  }, [questionCount, request.id, request.status, request.updated_at]);
+
   const answerQuestion = question
     ? (event: React.MouseEvent<HTMLButtonElement>) => {
         event.stopPropagation();
         onSelectGuidance(clarificationGuidanceItem(detail, question));
+      }
+    : undefined;
+  const copyHandoff = handoffEligible && onCopyArchitectHandoff
+    ? async (event: React.MouseEvent<HTMLButtonElement>) => {
+        event.stopPropagation();
+        setHandoffCopyState("copying");
+
+        try {
+          const result = await onCopyArchitectHandoff(request.id, architectHandoffRef.current);
+          architectHandoffRef.current = result.handoff;
+          setHandoffCopyState(result.copied ? "copied" : "error");
+        } catch {
+          setHandoffCopyState("error");
+        }
       }
     : undefined;
   const tone = requestCardTone(detail, questionCount);
@@ -3933,6 +4097,16 @@ function RequestCard({
         />
       ) : null}
       {question ? <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{question.question}</p> : null}
+      {copyHandoff ? (
+        <CardSignal
+          className="mt-3"
+          label={handoffHasOpenQuestions ? "Architect Handoff" : "Agent Handoff"}
+          value={handoffSignalLabel(handoffCopyState, handoffHasOpenQuestions)}
+          tone={handoffHasOpenQuestions ? "muted" : "info"}
+          onClick={copyHandoff}
+          ariaLabel={`Copy agent handoff for ${request.title || request.id}`}
+        />
+      ) : null}
     </div>
   );
 }
@@ -4160,6 +4334,29 @@ function requestCardTone(detail: WorkRequestDetail, questionCount?: number): Sta
   if (status === "sliced") return "slice";
   if (status === "draft" || status === "clarifying" || status === "ready_for_clarification") return "request";
   return "request";
+}
+
+function architectHandoffEligibleRequest(request: WorkRequestCard) {
+  const status = request.status || "";
+  return Boolean(
+    request.id &&
+      request.repo &&
+      request.base_branch &&
+      ["ready_for_clarification", "clarifying", "human_info_needed", "ready_for_slicing", "sliced"].includes(status),
+  );
+}
+
+function handoffSignalLabel(state: HandoffCopyState, resumeClarification = false) {
+  switch (state) {
+    case "copying":
+      return "Copying...";
+    case "copied":
+      return "Copied";
+    case "error":
+      return "Try again";
+    default:
+      return resumeClarification ? "Resume prompt" : "Copy prompt";
+  }
 }
 
 function sliceCardTone(slice: PlannedSlice, pkg: WorkPackageCard | undefined, lane: BoardLane): StateCardTone {
@@ -4519,7 +4716,7 @@ function reviewLaneRank(lane: string) {
 }
 
 function normalizeReviewLane(lane: string) {
-  const normalized = lane.trim().toLowerCase().replace(/-/g, "_");
+  const normalized = normalizedReviewMode(lane).trim().toLowerCase().replace(/-/g, "_");
 
   switch (normalized) {
     case "review_t1":
@@ -4537,6 +4734,13 @@ function normalizeReviewLane(lane: string) {
     default:
       return normalized;
   }
+}
+
+function normalizedReviewMode(lane: string) {
+  const modeMatch = lane.match(/(?:^|\s)--mode(?:=|\s+)([a-z0-9_-]+)/i);
+  if (modeMatch?.[1]) return modeMatch[1];
+
+  return lane;
 }
 
 function reviewStageLabel(payload: NonNullable<WorkPackageCard["metadata"]>["review_suite_result"]) {
@@ -5295,12 +5499,14 @@ function NewRequestDialog({
   open,
   onOpenChange,
   onCreated,
+  onCopyArchitectHandoff,
   defaultRepo,
   repos,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated: (dashboard: DashboardPayload) => void;
+  onCopyArchitectHandoff: CopyArchitectHandoff;
   defaultRepo?: string;
   repos: RepoSummary[];
 }) {
@@ -5312,30 +5518,42 @@ function NewRequestDialog({
     base_branch: baseBranchOptionsForRepo(repos, initialRepo)[0] || initialRequestForm.base_branch,
   });
   const branchChoices = useMemo(() => baseBranchOptionsForRepo(repos, form.repo), [form.repo, repos]);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [dialogState, dispatchDialog] = useReducer(newRequestDialogReducer, initialNewRequestDialogState);
+  const { architectHandoff, createdRequest, error, handoffCopyState, submitting } = dialogState;
 
   useEffect(() => {
-    if (open) {
-      setForm((current) => {
-        const repo = repoChoices.includes(current.repo) ? current.repo : repoChoices[0] || initialRequestForm.repo;
-        const branches = baseBranchOptionsForRepo(repos, repo);
-        const baseBranch = branches.includes(current.base_branch) ? current.base_branch : branches[0] || initialRequestForm.base_branch;
+    if (!open || createdRequest) return;
 
-        if (repo === current.repo && baseBranch === current.base_branch) {
-          return current;
-        }
+    setForm((current) => {
+      const repo = repoChoices.includes(current.repo) ? current.repo : repoChoices[0] || initialRequestForm.repo;
+      const branches = baseBranchOptionsForRepo(repos, repo);
+      const baseBranch = branches.includes(current.base_branch) ? current.base_branch : branches[0] || initialRequestForm.base_branch;
 
-        return { ...current, repo, base_branch: baseBranch };
-      });
-      setError(null);
+      if (repo === current.repo && baseBranch === current.base_branch) {
+        return current;
+      }
+
+      return { ...current, repo, base_branch: baseBranch };
+    });
+    dispatchDialog({ type: "reset" });
+  }, [createdRequest, open, repoChoices, repos]);
+
+  async function copyCreatedHandoff() {
+    if (!createdRequest) return;
+
+    dispatchDialog({ type: "startCopy" });
+
+    try {
+      const result = await onCopyArchitectHandoff(createdRequest.work_request.id, architectHandoff);
+      dispatchDialog({ type: "copyResult", result });
+    } catch (caught) {
+      dispatchDialog({ type: "failed", error: caught instanceof Error ? caught.message : "Architect handoff could not be copied" });
     }
-  }, [open, repoChoices, repos]);
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    setSubmitting(true);
-    setError(null);
+    dispatchDialog({ type: "startSubmit" });
 
     try {
       const response = await fetch(operatorApiUrl("/work-requests"), {
@@ -5350,23 +5568,34 @@ function NewRequestDialog({
           human_description: form.human_description,
         }),
       });
-      const payload = await response.json();
+      const payload: CreateWorkRequestPayload & { error?: { message?: string } } = await response.json();
 
       if (!response.ok) {
         throw new Error(payload?.error?.message || "Request was not created");
       }
 
+      if (!payload.dashboard || !payload.work_request) {
+        throw new Error("Request was created, but the dashboard response was incomplete");
+      }
+
       setForm({ ...initialRequestForm, repo: form.repo, base_branch: form.base_branch });
+      dispatchDialog({ type: "created", request: payload.work_request });
       onCreated(payload.dashboard);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Request was not created");
-    } finally {
-      setSubmitting(false);
+      dispatchDialog({ type: "failed", error: caught instanceof Error ? caught.message : "Request was not created" });
     }
   }
 
+  function handleOpenChange(nextOpen: boolean) {
+    if (!nextOpen) {
+      dispatchDialog({ type: "reset" });
+    }
+
+    onOpenChange(nextOpen);
+  }
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button size="sm">
           <Plus className="size-4" />
@@ -5374,92 +5603,132 @@ function NewRequestDialog({
         </Button>
       </DialogTrigger>
       <DialogContent className="dashboard-dialog-content">
-        <form onSubmit={submit} className="grid gap-5">
-          <DialogHeader>
-            <DialogTitle>New Request</DialogTitle>
-            <DialogDescription>Architect-owned intake</DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 md:grid-cols-2">
-            <Field label="Title">
-              <Input value={form.title} onChange={(event) => setFormValue(setForm, "title", event.target.value)} required />
-            </Field>
-            <Field label="Repository">
-              <Select
-                value={form.repo}
-                onValueChange={(value) => {
-                  const branches = baseBranchOptionsForRepo(repos, value);
-                  setForm((current) => ({ ...current, repo: value, base_branch: branches[0] || initialRequestForm.base_branch }));
-                }}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {repoChoices.map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {value}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field label="Base Branch">
-              <Select value={form.base_branch} onValueChange={(value) => setFormValue(setForm, "base_branch", value)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {branchChoices.map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {value}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field label="Work Type">
-              <Select value={form.work_type} onValueChange={(value) => setFormValue(setForm, "work_type", value)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {["feature", "bugfix", "hotfix", "refactor", "investigation", "docs", "review"].map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {formatStatus(value)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field label="Dispatch Shape">
-              <Select value={form.desired_dispatch_shape} onValueChange={(value) => setFormValue(setForm, "desired_dispatch_shape", value)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {["architect_led_feature_branch", "single_package", "direct_main_fix", "investigation_first", "review_only"].map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {formatStatus(value)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-          </div>
-          <Field label="Description">
-            <Textarea value={form.human_description} onChange={(event) => setFormValue(setForm, "human_description", event.target.value)} required />
-          </Field>
-          {error ? <p className="text-sm text-destructive">{error}</p> : null}
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={submitting}>
-              {submitting ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-              Create
-            </Button>
-          </DialogFooter>
-        </form>
+        <AnimatedDetailBody motionKey={createdRequest ? `created:${createdRequest.work_request.id}:${handoffCopyState}` : "new-request:form"}>
+          {createdRequest ? (
+            <div className="grid gap-5">
+              <DialogHeader>
+                <DialogTitle>Request Created</DialogTitle>
+                <DialogDescription>Ready for an architecture agent</DialogDescription>
+              </DialogHeader>
+              <div className="handoff-success-panel" data-guidance-section>
+                <div className="flex min-w-0 items-start gap-3">
+                  <div className="handoff-success-icon">
+                    <CheckCircle2 className="size-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold">{createdRequest.work_request.title || createdRequest.work_request.id}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {repoName(createdRequest.work_request.repo)} / {createdRequest.work_request.base_branch || "main"}
+                    </p>
+                  </div>
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  The request is in the ledger. Copy the agent handoff and paste it into the architect Codex session that will own this WorkRequest.
+                </p>
+              </div>
+              {error ? <p className="text-sm text-destructive">{error}</p> : null}
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => dispatchDialog({ type: "newRequest" })}>
+                  New Request
+                </Button>
+                <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
+                  Close
+                </Button>
+                <Button type="button" onClick={() => void copyCreatedHandoff()} disabled={handoffCopyState === "copying" || !architectHandoffEligibleRequest(createdRequest.work_request)}>
+                  {handoffCopyState === "copying" ? <Loader2 className="size-4 animate-spin" /> : handoffCopyState === "copied" ? <CheckCircle2 className="size-4" /> : <Copy className="size-4" />}
+                  {handoffCopyState === "copied" ? "Copied Agent Handoff" : "Copy Agent Handoff"}
+                </Button>
+              </DialogFooter>
+            </div>
+          ) : (
+            <form onSubmit={submit} className="grid gap-5">
+              <DialogHeader>
+                <DialogTitle>New Request</DialogTitle>
+                <DialogDescription>Architect-owned intake</DialogDescription>
+              </DialogHeader>
+              <div className="grid gap-4 md:grid-cols-2">
+                <Field label="Title">
+                  <Input value={form.title} onChange={(event) => setFormValue(setForm, "title", event.target.value)} required />
+                </Field>
+                <Field label="Repository">
+                  <Select
+                    value={form.repo}
+                    onValueChange={(value) => {
+                      const branches = baseBranchOptionsForRepo(repos, value);
+                      setForm((current) => ({ ...current, repo: value, base_branch: branches[0] || initialRequestForm.base_branch }));
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {repoChoices.map((value) => (
+                        <SelectItem key={value} value={value}>
+                          {value}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field label="Base Branch">
+                  <Select value={form.base_branch} onValueChange={(value) => setFormValue(setForm, "base_branch", value)}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {branchChoices.map((value) => (
+                        <SelectItem key={value} value={value}>
+                          {value}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field label="Work Type">
+                  <Select value={form.work_type} onValueChange={(value) => setFormValue(setForm, "work_type", value)}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {["feature", "bugfix", "hotfix", "refactor", "investigation", "docs", "review"].map((value) => (
+                        <SelectItem key={value} value={value}>
+                          {formatStatus(value)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field label="Dispatch Shape">
+                  <Select value={form.desired_dispatch_shape} onValueChange={(value) => setFormValue(setForm, "desired_dispatch_shape", value)}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {["architect_led_feature_branch", "single_package", "direct_main_fix", "investigation_first", "review_only"].map((value) => (
+                        <SelectItem key={value} value={value}>
+                          {formatStatus(value)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+              </div>
+              <Field label="Description">
+                <Textarea value={form.human_description} onChange={(event) => setFormValue(setForm, "human_description", event.target.value)} required />
+              </Field>
+              {error ? <p className="text-sm text-destructive">{error}</p> : null}
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={submitting}>
+                  {submitting ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+                  Create
+                </Button>
+              </DialogFooter>
+            </form>
+          )}
+        </AnimatedDetailBody>
       </DialogContent>
     </Dialog>
   );
@@ -5538,10 +5807,12 @@ function CardDetailDialog({
   selection,
   onOpenChange,
   onSelectGuidance,
+  onCopyArchitectHandoff,
 }: {
   selection: CardDetailSelection | null;
   onOpenChange: (open: boolean) => void;
   onSelectGuidance: (item: GuidanceItem) => void;
+  onCopyArchitectHandoff: CopyArchitectHandoff;
 }) {
   const [state, dispatch] = useReducer(cardDetailDialogReducer, initialCardDetailDialogState);
   const packageId = selection?.kind === "package" ? selection.pkg.id : null;
@@ -5603,8 +5874,10 @@ function CardDetailDialog({
   return (
     <Dialog open={Boolean(selection)} onOpenChange={onOpenChange}>
       <DialogContent className="dashboard-dialog-content card-detail-dialog">
-        <AnimatedDetailBody motionKey={detailMotionKey}>
-          {selection?.kind === "request" ? <RequestDetailContent detail={selection.detail} onSelectGuidance={onSelectGuidance} /> : null}
+        <NaturalDetailBody motionKey={detailMotionKey}>
+          {selection?.kind === "request" ? (
+            <RequestDetailContent detail={selection.detail} onSelectGuidance={onSelectGuidance} onCopyArchitectHandoff={onCopyArchitectHandoff} />
+          ) : null}
           {selection?.kind === "slice" ? <SliceDetailContent detail={selection.detail} slice={selection.slice} pkg={selection.pkg} /> : null}
           {selection?.kind === "package" ? (
             <PackageDetailContent selection={selection} detailPayload={state.package.payload} loading={effectiveLoadingPackage} error={state.package.error} />
@@ -5612,15 +5885,24 @@ function CardDetailDialog({
           {selection?.kind === "solo" ? (
             <SoloSessionDetailContent session={selection.session} detailPayload={state.solo.payload} loading={effectiveLoadingSolo} error={state.solo.error} />
           ) : null}
-        </AnimatedDetailBody>
+        </NaturalDetailBody>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function NaturalDetailBody({ motionKey, children }: { motionKey: string; children: React.ReactNode }) {
+  return (
+    <div className="detail-modal-natural-frame" data-detail-motion-key={motionKey}>
+      <div className="detail-modal-size-inner">{children}</div>
+    </div>
   );
 }
 
 function AnimatedDetailBody({ motionKey, children }: { motionKey: string; children: React.ReactNode }) {
   const innerRef = useRef<HTMLDivElement>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const settleTimerRef = useRef<number | null>(null);
   const [height, setHeight] = useState<number | null>(null);
 
   const measure = useCallback(() => {
@@ -5631,10 +5913,21 @@ function AnimatedDetailBody({ motionKey, children }: { motionKey: string; childr
     if (nextHeight <= 0) return;
 
     setHeight((currentHeight) => (currentHeight === nextHeight ? currentHeight : nextHeight));
+
+    if (settleTimerRef.current !== null) {
+      window.clearTimeout(settleTimerRef.current);
+    }
+
+    settleTimerRef.current = window.setTimeout(() => {
+      setHeight(null);
+      settleTimerRef.current = null;
+    }, 340);
   }, []);
 
   useLayoutEffect(() => {
     measure();
+    const frame = window.requestAnimationFrame(measure);
+    return () => window.cancelAnimationFrame(frame);
   }, [measure, motionKey]);
 
   useEffect(() => {
@@ -5657,6 +5950,11 @@ function AnimatedDetailBody({ motionKey, children }: { motionKey: string; childr
       if (animationFrameRef.current !== null) {
         window.cancelAnimationFrame(animationFrameRef.current);
         animationFrameRef.current = null;
+      }
+
+      if (settleTimerRef.current !== null) {
+        window.clearTimeout(settleTimerRef.current);
+        settleTimerRef.current = null;
       }
     };
   }, [measure]);
@@ -5701,11 +5999,46 @@ function detailLoadState(loading: boolean, payload: unknown, error: string | nul
   return loading ? "loading" : "summary";
 }
 
-function RequestDetailContent({ detail, onSelectGuidance }: { detail: WorkRequestDetail; onSelectGuidance: (item: GuidanceItem) => void }) {
+function RequestDetailContent({
+  detail,
+  onSelectGuidance,
+  onCopyArchitectHandoff,
+}: {
+  detail: WorkRequestDetail;
+  onSelectGuidance: (item: GuidanceItem) => void;
+  onCopyArchitectHandoff: CopyArchitectHandoff;
+}) {
   const request = detail.work_request;
   const operational = requestOperationalState(request);
   const openQuestions = requestOpenQuestions(detail);
   const sliceCounts = requestSliceCounts(detail);
+  const handoffEligible = architectHandoffEligibleRequest(request);
+  const handoffHasOpenQuestions = (openQuestions.length || request.open_question_count || 0) > 0;
+  const handoffButtonLabel = handoffHasOpenQuestions ? "Copy Resume Handoff" : "Copy Agent Handoff";
+  const [handoffCopyState, setHandoffCopyState] = useState<HandoffCopyState>("idle");
+  const architectHandoffRef = useRef<ArchitectHandoff | null>(null);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setHandoffCopyState("idle");
+    architectHandoffRef.current = null;
+    setHandoffError(null);
+  }, [handoffHasOpenQuestions, request.id, request.status, request.updated_at]);
+
+  async function copyHandoff() {
+    setHandoffCopyState("copying");
+    setHandoffError(null);
+
+    try {
+      const result = await onCopyArchitectHandoff(request.id, architectHandoffRef.current);
+      architectHandoffRef.current = result.handoff;
+      setHandoffCopyState(result.copied ? "copied" : "error");
+      setHandoffError(result.copyError ? `Handoff is ready, but clipboard copy failed: ${result.copyError}` : null);
+    } catch (caught) {
+      setHandoffCopyState("error");
+      setHandoffError(caught instanceof Error ? caught.message : "Architect handoff could not be copied");
+    }
+  }
 
   return (
     <>
@@ -5715,6 +6048,23 @@ function RequestDetailContent({ detail, onSelectGuidance }: { detail: WorkReques
         badge={<Badge variant={operationalBadgeVariant(operational, request.status)}>{operationalLabel(operational, request.status)}</Badge>}
       />
       <div className="grid gap-4">
+        {handoffEligible ? (
+          <div className={cn("handoff-action-panel", handoffHasOpenQuestions && "handoff-action-panel-muted")} data-guidance-section style={{ animationDelay: "58ms" }}>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold">{handoffHasOpenQuestions ? "Resume architect clarification" : "Agent handoff"}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {handoffHasOpenQuestions
+                  ? "Open questions remain. Copy this handoff for the architect agent that will continue the human feedback loop."
+                  : "Copy the safe architect prompt for the agent that will own this request."}
+              </p>
+              {handoffError ? <p className="mt-2 text-xs text-destructive">{handoffError}</p> : null}
+            </div>
+            <Button type="button" size="sm" variant={handoffHasOpenQuestions ? "outline" : "default"} onClick={() => void copyHandoff()} disabled={handoffCopyState === "copying"}>
+              {handoffCopyState === "copying" ? <Loader2 className="size-4 animate-spin" /> : handoffCopyState === "copied" ? <CheckCircle2 className="size-4" /> : <Copy className="size-4" />}
+              {handoffCopyState === "copied" ? "Copied" : handoffButtonLabel}
+            </Button>
+          </div>
+        ) : null}
         <DetailStatGrid
           stats={[
             { label: "Open Questions", value: String(openQuestions.length || request.open_question_count || 0) },
@@ -7157,7 +7507,7 @@ function workstreamWires(details: WorkRequestDetail[], packages: WorkPackageCard
         id: `${source}->${targetNode}:${index}:slice`,
         from: source,
         to: targetNode,
-        tone: wireToneForSlice(target, pkg),
+        tone: wireToneForSliceTarget(target),
       }];
 
       if (pkg) {
@@ -7166,7 +7516,7 @@ function workstreamWires(details: WorkRequestDetail[], packages: WorkPackageCard
           id: `${targetNode}->${packageTargetNode}:${index}:package`,
           from: targetNode,
           to: packageTargetNode,
-          tone: wireToneForSlice(target, pkg),
+          tone: wireToneForPackageTarget(pkg, sliceLane(target, pkg)),
         });
       }
 
@@ -7265,8 +7615,12 @@ function blockerFallbackSourceNode(edge: ActiveBlockingEdge, context: ReturnType
   return undefined;
 }
 
-function wireToneForSlice(slice: PlannedSlice, pkg?: WorkPackageCard): BoardWireTone {
-  return sliceCardTone(slice, pkg, sliceLane(slice, pkg));
+function wireToneForSliceTarget(slice: PlannedSlice): BoardWireTone {
+  return sliceContractTone(slice);
+}
+
+function wireToneForPackageTarget(pkg: WorkPackageCard, lane: BoardLane): BoardWireTone {
+  return packageCardTone(pkg, lane);
 }
 
 function statusVariant(status?: string | null): BadgeTone {
