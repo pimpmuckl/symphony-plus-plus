@@ -34,6 +34,8 @@ readiness surfaces without replacing the base Linear-oriented runtime docs.
   `implementation_docs_symphplusplus/docs/04_MCP_AND_SKILL_CONTRACT.md`
 - Dashboard/operator cockpit:
   `implementation_docs_symphplusplus/docs/07_DASHBOARD_SPEC.md`
+- V3 Execution Atlas product direction:
+  `implementation_docs_symphplusplus/docs/execution_atlas/README.md`
 
 For new Symphony++ work, start from a live WorkPackage or operator-approved
 package request. Do not treat historical implementation phase notes as current
@@ -76,7 +78,7 @@ rules.
 - `scripts/sympp-worker-secret.sh` contains the non-Windows local private-file
   MCP bootstrap wrapper for worker secrets.
 - `implementation_docs_symphplusplus/docs/` contains the product, permission,
-  MCP, dashboard, GitHub, operator, and release contracts.
+  MCP, dashboard, GitHub, operator, release, and V3 Execution Atlas contracts.
 - `implementation_docs_symphplusplus/runbooks/` contains operator runbooks.
 - `implementation_docs_symphplusplus/review/` contains readiness and reviewer
   checklists.
