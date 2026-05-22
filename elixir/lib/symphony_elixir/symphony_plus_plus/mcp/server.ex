@@ -1269,13 +1269,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp safe_endpoint_port(port) when is_integer(port) and port >= 0 and port <= 65_535, do: ":#{port}"
+
   defp safe_endpoint_port(_port), do: ""
 
   defp repo_configured_database_for_identity(repo) when is_atom(repo) do
     if Code.ensure_loaded?(repo) and function_exported?(repo, :config, 0) do
       repo.config()
-      |> Keyword.get(:database)
-      |> normalized_database()
+      |> configured_database_for_identity()
     end
   rescue
     _error -> nil
@@ -1287,6 +1288,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case repo_configured_database_for_identity(repo) do
       repo_database when is_binary(repo_database) -> repo_database == database
       _database -> false
+    end
+  end
+
+  defp configured_database_for_identity(config) when is_list(config) do
+    configured_database_url_for_identity(config) ||
+      configured_database_host_for_identity(config) ||
+      config |> Keyword.get(:database) |> normalized_database()
+  end
+
+  defp configured_database_for_identity(_config), do: nil
+
+  defp configured_database_url_for_identity(config) do
+    config
+    |> Keyword.get(:url)
+    |> normalized_database()
+  end
+
+  defp configured_database_host_for_identity(config) do
+    host =
+      config
+      |> Keyword.get(:hostname)
+      |> case do
+        host when is_binary(host) and host != "" -> host
+        _missing -> Keyword.get(config, :host)
+      end
+      |> normalized_database()
+
+    if is_binary(host) do
+      port = Keyword.get(config, :port) |> safe_endpoint_port()
+      "server://#{host}#{port}"
     end
   end
 
