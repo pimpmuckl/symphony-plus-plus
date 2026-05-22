@@ -556,6 +556,42 @@ function Get-HealthSourceRevision($Payload) {
   }
 }
 
+function Test-NonEmptyString($Value) {
+  return $null -ne $Value -and -not [string]::IsNullOrWhiteSpace([string]$Value)
+}
+
+function Test-HealthLedgerIdentity($Payload) {
+  if ($null -eq $Payload -or -not $Payload.PSObject.Properties["result"]) {
+    return [pscustomobject]@{ ok = $false; reason = "missing_result" }
+  }
+
+  $structuredContent = $Payload.result.structuredContent
+  if ($null -eq $structuredContent -or -not $structuredContent.PSObject.Properties["ledger"]) {
+    return [pscustomobject]@{ ok = $false; reason = "missing_ledger" }
+  }
+
+  $ledger = $structuredContent.ledger
+  if ($null -eq $ledger -or -not $ledger.PSObject.Properties["identity"]) {
+    return [pscustomobject]@{ ok = $false; reason = "missing_ledger_identity" }
+  }
+
+  $identity = $ledger.identity
+  if ($null -eq $identity -or -not (Test-NonEmptyString $identity.kind) -or -not (Test-NonEmptyString $identity.source)) {
+    return [pscustomobject]@{ ok = $false; reason = "incomplete_ledger_identity" }
+  }
+
+  $kind = [string]$identity.kind
+  if ($kind -eq "sqlite" -and -not (Test-NonEmptyString $identity.display_path)) {
+    return [pscustomobject]@{ ok = $false; reason = "missing_sqlite_display_path" }
+  }
+
+  if ($kind -eq "server" -and -not (Test-NonEmptyString $identity.endpoint)) {
+    return [pscustomobject]@{ ok = $false; reason = "missing_server_endpoint" }
+  }
+
+  return [pscustomobject]@{ ok = $true; reason = $null }
+}
+
 function Invoke-HealthSmoke([string]$SessionId, [string]$ExpectedRevision) {
   $healthResponse = Invoke-McpPost $Url (New-ToolCallRequest "sympp-http-smoke-health" "sympp.health" @{}) $SessionId
   if (-not $healthResponse.ok) {
@@ -600,6 +636,14 @@ function Invoke-HealthSmoke([string]$SessionId, [string]$ExpectedRevision) {
           daemonSourceRevision = $actualRevision
         }
       }
+    }
+  }
+
+  $identityCheck = Test-HealthLedgerIdentity $healthPayload
+  if (-not $identityCheck.ok) {
+    return [pscustomobject]@{
+      ok = $false
+      result = New-SmokeResult "health_ledger_identity_missing" "MCP sympp.health did not report a complete safe ledger identity ($($identityCheck.reason))."
     }
   }
 

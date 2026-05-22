@@ -400,11 +400,13 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
 
   defp configured_database(repo) do
     repo_database = repo_configured_database(repo)
+    sympp_repo_database = Application.get_env(:symphony_elixir, :sympp_repo_database) |> normalize_database()
 
-    if custom_repo?(repo) and not is_nil(repo_database) do
-      repo_database
-    else
-      Application.get_env(:symphony_elixir, :sympp_repo_database) || repo_database || default_repo_database()
+    cond do
+      custom_repo?(repo) and not is_nil(repo_database) -> repo_database
+      not is_nil(sympp_repo_database) -> sympp_repo_database
+      not is_nil(repo_database) -> repo_database
+      true -> nil
     end
   end
 
@@ -422,13 +424,6 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
   end
 
   defp repo_configured_database(_repo), do: nil
-
-  defp default_repo_database do
-    Repo.database_path()
-    |> normalize_database()
-  rescue
-    _error -> nil
-  end
 
   defp normalize_database(database) when is_binary(database) do
     if String.trim(database) == "", do: nil, else: database

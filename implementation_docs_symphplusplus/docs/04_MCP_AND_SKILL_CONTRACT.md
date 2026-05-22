@@ -38,6 +38,11 @@ endpoint contract:
 - Dispatch uses the existing dashboard lazy-repo access path so the configured
   local ledger is live and migrated before MCP tools run. Ledger startup or
   migration failures fail closed with a JSON-RPC server error.
+- `sympp.health` includes `ledger.reachable` and `ledger.identity`. The
+  identity distinguishes omitted/default SQLite configuration from explicit
+  SQLite configuration with `kind`, `source`, `display_path`, and
+  `default_home`; remote/server-style configuration is reduced to a safe
+  scheme/host/port endpoint and never includes credentials or query strings.
 - Notifications that do not produce JSON-RPC responses return HTTP 202 with no
   body.
 - `GET /mcp` returns HTTP 405 because this slice does not implement SSE.
@@ -225,6 +230,11 @@ Unbound/generic MCP sessions also advertise `sympp.health`, the recovery
 `claim_work_key` tool, `claim_private_handoff`, `create_work_request`, Solo
 Session tools, and static architect schemas. They do not advertise any other
 worker mutation tools until a valid grant is bound.
+
+`sympp.health` is safe to run before or after claim. It reports only server
+version/source, mode, ledger reachability, and a redacted ledger identity; it
+does not expose WorkPackage data, raw worker secrets, bearer tokens, database
+passwords, or private-store handoff contents.
 
 `claim_work_key` intentionally requires both the one-time secret and a stable
 `claimed_by` owner identity. Symphony++ uses that identity as part of the MCP
