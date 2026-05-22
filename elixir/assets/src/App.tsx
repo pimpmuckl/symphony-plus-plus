@@ -21,6 +21,15 @@ import type * as React from "react";
 import { Children, FormEvent, isValidElement, useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
+import {
+  DetailDisclosure,
+  DetailFacts,
+  DetailHeader,
+  DetailList,
+  DetailSection,
+  DetailStatGrid,
+  JsonDetail,
+} from "@/components/dashboard/detail-layout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -6287,69 +6296,6 @@ function SoloPlanningGroup({
   );
 }
 
-function DetailHeader({ title, eyebrow, badge }: { title: string; eyebrow: string; badge?: React.ReactNode }) {
-  return (
-    <DialogHeader data-guidance-section style={{ animationDelay: "35ms" }}>
-      <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <DialogTitle className="pr-6">{title}</DialogTitle>
-          <DialogDescription className="mt-1 truncate">{eyebrow}</DialogDescription>
-        </div>
-        {badge ? <div className="shrink-0 sm:pr-6">{badge}</div> : null}
-      </div>
-    </DialogHeader>
-  );
-}
-
-function DetailStatGrid({ stats }: { stats: Array<{ label: string; value: string }> }) {
-  return (
-    <div className="detail-stat-grid" data-guidance-section style={{ animationDelay: "70ms" }}>
-      {stats.map((stat) => (
-        <div key={stat.label} className="detail-stat">
-          <span>{stat.label}</span>
-          <strong>{stat.value}</strong>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="detail-section" data-guidance-section style={{ animationDelay: "95ms" }}>
-      <h3>{title}</h3>
-      <div className="detail-section-body">{children}</div>
-    </section>
-  );
-}
-
-function DetailDisclosure({
-  title,
-  meta,
-  children,
-  defaultOpen = false,
-}: {
-  title: string;
-  meta?: string;
-  children: React.ReactNode;
-  defaultOpen?: boolean;
-}) {
-  return (
-    <Collapsible defaultOpen={defaultOpen} className="detail-disclosure" data-guidance-section style={{ animationDelay: "120ms" }}>
-      <CollapsibleTrigger className="detail-disclosure-trigger">
-        <span className="flex min-w-0 items-center gap-2">
-          <ChevronRight className="detail-disclosure-chevron size-4 shrink-0 transition-transform duration-150" />
-          <span className="truncate">{title}</span>
-        </span>
-        {meta ? <span className="truncate text-xs text-muted-foreground">{meta}</span> : null}
-      </CollapsibleTrigger>
-      <CollapsibleContent className="collapsible-content">
-        <div className="detail-disclosure-body">{children}</div>
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
-
 function RecentDecisionsDisclosure({ detail }: { detail: WorkRequestDetail }) {
   const decisions = latestDecisionLogs(detail);
 
@@ -6403,41 +6349,6 @@ function detailActivityKey(item: { title?: string | null; body?: string | null; 
   return `activity:${hashText([item.title, item.body, item.at].filter(Boolean).join("|"))}`;
 }
 
-function DetailFacts({ facts }: { facts: Array<[string, string | null | undefined]> }) {
-  return (
-    <dl className="detail-facts">
-      {facts.map(([label, value]) => (
-        <div key={label}>
-          <dt>{label}</dt>
-          <dd>{value || "Not recorded"}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
-function DetailList({ title, items, empty }: { title: string; items: string[]; empty: string }) {
-  const visibleItems = items.filter(Boolean).slice(0, 4);
-
-  return (
-    <div className="grid gap-2">
-      <p className="text-xs font-semibold text-muted-foreground">{title}</p>
-      {visibleItems.length > 0 ? (
-        <ul className="grid gap-1.5 text-sm text-muted-foreground">
-          {visibleItems.map((item) => (
-            <li key={item} className="detail-bullet">
-              {item}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="text-sm text-muted-foreground">{empty}</p>
-      )}
-      {items.length > visibleItems.length ? <p className="text-xs text-muted-foreground">+{items.length - visibleItems.length} more</p> : null}
-    </div>
-  );
-}
-
 function DetailAttentionList({ items }: { items: OperationalAttention[] }) {
   const visibleItems = items.slice(0, 3);
 
@@ -6479,17 +6390,6 @@ function LineageDisclosure({ lineage }: { lineage: WorkPackageCard["lineage"] })
         {attentionItems.length > 0 ? <DetailAttentionList items={attentionItems} /> : null}
       </div>
     </DetailDisclosure>
-  );
-}
-
-function JsonDetail({ label, value }: { label: string; value?: Record<string, unknown> }) {
-  if (!value || Object.keys(value).length === 0) return null;
-
-  return (
-    <div className="grid gap-2">
-      <p className="text-xs font-semibold text-muted-foreground">{label}</p>
-      <pre className="detail-json">{JSON.stringify(value, null, 2)}</pre>
-    </div>
   );
 }
 
