@@ -12,7 +12,7 @@ resources, and the docs below.
 ## Contents
 
 - `docs/` - operator guide, product spec, permission, MCP, testing, dashboard,
-  GitHub, release, and role-boundary documents.
+  GitHub, release, role-boundary, and V3 Execution Atlas documents.
 - `templates/` - worker/architect/reviewer prompts, Symphony++ workflow
   template, skill template, status templates, quick-work examples, and optional
   Codex hook nudges.
@@ -29,6 +29,7 @@ resources, and the docs below.
 - Product/operator guide: `docs/01_IMPLEMENTATION_GUIDE.md`
 - v2 intake product contract: `docs/13_WORKREQUEST_CONTRACT.md`
 - Solo Session product contract: `docs/14_SOLO_SESSION_CONTRACT.md`
+- V3 Execution Atlas product direction: `docs/execution_atlas/README.md`
 - Role-oriented walkthrough: `docs/12_OPERATOR_TRAINING.md`
 - Short command-flow runbook: `docs/09_OPERATIONAL_RUNBOOK.md`
 - Release gate: `docs/11_RELEASE_VALIDATION.md`

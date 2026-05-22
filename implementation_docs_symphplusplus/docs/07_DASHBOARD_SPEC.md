@@ -374,3 +374,19 @@ Human says ready
 ```
 
 Do not collapse these into one boolean.
+
+## Future: Execution Atlas
+
+The current operator cockpit remains the live V2 dashboard contract: it shows
+WorkRequests, WorkPackages, reviews, handoffs, blockers, and runtime activity.
+The V3 direction is documented separately as the Execution Atlas:
+
+```text
+implementation_docs_symphplusplus/docs/execution_atlas/README.md
+```
+
+Execution Atlas is the proposed human-first projection that groups slices and
+packages into nested topics, dependency-aware capability rows, attention items,
+and next moves. It should build on the cockpit data instead of replacing raw
+ledger records. Until V3 is implemented, dashboard changes should continue to
+preserve the V2 operational truth model documented above.
