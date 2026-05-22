@@ -1029,7 +1029,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp configured_ledger_health(repo, database) do
     case configured_ledger(database, "explicit") do
       {:sqlite, path, identity} ->
-        configured_sqlite_ledger_health(repo, path, identity)
+        case configured_server_ledger_for_explicit_database(repo, database, "explicit") do
+          {:server, identity} -> repo_reachable_ledger_health(repo, identity)
+          nil -> configured_sqlite_ledger_health(repo, path, identity)
+        end
 
       {:server, identity} ->
         if explicit_database_matches_repo_config?(repo, database) do
@@ -1096,6 +1099,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case repo_configured_database_for_identity(repo) do
       database when is_binary(database) -> configured_ledger_identity(database, source)
       _database -> unknown_ledger_identity(source)
+    end
+  end
+
+  defp configured_server_ledger_for_explicit_database(repo, database, source) do
+    with config when is_list(config) <- repo_config_for_identity(repo),
+         true <- explicit_database_name_matches_repo_config?(config, database),
+         identity_database when is_binary(identity_database) <- configured_server_database_for_identity(config) do
+      {:server, server_ledger_identity(identity_database, source)}
+    else
+      _unmatched -> nil
     end
   end
 
@@ -1218,6 +1231,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     values = server_database_dsn_values(database)
 
     Enum.any?(["host", "hostname", "server", "addr", "address", "datasource"], &Map.has_key?(values, &1)) or
+      Map.has_key?(values, "dbname") or
       (Map.has_key?(values, "database") and (Map.has_key?(values, "port") or Map.has_key?(values, "trustedconnection")))
   end
 
@@ -1273,16 +1287,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp safe_endpoint_port(_port), do: ""
 
-  defp repo_configured_database_for_identity(repo) when is_atom(repo) do
+  defp repo_config_for_identity(repo) when is_atom(repo) do
     if Code.ensure_loaded?(repo) and function_exported?(repo, :config, 0) do
       repo.config()
-      |> configured_database_for_identity()
     end
   rescue
     _error -> nil
   end
 
-  defp repo_configured_database_for_identity(_repo), do: nil
+  defp repo_config_for_identity(_repo), do: nil
+
+  defp repo_configured_database_for_identity(repo) do
+    repo
+    |> repo_config_for_identity()
+    |> configured_database_for_identity()
+  end
 
   defp explicit_database_matches_repo_config?(repo, database) do
     case repo_configured_database_for_identity(repo) do
@@ -1298,6 +1317,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp configured_database_for_identity(_config), do: nil
+
+  defp configured_server_database_for_identity(config) when is_list(config) do
+    configured_database_url_for_identity(config) || configured_database_host_for_identity(config)
+  end
+
+  defp configured_server_database_for_identity(_config), do: nil
 
   defp configured_database_url_for_identity(config) do
     config
@@ -1319,6 +1344,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       port = Keyword.get(config, :port) |> safe_endpoint_port()
       "server://#{safe_endpoint_host(host)}#{port}"
     end
+  end
+
+  defp explicit_database_name_matches_repo_config?(config, database) do
+    config
+    |> Keyword.get(:database)
+    |> normalized_database()
+    |> Kernel.==(database)
   end
 
   defp sqlite_display_path(":memory:"), do: ":memory:"

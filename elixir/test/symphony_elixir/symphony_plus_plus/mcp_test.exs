@@ -97,6 +97,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     def query(sql, _params, _opts) when is_binary(sql), do: {:ok, %{rows: [[1]]}}
   end
 
+  defmodule DefaultRemoteDbnameHealthRepo do
+    def config, do: [database: "dbname=sympp"]
+    def query("PRAGMA database_list", _params, _opts), do: {:error, :unsupported}
+    def query(sql, _params, _opts) when is_binary(sql), do: {:ok, %{rows: [[1]]}}
+  end
+
   defmodule BusyPrSyncRepo do
     def get(AccessGrant, "grant-pr-sync-service") do
       %AccessGrant{
@@ -671,6 +677,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute inspect(response) =~ "dbname=sympp"
     refute inspect(response) =~ "host="
 
+    explicit_name_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "explicit-remote-name-health",
+          "method" => "tools/call",
+          "params" => %{"name" => "sympp.health", "arguments" => %{}}
+        },
+        config: Config.default(repo: DefaultRemoteHealthRepo, database: "sympp")
+      )
+
+    assert get_in(explicit_name_response, ["result", "structuredContent", "ledger", "reachable"]) == true
+
+    assert get_in(explicit_name_response, ["result", "structuredContent", "ledger", "identity"]) == %{
+             "kind" => "server",
+             "source" => "explicit",
+             "endpoint" => "server://ledger-prod.example.test:15432"
+           }
+
     ipv6_response =
       MCPHarness.request(
         %{
@@ -686,6 +711,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              "kind" => "server",
              "source" => "default",
              "endpoint" => "server://[::1]:15432"
+           }
+
+    dbname_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "default-remote-dbname-health",
+          "method" => "tools/call",
+          "params" => %{"name" => "sympp.health", "arguments" => %{}}
+        },
+        config: Config.default(repo: DefaultRemoteDbnameHealthRepo)
+      )
+
+    assert get_in(dbname_response, ["result", "structuredContent", "ledger", "reachable"]) == true
+
+    assert get_in(dbname_response, ["result", "structuredContent", "ledger", "identity"]) == %{
+             "kind" => "server",
+             "source" => "default",
+             "endpoint" => "server"
+           }
+
+    explicit_dbname_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "explicit-remote-dbname-health",
+          "method" => "tools/call",
+          "params" => %{"name" => "sympp.health", "arguments" => %{}}
+        },
+        config: Config.default(repo: DefaultRemoteDbnameHealthRepo, database: "dbname=sympp")
+      )
+
+    assert get_in(explicit_dbname_response, ["result", "structuredContent", "ledger", "reachable"]) == true
+
+    assert get_in(explicit_dbname_response, ["result", "structuredContent", "ledger", "identity"]) == %{
+             "kind" => "server",
+             "source" => "explicit",
+             "endpoint" => "server"
            }
   end
 
