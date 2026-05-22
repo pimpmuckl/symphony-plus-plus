@@ -136,7 +136,7 @@ function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [strin
 
   New-Item -ItemType Directory -Path $TargetRoot -Force | Out-Null
 
-  foreach ($item in @(".codex-plugin", ".mcp.json", "skills", "skills-default", "scripts", "README.md")) {
+  foreach ($item in @(".codex-plugin", ".mcp.json", "assets", "skills", "skills-default", "scripts", "README.md")) {
     $source = Join-Path $SourceRoot $item
     $target = Join-Path $TargetRoot $item
     if (Test-Path -LiteralPath $source) {
@@ -153,6 +153,21 @@ function Copy-PluginCacheTarget([string]$TargetRoot, [string]$SourceRoot, [strin
   Assert-NotReparsePoint $sourceRootHintPath
   $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
   [System.IO.File]::WriteAllText($sourceRootHintPath, "$RepoRoot`n", $utf8NoBom)
+}
+
+function Remove-GeneratedLocalCacheEntry([string]$PluginCacheRoot) {
+  $localCacheRoot = Join-And-Normalize $PluginCacheRoot @("local")
+  Assert-SafeCacheTarget $localCacheRoot $PluginCacheRoot
+  if (-not (Test-Path -LiteralPath $localCacheRoot)) {
+    return
+  }
+
+  if (Test-GeneratedDefaultPluginCache $localCacheRoot) {
+    Remove-ManagedCachePath $localCacheRoot $PluginCacheRoot "Removed stale generated Symphony++ local plugin cache"
+    return
+  }
+
+  throw "Unmarked local plugin cache entry still exists. Inspect and remove it manually if obsolete, then rerun refresh: $localCacheRoot"
 }
 
 function Assert-SafeVersionSegment([string]$Version) {
@@ -286,6 +301,15 @@ function Assert-CachePluginConfig([string]$TargetRoot, [string]$ExpectedVersion)
   }
   if ($targetManifest.version -ne $ExpectedVersion) {
     throw "Installed plugin manifest version mismatch in $targetManifestPath."
+  }
+  foreach ($iconProperty in @("composerIcon", "logo")) {
+    if ($targetManifest.interface.$iconProperty -ne "./assets/splusplus-logo.png") {
+      throw "Installed plugin manifest must declare interface.$iconProperty './assets/splusplus-logo.png': $targetManifestPath"
+    }
+  }
+  $iconPath = Join-Path $TargetRoot "assets/splusplus-logo.png"
+  if (-not (Test-Path -LiteralPath $iconPath)) {
+    throw "Installed plugin icon is missing from cache: $iconPath"
   }
   $manifestHasMcpServers = @($targetManifest.PSObject.Properties.Name) -contains "mcpServers"
   if ($PluginName -eq "symphony-plus-plus" -and $manifestHasMcpServers) {
@@ -440,23 +464,21 @@ Assert-PathInside $pluginCacheRoot $cacheRoot "Resolved plugin cache path is out
 Assert-PathInside $defaultPluginCacheRoot $cacheRoot "Resolved default plugin cache path is outside Codex plugin cache"
 Assert-ExistingCachePathNotReparsePoint @($codexHomePath, $pluginsRoot, $cacheRoot, $marketplaceCacheRoot, $pluginCacheRoot)
 
-$localTargetRoot = Join-And-Normalize $pluginCacheRoot @("local")
 $versionTargetRoot = Join-And-Normalize $pluginCacheRoot @($manifestVersion)
 
 New-Item -ItemType Directory -Path $pluginCacheRoot -Force | Out-Null
 Repair-IncompatibleDefaultPluginCacheEntries $defaultPluginCacheRoot
 
-Copy-PluginCacheTarget $localTargetRoot $sourceRoot $repoRoot
 Copy-PluginCacheTarget $versionTargetRoot $sourceRoot $repoRoot
 
 if ($ValidateInstalledCache) {
-  Invoke-InstalledCacheValidation $localTargetRoot "local" $manifestVersion
   Invoke-InstalledCacheValidation $versionTargetRoot $manifestVersion $manifestVersion
 }
 
+Remove-GeneratedLocalCacheEntry $pluginCacheRoot
+
 Write-Host "Refreshed local Codex plugin cache:"
 Write-Host "  source: $sourceRoot"
-Write-Host "  local target: $localTargetRoot"
 Write-Host "  version target: $versionTargetRoot"
 Write-Host ""
 Write-Host "Restart or reload Codex to pick up refreshed plugin skills and MCP servers."
