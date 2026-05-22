@@ -97,10 +97,12 @@ const LOCAL_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, { month: "short"
 const TOP_PANEL_ORDER: TopPanelKey[] = ["guidance", "blockers", "finished"];
 const TOP_PANEL_RESIZE_MS = 210;
 const TOP_PANEL_SLIDE_MS = 360;
-const UPDATE_ANIMATION_TTL_MS = 1800;
+const CARD_BODY_RESIZE_MS = TOP_PANEL_RESIZE_MS;
+const CARD_BODY_CONTENT_MS = TOP_PANEL_SLIDE_MS;
+const UPDATE_ANIMATION_TTL_MS = 4000;
 const WORKSPACE_TAB_SLIDE_MS = 360;
-const BADGE_TEXT_PUSH_MS = 220;
-const BADGE_RESIZE_MS = 150;
+const BADGE_TEXT_PUSH_MS = 3200;
+const BADGE_RESIZE_MS = 400;
 const DEFAULT_DASHBOARD_API_BASE = "/api/v1/sympp/operator";
 const PR_SYNC_INTERVAL_MS = 60_000;
 
@@ -161,6 +163,11 @@ type WorkstreamLayoutMode = "jira" | "aligned";
 type DashboardTheme = "light" | "dark";
 type UpdateMotionKind = "added" | "changed" | "guidance" | "blocker" | "finished";
 type UpdateMotion = { kind: UpdateMotionKind | "settled"; token: number };
+type CardBodySizePhase = "idle" | "pre-grow" | "enter" | "pre-shrink" | "post-shrink";
+type UpdateMotionsAction =
+  | { type: "clear" }
+  | { type: "merge"; motions: Record<string, UpdateMotion> }
+  | { type: "settle"; entries: [string, UpdateMotion][] };
 type BadgePushPhase = "idle" | "measure" | "resize-first" | "push" | "resize-last";
 type UpdateAnimationEntity = {
   signature: string;
@@ -187,6 +194,20 @@ type CardDetailSelection =
   | { kind: "solo"; session: SoloSession };
 type CardDetailSelect = (selection: CardDetailSelection) => void;
 type HandoffCopyState = "idle" | "copying" | "copied" | "error";
+type ScopedHandoffCopy = {
+  error: string | null;
+  identity: string;
+  state: HandoffCopyState;
+};
+type AnimatedCardBodyState = {
+  targetKey: string;
+  renderedChildren: React.ReactNode;
+  phase: CardBodySizePhase;
+  height: number | "auto";
+};
+type AnimatedCardBodyAction =
+  | { type: "replace"; state: AnimatedCardBodyState }
+  | { type: "patch"; state: Partial<AnimatedCardBodyState> };
 type DashboardUiState = {
   workspaceTab?: WorkspaceTab;
   topPanel?: TopPanelKey | null;
@@ -273,6 +294,36 @@ async function copyTextToClipboard(value: string) {
   } finally {
     document.body.removeChild(textArea);
   }
+}
+
+function useScopedHandoffCopy(identity: string) {
+  const [copy, setCopy] = useState<ScopedHandoffCopy>({ error: null, identity, state: "idle" });
+  const handoffRef = useRef<{ handoff: ArchitectHandoff | null; identity: string }>({ handoff: null, identity: "" });
+
+  const current = copy.identity === identity ? copy : { error: null, identity, state: "idle" as const };
+  const cachedHandoff = useCallback(() => (handoffRef.current.identity === identity ? handoffRef.current.handoff : null), [identity]);
+  const startCopy = useCallback(() => setCopy({ error: null, identity, state: "copying" }), [identity]);
+  const recordCopyResult = useCallback(
+    (result: ArchitectHandoffCopyResult) => {
+      handoffRef.current = { handoff: result.handoff, identity };
+      setCopy({
+        error: result.copyError ? `Handoff is ready, but clipboard copy failed: ${result.copyError}` : null,
+        identity,
+        state: result.copied ? "copied" : "error",
+      });
+    },
+    [identity],
+  );
+  const recordCopyError = useCallback((error: string) => setCopy({ error, identity, state: "error" }), [identity]);
+
+  return {
+    cachedHandoff,
+    error: current.error,
+    recordCopyError,
+    recordCopyResult,
+    startCopy,
+    state: current.state,
+  };
 }
 
 type BlockerItem = {
@@ -469,6 +520,20 @@ const initialRequestForm: NewRequestForm = {
   human_description: "",
 };
 
+type NewRequestFormUpdate = React.SetStateAction<NewRequestForm>;
+
+function syncNewRequestFormToRepos(form: NewRequestForm, repos: RepoSummary[], repoChoices: string[]): NewRequestForm {
+  const repo = repoChoices.includes(form.repo) ? form.repo : repoChoices[0] || initialRequestForm.repo;
+  const branches = baseBranchOptionsForRepo(repos, repo);
+  const baseBranch = branches.includes(form.base_branch) ? form.base_branch : branches[0] || initialRequestForm.base_branch;
+
+  return repo === form.repo && baseBranch === form.base_branch ? form : { ...form, repo, base_branch: baseBranch };
+}
+
+function newRequestFormReducer(form: NewRequestForm, update: NewRequestFormUpdate): NewRequestForm {
+  return typeof update === "function" ? update(form) : update;
+}
+
 type NewRequestDialogState = {
   submitting: boolean;
   createdRequest: WorkRequestDetail | null;
@@ -515,6 +580,28 @@ function newRequestDialogReducer(state: NewRequestDialogState, action: NewReques
         handoffCopyState: action.result.copied ? "copied" : "error",
         error: action.result.copyError ? `Handoff is ready, but clipboard copy failed: ${action.result.copyError}` : null,
       };
+  }
+}
+
+function updateMotionsReducer(current: Record<string, UpdateMotion>, action: UpdateMotionsAction): Record<string, UpdateMotion> {
+  switch (action.type) {
+    case "clear":
+      return Object.keys(current).length === 0 ? current : {};
+    case "merge":
+      return { ...current, ...action.motions };
+    case "settle": {
+      let changed = false;
+      const next = { ...current };
+
+      action.entries.forEach(([key, motion]) => {
+        if (next[key]?.token === motion.token) {
+          next[key] = { kind: "settled", token: motion.token };
+          changed = true;
+        }
+      });
+
+      return changed ? next : current;
+    }
   }
 }
 
@@ -877,29 +964,17 @@ function useDashboardUpdateAnimations({
   const latestSnapshotRef = useRef<Map<string, UpdateAnimationEntity>>(new Map());
   const timersRef = useRef<number[]>([]);
   const tokenRef = useRef(0);
-  const [motions, setMotions] = useState<Record<string, UpdateMotion>>({});
+  const [motions, dispatchMotions] = useReducer(updateMotionsReducer, {});
   const [countPulses, setCountPulses] = useState<Record<TopPanelKey, number>>({ blockers: 0, finished: 0, guidance: 0 });
 
   const applyMotions = useCallback((nextMotions: Record<string, UpdateMotion>) => {
     const motionEntries = Object.entries(nextMotions);
     if (motionEntries.length === 0) return;
 
-    setMotions((current) => ({ ...current, ...nextMotions }));
+    dispatchMotions({ type: "merge", motions: nextMotions });
 
     const timer = window.setTimeout(() => {
-      setMotions((current) => {
-        let changed = false;
-        const next = { ...current };
-
-        motionEntries.forEach(([key, motion]) => {
-          if (next[key]?.token === motion.token) {
-            next[key] = { kind: "settled", token: motion.token };
-            changed = true;
-          }
-        });
-
-        return changed ? next : current;
-      });
+      dispatchMotions({ type: "settle", entries: motionEntries });
     }, UPDATE_ANIMATION_TTL_MS);
 
     timersRef.current.push(timer);
@@ -917,7 +992,7 @@ function useDashboardUpdateAnimations({
     if (!ready) {
       latestSnapshotRef.current = new Map();
       previousSnapshotRef.current = null;
-      setMotions((current) => (Object.keys(current).length > 0 ? {} : current));
+      dispatchMotions({ type: "clear" });
       return;
     }
 
@@ -943,7 +1018,7 @@ function useDashboardUpdateAnimations({
     applyMotions(nextMotions);
   }, [applyMotions, blockerItems, finishedHighlights, guidanceItems, packages, ready, requestDetails, soloSessions]);
 
-  const motionFor = useCallback((key?: string | null) => (key ? motions[key] : undefined), [motions]);
+  const motionFor = useCallback((key?: string | null) => (ready && key ? motions[key] : undefined), [motions, ready]);
   const countPulseFor = useCallback((panel: TopPanelKey) => countPulses[panel] || 0, [countPulses]);
   const simulate = useCallback(
     (kind: UpdateMotionKind) => {
@@ -2568,6 +2643,108 @@ function animatedBadgeReducer(state: AnimatedBadgeState, action: AnimatedBadgeAc
   }
 }
 
+function animatedCardBodyReducer(state: AnimatedCardBodyState, action: AnimatedCardBodyAction): AnimatedCardBodyState {
+  if (action.type === "replace") return action.state;
+  return { ...state, ...action.state };
+}
+
+function AnimatedCardBody({ motionKey, children }: { motionKey: string; children: React.ReactNode }) {
+  const visibleRef = useRef<HTMLDivElement | null>(null);
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const measureRef = useRef<HTMLDivElement | null>(null);
+  const timersRef = useRef<number[]>([]);
+  const framesRef = useRef<number[]>([]);
+  const [state, dispatch] = useReducer(animatedCardBodyReducer, {
+    targetKey: motionKey,
+    renderedChildren: children,
+    phase: "idle",
+    height: "auto",
+  });
+
+  useEffect(
+    () => () => {
+      clearTopPanelTimers(timersRef, framesRef);
+    },
+    [],
+  );
+
+  useLayoutEffect(() => {
+    if (motionKey === state.targetKey) return;
+
+    clearTopPanelTimers(timersRef, framesRef);
+
+    if (dashboardPrefersReducedMotion()) {
+      dispatch({ type: "replace", state: { targetKey: motionKey, renderedChildren: children, phase: "idle", height: "auto" } });
+      return;
+    }
+
+    const oldHeight = measureElementHeight(frameRef.current) || measureElementHeight(visibleRef.current);
+    const newHeight = measureElementHeight(measureRef.current);
+
+    if (Math.abs(newHeight - oldHeight) <= 2) {
+      dispatch({ type: "replace", state: { targetKey: motionKey, renderedChildren: children, phase: "idle", height: "auto" } });
+      return;
+    }
+
+    if (newHeight > oldHeight) {
+      dispatch({
+        type: "replace",
+        state: {
+          targetKey: motionKey,
+          renderedChildren: state.renderedChildren,
+          phase: "pre-grow",
+          height: oldHeight,
+        },
+      });
+      nextFrame(framesRef, () => dispatch({ type: "patch", state: { height: newHeight } }));
+      later(timersRef, CARD_BODY_RESIZE_MS, () => {
+        dispatch({ type: "patch", state: { renderedChildren: children, phase: "enter", height: newHeight } });
+        later(timersRef, CARD_BODY_CONTENT_MS, () => {
+          dispatch({ type: "patch", state: { phase: "idle", height: "auto" } });
+        });
+      });
+      return;
+    }
+
+    dispatch({
+      type: "replace",
+      state: {
+        targetKey: motionKey,
+        renderedChildren: children,
+        phase: "pre-shrink",
+        height: oldHeight,
+      },
+    });
+    later(timersRef, CARD_BODY_CONTENT_MS, () => {
+      dispatch({ type: "patch", state: { phase: "post-shrink" } });
+      nextFrame(framesRef, () => dispatch({ type: "patch", state: { height: newHeight } }));
+      later(timersRef, CARD_BODY_RESIZE_MS, () => {
+        dispatch({ type: "patch", state: { phase: "idle", height: "auto" } });
+      });
+    });
+  }, [children, motionKey, state.renderedChildren, state.targetKey]);
+
+  const renderedChildren = state.phase === "idle" && state.targetKey === motionKey ? children : state.renderedChildren;
+
+  return (
+    <div className="state-card-size-shell">
+      <div ref={measureRef} className="state-card-size-measure" aria-hidden="true">
+        <div className="state-card-size-inner">{children}</div>
+      </div>
+      <div
+        ref={frameRef}
+        className="state-card-size-frame"
+        data-card-size-phase={state.phase === "enter" ? "enter" : state.phase === "idle" ? "idle" : "sizing"}
+        style={state.height === "auto" ? undefined : { height: `${Math.max(state.height, 0)}px` }}
+      >
+        <div ref={visibleRef} className="state-card-size-inner">
+          {renderedChildren}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function stateCardClassName(tone: StateCardTone, className?: string) {
   return cn(
     "min-w-0 max-w-full rounded-lg border border-l-4 shadow-sm transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out",
@@ -2578,6 +2755,10 @@ function stateCardClassName(tone: StateCardTone, className?: string) {
 
 function stateCardStyle(tone: StateCardTone, style?: React.CSSProperties) {
   return { ...style, "--state-accent": STATE_CARD_TONES[tone].accent, borderLeftColor: STATE_CARD_TONES[tone].accent } as React.CSSProperties;
+}
+
+function stateCardBodyMotionKey(...parts: Array<string | number | boolean | null | undefined>) {
+  return parts.map((part) => (part === null || part === undefined ? "" : String(part))).join("|");
 }
 
 function wireToneStyle(tone: BoardWireTone) {
@@ -4070,13 +4251,14 @@ function RequestCard({
   const description = firstParagraph(request.human_description);
   const handoffEligible = architectHandoffEligibleRequest(request);
   const handoffHasOpenQuestions = questionCount > 0;
-  const [handoffCopyState, setHandoffCopyState] = useState<HandoffCopyState>("idle");
-  const architectHandoffRef = useRef<ArchitectHandoff | null>(null);
-
-  useEffect(() => {
-    setHandoffCopyState("idle");
-    architectHandoffRef.current = null;
-  }, [questionCount, request.id, request.status, request.updated_at]);
+  const handoffIdentity = `${questionCount}:${request.id}:${request.status || ""}:${request.updated_at || ""}`;
+  const {
+    cachedHandoff,
+    recordCopyError,
+    recordCopyResult,
+    startCopy,
+    state: handoffCopyState,
+  } = useScopedHandoffCopy(handoffIdentity);
 
   const answerQuestion = question
     ? (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -4084,22 +4266,35 @@ function RequestCard({
         onSelectGuidance(clarificationGuidanceItem(detail, question));
       }
     : undefined;
-  const copyHandoff = handoffEligible && onCopyArchitectHandoff
-    ? async (event: React.MouseEvent<HTMLButtonElement>) => {
-        event.stopPropagation();
-        setHandoffCopyState("copying");
+  const canCopyHandoff = handoffEligible && Boolean(onCopyArchitectHandoff);
+  const copyHandoff = useCallback(
+    async (event: React.MouseEvent<HTMLButtonElement>) => {
+      if (!onCopyArchitectHandoff) return;
 
-        try {
-          const result = await onCopyArchitectHandoff(request.id, architectHandoffRef.current);
-          architectHandoffRef.current = result.handoff;
-          setHandoffCopyState(result.copied ? "copied" : "error");
-        } catch {
-          setHandoffCopyState("error");
-        }
+      event.stopPropagation();
+      startCopy();
+
+      try {
+        recordCopyResult(await onCopyArchitectHandoff(request.id, cachedHandoff()));
+      } catch {
+        recordCopyError("Architect handoff could not be copied");
       }
-    : undefined;
+    },
+    [cachedHandoff, onCopyArchitectHandoff, recordCopyError, recordCopyResult, request.id, startCopy],
+  );
   const tone = requestCardTone(detail, questionCount);
   const operational = requestOperationalState(request);
+  const bodyMotionKey = stateCardBodyMotionKey(
+    "request",
+    request.id,
+    description,
+    questionCount,
+    question?.id,
+    question?.question,
+    canCopyHandoff,
+    handoffHasOpenQuestions,
+    handoffCopyState,
+  );
 
   return (
     <div
@@ -4121,28 +4316,30 @@ function RequestCard({
           className="shrink-0"
         />
       </div>
-      {description ? <p className="request-card-description mt-3 text-xs leading-relaxed text-muted-foreground">{description}</p> : null}
-      {questionCount > 0 ? (
-        <CardSignal
-          className="mt-3"
-          label="Open Questions"
-          value={String(questionCount)}
-          tone="danger"
-          onClick={answerQuestion}
-          ariaLabel={question ? `Answer open question for ${request.title || request.id}` : undefined}
-        />
-      ) : null}
-      {question ? <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{question.question}</p> : null}
-      {copyHandoff ? (
-        <CardSignal
-          className="mt-3"
-          label={handoffHasOpenQuestions ? "Architect Handoff" : "Agent Handoff"}
-          value={handoffSignalLabel(handoffCopyState, handoffHasOpenQuestions)}
-          tone={handoffHasOpenQuestions ? "muted" : "info"}
-          onClick={copyHandoff}
-          ariaLabel={`Copy agent handoff for ${request.title || request.id}`}
-        />
-      ) : null}
+      <AnimatedCardBody motionKey={bodyMotionKey}>
+        {description ? <p className="request-card-description mt-3 text-xs leading-relaxed text-muted-foreground">{description}</p> : null}
+        {questionCount > 0 ? (
+          <CardSignal
+            className="mt-3"
+            label="Open Questions"
+            value={String(questionCount)}
+            tone="danger"
+            onClick={answerQuestion}
+            ariaLabel={question ? `Answer open question for ${request.title || request.id}` : undefined}
+          />
+        ) : null}
+        {question ? <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{question.question}</p> : null}
+        {canCopyHandoff ? (
+          <CardSignal
+            className="mt-3"
+            label={handoffHasOpenQuestions ? "Architect Handoff" : "Agent Handoff"}
+            value={handoffSignalLabel(handoffCopyState, handoffHasOpenQuestions)}
+            tone={handoffHasOpenQuestions ? "muted" : "info"}
+            onClick={copyHandoff}
+            ariaLabel={`Copy agent handoff for ${request.title || request.id}`}
+          />
+        ) : null}
+      </AnimatedCardBody>
     </div>
   );
 }
@@ -4169,6 +4366,15 @@ function SliceCard({
   const tone = sliceCardTone(slice, pkg, lane);
   const detail = slice.status === "skipped" ? null : sliceCardSubtitle(slice, pkg, operational, rawStatus);
   const blockerSignal = lane === "slices" ? null : cardBlockerSignal(pkg, operational);
+  const bodyMotionKey = stateCardBodyMotionKey(
+    "slice",
+    slice.id,
+    lane,
+    detail,
+    blockerSignal?.label,
+    blockerSignal?.value,
+    blockerSignal?.tone,
+  );
 
   return (
     <div
@@ -4190,20 +4396,22 @@ function SliceCard({
           className="shrink-0"
         />
       </div>
-      {detail ? <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{detail}</p> : null}
-      {blockerSignal ? (
-        <CardSignal
-          className="mt-3"
-          label={blockerSignal.label}
-          value={blockerSignal.value}
-          tone={blockerSignal.tone}
-          onClick={onSelectCard ? (event) => {
-            event.stopPropagation();
-            onSelectCard();
-          } : undefined}
-          ariaLabel={`Open blockers for ${slice.title || pkg?.title || slice.id}`}
-        />
-      ) : null}
+      <AnimatedCardBody motionKey={bodyMotionKey}>
+        {detail ? <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{detail}</p> : null}
+        {blockerSignal ? (
+          <CardSignal
+            className="mt-3"
+            label={blockerSignal.label}
+            value={blockerSignal.value}
+            tone={blockerSignal.tone}
+            onClick={onSelectCard ? (event) => {
+              event.stopPropagation();
+              onSelectCard();
+            } : undefined}
+            ariaLabel={`Open blockers for ${slice.title || pkg?.title || slice.id}`}
+          />
+        ) : null}
+      </AnimatedCardBody>
     </div>
   );
 }
@@ -4273,6 +4481,7 @@ function PackageCard({
   const tone = packageCardTone(pkg, lane);
   const attention = packageAttentionSignal(pkg);
   const operational = packageOperationalState(pkg);
+  const bodyMotionKey = stateCardBodyMotionKey("package", pkg.id, attention?.label, attention?.value, attention?.tone);
 
   return (
     <div
@@ -4290,7 +4499,9 @@ function PackageCard({
         </div>
         <AnimatedBadge label={operationalLabel(operational, pkg.status)} variant={operationalBadgeVariant(operational, pkg.status)} className="shrink-0" />
       </div>
-      {attention ? <CardSignal className="mt-3" label={attention.label} value={attention.value} tone={attention.tone} /> : null}
+      <AnimatedCardBody motionKey={bodyMotionKey}>
+        {attention ? <CardSignal className="mt-3" label={attention.label} value={attention.value} tone={attention.tone} /> : null}
+      </AnimatedCardBody>
     </div>
   );
 }
@@ -4808,6 +5019,19 @@ function SoloSessionCard({
   const latestSignalValue = latest?.status ? formatStatus(latest.status) : latestText;
   const tone = soloSessionCardTone(session);
   const showLatest = latest && latestText && !soloSessionLatestIsRedundant(session, latestText);
+  const bodyMotionKey = stateCardBodyMotionKey(
+    "solo",
+    session.id,
+    attention.guidanceCount,
+    attention.blockerCount,
+    latestSignalValue,
+    showLatest,
+    latest?.kind_label,
+    latest?.kind,
+    latestText,
+    session.last_activity_at,
+    session.updated_at,
+  );
 
   return (
     <div
@@ -4825,28 +5049,30 @@ function SoloSessionCard({
         <AnimatedBadge label={formatStatus(session.status)} variant={soloSessionStatusVariant(session.status)} className="shrink-0" />
       </div>
 
-      {attention.guidanceCount > 0 || attention.blockerCount > 0 ? (
-        <div className="mt-3 flex flex-wrap gap-1.5">
-          {attention.guidanceCount > 0 ? <RepoSummaryPlate label="Guidance Needed" value={attention.guidanceCount} tone="guidance" /> : null}
-          {attention.blockerCount > 0 ? <RepoSummaryPlate label="Active Blockers" value={attention.blockerCount} tone="blocker" /> : null}
-        </div>
-      ) : latestSignalValue ? (
-        <CardSignal className="mt-3" label={soloSessionLatestSignalLabel(session)} value={latestSignalValue} tone={soloSessionLatestSignalTone(session)} />
-      ) : null}
-
-      {showLatest ? (
-        <>
-          <Separator className="my-3" />
-          <div className="flex min-w-0 items-start gap-2">
-            <Badge variant="secondary" className="shrink-0">
-              {latest.kind_label || formatStatus(latest.kind)}
-            </Badge>
-            <p className="line-clamp-2 min-w-0 text-sm text-muted-foreground">{latestText}</p>
+      <AnimatedCardBody motionKey={bodyMotionKey}>
+        {attention.guidanceCount > 0 || attention.blockerCount > 0 ? (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {attention.guidanceCount > 0 ? <RepoSummaryPlate label="Guidance Needed" value={attention.guidanceCount} tone="guidance" /> : null}
+            {attention.blockerCount > 0 ? <RepoSummaryPlate label="Active Blockers" value={attention.blockerCount} tone="blocker" /> : null}
           </div>
-        </>
-      ) : null}
+        ) : latestSignalValue ? (
+          <CardSignal className="mt-3" label={soloSessionLatestSignalLabel(session)} value={latestSignalValue} tone={soloSessionLatestSignalTone(session)} />
+        ) : null}
 
-      <p className="mt-3 text-xs text-muted-foreground">Updated {detailDate(session.last_activity_at || session.updated_at || session.inserted_at)}</p>
+        {showLatest ? (
+          <>
+            <Separator className="my-3" />
+            <div className="flex min-w-0 items-start gap-2">
+              <Badge variant="secondary" className="shrink-0">
+                {latest.kind_label || formatStatus(latest.kind)}
+              </Badge>
+              <p className="line-clamp-2 min-w-0 text-sm text-muted-foreground">{latestText}</p>
+            </div>
+          </>
+        ) : null}
+
+        <p className="mt-3 text-xs text-muted-foreground">Updated {detailDate(session.last_activity_at || session.updated_at || session.inserted_at)}</p>
+      </AnimatedCardBody>
     </div>
   );
 }
@@ -5388,11 +5614,11 @@ function NewRequestDialog({
 }) {
   const repoChoices = useMemo(() => repoOptions(repos, defaultRepo), [defaultRepo, repos]);
   const initialRepo = defaultRepo || repoChoices[0] || initialRequestForm.repo;
-  const [form, setForm] = useState<NewRequestForm>({
+  const [form, updateForm] = useReducer(newRequestFormReducer, { initialRepo, repos }, ({ initialRepo: repo, repos: initialRepos }) => ({
     ...initialRequestForm,
-    repo: initialRepo,
-    base_branch: baseBranchOptionsForRepo(repos, initialRepo)[0] || initialRequestForm.base_branch,
-  });
+    repo,
+    base_branch: baseBranchOptionsForRepo(initialRepos, repo)[0] || initialRequestForm.base_branch,
+  }));
   const branchChoices = useMemo(() => baseBranchOptionsForRepo(repos, form.repo), [form.repo, repos]);
   const [dialogState, dispatchDialog] = useReducer(newRequestDialogReducer, initialNewRequestDialogState);
   const { architectHandoff, createdRequest, error, handoffCopyState, submitting } = dialogState;
@@ -5400,17 +5626,7 @@ function NewRequestDialog({
   useEffect(() => {
     if (!open || createdRequest) return;
 
-    setForm((current) => {
-      const repo = repoChoices.includes(current.repo) ? current.repo : repoChoices[0] || initialRequestForm.repo;
-      const branches = baseBranchOptionsForRepo(repos, repo);
-      const baseBranch = branches.includes(current.base_branch) ? current.base_branch : branches[0] || initialRequestForm.base_branch;
-
-      if (repo === current.repo && baseBranch === current.base_branch) {
-        return current;
-      }
-
-      return { ...current, repo, base_branch: baseBranch };
-    });
+    updateForm((current) => syncNewRequestFormToRepos(current, repos, repoChoices));
     dispatchDialog({ type: "reset" });
   }, [createdRequest, open, repoChoices, repos]);
 
@@ -5454,7 +5670,7 @@ function NewRequestDialog({
         throw new Error("Request was created, but the dashboard response was incomplete");
       }
 
-      setForm({ ...initialRequestForm, repo: form.repo, base_branch: form.base_branch });
+      updateForm({ ...initialRequestForm, repo: form.repo, base_branch: form.base_branch });
       dispatchDialog({ type: "created", request: payload.work_request });
       onCreated(payload.dashboard);
     } catch (caught) {
@@ -5524,15 +5740,18 @@ function NewRequestDialog({
               </DialogHeader>
               <div className="grid gap-4 md:grid-cols-2">
                 <Field label="Title">
-                  <Input value={form.title} onChange={(event) => setFormValue(setForm, "title", event.target.value)} required />
+                  <Input value={form.title} onChange={(event) => updateForm((current) => ({ ...current, title: event.target.value }))} required />
                 </Field>
                 <Field label="Repository">
                   <Select
                     value={form.repo}
-                    onValueChange={(value) => {
-                      const branches = baseBranchOptionsForRepo(repos, value);
-                      setForm((current) => ({ ...current, repo: value, base_branch: branches[0] || initialRequestForm.base_branch }));
-                    }}
+                    onValueChange={(value) =>
+                      updateForm((current) => ({
+                        ...current,
+                        repo: value,
+                        base_branch: baseBranchOptionsForRepo(repos, value)[0] || initialRequestForm.base_branch,
+                      }))
+                    }
                   >
                     <SelectTrigger>
                       <SelectValue />
@@ -5547,7 +5766,7 @@ function NewRequestDialog({
                   </Select>
                 </Field>
                 <Field label="Base Branch">
-                  <Select value={form.base_branch} onValueChange={(value) => setFormValue(setForm, "base_branch", value)}>
+                  <Select value={form.base_branch} onValueChange={(value) => updateForm((current) => ({ ...current, base_branch: value }))}>
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
@@ -5561,7 +5780,7 @@ function NewRequestDialog({
                   </Select>
                 </Field>
                 <Field label="Work Type">
-                  <Select value={form.work_type} onValueChange={(value) => setFormValue(setForm, "work_type", value)}>
+                  <Select value={form.work_type} onValueChange={(value) => updateForm((current) => ({ ...current, work_type: value }))}>
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
@@ -5575,7 +5794,7 @@ function NewRequestDialog({
                   </Select>
                 </Field>
                 <Field label="Dispatch Shape">
-                  <Select value={form.desired_dispatch_shape} onValueChange={(value) => setFormValue(setForm, "desired_dispatch_shape", value)}>
+                  <Select value={form.desired_dispatch_shape} onValueChange={(value) => updateForm((current) => ({ ...current, desired_dispatch_shape: value }))}>
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
@@ -5590,7 +5809,7 @@ function NewRequestDialog({
                 </Field>
               </div>
               <Field label="Description">
-                <Textarea value={form.human_description} onChange={(event) => setFormValue(setForm, "human_description", event.target.value)} required />
+                <Textarea value={form.human_description} onChange={(event) => updateForm((current) => ({ ...current, human_description: event.target.value }))} required />
               </Field>
               {error ? <p className="text-sm text-destructive">{error}</p> : null}
               <DialogFooter>
@@ -5891,28 +6110,23 @@ function RequestDetailContent({
   const handoffEligible = architectHandoffEligibleRequest(request);
   const handoffHasOpenQuestions = (openQuestions.length || request.open_question_count || 0) > 0;
   const handoffButtonLabel = handoffHasOpenQuestions ? "Copy Resume Handoff" : "Copy Agent Handoff";
-  const [handoffCopyState, setHandoffCopyState] = useState<HandoffCopyState>("idle");
-  const architectHandoffRef = useRef<ArchitectHandoff | null>(null);
-  const [handoffError, setHandoffError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setHandoffCopyState("idle");
-    architectHandoffRef.current = null;
-    setHandoffError(null);
-  }, [handoffHasOpenQuestions, request.id, request.status, request.updated_at]);
+  const handoffIdentity = `${handoffHasOpenQuestions}:${request.id}:${request.status || ""}:${request.updated_at || ""}`;
+  const {
+    cachedHandoff,
+    error: handoffError,
+    recordCopyError,
+    recordCopyResult,
+    startCopy,
+    state: handoffCopyState,
+  } = useScopedHandoffCopy(handoffIdentity);
 
   async function copyHandoff() {
-    setHandoffCopyState("copying");
-    setHandoffError(null);
+    startCopy();
 
     try {
-      const result = await onCopyArchitectHandoff(request.id, architectHandoffRef.current);
-      architectHandoffRef.current = result.handoff;
-      setHandoffCopyState(result.copied ? "copied" : "error");
-      setHandoffError(result.copyError ? `Handoff is ready, but clipboard copy failed: ${result.copyError}` : null);
+      recordCopyResult(await onCopyArchitectHandoff(request.id, cachedHandoff()));
     } catch (caught) {
-      setHandoffCopyState("error");
-      setHandoffError(caught instanceof Error ? caught.message : "Architect handoff could not be copied");
+      recordCopyError(caught instanceof Error ? caught.message : "Architect handoff could not be copied");
     }
   }
 
@@ -7468,8 +7682,4 @@ function clearTopPanelTimers(
   framesRef.current.forEach((id) => window.cancelAnimationFrame(id));
   timersRef.current = [];
   framesRef.current = [];
-}
-
-function setFormValue(setForm: React.Dispatch<React.SetStateAction<NewRequestForm>>, key: keyof NewRequestForm, value: string) {
-  setForm((current) => ({ ...current, [key]: value }));
 }
