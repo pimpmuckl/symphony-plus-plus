@@ -31,6 +31,22 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | claim_private_handoff | Claim an existing worker or architect grant from `local-private-file` handoff metadata. |
 | create_work_request | Create a local WorkRequest with creator provenance and return a redacted architect handoff/bootstrap payload. |
 
+## Health tool
+
+`sympp.health` returns server status, version/source revision, mode, and
+`ledger.reachable` as before. It also includes `ledger.identity`, a JSON-safe
+ledger identity for operator diagnosis:
+
+- Local SQLite ledgers report `kind: "sqlite"`, `source: "default"` when the
+  MCP database option is omitted or `source: "explicit"` when an explicit
+  SQLite database was configured, plus `display_path` and `default_home`.
+- SQLite file URI query parameters are not echoed; `display_path` is derived
+  from the URI path only.
+- Remote/server-style ledger configuration reports `kind: "server"` and a
+  redacted `endpoint` containing only scheme, host, and port. Userinfo,
+  passwords, tokens, query strings, fragments, and raw credential-bearing
+  connection strings are never returned.
+
 ## Architect tools
 
 | Tool | Purpose |

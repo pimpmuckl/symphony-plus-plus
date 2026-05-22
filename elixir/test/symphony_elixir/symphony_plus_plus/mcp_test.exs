@@ -85,6 +85,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     def query(_sql, _params, _opts), do: {:error, %RuntimeError{message: "C:/secret/path.sqlite"}}
   end
 
+  defmodule DefaultRemoteHealthRepo do
+    def config, do: [database: "host=ledger-prod.example.test port=15432 dbname=sympp"]
+    def query("PRAGMA database_list", _params, _opts), do: {:error, :unsupported}
+    def query(sql, _params, _opts) when is_binary(sql), do: {:ok, %{rows: [[1]]}}
+  end
+
   defmodule BusyPrSyncRepo do
     def get(AccessGrant, "grant-pr-sync-service") do
       %AccessGrant{
@@ -486,13 +492,156 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           Server.new(Config.default(repo: Repo), state_key: "named-dynamic-ledger-state")
         )
 
-      assert get_in(health_response, ["result", "structuredContent", "ledger"]) == %{"reachable" => true}
+      assert get_in(health_response, ["result", "structuredContent", "ledger", "reachable"]) == true
       assert is_list(get_in(tools_response, ["result", "tools"]))
     after
       Repo.put_dynamic_repo(original_repo)
       if Process.alive?(pid), do: GenServer.stop(pid)
       File.rm(database_path)
     end
+  end
+
+  test "health reports safe default and explicit sqlite ledger identity", %{repo: repo} do
+    database_path = current_main_database_path(repo)
+
+    default_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "default-health",
+          "method" => "tools/call",
+          "params" => %{"name" => "sympp.health", "arguments" => %{}}
+        },
+        config: Config.default(repo: repo)
+      )
+
+    default_identity = get_in(default_response, ["result", "structuredContent", "ledger", "identity"])
+
+    assert get_in(default_response, ["result", "structuredContent", "ledger", "reachable"]) == true
+    assert default_identity["kind"] == "sqlite"
+    assert default_identity["source"] == "default"
+    assert is_binary(default_identity["display_path"])
+    assert is_boolean(default_identity["default_home"])
+    assert String.ends_with?(default_identity["display_path"], Path.basename(database_path))
+
+    explicit_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "explicit-health",
+          "method" => "tools/call",
+          "params" => %{"name" => "sympp.health", "arguments" => %{}}
+        },
+        config: Config.default(repo: repo, database: database_path)
+      )
+
+    explicit_identity = get_in(explicit_response, ["result", "structuredContent", "ledger", "identity"])
+
+    assert get_in(explicit_response, ["result", "structuredContent", "ledger", "reachable"]) == true
+    assert explicit_identity["kind"] == "sqlite"
+    assert explicit_identity["source"] == "explicit"
+    assert String.ends_with?(explicit_identity["display_path"], Path.basename(database_path))
+  end
+
+  test "health redacts credential-bearing ledger identity values", %{repo: repo} do
+    sqlite_secret = "sqlite_password_that_must_not_echo"
+    sqlite_uri = sqlite_file_uri(current_main_database_path(repo), "password=#{sqlite_secret}&cache=shared")
+
+    sqlite_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "sqlite-health",
+          "method" => "tools/call",
+          "params" => %{"name" => "sympp.health", "arguments" => %{}}
+        },
+        config: Config.default(repo: repo, database: sqlite_uri)
+      )
+
+    assert get_in(sqlite_response, ["result", "structuredContent", "ledger", "identity", "kind"]) == "sqlite"
+    assert get_in(sqlite_response, ["result", "structuredContent", "ledger", "identity", "source"]) == "explicit"
+    refute inspect(sqlite_response) =~ sqlite_secret
+    refute inspect(sqlite_response) =~ "password="
+
+    remote_secret = "remote_secret_that_must_not_echo"
+    remote_database = "https://worker:#{remote_secret}@ledger-prod.example.test:9443/mcp?token=#{remote_secret}"
+
+    remote_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "remote-health",
+          "method" => "tools/call",
+          "params" => %{"name" => "sympp.health", "arguments" => %{}}
+        },
+        config: Config.default(repo: FailingHealthRepo, database: remote_database)
+      )
+
+    assert get_in(remote_response, ["result", "structuredContent", "ledger", "reachable"]) == false
+
+    assert get_in(remote_response, ["result", "structuredContent", "ledger", "identity"]) == %{
+             "kind" => "server",
+             "source" => "explicit",
+             "endpoint" => "https://ledger-prod.example.test:9443"
+           }
+
+    refute inspect(remote_response) =~ remote_secret
+    refute inspect(remote_response) =~ "worker:"
+    refute inspect(remote_response) =~ "token="
+
+    dsn_secret = "dsn_password_that_must_not_echo"
+    dsn_database = "Server=tcp:ledger-dsn.example.test,1433;Database=sympp;Password=#{dsn_secret}"
+
+    dsn_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "dsn-health",
+          "method" => "tools/call",
+          "params" => %{"name" => "sympp.health", "arguments" => %{}}
+        },
+        config: Config.default(repo: FailingHealthRepo, database: dsn_database)
+      )
+
+    assert get_in(dsn_response, ["result", "structuredContent", "ledger", "identity"]) == %{
+             "kind" => "server",
+             "source" => "explicit",
+             "endpoint" => "server://ledger-dsn.example.test:1433"
+           }
+
+    refute inspect(dsn_response) =~ dsn_secret
+    refute inspect(dsn_response) =~ "Password="
+    refute inspect(dsn_response) =~ "Server="
+  end
+
+  test "health uses default remote repo config as safe server identity" do
+    Code.ensure_loaded!(DefaultRemoteHealthRepo)
+    assert {:ok, _result} = DefaultRemoteHealthRepo.query("SELECT 1", [], [])
+
+    response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "default-remote-health",
+          "method" => "tools/call",
+          "params" => %{"name" => "sympp.health", "arguments" => %{}}
+        },
+        config: Config.default(repo: DefaultRemoteHealthRepo)
+      )
+
+    result = get_in(response, ["result", "structuredContent"])
+
+    assert result["status"] == "ok"
+    assert result["ledger"]["reachable"] == true
+
+    assert result["ledger"]["identity"] == %{
+             "kind" => "server",
+             "source" => "default",
+             "endpoint" => "server://ledger-prod.example.test:15432"
+           }
+
+    refute inspect(response) =~ "dbname=sympp"
+    refute inspect(response) =~ "host="
   end
 
   test "mix task database option reaches the requested ledger while the default repo is running" do
@@ -816,7 +965,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       assignment = Jason.decode!(get_in(assignment_response, ["result", "contents", Access.at(0), "text"]))
 
       assert get_in(health_response, ["result", "structuredContent", "status"]) == "ok"
-      assert get_in(health_response, ["result", "structuredContent", "ledger"]) == %{"reachable" => true}
+      assert get_in(health_response, ["result", "structuredContent", "ledger", "reachable"]) == true
+      assert get_in(health_response, ["result", "structuredContent", "ledger", "identity", "kind"]) == "sqlite"
+      assert get_in(health_response, ["result", "structuredContent", "ledger", "identity", "source"]) == "explicit"
       assert assignment["work_package_id"] == package.id
       assert get_in(progress_response, ["result", "structuredContent", "progress_event", "id"])
       refute output =~ minted.work_key.secret
@@ -2008,7 +2159,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     text = get_in(response, ["result", "content", Access.at(0), "text"])
 
     assert result["status"] == "ok"
-    assert result["ledger"] == %{"reachable" => true}
+    assert result["ledger"]["reachable"] == true
+    assert get_in(result, ["ledger", "identity", "kind"]) == "sqlite"
+    assert get_in(result, ["ledger", "identity", "source"]) == "default"
     assert result["mode"] == "stdio"
     assert result["source"] == %{"revision" => "abcdef1234567890abcdef1234567890abcdef12"}
     refute text =~ "SYMPP-P3-001"
@@ -2075,7 +2228,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     text = get_in(response, ["result", "content", Access.at(0), "text"])
 
     assert result["status"] == "degraded"
-    assert result["ledger"] == %{"reachable" => false, "error" => "ledger_unavailable"}
+    assert result["ledger"]["reachable"] == false
+    assert result["ledger"]["error"] == "ledger_unavailable"
+    assert get_in(result, ["ledger", "identity"]) == %{"kind" => "unknown", "source" => "default"}
     refute text =~ "C:/secret/path.sqlite"
     refute text =~ "RuntimeError"
   end
@@ -6712,6 +6867,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert worker_grant["secret_handoff"]["claimed_by"] == "sympp-child-worker:#{child_id}"
     assert is_binary(worker_grant["secret_handoff"]["run_mcp_command"])
     assert worker_grant["secret_handoff"]["run_mcp_command"] =~ "sympp-child-worker:#{child_id}"
+
+    assert String.downcase(worker_grant["secret_handoff"]["run_mcp_command"]) =~
+             String.downcase(current_main_database_path(repo))
+
     assert handoff_secret_absent?(worker_grant["secret_handoff"], worker_grant["secret_handoff"]["run_mcp_command"])
     refute Map.has_key?(worker_grant["secret_handoff"], "tradeoff")
 
@@ -6850,7 +7009,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         assignment = Jason.decode!(assignment_text)
 
         assert get_in(health_response, ["result", "structuredContent", "status"]) == "ok"
-        assert get_in(health_response, ["result", "structuredContent", "ledger"]) == %{"reachable" => true}
+        assert get_in(health_response, ["result", "structuredContent", "ledger", "reachable"]) == true
         assert assignment["work_package_id"] == child_id
         assert assignment["claimed_by"] == claimed_by
 

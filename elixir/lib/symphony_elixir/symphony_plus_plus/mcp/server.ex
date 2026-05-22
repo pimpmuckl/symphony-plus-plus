@@ -532,14 +532,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp repo_query(repo, sql, params, opts) when is_atom(repo) do
-    case dynamic_repo_identity(repo) do
-      pid when is_pid(pid) -> SQL.query(pid, sql, params, opts)
-      dynamic_repo when is_atom(dynamic_repo) and dynamic_repo != repo -> SQL.query(dynamic_repo, sql, params, opts)
-      _repo -> SQL.query(repo, sql, params, opts)
+    cond do
+      repo_module_query?(repo) ->
+        repo.query(sql, params, opts)
+
+      true ->
+        case dynamic_repo_identity(repo) do
+          pid when is_pid(pid) -> SQL.query(pid, sql, params, opts)
+          dynamic_repo when is_atom(dynamic_repo) and dynamic_repo != repo -> SQL.query(dynamic_repo, sql, params, opts)
+          _repo -> SQL.query(repo, sql, params, opts)
+        end
     end
   end
 
   defp repo_query(repo, sql, params, opts), do: SQL.query(repo, sql, params, opts)
+
+  defp repo_module_query?(repo) do
+    case Code.ensure_loaded(repo) do
+      {:module, _module} -> function_exported?(repo, :query, 3)
+      {:error, _reason} -> false
+    end
+  end
 
   defp main_database_row?([_seq, "main", _path]), do: true
   defp main_database_row?(_row), do: false
@@ -968,7 +981,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp health(%__MODULE__{config: %Config{} = config}) do
-    ledger = ledger_health(config.repo)
+    ledger = ledger_health(config)
 
     %{
       "status" => if(ledger["reachable"], do: "ok", else: "degraded"),
@@ -985,11 +998,302 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp source_identity(%Config{}), do: %{"revision" => nil}
 
+  defp ledger_health(%Config{repo: repo, database: database}) do
+    case normalized_database(database) do
+      nil -> default_ledger_health(repo)
+      database -> configured_ledger_health(repo, database)
+    end
+  end
+
+  defp default_ledger_health(repo) do
+    case live_main_database_path(repo) do
+      {:ok, path} -> %{"reachable" => true, "identity" => sqlite_ledger_identity(path, "default")}
+      :memory -> %{"reachable" => true, "identity" => sqlite_ledger_identity(":memory:", "default")}
+      :error -> generic_default_ledger_health(repo)
+    end
+  end
+
+  defp generic_default_ledger_health(repo) do
+    identity = repo_configured_ledger_identity(repo, "default")
+
+    try do
+      case repo_query(repo, "SELECT 1", [], log: false) do
+        {:ok, _result} -> %{"reachable" => true, "identity" => identity}
+        {:error, _reason} -> %{"reachable" => false, "error" => "ledger_unavailable", "identity" => identity}
+      end
+    rescue
+      _error -> %{"reachable" => false, "error" => "ledger_unavailable", "identity" => identity}
+    end
+  end
+
+  defp configured_ledger_health(repo, database) do
+    identity = configured_ledger_identity(database, "explicit")
+
+    try do
+      case repo_query(repo, "SELECT 1", [], log: false) do
+        {:ok, _result} -> %{"reachable" => true, "identity" => identity}
+        {:error, _reason} -> %{"reachable" => false, "error" => "ledger_unavailable", "identity" => identity}
+      end
+    rescue
+      _error -> %{"reachable" => false, "error" => "ledger_unavailable", "identity" => identity}
+    end
+  end
+
+  defp configured_ledger_identity(database, source) do
+    cond do
+      Repo.memory_database?(database) ->
+        sqlite_ledger_identity(":memory:", source)
+
+      sqlite_file_uri?(database) ->
+        sqlite_file_uri_identity(database, source)
+
+      remote_database_identity?(database) ->
+        server_ledger_identity(database, source)
+
+      true ->
+        sqlite_ledger_identity(database, source)
+    end
+  end
+
+  defp repo_configured_ledger_identity(repo, source) do
+    case repo_configured_database_for_identity(repo) do
+      database when is_binary(database) -> configured_ledger_identity(database, source)
+      _database -> unknown_ledger_identity(source)
+    end
+  end
+
+  defp sqlite_file_uri_identity(database, source) do
+    case Repo.sqlite_file_uri_path(database) do
+      path when is_binary(path) and path != "" -> sqlite_ledger_identity(path, source)
+      _path -> %{"kind" => "sqlite", "source" => source, "display_path" => "file:[redacted]", "default_home" => false}
+    end
+  end
+
+  defp sqlite_ledger_identity(path, source) do
+    %{
+      "kind" => "sqlite",
+      "source" => source,
+      "display_path" => sqlite_display_path(path),
+      "default_home" => default_home_database_path?(path)
+    }
+  end
+
+  defp server_ledger_identity(database, source) do
+    %{
+      "kind" => "server",
+      "source" => source,
+      "endpoint" => safe_server_endpoint(database)
+    }
+  end
+
+  defp live_main_database_path(repo) do
+    case repo_query(repo, "PRAGMA database_list", [], log: false) do
+      {:ok, %{rows: rows}} ->
+        case Enum.find(rows, &main_database_row?/1) do
+          [_seq, "main", path] when is_binary(path) and path != "" -> {:ok, path}
+          [_seq, "main", ""] -> :memory
+          _row -> :error
+        end
+
+      _result ->
+        :error
+    end
+  rescue
+    _error -> :error
+  catch
+    _kind, _reason -> :error
+  end
+
+  defp normalized_database(database) when is_binary(database) do
+    case String.trim(database) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalized_database(_database), do: nil
+
+  defp sqlite_file_uri?("file:" <> _uri), do: true
+  defp sqlite_file_uri?(_database), do: false
+
+  defp remote_database_identity?(database) when is_binary(database) do
+    remote_database_uri?(database) or server_database_dsn?(database) or credential_bearing_database_string?(database)
+  end
+
+  defp remote_database_uri?(database) do
+    case URI.parse(database) do
+      %URI{scheme: scheme, host: host} when is_binary(scheme) and scheme != "file" and is_binary(host) -> true
+      %URI{scheme: scheme} when scheme in ["http", "https", "postgres", "postgresql", "mysql", "mssql"] -> true
+      _uri -> false
+    end
+  rescue
+    _error -> false
+  end
+
+  defp credential_bearing_database_string?(database) do
+    database =~ ~r/(^|[;?\s])(password|passwd|pwd|secret|token|api[_-]?key)=/i
+  end
+
+  defp safe_server_endpoint(database) do
+    case URI.parse(database) do
+      %URI{scheme: scheme, host: host, port: port} when is_binary(scheme) and is_binary(host) ->
+        port_part = if is_integer(port), do: ":#{port}", else: ""
+        "#{safe_endpoint_part(scheme)}://#{safe_endpoint_host(host)}#{port_part}"
+
+      %URI{scheme: scheme} when is_binary(scheme) ->
+        "#{safe_endpoint_part(scheme)}://[redacted]"
+
+      _uri ->
+        safe_server_dsn_endpoint(database)
+    end
+  rescue
+    _error -> safe_server_dsn_endpoint(database)
+  end
+
+  defp safe_endpoint_part(part) do
+    if part =~ ~r/\A[a-zA-Z][a-zA-Z0-9+.-]*\z/, do: String.downcase(part), else: "server"
+  end
+
+  defp safe_endpoint_host(host) do
+    host = String.downcase(host)
+
+    if host =~ ~r/\A[0-9a-z.:\-]+\z/ do
+      if String.contains?(host, ":") and not String.starts_with?(host, "["),
+        do: "[#{host}]",
+        else: host
+    else
+      "[redacted]"
+    end
+  end
+
+  defp safe_server_dsn_endpoint(database) do
+    with values when map_size(values) > 0 <- server_database_dsn_values(database),
+         host when is_binary(host) <- server_database_dsn_host(values) do
+      {host, embedded_port} = split_server_dsn_host_port(host)
+      port = server_database_dsn_port(values)
+      "server://#{safe_endpoint_host(host)}#{if(port == "", do: embedded_port, else: port)}"
+    else
+      _missing_host -> "server"
+    end
+  end
+
+  defp server_database_dsn?(database) do
+    values = server_database_dsn_values(database)
+
+    Enum.any?(["host", "hostname", "server", "addr", "address", "datasource"], &Map.has_key?(values, &1)) or
+      (Map.has_key?(values, "database") and (Map.has_key?(values, "port") or Map.has_key?(values, "trustedconnection")))
+  end
+
+  defp server_database_dsn_values(database) when is_binary(database) do
+    ~r/(?:^|[;\s])([A-Za-z][A-Za-z _-]*)\s*=\s*([^;\s]+)/
+    |> Regex.scan(database)
+    |> Map.new(fn [_match, key, value] -> {normalize_server_dsn_key(key), trim_server_dsn_value(value)} end)
+  end
+
+  defp server_database_dsn_values(_database), do: %{}
+
+  defp normalize_server_dsn_key(key) do
+    key
+    |> String.downcase()
+    |> String.replace(~r/[\s_-]/, "")
+  end
+
+  defp trim_server_dsn_value(value) do
+    value
+    |> String.trim()
+    |> String.trim("\"'")
+  end
+
+  defp server_database_dsn_host(values) do
+    Enum.find_value(["host", "hostname", "server", "addr", "address", "datasource"], &Map.get(values, &1))
+  end
+
+  defp server_database_dsn_port(values), do: Map.get(values, "port") |> safe_endpoint_port()
+
+  defp split_server_dsn_host_port(host) do
+    host =
+      host
+      |> String.trim()
+      |> String.replace(~r/\A(?:tcp|udp):/i, "")
+
+    case String.split(host, ",", parts: 2) do
+      [dsn_host, port] -> {dsn_host, safe_endpoint_port(port)}
+      [dsn_host] -> {dsn_host, ""}
+    end
+  end
+
+  defp safe_endpoint_port(port) when is_binary(port) do
+    port = String.trim(port)
+
+    if port =~ ~r/\A\d{1,5}\z/ and String.to_integer(port) <= 65_535 do
+      ":#{port}"
+    else
+      ""
+    end
+  end
+
+  defp safe_endpoint_port(_port), do: ""
+
+  defp repo_configured_database_for_identity(repo) when is_atom(repo) do
+    if Code.ensure_loaded?(repo) and function_exported?(repo, :config, 0) do
+      repo.config()
+      |> Keyword.get(:database)
+      |> normalized_database()
+    end
+  rescue
+    _error -> nil
+  end
+
+  defp repo_configured_database_for_identity(_repo), do: nil
+
+  defp sqlite_display_path(":memory:"), do: ":memory:"
+
+  defp sqlite_display_path(path) when is_binary(path) do
+    path
+    |> Path.expand()
+    |> normalize_display_separator()
+    |> display_home_relative_path()
+  end
+
+  defp normalize_display_separator(path), do: String.replace(path, "\\", "/")
+
+  defp display_home_relative_path(path) do
+    with home when is_binary(home) and home != "" <- System.user_home(),
+         normalized_home <- home |> Path.expand() |> normalize_display_separator(),
+         true <- path == normalized_home or String.starts_with?(path, normalized_home <> "/") do
+      relative = binary_part(path, byte_size(normalized_home), byte_size(path) - byte_size(normalized_home))
+
+      case String.trim_leading(relative, "/") do
+        "" -> "$HOME"
+        relative -> "$HOME/" <> relative
+      end
+    else
+      _not_home -> path
+    end
+  end
+
+  defp default_home_database_path?(path) when is_binary(path) do
+    with home when is_binary(home) and home != "" <- System.user_home() do
+      default_home_database =
+        [home, ".agents", "splusplus", "symphony_plus_plus.sqlite3"]
+        |> Path.join()
+        |> Path.expand()
+
+      Repo.same_database_path?(path, default_home_database)
+    else
+      _missing_home -> false
+    end
+  end
+
+  defp default_home_database_path?(_path), do: false
+
+  defp unknown_ledger_identity(source), do: %{"kind" => "unknown", "source" => source}
+
   defp health_tool_spec do
     %{
       "name" => @health_tool,
       "title" => "Symphony++ health",
-      "description" => "Returns server version and ledger reachability without exposing package data.",
+      "description" => "Returns server version, ledger reachability, and safe ledger identity without exposing package data.",
       "inputSchema" => %{
         "type" => "object",
         "additionalProperties" => false,
@@ -1843,15 +2147,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "required" => ["lane", "verdict"]
       }
     }
-  end
-
-  defp ledger_health(repo) when is_atom(repo) do
-    case repo_query(repo, "SELECT 1", [], log: false) do
-      {:ok, _result} -> %{"reachable" => true}
-      {:error, _reason} -> %{"reachable" => false, "error" => "ledger_unavailable"}
-    end
-  rescue
-    _error -> %{"reachable" => false, "error" => "ledger_unavailable"}
   end
 
   defp work_package_resource_id(rest) when is_binary(rest) do
@@ -3405,22 +3700,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp truthy_sqlite_uri_param?(_value), do: false
 
   defp live_file_backed_dispatch_database(repo) do
-    case repo_query(repo, "PRAGMA database_list", [], log: false) do
-      {:ok, %{rows: rows}} ->
-        case Enum.find(rows, &main_database_row?/1) do
-          [_seq, "main", path] when is_binary(path) and path != "" -> {:ok, path}
-          _row -> {:tool_error, "file_backed_database_required"}
-        end
-
-      _result ->
-        {:tool_error, "database_required"}
+    case live_main_database_path(repo) do
+      {:ok, path} -> {:ok, path}
+      :memory -> {:tool_error, "file_backed_database_required"}
+      :error -> {:tool_error, "database_required"}
     end
-  rescue
-    _error ->
-      {:tool_error, "database_required"}
-  catch
-    _kind, _reason ->
-      {:tool_error, "database_required"}
   end
 
   defp require_approved_dispatch_planned_slice(%PlannedSlice{status: "approved"}), do: :ok
@@ -5226,11 +5510,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
       {:ok,
        opts
-       |> put_optional_handoff_opt(:database, config.database)
+       |> put_optional_handoff_opt(:database, child_worker_handoff_database(config))
        |> put_optional_handoff_opt(:mode, Map.get(handoff_template, :mode))
        |> put_optional_handoff_opt(:store_dir, Map.get(handoff_template, :store_dir))}
     end
   end
+
+  defp child_worker_handoff_database(%Config{database: database}) when is_binary(database) do
+    case normalized_database(database) do
+      nil -> nil
+      database -> database
+    end
+  end
+
+  defp child_worker_handoff_database(%Config{repo: repo}), do: live_dispatch_database_or_nil(repo)
 
   defp config_repo_root(%Config{repo_root: repo_root}) when is_binary(repo_root) do
     case String.trim(repo_root) do

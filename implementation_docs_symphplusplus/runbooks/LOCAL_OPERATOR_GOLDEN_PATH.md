@@ -84,6 +84,10 @@ home is unavailable, Symphony++ falls back under a temp/relative
 isolated tests, manual experiments, or demo ledgers. Pre-production ledgers
 under the earlier `~/.symphony_plus_plus` default are not auto-migrated; pass
 that path with `--database` only when you need to inspect old dogfood state.
+`sympp.health` reports this distinction under `ledger.identity`: normal omitted
+configuration uses `source: "default"`, explicit SQLite overrides use
+`source: "explicit"`, and default-home ledgers set `default_home: true` with a
+safe display path.
 
 ## Optional Demo Ledger
 
@@ -137,8 +141,10 @@ single header value, follows with `tools/list`, and verifies the generic
 unbound tool surface including `sympp.health`, the `solo_*` tools,
 `claim_work_key`, and statically discoverable architect schemas such as
 `read_work_request` and `list_guidance_requests`. Worker-only mutation tools
-remain absent until claim. For a non-default or dynamic cockpit port, pass the
-printed MCP URL:
+remain absent until claim. The health smoke also verifies that
+`ledger.identity` is present and complete enough to identify default or
+explicit SQLite ledgers without exposing credential-bearing configuration. For a
+non-default or dynamic cockpit port, pass the printed MCP URL:
 
 ```powershell
 .\scripts\smoke-sympp-mcp-http.ps1 -Url http://127.0.0.1:<port>/mcp
