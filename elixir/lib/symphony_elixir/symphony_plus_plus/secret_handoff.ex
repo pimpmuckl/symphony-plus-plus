@@ -9,6 +9,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   @default_repo_root __DIR__ |> Path.join("../../../..") |> Path.expand()
   @metadata_version 1
   @metadata_lock_stale_seconds 300
+  @max_handoff_metadata_bytes 16_384
+  @max_handoff_metadata_scan_files 512
   @max_local_private_secret_bytes 16_384
   @valid_modes ["auto", "windows-credential-manager", "local-private-file"]
 
@@ -133,13 +135,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   def read_local_private_file_secret(%WorkPackage{} = work_package, grant, handoff, opts)
       when is_map(grant) and is_map(handoff) and is_list(opts) do
     with {:ok, opts} <- require_handoff_namespace_opts(opts),
-         :ok <- reject_metadata_location_overrides(opts),
-         {:ok, display_handoff} <- read_worker_secret_metadata(work_package, grant, opts),
-         :ok <- validate_private_handoff_claim_display(handoff, display_handoff),
-         {:ok, path} <- private_handoff_claim_path(handoff, display_handoff),
-         {:ok, secret} <- read_private_handoff_secret(path),
-         :ok <- validate_private_handoff_secret(secret, handoff_value(grant, :secret_hash)) do
-      {:ok, secret}
+         :ok <- reject_metadata_location_overrides(opts) do
+      read_local_private_file_secret_from_metadata(work_package, grant, handoff, opts)
     end
   end
 
@@ -462,6 +459,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
       claimed_by_required: true,
       secret_in_stdout: false
     }
+    |> maybe_put_handoff_value(:namespace_repo_root, handoff_namespace_repo_root(opts))
   end
 
   defp mode_name(:windows_credential_manager), do: "windows-credential-manager"
@@ -511,7 +509,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
       ~s(& #{powershell_literal(powershell)} -NoProfile -ExecutionPolicy Bypass -File #{powershell_literal(script_path)} run-mcp-local-file),
       ~s(-SecretFile #{powershell_literal(secret_path)}),
       maybe_powershell_arg("-Database", Keyword.get(opts, :database)),
-      ~s(-ClaimedBy #{powershell_literal(claimed_by)})
+      ~s(-ClaimedBy #{powershell_literal(claimed_by)}),
+      maybe_powershell_arg("-RepoRoot", handoff_namespace_repo_root(opts)),
+      ~s(-ElixirDir #{powershell_literal(mcp_elixir_dir(opts))})
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" ")
@@ -531,11 +531,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
       ~s(sh #{shell_literal(script_path)} run-mcp-local-file),
       ~s(--path #{shell_literal(secret_path)}),
       maybe_shell_arg("--database", Keyword.get(opts, :database)),
-      ~s(--claimed-by #{shell_literal(claimed_by)})
+      ~s(--claimed-by #{shell_literal(claimed_by)}),
+      maybe_shell_arg("--repo-root", handoff_namespace_repo_root(opts)),
+      ~s(--elixir-dir #{shell_literal(mcp_elixir_dir(opts))})
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" ")
   end
+
+  defp mcp_elixir_dir(opts) do
+    case Keyword.get(opts, :elixir_dir) do
+      elixir_dir when is_binary(elixir_dir) ->
+        case String.trim(elixir_dir) do
+          "" -> default_mcp_elixir_dir()
+          elixir_dir -> Path.expand(elixir_dir)
+        end
+
+      _elixir_dir ->
+        default_mcp_elixir_dir()
+    end
+  end
+
+  defp default_mcp_elixir_dir, do: Path.join(@default_repo_root, "elixir")
 
   defp maybe_powershell_arg(_flag, nil), do: nil
   defp maybe_powershell_arg(flag, value), do: "#{flag} #{powershell_literal(value)}"
@@ -847,6 +864,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
       claimed_by_required: true,
       secret_in_stdout: false
     }
+    |> maybe_put_handoff_value(:namespace_repo_root, handoff_namespace_repo_root(opts))
     |> maybe_put_handoff_value(:path, Map.get(coordinates, "path"))
     |> maybe_put_handoff_value(
       :run_mcp_command,
@@ -886,6 +904,235 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
 
   defp maybe_put_handoff_value(map, _key, nil), do: map
   defp maybe_put_handoff_value(map, key, value), do: Map.put(map, key, value)
+
+  defp handoff_namespace_repo_root(opts) do
+    Keyword.get(opts, :namespace_repo_root) || Keyword.get(opts, :repo_root)
+  end
+
+  defp read_local_private_file_secret_from_metadata(%WorkPackage{} = work_package, grant, handoff, opts) do
+    case read_local_private_file_secret_from_namespaced_metadata(work_package, grant, handoff, opts) do
+      {:error, {:handoff_metadata_read_failed, :enoent}} = missing_error ->
+        if private_handoff_scan_allowed?(handoff, opts) do
+          read_local_private_file_secret_from_scanned_metadata(work_package, grant, handoff, opts, missing_error)
+        else
+          missing_error
+        end
+
+      result ->
+        result
+    end
+  end
+
+  defp private_handoff_scan_allowed?(handoff, opts) do
+    not private_handoff_optional_coordinate?(handoff, :namespace_repo_root) and
+      (not private_handoff_optional_coordinate?(handoff, :database) or
+         Keyword.get(opts, :allow_database_metadata_scan?, false))
+  end
+
+  defp private_handoff_optional_coordinate?(handoff, key) do
+    case handoff_value(handoff, key) do
+      value when is_binary(value) -> String.trim(value) != ""
+      _value -> false
+    end
+  end
+
+  defp read_local_private_file_secret_from_namespaced_metadata(%WorkPackage{} = work_package, grant, handoff, opts) do
+    with {:ok, display_handoff} <- read_worker_secret_metadata(work_package, grant, opts),
+         :ok <- validate_private_handoff_claim_display(handoff, display_handoff),
+         {:ok, path} <- private_handoff_claim_path(handoff, display_handoff),
+         {:ok, secret} <- read_private_handoff_secret(path),
+         :ok <- validate_private_handoff_secret(secret, handoff_value(grant, :secret_hash)) do
+      {:ok, secret}
+    end
+  end
+
+  defp read_local_private_file_secret_from_scanned_metadata(
+         %WorkPackage{} = work_package,
+         grant,
+         handoff,
+         opts,
+         missing_error
+       ) do
+    with {:ok, context} <- private_handoff_scan_context(work_package, grant, handoff, opts),
+         :ok <- validate_private_handoff_claim_display(handoff, private_handoff_scan_display(context)),
+         {:ok, metadata} <- matching_handoff_metadata(context, missing_error),
+         :ok <- validate_scanned_handoff_metadata(metadata, context),
+         {:ok, _path} <- private_handoff_claim_path(handoff, private_handoff_scan_display(context)),
+         {:ok, secret} <- read_private_handoff_secret(context.claim_path),
+         :ok <- validate_private_handoff_secret(secret, handoff_value(grant, :secret_hash)) do
+      {:ok, secret}
+    end
+  end
+
+  defp private_handoff_scan_context(%WorkPackage{} = work_package, grant, handoff, opts) do
+    with {:ok, display_key} <- fetch_grant_display_key(grant),
+         {:ok, grant_identity} <- fetch_grant_identity(grant),
+         {:ok, claim_path} <-
+           private_handoff_scan_claim_path(work_package, display_key, grant_identity, handoff, opts) do
+      {:ok,
+       %{
+         work_package: work_package,
+         work_package_id: work_package.id,
+         display_key: display_key,
+         grant_identity: grant_identity,
+         expected_local_private_file_path: claim_path,
+         claim_path: claim_path,
+         metadata_dir: Path.join(local_private_store_dir(opts), "metadata")
+       }}
+    end
+  end
+
+  defp private_handoff_scan_claim_path(%WorkPackage{} = work_package, display_key, grant_identity, handoff, opts) do
+    store_dir = local_private_store_dir(opts)
+
+    with {:ok, path} <- private_handoff_input_path(handoff),
+         :ok <- validate_private_handoff_path_in_store(path, store_dir),
+         :ok <- validate_managed_private_handoff_filename(path, work_package, display_key, grant_identity) do
+      {:ok, path}
+    end
+  end
+
+  defp private_handoff_input_path(handoff) do
+    case handoff_value(handoff, :path) do
+      path when is_binary(path) ->
+        cond do
+          String.trim(path) == "" -> {:error, :private_handoff_path_mismatch}
+          private_handoff_path_traversal?(path) -> {:error, :private_handoff_path_traversal}
+          true -> {:ok, Path.expand(path)}
+        end
+
+      _path ->
+        {:error, :private_handoff_path_mismatch}
+    end
+  end
+
+  defp validate_private_handoff_path_in_store(path, store_dir) do
+    if path_inside_directory?(path, store_dir), do: :ok, else: {:error, :private_handoff_path_mismatch}
+  end
+
+  defp validate_managed_private_handoff_filename(path, %WorkPackage{} = work_package, display_key, grant_identity) do
+    prefix = "#{safe_filename(work_package.id)}-#{safe_filename(display_key)}-#{safe_filename(grant_identity)}-"
+    pattern = ~r/\A#{Regex.escape(prefix)}[A-Za-z0-9_-]{16}\.secret\z/
+
+    if Regex.match?(pattern, Path.basename(path)), do: :ok, else: {:error, :private_handoff_path_mismatch}
+  end
+
+  defp private_handoff_scan_display(context) do
+    %{
+      mode: "local-private-file",
+      work_package_id: context.work_package_id,
+      grant_id: context.grant_identity,
+      display_key: context.display_key,
+      target: credential_target(context.work_package, %{display_key: context.display_key, id: context.grant_identity}),
+      path: context.claim_path
+    }
+  end
+
+  defp matching_handoff_metadata(context, missing_error) do
+    with {:ok, paths} <- handoff_metadata_scan_paths(context.metadata_dir, missing_error) do
+      scan_handoff_metadata_paths(paths, context, missing_error)
+    end
+  end
+
+  defp handoff_metadata_scan_paths(metadata_dir, missing_error) do
+    case File.ls(metadata_dir) do
+      {:ok, entries} ->
+        paths =
+          entries
+          |> Enum.filter(&handoff_metadata_filename?/1)
+          |> Enum.sort()
+
+        cond do
+          paths == [] ->
+            missing_error
+
+          length(paths) > @max_handoff_metadata_scan_files ->
+            {:error, {:handoff_metadata_read_failed, :too_many_metadata_files}}
+
+          true ->
+            {:ok, Enum.map(paths, &Path.join(metadata_dir, &1))}
+        end
+
+      {:error, :enoent} ->
+        missing_error
+
+      {:error, reason} ->
+        {:error, {:handoff_metadata_read_failed, reason}}
+    end
+  end
+
+  defp handoff_metadata_filename?(filename) when is_binary(filename) do
+    Regex.match?(~r/\Ahandoff-[A-Za-z0-9_-]+\.json\z/, filename)
+  end
+
+  defp handoff_metadata_filename?(_filename), do: false
+
+  defp scan_handoff_metadata_paths(paths, context, missing_error) do
+    Enum.reduce_while(paths, missing_error, fn path, last_error ->
+      scan_handoff_metadata_path(path, context, last_error)
+    end)
+  end
+
+  defp scan_handoff_metadata_path(path, context, last_error) do
+    case read_handoff_metadata(path) do
+      {:ok, metadata} -> scanned_handoff_metadata_result(metadata, context, last_error)
+      {:error, reason} -> {:cont, {:error, reason}}
+    end
+  end
+
+  defp scanned_handoff_metadata_result(metadata, context, last_error) do
+    case scanned_handoff_metadata_candidate(metadata, context) do
+      :skip -> {:cont, last_error}
+      :match -> {:halt, {:ok, metadata}}
+      {:error, reason} -> {:halt, {:error, reason}}
+    end
+  end
+
+  defp scanned_handoff_metadata_candidate(metadata, context) when is_map(metadata) do
+    case Map.get(metadata, "path") do
+      path when is_binary(path) ->
+        cond do
+          private_handoff_path_traversal?(path) and Path.expand(path) == context.claim_path ->
+            {:error, {:handoff_metadata_invalid, :local_path_mismatch}}
+
+          Path.expand(path) == context.claim_path ->
+            :match
+
+          true ->
+            :skip
+        end
+
+      _path ->
+        :skip
+    end
+  end
+
+  defp validate_scanned_handoff_metadata(metadata, context) do
+    with :ok <- validate_handoff_metadata_identity(metadata, context),
+         {:ok, "local-private-file"} <- handoff_metadata_mode(metadata),
+         :ok <- validate_handoff_metadata_keys(metadata, "local-private-file") do
+      :ok
+    else
+      {:ok, _mode} -> {:error, {:handoff_metadata_invalid, :local_path_mismatch}}
+      error -> error
+    end
+  end
+
+  defp path_inside_directory?(path, directory) do
+    path = comparable_path(path)
+    directory = directory |> comparable_path() |> String.trim_trailing("/")
+
+    String.starts_with?(path, directory <> "/")
+  end
+
+  defp comparable_path(path) do
+    path =
+      path
+      |> Path.expand()
+      |> String.replace("\\", "/")
+
+    if windows?(), do: String.downcase(path), else: path
+  end
 
   defp validate_private_handoff_claim_display(handoff, display_handoff) do
     with :ok <- expect_private_handoff_field(handoff, :mode, handoff_value(display_handoff, :mode)),
@@ -1375,9 +1622,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoff do
   end
 
   defp read_handoff_metadata(path) do
-    case File.read(path) do
-      {:ok, content} -> decode_handoff_metadata(content)
+    with :ok <- validate_handoff_metadata_file(path),
+         {:ok, content} <- File.read(path) do
+      decode_handoff_metadata(content)
+    else
+      {:error, {:handoff_metadata_read_failed, _reason} = reason} -> {:error, reason}
       {:error, reason} -> {:error, {:handoff_metadata_read_failed, reason}}
+    end
+  end
+
+  defp validate_handoff_metadata_file(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_handoff_metadata_bytes ->
+        :ok
+
+      {:ok, %File.Stat{type: :regular}} ->
+        {:error, {:handoff_metadata_read_failed, :too_large}}
+
+      {:ok, %File.Stat{}} ->
+        {:error, {:handoff_metadata_read_failed, :not_regular_file}}
+
+      {:error, reason} ->
+        {:error, {:handoff_metadata_read_failed, reason}}
     end
   end
 
