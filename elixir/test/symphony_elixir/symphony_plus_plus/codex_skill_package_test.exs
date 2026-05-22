@@ -10,12 +10,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   @plugin_version @plugin_manifest_path |> File.read!() |> Jason.decode!() |> Map.fetch!("version")
   @plugin_mcp_path Path.join(@repo_root, "plugins/symphony-plus-plus/.mcp.json")
   @plugin_skills_dir Path.join(@repo_root, "plugins/symphony-plus-plus/skills")
+  @plugin_icon_path Path.join(@repo_root, "plugins/symphony-plus-plus/assets/splusplus-logo.png")
   @plugin_default_solo_skill_path Path.join(@repo_root, "plugins/symphony-plus-plus/skills-default/symphony-solo-session/SKILL.md")
   @plugin_solo_script_path Path.join(@repo_root, "plugins/symphony-plus-plus/scripts/sympp-solo.ps1")
   @plugin_lifecycle_diagnostic_path Path.join(@repo_root, "plugins/symphony-plus-plus/scripts/diagnose-mcp-lifecycle.ps1")
   @mcp_plugin_manifest_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/.codex-plugin/plugin.json")
   @mcp_plugin_mcp_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/.mcp.json")
   @mcp_plugin_readme_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/README.md")
+  @mcp_plugin_icon_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/assets/splusplus-logo.png")
   @mcp_plugin_skill_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/skills/symphony-work-package/SKILL.md")
   @mcp_plugin_solo_skill_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/skills/symphony-solo-session/SKILL.md")
   @mcp_plugin_architect_skill_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/skills/symphony-architect/SKILL.md")
@@ -223,12 +225,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert manifest["skills"] == "./skills-default/"
     refute Map.has_key?(manifest, "mcpServers")
     assert manifest["interface"]["displayName"] == "Symphony++"
+    assert manifest["interface"]["composerIcon"] == "./assets/splusplus-logo.png"
+    assert manifest["interface"]["logo"] == "./assets/splusplus-logo.png"
     assert manifest["description"] =~ "Solo Session"
     assert manifest["interface"]["shortDescription"] =~ "Solo Session"
     refute manifest["description"] =~ "WorkPackage"
     refute manifest["interface"]["shortDescription"] =~ "WorkPackage"
     refute File.exists?(@plugin_mcp_path)
     refute File.exists?(@plugin_skills_dir)
+    assert File.exists?(@plugin_icon_path)
     assert File.read!(@plugin_default_solo_skill_path) =~ "name: symphony-solo-session"
     assert File.read!(@plugin_default_solo_skill_path) =~ "Do not create local"
     assert File.read!(@plugin_default_solo_skill_path) =~ "symphony-work-package"
@@ -254,7 +259,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.exists?(@worker_secret_script_path)
     assert File.exists?(@worker_secret_shell_path)
     assert File.read!(@plugin_readme_path) =~ ~s("path": "./plugins/symphony-plus-plus")
-    assert File.read!(@plugin_readme_path) =~ "manifest-version directory"
+    assert File.read!(@plugin_readme_path) =~ "manifest-version cache"
     assert File.read!(@plugin_readme_path) =~ "refreshes every Symphony++ package"
     assert File.read!(@plugin_readme_path) =~ "refresh-local-plugin.ps1 -ValidateInstalledCache"
     assert File.read!(@plugin_readme_path) =~ "intentionally skill-only"
@@ -269,6 +274,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@plugin_readme_path) =~ "Live process counts are scoped to `-RepoRoot`"
     assert File.read!(@plugin_readme_path) =~ "current usable cache entries"
     assert File.read!(@plugin_readme_path) =~ "prunes removed managed skill directories"
+    assert File.read!(@plugin_readme_path) =~ "prunes the\nolder generated `local` cache root"
     assert File.read!(@plugin_readme_path) =~ "Superseded version directories"
     assert File.read!(@plugin_readme_path) =~ "The diagnostic rejects `-RepoRoot`"
     assert File.read!(@plugin_readme_path) =~ "usable current caches point at multiple"
@@ -314,6 +320,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert File.read!(@refresh_script_path) =~ "PSObject.Properties.Name) -contains \"mcpServers\""
     assert File.read!(@refresh_script_path) =~ "scripts/sympp-solo.ps1"
     assert File.read!(@refresh_script_path) =~ "skills-default"
+    assert File.read!(@refresh_script_path) =~ "\"assets\""
+    assert File.read!(@refresh_script_path) =~ "Remove-GeneratedLocalCacheEntry"
+    assert File.read!(@refresh_script_path) =~ "Removed stale generated Symphony++ local plugin cache"
+    assert File.read!(@refresh_script_path) =~ "Unmarked local plugin cache entry still exists"
+    refute File.read!(@refresh_script_path) =~ "local target:"
     assert File.read!(@refresh_script_path) =~ "Repair-IncompatibleDefaultPluginCacheEntries"
     assert File.read!(@refresh_script_path) =~ "Sync-ManagedDirectoryChildren"
     assert File.read!(@refresh_script_path) =~ "Installed plugin MCP fallback wrapper validation failed"
@@ -436,10 +447,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert manifest["mcpServers"] == "./.mcp.json"
     assert manifest["description"] =~ "Opt-in"
     assert manifest["interface"]["displayName"] == "Symphony++ MCP"
+    assert manifest["interface"]["composerIcon"] == "./assets/splusplus-logo.png"
+    assert manifest["interface"]["logo"] == "./assets/splusplus-logo.png"
+    assert File.read!(@mcp_plugin_icon_path) == File.read!(@plugin_icon_path)
 
     assert File.read!(@mcp_plugin_readme_path) =~ "`symphony-plus-plus` Codex plugin"
     assert File.read!(@mcp_plugin_readme_path) =~ "Do not enable this plugin in the normal global Codex config"
     assert File.read!(@mcp_plugin_readme_path) =~ "concrete install path"
+    assert File.read!(@mcp_plugin_readme_path) =~ "assets/splusplus-logo.png"
     assert File.read!(@mcp_plugin_readme_path) =~ "[plugins.\"symphony-plus-plus-mcp@jonat-local\"]"
     assert File.read!(@mcp_plugin_readme_path) =~ "-EnableMcpCompanion"
     assert File.read!(@mcp_plugin_readme_path) =~ "-CodexHome <dedicated-codex-home>"
@@ -3076,9 +3091,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         assert status == 0, output
 
-        for cache_name <- ["local", @plugin_version] do
+        refute File.exists?(published_plugin_cache_path(temp_codex_home, ["local"]))
+        refute File.exists?(published_plugin_cache_path(temp_codex_home, ["local"], "symphony-plus-plus-mcp"))
+
+        for cache_name <- [@plugin_version] do
           refreshed_manifest_path = published_plugin_cache_path(temp_codex_home, [cache_name, ".codex-plugin", "plugin.json"])
           refreshed_mcp_path = published_plugin_cache_path(temp_codex_home, [cache_name, ".mcp.json"])
+          refreshed_icon_path = published_plugin_cache_path(temp_codex_home, [cache_name, "assets", "splusplus-logo.png"])
           default_skill_path = published_plugin_cache_path(temp_codex_home, [cache_name, "skills-default", "symphony-solo-session", "SKILL.md"])
           root_skills_path = published_plugin_cache_path(temp_codex_home, [cache_name, "skills"])
           source_hint_path = published_plugin_cache_path(temp_codex_home, [cache_name, ".sympp-source-root"])
@@ -3088,17 +3107,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           assert refreshed_manifest["version"] == @plugin_version
           assert refreshed_manifest["skills"] == "./skills-default/"
           refute Map.has_key?(refreshed_manifest, "mcpServers")
+          assert refreshed_manifest["interface"]["composerIcon"] == "./assets/splusplus-logo.png"
+          assert refreshed_manifest["interface"]["logo"] == "./assets/splusplus-logo.png"
+          assert File.read!(refreshed_icon_path) == File.read!(@plugin_icon_path)
           assert File.read!(default_skill_path) == File.read!(@plugin_default_solo_skill_path)
           refute File.exists?(root_skills_path)
           refute File.exists?(refreshed_mcp_path)
           assert same_path?(String.trim(File.read!(source_hint_path)), @repo_root)
         end
 
-        for cache_name <- ["local", @plugin_version] do
+        for cache_name <- [@plugin_version] do
           mcp_manifest_path =
             published_plugin_cache_path(temp_codex_home, [cache_name, ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
 
           mcp_config_path = published_plugin_cache_path(temp_codex_home, [cache_name, ".mcp.json"], "symphony-plus-plus-mcp")
+          mcp_icon_path = published_plugin_cache_path(temp_codex_home, [cache_name, "assets", "splusplus-logo.png"], "symphony-plus-plus-mcp")
           mcp_solo_skill_path = published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-solo-session", "SKILL.md"], "symphony-plus-plus-mcp")
           mcp_worker_skill_path = published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-work-package", "SKILL.md"], "symphony-plus-plus-mcp")
           mcp_architect_skill_path = published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-architect", "SKILL.md"], "symphony-plus-plus-mcp")
@@ -3106,6 +3129,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           mcp_config = mcp_config_path |> File.read!() |> Jason.decode!()
           assert mcp_manifest["name"] == "symphony-plus-plus-mcp"
           assert mcp_manifest["mcpServers"] == "./.mcp.json"
+          assert mcp_manifest["interface"]["composerIcon"] == "./assets/splusplus-logo.png"
+          assert mcp_manifest["interface"]["logo"] == "./assets/splusplus-logo.png"
+          assert File.read!(mcp_icon_path) == File.read!(@plugin_icon_path)
           refute File.exists?(mcp_solo_skill_path)
           assert File.read!(mcp_worker_skill_path) == File.read!(@mcp_plugin_skill_path)
           assert File.read!(mcp_architect_skill_path) == File.read!(@mcp_plugin_architect_skill_path)
@@ -3153,10 +3179,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         assert output =~ "Symphony++ Solo Session wrapper validation passed."
         assert output =~ "Symphony++ generic MCP wrapper validation passed."
         assert output =~ "Validated installed Symphony++ plugin cache:"
-        assert output =~ "cache: local"
         assert output =~ "cache: #{expected_version}"
 
-        for cache_name <- ["local", expected_version] do
+        refute File.exists?(published_plugin_cache_path(temp_codex_home, ["local"]))
+        refute File.exists?(published_plugin_cache_path(temp_codex_home, ["local"], "symphony-plus-plus-mcp"))
+
+        for cache_name <- [expected_version] do
           source_hint_path = published_plugin_cache_path(temp_codex_home, [cache_name, ".sympp-source-root"])
           assert same_path?(String.trim(File.read!(source_hint_path)), @repo_root)
         end
@@ -3196,19 +3224,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         assert output =~ "Symphony++ Solo Session wrapper validation passed."
         assert output =~ "Symphony++ generic MCP wrapper validation passed."
         assert output =~ "Validated installed Symphony++ plugin cache:"
-        assert output =~ "cache: local"
         assert output =~ "cache: #{@plugin_version}"
+        refute File.exists?(published_plugin_cache_path(temp_codex_home, ["local"], "symphony-plus-plus-mcp"))
 
-        for cache_name <- ["local", @plugin_version] do
+        for cache_name <- [@plugin_version] do
           manifest_path =
             published_plugin_cache_path(temp_codex_home, [cache_name, ".codex-plugin", "plugin.json"], "symphony-plus-plus-mcp")
 
           source_hint_path = published_plugin_cache_path(temp_codex_home, [cache_name, ".sympp-source-root"], "symphony-plus-plus-mcp")
+          icon_path = published_plugin_cache_path(temp_codex_home, [cache_name, "assets", "splusplus-logo.png"], "symphony-plus-plus-mcp")
 
           manifest = manifest_path |> File.read!() |> Jason.decode!()
           assert manifest["name"] == "symphony-plus-plus-mcp"
           assert manifest["version"] == @plugin_version
           assert manifest["mcpServers"] == "./.mcp.json"
+          assert File.read!(icon_path) == File.read!(@plugin_icon_path)
           refute File.exists?(published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-solo-session"], "symphony-plus-plus-mcp"))
           assert File.exists?(published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-work-package", "SKILL.md"], "symphony-plus-plus-mcp"))
           assert File.exists?(published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-architect", "SKILL.md"], "symphony-plus-plus-mcp"))
@@ -3220,7 +3250,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     end
   end
 
-  test "refresh script overlays local and manifest-version caches without deleting unrelated entries" do
+  test "refresh script prunes generated local cache and overlays manifest-version cache" do
     powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
     temp_codex_home = unique_temp_path("sympp-plugin-refresh")
 
@@ -3232,16 +3262,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         stale_root_architect_skill_path = published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-architect", "SKILL.md"])
         stale_mcp_solo_skill_path = published_plugin_cache_path(temp_codex_home, [cache_name, "skills", "symphony-solo-session", "SKILL.md"], "symphony-plus-plus-mcp")
         marker_path = published_plugin_cache_path(temp_codex_home, [cache_name, "operator-marker", "keep.txt"])
+        source_hint_path = published_plugin_cache_path(temp_codex_home, [cache_name, ".sympp-source-root"])
+        mcp_source_hint_path = published_plugin_cache_path(temp_codex_home, [cache_name, ".sympp-source-root"], "symphony-plus-plus-mcp")
 
         File.mkdir_p!(Path.dirname(stale_manifest_path))
         File.write!(stale_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "stale"}))
         File.write!(stale_mcp_path, Jason.encode!(%{"mcpServers" => %{}}))
+        File.write!(source_hint_path, "C:/sympp/generated\n")
         File.mkdir_p!(Path.dirname(stale_root_solo_skill_path))
         File.write!(stale_root_solo_skill_path, "stale duplicate skill")
         File.mkdir_p!(Path.dirname(stale_root_architect_skill_path))
         File.write!(stale_root_architect_skill_path, "stale default architect skill")
         File.mkdir_p!(Path.dirname(stale_mcp_solo_skill_path))
         File.write!(stale_mcp_solo_skill_path, "stale mcp solo duplicate")
+        File.write!(mcp_source_hint_path, "C:/sympp/generated\n")
         File.mkdir_p!(Path.dirname(marker_path))
         File.write!(marker_path, "preserve #{cache_name}")
       end
@@ -3263,8 +3297,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           )
 
         assert status == 0, output
+        assert output =~ "Removed stale generated Symphony++ local plugin cache"
+        refute File.exists?(published_plugin_cache_path(temp_codex_home, ["local"]))
+        refute File.exists?(published_plugin_cache_path(temp_codex_home, ["local"], "symphony-plus-plus-mcp"))
 
-        for cache_name <- ["local", @plugin_version] do
+        for cache_name <- [@plugin_version] do
           manifest =
             temp_codex_home
             |> published_plugin_cache_path([cache_name, ".codex-plugin", "plugin.json"])
@@ -3282,6 +3319,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           assert File.read!(published_plugin_cache_path(temp_codex_home, [cache_name, "operator-marker", "keep.txt"])) ==
                    "preserve #{cache_name}"
         end
+      after
+        File.rm_rf(temp_codex_home)
+      end
+    end
+  end
+
+  test "refresh script fails when an unmarked local cache could shadow the versioned install" do
+    powershell = System.find_executable("powershell.exe") || System.find_executable("pwsh") || System.find_executable("powershell")
+    temp_codex_home = unique_temp_path("sympp-plugin-refresh-unmarked-local")
+
+    if powershell do
+      unmarked_manifest_path = published_plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"])
+
+      try do
+        File.mkdir_p!(Path.dirname(unmarked_manifest_path))
+        File.write!(unmarked_manifest_path, Jason.encode!(%{"name" => "symphony-plus-plus", "version" => "stale"}))
+
+        {output, status} =
+          System.cmd(
+            powershell,
+            [
+              "-NoProfile",
+              "-ExecutionPolicy",
+              "Bypass",
+              "-File",
+              @refresh_script_path,
+              "-PluginName",
+              "symphony-plus-plus",
+              "-CodexHome",
+              temp_codex_home
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status != 0
+        assert output =~ "Unmarked local plugin cache entry still exists"
+        assert File.exists?(unmarked_manifest_path)
+        assert File.exists?(published_plugin_cache_path(temp_codex_home, [@plugin_version, ".codex-plugin", "plugin.json"]))
       after
         File.rm_rf(temp_codex_home)
       end
@@ -3378,11 +3453,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         assert status == 0, output
 
-        refreshed_manifest_path = plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"])
-        refreshed_mcp_path = plugin_cache_path(temp_codex_home, ["local", ".mcp.json"])
+        refreshed_manifest_path = plugin_cache_path(temp_codex_home, [@plugin_version, ".codex-plugin", "plugin.json"])
+        refreshed_mcp_path = plugin_cache_path(temp_codex_home, [@plugin_version, ".mcp.json"])
 
         assert refreshed_manifest_path |> File.read!() |> Jason.decode!() |> Map.fetch!("name") == "symphony-plus-plus"
         refute File.exists?(refreshed_mcp_path)
+        refute File.exists?(plugin_cache_path(temp_codex_home, ["local"]))
       after
         File.rm(marketplace_path)
         File.rm_rf(temp_codex_home)
@@ -3505,7 +3581,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
         refute Map.has_key?(versioned_manifest, "mcpServers")
         refute File.exists?(published_plugin_cache_path(temp_codex_home, [@plugin_version, ".mcp.json"]))
-        assert published_plugin_cache_path(temp_codex_home, ["local", ".codex-plugin", "plugin.json"]) |> File.exists?()
+        refute File.exists?(published_plugin_cache_path(temp_codex_home, ["local"]))
 
         repaired_manifest =
           published_plugin_cache_path(temp_codex_home, ["0.1.1", ".codex-plugin", "plugin.json"])
@@ -3575,7 +3651,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
         repaired_manifest = stale_manifest_path |> File.read!() |> Jason.decode!()
         refute Map.has_key?(repaired_manifest, "mcpServers")
         refute File.exists?(stale_mcp_path)
-        assert File.exists?(published_plugin_cache_path(temp_codex_home, ["local", ".mcp.json"], "symphony-plus-plus-mcp"))
+        refute File.exists?(published_plugin_cache_path(temp_codex_home, ["local"], "symphony-plus-plus-mcp"))
+        assert File.exists?(published_plugin_cache_path(temp_codex_home, [@plugin_version, ".mcp.json"], "symphony-plus-plus-mcp"))
       after
         File.rm_rf(temp_codex_home)
       end

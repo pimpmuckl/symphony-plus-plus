@@ -31,6 +31,11 @@ cache from the repository root:
 
 Then reload Codex and start a new session. Existing sessions may keep the old
 skill and MCP registration list.
+The refresh writes versioned marketplace cache entries and prunes generated
+stale `local` entries after the versioned cache is accepted, when the `local`
+entry carries the Symphony++ source-root marker. If it stops on an unmarked
+`local` cache entry, inspect that path and remove it manually only if it is
+known obsolete.
 
 If the default Symphony++ skill is visible but the `symphony_plus_plus` MCP
 tools are missing, run the activation doctor from the repository root:
