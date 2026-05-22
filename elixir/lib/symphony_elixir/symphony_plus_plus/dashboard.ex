@@ -21,6 +21,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.State
   alias SymphonyElixir.SymphonyPlusPlus.Readiness.ScopeGuard
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.RepoIdentity
   alias SymphonyElixir.SymphonyPlusPlus.ReviewProfiles
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.Service, as: SoloSessionsService
@@ -73,12 +74,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   @spec board(repo()) :: {:ok, map()} | {:error, dashboard_error()}
   def board(repo) when is_atom(repo) do
-    safe_read(fn -> build_board(repo) end)
+    board(repo, [])
+  end
+
+  @spec board(repo(), keyword()) :: {:ok, map()} | {:error, dashboard_error()}
+  def board(repo, opts) when is_atom(repo) and is_list(opts) do
+    safe_read(fn -> build_board(repo, opts) end)
   end
 
   @spec operator_board(repo()) :: {:ok, map()} | {:error, dashboard_error()}
   def operator_board(repo) when is_atom(repo) do
-    safe_read(fn -> build_board(repo, active_blocking_edges?: true) end)
+    operator_board(repo, [])
+  end
+
+  @spec operator_board(repo(), keyword()) :: {:ok, map()} | {:error, dashboard_error()}
+  def operator_board(repo, opts) when is_atom(repo) and is_list(opts) do
+    safe_read(fn -> build_board(repo, Keyword.put(opts, :active_blocking_edges?, true)) end)
+  end
+
+  @spec repo_identity_catalog(repo()) :: {:ok, RepoIdentity.catalog()} | {:error, dashboard_error()}
+  def repo_identity_catalog(repo) when is_atom(repo) do
+    safe_read(fn ->
+      {:ok,
+       repo
+       |> repo_identity_repo_values()
+       |> build_repo_identity_catalog()}
+    end)
   end
 
   @spec phase_board(repo(), String.t()) :: {:ok, map()} | {:error, dashboard_error()}
@@ -100,10 +121,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   @spec work_requests_for_grant(repo(), AccessGrant.t()) :: {:ok, map()} | {:error, dashboard_error()}
   def work_requests_for_grant(repo, %AccessGrant{} = grant) when is_atom(repo) do
+    work_requests_for_grant(repo, grant, [])
+  end
+
+  @spec work_requests_for_grant(repo(), AccessGrant.t(), keyword()) :: {:ok, map()} | {:error, dashboard_error()}
+  def work_requests_for_grant(repo, %AccessGrant{} = grant, opts) when is_atom(repo) and is_list(opts) do
     safe_read(fn ->
       with {:ok, filters} <- work_request_filters_for_grant(repo, grant),
            {:ok, work_requests} <- WorkRequestRepository.list(repo, Map.new(filters)),
-           {:ok, cards} <- work_request_cards(repo, ordered_work_requests(work_requests), grant: grant) do
+           repo_identity_catalog = repo_identity_catalog_from_opts(opts, Enum.map(work_requests, & &1.repo)),
+           {:ok, cards} <- work_request_cards(repo, ordered_work_requests(work_requests), Keyword.merge(opts, grant: grant, repo_identity_catalog: repo_identity_catalog)) do
         {:ok,
          %{
            work_requests: cards,
@@ -115,9 +142,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   @spec work_requests(repo()) :: {:ok, map()} | {:error, dashboard_error()}
   def work_requests(repo) when is_atom(repo) do
+    work_requests(repo, [])
+  end
+
+  @spec work_requests(repo(), keyword()) :: {:ok, map()} | {:error, dashboard_error()}
+  def work_requests(repo, opts) when is_atom(repo) and is_list(opts) do
     safe_read(fn ->
       with {:ok, work_requests} <- WorkRequestRepository.list(repo),
-           {:ok, cards} <- work_request_cards(repo, ordered_work_requests(work_requests)) do
+           {:ok, repo_identity_catalog} <- repo_identity_catalog_from_repo(repo, opts, Enum.map(work_requests, & &1.repo)),
+           {:ok, cards} <- work_request_cards(repo, ordered_work_requests(work_requests), Keyword.put(opts, :repo_identity_catalog, repo_identity_catalog)) do
         {:ok,
          %{
            work_requests: cards,
@@ -129,8 +162,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   @spec human_guidance_requests(repo()) :: {:ok, map()} | {:error, dashboard_error()}
   def human_guidance_requests(repo) when is_atom(repo) do
+    human_guidance_requests(repo, [])
+  end
+
+  @spec human_guidance_requests(repo(), keyword()) :: {:ok, map()} | {:error, dashboard_error()}
+  def human_guidance_requests(repo, opts) when is_atom(repo) and is_list(opts) do
     safe_read(fn ->
-      with {:ok, cards} <- human_guidance_request_cards(repo) do
+      with {:ok, cards} <- human_guidance_request_cards(repo, opts) do
         {:ok,
          %{
            guidance_requests: cards,
@@ -143,9 +181,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   @spec solo_sessions(repo()) :: {:ok, map()} | {:error, dashboard_error()}
   @spec solo_sessions(repo(), map()) :: {:ok, map()} | {:error, dashboard_error()}
   def solo_sessions(repo, filters \\ %{}) when is_atom(repo) and is_map(filters) do
+    solo_sessions(repo, filters, [])
+  end
+
+  @spec solo_sessions(repo(), map(), keyword()) :: {:ok, map()} | {:error, dashboard_error()}
+  def solo_sessions(repo, filters, opts) when is_atom(repo) and is_map(filters) and is_list(opts) do
     safe_read(fn ->
       with {:ok, sessions} <- SoloSessionsService.list(repo, filters),
-           {:ok, cards} <- solo_session_cards(repo, sessions) do
+           {:ok, repo_identity_catalog} <- repo_identity_catalog_from_repo(repo, opts, Enum.map(sessions, & &1.repo)),
+           {:ok, cards} <- solo_session_cards(repo, sessions, repo_identity_catalog) do
         {:ok,
          %{
            solo_sessions: cards,
@@ -157,12 +201,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   @spec solo_session_detail(repo(), String.t()) :: {:ok, map()} | {:error, dashboard_error()}
   def solo_session_detail(repo, solo_session_id) when is_atom(repo) and is_binary(solo_session_id) do
+    solo_session_detail(repo, solo_session_id, [])
+  end
+
+  @spec solo_session_detail(repo(), String.t(), keyword()) :: {:ok, map()} | {:error, dashboard_error()}
+  def solo_session_detail(repo, solo_session_id, opts) when is_atom(repo) and is_binary(solo_session_id) and is_list(opts) do
     safe_read(fn ->
       with {:ok, session} <- SoloSessionsService.get(repo, solo_session_id),
            {:ok, entries} <- SoloSessionsService.list_entries(repo, solo_session_id) do
+        repo_identity_catalog = repo_identity_catalog_from_opts(opts, [session.repo])
+
         {:ok,
          %{
-           solo_session: solo_session_detail(session),
+           solo_session: solo_session_payload(session, repo_identity_catalog),
            entries: Enum.map(entries, &solo_session_detail_entry/1),
            entry_count: length(entries)
          }}
@@ -189,8 +240,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   @spec solo_session_streams(repo()) :: {:ok, [map()]} | {:error, dashboard_error()}
   def solo_session_streams(repo) when is_atom(repo) do
+    solo_session_streams(repo, [])
+  end
+
+  @spec solo_session_streams(repo(), keyword()) :: {:ok, [map()]} | {:error, dashboard_error()}
+  def solo_session_streams(repo, opts) when is_atom(repo) and is_list(opts) do
     safe_read(fn ->
-      streams =
+      raw_streams =
         repo.all(
           from(session in SoloSession,
             where: not is_nil(session.repo) and session.repo != "",
@@ -205,7 +261,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
           )
         )
 
-      {:ok, streams}
+      with {:ok, repo_identity_catalog} <- repo_identity_catalog_from_repo(repo, opts, Enum.map(raw_streams, & &1.repo)) do
+        {:ok, canonical_solo_session_streams(raw_streams, repo_identity_catalog)}
+      end
     end)
   end
 
@@ -223,6 +281,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end)
   end
 
+  defp canonical_solo_session_streams(streams, repo_identity_catalog) do
+    streams
+    |> Enum.map(&Map.merge(&1, RepoIdentity.fields(repo_identity_catalog, &1.repo)))
+    |> Enum.group_by(&{&1.repo_key || &1.repo, &1.base_branch})
+    |> Enum.map(fn {_key, grouped_streams} -> canonical_solo_session_stream(grouped_streams) end)
+    |> Enum.sort_by(&{&1.repo_key || &1.repo || "", &1.base_branch || ""})
+  end
+
+  defp canonical_solo_session_stream([first | _rest] = streams) do
+    %{
+      repo: preferred_solo_session_stream_repo(streams),
+      repo_key: first.repo_key,
+      repo_display: first.repo_display,
+      repo_remote: Enum.find_value(streams, & &1.repo_remote),
+      repo_aliases: repo_identity_aliases(streams),
+      base_branch: first.base_branch,
+      solo_session_count: Enum.sum(Enum.map(streams, & &1.solo_session_count))
+    }
+  end
+
+  defp preferred_solo_session_stream_repo(streams) do
+    streams
+    |> Enum.map(& &1.repo)
+    |> Enum.uniq()
+    |> Enum.sort_by(&{String.contains?(&1, "/"), String.downcase(&1)})
+    |> hd()
+  end
+
+  defp repo_identity_aliases(items) do
+    items
+    |> Enum.flat_map(&Map.get(&1, :repo_aliases, []))
+    |> Enum.uniq()
+    |> Enum.sort_by(&String.downcase/1)
+  end
+
+  defp put_repo_identity_fields(payload, repo_identity_catalog, repo_value) when is_map(payload) do
+    Map.merge(payload, RepoIdentity.fields(repo_identity_catalog, repo_value))
+  end
+
   @spec work_request_detail_for_grant(repo(), String.t(), AccessGrant.t()) :: {:ok, map()} | {:error, dashboard_error()}
   def work_request_detail_for_grant(repo, work_request_id, %AccessGrant{} = grant)
       when is_atom(repo) and is_binary(work_request_id) do
@@ -232,14 +329,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            {:ok, questions} <- WorkRequestRepository.list_questions(repo, work_request_id),
            {:ok, decisions} <- WorkRequestRepository.list_decisions(repo, work_request_id),
            {:ok, planned_slices} <- WorkRequestRepository.list_planned_slices(repo, work_request_id),
-           {:ok, work_package_contexts} <- planned_slice_work_package_contexts_for_grant(repo, planned_slices, grant) do
+           {:ok, work_package_contexts} <- planned_slice_work_package_contexts_for_grant(repo, planned_slices, grant),
+           {:ok, repo_identity_catalog} <-
+             work_request_detail_repo_identity_catalog_for_grant(repo, grant, [work_request.repo]) do
         questions = ordered_sequence_records(questions)
         decisions = ordered_sequence_records(decisions)
         planned_slices = ordered_sequence_records(planned_slices)
 
+        work_request_payload =
+          work_request_payload(work_request, planned_slices, work_package_contexts, repo_identity_catalog)
+
         {:ok,
          %{
-           work_request: work_request_detail(work_request, planned_slices, work_package_contexts),
+           work_request: work_request_payload,
            clarification_questions: Enum.map(questions, &clarification_question/1),
            decision_logs: Enum.map(decisions, &decision_log_entry/1),
            planned_slices: Enum.map(planned_slices, &planned_slice(&1, %{}, include_dispatch_linkage?: false)),
@@ -251,19 +353,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   @spec work_request_detail(repo(), String.t()) :: {:ok, map()} | {:error, dashboard_error()}
   def work_request_detail(repo, work_request_id) when is_atom(repo) and is_binary(work_request_id) do
+    work_request_detail(repo, work_request_id, [])
+  end
+
+  @spec work_request_detail(repo(), String.t(), keyword()) :: {:ok, map()} | {:error, dashboard_error()}
+  def work_request_detail(repo, work_request_id, opts) when is_atom(repo) and is_binary(work_request_id) and is_list(opts) do
     safe_read(fn ->
       with {:ok, work_request} <- WorkRequestRepository.get(repo, work_request_id),
            {:ok, questions} <- WorkRequestRepository.list_questions(repo, work_request_id),
            {:ok, decisions} <- WorkRequestRepository.list_decisions(repo, work_request_id),
            {:ok, planned_slices} <- WorkRequestRepository.list_planned_slices(repo, work_request_id),
            {:ok, work_package_contexts} <- planned_slice_work_package_contexts(repo, planned_slices) do
+        repo_identity_catalog = repo_identity_catalog_from_opts(opts, [work_request.repo])
         questions = ordered_sequence_records(questions)
         decisions = ordered_sequence_records(decisions)
         planned_slices = ordered_sequence_records(planned_slices)
 
+        work_request_payload =
+          work_request_payload(work_request, planned_slices, work_package_contexts, repo_identity_catalog)
+
         {:ok,
          %{
-           work_request: work_request_detail(work_request, planned_slices, work_package_contexts),
+           work_request: work_request_payload,
            clarification_questions: Enum.map(questions, &clarification_question/1),
            decision_logs: Enum.map(decisions, &decision_log_entry/1),
            planned_slices: Enum.map(planned_slices, &planned_slice(&1, work_package_contexts, include_dispatch_linkage?: true)),
@@ -332,13 +443,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            {:ok, grants} <- AccessGrantRepository.list_for_work_package(repo, work_package_id),
            {:ok, agent_runs} <- AgentRunRepository.list_for_work_package(repo, work_package_id),
            {:ok, guidance_requests} <- GuidanceRequestRepository.list_for_work_package(repo, work_package_id) do
+        repo_identity_catalog = repo_identity_catalog_from_opts(opts, [state.work_package.repo])
         blockers = blockers(state.progress_events)
         summary = summary(state, grants, agent_runs, blockers, guidance_requests)
         worker_secret_handoffs = worker_secret_handoffs(repo, state.work_package, grants, opts)
 
         {:ok,
          %{
-           work_package: work_package_detail(state.work_package),
+           work_package: work_package_detail(state.work_package, repo_identity_catalog),
            lineage: package_lineage(repo, work_package_id),
            summary: summary,
            plan: Enum.map(state.plan_nodes, &plan_node/1),
@@ -419,10 +531,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp card_context(repo, %WorkPackage{} = work_package) do
-    card_context(repo, work_package, package_lineage(repo, work_package.id))
+    with {:ok, repo_identity_catalog} <- repo_identity_catalog_from_repo(repo, [], [work_package.repo]) do
+      card_context(repo, work_package, package_lineage(repo, work_package.id), repo_identity_catalog)
+    end
   end
 
-  defp card_context(repo, %WorkPackage{} = work_package, lineage) do
+  defp card_context(repo, %WorkPackage{} = work_package, lineage, repo_identity_catalog) do
     with {:ok, status_summary} <- PlanningRepository.get_status_summary(repo, work_package.id),
          {:ok, progress_events} <- PlanningRepository.list_progress_events(repo, work_package.id),
          {:ok, readiness_collections} <- readiness_collections(repo, work_package),
@@ -459,30 +573,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
        %{
          work_package: work_package,
          blockers: blockers,
-         card: %{
-           id: work_package.id,
-           title: redacted_text(work_package.title),
-           kind: work_package.kind,
-           status: work_package.status,
-           repo: work_package.repo,
-           base_branch: work_package.base_branch,
-           parent_id: work_package.parent_id,
-           phase_id: work_package.phase_id,
-           owner_id: work_package.owner_id,
-           active_agent_run: latest_active_agent_run(agent_runs),
-           runtime: runtime,
-           latest_progress_at: latest_progress_at(progress_events),
-           active_blocker_count: Enum.count(blockers, & &1.active),
-           artifact_count: status_summary.artifact_count,
-           finding_count: status_summary.finding_count,
-           plan: plan_summary(status_summary.plan_nodes),
-           metadata: metadata,
-           lineage: lineage,
-           operational_state: operational_state,
-           alert_indicators: alert_indicators(readiness_context, blockers, runtime),
-           inserted_at: timestamp(work_package.inserted_at),
-           updated_at: timestamp(work_package.updated_at)
-         }
+         card:
+           %{
+             id: work_package.id,
+             title: redacted_text(work_package.title),
+             kind: work_package.kind,
+             status: work_package.status,
+             repo: work_package.repo,
+             base_branch: work_package.base_branch,
+             parent_id: work_package.parent_id,
+             phase_id: work_package.phase_id,
+             owner_id: work_package.owner_id,
+             active_agent_run: latest_active_agent_run(agent_runs),
+             runtime: runtime,
+             latest_progress_at: latest_progress_at(progress_events),
+             active_blocker_count: Enum.count(blockers, & &1.active),
+             artifact_count: status_summary.artifact_count,
+             finding_count: status_summary.finding_count,
+             plan: plan_summary(status_summary.plan_nodes),
+             metadata: metadata,
+             lineage: lineage,
+             operational_state: operational_state,
+             alert_indicators: alert_indicators(readiness_context, blockers, runtime),
+             inserted_at: timestamp(work_package.inserted_at),
+             updated_at: timestamp(work_package.updated_at)
+           }
+           |> put_repo_identity_fields(repo_identity_catalog, work_package.repo)
        }}
     end
   end
@@ -590,6 +706,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   @spec work_package_detail(WorkPackage.t()) :: map()
   def work_package_detail(%WorkPackage{} = work_package) do
+    work_package_detail(work_package, build_repo_identity_catalog([work_package.repo]))
+  end
+
+  @spec work_package_detail(WorkPackage.t(), RepoIdentity.catalog()) :: map()
+  def work_package_detail(%WorkPackage{} = work_package, repo_identity_catalog) when is_map(repo_identity_catalog) do
     %{
       id: work_package.id,
       kind: work_package.kind,
@@ -609,6 +730,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       inserted_at: timestamp(work_package.inserted_at),
       updated_at: timestamp(work_package.updated_at)
     }
+    |> put_repo_identity_fields(repo_identity_catalog, work_package.repo)
   end
 
   defp collect_or_error(results) do
@@ -622,9 +744,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
-  defp build_board(repo, opts \\ []) do
+  defp build_board(repo, opts) do
     with {:ok, work_packages} <- WorkPackageRepository.list(repo),
-         {:ok, contexts} <- card_contexts_for_packages(repo, work_packages) do
+         {:ok, repo_identity_catalog} <- repo_identity_catalog_from_repo(repo, opts, Enum.map(work_packages, & &1.repo)),
+         {:ok, contexts} <- card_contexts_for_packages(repo, work_packages, repo_identity_catalog) do
       cards = Enum.map(contexts, & &1.card)
 
       board = %{
@@ -656,7 +779,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
          {:ok, work_packages} <- WorkPackageRepository.list_for_phase(repo, phase_id),
          summary_work_packages = filter_phase_work_packages(work_packages, phase_scope_filters(filters)),
          scoped_work_packages = filter_phase_work_packages(work_packages, filters),
-         {:ok, cards} <- cards_for_packages(repo, scoped_work_packages) do
+         repo_identity_catalog = build_repo_identity_catalog(Enum.map(summary_work_packages, & &1.repo)),
+         {:ok, cards} <- cards_for_packages(repo, scoped_work_packages, repo_identity_catalog) do
       {:ok,
        %{
          phase: phase(phase),
@@ -776,17 +900,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
-  defp cards_for_packages(repo, work_packages) do
-    with {:ok, contexts} <- card_contexts_for_packages(repo, work_packages) do
+  defp cards_for_packages(repo, work_packages, repo_identity_catalog) do
+    with {:ok, contexts} <- card_contexts_for_packages(repo, work_packages, repo_identity_catalog) do
       {:ok, Enum.map(contexts, & &1.card)}
     end
   end
 
-  defp card_contexts_for_packages(repo, work_packages) do
+  defp card_contexts_for_packages(repo, work_packages, repo_identity_catalog) do
     lineages_by_id = package_lineages(repo, work_packages)
 
     work_packages
-    |> Enum.map(&card_context(repo, &1, Map.get(lineages_by_id, &1.id, empty_lineage(&1.id))))
+    |> Enum.map(&card_context(repo, &1, Map.get(lineages_by_id, &1.id, empty_lineage(&1.id)), repo_identity_catalog))
     |> collect_or_error()
   end
 
@@ -889,9 +1013,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end)
   end
 
-  defp work_request_cards(repo, work_requests, opts \\ []) do
+  defp work_request_cards(repo, work_requests, opts) do
     with {:ok, summaries} <- work_request_card_summaries(repo, work_requests, opts) do
-      {:ok, Enum.map(work_requests, &work_request_card(&1, summaries))}
+      repo_identity_catalog = repo_identity_catalog_from_opts(opts, Enum.map(work_requests, & &1.repo))
+      {:ok, Enum.map(work_requests, &work_request_card(&1, summaries, repo_identity_catalog))}
     end
   end
 
@@ -923,6 +1048,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp repo_identity_repo_values(repo) do
+    Enum.flat_map([WorkPackage, WorkRequest, SoloSession], &repo_values(repo, &1))
+  end
+
+  defp repo_values(repo, schema) do
+    repo.all(
+      from(record in schema,
+        where: not is_nil(record.repo) and record.repo != "",
+        distinct: true,
+        select: record.repo
+      )
+    )
+  end
+
+  defp work_request_detail_repo_identity_catalog_for_grant(repo, %AccessGrant{} = grant, fallback_repo_values) do
+    with {:ok, filters} <- work_request_filters_for_grant(repo, grant),
+         {:ok, work_requests} <- WorkRequestRepository.list(repo, Map.new(filters)) do
+      {:ok, build_repo_identity_catalog(Enum.map(work_requests, & &1.repo) ++ fallback_repo_values)}
+    end
+  end
+
+  defp repo_identity_catalog_from_repo(repo, opts, repo_values) do
+    case Keyword.fetch(opts, :repo_identity_catalog) do
+      {:ok, repo_identity_catalog} ->
+        {:ok, repo_identity_catalog}
+
+      :error ->
+        {:ok, build_repo_identity_catalog(repo_identity_repo_values(repo) ++ repo_values)}
+    end
+  end
+
+  defp repo_identity_catalog_from_opts(opts, repo_values) do
+    Keyword.get_lazy(opts, :repo_identity_catalog, fn -> build_repo_identity_catalog(repo_values) end)
+  end
+
+  defp build_repo_identity_catalog(repo_values) do
+    RepoIdentity.catalog(repo_values, trusted_remotes: trusted_repo_remotes())
+  end
+
+  defp trusted_repo_remotes do
+    :symphony_elixir
+    |> Application.get_env(:sympp_repo_identity_trusted_remotes, [])
+    |> List.wrap()
+    |> Enum.uniq()
   end
 
   defp safe_read(fun) when is_function(fun, 0) do
@@ -1084,7 +1255,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     |> Map.get(status, 0)
   end
 
-  defp work_request_card(%WorkRequest{} = work_request, summaries) do
+  defp work_request_card(%WorkRequest{} = work_request, summaries, repo_identity_catalog) do
     Map.merge(Map.fetch!(summaries, work_request.id), %{
       id: work_request.id,
       title: redacted_text(work_request.title),
@@ -1097,16 +1268,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       inserted_at: timestamp(work_request.inserted_at),
       updated_at: timestamp(work_request.updated_at)
     })
+    |> put_repo_identity_fields(repo_identity_catalog, work_request.repo)
   end
 
-  defp solo_session_cards(repo, sessions) do
+  defp solo_session_cards(repo, sessions, repo_identity_catalog) do
     session_ids = Enum.map(sessions, & &1.id)
 
     with {:ok, entry_counts} <- solo_session_entry_counts(repo, session_ids),
          {:ok, latest_entries} <- latest_solo_session_entries(repo, session_ids) do
       cards =
         Enum.map(sessions, fn %SoloSession{} = session ->
-          solo_session_card(session, Map.get(entry_counts, session.id, []), Map.get(latest_entries, session.id))
+          solo_session_card(session, Map.get(entry_counts, session.id, []), Map.get(latest_entries, session.id), repo_identity_catalog)
         end)
 
       {:ok, cards}
@@ -1181,7 +1353,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     )
   end
 
-  defp solo_session_card(%SoloSession{} = session, entry_counts, latest_entry) do
+  defp solo_session_card(%SoloSession{} = session, entry_counts, latest_entry, repo_identity_catalog) do
     %{
       id: session.id,
       title: solo_session_title(session),
@@ -1195,9 +1367,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       entry_counts: entry_counts,
       latest_entry: latest_entry
     }
+    |> put_repo_identity_fields(repo_identity_catalog, session.repo)
   end
 
-  defp solo_session_detail(%SoloSession{} = session) do
+  defp solo_session_payload(%SoloSession{} = session, repo_identity_catalog) do
     %{
       id: session.id,
       title: solo_session_title(session),
@@ -1211,6 +1384,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       inserted_at: timestamp(session.inserted_at),
       updated_at: timestamp(session.updated_at)
     }
+    |> put_repo_identity_fields(repo_identity_catalog, session.repo)
   end
 
   defp solo_session_title(%SoloSession{title: title, id: id}) do
@@ -1276,7 +1450,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp status_label(status), do: to_string(status)
 
-  defp human_guidance_request_cards(repo) do
+  defp human_guidance_request_cards(repo, opts) do
     rows =
       repo.all(
         from(guidance_request in GuidanceRequest,
@@ -1288,12 +1462,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
         )
       )
 
-    {:ok, Enum.map(rows, fn {guidance_request, work_package} -> guidance_request_card(guidance_request, work_package) end)}
+    with {:ok, repo_identity_catalog} <-
+           repo_identity_catalog_from_repo(repo, opts, Enum.map(rows, fn {_guidance_request, work_package} -> work_package.repo end)) do
+      {:ok,
+       Enum.map(rows, fn {guidance_request, work_package} ->
+         guidance_request_card(guidance_request, work_package, repo_identity_catalog)
+       end)}
+    end
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
-  defp guidance_request_card(%GuidanceRequest{} = guidance_request, %WorkPackage{} = work_package) do
+  defp guidance_request_card(%GuidanceRequest{} = guidance_request, %WorkPackage{} = work_package, repo_identity_catalog) do
     guidance_request(guidance_request)
     |> Map.merge(%{
       work_package_title: redacted_text(work_package.title),
@@ -1302,9 +1482,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       base_branch: work_package.base_branch,
       phase_id: work_package.phase_id
     })
+    |> put_repo_identity_fields(repo_identity_catalog, work_package.repo)
   end
 
-  defp work_request_detail(%WorkRequest{} = work_request) do
+  defp work_request_payload(%WorkRequest{} = work_request, repo_identity_catalog) do
     %{
       id: work_request.id,
       title: redacted_text(work_request.title),
@@ -1319,6 +1500,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       inserted_at: timestamp(work_request.inserted_at),
       updated_at: timestamp(work_request.updated_at)
     }
+    |> put_repo_identity_fields(repo_identity_catalog, work_request.repo)
   end
 
   defp work_request_creator(%WorkRequest{} = work_request) do
@@ -1329,9 +1511,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     }
   end
 
-  defp work_request_detail(%WorkRequest{} = work_request, planned_slices, work_package_contexts) do
+  defp work_request_payload(%WorkRequest{} = work_request, planned_slices, work_package_contexts, repo_identity_catalog) do
     work_request
-    |> work_request_detail()
+    |> work_request_payload(repo_identity_catalog)
     |> Map.put(:operational_state, work_request_operational_state(work_request, planned_slices, work_package_contexts))
   end
 
