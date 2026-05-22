@@ -79,6 +79,95 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     end
   end
 
+  test "local private file run command pins copied wrappers to the real Elixir directory" do
+    secret = "synthetic-local-bootstrap-#{System.unique_integer([:positive])}"
+    store_dir = Path.join(System.tmp_dir!(), "sympp-secret-bootstrap-#{System.unique_integer([:positive])}")
+    repo_root = temporary_worker_repo_root("bootstrap-command")
+    script_path = Path.join([repo_root, "scripts", local_private_file_script_name()])
+    elixir_dir = Path.join(@repo_root, "elixir")
+
+    try do
+      assert {:ok, handoff} =
+               SecretHandoff.store_worker_secret(creation(secret),
+                 mode: "local-private-file",
+                 store_dir: store_dir,
+                 database: "bootstrap-ledger.sqlite3",
+                 claimed_by: "worker-local-bootstrap",
+                 repo_root: repo_root
+               )
+
+      assert String.downcase(path_with_forward_slashes(handoff.run_mcp_command)) =~
+               String.downcase(path_with_forward_slashes(script_path))
+
+      refute handoff.run_mcp_command =~ secret
+
+      if windows?() do
+        command = normalized_path_text(handoff.run_mcp_command)
+
+        assert command =~ "-reporoot"
+        assert command =~ normalized_path_text(repo_root)
+        assert command =~ "-elixirdir"
+        assert command =~ normalized_path_text(elixir_dir)
+      else
+        assert handoff.run_mcp_command =~ ~s(--repo-root #{shell_literal(repo_root)})
+        assert handoff.run_mcp_command =~ ~s(--elixir-dir #{shell_literal(elixir_dir)})
+      end
+    after
+      File.rm_rf!(store_dir)
+      File.rm_rf!(repo_root)
+    end
+  end
+
+  test "local private file metadata display uses namespace root in generated run command" do
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-bootstrap-namespace-#{System.unique_integer([:positive])}")
+    wrapper_repo_root = temporary_worker_repo_root("bootstrap-wrapper")
+    namespace_repo_root = Path.join(System.tmp_dir!(), "sympp-handoff-bootstrap-namespace-root-#{System.unique_integer([:positive])}")
+    package = work_package("wp/bootstrap-namespace")
+    grant = worker_grant("display-secret", claimed_by: "claimed-worker-1")
+
+    display_opts = [
+      mode: "local-private-file",
+      store_dir: store_dir,
+      claimed_by: "worker-local-1",
+      repo_root: wrapper_repo_root,
+      namespace_repo_root: namespace_repo_root
+    ]
+
+    handoff_path = local_private_file_path(package, grant, display_opts)
+    metadata_path = managed_metadata_file(package, grant, display_opts)
+    script_path = Path.join([wrapper_repo_root, "scripts", local_private_file_script_name()])
+
+    try do
+      File.mkdir_p!(namespace_repo_root)
+      File.mkdir_p!(Path.dirname(handoff_path))
+      File.write!(handoff_path, "display fixture")
+
+      File.mkdir_p!(Path.dirname(metadata_path))
+      File.write!(metadata_path, Jason.encode!(metadata_record(package, grant, "local-private-file", %{"path" => handoff_path})))
+
+      assert {:ok, display} = SecretHandoff.read_worker_secret_metadata(package, grant, display_opts)
+
+      command = normalized_path_text(display.run_mcp_command)
+
+      assert command =~ normalized_path_text(script_path)
+
+      if windows?() do
+        assert command =~ "-reporoot"
+        assert command =~ normalized_path_text(namespace_repo_root)
+        refute command =~ "-reporoot '#{normalized_path_text(wrapper_repo_root)}'"
+      else
+        assert display.run_mcp_command =~ ~s(--repo-root #{shell_literal(namespace_repo_root)})
+        refute display.run_mcp_command =~ ~s(--repo-root #{shell_literal(wrapper_repo_root)})
+      end
+
+      assert display.namespace_repo_root == Path.expand(namespace_repo_root)
+    after
+      File.rm_rf!(store_dir)
+      File.rm_rf!(wrapper_repo_root)
+      File.rm_rf!(namespace_repo_root)
+    end
+  end
+
   test "expands relative local file paths and can delete a stored local secret" do
     secret = "synthetic-local-secret-#{System.unique_integer([:positive])}"
     relative_store_dir = "tmp/sympp-secret-handoff-#{System.unique_integer([:positive])}"
@@ -594,6 +683,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     metadata_path = managed_metadata_file(package, grant, opts)
 
     try do
+      assert Code.ensure_loaded?(SecretHandoff)
       assert function_exported?(SecretHandoff, :delete_worker_secret_by_grant, 3)
       refute function_exported?(SecretHandoff, :delete_worker_secret_by_grant, 2)
 
@@ -903,6 +993,158 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
                SecretHandoff.read_worker_secret_metadata(package, grant, opts)
     after
       File.rm_rf!(store_dir)
+    end
+  end
+
+  test "reads local private secrets by scanning managed metadata when namespace roots differ" do
+    secret = "synthetic-namespace-secret-#{System.unique_integer([:positive])}"
+    store_dir = Path.join(System.tmp_dir!(), "sympp-handoff-scan-#{System.unique_integer([:positive])}")
+    repo_root = temporary_worker_repo_root("namespace-scan")
+    database = Path.join(store_dir, "matching-ledger.sqlite3")
+    package = work_package("wp/namespace-scan")
+
+    grant =
+      secret
+      |> worker_grant(id: "ag/namespace-scan", display_key: "N/21?")
+      |> Map.put(:secret_hash, WorkKey.secret_hash(secret))
+
+    dispatch_opts = [
+      mode: "local-private-file",
+      store_dir: store_dir,
+      claimed_by: "worker-dispatch-namespace",
+      repo_root: repo_root,
+      database: database
+    ]
+
+    claim_opts = [
+      mode: "local-private-file",
+      store_dir: store_dir,
+      claimed_by: "worker-claim-namespace",
+      repo_root: @repo_root,
+      database: database,
+      allow_database_metadata_scan?: true
+    ]
+
+    handoff_path = local_private_file_path(package, grant, dispatch_opts)
+    metadata_path = managed_metadata_file(package, grant, dispatch_opts)
+
+    claim_handoff = %{
+      "mode" => "local-private-file",
+      "path" => handoff_path,
+      "target" => credential_target(package, grant),
+      "grant_id" => grant.id,
+      "display_key" => grant.display_key,
+      "work_package_id" => package.id,
+      "database" => database
+    }
+
+    try do
+      File.mkdir_p!(Path.dirname(handoff_path))
+      File.write!(handoff_path, secret)
+
+      assert :ok =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 Map.delete(grant, :secret),
+                 %{"mode" => "local-private-file", "path" => handoff_path},
+                 dispatch_opts
+               )
+
+      assert {:ok, ^secret} = SecretHandoff.read_local_private_file_secret(package, grant, claim_handoff, claim_opts)
+
+      bad_metadata_path = Path.join(Path.dirname(metadata_path), "handoff-000000.json")
+      File.write!(bad_metadata_path, "{not json")
+
+      assert {:ok, ^secret} = SecretHandoff.read_local_private_file_secret(package, grant, claim_handoff, claim_opts)
+
+      File.rm!(bad_metadata_path)
+      File.rm!(metadata_path)
+
+      assert {:error, {:handoff_metadata_read_failed, :enoent}} =
+               SecretHandoff.read_local_private_file_secret(package, grant, claim_handoff, claim_opts)
+
+      assert :ok =
+               SecretHandoff.store_worker_secret_metadata(
+                 package,
+                 Map.delete(grant, :secret),
+                 %{"mode" => "local-private-file", "path" => handoff_path},
+                 dispatch_opts
+               )
+
+      assert {:error, {:handoff_metadata_read_failed, :enoent}} =
+               SecretHandoff.read_local_private_file_secret(
+                 package,
+                 grant,
+                 Map.put(claim_handoff, "database", "wrong-ledger.sqlite3"),
+                 claim_opts
+                 |> Keyword.put(:database, "wrong-ledger.sqlite3")
+                 |> Keyword.put(:allow_database_metadata_scan?, false)
+               )
+
+      assert {:error, {:handoff_metadata_read_failed, :enoent}} =
+               SecretHandoff.read_local_private_file_secret(
+                 package,
+                 grant,
+                 Map.put(claim_handoff, "namespace_repo_root", Path.join(store_dir, "wrong-repo")),
+                 claim_opts
+               )
+
+      for {key, value, reason} <- [
+            {"work_package_id", "other-package", {:metadata_mismatch, "work_package_id"}},
+            {"worker_grant_display_key", "other-key", {:metadata_mismatch, "worker_grant_display_key"}},
+            {"worker_grant_id", "other-grant", {:metadata_mismatch, "worker_grant_id"}}
+          ] do
+        metadata = metadata_record(package, grant, "local-private-file", %{"path" => handoff_path})
+        File.write!(metadata_path, Jason.encode!(Map.put(metadata, key, value)))
+
+        assert {:error, {:handoff_metadata_invalid, ^reason}} =
+                 SecretHandoff.read_local_private_file_secret(package, grant, claim_handoff, claim_opts)
+      end
+
+      File.write!(metadata_path, Jason.encode!(metadata_record(package, grant, "local-private-file", %{"path" => handoff_path})))
+
+      arbitrary_path = Path.join(store_dir, "arbitrary.secret")
+      File.write!(arbitrary_path, "not the managed work key")
+
+      assert {:error, :private_handoff_path_mismatch} =
+               SecretHandoff.read_local_private_file_secret(
+                 package,
+                 grant,
+                 Map.put(claim_handoff, "path", arbitrary_path),
+                 claim_opts
+               )
+
+      traversal_path = Path.join([store_dir, "..", Path.basename(handoff_path)])
+
+      assert {:error, :private_handoff_path_traversal} =
+               SecretHandoff.read_local_private_file_secret(
+                 package,
+                 grant,
+                 Map.put(claim_handoff, "path", traversal_path),
+                 claim_opts
+               )
+
+      File.rm!(handoff_path)
+      File.mkdir!(handoff_path)
+
+      assert {:error, :private_handoff_not_regular_file} =
+               SecretHandoff.read_local_private_file_secret(package, grant, claim_handoff, claim_opts)
+
+      File.rm_rf!(handoff_path)
+      File.rm!(metadata_path)
+      File.mkdir_p!(metadata_path)
+
+      assert {:error, {:handoff_metadata_read_failed, :not_regular_file}} =
+               SecretHandoff.read_local_private_file_secret(package, grant, claim_handoff, claim_opts)
+
+      File.rm_rf!(metadata_path)
+      File.write!(metadata_path, String.duplicate("x", 20_000))
+
+      assert {:error, {:handoff_metadata_read_failed, :too_large}} =
+               SecretHandoff.read_local_private_file_secret(package, grant, claim_handoff, claim_opts)
+    after
+      File.rm_rf!(store_dir)
+      File.rm_rf!(repo_root)
     end
   end
 
@@ -1541,7 +1783,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     hash_source = [
       "v1",
       0,
-      opts |> Keyword.get(:repo_root, "") |> to_string() |> Path.expand(),
+      opts |> namespace_repo_root() |> to_string() |> Path.expand(),
       0,
       database_hash_value(opts),
       0,
@@ -1578,7 +1820,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
 
   defp handoff_filename_hash(%WorkPackage{} = work_package, display_key, grant_identity, opts) do
     hash_source = [
-      opts |> Keyword.get(:repo_root, "") |> to_string() |> Path.expand(),
+      opts |> namespace_repo_root() |> to_string() |> Path.expand(),
       0,
       database_hash_value(opts),
       0,
@@ -1594,6 +1836,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     |> Base.url_encode64(padding: false)
     |> binary_part(0, 16)
   end
+
+  defp namespace_repo_root(opts), do: Keyword.get(opts, :namespace_repo_root, Keyword.get(opts, :repo_root, ""))
 
   defp database_hash_value(opts) do
     case Keyword.get(opts, :database) do
@@ -1711,12 +1955,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.SecretHandoffTest do
     if windows?(), do: "sympp-worker-secret.ps1", else: "sympp-worker-secret.sh"
   end
 
+  defp temporary_worker_repo_root(name) do
+    repo_root = Path.join(System.tmp_dir!(), "sympp-handoff-#{name}-#{System.unique_integer([:positive])}")
+    script_path = Path.join([repo_root, "scripts", local_private_file_script_name()])
+
+    File.mkdir_p!(Path.dirname(script_path))
+    File.write!(script_path, "# synthetic worker bootstrap wrapper\n")
+
+    repo_root
+  end
+
   defp powershell_literal(value) do
     "'#{String.replace(to_string(value), "'", "''")}'"
   end
 
   defp shell_literal(value) do
     "'#{String.replace(to_string(value), "'", "'\"'\"'")}'"
+  end
+
+  defp path_with_forward_slashes(value), do: String.replace(to_string(value), "\\", "/")
+
+  defp normalized_path_text(value) do
+    value
+    |> path_with_forward_slashes()
+    |> String.downcase()
   end
 
   defp restore_repo_root_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_repo_root)

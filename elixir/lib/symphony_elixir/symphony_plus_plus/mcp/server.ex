@@ -47,7 +47,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @solo_tools ["solo_attach", "solo_append", "solo_show", "solo_list", "solo_update_status"]
   @bootstrap_tools ["claim_private_handoff", "create_work_request"]
   @session_claim_tools ["claim_work_key", "claim_private_handoff"]
-  @private_handoff_claim_keys ["mode", "path", "target", "grant_id", "display_key", "work_package_id", "database"]
+  @private_handoff_claim_keys [
+    "mode",
+    "path",
+    "target",
+    "grant_id",
+    "display_key",
+    "work_package_id",
+    "database",
+    "namespace_repo_root"
+  ]
   @solo_show_entry_limit 50
   @worker_tools [
     "claim_work_key",
@@ -129,6 +138,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     :display_key,
     :env_var,
     :mode,
+    :namespace_repo_root,
     :path,
     :run_mcp_command,
     :secret_in_stdout,
@@ -1637,7 +1647,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
           "grant_id" => string_schema(),
           "display_key" => string_schema(),
           "work_package_id" => string_schema(),
-          "database" => nullable_string_schema()
+          "database" => nullable_string_schema(),
+          "namespace_repo_root" => string_schema()
         },
         ["mode", "path", "target", "grant_id", "display_key", "work_package_id"]
       )
@@ -1652,7 +1663,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "grant_id" => string_schema(),
         "display_key" => string_schema(),
         "work_package_id" => string_schema(),
-        "database" => nullable_string_schema()
+        "database" => nullable_string_schema(),
+        "namespace_repo_root" => string_schema()
       },
       ["claimed_by"]
     )
@@ -2589,12 +2601,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp last_private_handoff_error(_last_error, reason), do: {:error, reason}
 
   defp private_handoff_read_opts(%Config{} = config, handoff, claimed_by) do
-    repo_roots = private_handoff_repo_roots(config)
-    databases = private_handoff_databases(config, handoff)
+    repo_roots = private_handoff_repo_roots(config, handoff)
+    databases = private_handoff_database_entries(config, handoff)
     store_dirs = private_handoff_store_dirs()
 
     for repo_root <- repo_roots,
-        database <- databases,
+        {database, allow_database_scan?} <- databases,
         store_dir <- store_dirs do
       [
         mode: "local-private-file",
@@ -2603,27 +2615,61 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         claimed_by: claimed_by
       ]
       |> put_optional_handoff_opt(:database, database)
+      |> put_optional_handoff_opt(:allow_database_metadata_scan?, allow_database_scan?)
       |> put_optional_handoff_opt(:store_dir, store_dir)
     end
   end
 
-  defp private_handoff_repo_roots(%Config{repo_root: repo_root}) do
-    [repo_root, SecretHandoff.local_operator_repo_root() | SecretHandoff.local_operator_namespace_repo_roots()]
-    |> nonblank_unique_paths()
+  defp private_handoff_repo_roots(%Config{repo_root: repo_root}, handoff) do
+    case private_handoff_namespace_repo_root(handoff) do
+      namespace_repo_root when is_binary(namespace_repo_root) ->
+        nonblank_unique_paths([namespace_repo_root])
+
+      nil ->
+        [repo_root, SecretHandoff.local_operator_repo_root() | SecretHandoff.local_operator_namespace_repo_roots()]
+        |> nonblank_unique_paths()
+    end
   end
 
-  defp private_handoff_databases(%Config{} = config, handoff) do
+  defp private_handoff_namespace_repo_root(handoff) do
+    case private_handoff_optional_string(handoff, "namespace_repo_root") do
+      {:ok, repo_root} -> repo_root
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp private_handoff_database_entries(%Config{} = config, handoff) do
     case private_handoff_optional_string(handoff, "database") do
       {:ok, database} when is_binary(database) ->
-        [database]
+        [{database, private_handoff_database_matches_config?(config, database)}]
 
       {:ok, nil} ->
         [config.database, live_dispatch_database_or_nil(config.repo), nil]
         |> unique_optional_values()
+        |> private_handoff_database_entries_without_explicit_database()
 
       {:error, _reason} ->
         [config.database, live_dispatch_database_or_nil(config.repo), nil]
         |> unique_optional_values()
+        |> private_handoff_database_entries_without_explicit_database()
+    end
+  end
+
+  defp private_handoff_database_entries_without_explicit_database(databases) do
+    Enum.map(databases, &{&1, false})
+  end
+
+  defp private_handoff_database_matches_config?(%Config{} = config, database) do
+    Enum.any?([config.database, live_dispatch_database_or_nil(config.repo)], &same_handoff_database?(database, &1))
+  end
+
+  defp same_handoff_database?(database, candidate) do
+    case {normalize_optional_value(database), normalize_optional_value(candidate)} do
+      {database, candidate} when is_binary(database) and is_binary(candidate) ->
+        Repo.same_database_path?(database, candidate)
+
+      _database ->
+        false
     end
   end
 

@@ -10,6 +10,7 @@ param(
   [string]$SecretSha256,
   [string]$Database,
   [string]$ClaimedBy,
+  [string]$RepoRoot,
   [string]$InputFile,
   [string]$OutputFile,
   [string]$ErrorFile,
@@ -303,6 +304,10 @@ function Invoke-McpWithSecret([string]$Secret) {
     $pushedLocation = $true
 
     $mcpArgs = @("exec", "--", "mix", "sympp.mcp", "--mode", "stdio", "--work-key-secret-env", $EnvVar, "--claimed-by", $ClaimedBy)
+    if (-not [string]::IsNullOrWhiteSpace($RepoRoot)) {
+      $mcpArgs += @("--repo-root", $RepoRoot)
+    }
+
     if (-not [string]::IsNullOrWhiteSpace($Database)) {
       $mcpArgs += @("--database", $Database)
     }
@@ -369,6 +374,10 @@ function Invoke-McpOnceWithSecret([string]$Secret) {
   }
 
   $mcpArgs = @("exec", "--", "mix", "sympp.mcp", "--mode", "stdio", "--work-key-secret-env", $EnvVar, "--claimed-by", $ClaimedBy)
+
+  if (-not [string]::IsNullOrWhiteSpace($RepoRoot)) {
+    $mcpArgs += @("--repo-root", $RepoRoot)
+  }
 
   if (-not [string]::IsNullOrWhiteSpace($Database)) {
     $mcpArgs += @("--database", $Database)

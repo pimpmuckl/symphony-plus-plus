@@ -2,8 +2,8 @@
 set -eu
 
 usage() {
-  printf '%s\n' 'Usage: sympp-worker-secret.sh run-mcp-local-file --path <secret-file> --claimed-by <worker-id> [--database <sqlite-path>] [--elixir-dir <dir>]' >&2
-  printf '%s\n' '       sympp-worker-secret.sh run-mcp-local-file-once --path <secret-file> --claimed-by <worker-id> --input-file <jsonl> [--output-file <jsonl>] [--error-file <txt>] [--database <sqlite-path>] [--elixir-dir <dir>]' >&2
+  printf '%s\n' 'Usage: sympp-worker-secret.sh run-mcp-local-file --path <secret-file> --claimed-by <worker-id> [--database <sqlite-path>] [--repo-root <dir>] [--elixir-dir <dir>]' >&2
+  printf '%s\n' '       sympp-worker-secret.sh run-mcp-local-file-once --path <secret-file> --claimed-by <worker-id> --input-file <jsonl> [--output-file <jsonl>] [--error-file <txt>] [--database <sqlite-path>] [--repo-root <dir>] [--elixir-dir <dir>]' >&2
 }
 
 json_escape() {
@@ -168,9 +168,10 @@ ACTION=$1
 shift
 
 SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
-ELIXIR_DIR=$(CDPATH= cd "$SCRIPT_DIR/../elixir" && pwd)
+ELIXIR_DIR=$SCRIPT_DIR/../elixir
 SECRET_PATH=
 DATABASE=
+REPO_ROOT=
 CLAIMED_BY=
 INPUT_FILE=
 OUTPUT_FILE=
@@ -193,6 +194,11 @@ case "$ACTION" in
         --claimed-by)
           [ "$#" -ge 2 ] || { usage; exit 2; }
           CLAIMED_BY=$2
+          shift 2
+          ;;
+        --repo-root)
+          [ "$#" -ge 2 ] || { usage; exit 2; }
+          REPO_ROOT=$2
           shift 2
           ;;
         --input-file)
@@ -373,14 +379,22 @@ if [ "$ACTION" = "run-mcp-local-file-once" ]; then
     set +e
     if command -v setsid >/dev/null 2>&1; then
       PROCESS_GROUP=1
-      if [ -n "$DATABASE" ]; then
+      if [ -n "$REPO_ROOT" ] && [ -n "$DATABASE" ]; then
+        SYMPP_WORK_KEY_SECRET=$SECRET setsid mise exec -- mix sympp.mcp --mode stdio --repo-root "$REPO_ROOT" --database "$DATABASE" --work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by "$CLAIMED_BY" < "$INPUT_FILE" > "$OUTPUT_FILE" 2> "$ERROR_FILE" &
+      elif [ -n "$REPO_ROOT" ]; then
+        SYMPP_WORK_KEY_SECRET=$SECRET setsid mise exec -- mix sympp.mcp --mode stdio --repo-root "$REPO_ROOT" --work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by "$CLAIMED_BY" < "$INPUT_FILE" > "$OUTPUT_FILE" 2> "$ERROR_FILE" &
+      elif [ -n "$DATABASE" ]; then
         SYMPP_WORK_KEY_SECRET=$SECRET setsid mise exec -- mix sympp.mcp --mode stdio --database "$DATABASE" --work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by "$CLAIMED_BY" < "$INPUT_FILE" > "$OUTPUT_FILE" 2> "$ERROR_FILE" &
       else
         SYMPP_WORK_KEY_SECRET=$SECRET setsid mise exec -- mix sympp.mcp --mode stdio --work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by "$CLAIMED_BY" < "$INPUT_FILE" > "$OUTPUT_FILE" 2> "$ERROR_FILE" &
       fi
     else
       PROCESS_GROUP=0
-      if [ -n "$DATABASE" ]; then
+      if [ -n "$REPO_ROOT" ] && [ -n "$DATABASE" ]; then
+        SYMPP_WORK_KEY_SECRET=$SECRET mise exec -- mix sympp.mcp --mode stdio --repo-root "$REPO_ROOT" --database "$DATABASE" --work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by "$CLAIMED_BY" < "$INPUT_FILE" > "$OUTPUT_FILE" 2> "$ERROR_FILE" &
+      elif [ -n "$REPO_ROOT" ]; then
+        SYMPP_WORK_KEY_SECRET=$SECRET mise exec -- mix sympp.mcp --mode stdio --repo-root "$REPO_ROOT" --work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by "$CLAIMED_BY" < "$INPUT_FILE" > "$OUTPUT_FILE" 2> "$ERROR_FILE" &
+      elif [ -n "$DATABASE" ]; then
         SYMPP_WORK_KEY_SECRET=$SECRET mise exec -- mix sympp.mcp --mode stdio --database "$DATABASE" --work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by "$CLAIMED_BY" < "$INPUT_FILE" > "$OUTPUT_FILE" 2> "$ERROR_FILE" &
       else
         SYMPP_WORK_KEY_SECRET=$SECRET mise exec -- mix sympp.mcp --mode stdio --work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by "$CLAIMED_BY" < "$INPUT_FILE" > "$OUTPUT_FILE" 2> "$ERROR_FILE" &
@@ -458,6 +472,14 @@ fi
 
 cd "$ELIXIR_DIR"
 export SYMPP_WORK_KEY_SECRET="$SECRET"
+
+if [ -n "$REPO_ROOT" ] && [ -n "$DATABASE" ]; then
+  exec mise exec -- mix sympp.mcp --mode stdio --repo-root "$REPO_ROOT" --database "$DATABASE" --work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by "$CLAIMED_BY"
+fi
+
+if [ -n "$REPO_ROOT" ]; then
+  exec mise exec -- mix sympp.mcp --mode stdio --repo-root "$REPO_ROOT" --work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by "$CLAIMED_BY"
+fi
 
 if [ -n "$DATABASE" ]; then
   exec mise exec -- mix sympp.mcp --mode stdio --database "$DATABASE" --work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by "$CLAIMED_BY"

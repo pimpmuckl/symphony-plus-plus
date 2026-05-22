@@ -2884,6 +2884,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert handoff_secret_absent?(private_handoff, inspect(read_response))
   end
 
+  test "claim_private_handoff resolves metadata when dispatch and worker namespaces differ", %{repo: repo} do
+    store_dir = Path.join(test_handoff_store_dir(), "private-architect-namespace-mismatch")
+    dispatch_repo_root = temporary_worker_repo_root("claim-namespace-mismatch")
+    database = Path.join(store_dir, "matching-ledger.sqlite3")
+    previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
+    Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+
+    on_exit(fn ->
+      restore_app_env(:sympp_worker_secret_store_dir, previous_store_dir)
+      File.rm_rf(store_dir)
+      File.rm_rf(dispatch_repo_root)
+    end)
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-PRIVATE-HANDOFF-NAMESPACE-MISMATCH",
+        status: "ready_for_clarification"
+      )
+
+    assert {:ok, handoff} =
+             ArchitectHandoff.create_or_replay(repo, work_request.id,
+               local_operator?: true,
+               secret_handoff_opts: [
+                 mode: "local-private-file",
+                 repo_root: dispatch_repo_root,
+                 database: database,
+                 store_dir: store_dir,
+                 claimed_by: ArchitectHandoff.claimed_by()
+               ]
+             )
+
+    private_handoff = json_payload(handoff.secret_handoff)
+    assert private_handoff["namespace_repo_root"] == Path.expand(dispatch_repo_root)
+    assert private_handoff["database"] == database
+
+    legacy_private_handoff = Map.delete(private_handoff, "namespace_repo_root")
+
+    {claim_response, claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "claim-private-handoff-namespace-mismatch",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_private_handoff",
+            "arguments" => %{"claimed_by" => "kraken-beta-arch", "private_handoff" => legacy_private_handoff}
+          }
+        },
+        Server.new(Config.default(repo: repo, repo_root: test_repo_root(), database: database), initialized: true)
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "grant_role"]) == "architect"
+    assert get_in(claim_response, ["result", "structuredContent", "assignment", "work_package_id"]) == handoff.anchor_package.id
+    assert claimed_server.session.assignment.grant_role == "architect"
+    assert handoff_secret_absent?(legacy_private_handoff, inspect(claim_response))
+  end
+
   test "claim_private_handoff rejects arbitrary paths and mismatched metadata without leaking secrets", %{repo: repo} do
     store_dir = Path.join(test_handoff_store_dir(), "private-architect-reject")
     previous_store_dir = Application.get_env(:symphony_elixir, :sympp_worker_secret_store_dir)
@@ -2936,6 +2993,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(mismatch_response, ["error", "code"]) == -32_001
     assert get_in(mismatch_response, ["error", "data", "reason"]) == "private_handoff_metadata_mismatch"
     assert handoff_secret_absent?(private_handoff, inspect(mismatch_response))
+
+    namespace_response =
+      mcp_tool(repo, nil, "claim_private_handoff", %{
+        "claimed_by" => "kraken-beta-arch",
+        "private_handoff" => Map.put(private_handoff, "namespace_repo_root", Path.join(System.tmp_dir!(), "wrong-repo"))
+      })
+
+    assert get_in(namespace_response, ["error", "code"]) == -32_001
+    assert get_in(namespace_response, ["error", "data", "reason"]) == "{:handoff_metadata_read_failed, :enoent}"
+    assert handoff_secret_absent?(private_handoff, inspect(namespace_response))
+
+    database_response =
+      mcp_tool(repo, nil, "claim_private_handoff", %{
+        "claimed_by" => "kraken-beta-arch",
+        "private_handoff" => Map.put(private_handoff, "database", "wrong-ledger.sqlite3")
+      })
+
+    assert get_in(database_response, ["error", "code"]) == -32_001
+    assert get_in(database_response, ["error", "data", "reason"]) == "{:handoff_metadata_read_failed, :enoent}"
+    assert handoff_secret_absent?(private_handoff, inspect(database_response))
   end
 
   test "create_work_request creates provenance and a claimable redacted architect handoff", %{repo: repo} do
@@ -5591,6 +5668,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert payload["worker_handoff"]["secret_handoff"]["secret_in_stdout"] == false
     refute Map.has_key?(payload["worker_handoff"]["secret_handoff"], "display_key")
     assert String.downcase(handoff_command) =~ String.downcase(configured_database)
+    assert local_file_run_mcp_command_pins_elixir_dir?(handoff_command)
     refute inspect(response) =~ "raw_secret_value"
 
     assert {:ok, persisted_slice} = WorkRequestRepository.get_planned_slice(repo, work_request.id, approved_slice.id)
@@ -14604,6 +14682,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     System.tmp_dir!()
     |> Path.join("sympp-mcp-test-worker-secrets")
     |> Path.expand()
+  end
+
+  defp temporary_worker_repo_root(name) do
+    repo_root = Path.join(System.tmp_dir!(), "sympp-mcp-#{name}-#{System.unique_integer([:positive])}")
+    script_path = Path.join([repo_root, "scripts", local_private_file_script_name()])
+
+    File.mkdir_p!(Path.dirname(script_path))
+    File.write!(script_path, "# synthetic worker bootstrap wrapper\n")
+
+    repo_root
+  end
+
+  defp local_private_file_script_name do
+    if windows?(), do: "sympp-worker-secret.ps1", else: "sympp-worker-secret.sh"
+  end
+
+  defp local_file_run_mcp_command_pins_elixir_dir?(command) do
+    if windows?(), do: command =~ "-ElixirDir", else: command =~ "--elixir-dir"
   end
 
   defp solo_workspace_path(name) do
