@@ -19,6 +19,7 @@ plugin session.
 This plugin intentionally bundles:
 
 - `mcpServers: "./.mcp.json"` for the generic `symphony_plus_plus` HTTP server at `http://127.0.0.1:4057/mcp`.
+- The same `assets/splusplus-logo.png` icon used by the default Symphony++ plugin.
 - The WorkPackage and architect skills.
 - The legacy stdio MCP wrapper for explicit fallback/dev bootstrap, plus the Solo wrapper script needed after marketplace/cache packaging.
 
