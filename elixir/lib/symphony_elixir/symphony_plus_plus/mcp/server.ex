@@ -1169,9 +1169,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp safe_server_dsn_endpoint(database) do
     with values when map_size(values) > 0 <- server_database_dsn_values(database),
          host when is_binary(host) <- server_database_dsn_host(values) do
-      {host, embedded_port} = split_server_dsn_host_port(host)
+      {dsn_host, embedded_port} = split_server_dsn_host_port(host)
       port = server_database_dsn_port(values)
-      "server://#{safe_endpoint_host(host)}#{if(port == "", do: embedded_port, else: port)}"
+      "server://#{safe_endpoint_host(dsn_host)}#{if(port == "", do: embedded_port, else: port)}"
     else
       _missing_host -> "server"
     end
