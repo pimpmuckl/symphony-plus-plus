@@ -1029,15 +1029,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp configured_ledger_health(repo, database) do
     identity = configured_ledger_identity(database, "explicit")
 
+    cond do
+      sqlite_ledger_database?(database) ->
+        configured_sqlite_ledger_health(repo, database, identity)
+
+      explicit_database_matches_repo_config?(repo, database) ->
+        repo_reachable_ledger_health(repo, identity)
+
+      true ->
+        unavailable_ledger_health(identity)
+    end
+  end
+
+  defp configured_sqlite_ledger_health(repo, database, identity) do
+    case {configured_sqlite_main_path(database), live_main_database_path(repo)} do
+      {":memory:", :memory} -> %{"reachable" => true, "identity" => identity}
+      {path, {:ok, live_path}} when is_binary(path) -> sqlite_path_reachable_health(path, live_path, identity)
+      _unmatched -> unavailable_ledger_health(identity)
+    end
+  end
+
+  defp sqlite_path_reachable_health(path, live_path, identity) do
+    if Repo.same_database_path?(path, live_path) do
+      %{"reachable" => true, "identity" => identity}
+    else
+      unavailable_ledger_health(identity)
+    end
+  end
+
+  defp repo_reachable_ledger_health(repo, identity) do
     try do
       case repo_query(repo, "SELECT 1", [], log: false) do
         {:ok, _result} -> %{"reachable" => true, "identity" => identity}
-        {:error, _reason} -> %{"reachable" => false, "error" => "ledger_unavailable", "identity" => identity}
+        {:error, _reason} -> unavailable_ledger_health(identity)
       end
     rescue
-      _error -> %{"reachable" => false, "error" => "ledger_unavailable", "identity" => identity}
+      _error -> unavailable_ledger_health(identity)
     end
   end
+
+  defp unavailable_ledger_health(identity),
+    do: %{"reachable" => false, "error" => "ledger_unavailable", "identity" => identity}
 
   defp configured_ledger_identity(database, source) do
     cond do
@@ -1059,6 +1091,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     case repo_configured_database_for_identity(repo) do
       database when is_binary(database) -> configured_ledger_identity(database, source)
       _database -> unknown_ledger_identity(source)
+    end
+  end
+
+  defp sqlite_ledger_database?(database) do
+    Repo.memory_database?(database) or sqlite_file_uri?(database) or not remote_database_identity?(database)
+  end
+
+  defp configured_sqlite_main_path(database) do
+    cond do
+      Repo.memory_database?(database) -> ":memory:"
+      sqlite_file_uri?(database) -> Repo.sqlite_file_uri_path(database)
+      true -> database
     end
   end
 
@@ -1245,6 +1289,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp repo_configured_database_for_identity(_repo), do: nil
+
+  defp explicit_database_matches_repo_config?(repo, database) do
+    case repo_configured_database_for_identity(repo) do
+      repo_database when is_binary(repo_database) -> repo_database == database
+      _database -> false
+    end
+  end
 
   defp sqlite_display_path(":memory:"), do: ":memory:"
 

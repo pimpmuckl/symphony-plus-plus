@@ -541,6 +541,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert explicit_identity["kind"] == "sqlite"
     assert explicit_identity["source"] == "explicit"
     assert String.ends_with?(explicit_identity["display_path"], Path.basename(database_path))
+
+    mismatched_database_path = WorkPackageFactory.database_path()
+
+    mismatched_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "mismatched-explicit-health",
+          "method" => "tools/call",
+          "params" => %{"name" => "sympp.health", "arguments" => %{}}
+        },
+        config: Config.default(repo: repo, database: mismatched_database_path)
+      )
+
+    assert get_in(mismatched_response, ["result", "structuredContent", "status"]) == "degraded"
+    assert get_in(mismatched_response, ["result", "structuredContent", "ledger", "reachable"]) == false
+    assert get_in(mismatched_response, ["result", "structuredContent", "ledger", "identity", "kind"]) == "sqlite"
+    assert get_in(mismatched_response, ["result", "structuredContent", "ledger", "identity", "source"]) == "explicit"
+    assert get_in(mismatched_response, ["result", "structuredContent", "ledger", "error"]) == "ledger_unavailable"
+
+    File.rm(mismatched_database_path)
   end
 
   test "health redacts credential-bearing ledger identity values", %{repo: repo} do
@@ -560,6 +581,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(sqlite_response, ["result", "structuredContent", "ledger", "identity", "kind"]) == "sqlite"
     assert get_in(sqlite_response, ["result", "structuredContent", "ledger", "identity", "source"]) == "explicit"
+    assert get_in(sqlite_response, ["result", "structuredContent", "ledger", "reachable"]) == true
     refute inspect(sqlite_response) =~ sqlite_secret
     refute inspect(sqlite_response) =~ "password="
 
