@@ -268,7 +268,7 @@ type FinishedHighlight = {
   title: string;
   repo: string;
   kind: FinishedHighlightKind;
-  status?: string | null;
+  state?: string | null;
   at?: string | null;
   selection: CardDetailSelection;
 };
@@ -1158,8 +1158,8 @@ function blockerAnimationEntity(item: BlockerItem): UpdateAnimationEntity {
 
 function finishedHighlightAnimationEntity(item: FinishedHighlight): UpdateAnimationEntity {
   return {
-    signature: stableSignature([item.status, item.at, item.title, item.kind]),
-    status: item.status,
+    signature: stableSignature([item.state, item.at, item.title, item.kind]),
+    status: item.state,
     guidanceCount: 0,
     blockerCount: 0,
     finished: true,
@@ -2188,7 +2188,7 @@ function FinishedHighlightCard({
         </div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <AnimatedBadge label={formatStatus(item.status)} variant="success" />
+        <AnimatedBadge label={item.state || "Finished"} variant="success" />
         {item.at ? (
           <span className="flex items-center gap-1 text-xs text-muted-foreground">
             <Clock3 className="size-3.5" />
@@ -4128,10 +4128,10 @@ function SliceCard({
   onSelectCard?: () => void;
   motion?: UpdateMotion;
 }) {
-  const tone = lane === "slices" ? sliceContractTone(slice) : sliceCardTone(slice, pkg, lane);
-  const operational = lane === "slices" ? null : sliceOperationalState(slice, pkg);
-  const status = lane === "slices" ? slice.status : slice.work_package_status || slice.status;
-  const detail = slice.status === "skipped" ? null : sliceCardSubtitle(slice, pkg, operational, status);
+  const operational = sliceOperationalState(slice, pkg);
+  const rawStatus = lane === "slices" ? slice.status : slice.work_package_status || slice.status;
+  const tone = sliceCardTone(slice, pkg, lane);
+  const detail = slice.status === "skipped" ? null : sliceCardSubtitle(slice, pkg, operational, rawStatus);
   const blockerSignal = lane === "slices" ? null : cardBlockerSignal(pkg, operational);
 
   return (
@@ -4149,8 +4149,8 @@ function SliceCard({
           <p className="min-w-0 truncate text-sm font-medium">{slice.title || pkg?.title || slice.id}</p>
         </div>
         <AnimatedBadge
-          label={operationalLabel(operational, status)}
-          variant={operationalBadgeVariant(operational, status)}
+          label={operationalLabel(operational, rawStatus)}
+          variant={operationalBadgeVariant(operational, rawStatus)}
           className="shrink-0"
         />
       </div>
@@ -4194,17 +4194,6 @@ function sliceCardSubtitle(
   if (quietTerminalCard(operational, status, pkg?.status)) return null;
   if (pkg) return `Linked package: ${operationalLabel(pkg.operational_state, pkg.status)}.`;
   return slice.goal || slice.work_package_kind;
-}
-
-function sliceContractTone(slice: PlannedSlice): StateCardTone {
-  switch (slice.status) {
-    case "approved":
-      return "queued";
-    case "skipped":
-      return "muted";
-    default:
-      return "slice";
-  }
 }
 
 function quietTerminalCard(operational?: WorkPackageCard["operational_state"], ...statuses: Array<string | null | undefined>) {
@@ -6105,6 +6094,7 @@ function RequestDetailContent({
             facts={[
               ["Request ID", request.id],
               ["Dispatch Shape", formatStatus(request.desired_dispatch_shape)],
+              ["Raw Lifecycle", statusLabel(request.status)],
               ["Created", detailDate(request.inserted_at)],
               ["Updated", detailDate(request.updated_at)],
             ]}
@@ -6163,6 +6153,7 @@ function SliceDetailContent({ detail, slice, pkg }: { detail: WorkRequestDetail;
             facts={[
               ["Slice ID", slice.id],
               ["Work Package", slice.work_package_id || "Not dispatched"],
+              ["Raw Lifecycle", statusLabel(slice.status)],
               ["Target Branch", slice.target_base_branch || detail.work_request.base_branch || "main"],
               ["Dispatched", detailDate(slice.dispatched_at)],
             ]}
@@ -6864,7 +6855,8 @@ function requestProgressText(detail: WorkRequestDetail) {
 function sliceProgressText(slice: PlannedSlice, pkg?: WorkPackageCard) {
   if (pkg) {
     const progress = planProgressLabel(pkg);
-    return progress ? `Linked work package is ${statusLabel(pkg.status)} with ${progress.toLowerCase()}.` : `Linked work package is ${statusLabel(pkg.status)}.`;
+    const label = operationalLabel(packageOperationalState(pkg), pkg.status);
+    return progress ? `Linked work package is ${label} with ${progress.toLowerCase()}.` : `Linked work package is ${label}.`;
   }
 
   if (slice.status === "approved") {
@@ -7134,14 +7126,15 @@ function recentFinishedHighlights(
 
   const packageHighlights = packages.reduce<FinishedHighlight[]>((items, pkg) => {
     if (packageLane(pkg) === "finished") {
+      const operational = packageOperationalState(pkg);
       items.push({
-      id: pkg.id,
-      title: pkg.title || pkg.id,
-      repo: repoName(pkg.repo),
-      kind: "Work Package",
-      status: pkg.status,
-      at: pkg.latest_progress_at,
-      selection: packageBoardSelection(pkg, details),
+        id: pkg.id,
+        title: pkg.title || pkg.id,
+        repo: repoName(pkg.repo),
+        kind: "Work Package",
+        state: operationalLabel(operational, pkg.status),
+        at: pkg.latest_progress_at,
+        selection: packageBoardSelection(pkg, details),
       });
     }
 
@@ -7153,12 +7146,13 @@ function recentFinishedHighlights(
       const detail = detailByRequestId.get(request.id);
       if (!detail) return items;
 
+      const operational = requestOperationalState(request);
       items.push({
         id: request.id,
         title: request.title || request.id,
         repo: repoName(request.repo),
         kind: "Request",
-        status: request.status,
+        state: operationalLabel(operational, request.status),
         at: request.updated_at || request.inserted_at,
         selection: { kind: "request", detail },
       });
@@ -7173,12 +7167,13 @@ function recentFinishedHighlights(
       const pkg = slice.work_package_id ? packageById.get(slice.work_package_id) : undefined;
 
       if (sliceLane(slice, pkg) === "finished") {
+        const operational = sliceOperationalState(slice, pkg);
         items.push({
           id: slice.id,
           title: slice.title || slice.id,
           repo: repoName(detail.work_request.repo),
           kind: "Slice",
-          status: slice.work_package_status || slice.status,
+          state: operationalLabel(operational, slice.work_package_status || slice.status),
           at: detail.work_request.updated_at || detail.work_request.inserted_at,
           selection: pkg ? { kind: "package", pkg, detail, slice } : { kind: "slice", detail, slice },
         });
@@ -7330,8 +7325,7 @@ function requestLane(request: WorkRequestCard): "requested" | "slices" | "finish
   const rawStatus = request.status || "";
   const key = requestOperationalState(request)?.key || rawStatus;
 
-  if (FINISHED_BOARD_STATUSES.has(rawStatus)) return "finished";
-  if (FINISHED_BOARD_STATUSES.has(key)) return "slices";
+  if (FINISHED_BOARD_STATUSES.has(key)) return "finished";
   if (
     [
       "sliced",
@@ -7507,7 +7501,7 @@ function workstreamWires(details: WorkRequestDetail[], packages: WorkPackageCard
         id: `${source}->${targetNode}:${index}:slice`,
         from: source,
         to: targetNode,
-        tone: wireToneForSliceTarget(target),
+        tone: sliceCardTone(target, pkg, "slices"),
       }];
 
       if (pkg) {
@@ -7613,10 +7607,6 @@ function blockerFallbackSourceNode(edge: ActiveBlockingEdge, context: ReturnType
   }
 
   return undefined;
-}
-
-function wireToneForSliceTarget(slice: PlannedSlice): BoardWireTone {
-  return sliceContractTone(slice);
 }
 
 function wireToneForPackageTarget(pkg: WorkPackageCard, lane: BoardLane): BoardWireTone {
