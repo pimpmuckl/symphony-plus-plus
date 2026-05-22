@@ -556,6 +556,10 @@ function Get-HealthSourceRevision($Payload) {
   }
 }
 
+function Test-NonEmptyString($Value) {
+  return $null -ne $Value -and -not [string]::IsNullOrWhiteSpace([string]$Value)
+}
+
 function Test-HealthLedgerIdentity($Payload) {
   if ($null -eq $Payload -or -not $Payload.PSObject.Properties["result"]) {
     return [pscustomobject]@{ ok = $false; reason = "missing_result" }
@@ -572,16 +576,16 @@ function Test-HealthLedgerIdentity($Payload) {
   }
 
   $identity = $ledger.identity
-  if ($null -eq $identity -or -not $identity.PSObject.Properties["kind"] -or -not $identity.PSObject.Properties["source"]) {
+  if ($null -eq $identity -or -not (Test-NonEmptyString $identity.kind) -or -not (Test-NonEmptyString $identity.source)) {
     return [pscustomobject]@{ ok = $false; reason = "incomplete_ledger_identity" }
   }
 
   $kind = [string]$identity.kind
-  if ($kind -eq "sqlite" -and -not $identity.PSObject.Properties["display_path"]) {
+  if ($kind -eq "sqlite" -and -not (Test-NonEmptyString $identity.display_path)) {
     return [pscustomobject]@{ ok = $false; reason = "missing_sqlite_display_path" }
   }
 
-  if ($kind -eq "server" -and -not $identity.PSObject.Properties["endpoint"]) {
+  if ($kind -eq "server" -and -not (Test-NonEmptyString $identity.endpoint)) {
     return [pscustomobject]@{ ok = $false; reason = "missing_server_endpoint" }
   }
 
