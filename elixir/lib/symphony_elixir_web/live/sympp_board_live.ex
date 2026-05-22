@@ -280,7 +280,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
 
               <div class="sympp-board-request-list">
                 <a :for={request <- lane.items} href={request.href} class="sympp-board-request-row">
-                  <span class="state-badge state-badge-warning"><%= request.state %></span>
+                  <span class={request.state_class}><%= request.state %></span>
                   <strong><%= request.title %></strong>
                   <span class="sympp-board-request-hint"><%= request.action_hint %></span>
                   <span class="muted"><%= request.repo_base %></span>
@@ -305,7 +305,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
           <div>
             <h2>Blockers</h2>
             <a :for={item <- @board.blocker_items} href={item.href} class="sympp-watch-row">
-              <span class="state-badge state-badge-danger"><%= item.state %></span>
+              <span class={item.state_class}><%= item.state %></span>
               <strong><%= item.title %></strong>
               <span class="muted"><%= item.detail %></span>
             </a>
@@ -1089,7 +1089,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp work_request_lane_key(request) do
-    case work_request_operational_key(request) || Map.get(request, :status) do
+    case item_operational_key(request) || Map.get(request, :status) do
       "draft" ->
         :draft
 
@@ -1126,12 +1126,6 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     end
   end
 
-  defp work_request_operational_key(%{operational_state: %{key: key}}) when is_binary(key), do: key
-  defp work_request_operational_key(_request), do: nil
-
-  defp work_request_operational_label(%{operational_state: %{label: label}}) when is_binary(label), do: label
-  defp work_request_operational_label(request), do: status_label(Map.get(request, :status))
-
   defp work_request_items(work_requests, mode) when is_list(work_requests) do
     Enum.map(work_requests, &work_request_item(&1, mode))
   end
@@ -1140,7 +1134,8 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
     %{
       href: "work-requests/#{path_segment(Map.get(request, :id))}",
       title: Map.get(request, :title) || Map.get(request, :id) || "Untitled WorkRequest",
-      state: work_request_operational_label(request),
+      state: item_operational_label(request),
+      state_class: state_badge_class(item_operational_key(request) || Map.get(request, :status)),
       repo_base: repo_base(request),
       questions: "#{Map.get(request, :open_question_count) || 0} Q",
       action_hint: work_request_action_hint(request, mode),
@@ -1199,7 +1194,8 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       %{
         href: "work-requests/#{path_segment(Map.get(request, :id))}",
         title: Map.get(request, :title) || Map.get(request, :id) || "Untitled WorkRequest",
-        state: work_request_operational_label(request),
+        state: item_operational_label(request),
+        state_class: state_badge_class(item_operational_key(request) || Map.get(request, :status)),
         detail: "#{open_questions} open questions / #{slice_total(request)} slices"
       }
     end)
@@ -1240,7 +1236,8 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
       %{
         href: package_detail_path(card),
         title: Map.get(card, :title) || Map.get(card, :id) || "Untitled package",
-        state: status_label(Map.get(card, :status)),
+        state: item_operational_label(card),
+        state_class: state_badge_class(item_operational_key(card) || Map.get(card, :status)),
         detail: "#{Map.get(card, :active_blocker_count) || 0} active blockers / #{repo_base(card)}"
       }
     end)
@@ -1526,6 +1523,46 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   end
 
   defp status_label(status), do: to_string(status)
+
+  defp item_operational_key(%{operational_state: %{key: key}}) when is_binary(key), do: key
+  defp item_operational_key(%{operational_state: %{"key" => key}}) when is_binary(key), do: key
+  defp item_operational_key(_item), do: nil
+
+  defp item_operational_label(%{operational_state: %{label: label}}) when is_binary(label), do: label
+  defp item_operational_label(%{operational_state: %{"label" => label}}) when is_binary(label), do: label
+  defp item_operational_label(item), do: status_label(Map.get(item, :status))
+
+  defp state_badge_class(status) when status in ["blocked", "needs_attention"], do: "state-badge state-badge-danger"
+
+  defp state_badge_class(status)
+       when status in [
+              "human_info_needed",
+              "ready_for_clarification",
+              "clarifying",
+              "started_paused"
+            ],
+       do: "state-badge state-badge-warning"
+
+  defp state_badge_class(status)
+       when status in [
+              "active",
+              "ready_for_slicing",
+              "sliced",
+              "planned",
+              "ready_for_worker",
+              "reviewing",
+              "ci_waiting",
+              "merge_ready",
+              "merging",
+              "merged",
+              "merged_into_phase",
+              "closed",
+              "approved",
+              "dispatched"
+            ],
+       do: "state-badge state-badge-active"
+
+  defp state_badge_class(_status), do: "state-badge"
 
   defp card_class(card) do
     base = "sympp-work-card"
