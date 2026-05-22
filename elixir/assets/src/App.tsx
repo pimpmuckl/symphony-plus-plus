@@ -100,6 +100,8 @@ type DashboardRuntimeConfig = {
   csrfToken?: string;
   logoUrl?: string;
 };
+type DashboardApiResponse = unknown;
+type DashboardResponseSelector = (payload: DashboardApiResponse) => DashboardPayload | null | undefined;
 
 let dashboardRuntimeConfig: DashboardRuntimeConfig | undefined = typeof window === "undefined" ? undefined : window.SYMPP_DASHBOARD_CONFIG;
 let dashboardRuntimeConfigPromise: Promise<DashboardRuntimeConfig | undefined> | null = null;
@@ -206,6 +208,16 @@ function jsonHeaders({ csrf = false, content = false }: { csrf?: boolean; conten
   }
 
   return headers;
+}
+
+function dashboardErrorMessage(payload: DashboardApiResponse) {
+  if (!isRecord(payload) || !isRecord(payload.error)) return null;
+  return typeof payload.error.message === "string" ? payload.error.message : null;
+}
+
+function dashboardFromEnvelope(payload: DashboardApiResponse) {
+  if (!isRecord(payload) || !isRecord(payload.dashboard)) return null;
+  return payload.dashboard as DashboardPayload;
 }
 
 async function ensureDashboardRuntimeConfig() {
@@ -500,10 +512,10 @@ export default function App() {
   const [appState, dispatchApp] = useReducer(appStateReducer, null, createInitialAppState);
   const { dashboard, error, loading, refreshing, theme, workspaceTab, workstreamLayout } = appState;
   const [dialogState, dispatchDialog] = useReducer(appDialogReducer, initialAppDialogState);
-  const showUpdateSimulationControls = useMemo(shouldShowUpdateSimulationControls, []);
+  const showUpdateSimulationControls = useMemo(() => shouldShowUpdateSimulationControls(), []);
   const loadInFlightRef = useRef(false);
   const prSyncInFlightRef = useRef(false);
-  const lastPrSyncAtRef = useRef(Date.now());
+  const lastPrSyncAtRef = useRef(0);
   const setDashboard = useCallback((nextDashboard: DashboardPayload | null) => {
     dispatchApp({ type: "patch", state: { dashboard: nextDashboard } });
   }, []);
@@ -533,11 +545,11 @@ export default function App() {
   }, []);
 
   const applyDashboardResponse = useCallback(
-    async (response: Response, fallbackMessage: string, selectDashboard: (payload: any) => DashboardPayload = (payload) => payload) => {
-      const payload = await response.json();
+    async (response: Response, fallbackMessage: string, selectDashboard: DashboardResponseSelector = (payload) => payload as DashboardPayload) => {
+      const payload = (await response.json()) as DashboardApiResponse;
 
       if (!response.ok) {
-        throw new Error(payload?.error?.message || fallbackMessage);
+        throw new Error(dashboardErrorMessage(payload) || fallbackMessage);
       }
 
       const nextDashboard = selectDashboard(payload);
@@ -548,7 +560,7 @@ export default function App() {
       setDashboard(nextDashboard);
       setError(null);
     },
-    [],
+    [setDashboard, setError],
   );
 
   const loadDashboard = useCallback(async (mode: "initial" | "refresh" | "silent" = "refresh") => {
@@ -571,7 +583,7 @@ export default function App() {
       setLoading(false);
       if (mode === "refresh") setRefreshing(false);
     }
-  }, [applyDashboardResponse]);
+  }, [applyDashboardResponse, setError, setLoading, setRefreshing]);
 
   const syncPullRequests = useCallback(async () => {
     if (prSyncInFlightRef.current) return;
@@ -584,13 +596,13 @@ export default function App() {
         headers,
         body: JSON.stringify({ mode: "auto" }),
       });
-      await applyDashboardResponse(response, "GitHub PR sync unavailable", (payload) => payload.dashboard);
+      await applyDashboardResponse(response, "GitHub PR sync unavailable", dashboardFromEnvelope);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "GitHub PR sync unavailable");
     } finally {
       prSyncInFlightRef.current = false;
     }
-  }, [applyDashboardResponse]);
+  }, [applyDashboardResponse, setError]);
 
   const copyArchitectHandoff = useCallback<CopyArchitectHandoff>(async (workRequestId, cachedHandoff) => {
     let handoff = cachedHandoff || null;
@@ -636,6 +648,10 @@ export default function App() {
   }, [loadDashboard]);
 
   useEffect(() => {
+    lastPrSyncAtRef.current = Date.now();
+  }, []);
+
+  useEffect(() => {
     const interval = window.setInterval(() => {
       if (document.visibilityState !== "visible" || loadInFlightRef.current || prSyncInFlightRef.current) {
         return;
@@ -672,12 +688,12 @@ export default function App() {
   }, [theme]);
 
   const packages = useMemo(() => allPackages(dashboard), [dashboard]);
-  const requests = dashboard?.work_requests?.work_requests ?? [];
-  const requestDetails = dashboard?.work_request_details ?? [];
+  const requests = useMemo(() => dashboard?.work_requests?.work_requests ?? [], [dashboard]);
+  const requestDetails = useMemo(() => dashboard?.work_request_details ?? [], [dashboard]);
   const guidanceItems = useMemo(() => allGuidanceItems(dashboard), [dashboard]);
   const blockerItems = useMemo(() => activeBlockerItems(packages, requestDetails), [packages, requestDetails]);
   const finishedHighlights = useMemo(() => recentFinishedHighlights(packages, requests, requestDetails), [packages, requests, requestDetails]);
-  const soloSessions = dashboard?.solo_sessions?.solo_sessions ?? [];
+  const soloSessions = useMemo(() => dashboard?.solo_sessions?.solo_sessions ?? [], [dashboard]);
   const repos = useMemo(() => repoSummaries(packages, requests, guidanceItems, soloSessions, requestDetails), [
     packages,
     requests,
@@ -710,7 +726,17 @@ export default function App() {
       ),
       solo: <SoloSessions sessions={soloSessions} onSelectCard={setSelectedCardDetail} updateAnimations={updateAnimations} />,
     }),
-    [copyArchitectHandoff, dashboard?.active_blocking_edges, repos, requestDetails, soloSessions, updateAnimations, workstreamLayout],
+    [
+      copyArchitectHandoff,
+      dashboard?.active_blocking_edges,
+      repos,
+      requestDetails,
+      setSelectedCardDetail,
+      setSelectedGuidance,
+      soloSessions,
+      updateAnimations,
+      workstreamLayout,
+    ],
   );
 
   if (loading) {
@@ -4457,10 +4483,6 @@ function signalToneForBackendTone(tone?: string | null): SignalTone {
   }
 }
 
-function operationalSignalTone(operational?: WorkPackageCard["operational_state"]): SignalTone {
-  return signalToneForBackendTone(operational?.tone);
-}
-
 function operationalBadgeVariant(operational?: WorkPackageCard["operational_state"], fallbackStatus?: string | null): BadgeTone {
   if (!operational) return statusVariant(fallbackStatus);
   const key = operational.key || "";
@@ -4502,133 +4524,6 @@ function attentionTone(attention?: OperationalAttention | null): SignalTone {
   return signalToneForBackendTone(attention?.tone);
 }
 
-function sliceSignal(slice: PlannedSlice, pkg: WorkPackageCard | undefined, lane: BoardLane) {
-  const operational = sliceOperationalState(slice, pkg);
-  const attention = firstOperationalAttention(operational);
-
-  if (operational && attention) {
-    return { label: "Attention", value: attention.label || operational.label || formatStatus(attention.key), tone: attentionTone(attention) };
-  }
-
-  if (operational && operational.key && operational.key !== "planned") {
-    return { label: "State", value: operational.label || formatStatus(operational.key), tone: operationalSignalTone(operational) };
-  }
-
-  if (pkg) {
-    return packageSignal(pkg, lane);
-  }
-
-  if (lane === "finished") {
-    return { label: "Finished", value: formatStatus(slice.status), tone: "success" as const };
-  }
-
-  if (slice.status === "approved") {
-    return { label: "Slice", value: "Approved to dispatch", tone: "info" as const };
-  }
-
-  if (slice.status === "planned") {
-    return { label: "Slice", value: "Planned", tone: "muted" as const };
-  }
-
-  if (slice.status === "skipped") {
-    return { label: "Slice", value: "Skipped", tone: "muted" as const };
-  }
-
-  return { label: lane === "implementing" ? "Worker" : "Slice", value: formatStatus(slice.work_package_status || slice.status), tone: "info" as const };
-}
-
-function packageSignal(pkg: WorkPackageCard, lane: BoardLane): { label: string; value: string; tone: SignalTone } {
-  const status = pkg.status || "";
-  const blockerCount = pkg.active_blocker_count || 0;
-  const operational = packageOperationalState(pkg);
-  const attention = firstOperationalAttention(operational);
-
-  if (operational?.key === "blocked" || blockerCount > 0 || status === "blocked") {
-    return { label: "Blockers", value: `${blockerCount || 1} ${plural("blocker", blockerCount || 1)}`, tone: "danger" };
-  }
-
-  if (["merged", "merged_into_phase", "closed"].includes(operational?.key || "") || lane === "finished" || packageLane(pkg) === "finished") {
-    return { label: "Finished", value: operationalLabel(operational, status), tone: operational ? operationalSignalTone(operational) : "success" };
-  }
-
-  if (attention) {
-    return { label: "Attention", value: attention.label || formatStatus(attention.key), tone: attentionTone(attention) };
-  }
-
-  if (operational?.key === "merge_ready") {
-    return { label: "Merge", value: packagePrLabel(pkg) || operational.label || "Ready for merge", tone: operationalSignalTone(operational) };
-  }
-
-  if (operational?.key === "in_progress") {
-    return packageRuntimeSignal(pkg) || { label: "Implementation", value: planProgressLabel(pkg) || "In progress", tone: "info" };
-  }
-
-  if (operational?.key === "ready_for_worker" && status === "ready_for_worker") {
-    return { label: "Worker", value: "Queued for worker", tone: "muted" };
-  }
-
-  if (operational?.key && operational.key !== status) {
-    return { label: "State", value: operational.label || formatStatus(operational.key), tone: operationalSignalTone(operational) };
-  }
-
-  if (status === "reviewing") {
-    return packageReviewSignal(pkg) || { label: "Review", value: "Reviewing", tone: "info" };
-  }
-
-  if (status === "ci_waiting") {
-    return { label: "CI", value: "Waiting", tone: "info" };
-  }
-
-  if (status === "ready_for_human_merge") {
-    return { label: "Merge", value: packagePrLabel(pkg) || "Ready for human", tone: "warning" };
-  }
-
-  if (status === "ready_for_architect_merge") {
-    return { label: "Merge", value: packagePrLabel(pkg) || "Ready for architect", tone: "warning" };
-  }
-
-  if (status === "merging_into_phase") {
-    return { label: "Merge", value: "Merging", tone: "info" };
-  }
-
-  if (status === "implementing") {
-    return packageRuntimeSignal(pkg) || { label: "Implementation", value: planProgressLabel(pkg) || "Active", tone: "info" };
-  }
-
-  if (status === "created" || status === "ready_for_worker") {
-    return { label: "Worker", value: "Queued for worker", tone: "muted" };
-  }
-
-  if (status === "claimed") {
-    return { label: "Worker", value: "Claimed", tone: "info" };
-  }
-
-  if (status === "planning") {
-    return { label: "Architect", value: "Planning", tone: "info" };
-  }
-
-  return { label: lane === "slices" ? "Slice" : "State", value: planProgressLabel(pkg) || formatStatus(status), tone: "muted" };
-}
-
-function packageRuntimeSignal(pkg: WorkPackageCard) {
-  const run = pkg.active_agent_run;
-  const runtime = pkg.runtime || {};
-
-  if (run?.stale === true || runtimeBoolean(runtime, "stale_count")) {
-    return { label: "Worker", value: "Stale run", tone: "warning" as const };
-  }
-
-  if (run?.runtime_state === "queued" || runtimeBoolean(runtime, "queued_count")) {
-    return { label: "Worker", value: "Queued", tone: "muted" as const };
-  }
-
-  if (run || runtimeBoolean(runtime, "active_count")) {
-    return { label: "Worker", value: "Active run", tone: "info" as const };
-  }
-
-  return null;
-}
-
 function runtimeBoolean(runtime: Record<string, unknown>, key: string) {
   const value = runtime[key];
   return typeof value === "number" && value > 0;
@@ -4641,7 +4536,7 @@ function packageReviewSignal(pkg: WorkPackageCard) {
   return pkg.status === "reviewing" ? progressSignal || resultSignal : resultSignal || progressSignal;
 }
 
-function reviewPackageSignal(reviewPackage: WorkPackageCard["metadata"] extends infer _Metadata ? NonNullable<WorkPackageCard["metadata"]>["review_package"] : never) {
+function reviewPackageSignal(reviewPackage: NonNullable<WorkPackageCard["metadata"]>["review_package"]) {
   if (!reviewPackage) return null;
 
   const reviews = Array.isArray(reviewPackage.reviews) ? reviewPackage.reviews : [];
@@ -4771,12 +4666,6 @@ function planProgressLabel(pkg: WorkPackageCard) {
   const open = pkg.plan?.open_count || 0;
 
   return open > 0 ? `${open} open / ${total} total` : `${done}/${total} done`;
-}
-
-function terminalPackageLabel(pkg: WorkPackageCard) {
-  if (pkg.status === "merged" || pkg.status === "merged_into_phase") return "Merged";
-  if (pkg.status === "closed") return "Closed";
-  return "Finished";
 }
 
 function plural(word: string, count: number) {
@@ -5065,18 +4954,6 @@ function soloSessionCardTone(session: SoloSession): StateCardTone {
   if (latestText.includes("validation")) return latestText.includes("completed") ? "finished" : "implementing";
   if (status === "paused") return "merge";
   return "implementing";
-}
-
-function soloSessionSignalTone(status?: string | null): SignalTone {
-  if (["completed", "archived", "finished", "closed"].includes(status || "")) return "success";
-  if (["blocked", "human_info_needed"].includes(status || "")) return "danger";
-  if (status === "paused") return "warning";
-  return "info";
-}
-
-function soloSessionStateLabel(session: SoloSession) {
-  const lastActivity = session.last_activity_at ? formatDate(session.last_activity_at) : null;
-  return lastActivity ? `${formatStatus(session.status)} / ${lastActivity}` : formatStatus(session.status);
 }
 
 function soloSessionLatestSignalLabel(session: SoloSession) {
@@ -7270,15 +7147,6 @@ function repoSummaries(
   });
 
   return sortedCopy([...repos.values()], (a, b) => a.repo.localeCompare(b.repo));
-}
-
-function dashboardTotals(packages: WorkPackageCard[], requests: WorkRequestCard[], guidance: GuidanceItem[]) {
-  return {
-    guidance: guidance.length,
-    active: requests.filter((request) => requestLane(request) === "slices").length + packages.filter((pkg) => packageLane(pkg) === "slices").length,
-    implementing: packages.filter((pkg) => packageLane(pkg) === "implementing").length,
-    finished: packages.filter((pkg) => packageLane(pkg) === "finished").length,
-  };
 }
 
 function guidanceOptions(prompt?: DecisionPrompt | null): DecisionOption[] {
