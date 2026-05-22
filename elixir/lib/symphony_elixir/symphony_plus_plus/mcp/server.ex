@@ -1317,7 +1317,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
     if is_binary(host) do
       port = Keyword.get(config, :port) |> safe_endpoint_port()
-      "server://#{host}#{port}"
+      "server://#{safe_endpoint_host(host)}#{port}"
     end
   end
 

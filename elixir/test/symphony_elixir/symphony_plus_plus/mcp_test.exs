@@ -91,6 +91,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     def query(sql, _params, _opts) when is_binary(sql), do: {:ok, %{rows: [[1]]}}
   end
 
+  defmodule DefaultRemoteIpv6HealthRepo do
+    def config, do: [hostname: "::1", port: 15432, database: "sympp"]
+    def query("PRAGMA database_list", _params, _opts), do: {:error, :unsupported}
+    def query(sql, _params, _opts) when is_binary(sql), do: {:ok, %{rows: [[1]]}}
+  end
+
   defmodule BusyPrSyncRepo do
     def get(AccessGrant, "grant-pr-sync-service") do
       %AccessGrant{
@@ -664,6 +670,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     refute inspect(response) =~ "dbname=sympp"
     refute inspect(response) =~ "host="
+
+    ipv6_response =
+      MCPHarness.request(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "default-remote-ipv6-health",
+          "method" => "tools/call",
+          "params" => %{"name" => "sympp.health", "arguments" => %{}}
+        },
+        config: Config.default(repo: DefaultRemoteIpv6HealthRepo)
+      )
+
+    assert get_in(ipv6_response, ["result", "structuredContent", "ledger", "identity"]) == %{
+             "kind" => "server",
+             "source" => "default",
+             "endpoint" => "server://[::1]:15432"
+           }
   end
 
   test "mix task database option reaches the requested ledger while the default repo is running" do
