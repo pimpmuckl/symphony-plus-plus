@@ -214,7 +214,7 @@ export function NewRequestDialog({
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold">{createdRequest.work_request.title || createdRequest.work_request.id}</p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {createdRequest.work_request.repo?.trim() || "Unscoped"} / {createdRequest.work_request.base_branch || "main"}
+                      {createdRequest.work_request.repo_display?.trim() || createdRequest.work_request.repo?.trim() || "Unscoped"} / {createdRequest.work_request.base_branch || "main"}
                     </p>
                   </div>
                 </div>
