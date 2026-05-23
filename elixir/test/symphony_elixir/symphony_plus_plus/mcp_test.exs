@@ -45,6 +45,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   @architect_phase_id "phase-mcp-architect-test"
   @child_worker_grant_provenance "child_worker_delegation"
+  @handoff_store_process_key :sympp_mcp_test_handoff_store_dir
   @architect_tool_names [
     "create_child_work_package",
     "mint_child_worker_key",
@@ -297,7 +298,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   setup %{repo: repo} do
     reset_handle_state_store()
-    File.rm_rf(test_handoff_store_dir())
+    handoff_store_dir = unique_test_handoff_store_dir()
+    Process.put(@handoff_store_process_key, handoff_store_dir)
+    File.rm_rf(handoff_store_dir)
     repo.delete_all(Artifact)
     repo.delete_all(ProgressEvent)
     repo.delete_all(Finding)
@@ -311,8 +314,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     repo.delete_all(Phase)
 
     on_exit(fn ->
-      cleanup_test_child_worker_handoffs(repo)
-      File.rm_rf(test_handoff_store_dir())
+      cleanup_test_child_worker_handoffs(repo, handoff_store_dir)
+      File.rm_rf(handoff_store_dir)
     end)
 
     :ok
@@ -6335,6 +6338,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
       cleanup_payload = get_in(cleanup_response, ["result", "structuredContent"])
       assert cleanup_payload["worktree"]["status"] == "cleaned"
+      assert cleanup_payload["audit_event"]["summary"] == "Success removing worktree. Subagent can be closed now."
       assert cleanup_payload["work_package"]["worktree_path"] == nil
       assert cleanup_payload["audit_event"]["payload"]["source_tool"] == "cleanup_work_package_worktree"
       assert cleanup_payload["audit_event"]["payload"]["worktree_path"] == "[REDACTED]"
@@ -15105,8 +15109,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   end
 
   defp test_handoff_store_dir do
+    case Process.get(@handoff_store_process_key) do
+      nil -> raise "MCP test handoff store directory was not initialized"
+      store_dir -> store_dir
+    end
+  end
+
+  defp unique_test_handoff_store_dir do
     System.tmp_dir!()
-    |> Path.join("sympp-mcp-test-worker-secrets")
+    |> Path.join("sympp-mcp-test-worker-secrets-#{System.unique_integer([:positive])}")
     |> Path.expand()
   end
 
@@ -15139,12 +15150,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     |> Path.join("dispatch-#{System.unique_integer([:positive])}")
   end
 
-  defp test_handoff_opts(claimed_by \\ "worker-1") do
+  defp test_handoff_opts(claimed_by, store_dir \\ test_handoff_store_dir()) do
     [
       repo_root: test_repo_root(),
       claimed_by: claimed_by,
       mode: test_secret_handoff_mode(),
-      store_dir: test_handoff_store_dir()
+      store_dir: store_dir
     ]
   end
 
@@ -15260,7 +15271,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       windows_credential_manager_writable?()
   end
 
-  defp cleanup_test_child_worker_handoffs(repo) do
+  defp cleanup_test_child_worker_handoffs(repo, store_dir) do
     grants =
       repo.all(
         from(grant in AccessGrant,
@@ -15270,7 +15281,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     Enum.each(grants, fn grant ->
       with {:ok, work_package} <- WorkPackageRepository.get(repo, grant.work_package_id) do
-        SecretHandoff.delete_worker_secret_by_grant(work_package, grant, test_handoff_opts())
+        SecretHandoff.delete_worker_secret_by_grant(work_package, grant, test_handoff_opts("worker-1", store_dir))
       end
     end)
   end

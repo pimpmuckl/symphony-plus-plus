@@ -1250,10 +1250,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       (Map.has_key?(values, "database") and (Map.has_key?(values, "port") or Map.has_key?(values, "trustedconnection")))
   end
 
-  defp server_database_dsn_values(database) when is_binary(database) do
-    ~r/(?:^|[;\s])([A-Za-z][A-Za-z _-]*)\s*=\s*([^;\s]+)/
-    |> Regex.scan(database)
-    |> Map.new(fn [_match, key, value] -> {normalize_server_dsn_key(key), trim_server_dsn_value(value)} end)
+  defp server_database_dsn_values(database) do
+    case normalized_database(database) do
+      nil ->
+        %{}
+
+      database ->
+        ~r/(?:^|[;\s])([A-Za-z][A-Za-z _-]*)\s*=\s*([^;\s]+)/
+        |> Regex.scan(database)
+        |> Map.new(fn [_match, key, value] -> {normalize_server_dsn_key(key), trim_server_dsn_value(value)} end)
+    end
   end
 
   defp normalize_server_dsn_key(key) do
@@ -1388,18 +1394,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp default_home_database_path?(path) when is_binary(path) do
-    case System.user_home() do
-      home when is_binary(home) and home != "" ->
-        default_home_database =
-          [home, ".agents", "splusplus", "symphony_plus_plus.sqlite3"]
-          |> Path.join()
-          |> Path.expand()
+  defp default_home_database_path?(path) do
+    with path when is_binary(path) <- normalized_database(path),
+         home when is_binary(home) and home != "" <- System.user_home() do
+      default_home_database =
+        [home, ".agents", "splusplus", "symphony_plus_plus.sqlite3"]
+        |> Path.join()
+        |> Path.expand()
 
-        Repo.same_database_path?(path, default_home_database)
-
-      _missing_home ->
-        false
+      Repo.same_database_path?(path, default_home_database)
+    else
+      _unmatched -> false
     end
   end
 
@@ -4013,7 +4018,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp worktree_lifecycle_summary("prepare_work_package_worktree", "already_prepared"), do: "WorkPackage worktree already prepared"
   defp worktree_lifecycle_summary("prepare_work_package_worktree", _status), do: "Prepared WorkPackage worktree"
-  defp worktree_lifecycle_summary("cleanup_work_package_worktree", _status), do: "Cleaned WorkPackage worktree"
+  defp worktree_lifecycle_summary("cleanup_work_package_worktree", _status), do: "Success removing worktree. Subagent can be closed now."
 
   defp worktree_lifecycle_idempotency_key(work_package_id, source_tool, result) do
     fingerprint =

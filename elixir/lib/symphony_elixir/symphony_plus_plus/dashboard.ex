@@ -104,6 +104,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end)
   end
 
+  @spec local_operator_repo_identity_catalog(repo()) :: {:ok, RepoIdentity.catalog()} | {:error, dashboard_error()}
+  def local_operator_repo_identity_catalog(repo) when is_atom(repo) do
+    safe_read(fn ->
+      {:ok,
+       repo
+       |> repo_identity_repo_values()
+       |> build_repo_identity_catalog(local_operator_trusted_repo_remotes())}
+    end)
+  end
+
   @spec phase_board(repo(), String.t()) :: {:ok, map()} | {:error, dashboard_error()}
   def phase_board(repo, phase_id) when is_atom(repo) and is_binary(phase_id) do
     phase_board(repo, phase_id, [])
@@ -1115,15 +1125,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp build_repo_identity_catalog(repo_values) do
-    RepoIdentity.catalog(repo_values, trusted_remotes: trusted_repo_remotes())
+    build_repo_identity_catalog(repo_values, configured_trusted_repo_remotes())
   end
 
-  defp trusted_repo_remotes do
+  defp build_repo_identity_catalog(repo_values, trusted_remotes) when is_list(trusted_remotes) do
+    RepoIdentity.catalog(repo_values, trusted_remotes: Enum.uniq(trusted_remotes))
+  end
+
+  defp configured_trusted_repo_remotes do
     :symphony_elixir
     |> Application.get_env(:sympp_repo_identity_trusted_remotes, [])
     |> List.wrap()
+  end
+
+  defp local_operator_trusted_repo_remotes do
+    (configured_trusted_repo_remotes() ++ local_operator_origin_remotes())
     |> Enum.uniq()
   end
+
+  defp local_operator_origin_remotes do
+    SecretHandoff.local_operator_repo_root()
+    |> git_origin_remote()
+    |> List.wrap()
+  end
+
+  defp git_origin_remote(repo_root) when is_binary(repo_root) do
+    with git when is_binary(git) <- System.find_executable("git") || System.find_executable("git.exe"),
+         {origin, 0} <- System.cmd(git, ["-C", repo_root, "remote", "get-url", "origin"], stderr_to_stdout: true),
+         origin <- String.trim(origin),
+         false <- origin == "" do
+      origin
+    else
+      _result -> nil
+    end
+  rescue
+    _error -> nil
+  end
+
+  defp git_origin_remote(_repo_root), do: nil
 
   defp safe_read(fun) when is_function(fun, 0) do
     fun.()

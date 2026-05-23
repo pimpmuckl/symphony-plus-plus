@@ -121,12 +121,19 @@ export type ActiveAgentRun = {
   stale?: boolean;
 };
 
-export type WorkPackageCard = {
+export type RepoIdentityFields = {
+  repo?: string | null;
+  repo_key?: string | null;
+  repo_display?: string | null;
+  repo_remote?: string | null;
+  repo_aliases?: string[];
+};
+
+export type WorkPackageCard = RepoIdentityFields & {
   id: string;
   title?: string | null;
   kind?: string | null;
   status?: string | null;
-  repo?: string | null;
   base_branch?: string | null;
   parent_id?: string | null;
   phase_id?: string | null;
@@ -164,10 +171,9 @@ export type ContextComment = {
   updated_at?: string | null;
 };
 
-export type WorkRequestCard = {
+export type WorkRequestCard = RepoIdentityFields & {
   id: string;
   title?: string | null;
-  repo?: string | null;
   base_branch?: string | null;
   work_type?: string | null;
   desired_dispatch_shape?: string | null;
@@ -212,6 +218,8 @@ export type ArchitectHandoffCopyResult = {
 };
 
 export type CopyArchitectHandoff = (workRequestId: string, cachedHandoff?: ArchitectHandoff | null) => Promise<ArchitectHandoffCopyResult>;
+
+export type HandoffCopyState = "idle" | "copying" | "copied" | "error";
 
 export type CreateWorkRequestPayload = {
   work_request?: WorkRequestDetail;
@@ -334,12 +342,11 @@ export type ActiveBlockingEdge = {
   work_package_id?: string | null;
 };
 
-export type GuidanceRequest = {
+export type GuidanceRequest = RepoIdentityFields & {
   id: string;
   work_package_id: string;
   work_package_title?: string | null;
   package_kind?: string | null;
-  repo?: string | null;
   base_branch?: string | null;
   summary?: string | null;
   question?: string | null;
@@ -356,6 +363,8 @@ export type GuidanceItem =
       source: "guidance";
       id: string;
       repo: string;
+      repoKey: string;
+      repoRemote?: string | null;
       title: string;
       packageId: string;
       prompt?: DecisionPrompt | null;
@@ -366,6 +375,8 @@ export type GuidanceItem =
       source: "clarification";
       id: string;
       repo: string;
+      repoKey: string;
+      repoRemote?: string | null;
       title: string;
       workRequestId: string;
       prompt?: DecisionPrompt | null;
@@ -380,10 +391,9 @@ export type GuidanceAnswerSubmission = {
   answer_note: string;
 };
 
-export type SoloSession = {
+export type SoloSession = RepoIdentityFields & {
   id: string;
   title?: string | null;
-  repo?: string | null;
   base_branch?: string | null;
   caller_id?: string | null;
   status?: string | null;

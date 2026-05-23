@@ -22,6 +22,7 @@ import type {
   ArchitectHandoff,
   ArchitectHandoffCopyResult,
   CopyArchitectHandoff,
+  HandoffCopyState,
   WorkRequestCard,
   WorkRequestDetail,
 } from "@/types/dashboard";
@@ -41,8 +42,6 @@ type NewRequestRepo = {
   repo: string;
   baseBranches: string[];
 };
-
-type HandoffCopyState = "idle" | "copying" | "copied" | "error";
 
 type NewRequestDialogState = {
   submitting: boolean;
@@ -215,7 +214,7 @@ export function NewRequestDialog({
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold">{createdRequest.work_request.title || createdRequest.work_request.id}</p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {createdRequest.work_request.repo?.trim() || "Unscoped"} / {createdRequest.work_request.base_branch || "main"}
+                      {createdRequest.work_request.repo_display?.trim() || createdRequest.work_request.repo?.trim() || "Unscoped"} / {createdRequest.work_request.base_branch || "main"}
                     </p>
                   </div>
                 </div>

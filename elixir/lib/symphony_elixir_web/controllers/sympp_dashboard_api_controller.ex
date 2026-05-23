@@ -512,7 +512,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @spec operator_package_detail(Conn.t(), map()) :: Conn.t()
   def operator_package_detail(conn, %{"work_package_id" => work_package_id}) do
     send_local_operator_response(conn, fn repo ->
-      with {:ok, repo_identity_catalog} <- Dashboard.repo_identity_catalog(repo),
+      with {:ok, repo_identity_catalog} <- Dashboard.local_operator_repo_identity_catalog(repo),
            {:ok, payload} <- Dashboard.detail(repo, normalize_package_route_id(work_package_id), repo_identity_catalog: repo_identity_catalog) do
         json(conn, payload)
       end
@@ -532,7 +532,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @spec operator_solo_session_detail(Conn.t(), map()) :: Conn.t()
   def operator_solo_session_detail(conn, %{"solo_session_id" => solo_session_id}) do
     send_local_operator_response(conn, fn repo ->
-      with {:ok, repo_identity_catalog} <- Dashboard.repo_identity_catalog(repo),
+      with {:ok, repo_identity_catalog} <- Dashboard.local_operator_repo_identity_catalog(repo),
            {:ok, payload} <-
              Dashboard.solo_session_detail(repo, solo_session_id, repo_identity_catalog: repo_identity_catalog) do
         json(conn, payload)
@@ -703,7 +703,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp operator_dashboard_payload(repo) do
-    with {:ok, repo_identity_catalog} <- Dashboard.repo_identity_catalog(repo),
+    with {:ok, repo_identity_catalog} <- Dashboard.local_operator_repo_identity_catalog(repo),
          opts = [repo_identity_catalog: repo_identity_catalog],
          {:ok, board} <- Dashboard.operator_board(repo, opts),
          {:ok, work_requests} <- Dashboard.work_requests(repo, opts),
