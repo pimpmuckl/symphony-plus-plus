@@ -302,13 +302,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
                codex_home: codex_home
              )
 
-    assert {:error, :database_busy} = WorktreeLifecycle.cleanup(UpdateFailsWorkPackageRepo, package.id, codex_home: codex_home)
+    assert {:error, :database_busy} =
+             WorktreeLifecycle.cleanup(UpdateFailsWorkPackageRepo, package.id,
+               codex_home: codex_home,
+               repo_root: fixture.repo_root
+             )
+
     refute File.exists?(prepared.worktree_path)
 
     assert {:ok, fetched} = Repository.get(repo, package.id)
     assert fetched.worktree_path == prepared.worktree_path
 
-    assert {:ok, recovered} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
+    assert {:ok, recovered} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home, repo_root: fixture.repo_root)
     assert recovered.status == "stale_record_cleared"
 
     assert {:ok, cleared} = Repository.get(repo, package.id)
@@ -328,8 +333,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
 
     File.rm_rf!(prepared.worktree_path)
 
-    assert {:ok, recovered} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
+    assert normalized_path(TestSupport.git_output!(fixture.repo_root, ["worktree", "list", "--porcelain"])) =~
+             normalized_path(prepared.worktree_path)
+
+    assert {:ok, recovered} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home, repo_root: fixture.repo_root)
     assert recovered.status == "stale_record_cleared"
+
+    refute normalized_path(TestSupport.git_output!(fixture.repo_root, ["worktree", "list", "--porcelain"])) =~
+             normalized_path(prepared.worktree_path)
 
     assert {:ok, prepared_again} = WorktreeLifecycle.prepare(repo, package.id, attrs, codex_home: codex_home)
     assert prepared_again.status == "prepared"
@@ -356,6 +367,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
     refute inspect(reason) =~ "fatal"
     refute inspect(reason) =~ "fetch"
     refute inspect(reason) =~ "secret-token"
+  end
+
+  test "prepare updates the remote-tracking base before creating new branches", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+    updater_root = Path.join(fixture.root, "updater")
+
+    TestSupport.git_output!(fixture.repo_root, ["config", "--unset-all", "remote.origin.fetch"])
+    TestSupport.git_output!(fixture.root, ["clone", fixture.origin, updater_root])
+    TestSupport.git_output!(updater_root, ["checkout", "main"])
+    TestSupport.git_output!(updater_root, ["config", "user.email", "sympp@example.com"])
+    TestSupport.git_output!(updater_root, ["config", "user.name", "Symphony Test"])
+    File.write!(Path.join(updater_root, "remote-update.txt"), "remote update\n")
+    TestSupport.git_output!(updater_root, ["add", "remote-update.txt"])
+    TestSupport.git_output!(updater_root, ["commit", "-m", "Remote update"])
+    TestSupport.git_output!(updater_root, ["push", "origin", "main"])
+
+    stale_origin_revision = fixture.repo_root |> TestSupport.git_output!(["rev-parse", "origin/main"]) |> String.trim()
+    remote_revision = updater_root |> TestSupport.git_output!(["rev-parse", "HEAD"]) |> String.trim()
+    refute stale_origin_revision == remote_revision
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-013", kind: "mcp", base_branch: "main"))
+
+    assert {:ok, _prepared} =
+             WorktreeLifecycle.prepare(
+               repo,
+               package.id,
+               %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/fresh-base"},
+               codex_home: codex_home
+             )
+
+    assert fixture.repo_root |> TestSupport.git_output!(["rev-parse", "origin/main"]) |> String.trim() == remote_revision
+    assert fixture.repo_root |> TestSupport.git_output!(["rev-parse", "feat/fresh-base"]) |> String.trim() == remote_revision
   end
 
   test "prepare replay rejects recorded paths that are no longer git worktrees", %{repo: repo} do
@@ -553,5 +598,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
         String.replace(acc, "%{#{key}}", inspect(value))
       end)
     end)
+  end
+
+  defp normalized_path(path) do
+    path
+    |> String.replace("\\", "/")
+    |> String.downcase()
   end
 end

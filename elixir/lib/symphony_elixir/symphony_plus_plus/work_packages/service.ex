@@ -25,5 +25,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Service do
 
   @spec cleanup_worktree(Repository.repo(), String.t()) ::
           {:ok, WorktreeLifecycle.lifecycle_result()} | {:error, error()}
-  def cleanup_worktree(repo, id), do: WorktreeLifecycle.cleanup(repo, id)
+  @spec cleanup_worktree(Repository.repo(), String.t(), keyword()) ::
+          {:ok, WorktreeLifecycle.lifecycle_result()} | {:error, error()}
+  def cleanup_worktree(repo, id, opts \\ []), do: WorktreeLifecycle.cleanup(repo, id, opts)
 end

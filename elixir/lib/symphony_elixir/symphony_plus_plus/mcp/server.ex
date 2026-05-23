@@ -3538,7 +3538,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     with {:ok, session} <- architect_session(config.repo, session, "dispatch:work_request"),
          {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
          {:ok, _work_package, scope} <- scoped_worktree_work_package(config.repo, session, work_package_id),
-         {:ok, result} <- WorkPackageService.cleanup_worktree(config.repo, work_package_id),
+         {:ok, result} <- WorkPackageService.cleanup_worktree(config.repo, work_package_id, repo_root: config.repo_root),
          {:ok, audit_event} <- maybe_append_cleanup_worktree_audit(config.repo, session, work_package_id, result) do
       {:ok, tool_result(worktree_lifecycle_payload(result, scope, audit_event))}
     else

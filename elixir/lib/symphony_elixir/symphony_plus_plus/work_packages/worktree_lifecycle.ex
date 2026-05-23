@@ -136,7 +136,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
 
   defp create_worktree(repo, %WorkPackage{} = work_package, repo_root, base_branch, branch, worktree_path, opts) do
     with :ok <- File.mkdir_p(Path.dirname(worktree_path)),
-         :ok <- git(repo_root, ["fetch", "origin", base_branch], opts),
+         :ok <- fetch_remote_base(repo_root, base_branch, opts),
          :ok <- git(repo_root, ["worktree", "prune"], opts),
          {:ok, branch_exists?} <- local_branch_exists?(repo_root, branch, opts),
          :ok <- add_worktree(repo_root, worktree_path, base_branch, branch, branch_exists?, opts) do
@@ -210,7 +210,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     cond do
       File.dir?(worktree_path) -> cleanup_existing_worktree(repo, work_package, worktree_path, opts)
       File.exists?(worktree_path) -> {:error, :invalid_worktree_path}
-      true -> clear_missing_recorded_worktree(repo, work_package)
+      true -> clear_missing_recorded_worktree(repo, work_package, opts)
     end
   end
 
@@ -227,9 +227,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     end
   end
 
-  defp clear_missing_recorded_worktree(repo, %WorkPackage{} = work_package) do
-    with {:ok, updated_work_package} <- Repository.update(repo, work_package.id, %{worktree_path: nil}) do
-      {:ok, result(updated_work_package, "stale_record_cleared", nil, nil, nil, nil)}
+  defp clear_missing_recorded_worktree(repo, %WorkPackage{} = work_package, opts) do
+    with {:ok, repo_root} <- cleanup_repo_root(opts),
+         :ok <- git(repo_root, ["worktree", "prune"], opts),
+         {:ok, updated_work_package} <- Repository.update(repo, work_package.id, %{worktree_path: nil}) do
+      {:ok, result(updated_work_package, "stale_record_cleared", nil, nil, nil, repo_root)}
     end
   end
 
@@ -275,6 +277,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
 
   defp require_clean(""), do: :ok
   defp require_clean(_status_output), do: {:error, :dirty_worktree}
+
+  defp fetch_remote_base(repo_root, base_branch, opts) do
+    git(repo_root, ["fetch", "origin", "+refs/heads/#{base_branch}:refs/remotes/origin/#{base_branch}"], opts)
+  end
+
+  defp cleanup_repo_root(opts) do
+    case Keyword.get(opts, :repo_root) do
+      repo_root when is_binary(repo_root) ->
+        with {:ok, repo_root} <- canonicalize(repo_root),
+             true <- File.dir?(repo_root) do
+          {:ok, repo_root}
+        else
+          false -> {:error, :invalid_repo_root}
+          {:error, _reason} = error -> error
+        end
+
+      _repo_root ->
+        {:error, :invalid_repo_root}
+    end
+  end
 
   defp required_string(attrs, key) do
     case Map.fetch(attrs, key) do
