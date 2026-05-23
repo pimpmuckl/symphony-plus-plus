@@ -22,6 +22,7 @@ import type {
   ArchitectHandoff,
   ArchitectHandoffCopyResult,
   CopyArchitectHandoff,
+  HandoffCopyState,
   WorkRequestCard,
   WorkRequestDetail,
 } from "@/types/dashboard";
@@ -41,8 +42,6 @@ type NewRequestRepo = {
   repo: string;
   baseBranches: string[];
 };
-
-type HandoffCopyState = "idle" | "copying" | "copied" | "error";
 
 type NewRequestDialogState = {
   submitting: boolean;

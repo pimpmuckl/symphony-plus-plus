@@ -87,6 +87,23 @@ import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { sortedCopy, uniqueNonEmpty } from "@/lib/collections";
+import {
+  architectHandoffEligibleRequest,
+  attentionTone,
+  isFinishedBoardStatus,
+  operationalBadgeVariant,
+  operationalLabel,
+  packageAttentionSignal,
+  packageBlockerSignal,
+  packageCardTone,
+  packageLane,
+  requestStateCardTone,
+  sliceCardTone,
+  sliceLane,
+  sliceOperationalState,
+  workRequestLane,
+} from "@/lib/operational-state";
+import type { BadgeTone, BoardLane } from "@/lib/operational-state";
 import { formatStatus, statusLabel } from "@/lib/status-labels";
 import { cn } from "@/lib/utils";
 import type {
@@ -100,7 +117,9 @@ import type {
   DashboardPayload,
   GuidanceAnswerSubmission,
   GuidanceItem,
+  HandoffCopyState,
   PackageAlertIndicator,
+  PackageOperationalAttention,
   PlannedSlice,
   SoloSession,
   SoloSessionDetailPayload,
@@ -148,9 +167,6 @@ const DASHBOARD_LOGO_URL = dashboardRuntimeConfig?.logoUrl || "/splusplus-logo.p
 type TopPanelKey = "guidance" | "blockers" | "finished";
 type TopPanelDirection = "forward" | "backward";
 type TopPanelPhase = "idle" | "opening" | "closing" | "pre-resize" | "swapping" | "post-resize";
-type BoardLane = "slices" | "implementing" | "finished";
-type OperationalState = NonNullable<WorkPackageCard["operational_state"]>;
-type OperationalAttention = NonNullable<OperationalState["attention_items"]>[number];
 type PackageLineageProjection = NonNullable<WorkPackageCard["lineage"]>;
 type WorkspaceTab = "workstreams" | "solo";
 type WorkspaceTabPhase = "idle" | "swapping";
@@ -177,7 +193,6 @@ type CardDetailSelection =
   | { kind: "package"; pkg: WorkPackageCard; detail?: WorkRequestDetail; slice?: PlannedSlice }
   | { kind: "solo"; session: SoloSession };
 type CardDetailSelect = (selection: CardDetailSelection) => void;
-type HandoffCopyState = "idle" | "copying" | "copied" | "error";
 type ScopedHandoffCopy = {
   error: string | null;
   identity: string;
@@ -341,8 +356,6 @@ type WorkstreamRow = {
   minHeight: number;
   unlinked?: boolean;
 };
-
-type BadgeTone = "default" | "secondary" | "outline" | "success" | "warning" | "danger" | "info" | "ready";
 
 type AppState = {
   dashboard: DashboardPayload | null;
@@ -1004,7 +1017,7 @@ function topPanelForMotionKind(kind: UpdateMotionKind): TopPanelKey | null {
 
 function requestAnimationEntity(detail: WorkRequestDetail): UpdateAnimationEntity {
   const request = detail.work_request;
-  const operational = requestOperationalState(request);
+  const operational = request.operational_state || null;
   const openQuestions = detail.clarification_questions?.filter((question) => question.status === "open") ?? [];
   const guidanceCount = Math.max(openQuestions.length, request.open_question_count || 0, request.status === "human_info_needed" ? 1 : 0);
 
@@ -1031,7 +1044,7 @@ function requestAnimationEntity(detail: WorkRequestDetail): UpdateAnimationEntit
     status: operational?.key || request.status,
     guidanceCount,
     blockerCount: 0,
-    finished: requestLane(request) === "finished",
+    finished: workRequestLane(request) === "finished",
   };
 }
 
@@ -1064,7 +1077,7 @@ function sliceAnimationEntity(slice: PlannedSlice, pkg?: WorkPackageCard): Updat
 }
 
 function packageAnimationEntity(pkg: WorkPackageCard): UpdateAnimationEntity {
-  const operational = packageOperationalState(pkg);
+  const operational = pkg.operational_state || null;
   const blockerCount = pkg.active_blocker_count || (pkg.status === "blocked" || operational?.key === "blocked" ? 1 : 0);
 
   return {
@@ -2674,7 +2687,7 @@ function RequestCard({
   const request = detail.work_request;
   const openQuestions = detail.clarification_questions?.filter((question) => question.status === "open") ?? [];
   const questionCount = openQuestions.length || request.open_question_count || 0;
-  const operational = requestOperationalState(request);
+  const operational = request.operational_state || null;
   const quietMerged = [operational?.key, request.status].some(isFinishedBoardStatus);
   const question = quietMerged ? undefined : openQuestions[0];
   const description = quietMerged ? null : firstParagraph(request.human_description);
@@ -2695,6 +2708,16 @@ function RequestCard({
       }
     : undefined;
   const canCopyHandoff = !quietMerged && handoffEligible && Boolean(onCopyArchitectHandoff);
+  const handoffSignalValue =
+    handoffCopyState === "copying"
+      ? "Copying..."
+      : handoffCopyState === "copied"
+        ? "Copied"
+        : handoffCopyState === "error"
+          ? "Try again"
+          : handoffHasOpenQuestions
+            ? "Resume prompt"
+            : "Copy prompt";
   const copyHandoff = useCallback(
     async () => {
       if (!onCopyArchitectHandoff) return;
@@ -2709,7 +2732,7 @@ function RequestCard({
     },
     [cachedHandoff, onCopyArchitectHandoff, recordCopyError, recordCopyResult, request.id, startCopy],
   );
-  const tone = requestToneForState(request.status || "", operational, questionCount);
+  const tone = requestStateCardTone(detail);
   const bodyMotionKey = stateCardBodyMotionKey(
     "request",
     request.id,
@@ -2761,7 +2784,7 @@ function RequestCard({
           <CardSignal
             className="mt-3"
             label={handoffHasOpenQuestions ? "Architect Handoff" : "Agent Handoff"}
-            value={handoffSignalLabel(handoffCopyState, handoffHasOpenQuestions)}
+            value={handoffSignalValue}
             tone={handoffHasOpenQuestions ? "muted" : "info"}
             onClick={copyHandoff}
             ariaLabel={`Copy agent handoff for ${request.title || request.id}`}
@@ -2793,7 +2816,7 @@ function SliceCard({
   const rawStatus = lane === "slices" ? slice.status : slice.work_package_status || slice.status;
   const tone = sliceCardTone(slice, pkg, lane);
   const detail = slice.status === "skipped" ? null : sliceCardSubtitle(slice, pkg, operational, rawStatus);
-  const blockerSignal = lane === "slices" ? null : cardBlockerSignal(pkg, operational);
+  const blockerSignal = lane === "slices" ? null : packageBlockerSignal(pkg, operational);
   const bodyMotionKey = stateCardBodyMotionKey(
     "slice",
     slice.id,
@@ -2854,22 +2877,6 @@ function sliceCardSubtitle(
   return slice.goal || slice.work_package_kind;
 }
 
-function cardBlockerSignal(pkg?: WorkPackageCard, operational?: WorkPackageCard["operational_state"]): { label: string; value: string; tone: SignalTone } | null {
-  const blockerCount = pkg?.active_blocker_count || 0;
-  const hasBlockerAttention = (operational?.attention_items || []).some(operationalAttentionIsBlocker);
-
-  if (blockerCount <= 0 && !hasBlockerAttention) return null;
-
-  const count = blockerCount || 1;
-  return { label: "Blockers", value: `${count} ${plural("blocker", count)}`, tone: "danger" };
-}
-
-function operationalAttentionIsBlocker(attention: OperationalAttention) {
-  const key = (attention.key || "").toLowerCase();
-  const label = (attention.label || "").toLowerCase();
-  return key.includes("blocker") || label.includes("blocker");
-}
-
 function PackageCard({
   pkg,
   lane,
@@ -2889,7 +2896,7 @@ function PackageCard({
 }) {
   const tone = packageCardTone(pkg, lane);
   const attention = packageAttentionSignal(pkg);
-  const operational = packageOperationalState(pkg);
+  const operational = pkg.operational_state || null;
   const bodyMotionKey = stateCardBodyMotionKey("package", pkg.id, attention?.label, attention?.value, attention?.tone);
 
   return (
@@ -2914,207 +2921,6 @@ function PackageCard({
       </AnimatedCardBody>
     </StateCard>
   );
-}
-
-function requestStatusFallbackCardTone(status: string): StateCardTone {
-  if (status === "ready_for_slicing") return "queued";
-  if (status === "sliced") return "slice";
-  return "request";
-}
-
-function requestStateCardTone(detail: WorkRequestDetail): StateCardTone {
-  const request = detail.work_request;
-  const status = request.status || "";
-  const operational = requestOperationalState(request);
-  const detailOpenQuestions = detail.clarification_questions?.filter((question) => question.status === "open").length || request.open_question_count || 0;
-  return requestToneForState(status, operational, detailOpenQuestions);
-}
-
-function requestToneForState(status: string, operational: WorkPackageCard["operational_state"], openQuestions: number): StateCardTone {
-  const operationalTone = operationalCardTone(operational, status);
-  const quietFinished = [operational?.key, status].some(isFinishedBoardStatus);
-
-  if (operationalTone && quietFinished) return operationalTone;
-  if (openQuestions > 0 || status === "human_info_needed") return "guidance";
-  return operationalTone || requestStatusFallbackCardTone(status);
-}
-
-function architectHandoffEligibleRequest(request: WorkRequestCard) {
-  const status = request.status || "";
-  return Boolean(
-    request.id &&
-      request.repo &&
-      request.base_branch &&
-      ["ready_for_clarification", "clarifying", "human_info_needed", "ready_for_slicing", "sliced"].includes(status),
-  );
-}
-
-function handoffSignalLabel(state: HandoffCopyState, resumeClarification = false) {
-  switch (state) {
-    case "copying":
-      return "Copying...";
-    case "copied":
-      return "Copied";
-    case "error":
-      return "Try again";
-    default:
-      return resumeClarification ? "Resume prompt" : "Copy prompt";
-  }
-}
-
-function sliceCardTone(slice: PlannedSlice, pkg: WorkPackageCard | undefined, lane: BoardLane): StateCardTone {
-  const operational = sliceOperationalState(slice, pkg);
-  const tone = operationalCardTone(operational, slice.status);
-  if (tone) return tone;
-
-  if (pkg) return packageCardTone(pkg, lane);
-  if (lane === "finished") return "finished";
-
-  switch (slice.status) {
-    case "approved":
-      return "queued";
-    case "planned":
-      return "slice";
-    case "skipped":
-      return "muted";
-    default:
-      return "slice";
-  }
-}
-
-function packageCardTone(pkg: WorkPackageCard, lane?: BoardLane): StateCardTone {
-  const status = pkg.status || "";
-  if ((pkg.active_blocker_count || 0) > 0 || status === "blocked") return "blocked";
-
-  const operational = packageOperationalState(pkg);
-  const tone = operationalCardTone(operational, pkg.status);
-  if (tone) return tone;
-
-  if (lane === "finished" && packageLane(pkg) === "finished") return "finished";
-  return lane === "implementing" ? "implementing" : "slice";
-}
-
-function operationalCardTone(operational?: WorkPackageCard["operational_state"], fallbackStatus?: string | null): StateCardTone | null {
-  const key = operationalKey(operational) || fallbackStatus || "";
-
-  switch (key) {
-    case "blocked":
-      return "blocked";
-    case "merged":
-    case "merged_into_phase":
-    case "closed":
-      return "finished";
-    case "abandoned":
-    case "skipped":
-      return "muted";
-    case "reviewing":
-    case "ci_waiting":
-      return "review";
-    case "merge_ready":
-    case "ready_for_human_merge":
-    case "ready_for_architect_merge":
-    case "merging":
-    case "merging_into_phase":
-      return "merge";
-    case "active":
-    case "in_progress":
-    case "implementing":
-      return "implementing";
-    case "needs_attention":
-    case "started_paused":
-      return "queued";
-    case "ready_for_worker":
-    case "created":
-    case "claimed":
-    case "planning":
-      return "queued";
-    case "planned":
-    case "dispatched":
-      return "slice";
-    default:
-      return null;
-  }
-}
-
-function requestOperationalState(request: WorkRequestCard): WorkRequestCard["operational_state"] {
-  return request.operational_state || null;
-}
-
-function packageOperationalState(pkg: WorkPackageCard): WorkPackageCard["operational_state"] {
-  return pkg.operational_state || null;
-}
-
-function sliceOperationalState(slice: PlannedSlice, pkg?: WorkPackageCard): WorkPackageCard["operational_state"] {
-  return slice.operational_state || pkg?.operational_state || null;
-}
-
-function operationalKey(operational?: WorkPackageCard["operational_state"]) {
-  return operational?.key || "";
-}
-
-function operationalLabel(operational?: WorkPackageCard["operational_state"], fallbackStatus?: string | null) {
-  return operational?.label || statusLabel(fallbackStatus);
-}
-
-function signalToneForBackendTone(tone?: string | null): SignalTone {
-  switch (tone) {
-    case "critical":
-      return "danger";
-    case "warning":
-      return "warning";
-    case "success":
-      return "success";
-    case "info":
-      return "info";
-    default:
-      return "muted";
-  }
-}
-
-function operationalBadgeVariant(operational?: WorkPackageCard["operational_state"], fallbackStatus?: string | null): BadgeTone {
-  if (!operational) return statusVariant(fallbackStatus);
-  const key = operational.key || "";
-
-  if (key === "merge_ready") return operational.tone === "warning" ? "warning" : "ready";
-  if (key === "blocked" || operational.tone === "critical") return "danger";
-  if (["merged", "merged_into_phase", "closed"].includes(key) || operational.tone === "success") return "success";
-  if (["abandoned", "skipped"].includes(key)) return "secondary";
-  if (operational.tone === "warning") return "warning";
-  if (operational.tone === "info") return "info";
-  return statusVariant(key || operational.raw_status || fallbackStatus);
-}
-
-function packageAttentionSignal(pkg: WorkPackageCard): { label: string; value: string; tone: SignalTone } | null {
-  const blockerCount = pkg.active_blocker_count || 0;
-  const operational = packageOperationalState(pkg);
-  const firstAttention = firstOperationalAttention(operational);
-
-  if (blockerCount > 0 || pkg.status === "blocked" || operational?.key === "blocked") {
-    return { label: "Blockers", value: `${blockerCount || 1} ${plural("blocker", blockerCount || 1)}`, tone: "danger" };
-  }
-
-  if (firstAttention) {
-    return {
-      label: "Attention",
-      value: firstAttention.label || formatStatus(firstAttention.key),
-      tone: attentionTone(firstAttention),
-    };
-  }
-
-  return null;
-}
-
-function firstOperationalAttention(operational?: WorkPackageCard["operational_state"]) {
-  return (operational?.attention_items || [])[0] || null;
-}
-
-function attentionTone(attention?: OperationalAttention | null): SignalTone {
-  return signalToneForBackendTone(attention?.tone);
-}
-
-function runtimeBoolean(runtime: Record<string, unknown>, key: string) {
-  const value = runtime[key];
-  return typeof value === "number" && value > 0;
 }
 
 function packageReviewSignal(pkg: WorkPackageCard) {
@@ -3254,10 +3060,6 @@ function planProgressLabel(pkg: WorkPackageCard) {
   const open = pkg.plan?.open_count || 0;
 
   return open > 0 ? `${open} open / ${total} total` : `${done}/${total} done`;
-}
-
-function plural(word: string, count: number) {
-  return count === 1 ? word : `${word}s`;
 }
 
 function SoloSessions({
@@ -3908,7 +3710,7 @@ function RequestDetailContent({
   onCopyArchitectHandoff: CopyArchitectHandoff;
 }) {
   const request = detail.work_request;
-  const operational = requestOperationalState(request);
+  const operational = request.operational_state || null;
   const openQuestions = requestOpenQuestions(detail);
   const sliceCounts = requestSliceCounts(detail);
   const handoffEligible = architectHandoffEligibleRequest(request);
@@ -4030,7 +3832,7 @@ function SliceDetailContent({ detail, slice, pkg }: { detail: WorkRequestDetail;
         <DetailStatGrid
           stats={[
             { label: "State", value: operationalLabel(operational, status) },
-            { label: "Package", value: pkg ? operationalLabel(packageOperationalState(pkg), pkg.status) : "Not dispatched" },
+            { label: "Package", value: pkg ? operationalLabel(pkg.operational_state || null, pkg.status) : "Not dispatched" },
             { label: "Review", value: reviewLanes.length > 0 ? reviewLanes.map(reviewLaneLabel).join(", ") : "Not recorded" },
             { label: "Blockers", value: String(blockerCount) },
             { label: "Updated", value: detailDate(slice.updated_at || slice.dispatched_at || slice.inserted_at) },
@@ -4095,7 +3897,7 @@ function PackageDetailContent({
   const blockers = (detailPayload?.blockers || []).filter((blocker) => blocker.active !== false);
   const progress = latestPackageProgress(detailPayload);
   const plan = summary?.plan || pkg.plan;
-  const operational = packageOperationalState(pkg);
+  const operational = pkg.operational_state || null;
   const lineage = detailPayload?.lineage || pkg.lineage || null;
   const attentionItems = operational?.attention_items || [];
   const blockerCount = blockers.length || summary?.active_blocker_count || pkg.active_blocker_count || (operational?.key === "blocked" || pkg.status === "blocked" ? 1 : 0);
@@ -4368,7 +4170,7 @@ function detailActivityKey(item: { title?: string | null; body?: string | null; 
   return `activity:${hashText([item.title, item.body, item.at].filter(Boolean).join("|"))}`;
 }
 
-function DetailAttentionList({ items }: { items: OperationalAttention[] }) {
+function DetailAttentionList({ items }: { items: PackageOperationalAttention[] }) {
   const visibleItems = items.slice(0, 3);
 
   return (
@@ -4437,7 +4239,7 @@ function requestSliceCounts(detail: WorkRequestDetail) {
 
 function requestProgressText(detail: WorkRequestDetail) {
   const request = detail.work_request;
-  const operational = requestOperationalState(request);
+  const operational = request.operational_state || null;
   const questions = requestOpenQuestions(detail);
   const slices = requestSliceCounts(detail);
 
@@ -4464,7 +4266,7 @@ function requestProgressText(detail: WorkRequestDetail) {
 function sliceProgressText(slice: PlannedSlice, pkg?: WorkPackageCard) {
   if (pkg) {
     const progress = planProgressLabel(pkg);
-    const label = operationalLabel(packageOperationalState(pkg), pkg.status);
+    const label = operationalLabel(pkg.operational_state || null, pkg.status);
     return progress ? `Linked work package is ${label} with ${progress.toLowerCase()}.` : `Linked work package is ${label}.`;
   }
 
@@ -4508,7 +4310,7 @@ function packageRuntimeText(summary: WorkPackageDetailPayload["summary"] | undef
   if (summary?.queued_agent_run_count) return `${summary.queued_agent_run_count} queued`;
   if (pkg.active_agent_run?.stale) return "Stale run";
   if (pkg.active_agent_run?.runtime_state === "queued") return "Queued";
-  if (pkg.active_agent_run || runtimeBoolean(pkg.runtime || {}, "active_count")) return "Active";
+  if (pkg.active_agent_run || (typeof pkg.runtime?.active_count === "number" && pkg.runtime.active_count > 0)) return "Active";
   return "No active run";
 }
 
@@ -4527,7 +4329,7 @@ function packageOperationalFallbackText(pkg: WorkPackageCard) {
   return `Raw lifecycle status is ${statusLabel(pkg.status)}.`;
 }
 
-function attentionBorderClassName(attention: OperationalAttention) {
+function attentionBorderClassName(attention: PackageOperationalAttention) {
   switch (attentionTone(attention)) {
     case "danger":
       return "border-l-rose-400";
@@ -4695,7 +4497,7 @@ function clarificationGuidanceItem(detail: WorkRequestDetail, question: Clarific
 
 function activeBlockerItems(packages: WorkPackageCard[], details: WorkRequestDetail[] = []): BlockerItem[] {
   return packages.reduce<BlockerItem[]>((items, pkg) => {
-    const operational = packageOperationalState(pkg);
+    const operational = pkg.operational_state || null;
     if (operational?.key === "blocked" || pkg.status === "blocked" || (pkg.active_blocker_count || 0) > 0) {
       items.push({
         id: pkg.id,
@@ -4726,7 +4528,7 @@ function recentFinishedHighlights(
 
   const packageHighlights = packages.reduce<FinishedHighlight[]>((items, pkg) => {
     if (packageLane(pkg) === "finished") {
-      const operational = packageOperationalState(pkg);
+      const operational = pkg.operational_state || null;
       items.push({
         id: pkg.id,
         title: pkg.title || pkg.id,
@@ -4742,11 +4544,11 @@ function recentFinishedHighlights(
   }, []);
 
   const requestHighlights = requests.reduce<FinishedHighlight[]>((items, request) => {
-    if (requestLane(request) === "finished") {
+    if (workRequestLane(request) === "finished") {
       const detail = detailByRequestId.get(request.id);
       if (!detail) return items;
 
-      const operational = requestOperationalState(request);
+      const operational = request.operational_state || null;
       items.push({
         id: request.id,
         title: request.title || request.id,
@@ -4851,9 +4653,9 @@ function repoSummaries(
   });
 
   repos.forEach((summary) => {
-    summary.requested = summary.requests.filter((request) => requestLane(request) === "requested").length;
+    summary.requested = summary.requests.filter((request) => workRequestLane(request) === "requested").length;
     summary.active =
-      summary.requests.filter((request) => requestLane(request) === "slices").length +
+      summary.requests.filter((request) => workRequestLane(request) === "slices").length +
       summary.packages.filter((pkg) => packageLane(pkg) === "slices").length;
     summary.implementing = summary.packages.filter((pkg) => packageLane(pkg) === "implementing").length;
     summary.finished = summary.packages.filter((pkg) => packageLane(pkg) === "finished").length;
@@ -4878,72 +4680,6 @@ function guidanceAnswerUrl(item: GuidanceItem) {
   }
 
   return operatorApiUrl(`/work-requests/${encodeURIComponent(item.workRequestId)}/questions/${encodeURIComponent(item.id)}/answer`);
-}
-
-function requestLane(request: WorkRequestCard): "requested" | "slices" | "finished" {
-  const rawStatus = request.status || "";
-  const key = requestOperationalState(request)?.key || rawStatus;
-
-  if (FINISHED_BOARD_STATUSES.has(key)) return "finished";
-  if (
-    [
-      "sliced",
-      "ready_for_slicing",
-      "planned",
-      "ready_for_worker",
-      "active",
-      "needs_attention",
-      "started_paused",
-      "reviewing",
-      "ci_waiting",
-      "merge_ready",
-      "merging",
-      "blocked",
-    ].includes(key)
-  ) {
-    return "slices";
-  }
-
-  return "requested";
-}
-
-const FINISHED_BOARD_STATUSES = new Set(["merged", "merged_into_phase", "closed", "abandoned", "skipped"]);
-const IMPLEMENTING_BOARD_STATUSES = new Set([
-  "active",
-  "claimed",
-  "planning",
-  "in_progress",
-  "implementing",
-  "needs_attention",
-  "reviewing",
-  "ci_waiting",
-  "merge_ready",
-  "merging",
-  "started_paused",
-  "merging_into_phase",
-  "ready_for_human_merge",
-  "ready_for_architect_merge",
-  "blocked",
-]);
-
-function isFinishedBoardStatus(status?: string | null) {
-  return FINISHED_BOARD_STATUSES.has(status || "");
-}
-
-function boardLaneForStatus(status?: string | null): BoardLane {
-  const key = status || "";
-
-  if (isFinishedBoardStatus(key)) return "finished";
-  if (IMPLEMENTING_BOARD_STATUSES.has(key)) return "implementing";
-  return "slices";
-}
-
-function packageLane(pkg: WorkPackageCard): BoardLane {
-  return boardLaneForStatus(packageOperationalState(pkg)?.key || pkg.status);
-}
-
-function sliceLane(slice: PlannedSlice, pkg?: WorkPackageCard): BoardLane {
-  return boardLaneForStatus(sliceOperationalState(slice, pkg)?.key || slice.work_package_status || slice.status);
 }
 
 function packageLinkedToRequest(pkg: WorkPackageCard, details: WorkRequestDetail[]) {
@@ -5168,31 +4904,6 @@ function blockerFallbackSourceEndpoint(edge: ActiveBlockingEdge, context: Return
   }
 
   return undefined;
-}
-
-function statusVariant(status?: string | null): BadgeTone {
-  if (["merged", "merged_into_phase", "closed", "answered"].includes(status || "")) return "success";
-  if (["blocked", "human_info_needed", "needs_attention"].includes(status || "")) return "danger";
-  if (
-    [
-      "active",
-      "in_progress",
-      "implementing",
-      "reviewing",
-      "ci_waiting",
-      "ready_for_slicing",
-      "approved",
-      "created",
-      "ready_for_worker",
-      "claimed",
-      "planning",
-      "started_paused",
-    ].includes(status || "")
-  ) {
-    return "info";
-  }
-  if (["merge_ready", "ready_for_human_merge", "ready_for_architect_merge", "merging", "merging_into_phase"].includes(status || "")) return "ready";
-  return "secondary";
 }
 
 function formatDate(value: string) {

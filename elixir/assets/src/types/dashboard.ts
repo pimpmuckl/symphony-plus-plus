@@ -193,6 +193,8 @@ export type ArchitectHandoffCopyResult = {
 
 export type CopyArchitectHandoff = (workRequestId: string, cachedHandoff?: ArchitectHandoff | null) => Promise<ArchitectHandoffCopyResult>;
 
+export type HandoffCopyState = "idle" | "copying" | "copied" | "error";
+
 export type CreateWorkRequestPayload = {
   work_request?: WorkRequestDetail;
   dashboard?: DashboardPayload;
