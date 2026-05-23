@@ -104,6 +104,7 @@ import {
   workRequestLane,
 } from "@/lib/operational-state";
 import type { BadgeTone, BoardLane } from "@/lib/operational-state";
+import { packageReviewLabel, planProgressLabel, reviewLaneLabel } from "@/lib/review-signals";
 import { formatStatus, statusLabel } from "@/lib/status-labels";
 import { cn } from "@/lib/utils";
 import type {
@@ -2923,145 +2924,6 @@ function PackageCard({
   );
 }
 
-function packageReviewSignal(pkg: WorkPackageCard) {
-  const progressSignal = reviewPayloadSignal(pkg.metadata?.review_progress);
-  const resultSignal = reviewPayloadSignal(pkg.metadata?.review_suite_result) || reviewPackageSignal(pkg.metadata?.review_package);
-
-  return pkg.status === "reviewing" ? progressSignal || resultSignal : resultSignal || progressSignal;
-}
-
-function reviewPackageSignal(reviewPackage: NonNullable<WorkPackageCard["metadata"]>["review_package"]) {
-  if (!reviewPackage) return null;
-
-  const reviews = Array.isArray(reviewPackage.reviews) ? reviewPackage.reviews : [];
-  const signals = reviews.reduce<NonNullable<ReturnType<typeof reviewPayloadSignal>>[]>((result, review) => {
-    const signal = reviewPayloadSignal(review);
-    if (signal) result.push(signal);
-    return result;
-  }, []);
-
-  if (signals.length > 0) {
-    return signals[signals.length - 1];
-  }
-
-  return reviewPayloadSignal(reviewPackage);
-}
-
-function reviewPayloadSignal(payload?: NonNullable<WorkPackageCard["metadata"]>["review_suite_result"] | null) {
-  if (!payload) return null;
-
-  const lane = payload.profile || payload.mode || payload.lane || payload.review_lane || payload.suite;
-  const stage = reviewStageLabel(payload);
-  if (!lane && !stage) return null;
-
-  const state = reviewState(payload.verdict || payload.status);
-  const tone: SignalTone = state === "green" ? "success" : state === "failed" ? "danger" : "info";
-  const suffix = state === "green" ? "Green" : state === "failed" ? "Failed" : "Pending";
-  const label = lane ? reviewLaneLabel(lane) : "Review";
-  const value = stage ? `${label} ${stage}` : `${label} ${suffix}`;
-
-  return { label: "Review", value, tone, rank: lane ? reviewLaneRank(lane) : -1 };
-}
-
-function reviewState(value?: string) {
-  const normalized = value?.trim().toLowerCase();
-  if (["green", "clean", "passed", "pass"].includes(normalized || "")) return "green";
-  if (["red", "failed", "fail", "findings"].includes(normalized || "")) return "failed";
-  return "pending";
-}
-
-function reviewLaneLabel(lane: string) {
-  switch (normalizeReviewLane(lane)) {
-    case "brief":
-      return "Brief";
-    case "normal":
-      return "Normal";
-    case "deep":
-      return "Deep";
-    case "emergency":
-      return "Emergency";
-    case "review_deslop":
-      return "Review-Deslop";
-    case "review_github":
-      return "Review-GitHub";
-    default:
-      return formatStatus(lane);
-  }
-}
-
-function reviewLaneRank(lane: string) {
-  return ["review_deslop", "brief", "normal", "deep", "emergency", "review_github"].indexOf(normalizeReviewLane(lane));
-}
-
-function normalizeReviewLane(lane: string) {
-  const normalized = normalizedReviewMode(lane).trim().toLowerCase().replace(/-/g, "_");
-
-  switch (normalized) {
-    case "review_t1":
-    case "t1":
-    case "review_brief":
-      return "brief";
-    case "review_t2":
-    case "t2":
-    case "review_normal":
-      return "normal";
-    case "review_deep":
-      return "deep";
-    case "review_emergency":
-      return "emergency";
-    default:
-      return normalized;
-  }
-}
-
-function normalizedReviewMode(lane: string) {
-  const modeMatch = lane.match(/(?:^|\s)--mode(?:=|\s+)([a-z0-9_-]+)/i);
-  if (modeMatch?.[1]) return modeMatch[1];
-
-  return lane;
-}
-
-function reviewStageLabel(payload: NonNullable<WorkPackageCard["metadata"]>["review_suite_result"]) {
-  const current = numericPayloadValue(payload?.step_current);
-  const total = numericPayloadValue(payload?.step_total);
-
-  if (current && total) return `${current}/${total}`;
-  if (payload?.step_name) return formatStatus(payload.step_name);
-  return null;
-}
-
-function numericPayloadValue(value: unknown) {
-  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
-
-  if (typeof value === "string") {
-    const parsed = Number.parseInt(value, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-  }
-
-  return null;
-}
-
-function packagePrLabel(pkg: WorkPackageCard) {
-  const pr = pkg.metadata?.pr;
-  if (!pr) return null;
-
-  if (pr.number) {
-    return `PR #${pr.number}`;
-  }
-
-  return pr.url ? "PR attached" : null;
-}
-
-function planProgressLabel(pkg: WorkPackageCard) {
-  const total = pkg.plan?.total_count || 0;
-  if (total <= 0) return null;
-
-  const done = pkg.plan?.completed_count || 0;
-  const open = pkg.plan?.open_count || 0;
-
-  return open > 0 ? `${open} open / ${total} total` : `${done}/${total} done`;
-}
-
 function SoloSessions({
   sessions,
   onSelectCard,
@@ -3960,10 +3822,10 @@ function PackageDetailContent({
               ["Raw Status", statusLabel(operational?.raw_status || pkg.status)],
               ["Policy", pkg.policy_template || pkg.kind || "Not recorded"],
               ["Branch", pkg.metadata?.branch?.branch || pkg.branch_pattern || "Not recorded"],
-              ["PR", packagePrLabel(pkg) || pkg.metadata?.pr?.url || "Not attached"],
+              ["PR", pkg.metadata?.pr?.number ? `PR #${pkg.metadata.pr.number}` : pkg.metadata?.pr?.url ? "PR attached" : "Not attached"],
               [
                 "Review",
-                packageReviewSignal(pkg)?.value || (pkg.status === "reviewing" ? "Reviewing" : "Not recorded"),
+                packageReviewLabel(pkg) || (pkg.status === "reviewing" ? "Reviewing" : "Not recorded"),
               ],
               ["Artifacts", String(summary?.artifact_count ?? pkg.artifact_count ?? 0)],
               ["Findings", String(summary?.finding_count ?? pkg.finding_count ?? 0)],
@@ -4265,7 +4127,7 @@ function requestProgressText(detail: WorkRequestDetail) {
 
 function sliceProgressText(slice: PlannedSlice, pkg?: WorkPackageCard) {
   if (pkg) {
-    const progress = planProgressLabel(pkg);
+    const progress = planProgressLabel(pkg.plan);
     const label = operationalLabel(pkg.operational_state || null, pkg.status);
     return progress ? `Linked work package is ${label} with ${progress.toLowerCase()}.` : `Linked work package is ${label}.`;
   }
@@ -4294,13 +4156,7 @@ function latestPackageProgress(payload: WorkPackageDetailPayload | null) {
 }
 
 function planSummaryText(plan?: WorkPackageCard["plan"] | null) {
-  const total = plan?.total_count || 0;
-  if (total <= 0) return "No plan";
-
-  const open = plan?.open_count || 0;
-  const completed = plan?.completed_count || 0;
-
-  return open > 0 ? `${open} open / ${total} total` : `${completed}/${total} done`;
+  return planProgressLabel(plan) || "No plan";
 }
 
 function packageRuntimeText(summary: WorkPackageDetailPayload["summary"] | undefined, pkg: WorkPackageCard) {
@@ -4320,10 +4176,10 @@ function packagePurpose(pkg: WorkPackageCard | NonNullable<WorkPackageDetailPayl
 }
 
 function packageOperationalFallbackText(pkg: WorkPackageCard) {
-  const review = packageReviewSignal(pkg)?.value;
+  const review = packageReviewLabel(pkg);
   if (review) return `Review signal: ${review}.`;
 
-  const progress = planProgressLabel(pkg);
+  const progress = planProgressLabel(pkg.plan);
   if (progress) return `Plan is ${progress.toLowerCase()}.`;
 
   return `Raw lifecycle status is ${statusLabel(pkg.status)}.`;
