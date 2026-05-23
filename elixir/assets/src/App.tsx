@@ -16,7 +16,7 @@ import {
   Sun,
 } from "lucide-react";
 import type * as React from "react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import {
@@ -361,6 +361,12 @@ type SliceEntry = {
   slice: PlannedSlice;
   pkg?: WorkPackageCard;
   requestIndex: number;
+};
+
+type WorkstreamCategoryCounts = {
+  requests: number;
+  slices: number;
+  workPackages: number;
 };
 
 type WorkstreamRow = {
@@ -2177,7 +2183,7 @@ function RepoWorkstream({
   updateAnimations: DashboardUpdateAnimations;
 }) {
   const stateKey = repoWorkstreamStateKey(repo);
-  const [open, setOpen] = useState(() => readStoredRepoWorkstreamOpen(stateKey, defaultRepoWorkstreamOpen(repo)));
+  const contentId = useId();
   const repoDetails = useMemo(
     () => requestDetails.filter((detail) => repoIdentityKey(detail.work_request) === repo.repoKey),
     [repo.repoKey, requestDetails],
@@ -2186,9 +2192,17 @@ function RepoWorkstream({
     () => repo.packages.filter((pkg) => !packageLinkedToRequest(pkg, requestDetails)),
     [repo.packages, requestDetails],
   );
+  const categoryCounts = useMemo(
+    () => workstreamCategoryCounts(repoDetails, repo.packages, unlinkedPackages),
+    [repo.packages, repoDetails, unlinkedPackages],
+  );
+  const [open, setOpen] = useState(() => readStoredRepoWorkstreamOpen(stateKey, defaultRepoWorkstreamOpen(repo)));
   const [openMotion, setOpenMotion] = useState(false);
   const previousOpenRef = useRef(open);
   const openMotionTimerRef = useRef<number | null>(null);
+  const toggleOpen = useCallback(() => {
+    setOpen((currentOpen) => !currentOpen);
+  }, []);
 
   useEffect(
     () => () => {
@@ -2225,14 +2239,21 @@ function RepoWorkstream({
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <Card className="dashboard-glass-surface motion-card overflow-hidden">
-        <CardHeader className="dashboard-panel-header border-b">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <CardHeader className="dashboard-panel-header relative space-y-0 overflow-hidden border-b">
+          <button
+            type="button"
+            className="absolute inset-0 cursor-pointer transition-colors hover:bg-muted/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            aria-label={`${open ? "Collapse" : "Open"} ${repo.repo}`}
+            aria-expanded={open}
+            aria-controls={contentId}
+            title={repo.repoRemote || undefined}
+            onClick={toggleOpen}
+          />
+          <div className="pointer-events-none relative flex select-none flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="flex min-w-0 items-center gap-3">
-              <CollapsibleTrigger asChild>
-                <Button variant="ghost" size="icon" className="size-8 shrink-0" aria-label={`${open ? "Collapse" : "Open"} ${repo.repo}`}>
-                  <ChevronRight className={cn("size-4 transition-transform duration-200", open && "rotate-90")} />
-                </Button>
-              </CollapsibleTrigger>
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
+                <ChevronRight className={cn("size-4 transition-transform duration-200", open && "rotate-90")} />
+              </span>
               <div className="min-w-0">
                 <CardTitle className="flex items-center gap-2">
                   <GitBranch className="size-4 text-primary" />
@@ -2242,11 +2263,11 @@ function RepoWorkstream({
               </div>
             </div>
             <div className="flex min-w-0 flex-col gap-2 md:items-end">
-              <RepoSummaryStrip repo={repo} />
+              <RepoSummaryStrip repo={repo} categoryCounts={categoryCounts} />
             </div>
           </div>
         </CardHeader>
-        <CollapsibleContent className="collapsible-content">
+        <CollapsibleContent id={contentId} className="collapsible-content">
           <CardContent className="p-3 sm:p-4" data-board-open-motion={openMotion ? "open" : "idle"}>
             <WorkstreamBoard
               repoDetails={repoDetails}
@@ -2266,11 +2287,11 @@ function RepoWorkstream({
   );
 }
 
-function RepoSummaryStrip({ repo }: { repo: RepoSummary }) {
+function RepoSummaryStrip({ repo, categoryCounts }: { repo: RepoSummary; categoryCounts: WorkstreamCategoryCounts }) {
   const progress = [
-    { label: "Requests", value: repo.requested, tone: "requested" },
-    { label: "Slices", value: repo.active, tone: "active" },
-    { label: "Work Packages", value: repo.implementing + repo.finished, tone: "implementing" },
+    { label: "Requests", value: categoryCounts.requests, tone: "requested" },
+    { label: "Slices", value: categoryCounts.slices, tone: "active" },
+    { label: "Work Packages", value: categoryCounts.workPackages, tone: "implementing" },
   ] as const;
   const attention = [
     { label: "Guidance Needed", value: repo.guidanceCount, tone: "guidance" },
@@ -5189,6 +5210,32 @@ function sortableSequence(sequence?: number | null) {
 function sortableTime(value?: string | null) {
   const timestamp = value ? Date.parse(value) : 0;
   return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function workstreamCategoryCounts(
+  details: WorkRequestDetail[],
+  packages: WorkPackageCard[],
+  unlinkedPackages: WorkPackageCard[],
+): WorkstreamCategoryCounts {
+  // Mirrors the workstream board's lane-card counts for the collapsed repo header.
+  const packageIds = new Set(packages.map((pkg) => pkg.id));
+  let slices = 0;
+  let linkedWorkPackages = 0;
+
+  details.forEach((detail) => {
+    (detail.planned_slices || []).forEach((slice) => {
+      slices += 1;
+      if (slice.work_package_id && packageIds.has(slice.work_package_id)) {
+        linkedWorkPackages += 1;
+      }
+    });
+  });
+
+  return {
+    requests: details.length,
+    slices,
+    workPackages: linkedWorkPackages + unlinkedPackages.length,
+  };
 }
 
 function workstreamRows(
