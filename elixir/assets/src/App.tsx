@@ -2075,8 +2075,8 @@ function RepoWorkstream({
   const stateKey = repoWorkstreamStateKey(repo);
   const [open, setOpen] = useState(() => readStoredRepoWorkstreamOpen(stateKey, defaultRepoWorkstreamOpen(repo)));
   const repoDetails = useMemo(
-    () => requestDetails.filter((detail) => repoName(detail.work_request.repo) === repo.repo),
-    [repo.repo, requestDetails],
+    () => requestDetails.filter((detail) => repoIdentityKey(detail.work_request) === repo.repoKey),
+    [repo.repoKey, requestDetails],
   );
   const unlinkedPackages = useMemo(
     () => repo.packages.filter((pkg) => !packageLinkedToRequest(pkg, requestDetails)),
@@ -2132,7 +2132,7 @@ function RepoWorkstream({
               <div className="min-w-0">
                 <CardTitle className="flex items-center gap-2">
                   <GitBranch className="size-4 text-primary" />
-                  <span className="truncate">{repo.repo}</span>
+                  <span className="truncate" title={repo.repoRemote || undefined}>{repo.repo}</span>
                 </CardTitle>
                 <p className="mt-1 truncate text-sm text-muted-foreground">{repo.baseBranches.join(", ") || "main"}</p>
               </div>
@@ -2940,7 +2940,7 @@ function SoloSessions({
   return (
     <div className="grid gap-5">
       {soloSessionGroups(sessions).map((group) => (
-        <SoloSessionGroup key={`${group.repo}:${group.baseBranch}`} group={group} onSelectCard={onSelectCard} updateAnimations={updateAnimations} />
+        <SoloSessionGroup key={`${group.repoKey}:${group.baseBranch}`} group={group} onSelectCard={onSelectCard} updateAnimations={updateAnimations} />
       ))}
     </div>
   );
@@ -2952,7 +2952,9 @@ function SoloSessionGroup({
   updateAnimations,
 }: {
   group: {
+    repoKey: string;
     repo: string;
+    repoRemote?: string | null;
     baseBranch: string;
     active: SoloSession[];
     finished: SoloSession[];
@@ -2969,7 +2971,7 @@ function SoloSessionGroup({
           <div className="min-w-0">
             <CardTitle className="flex items-center gap-2">
               <GitBranch className="size-4 text-primary" />
-              <span className="truncate">{group.repo}</span>
+              <span className="truncate" title={group.repoRemote || undefined}>{group.repo}</span>
             </CardTitle>
             <p className="mt-1 truncate text-sm text-muted-foreground">{group.baseBranch}</p>
           </div>
@@ -3113,7 +3115,9 @@ function soloSessionGroups(sessions: SoloSession[]) {
   const groups = new Map<
     string,
     {
+      repoKey: string;
       repo: string;
+      repoRemote?: string | null;
       baseBranch: string;
       active: SoloSession[];
       finished: SoloSession[];
@@ -3123,13 +3127,16 @@ function soloSessionGroups(sessions: SoloSession[]) {
   >();
 
   sessions.forEach((session) => {
-    const repo = repoName(session.repo);
+    const repoKey = repoIdentityKey(session);
+    const repo = repoDisplayName(session);
     const baseBranch = session.base_branch?.trim() || "main";
-    const key = `${repo}:${baseBranch}`;
+    const key = `${repoKey}:${baseBranch}`;
     const group =
       groups.get(key) ||
       ({
+        repoKey,
         repo,
+        repoRemote: repoRemoteName(session),
         baseBranch,
         active: [],
         finished: [],
@@ -3137,6 +3144,8 @@ function soloSessionGroups(sessions: SoloSession[]) {
         blockerCount: 0,
       } satisfies {
         repo: string;
+        repoKey: string;
+        repoRemote?: string | null;
         baseBranch: string;
         active: SoloSession[];
         finished: SoloSession[];
@@ -3145,6 +3154,7 @@ function soloSessionGroups(sessions: SoloSession[]) {
       });
 
     const attention = soloSessionAttention(session);
+    group.repoRemote ||= repoRemoteName(session);
     group.guidanceCount += attention.guidanceCount;
     group.blockerCount += attention.blockerCount;
 
@@ -3602,7 +3612,7 @@ function RequestDetailContent({
     <>
       <DetailHeader
         title={request.title || request.id}
-        eyebrow={`${repoName(request.repo)} / ${request.base_branch || "main"} / ${request.work_type || "feature"}`}
+        eyebrow={`${repoDisplayName(request)} / ${request.base_branch || "main"} / ${request.work_type || "feature"}`}
         badge={<Badge variant={operationalBadgeVariant(operational, request.status)}>{operationalLabel(operational, request.status)}</Badge>}
       />
       <div className="grid gap-4">
@@ -3687,7 +3697,7 @@ function SliceDetailContent({ detail, slice, pkg }: { detail: WorkRequestDetail;
     <>
       <DetailHeader
         title={slice.title || pkg?.title || slice.id}
-        eyebrow={`${repoName(detail.work_request.repo)} / ${detail.work_request.title || detail.work_request.id}`}
+        eyebrow={`${repoDisplayName(detail.work_request)} / ${detail.work_request.title || detail.work_request.id}`}
         badge={<Badge variant={operationalBadgeVariant(operational, status)}>{operationalLabel(operational, status)}</Badge>}
       />
       <div className="grid gap-4">
@@ -3768,7 +3778,7 @@ function PackageDetailContent({
     <>
       <DetailHeader
         title={pkg.title || pkg.id}
-        eyebrow={`${repoName(pkg.repo)} / ${pkg.base_branch || "main"} / ${pkg.kind || "work package"}`}
+        eyebrow={`${repoDisplayName(pkg)} / ${pkg.base_branch || "main"} / ${pkg.kind || "work package"}`}
         badge={<Badge variant={operationalBadgeVariant(operational, pkg.status)}>{operationalLabel(operational, pkg.status)}</Badge>}
       />
       <div className="grid gap-4">
@@ -3861,7 +3871,7 @@ function SoloSessionDetailContent({
     <>
       <DetailHeader
         title={detailSession.title || detailSession.id}
-        eyebrow={`${repoName(detailSession.repo)} / ${detailSession.base_branch || "main"} / ${detailSession.caller_id || "solo"}`}
+        eyebrow={`${repoDisplayName(detailSession)} / ${detailSession.base_branch || "main"} / ${detailSession.caller_id || "solo"}`}
         badge={<Badge variant={soloSessionStatusVariant(detailSession.status)}>{formatStatus(detailSession.status)}</Badge>}
       />
       <div className="grid gap-4">
@@ -4296,7 +4306,9 @@ function EmptyPanel({ title, compact = false }: { title: string; compact?: boole
 }
 
 type RepoSummary = {
+  repoKey: string;
   repo: string;
+  repoRemote?: string | null;
   baseBranches: string[];
   requested: number;
   active: number;
@@ -4317,7 +4329,9 @@ function allGuidanceItems(dashboard: DashboardPayload | null): GuidanceItem[] {
   const guidance = (dashboard?.guidance_requests?.guidance_requests || []).map<GuidanceItem>((item) => ({
     source: "guidance",
     id: item.id,
-    repo: repoName(item.repo),
+    repo: repoDisplayName(item),
+    repoKey: repoIdentityKey(item),
+    repoRemote: repoRemoteName(item),
     title: item.decision_prompt?.tl_dr || item.summary || item.question || item.id,
     packageId: item.work_package_id,
     prompt: item.decision_prompt,
@@ -4341,7 +4355,9 @@ function clarificationGuidanceItem(detail: WorkRequestDetail, question: Clarific
   return {
     source: "clarification",
     id: question.id,
-    repo: repoName(detail.work_request.repo),
+    repo: repoDisplayName(detail.work_request),
+    repoKey: repoIdentityKey(detail.work_request),
+    repoRemote: repoRemoteName(detail.work_request),
     title: question.decision_prompt?.tl_dr || question.question || question.id,
     workRequestId: detail.work_request.id,
     prompt: question.decision_prompt,
@@ -4358,7 +4374,7 @@ function activeBlockerItems(packages: WorkPackageCard[], details: WorkRequestDet
       items.push({
         id: pkg.id,
         title: pkg.title || pkg.id,
-        repo: repoName(pkg.repo),
+        repo: repoDisplayName(pkg),
         status: operational?.key || pkg.status,
         blockerCount: Math.max(pkg.active_blocker_count || 0, pkg.status === "blocked" || operational?.key === "blocked" ? 1 : 0),
         detail:
@@ -4388,7 +4404,7 @@ function recentFinishedHighlights(
       items.push({
         id: pkg.id,
         title: pkg.title || pkg.id,
-        repo: repoName(pkg.repo),
+        repo: repoDisplayName(pkg),
         kind: "Work Package",
         state: operationalLabel(operational, pkg.status),
         at: pkg.latest_progress_at,
@@ -4408,7 +4424,7 @@ function recentFinishedHighlights(
       items.push({
         id: request.id,
         title: request.title || request.id,
-        repo: repoName(request.repo),
+        repo: repoDisplayName(request),
         kind: "Request",
         state: operationalLabel(operational, request.status),
         at: request.updated_at || request.inserted_at,
@@ -4429,7 +4445,7 @@ function recentFinishedHighlights(
         items.push({
           id: slice.id,
           title: slice.title || slice.id,
-          repo: repoName(detail.work_request.repo),
+          repo: repoDisplayName(detail.work_request),
           kind: "Slice",
           state: operationalLabel(operational, slice.work_package_status || slice.status),
           at: detail.work_request.updated_at || detail.work_request.inserted_at,
@@ -4469,10 +4485,14 @@ function repoSummaries(
   const repos = new Map<string, RepoSummary>();
   const packageById = new Map(packages.map((pkg) => [pkg.id, pkg]));
 
-  const ensure = (repo: string): RepoSummary => {
-    if (!repos.has(repo)) {
-      repos.set(repo, {
+  const ensure = (identity: RepoIdentitySource): RepoSummary => {
+    const repoKey = repoIdentityKey(identity);
+    const repo = repoDisplayName(identity);
+    if (!repos.has(repoKey)) {
+      repos.set(repoKey, {
+        repoKey,
         repo,
+        repoRemote: repoRemoteName(identity),
         baseBranches: [],
         requested: 0,
         active: 0,
@@ -4484,28 +4504,30 @@ function repoSummaries(
         requests: [],
       });
     }
-    return repos.get(repo)!;
+    const summary = repos.get(repoKey)!;
+    summary.repoRemote ||= repoRemoteName(identity);
+    return summary;
   };
 
   requests.forEach((request) => {
-    const summary = ensure(repoName(request.repo));
+    const summary = ensure(request);
     summary.requests.push(request);
     addBranch(summary, request.base_branch);
   });
 
   packages.forEach((pkg) => {
-    const summary = ensure(repoName(pkg.repo));
+    const summary = ensure(pkg);
     summary.packages.push(pkg);
     addBranch(summary, pkg.base_branch);
   });
 
   sessions.forEach((session) => {
-    const summary = ensure(repoName(session.repo));
+    const summary = ensure(session);
     addBranch(summary, session.base_branch);
   });
 
   guidance.forEach((item) => {
-    ensure(item.repo).guidanceCount += 1;
+    ensure({ repo: item.repo, repo_key: item.repoKey, repo_display: item.repo, repo_remote: item.repoRemote }).guidanceCount += 1;
   });
 
   repos.forEach((summary) => {
@@ -4517,7 +4539,7 @@ function repoSummaries(
     summary.finished = summary.packages.filter((pkg) => packageLane(pkg) === "finished").length;
     summary.blockerCount = activeBlockerItems(summary.packages).length;
     details.forEach((detail) => {
-      if (repoName(detail.work_request.repo) !== summary.repo) return;
+      if (repoIdentityKey(detail.work_request) !== summary.repoKey) return;
       (detail.planned_slices || []).forEach((slice) => {
         const lane = sliceLane(slice, slice.work_package_id ? packageById.get(slice.work_package_id) : undefined);
         if (lane === "slices") summary.active += 1;
@@ -4777,6 +4799,26 @@ function repoName(value?: string | null) {
   return trimmed || "Unscoped";
 }
 
+type RepoIdentitySource = {
+  repo?: string | null;
+  repo_key?: string | null;
+  repo_display?: string | null;
+  repo_remote?: string | null;
+  repo_aliases?: string[];
+};
+
+function repoIdentityKey(item?: RepoIdentitySource | null) {
+  return item?.repo_key?.trim() || item?.repo?.trim() || "Unscoped";
+}
+
+function repoDisplayName(item?: RepoIdentitySource | null) {
+  return repoName(item?.repo_display || item?.repo);
+}
+
+function repoRemoteName(item?: RepoIdentitySource | null) {
+  return item?.repo_remote?.trim() || null;
+}
+
 function addBranch(summary: RepoSummary, branch?: string | null) {
   const value = branch?.trim();
   if (value && !summary.baseBranches.includes(value)) {
@@ -4898,11 +4940,11 @@ function defaultRepoWorkstreamOpen(repo: Pick<RepoSummary, "requested" | "active
 }
 
 function repoWorkstreamStateKey(
-  repo: Pick<RepoSummary, "repo" | "baseBranches" | "requested" | "active" | "implementing" | "finished" | "guidanceCount" | "blockerCount">,
+  repo: Pick<RepoSummary, "repoKey" | "baseBranches" | "requested" | "active" | "implementing" | "finished" | "guidanceCount" | "blockerCount">,
 ) {
   const branchKey = uniqueNonEmpty(repo.baseBranches).sort().join("|") || "main";
   const activityKey = repoWorkstreamHasActivity(repo) ? "active" : "empty";
-  return `${repo.repo}::${branchKey}::${activityKey}`;
+  return `${repo.repoKey}::${branchKey}::${activityKey}`;
 }
 
 function repoWorkstreamHasActivity(
