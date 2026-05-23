@@ -10,14 +10,12 @@ import {
   Loader2,
   MessageSquareText,
   Moon,
-  Plus,
   RefreshCw,
   Route,
-  Send,
   Sun,
 } from "lucide-react";
 import type * as React from "react";
-import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import {
@@ -45,6 +43,8 @@ import {
   JsonDetail,
 } from "@/components/dashboard/detail-layout";
 import { GuidanceDialog } from "@/components/dashboard/guidance-dialog";
+import { NewRequestDialog } from "@/components/dashboard/new-request-dialog";
+import type { NewRequestForm } from "@/components/dashboard/new-request-dialog";
 import {
   BoardWireLayer,
   useBoardWirePaths,
@@ -81,27 +81,21 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { sortedCopy } from "@/lib/collections";
+import { sortedCopy, uniqueNonEmpty } from "@/lib/collections";
+import { formatStatus, statusLabel } from "@/lib/status-labels";
 import { cn } from "@/lib/utils";
 import type {
   ActiveBlockingEdge,
   ArchitectHandoff,
+  ArchitectHandoffCopyResult,
   ArchitectHandoffPayload,
   ClarificationQuestion,
+  CopyArchitectHandoff,
   CreateWorkRequestPayload,
   DashboardPayload,
   GuidanceAnswerSubmission,
@@ -177,12 +171,6 @@ type DashboardUpdateAnimations = {
   motionFor: (key?: string | null) => UpdateMotion | undefined;
   simulate: (kind: UpdateMotionKind) => void;
 };
-type ArchitectHandoffCopyResult = {
-  handoff: ArchitectHandoff;
-  copied: boolean;
-  copyError?: string;
-};
-type CopyArchitectHandoff = (workRequestId: string, cachedHandoff?: ArchitectHandoff | null) => Promise<ArchitectHandoffCopyResult>;
 type CardDetailSelection =
   | { kind: "request"; detail: WorkRequestDetail }
   | { kind: "slice"; detail: WorkRequestDetail; slice: PlannedSlice; pkg?: WorkPackageCard }
@@ -354,15 +342,6 @@ type WorkstreamRow = {
   unlinked?: boolean;
 };
 
-type NewRequestForm = {
-  title: string;
-  repo: string;
-  base_branch: string;
-  work_type: string;
-  desired_dispatch_shape: string;
-  human_description: string;
-};
-
 type BadgeTone = "default" | "secondary" | "outline" | "success" | "warning" | "danger" | "info" | "ready";
 
 type AppState = {
@@ -421,78 +400,6 @@ function appDialogReducer(state: AppDialogState, action: AppDialogAction): AppDi
       return { ...state, selectedCardDetail: action.selectedCardDetail };
     case "newRequest":
       return { ...state, newRequestOpen: action.open };
-  }
-}
-
-const initialRequestForm: NewRequestForm = {
-  title: "",
-  repo: "symphony-plus-plus",
-  base_branch: "main",
-  work_type: "feature",
-  desired_dispatch_shape: "architect_led_feature_branch",
-  human_description: "",
-};
-
-type NewRequestFormUpdate = React.SetStateAction<NewRequestForm>;
-
-function syncNewRequestFormToRepos(form: NewRequestForm, repos: RepoSummary[], repoChoices: string[]): NewRequestForm {
-  const repo = repoChoices.includes(form.repo) ? form.repo : repoChoices[0] || initialRequestForm.repo;
-  const branches = baseBranchOptionsForRepo(repos, repo);
-  const baseBranch = branches.includes(form.base_branch) ? form.base_branch : branches[0] || initialRequestForm.base_branch;
-
-  return repo === form.repo && baseBranch === form.base_branch ? form : { ...form, repo, base_branch: baseBranch };
-}
-
-function newRequestFormReducer(form: NewRequestForm, update: NewRequestFormUpdate): NewRequestForm {
-  return typeof update === "function" ? update(form) : update;
-}
-
-type NewRequestDialogState = {
-  submitting: boolean;
-  createdRequest: WorkRequestDetail | null;
-  architectHandoff: ArchitectHandoff | null;
-  handoffCopyState: HandoffCopyState;
-  error: string | null;
-};
-
-type NewRequestDialogAction =
-  | { type: "reset" }
-  | { type: "startSubmit" }
-  | { type: "created"; request: WorkRequestDetail }
-  | { type: "failed"; error: string }
-  | { type: "newRequest" }
-  | { type: "startCopy" }
-  | { type: "copyResult"; result: ArchitectHandoffCopyResult };
-
-const initialNewRequestDialogState: NewRequestDialogState = {
-  submitting: false,
-  createdRequest: null,
-  architectHandoff: null,
-  handoffCopyState: "idle",
-  error: null,
-};
-
-function newRequestDialogReducer(state: NewRequestDialogState, action: NewRequestDialogAction): NewRequestDialogState {
-  switch (action.type) {
-    case "reset":
-      return initialNewRequestDialogState;
-    case "startSubmit":
-      return { ...state, submitting: true, error: null };
-    case "created":
-      return { ...state, submitting: false, createdRequest: action.request, architectHandoff: null, handoffCopyState: "idle", error: null };
-    case "failed":
-      return { ...state, submitting: false, handoffCopyState: "error", error: action.error };
-    case "newRequest":
-      return { ...initialNewRequestDialogState, createdRequest: null };
-    case "startCopy":
-      return { ...state, handoffCopyState: "copying", error: null };
-    case "copyResult":
-      return {
-        ...state,
-        architectHandoff: action.result.handoff,
-        handoffCopyState: action.result.copied ? "copied" : "error",
-        error: action.result.copyError ? `Handoff is ready, but clipboard copy failed: ${action.result.copyError}` : null,
-      };
   }
 }
 
@@ -583,6 +490,26 @@ export default function App() {
     await applyDashboardResponse(response, "Answer was not recorded", dashboardFromEnvelope);
     setSelectedGuidance(null);
   }, [applyDashboardResponse, setSelectedGuidance]);
+
+  const createWorkRequest = useCallback(async (form: NewRequestForm) => {
+    const response = await fetch(operatorApiUrl("/work-requests"), {
+      method: "POST",
+      headers: await mutationHeaders(),
+      body: JSON.stringify(form),
+    });
+    const payload = (await response.json()) as CreateWorkRequestPayload & { error?: { message?: string } };
+
+    if (!response.ok) {
+      throw new Error(payload?.error?.message || "Request was not created");
+    }
+    if (!payload.dashboard || !payload.work_request) {
+      throw new Error("Request was created, but the dashboard response was incomplete");
+    }
+
+    setDashboard(payload.dashboard);
+    setError(null);
+    return payload.work_request;
+  }, [setDashboard, setError]);
 
   const loadDashboard = useCallback(async (mode: "initial" | "refresh" | "silent" = "refresh") => {
     if (loadInFlightRef.current && mode === "silent") return;
@@ -795,13 +722,11 @@ export default function App() {
                 Refresh
               </Button>
               <NewRequestDialog
+                canCopyArchitectHandoff={architectHandoffEligibleRequest}
+                onCopyArchitectHandoff={copyArchitectHandoff}
+                onCreateRequest={createWorkRequest}
                 open={dialogState.newRequestOpen}
                 onOpenChange={setNewRequestOpen}
-                onCreated={(payload) => {
-                  setDashboard(payload);
-                }}
-                onCopyArchitectHandoff={copyArchitectHandoff}
-                defaultRepo={repos[0]?.repo}
                 repos={repos}
               />
             </div>
@@ -3777,238 +3702,6 @@ function firstSentence(value: string) {
   return value.match(/^(.+?[.!?])(?:\s|$)/)?.[1] || value;
 }
 
-function NewRequestDialog({
-  open,
-  onOpenChange,
-  onCreated,
-  onCopyArchitectHandoff,
-  defaultRepo,
-  repos,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onCreated: (dashboard: DashboardPayload) => void;
-  onCopyArchitectHandoff: CopyArchitectHandoff;
-  defaultRepo?: string;
-  repos: RepoSummary[];
-}) {
-  const repoChoices = useMemo(() => repoOptions(repos, defaultRepo), [defaultRepo, repos]);
-  const initialRepo = defaultRepo || repoChoices[0] || initialRequestForm.repo;
-  const [form, updateForm] = useReducer(newRequestFormReducer, { initialRepo, repos }, ({ initialRepo: repo, repos: initialRepos }) => ({
-    ...initialRequestForm,
-    repo,
-    base_branch: baseBranchOptionsForRepo(initialRepos, repo)[0] || initialRequestForm.base_branch,
-  }));
-  const branchChoices = useMemo(() => baseBranchOptionsForRepo(repos, form.repo), [form.repo, repos]);
-  const [dialogState, dispatchDialog] = useReducer(newRequestDialogReducer, initialNewRequestDialogState);
-  const { architectHandoff, createdRequest, error, handoffCopyState, submitting } = dialogState;
-
-  useEffect(() => {
-    if (!open || createdRequest) return;
-
-    updateForm((current) => syncNewRequestFormToRepos(current, repos, repoChoices));
-    dispatchDialog({ type: "reset" });
-  }, [createdRequest, open, repoChoices, repos]);
-
-  async function copyCreatedHandoff() {
-    if (!createdRequest) return;
-
-    dispatchDialog({ type: "startCopy" });
-
-    try {
-      const result = await onCopyArchitectHandoff(createdRequest.work_request.id, architectHandoff);
-      dispatchDialog({ type: "copyResult", result });
-    } catch (caught) {
-      dispatchDialog({ type: "failed", error: caught instanceof Error ? caught.message : "Architect handoff could not be copied" });
-    }
-  }
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    dispatchDialog({ type: "startSubmit" });
-
-    try {
-      const response = await fetch(operatorApiUrl("/work-requests"), {
-        method: "POST",
-        headers: await mutationHeaders(),
-        body: JSON.stringify({
-          title: form.title,
-          repo: form.repo,
-          base_branch: form.base_branch,
-          work_type: form.work_type,
-          desired_dispatch_shape: form.desired_dispatch_shape,
-          human_description: form.human_description,
-        }),
-      });
-      const payload: CreateWorkRequestPayload & { error?: { message?: string } } = await response.json();
-
-      if (!response.ok) {
-        throw new Error(payload?.error?.message || "Request was not created");
-      }
-
-      if (!payload.dashboard || !payload.work_request) {
-        throw new Error("Request was created, but the dashboard response was incomplete");
-      }
-
-      updateForm({ ...initialRequestForm, repo: form.repo, base_branch: form.base_branch });
-      dispatchDialog({ type: "created", request: payload.work_request });
-      onCreated(payload.dashboard);
-    } catch (caught) {
-      dispatchDialog({ type: "failed", error: caught instanceof Error ? caught.message : "Request was not created" });
-    }
-  }
-
-  function handleOpenChange(nextOpen: boolean) {
-    if (!nextOpen) {
-      dispatchDialog({ type: "reset" });
-    }
-
-    onOpenChange(nextOpen);
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger asChild>
-        <Button size="sm">
-          <Plus className="size-4" />
-          New Request
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="dashboard-dialog-content">
-        <AnimatedDetailBody motionKey={createdRequest ? `created:${createdRequest.work_request.id}:${handoffCopyState}` : "new-request:form"}>
-          {createdRequest ? (
-            <div className="grid gap-5">
-              <DialogHeader>
-                <DialogTitle>Request Created</DialogTitle>
-                <DialogDescription>Ready for an architecture agent</DialogDescription>
-              </DialogHeader>
-              <div className="handoff-success-panel" data-guidance-section>
-                <div className="flex min-w-0 items-start gap-3">
-                  <div className="handoff-success-icon">
-                    <CheckCircle2 className="size-5" />
-                  </div>
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold">{createdRequest.work_request.title || createdRequest.work_request.id}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {repoName(createdRequest.work_request.repo)} / {createdRequest.work_request.base_branch || "main"}
-                    </p>
-                  </div>
-                </div>
-                <p className="mt-3 text-sm text-muted-foreground">
-                  The request is in the ledger. Copy the agent handoff and paste it into the architect Codex session that will own this WorkRequest.
-                </p>
-              </div>
-              {error ? <p className="text-sm text-destructive">{error}</p> : null}
-              <DialogFooter>
-                <Button type="button" variant="outline" onClick={() => dispatchDialog({ type: "newRequest" })}>
-                  New Request
-                </Button>
-                <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
-                  Close
-                </Button>
-                <Button type="button" onClick={() => void copyCreatedHandoff()} disabled={handoffCopyState === "copying" || !architectHandoffEligibleRequest(createdRequest.work_request)}>
-                  {handoffCopyState === "copying" ? <Loader2 className="size-4 animate-spin" /> : handoffCopyState === "copied" ? <CheckCircle2 className="size-4" /> : <Copy className="size-4" />}
-                  {handoffCopyState === "copied" ? "Copied Agent Handoff" : "Copy Agent Handoff"}
-                </Button>
-              </DialogFooter>
-            </div>
-          ) : (
-            <form onSubmit={submit} className="grid gap-5">
-              <DialogHeader>
-                <DialogTitle>New Request</DialogTitle>
-                <DialogDescription>Architect-owned intake</DialogDescription>
-              </DialogHeader>
-              <div className="grid gap-4 md:grid-cols-2">
-                <Field label="Title">
-                  <Input value={form.title} onChange={(event) => updateForm((current) => ({ ...current, title: event.target.value }))} required />
-                </Field>
-                <Field label="Repository">
-                  <Select
-                    value={form.repo}
-                    onValueChange={(value) =>
-                      updateForm((current) => ({
-                        ...current,
-                        repo: value,
-                        base_branch: baseBranchOptionsForRepo(repos, value)[0] || initialRequestForm.base_branch,
-                      }))
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {repoChoices.map((value) => (
-                        <SelectItem key={value} value={value}>
-                          {value}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-                <Field label="Base Branch">
-                  <Select value={form.base_branch} onValueChange={(value) => updateForm((current) => ({ ...current, base_branch: value }))}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {branchChoices.map((value) => (
-                        <SelectItem key={value} value={value}>
-                          {value}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-                <Field label="Work Type">
-                  <Select value={form.work_type} onValueChange={(value) => updateForm((current) => ({ ...current, work_type: value }))}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {["feature", "bugfix", "hotfix", "refactor", "investigation", "docs", "review"].map((value) => (
-                        <SelectItem key={value} value={value}>
-                          {formatStatus(value)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-                <Field label="Dispatch Shape">
-                  <Select value={form.desired_dispatch_shape} onValueChange={(value) => updateForm((current) => ({ ...current, desired_dispatch_shape: value }))}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {["architect_led_feature_branch", "single_package", "direct_main_fix", "investigation_first", "review_only"].map((value) => (
-                        <SelectItem key={value} value={value}>
-                          {formatStatus(value)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-              </div>
-              <Field label="Description">
-                <Textarea value={form.human_description} onChange={(event) => updateForm((current) => ({ ...current, human_description: event.target.value }))} required />
-              </Field>
-              {error ? <p className="text-sm text-destructive">{error}</p> : null}
-              <DialogFooter>
-                <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={submitting}>
-                  {submitting ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-                  Create
-                </Button>
-              </DialogFooter>
-            </form>
-          )}
-        </AnimatedDetailBody>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 type DetailResourceState<T> = {
   payload: T | null;
   loading: boolean;
@@ -4170,75 +3863,6 @@ function NaturalDetailBody({ motionKey, children }: { motionKey: string; childre
   return (
     <div className="detail-modal-natural-frame" data-detail-motion-key={motionKey}>
       <div className="detail-modal-size-inner">{children}</div>
-    </div>
-  );
-}
-
-function AnimatedDetailBody({ motionKey, children }: { motionKey: string; children: React.ReactNode }) {
-  const innerRef = useRef<HTMLDivElement>(null);
-  const animationFrameRef = useRef<number | null>(null);
-  const settleTimerRef = useRef<number | null>(null);
-  const [height, setHeight] = useState<number | null>(null);
-
-  const measure = useCallback(() => {
-    const node = innerRef.current;
-    if (!node) return;
-
-    const nextHeight = Math.ceil(node.getBoundingClientRect().height);
-    if (nextHeight <= 0) return;
-
-    setHeight((currentHeight) => (currentHeight === nextHeight ? currentHeight : nextHeight));
-
-    if (settleTimerRef.current !== null) {
-      window.clearTimeout(settleTimerRef.current);
-    }
-
-    settleTimerRef.current = window.setTimeout(() => {
-      setHeight(null);
-      settleTimerRef.current = null;
-    }, 340);
-  }, []);
-
-  useLayoutEffect(() => {
-    measure();
-    const frame = window.requestAnimationFrame(measure);
-    return () => window.cancelAnimationFrame(frame);
-  }, [measure, motionKey]);
-
-  useEffect(() => {
-    const node = innerRef.current;
-    if (!node || typeof ResizeObserver === "undefined") return;
-
-    const observer = new ResizeObserver(() => {
-      if (animationFrameRef.current !== null) {
-        window.cancelAnimationFrame(animationFrameRef.current);
-      }
-
-      animationFrameRef.current = window.requestAnimationFrame(measure);
-    });
-
-    observer.observe(node);
-
-    return () => {
-      observer.disconnect();
-
-      if (animationFrameRef.current !== null) {
-        window.cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
-      }
-
-      if (settleTimerRef.current !== null) {
-        window.clearTimeout(settleTimerRef.current);
-        settleTimerRef.current = null;
-      }
-    };
-  }, [measure]);
-
-  return (
-    <div className="detail-modal-size-frame" data-detail-motion-key={motionKey} style={height === null ? undefined : { height }}>
-      <div ref={innerRef} className="detail-modal-size-inner">
-        {children}
-      </div>
     </div>
   );
 }
@@ -5003,15 +4627,6 @@ function firstParagraph(value?: string | null) {
   return value?.split(/\n\s*\n/)[0]?.trim() || "";
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="grid gap-2">
-      <Label>{label}</Label>
-      {children}
-    </div>
-  );
-}
-
 function EmptyPanel({ title, compact = false }: { title: string; compact?: boolean }) {
   return (
     <div
@@ -5580,23 +5195,6 @@ function statusVariant(status?: string | null): BadgeTone {
   return "secondary";
 }
 
-function formatStatus(status?: string | null) {
-  return status ? status.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : "Unknown";
-}
-
-function statusLabel(status?: string | null) {
-  if (status === "active") return "Active";
-  if (status === "merge_ready") return "Ready For Merge";
-  if (status === "in_progress") return "Active";
-  if (status === "needs_attention") return "Needs Attention";
-  if (status === "started_paused") return "Started / Paused";
-  if (status === "merging") return "Merging";
-  if (status === "ready_for_human_merge" || status === "ready_for_architect_merge") return "Merge Ready";
-  if (status === "merging_into_phase") return "Merging";
-  if (status === "ci_waiting") return "CI Waiting";
-  return formatStatus(status);
-}
-
 function formatDate(value: string) {
   const timestamp = Date.parse(value);
 
@@ -5617,33 +5215,6 @@ function addBranch(summary: RepoSummary, branch?: string | null) {
   if (value && !summary.baseBranches.includes(value)) {
     summary.baseBranches.push(value);
   }
-}
-
-const BRANCH_INTAKE_OPTIONS = ["main", "beta", "dev", "beta/dev"];
-
-function repoOptions(repos: RepoSummary[], defaultRepo?: string) {
-  const dashboardRepos = uniqueNonEmpty(repos.map((repo) => repo.repo));
-  if (dashboardRepos.length > 0) {
-    return dashboardRepos;
-  }
-
-  return uniqueNonEmpty([defaultRepo, initialRequestForm.repo]);
-}
-
-function baseBranchOptionsForRepo(repos: RepoSummary[], repo: string) {
-  const summary = repos.find((candidate) => candidate.repo === repo);
-  const exposedBranches = uniqueNonEmpty(summary?.baseBranches || []);
-  const branchOptions = BRANCH_INTAKE_OPTIONS.filter((branch) => exposedBranches.includes(branch));
-  return branchOptions.length > 0 ? branchOptions : [initialRequestForm.base_branch];
-}
-
-function uniqueNonEmpty(values: Array<string | undefined | null>) {
-  const unique = new Set<string>();
-  values.forEach((value) => {
-    const trimmed = value?.trim();
-    if (trimmed) unique.add(trimmed);
-  });
-  return [...unique];
 }
 
 function readStoredWorkspaceTab(): WorkspaceTab {

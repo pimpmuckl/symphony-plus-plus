@@ -185,6 +185,14 @@ export type ArchitectHandoffPayload = {
   dashboard?: DashboardPayload;
 };
 
+export type ArchitectHandoffCopyResult = {
+  handoff: ArchitectHandoff;
+  copied: boolean;
+  copyError?: string;
+};
+
+export type CopyArchitectHandoff = (workRequestId: string, cachedHandoff?: ArchitectHandoff | null) => Promise<ArchitectHandoffCopyResult>;
+
 export type CreateWorkRequestPayload = {
   work_request?: WorkRequestDetail;
   dashboard?: DashboardPayload;
