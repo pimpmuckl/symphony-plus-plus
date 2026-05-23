@@ -20,7 +20,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
   end
 
   defmodule UpdateFailsWorkPackageRepo do
-    def get(schema, id), do: SymphonyElixir.SymphonyPlusPlus.Repo.get(schema, id)
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    def get(schema, id), do: Repo.get(schema, id)
     def update(_changeset), do: raise(%Exqlite.Error{message: "database is locked"})
   end
 

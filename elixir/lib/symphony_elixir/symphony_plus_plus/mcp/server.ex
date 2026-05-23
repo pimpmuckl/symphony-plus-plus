@@ -34,6 +34,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Service, as: WorkPackageService
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
@@ -42,7 +43,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
-  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Service, as: WorkPackageService
 
   @protocol_version "2025-03-26"
   @health_tool "sympp.health"
@@ -546,16 +546,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp repo_query(repo, sql, params, opts) when is_atom(repo) do
-    cond do
-      repo_module_query?(repo) ->
-        repo.query(sql, params, opts)
-
-      true ->
-        case dynamic_repo_identity(repo) do
-          pid when is_pid(pid) -> SQL.query(pid, sql, params, opts)
-          dynamic_repo when is_atom(dynamic_repo) and dynamic_repo != repo -> SQL.query(dynamic_repo, sql, params, opts)
-          _repo -> SQL.query(repo, sql, params, opts)
-        end
+    if repo_module_query?(repo) do
+      repo.query(sql, params, opts)
+    else
+      case dynamic_repo_identity(repo) do
+        pid when is_pid(pid) -> SQL.query(pid, sql, params, opts)
+        dynamic_repo when is_atom(dynamic_repo) and dynamic_repo != repo -> SQL.query(dynamic_repo, sql, params, opts)
+        _repo -> SQL.query(repo, sql, params, opts)
+      end
     end
   end
 
@@ -1075,14 +1073,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp repo_reachable_ledger_health(repo, identity) do
-    try do
-      case repo_query(repo, "SELECT 1", [], log: false) do
-        {:ok, _result} -> %{"reachable" => true, "identity" => identity}
-        {:error, _reason} -> unavailable_ledger_health(identity)
-      end
-    rescue
-      _error -> unavailable_ledger_health(identity)
+    case repo_query(repo, "SELECT 1", [], log: false) do
+      {:ok, _result} -> %{"reachable" => true, "identity" => identity}
+      {:error, _reason} -> unavailable_ledger_health(identity)
     end
+  rescue
+    _error -> unavailable_ledger_health(identity)
   end
 
   defp unavailable_ledger_health(identity),
@@ -1394,15 +1390,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp default_home_database_path?(path) when is_binary(path) do
-    with home when is_binary(home) and home != "" <- System.user_home() do
-      default_home_database =
-        [home, ".agents", "splusplus", "symphony_plus_plus.sqlite3"]
-        |> Path.join()
-        |> Path.expand()
+    case System.user_home() do
+      home when is_binary(home) and home != "" ->
+        default_home_database =
+          [home, ".agents", "splusplus", "symphony_plus_plus.sqlite3"]
+          |> Path.join()
+          |> Path.expand()
 
-      Repo.same_database_path?(path, default_home_database)
-    else
-      _missing_home -> false
+        Repo.same_database_path?(path, default_home_database)
+
+      _missing_home ->
+        false
     end
   end
 

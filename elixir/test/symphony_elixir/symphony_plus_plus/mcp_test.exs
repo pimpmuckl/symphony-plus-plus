@@ -89,13 +89,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   end
 
   defmodule DefaultRemoteHealthRepo do
-    def config, do: [hostname: "ledger-prod.example.test", port: 15432, database: "sympp"]
+    def config, do: [hostname: "ledger-prod.example.test", port: 15_432, database: "sympp"]
     def query("PRAGMA database_list", _params, _opts), do: {:error, :unsupported}
     def query(sql, _params, _opts) when is_binary(sql), do: {:ok, %{rows: [[1]]}}
   end
 
   defmodule DefaultRemoteIpv6HealthRepo do
-    def config, do: [hostname: "::1", port: 15432, database: "sympp"]
+    def config, do: [hostname: "::1", port: 15_432, database: "sympp"]
     def query("PRAGMA database_list", _params, _opts), do: {:error, :unsupported}
     def query(sql, _params, _opts) when is_binary(sql), do: {:ok, %{rows: [[1]]}}
   end
