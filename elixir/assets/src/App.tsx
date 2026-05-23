@@ -463,6 +463,7 @@ export default function App() {
   const { dashboard, error, hideEmptyWorkstreams, loading, refreshing, theme, workspaceTab, workstreamLayout } = appState;
   const [dialogState, dispatchDialog] = useReducer(appDialogReducer, initialAppDialogState);
   const showUpdateSimulationControls = useMemo(() => shouldShowUpdateSimulationControls(), []);
+  const [runtimeConfig, setRuntimeConfig] = useState<DashboardRuntimeConfig | undefined>(() => dashboardRuntimeConfig);
   const loadInFlightRef = useRef(false);
   const prSyncInFlightRef = useRef(false);
   const lastPrSyncAtRef = useRef(0);
@@ -495,6 +496,18 @@ export default function App() {
   }, []);
   const setNewRequestOpen = useCallback((open: boolean) => {
     dispatchDialog({ type: "newRequest", open });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void ensureDashboardRuntimeConfig().then((config) => {
+      if (!cancelled) setRuntimeConfig(config);
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const applyDashboardResponse = useCallback(
@@ -883,7 +896,7 @@ export default function App() {
           onCopyArchitectHandoff={copyArchitectHandoff}
           onSubmitComment={submitComment}
           onResolveComment={resolveComment}
-          canMutateComments={canMutateDashboardComments()}
+          canMutateComments={canMutateDashboardComments(runtimeConfig)}
         />
       </main>
     </TooltipProvider>
@@ -4669,8 +4682,8 @@ function requestCommentStats(detail: WorkRequestDetail, requestComments: Context
   };
 }
 
-function canMutateDashboardComments() {
-  return dashboardRuntimeConfig?.operatorMode === true;
+function canMutateDashboardComments(config?: DashboardRuntimeConfig) {
+  return config?.operatorMode === true;
 }
 
 function requestProgressText(detail: WorkRequestDetail) {
