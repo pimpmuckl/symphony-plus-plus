@@ -179,6 +179,8 @@ export type WorkRequestCard = RepoIdentityFields & {
   desired_dispatch_shape?: string | null;
   status?: string | null;
   operational_state?: PackageOperationalState | null;
+  completed_at?: string | null;
+  archived_at?: string | null;
   open_question_count?: number;
   answered_question_count?: number;
   planned_slice_count?: number;

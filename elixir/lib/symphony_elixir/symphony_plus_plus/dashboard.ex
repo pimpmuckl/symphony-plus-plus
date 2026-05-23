@@ -32,9 +32,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion, as: WorkRequestCompletion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
   import Ecto.Query, only: [from: 2]
@@ -338,6 +340,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     safe_read(fn ->
       with {:ok, work_request} <- WorkRequestRepository.get(repo, work_request_id),
            :ok <- require_visible_work_request_scope(repo, work_request, grant),
+           {:ok, work_request} <- WorkRequestService.refresh_completion(repo, work_request_id),
            {:ok, questions} <- WorkRequestRepository.list_questions(repo, work_request_id),
            {:ok, decisions} <- WorkRequestRepository.list_decisions(repo, work_request_id),
            {:ok, planned_slices} <- WorkRequestRepository.list_planned_slices(repo, work_request_id),
@@ -352,6 +355,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
         work_request_payload =
           work_request_payload(
             work_request,
+            questions,
             planned_slices,
             work_package_contexts,
             repo_identity_catalog,
@@ -381,7 +385,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   @spec work_request_detail(repo(), String.t(), keyword()) :: {:ok, map()} | {:error, dashboard_error()}
   def work_request_detail(repo, work_request_id, opts) when is_atom(repo) and is_binary(work_request_id) and is_list(opts) do
     safe_read(fn ->
-      with {:ok, work_request} <- WorkRequestRepository.get(repo, work_request_id),
+      with {:ok, work_request} <- WorkRequestService.refresh_completion(repo, work_request_id),
            {:ok, questions} <- WorkRequestRepository.list_questions(repo, work_request_id),
            {:ok, decisions} <- WorkRequestRepository.list_decisions(repo, work_request_id),
            {:ok, planned_slices} <- WorkRequestRepository.list_planned_slices(repo, work_request_id),
@@ -395,6 +399,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
         work_request_payload =
           work_request_payload(
             work_request,
+            questions,
             planned_slices,
             work_package_contexts,
             repo_identity_catalog,
@@ -1223,11 +1228,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp work_request_card_summaries(repo, work_requests, opts) do
     work_request_ids = Enum.map(work_requests, & &1.id)
 
-    with {:ok, question_counts} <- work_request_question_counts(repo, work_request_ids),
+    with {:ok, question_context} <- work_request_question_context(repo, work_request_ids),
          {:ok, decision_counts} <- work_request_decision_counts(repo, work_request_ids),
          {:ok, planned_slices} <- work_request_planned_slices(repo, work_request_ids),
          {:ok, comment_context} <- work_request_card_comment_context(repo, work_requests, planned_slices),
          {:ok, work_package_contexts} <- work_request_card_work_package_contexts(repo, planned_slices, opts) do
+      question_counts = question_context.counts
+
       planned_slice_counts =
         planned_slices
         |> Enum.map(&{&1.work_request_id, &1.status})
@@ -1239,10 +1246,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
         Map.new(work_requests, fn %WorkRequest{} = work_request ->
           planned_slices = Map.get(planned_slices_by_request, work_request.id, [])
           comment_counts = work_request_comment_counts(comment_context, work_request, planned_slices)
+          open_question_count = status_count(question_counts, work_request.id, "open")
+          question_state = Map.get(question_context.states, work_request.id, %{open_count: open_question_count, latest_gate_at: nil})
+
+          completion_state =
+            work_request
+            |> WorkRequestCompletion.state(question_state, planned_slices, work_package_contexts)
+            |> preserve_persisted_work_request_completion(work_request, question_state, planned_slices, work_package_contexts)
 
           {work_request.id,
            %{
-             open_question_count: status_count(question_counts, work_request.id, "open"),
+             open_question_count: open_question_count,
              answered_question_count: status_count(question_counts, work_request.id, "answered"),
              closed_question_count: status_count(question_counts, work_request.id, "closed"),
              decision_count: Map.get(decision_counts, work_request.id, 0),
@@ -1252,7 +1266,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
              approved_slice_count: status_count(planned_slice_counts, work_request.id, "approved"),
              dispatched_slice_count: status_count(planned_slice_counts, work_request.id, "dispatched"),
              skipped_slice_count: status_count(planned_slice_counts, work_request.id, "skipped"),
-             operational_state: work_request_operational_state(work_request, planned_slices, work_package_contexts)
+             completed_at: timestamp(completion_state.completed_at),
+             archived_at: timestamp(completion_state.archived_at),
+             operational_state: work_request_operational_state(work_request, planned_slices, work_package_contexts, completion_state)
            }}
         end)
 
@@ -1329,17 +1345,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     |> Map.put(:open_comment_count, Map.get(counts, :open_comment_count, 0))
   end
 
-  defp work_request_question_counts(repo, work_request_ids) do
+  defp work_request_question_context(repo, work_request_ids) do
     rows =
       chunked_work_request_rows(work_request_ids, fn chunk ->
         from(question in ClarificationQuestion,
           where: question.work_request_id in ^chunk,
-          select: {question.work_request_id, question.status}
+          select: {question.work_request_id, question.status, question.updated_at}
         )
         |> repo.all()
       end)
 
-    {:ok, status_counts(rows)}
+    counts =
+      rows
+      |> Enum.map(fn {work_request_id, status, _updated_at} -> {work_request_id, status} end)
+      |> status_counts()
+
+    states =
+      rows
+      |> Enum.group_by(fn {work_request_id, _status, _updated_at} -> work_request_id end)
+      |> Map.new(fn {work_request_id, questions} ->
+        {work_request_id,
+         %{
+           open_count: Enum.count(questions, fn {_work_request_id, status, _updated_at} -> status == "open" end),
+           latest_gate_at: latest_datetime(Enum.map(questions, fn {_work_request_id, _status, updated_at} -> updated_at end))
+         }}
+      end)
+
+    {:ok, %{counts: counts, states: states}}
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
@@ -1648,18 +1680,62 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     }
   end
 
-  defp work_request_payload(%WorkRequest{} = work_request, planned_slices, work_package_contexts, repo_identity_catalog, comment_context) do
+  defp work_request_payload(%WorkRequest{} = work_request, questions, planned_slices, work_package_contexts, repo_identity_catalog, comment_context) do
+    question_state = %{
+      open_count: Enum.count(questions, &(&1.status == "open")),
+      latest_gate_at: latest_datetime(Enum.map(questions, & &1.updated_at))
+    }
+
+    completion_state =
+      work_request
+      |> WorkRequestCompletion.state(question_state, planned_slices, work_package_contexts)
+      |> preserve_persisted_work_request_completion(work_request, question_state, planned_slices, work_package_contexts)
+
     work_request
     |> work_request_payload(repo_identity_catalog)
-    |> Map.put(:operational_state, work_request_operational_state(work_request, planned_slices, work_package_contexts))
+    |> Map.put(:completed_at, timestamp(completion_state.completed_at))
+    |> Map.put(:archived_at, timestamp(completion_state.archived_at))
+    |> Map.put(:operational_state, work_request_operational_state(work_request, planned_slices, work_package_contexts, completion_state))
     |> put_comment_counts(work_request_comment_counts(comment_context, work_request, planned_slices))
   end
 
-  defp work_request_operational_state(%WorkRequest{} = work_request, planned_slices, work_package_contexts) do
+  defp preserve_persisted_work_request_completion(
+         %{completed?: false} = state,
+         %WorkRequest{completed_at: %DateTime{} = completed_at} = work_request,
+         question_state,
+         planned_slices,
+         work_package_contexts
+       ) do
+    if filtered_completion_context?(question_state, planned_slices, work_package_contexts) do
+      %{state | completed?: true, completed_at: completed_at, archived_at: work_request.archived_at}
+    else
+      state
+    end
+  end
+
+  defp preserve_persisted_work_request_completion(state, %WorkRequest{}, _question_state, _planned_slices, _work_package_contexts), do: state
+
+  defp filtered_completion_context?(question_state, planned_slices, work_package_contexts) do
+    Map.get(question_state, :open_count, 0) == 0 and planned_slices != [] and
+      Enum.all?(planned_slices, &terminal_or_filtered_slice?(&1, work_package_contexts))
+  end
+
+  defp terminal_or_filtered_slice?(%PlannedSlice{status: "skipped"}, _work_package_contexts), do: true
+
+  defp terminal_or_filtered_slice?(%PlannedSlice{status: "dispatched", work_package_id: work_package_id}, work_package_contexts) do
+    is_nil(Map.get(work_package_contexts, work_package_id))
+  end
+
+  defp terminal_or_filtered_slice?(%PlannedSlice{}, _work_package_contexts), do: false
+
+  defp work_request_operational_state(%WorkRequest{} = work_request, planned_slices, work_package_contexts, completion_state) do
     slice_states = planned_slice_operational_states(planned_slices, work_package_contexts)
     attention_items = aggregate_operational_attention(slice_states)
 
     cond do
+      completion_state.completed? ->
+        completed_work_request_operational_state(work_request.status, attention_items)
+
       work_request.status == "human_info_needed" ->
         base_work_request_operational_state("human_info_needed", attention_items)
 
@@ -1672,6 +1748,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       true ->
         base_work_request_operational_state(work_request.status, attention_items)
     end
+  end
+
+  defp completed_work_request_operational_state(raw_status, attention_items) do
+    operational_state(
+      "completed",
+      "Completed",
+      "success",
+      "All WorkRequest questions, slices, linked packages, blockers, and active runtimes are terminal.",
+      raw_status,
+      attention_items
+    )
   end
 
   defp base_work_request_operational_state("human_info_needed" = status, attention_items) do

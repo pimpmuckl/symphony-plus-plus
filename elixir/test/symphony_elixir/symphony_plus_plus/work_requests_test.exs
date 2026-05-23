@@ -3,9 +3,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
 
   alias Ecto.Adapters.SQL
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+  alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
+  alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
+  alias SymphonyElixir.WorkPackageFactory
 
   setup_all do
     database_path = database_path()
@@ -19,6 +29,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
   end
 
   setup %{repo: repo} do
+    repo.delete_all(AgentRun)
+    repo.delete_all(ProgressEvent)
+    repo.delete_all(AccessGrant)
+    repo.delete_all(PlannedSlice)
+    repo.delete_all(WorkPackage)
+    repo.delete_all(ClarificationQuestion)
     repo.delete_all(WorkRequest)
     :ok
   end
@@ -31,6 +47,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert created.constraints == %{}
     assert %DateTime{} = created.inserted_at
     assert %DateTime{} = created.updated_at
+    assert created.completed_at == nil
+    assert created.archived_at == nil
 
     assert {:ok, fetched} = Service.get(repo, created.id)
     assert fetched == created
@@ -96,6 +114,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
                work_type: "investigation",
                desired_dispatch_shape: "investigation_first",
                constraints: constraints,
+               completed_at: ~U[2001-01-01 00:00:00Z],
+               archived_at: ~U[2001-01-02 00:00:00Z],
                inserted_at: ~U[2000-01-01 00:00:00Z]
              })
 
@@ -107,6 +127,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert updated.work_type == "investigation"
     assert updated.desired_dispatch_shape == "investigation_first"
     assert updated.constraints == constraints
+    assert updated.completed_at == nil
+    assert updated.archived_at == nil
 
     assert {:error, %Ecto.Changeset{} = status_changeset} =
              Service.update(repo, created.id, %{status: "ready_for_slicing"})
@@ -175,6 +197,74 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
              Repository.update_status(repo, request.id, "draft", "ready")
   end
 
+  test "refreshes conservative completion and archive state without changing raw status", %{repo: repo} do
+    assert {:ok, request} = Repository.create(repo, attrs(id: "WR-COMPLETE", status: "ready_for_slicing"))
+    assert {:ok, slice} = Repository.add_planned_slice(repo, request.id, planned_slice_attrs(id: "WRS-COMPLETE"))
+    assert {:ok, _skipped} = Repository.skip_planned_slice(repo, request.id, slice.id, "planned")
+
+    assert {:ok, completed} = Service.refresh_completion(repo, request.id)
+    assert completed.status == "ready_for_slicing"
+    assert %DateTime{} = completed.completed_at
+    assert completed.archived_at == nil
+
+    assert {:ok, archived} = Service.archive(repo, request.id)
+    assert archived.status == "ready_for_slicing"
+    assert archived.completed_at == completed.completed_at
+    assert %DateTime{} = archived.archived_at
+  end
+
+  test "completion waits for questions blockers linked packages and active runtime", %{repo: repo} do
+    assert {:ok, question_request} = Repository.create(repo, attrs(id: "WR-COMPLETE-QUESTION", status: "ready_for_slicing"))
+    assert {:ok, question_slice} = Repository.add_planned_slice(repo, question_request.id, planned_slice_attrs(id: "WRS-COMPLETE-QUESTION"))
+    assert {:ok, _skipped} = Repository.skip_planned_slice(repo, question_request.id, question_slice.id, "planned")
+    assert {:ok, open_question} = Repository.ask_question(repo, question_request.id, question_attrs(id: "WRQ-COMPLETE-OPEN"))
+
+    assert {:ok, with_question} = Service.refresh_completion(repo, question_request.id)
+    assert with_question.completed_at == nil
+
+    assert {:ok, _closed} = Repository.close_question(repo, open_question.id, "open")
+    assert {:ok, without_question} = Service.refresh_completion(repo, question_request.id)
+    assert %DateTime{} = without_question.completed_at
+
+    assert {:ok, linked_request} = Repository.create(repo, attrs(id: "WR-COMPLETE-LINKED", status: "ready_for_slicing"))
+    assert {:ok, planned_slice} = Repository.add_planned_slice(repo, linked_request.id, planned_slice_attrs(id: "WRS-COMPLETE-LINKED"))
+    assert {:ok, approved_slice} = Repository.approve_planned_slice(repo, linked_request.id, planned_slice.id, "planned")
+    linked_package = create_matching_work_package!(repo, linked_request, approved_slice, id: "WP-COMPLETE-LINKED", status: "merged")
+
+    assert {:ok, _dispatched} = Repository.dispatch_planned_slice(repo, linked_request.id, approved_slice.id, "approved", linked_package.id)
+
+    append_blocker_event!(repo, linked_package.id, "blocker-completion", true)
+    assert {:ok, blocked} = Service.refresh_completion(repo, linked_request.id)
+    assert blocked.completed_at == nil
+
+    resolved_blocker = append_blocker_event!(repo, linked_package.id, "blocker-completion", false)
+    assert {:ok, unblocked} = Service.refresh_completion(repo, linked_request.id)
+    assert %DateTime{} = unblocked.completed_at
+    assert DateTime.compare(unblocked.completed_at, resolved_blocker.created_at) in [:eq, :gt]
+
+    assert {:ok, runtime_request} = Repository.create(repo, attrs(id: "WR-COMPLETE-RUNTIME", status: "ready_for_slicing"))
+    assert {:ok, runtime_slice} = Repository.add_planned_slice(repo, runtime_request.id, planned_slice_attrs(id: "WRS-COMPLETE-RUNTIME"))
+    assert {:ok, runtime_slice} = Repository.approve_planned_slice(repo, runtime_request.id, runtime_slice.id, "planned")
+    runtime_package = create_matching_work_package!(repo, runtime_request, runtime_slice, id: "WP-COMPLETE-RUNTIME", status: "merged")
+
+    assert {:ok, _runtime_dispatched} = Repository.dispatch_planned_slice(repo, runtime_request.id, runtime_slice.id, "approved", runtime_package.id)
+
+    assert {:ok, run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: runtime_package.id,
+               status: "running",
+               attempt: 1,
+               worker_task_handle: "completion-runtime"
+             })
+
+    assert {:ok, with_runtime} = Service.refresh_completion(repo, runtime_request.id)
+    assert with_runtime.completed_at == nil
+
+    assert {:ok, _completed_run} = AgentRunRepository.mark_completed(repo, run.id, "done")
+    assert {:ok, without_runtime} = Service.refresh_completion(repo, runtime_request.id)
+    assert %DateTime{} = without_runtime.completed_at
+  end
+
   test "returns not found for missing work requests", %{repo: repo} do
     assert {:error, :not_found} = Repository.get(repo, "missing")
     assert {:error, :not_found} = Repository.update(repo, "missing", %{title: "Nope"})
@@ -210,6 +300,68 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
 
     Enum.into(overrides, defaults)
   end
+
+  defp planned_slice_attrs(overrides) do
+    defaults = %{
+      title: "Complete WorkRequest state",
+      goal: "Track completed WorkRequests.",
+      work_package_kind: "mcp",
+      target_base_branch: "main",
+      owned_file_globs: ["elixir/lib/symphony_elixir/symphony_plus_plus/work_requests/**"],
+      forbidden_file_globs: [],
+      acceptance_criteria: ["Completion state is explicit."],
+      validation_steps: ["mix test"],
+      review_lanes: ["normal"],
+      stop_conditions: []
+    }
+
+    Enum.into(overrides, defaults)
+  end
+
+  defp question_attrs(overrides) do
+    defaults = %{
+      category: "product",
+      question: "Is the WorkRequest done?",
+      why_needed: "Open human questions keep the WorkRequest visible."
+    }
+
+    Enum.into(overrides, defaults)
+  end
+
+  defp create_matching_work_package!(repo, work_request, planned_slice, overrides) do
+    attrs =
+      [
+        kind: planned_slice.work_package_kind,
+        title: planned_slice.title,
+        repo: work_request.repo,
+        base_branch: planned_slice.target_base_branch,
+        branch_pattern: planned_slice.branch_pattern,
+        product_description: work_request.human_description,
+        allowed_file_globs: planned_slice.owned_file_globs,
+        acceptance_criteria: planned_slice.acceptance_criteria
+      ]
+      |> Keyword.merge(overrides)
+      |> WorkPackageFactory.attrs()
+
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, attrs)
+    work_package
+  end
+
+  defp append_blocker_event!(repo, work_package_id, blocker_id, active) do
+    assert {:ok, event} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package_id,
+               summary: "Blocked",
+               status: if(active, do: "blocked", else: "unblocked"),
+               idempotency_key: "#{blocker_id}-#{active}-#{System.unique_integer([:positive])}",
+               payload: %{type: "blocker", source_tool: blocker_source_tool(active), blocker_id: blocker_id, active: active}
+             })
+
+    event
+  end
+
+  defp blocker_source_tool(true), do: "report_blocker"
+  defp blocker_source_tool(false), do: "resolve_blocker"
 
   defp database_path do
     Path.join(System.tmp_dir!(), "sympp-work-requests-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}.sqlite3")

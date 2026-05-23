@@ -1438,7 +1438,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert request_card.operational_state.has_active_worker == true
   end
 
-  test "WorkRequest and dispatched slice show merged package truth without mutating raw lifecycle", %{repo: repo} do
+  test "WorkRequest completion shows completed while dispatched slice preserves merged package truth", %{repo: repo} do
     work_request = create_work_request!(repo, id: "WR-DASH-OP-MERGED", status: "ready_for_slicing")
 
     assert {:ok, planned_slice} =
@@ -1459,8 +1459,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     assert {:ok, payload} = Dashboard.work_request_detail(repo, work_request.id)
     assert payload.work_request.status == "ready_for_slicing"
-    assert payload.work_request.operational_state.key == "merged"
+    assert payload.work_request.completed_at != nil
+    assert payload.work_request.archived_at == nil
+    assert payload.work_request.operational_state.key == "completed"
+    assert payload.work_request.operational_state.label == "Completed"
     assert payload.work_request.operational_state.raw_status == "ready_for_slicing"
+
+    assert {:ok, refreshed_request} = WorkRequestRepository.get(repo, work_request.id)
+    assert refreshed_request.completed_at != nil
 
     [slice] = payload.planned_slices
     assert slice.status == "dispatched"
@@ -1516,10 +1522,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     [card] = Enum.filter(list_payload["work_requests"], &(&1["id"] == work_request.id))
 
     assert card["status"] == "ready_for_slicing"
-    assert card["operational_state"]["key"] == "merged"
+    assert card["completed_at"] != nil
+    assert card["archived_at"] == nil
+    assert card["operational_state"]["key"] == "completed"
+    assert card["operational_state"]["label"] == "Completed"
     assert card["operational_state"]["raw_status"] == "ready_for_slicing"
 
     assert detail_payload["work_request"]["operational_state"]["key"] == card["operational_state"]["key"]
+    assert detail_payload["work_request"]["completed_at"] == card["completed_at"]
     assert [%{"status" => "dispatched"} = grant_slice] = detail_payload["planned_slices"]
     refute Map.has_key?(grant_slice, "work_package_status")
     refute Map.has_key?(grant_slice, "operational_state")
