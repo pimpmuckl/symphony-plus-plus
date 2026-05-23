@@ -244,16 +244,19 @@ unlinked packages fail closed as not found. `prepare_work_package_worktree`
 requires `repo_root`, `base_branch`, and a concrete `branch`, validates git ref
 names, requires `base_branch` to match the WorkPackage, resolves `CODEX_HOME`
 with fallback to `~/.codex`, builds a safe path under
-`CODEX_HOME/worktrees/spp_worktrees/<repo-name>/<sanitized-branch>`, fetches
-`origin/<base_branch>`, creates the linked worktree from that remote branch,
-records only `worktree_path`, and returns a compact worker launch block.
-Replays with the same recorded existing path return `already_prepared`.
+`CODEX_HOME/worktrees/spp_worktrees/<repo-name>-<repo-hash>/<package-id>-<sanitized-branch>-<branch-hash>`,
+fetches `origin/<base_branch>` into the local remote-tracking ref, creates the
+linked worktree from that remote branch, records only `worktree_path`, and
+returns a compact worker launch block. Replays with the same recorded existing
+path return `already_prepared`.
 `cleanup_work_package_worktree` reads the recorded path, verifies it remains
 inside the managed S++ worktree root, refuses dirty worktrees, removes the git
-worktree through the owning repository, prunes stale worktree metadata, clears
+worktree through the configured/scoped repository after proving the recorded
+worktree belongs to that repository, prunes stale worktree metadata, clears
 `worktree_path`, and appends redacted progress/audit evidence. It does not
-force-remove dirty worktrees, clean arbitrary paths, alter worker secrets, or
-perform automatic cleanup when package statuses change.
+force-remove dirty worktrees, clean arbitrary paths, clean worktrees from a
+different repository, alter worker secrets, or perform automatic cleanup when
+package statuses change.
 `read_child_status` requires both `read:child_progress` and
 `read:child_findings` because its summary includes progress, findings, and
 artifact counts. `approve_child_ready_state` revalidates the ready child against

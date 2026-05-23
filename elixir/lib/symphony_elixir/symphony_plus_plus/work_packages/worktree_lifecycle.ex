@@ -217,7 +217,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   defp cleanup_existing_worktree(repo, %WorkPackage{} = work_package, worktree_path, opts) do
     with {:ok, status_output} <- git_output(worktree_path, ["status", "--porcelain"], opts),
          :ok <- require_clean(status_output),
-         {:ok, repo_root} <- repo_root_from_worktree(worktree_path, opts),
+         {:ok, repo_root} <- cleanup_repo_root(opts),
+         :ok <- require_git_worktree(worktree_path, repo_root, opts),
          :ok <- git(repo_root, ["worktree", "remove", worktree_path], opts),
          :ok <- git(repo_root, ["worktree", "prune"], opts),
          {:ok, updated_work_package} <- Repository.update(repo, work_package.id, %{worktree_path: nil}) do
@@ -235,30 +236,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     end
   end
 
-  defp repo_root_from_worktree(worktree_path, opts) do
-    with {:ok, common_dir} <- git_common_dir(worktree_path, opts),
-         repo_root <- repo_root_from_common_dir(common_dir),
-         {:ok, repo_root} <- canonicalize(repo_root),
-         true <- File.dir?(repo_root) do
-      {:ok, repo_root}
-    else
-      false -> {:error, :invalid_repo_root}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
   defp git_common_dir(path, opts) do
     with {:ok, common_dir} <- git_output(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], opts),
          common_dir <- common_dir |> String.trim() |> first_line() do
       canonicalize(common_dir)
-    end
-  end
-
-  defp repo_root_from_common_dir(common_dir) do
-    if Path.basename(common_dir) == ".git" do
-      Path.dirname(common_dir)
-    else
-      common_dir
     end
   end
 

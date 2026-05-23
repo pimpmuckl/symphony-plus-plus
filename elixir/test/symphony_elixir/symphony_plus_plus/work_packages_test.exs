@@ -264,7 +264,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
 
     File.rm!(dirty_path)
 
-    assert {:ok, cleaned} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
+    assert {:ok, cleaned} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home, repo_root: fixture.repo_root)
     assert cleaned.status == "cleaned"
     assert cleaned.worktree_path == prepared.worktree_path
     refute File.exists?(prepared.worktree_path)
@@ -369,6 +369,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
     refute inspect(reason) =~ "secret-token"
   end
 
+  test "cleanup rejects worktrees that belong to another repository", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    other_fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle-other")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-014", kind: "mcp", base_branch: "main"))
+
+    assert {:ok, other_package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-015", kind: "mcp", base_branch: "main"))
+
+    assert {:ok, other_prepared} =
+             WorktreeLifecycle.prepare(
+               repo,
+               other_package.id,
+               %{"repo_root" => other_fixture.repo_root, "base_branch" => "main", "branch" => "feat/other-repo"},
+               codex_home: codex_home
+             )
+
+    assert {:ok, _corrupted} = Repository.update(repo, package.id, %{worktree_path: other_prepared.worktree_path})
+
+    assert {:error, :invalid_worktree_path} =
+             WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home, repo_root: fixture.repo_root)
+
+    assert File.dir?(other_prepared.worktree_path)
+    assert {:ok, recorded} = Repository.get(repo, package.id)
+    assert recorded.worktree_path == other_prepared.worktree_path
+  end
+
   test "prepare updates the remote-tracking base before creating new branches", %{repo: repo} do
     fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
     codex_home = Path.join(fixture.root, "codex-home")
@@ -457,7 +486,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
     attrs = %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/stale"}
 
     assert {:ok, prepared} = WorktreeLifecycle.prepare(repo, package.id, attrs, codex_home: codex_home)
-    assert {:ok, _cleaned} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
+    assert {:ok, _cleaned} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home, repo_root: fixture.repo_root)
 
     TestSupport.git_output!(fixture.repo_root, ["checkout", "feat/stale"])
     File.write!(Path.join(fixture.repo_root, "stale.txt"), "stale\n")
