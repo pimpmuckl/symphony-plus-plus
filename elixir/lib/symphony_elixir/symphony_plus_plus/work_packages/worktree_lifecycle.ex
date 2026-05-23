@@ -27,7 +27,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
           | :unsafe_worktree_path
           | :worktree_path_exists
           | :worktree_path_missing_on_disk
-          | {:git_failed, [String.t()], non_neg_integer(), String.t()}
+          | {:git_failed, non_neg_integer()}
           | {:path_canonicalize_failed, Path.t(), term()}
           | {:worktree_path_already_recorded, Path.t()}
           | {:worktree_record_failed, term()}
@@ -83,7 +83,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
       {:ok, ref_name}
     else
       :error -> {:error, error}
-      {:error, {:git_failed, _args, _status, _output}} -> {:error, error}
+      {:error, {:git_failed, _status}} -> {:error, error}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -137,6 +137,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   defp create_worktree(repo, %WorkPackage{} = work_package, repo_root, base_branch, branch, worktree_path, opts) do
     with :ok <- File.mkdir_p(Path.dirname(worktree_path)),
          :ok <- git(repo_root, ["fetch", "origin", base_branch], opts),
+         :ok <- git(repo_root, ["worktree", "prune"], opts),
          {:ok, branch_exists?} <- local_branch_exists?(repo_root, branch, opts),
          :ok <- add_worktree(repo_root, worktree_path, base_branch, branch, branch_exists?, opts) do
       record_prepared_worktree(repo, work_package, repo_root, base_branch, branch, worktree_path, !branch_exists?, opts)
@@ -161,7 +162,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   defp local_branch_exists?(repo_root, branch, opts) do
     case git(repo_root, ["show-ref", "--verify", "--quiet", "refs/heads/#{branch}"], opts) do
       :ok -> {:ok, true}
-      {:error, {:git_failed, _args, 1, _output}} -> {:ok, false}
+      {:error, {:git_failed, 1}} -> {:ok, false}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -357,7 +358,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   defp git_output(repo_root, args, opts) do
     with {:ok, git} <- git_executable(opts) do
       {output, status} = System.cmd(git, ["-C", repo_root | args], stderr_to_stdout: true)
-      if status == 0, do: {:ok, output}, else: {:error, {:git_failed, args, status, output}}
+      if status == 0, do: {:ok, output}, else: {:error, {:git_failed, status}}
     end
   end
 

@@ -315,6 +315,49 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
     assert cleared.worktree_path == nil
   end
 
+  test "prepare prunes stale git worktree metadata after missing-path cleanup", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-011", kind: "mcp", base_branch: "main"))
+
+    attrs = %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/stale-prune"}
+
+    assert {:ok, prepared} = WorktreeLifecycle.prepare(repo, package.id, attrs, codex_home: codex_home)
+
+    File.rm_rf!(prepared.worktree_path)
+
+    assert {:ok, recovered} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
+    assert recovered.status == "stale_record_cleared"
+
+    assert {:ok, prepared_again} = WorktreeLifecycle.prepare(repo, package.id, attrs, codex_home: codex_home)
+    assert prepared_again.status == "prepared"
+    assert prepared_again.worktree_path == prepared.worktree_path
+    assert File.dir?(prepared_again.worktree_path)
+  end
+
+  test "prepare returns sanitized git command failures", %{repo: repo} do
+    non_repo_root =
+      Path.join(System.tmp_dir!(), "sympp-worktree-secret-token-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(non_repo_root)
+    on_exit(fn -> File.rm_rf(non_repo_root) end)
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-012", kind: "mcp", base_branch: "main"))
+
+    attrs = %{"repo_root" => non_repo_root, "base_branch" => "main", "branch" => "feat/git-failure"}
+
+    assert {:error, {:git_failed, status} = reason} =
+             WorktreeLifecycle.prepare(repo, package.id, attrs, codex_home: Path.join(non_repo_root, "codex-home"))
+
+    assert is_integer(status)
+    refute inspect(reason) =~ "fatal"
+    refute inspect(reason) =~ "fetch"
+    refute inspect(reason) =~ "secret-token"
+  end
+
   test "prepare replay rejects recorded paths that are no longer git worktrees", %{repo: repo} do
     fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
     codex_home = Path.join(fixture.root, "codex-home")
