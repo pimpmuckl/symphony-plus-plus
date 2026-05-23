@@ -53,6 +53,8 @@ import type { UpdateMotion, UpdateMotionKind } from "@/components/dashboard/moti
 import {
   CardSignal,
   StateCard,
+  wireGradientStopsStyle,
+  wireGradientStrokeStyle,
   wireToneStyle,
 } from "@/components/dashboard/state-card";
 import type { SignalTone, StateCardTone } from "@/components/dashboard/state-card";
@@ -349,6 +351,7 @@ type BoardWire = {
   id: string;
   from: string;
   to: string;
+  sourceTone: StateCardTone;
   tone: StateCardTone;
   kind?: BoardWireKind;
 };
@@ -2850,8 +2853,22 @@ function BoardWireLayer({ paths, width, height }: { paths: BoardWirePath[]; widt
   return (
     <>
       <svg className="board-wire-layer" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
-        {maskedPaths.length > 0 ? (
-          <defs>
+        <defs>
+          {paths.map((wire, index) => (
+            <linearGradient
+              key={`${wire.id}:gradient`}
+              id={boardWireGradientId(layerId, index)}
+              gradientUnits="userSpaceOnUse"
+              x1={wire.sourceX}
+              y1={wire.sourceY}
+              x2={wire.targetX}
+              y2={wire.targetY}
+              style={wireGradientStopsStyle(wire.sourceTone, wire.tone)}
+            >
+              <stop className="board-wire-gradient-stop-source" offset="0%" />
+              <stop className="board-wire-gradient-stop-target" offset="100%" />
+            </linearGradient>
+          ))}
           {maskedPaths.map(({ wire, maskId }) => (
             <mask key={maskId} id={maskId} maskUnits="userSpaceOnUse">
               <rect x="0" y="0" width={width} height={height} fill="white" />
@@ -2860,10 +2877,10 @@ function BoardWireLayer({ paths, width, height }: { paths: BoardWirePath[]; widt
               ))}
             </mask>
           ))}
-          </defs>
-        ) : null}
+        </defs>
         {paths.map((wire, index) => {
           const maskId = wire.hiddenRects.length > 0 ? `${layerId}-board-wire-mask-${index}` : undefined;
+          const gradientId = boardWireGradientId(layerId, index);
 
           return (
             <g
@@ -2878,7 +2895,7 @@ function BoardWireLayer({ paths, width, height }: { paths: BoardWirePath[]; widt
               data-wire-track-count={wire.trackCount}
               data-wire-track-side={wire.trackSide}
               data-mask-rects={wire.hiddenRects.length}
-              style={wireToneStyle(wire.tone)}
+              style={wireGradientStrokeStyle(gradientId)}
             >
               <path className="board-wire-path" d={wire.path} mask={maskId ? `url(#${maskId})` : undefined} />
             </g>
@@ -2909,6 +2926,10 @@ function BoardWireLayer({ paths, width, height }: { paths: BoardWirePath[]; widt
       </svg>
     </>
   );
+}
+
+function boardWireGradientId(layerId: string, index: number) {
+  return `${layerId}-board-wire-gradient-${index}`;
 }
 
 function useBoardLayoutMotion(
@@ -3306,6 +3327,7 @@ function measureBoardWires(board: HTMLDivElement, wires: BoardWire[]) {
       id: wire.id,
       from: wire.from,
       to: wire.to,
+      sourceTone: wire.sourceTone,
       tone: wire.tone,
       kind: wire.kind,
       path: boardWirePath(wire.sourceX, wire.sourceY, wire.targetX, wire.targetY, wire.trackX, boardWireBendRadius(wire, lanes)),
@@ -3894,7 +3916,6 @@ function RequestCard({
   const openQuestions = detail.clarification_questions?.filter((question) => question.status === "open") ?? [];
   const questionCount = openQuestions.length || request.open_question_count || 0;
   const operational = requestOperationalState(request);
-  const requestStatus = request.status || "";
   const quietMerged = [operational?.key, request.status].some(isFinishedBoardStatus);
   const question = quietMerged ? undefined : openQuestions[0];
   const description = quietMerged ? null : firstParagraph(request.human_description);
@@ -3929,12 +3950,7 @@ function RequestCard({
     },
     [cachedHandoff, onCopyArchitectHandoff, recordCopyError, recordCopyResult, request.id, startCopy],
   );
-  const operationalTone = operationalCardTone(operational, requestStatus);
-  const tone = operationalTone && quietMerged
-    ? operationalTone
-    : questionCount > 0 || requestStatus === "human_info_needed"
-      ? "guidance"
-      : operationalTone || requestStatusFallbackCardTone(requestStatus);
+  const tone = requestToneForState(request.status || "", operational, questionCount);
   const bodyMotionKey = stateCardBodyMotionKey(
     "request",
     request.id,
@@ -4145,6 +4161,23 @@ function requestStatusFallbackCardTone(status: string): StateCardTone {
   if (status === "ready_for_slicing") return "queued";
   if (status === "sliced") return "slice";
   return "request";
+}
+
+function requestStateCardTone(detail: WorkRequestDetail): StateCardTone {
+  const request = detail.work_request;
+  const status = request.status || "";
+  const operational = requestOperationalState(request);
+  const detailOpenQuestions = detail.clarification_questions?.filter((question) => question.status === "open").length || request.open_question_count || 0;
+  return requestToneForState(status, operational, detailOpenQuestions);
+}
+
+function requestToneForState(status: string, operational: WorkPackageCard["operational_state"], openQuestions: number): StateCardTone {
+  const operationalTone = operationalCardTone(operational, status);
+  const quietFinished = [operational?.key, status].some(isFinishedBoardStatus);
+
+  if (operationalTone && quietFinished) return operationalTone;
+  if (openQuestions > 0 || status === "human_info_needed") return "guidance";
+  return operationalTone || requestStatusFallbackCardTone(status);
 }
 
 function architectHandoffEligibleRequest(request: WorkRequestCard) {
@@ -6868,16 +6901,19 @@ function workstreamWires(details: WorkRequestDetail[], packages: WorkPackageCard
   const packageMap = new Map(packages.map((pkg) => [pkg.id, pkg]));
   const progressWires = details.flatMap((detail) => {
     const source = requestNodeId(detail);
+    const sourceTone = requestStateCardTone(detail);
     const slices = sortPlannedSlices(detail.planned_slices || []);
 
     return slices.flatMap((target, index) => {
       const pkg = packageMap.get(target.work_package_id || "");
       const targetNode = sliceNodeId(target);
+      const targetTone = sliceCardTone(target, pkg, "slices");
       const wires: BoardWire[] = [{
         id: `${source}->${targetNode}:${index}:slice`,
         from: source,
         to: targetNode,
-        tone: sliceCardTone(target, pkg, "slices"),
+        sourceTone,
+        tone: targetTone,
       }];
 
       if (pkg) {
@@ -6886,6 +6922,7 @@ function workstreamWires(details: WorkRequestDetail[], packages: WorkPackageCard
           id: `${targetNode}->${packageTargetNode}:${index}:package`,
           from: targetNode,
           to: packageTargetNode,
+          sourceTone: targetTone,
           tone: packageCardTone(pkg, sliceLane(target, pkg)),
         });
       }
@@ -6926,6 +6963,7 @@ function activeBlockingWires(details: WorkRequestDetail[], packages: WorkPackage
         id: `blocker:${edge.id}`,
         from: source,
         to: target,
+        sourceTone: "blocked",
         tone: "blocked",
         kind: "blocker",
       },
