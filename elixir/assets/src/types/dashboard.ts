@@ -131,6 +131,8 @@ export type WorkPackageCard = {
   parent_id?: string | null;
   phase_id?: string | null;
   owner_id?: string | null;
+  comment_count?: number;
+  open_comment_count?: number;
   active_blocker_count?: number;
   artifact_count?: number;
   finding_count?: number;
@@ -144,6 +146,22 @@ export type WorkPackageCard = {
   runtime?: Record<string, unknown> | null;
   operational_state?: PackageOperationalState | null;
   lineage?: PackageLineage | null;
+};
+
+export type ContextComment = {
+  id: string;
+  target_kind?: string | null;
+  target_id?: string | null;
+  body?: string | null;
+  source_type?: string | null;
+  author_name?: string | null;
+  status?: string | null;
+  resolved_by?: string | null;
+  resolved_source_type?: string | null;
+  resolved_at?: string | null;
+  resolution_note?: string | null;
+  inserted_at?: string | null;
+  updated_at?: string | null;
 };
 
 export type WorkRequestCard = {
@@ -161,6 +179,8 @@ export type WorkRequestCard = {
   approved_slice_count?: number;
   dispatched_slice_count?: number;
   skipped_slice_count?: number;
+  comment_count?: number;
+  open_comment_count?: number;
   inserted_at?: string | null;
   updated_at?: string | null;
 };
@@ -253,6 +273,9 @@ export type PlannedSlice = {
   inserted_at?: string | null;
   updated_at?: string | null;
   operational_state?: PackageOperationalState | null;
+  comments?: ContextComment[];
+  comment_count?: number;
+  open_comment_count?: number;
 };
 
 export type DecisionLogEntry = {
@@ -278,6 +301,7 @@ export type WorkRequestDetail = {
   clarification_questions?: ClarificationQuestion[];
   decision_logs?: DecisionLogEntry[];
   planned_slices?: PlannedSlice[];
+  comments?: ContextComment[];
   summary?: {
     open_question_count?: number;
     answered_question_count?: number;
@@ -287,6 +311,8 @@ export type WorkRequestDetail = {
     approved_slice_count?: number;
     dispatched_slice_count?: number;
     skipped_slice_count?: number;
+    comment_count?: number;
+    open_comment_count?: number;
   };
 };
 
@@ -420,10 +446,13 @@ export type WorkPackageDetailPayload = {
     queued_agent_run_count?: number;
     failed_agent_run_count?: number;
     stale_agent_run_count?: number;
+    comment_count?: number;
+    open_comment_count?: number;
     runtime?: Record<string, unknown> | null;
     latest_progress_at?: string | null;
     plan?: PackagePlanSummary | null;
   };
+  comments?: ContextComment[];
   plan?: Array<{
     id?: string;
     title?: string | null;

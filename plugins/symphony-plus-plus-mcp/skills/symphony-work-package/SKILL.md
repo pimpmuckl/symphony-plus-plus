@@ -42,6 +42,10 @@ process aids when the operator explicitly asks for them.
   blockers.
 - Use `resolve_blocker(blocker_id, resolution, summary, idempotency_key)` once
   the blocker is cleared.
+- Use `add_comment(target_kind, target_id, body, idempotency_key)`,
+  `list_comments(target_kind, target_id)`, and
+  `resolve_comment(comment_id, resolution, idempotency_key)` for package-scoped
+  implementation comments that need to stay visible in the cockpit.
 - Use `set_status(status, reason, expected_status)` for allowed non-ready
   lifecycle transitions.
 - Use `request_scope_expansion(summary, idempotency_key, payload)` when the

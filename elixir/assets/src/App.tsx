@@ -71,6 +71,7 @@ import {
 } from "@/components/dashboard/motion";
 import type { UpdateMotion, UpdateMotionKind } from "@/components/dashboard/motion";
 import {
+  CardSignalFrame,
   CardSignal,
   StateCard,
 } from "@/components/dashboard/state-card";
@@ -85,6 +86,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { sortedCopy, uniqueNonEmpty } from "@/lib/collections";
 import { formatStatus, statusLabel } from "@/lib/status-labels";
@@ -95,6 +97,7 @@ import type {
   ArchitectHandoffCopyResult,
   ArchitectHandoffPayload,
   ClarificationQuestion,
+  ContextComment,
   CopyArchitectHandoff,
   CreateWorkRequestPayload,
   DashboardPayload,
@@ -118,6 +121,7 @@ declare global {
       basePath?: string;
       csrfToken?: string;
       logoUrl?: string;
+      operatorMode?: boolean;
     };
   }
 }
@@ -131,12 +135,14 @@ const LOCAL_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, { month: "short"
 const TOP_PANEL_ORDER: TopPanelKey[] = ["guidance", "blockers", "finished"];
 const DEFAULT_DASHBOARD_API_BASE = "/api/v1/sympp/operator";
 const PR_SYNC_INTERVAL_MS = 60_000;
+const COMMENT_BODY_MAX_LENGTH = 4000;
 
 type DashboardRuntimeConfig = {
   apiBase?: string;
   basePath?: string;
   csrfToken?: string;
   logoUrl?: string;
+  operatorMode?: boolean;
 };
 type DashboardApiResponse = unknown;
 type DashboardResponseSelector = (payload: DashboardApiResponse) => DashboardPayload | null | undefined;
@@ -155,6 +161,7 @@ type PackageLineageProjection = NonNullable<WorkPackageCard["lineage"]>;
 type WorkspaceTab = "workstreams" | "solo";
 type WorkspaceTabPhase = "idle" | "swapping";
 type DashboardTheme = "light" | "dark";
+type CommentCardSignal = { open: number; total: number };
 type UpdateMotionsAction =
   | { type: "clear" }
   | { type: "merge"; motions: Record<string, UpdateMotion> }
@@ -177,6 +184,11 @@ type CardDetailSelection =
   | { kind: "package"; pkg: WorkPackageCard; detail?: WorkRequestDetail; slice?: PlannedSlice }
   | { kind: "solo"; session: SoloSession };
 type CardDetailSelect = (selection: CardDetailSelection) => void;
+type CommentTargetKind = "work_request" | "planned_slice" | "work_package";
+type CommentTarget = { target_kind: CommentTargetKind; target_id: string };
+type SubmitContextComment = (target: CommentTarget, body: string) => Promise<ContextComment>;
+type ResolveContextComment = (commentId: string, resolutionNote?: string) => Promise<ContextComment>;
+type CommentStats = { comment_count: number; open_comment_count: number };
 type HandoffCopyState = "idle" | "copying" | "copied" | "error";
 type ScopedHandoffCopy = {
   error: string | null;
@@ -511,6 +523,52 @@ export default function App() {
     return payload.work_request;
   }, [setDashboard, setError]);
 
+  const submitComment = useCallback<SubmitContextComment>(async (target, body) => {
+    const response = await fetch(operatorApiUrl("/comments"), {
+      method: "POST",
+      headers: await mutationHeaders(),
+      body: JSON.stringify({
+        target_kind: target.target_kind,
+        target_id: target.target_id,
+        body,
+      }),
+    });
+    const payload = (await response.json()) as { comment?: ContextComment; dashboard?: DashboardPayload; error?: { message?: string } };
+
+    if (!response.ok) {
+      throw new Error(payload?.error?.message || "Comment was not recorded");
+    }
+    if (!payload.dashboard || !payload.comment) {
+      throw new Error("Comment was recorded, but the dashboard response was incomplete");
+    }
+
+    setDashboard(payload.dashboard);
+    setError(null);
+    return payload.comment;
+  }, [setDashboard, setError]);
+
+  const resolveComment = useCallback<ResolveContextComment>(async (commentId, resolutionNote) => {
+    const response = await fetch(operatorApiUrl(`/comments/${encodeURIComponent(commentId)}/resolve`), {
+      method: "POST",
+      headers: await mutationHeaders(),
+      body: JSON.stringify({
+        resolution_note: resolutionNote || "",
+      }),
+    });
+    const payload = (await response.json()) as { comment?: ContextComment; dashboard?: DashboardPayload; error?: { message?: string } };
+
+    if (!response.ok) {
+      throw new Error(payload?.error?.message || "Comment was not resolved");
+    }
+    if (!payload.dashboard || !payload.comment) {
+      throw new Error("Comment was resolved, but the dashboard response was incomplete");
+    }
+
+    setDashboard(payload.dashboard);
+    setError(null);
+    return payload.comment;
+  }, [setDashboard, setError]);
+
   const loadDashboard = useCallback(async (mode: "initial" | "refresh" | "silent" = "refresh") => {
     if (loadInFlightRef.current && mode === "silent") return;
     loadInFlightRef.current = true;
@@ -783,6 +841,9 @@ export default function App() {
           }}
           onSelectGuidance={setSelectedGuidance}
           onCopyArchitectHandoff={copyArchitectHandoff}
+          onSubmitComment={submitComment}
+          onResolveComment={resolveComment}
+          canMutateComments={canMutateDashboardComments()}
         />
       </main>
     </TooltipProvider>
@@ -2681,6 +2742,7 @@ function RequestCard({
   const handoffEligible = architectHandoffEligibleRequest(request);
   const handoffHasOpenQuestions = !quietMerged && questionCount > 0;
   const handoffIdentity = `${questionCount}:${request.id}:${request.status || ""}:${request.updated_at || ""}`;
+  const commentSignal = cardCommentSignal(request.open_comment_count, request.comment_count);
   const {
     cachedHandoff,
     recordCopyError,
@@ -2721,6 +2783,7 @@ function RequestCard({
     canCopyHandoff,
     handoffHasOpenQuestions,
     handoffCopyState,
+    commentSignal ? `${commentSignal.open}:${commentSignal.total}` : null,
   );
 
   return (
@@ -2757,15 +2820,27 @@ function RequestCard({
           />
         ) : null}
         {question ? <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{question.question}</p> : null}
-        {canCopyHandoff ? (
-          <CardSignal
-            className="mt-3"
-            label={handoffHasOpenQuestions ? "Architect Handoff" : "Agent Handoff"}
-            value={handoffSignalLabel(handoffCopyState, handoffHasOpenQuestions)}
-            tone={handoffHasOpenQuestions ? "muted" : "info"}
-            onClick={copyHandoff}
-            ariaLabel={`Copy agent handoff for ${request.title || request.id}`}
-          />
+        {canCopyHandoff || commentSignal ? (
+          <div className="mt-3 flex min-w-0 items-stretch gap-2">
+            {canCopyHandoff ? (
+              <CardSignal
+                className="min-h-12 flex-1"
+                label={handoffHasOpenQuestions ? "Architect Handoff" : "Agent Handoff"}
+                value={handoffSignalLabel(handoffCopyState, handoffHasOpenQuestions)}
+                tone={handoffHasOpenQuestions ? "muted" : "info"}
+                onClick={copyHandoff}
+                ariaLabel={`Copy agent handoff for ${request.title || request.id}`}
+              />
+            ) : null}
+            {commentSignal ? (
+              <CommentCardSignalButton
+                signal={commentSignal}
+                title={request.title || request.id}
+                onClick={onSelectCard}
+                expanded={!canCopyHandoff}
+              />
+            ) : null}
+          </div>
         ) : null}
       </AnimatedCardBody>
     </StateCard>
@@ -2794,6 +2869,7 @@ function SliceCard({
   const tone = sliceCardTone(slice, pkg, lane);
   const detail = slice.status === "skipped" ? null : sliceCardSubtitle(slice, pkg, operational, rawStatus);
   const blockerSignal = lane === "slices" ? null : cardBlockerSignal(pkg, operational);
+  const commentSignal = cardCommentSignal(slice.open_comment_count, slice.comment_count);
   const bodyMotionKey = stateCardBodyMotionKey(
     "slice",
     slice.id,
@@ -2802,6 +2878,7 @@ function SliceCard({
     blockerSignal?.label,
     blockerSignal?.value,
     blockerSignal?.tone,
+    commentSignal ? `${commentSignal.open}:${commentSignal.total}` : null,
   );
 
   return (
@@ -2827,15 +2904,27 @@ function SliceCard({
       </div>
       <AnimatedCardBody motionKey={bodyMotionKey}>
         {detail ? <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{detail}</p> : null}
-        {blockerSignal ? (
-          <CardSignal
-            className="mt-3"
-            label={blockerSignal.label}
-            value={blockerSignal.value}
-            tone={blockerSignal.tone}
-            onClick={onSelectCard}
-            ariaLabel={`Open blockers for ${slice.title || pkg?.title || slice.id}`}
-          />
+        {blockerSignal || commentSignal ? (
+          <div className="mt-3 flex min-w-0 items-stretch gap-2">
+            {blockerSignal ? (
+              <CardSignal
+                className="min-h-12 flex-1"
+                label={blockerSignal.label}
+                value={blockerSignal.value}
+                tone={blockerSignal.tone}
+                onClick={onSelectCard}
+                ariaLabel={`Open blockers for ${slice.title || pkg?.title || slice.id}`}
+              />
+            ) : null}
+            {commentSignal ? (
+              <CommentCardSignalButton
+                signal={commentSignal}
+                title={slice.title || pkg?.title || slice.id}
+                onClick={onSelectCard}
+                expanded={!blockerSignal}
+              />
+            ) : null}
+          </div>
         ) : null}
       </AnimatedCardBody>
     </StateCard>
@@ -2864,6 +2953,51 @@ function cardBlockerSignal(pkg?: WorkPackageCard, operational?: WorkPackageCard[
   return { label: "Blockers", value: `${count} ${plural("blocker", count)}`, tone: "danger" };
 }
 
+function cardCommentSignal(openCount?: number | null, totalCount?: number | null): CommentCardSignal | null {
+  const open = openCount ?? 0;
+  if (open <= 0) return null;
+
+  const total = totalCount ?? open;
+  return { open, total };
+}
+
+function CommentCardSignalButton({
+  signal,
+  title,
+  onClick,
+  expanded = false,
+  className,
+}: {
+  signal: CommentCardSignal;
+  title: string;
+  onClick?: () => void;
+  expanded?: boolean;
+  className?: string;
+}) {
+  const summary = totalCommentSignalLabel(signal);
+  const ariaLabel = `Open comments for ${title}: ${summary}`;
+  const signalClassName = cn("comment-card-signal", expanded && "comment-card-signal-expanded", className);
+
+  return (
+    <CardSignalFrame
+      tone="warning"
+      className={signalClassName}
+      title={summary}
+      ariaLabel={ariaLabel}
+      onClick={onClick}
+    >
+      <MessageSquareText className="size-4" />
+      {expanded ? <span className="comment-card-signal-label">Unresolved Comments</span> : null}
+      <span className="comment-card-signal-count">{signal.open}</span>
+    </CardSignalFrame>
+  );
+}
+
+function totalCommentSignalLabel(signal: CommentCardSignal) {
+  const totalSuffix = signal.total > signal.open ? `, ${signal.total} total` : "";
+  return `${signal.open} unresolved ${plural("comment", signal.open)}${totalSuffix}`;
+}
+
 function operationalAttentionIsBlocker(attention: OperationalAttention) {
   const key = (attention.key || "").toLowerCase();
   const label = (attention.label || "").toLowerCase();
@@ -2889,8 +3023,9 @@ function PackageCard({
 }) {
   const tone = packageCardTone(pkg, lane);
   const attention = packageAttentionSignal(pkg);
+  const commentSignal = cardCommentSignal(pkg.open_comment_count, pkg.comment_count);
   const operational = packageOperationalState(pkg);
-  const bodyMotionKey = stateCardBodyMotionKey("package", pkg.id, attention?.label, attention?.value, attention?.tone);
+  const bodyMotionKey = stateCardBodyMotionKey("package", pkg.id, attention?.label, attention?.value, attention?.tone, commentSignal ? `${commentSignal.open}:${commentSignal.total}` : null);
 
   return (
     <StateCard
@@ -2910,7 +3045,19 @@ function PackageCard({
         <AnimatedBadge label={operationalLabel(operational, pkg.status)} variant={operationalBadgeVariant(operational, pkg.status)} className="shrink-0" />
       </div>
       <AnimatedCardBody motionKey={bodyMotionKey}>
-        {attention ? <CardSignal className="mt-3" label={attention.label} value={attention.value} tone={attention.tone} /> : null}
+        {attention || commentSignal ? (
+          <div className="mt-3 flex min-w-0 items-stretch gap-2">
+            {attention ? <CardSignal className="min-h-12 flex-1" label={attention.label} value={attention.value} tone={attention.tone} /> : null}
+            {commentSignal ? (
+              <CommentCardSignalButton
+                signal={commentSignal}
+                title={pkg.title || pkg.id}
+                onClick={onSelectCard}
+                expanded={!attention}
+              />
+            ) : null}
+          </div>
+        ) : null}
       </AnimatedCardBody>
     </StateCard>
   );
@@ -3776,11 +3923,17 @@ function CardDetailDialog({
   onOpenChange,
   onSelectGuidance,
   onCopyArchitectHandoff,
+  onSubmitComment,
+  onResolveComment,
+  canMutateComments,
 }: {
   selection: CardDetailSelection | null;
   onOpenChange: (open: boolean) => void;
   onSelectGuidance: (item: GuidanceItem) => void;
   onCopyArchitectHandoff: CopyArchitectHandoff;
+  onSubmitComment: SubmitContextComment;
+  onResolveComment: ResolveContextComment;
+  canMutateComments: boolean;
 }) {
   const [state, dispatch] = useReducer(cardDetailDialogReducer, initialCardDetailDialogState);
   const packageId = selection?.kind === "package" ? selection.pkg.id : null;
@@ -3844,11 +3997,35 @@ function CardDetailDialog({
       <DialogContent className="dashboard-dialog-content card-detail-dialog">
         <NaturalDetailBody motionKey={detailMotionKey}>
           {selection?.kind === "request" ? (
-            <RequestDetailContent detail={selection.detail} onSelectGuidance={onSelectGuidance} onCopyArchitectHandoff={onCopyArchitectHandoff} />
+            <RequestDetailContent
+              detail={selection.detail}
+              onSelectGuidance={onSelectGuidance}
+              onCopyArchitectHandoff={onCopyArchitectHandoff}
+              onSubmitComment={onSubmitComment}
+              onResolveComment={onResolveComment}
+              canMutateComments={canMutateComments}
+            />
           ) : null}
-          {selection?.kind === "slice" ? <SliceDetailContent detail={selection.detail} slice={selection.slice} pkg={selection.pkg} /> : null}
+          {selection?.kind === "slice" ? (
+            <SliceDetailContent
+              detail={selection.detail}
+              slice={selection.slice}
+              pkg={selection.pkg}
+              onSubmitComment={onSubmitComment}
+              onResolveComment={onResolveComment}
+              canMutateComments={canMutateComments}
+            />
+          ) : null}
           {selection?.kind === "package" ? (
-            <PackageDetailContent selection={selection} detailPayload={state.package.payload} loading={effectiveLoadingPackage} error={state.package.error} />
+            <PackageDetailContent
+              selection={selection}
+              detailPayload={state.package.payload}
+              loading={effectiveLoadingPackage}
+              error={state.package.error}
+              onSubmitComment={onSubmitComment}
+              onResolveComment={onResolveComment}
+              canMutateComments={canMutateComments}
+            />
           ) : null}
           {selection?.kind === "solo" ? (
             <SoloSessionDetailContent session={selection.session} detailPayload={state.solo.payload} loading={effectiveLoadingSolo} error={state.solo.error} />
@@ -3902,18 +4079,30 @@ function RequestDetailContent({
   detail,
   onSelectGuidance,
   onCopyArchitectHandoff,
+  onSubmitComment,
+  onResolveComment,
+  canMutateComments,
 }: {
   detail: WorkRequestDetail;
   onSelectGuidance: (item: GuidanceItem) => void;
   onCopyArchitectHandoff: CopyArchitectHandoff;
+  onSubmitComment: SubmitContextComment;
+  onResolveComment: ResolveContextComment;
+  canMutateComments: boolean;
 }) {
   const request = detail.work_request;
+  const [requestComments, setRequestComments] = useState(detail.comments || []);
+  const [commentsOpen, setCommentsOpen] = useState(false);
+  const commentTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const requestCommentsKey = `${request.id}:${(detail.comments || []).map((comment) => `${comment.id}:${comment.status}:${comment.updated_at || ""}`).join("|")}`;
   const operational = requestOperationalState(request);
   const openQuestions = requestOpenQuestions(detail);
   const sliceCounts = requestSliceCounts(detail);
+  const currentCommentStats = requestCommentStats(detail, requestComments);
+  const requestOnlyCommentStats = commentStats(requestComments);
   const handoffEligible = architectHandoffEligibleRequest(request);
   const handoffHasOpenQuestions = (openQuestions.length || request.open_question_count || 0) > 0;
-  const handoffButtonLabel = handoffHasOpenQuestions ? "Copy Resume Handoff" : "Copy Agent Handoff";
+  const handoffButtonLabel = handoffHasOpenQuestions ? "Copy Resume Handoff Prompt" : "Copy Agent Handoff Prompt";
   const handoffIdentity = `${handoffHasOpenQuestions}:${request.id}:${request.status || ""}:${request.updated_at || ""}`;
   const {
     cachedHandoff,
@@ -3923,6 +4112,10 @@ function RequestDetailContent({
     startCopy,
     state: handoffCopyState,
   } = useScopedHandoffCopy(handoffIdentity);
+
+  useEffect(() => {
+    setRequestComments(detail.comments || []);
+  }, [requestCommentsKey, detail.comments]);
 
   async function copyHandoff() {
     startCopy();
@@ -3934,6 +4127,11 @@ function RequestDetailContent({
     }
   }
 
+  const openCommentComposer = useCallback(() => {
+    setCommentsOpen(true);
+    window.setTimeout(() => commentTextareaRef.current?.focus(), 80);
+  }, []);
+
   return (
     <>
       <DetailHeader
@@ -3942,21 +4140,23 @@ function RequestDetailContent({
         badge={<Badge variant={operationalBadgeVariant(operational, request.status)}>{operationalLabel(operational, request.status)}</Badge>}
       />
       <div className="grid gap-4">
-        {handoffEligible ? (
+        {handoffEligible || canMutateComments ? (
           <div className={cn("handoff-action-panel", handoffHasOpenQuestions && "handoff-action-panel-muted")} data-guidance-section style={{ animationDelay: "58ms" }}>
-            <div className="min-w-0">
-              <p className="text-sm font-semibold">{handoffHasOpenQuestions ? "Resume architect clarification" : "Agent handoff"}</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {handoffHasOpenQuestions
-                  ? "Open questions remain. Copy this handoff for the architect agent that will continue the human feedback loop."
-                  : "Copy the safe architect prompt for the agent that will own this request."}
-              </p>
-              {handoffError ? <p className="mt-2 text-xs text-destructive">{handoffError}</p> : null}
+            <div className="handoff-action-row">
+              {handoffEligible ? (
+                <Button type="button" size="sm" variant={handoffHasOpenQuestions ? "outline" : "default"} onClick={() => void copyHandoff()} disabled={handoffCopyState === "copying"}>
+                  {handoffCopyState === "copying" ? <Loader2 className="size-4 animate-spin" /> : handoffCopyState === "copied" ? <CheckCircle2 className="size-4" /> : <Copy className="size-4" />}
+                  {handoffCopyState === "copied" ? "Copied" : handoffButtonLabel}
+                </Button>
+              ) : null}
+              {canMutateComments ? (
+                <Button type="button" size="sm" variant="outline" onClick={openCommentComposer}>
+                  <MessageSquareText className="size-4" />
+                  Add Comment
+                </Button>
+              ) : null}
             </div>
-            <Button type="button" size="sm" variant={handoffHasOpenQuestions ? "outline" : "default"} onClick={() => void copyHandoff()} disabled={handoffCopyState === "copying"}>
-              {handoffCopyState === "copying" ? <Loader2 className="size-4 animate-spin" /> : handoffCopyState === "copied" ? <CheckCircle2 className="size-4" /> : <Copy className="size-4" />}
-              {handoffCopyState === "copied" ? "Copied" : handoffButtonLabel}
-            </Button>
+            {handoffError ? <p className="text-xs text-destructive">{handoffError}</p> : null}
           </div>
         ) : null}
         <DetailStatGrid
@@ -3964,6 +4164,7 @@ function RequestDetailContent({
             { label: "Open Questions", value: String(openQuestions.length || request.open_question_count || 0) },
             { label: "Slices", value: String(sliceCounts.total) },
             { label: "Decisions", value: String(detail.decision_logs?.length || detail.summary?.decision_count || 0) },
+            { label: "Comments", value: commentStatLabel(currentCommentStats.open_comment_count, currentCommentStats.comment_count) },
             { label: "Updated", value: detailDate(request.updated_at || request.inserted_at) },
           ]}
         />
@@ -3993,6 +4194,22 @@ function RequestDetailContent({
             <p>No open human questions.</p>
           )}
         </DetailSection>
+        <DetailDisclosure
+          title="Comments"
+          meta={commentStatLabel(requestOnlyCommentStats.open_comment_count, requestOnlyCommentStats.comment_count)}
+          open={commentsOpen}
+          onOpenChange={setCommentsOpen}
+        >
+          <CommentsPanel
+            target={{ target_kind: "work_request", target_id: request.id }}
+            comments={requestComments}
+            onCommentsChange={setRequestComments}
+            onSubmitComment={onSubmitComment}
+            onResolveComment={onResolveComment}
+            canMutate={canMutateComments}
+            textareaRef={commentTextareaRef}
+          />
+        </DetailDisclosure>
         <RecentDecisionsDisclosure detail={detail} />
         <DetailDisclosure title="Details" meta="IDs, constraints, and slice plan">
           <DetailFacts
@@ -4012,12 +4229,33 @@ function RequestDetailContent({
   );
 }
 
-function SliceDetailContent({ detail, slice, pkg }: { detail: WorkRequestDetail; slice: PlannedSlice; pkg?: WorkPackageCard }) {
+function SliceDetailContent({
+  detail,
+  slice,
+  pkg,
+  onSubmitComment,
+  onResolveComment,
+  canMutateComments,
+}: {
+  detail: WorkRequestDetail;
+  slice: PlannedSlice;
+  pkg?: WorkPackageCard;
+  onSubmitComment: SubmitContextComment;
+  onResolveComment: ResolveContextComment;
+  canMutateComments: boolean;
+}) {
+  const [sliceComments, setSliceComments] = useState(slice.comments || []);
+  const sliceCommentsKey = `${slice.id}:${(slice.comments || []).map((comment) => `${comment.id}:${comment.status}:${comment.updated_at || ""}`).join("|")}`;
   const status = slice.work_package_status || slice.status;
   const operational = sliceOperationalState(slice, pkg);
   const blockerCount = Math.max(pkg?.active_blocker_count || 0, pkg?.status === "blocked" || operational?.key === "blocked" ? 1 : 0);
   const reviewLanes = slice.review_lanes || [];
   const attentionItems = operational?.attention_items || [];
+  const currentCommentStats = targetCommentStats(slice, slice.comments || [], sliceComments);
+
+  useEffect(() => {
+    setSliceComments(slice.comments || []);
+  }, [sliceCommentsKey, slice.comments]);
 
   return (
     <>
@@ -4033,6 +4271,7 @@ function SliceDetailContent({ detail, slice, pkg }: { detail: WorkRequestDetail;
             { label: "Package", value: pkg ? operationalLabel(packageOperationalState(pkg), pkg.status) : "Not dispatched" },
             { label: "Review", value: reviewLanes.length > 0 ? reviewLanes.map(reviewLaneLabel).join(", ") : "Not recorded" },
             { label: "Blockers", value: String(blockerCount) },
+            { label: "Comments", value: commentStatLabel(currentCommentStats.open_comment_count, currentCommentStats.comment_count) },
             { label: "Updated", value: detailDate(slice.updated_at || slice.dispatched_at || slice.inserted_at) },
           ]}
         />
@@ -4052,6 +4291,16 @@ function SliceDetailContent({ detail, slice, pkg }: { detail: WorkRequestDetail;
             <p>No blocker surfaced for this slice.</p>
           )}
         </DetailSection>
+        <DetailDisclosure title="Comments" meta={commentStatLabel(currentCommentStats.open_comment_count, currentCommentStats.comment_count)}>
+          <CommentsPanel
+            target={{ target_kind: "planned_slice", target_id: slice.id }}
+            comments={sliceComments}
+            onCommentsChange={setSliceComments}
+            onSubmitComment={onSubmitComment}
+            onResolveComment={onResolveComment}
+            canMutate={canMutateComments}
+          />
+        </DetailDisclosure>
         <RecentDecisionsDisclosure detail={detail} />
         <DetailDisclosure title="Details" meta="Branch, files, and acceptance">
           <DetailFacts
@@ -4078,12 +4327,20 @@ function PackageDetailContent({
   detailPayload,
   loading,
   error,
+  onSubmitComment,
+  onResolveComment,
+  canMutateComments,
 }: {
   selection: Extract<CardDetailSelection, { kind: "package" }>;
   detailPayload: WorkPackageDetailPayload | null;
   loading: boolean;
   error: string | null;
+  onSubmitComment: SubmitContextComment;
+  onResolveComment: ResolveContextComment;
+  canMutateComments: boolean;
 }) {
+  const [packageComments, setPackageComments] = useState(detailPayload?.comments || []);
+  const packageCommentsKey = `${selection.pkg.id}:${(detailPayload?.comments || []).map((comment) => `${comment.id}:${comment.status}:${comment.updated_at || ""}`).join("|")}`;
   const pkg = { ...selection.pkg, ...(detailPayload?.work_package || {}) } as WorkPackageCard & {
     branch_pattern?: string | null;
     product_description?: string | null;
@@ -4099,6 +4356,11 @@ function PackageDetailContent({
   const lineage = detailPayload?.lineage || pkg.lineage || null;
   const attentionItems = operational?.attention_items || [];
   const blockerCount = blockers.length || summary?.active_blocker_count || pkg.active_blocker_count || (operational?.key === "blocked" || pkg.status === "blocked" ? 1 : 0);
+  const currentCommentStats = targetCommentStats(summary || pkg, detailPayload?.comments || [], packageComments);
+
+  useEffect(() => {
+    setPackageComments(detailPayload?.comments || []);
+  }, [packageCommentsKey, detailPayload?.comments]);
 
   return (
     <>
@@ -4114,6 +4376,7 @@ function PackageDetailContent({
             { label: "Plan", value: planSummaryText(plan) },
             { label: "Runtime", value: packageRuntimeText(summary, pkg) },
             { label: "Blockers", value: String(blockerCount) },
+            { label: "Comments", value: commentStatLabel(currentCommentStats.open_comment_count, currentCommentStats.comment_count) },
             { label: "Updated", value: detailDate(summary?.latest_progress_at || pkg.latest_progress_at || pkg.updated_at || pkg.inserted_at) },
           ]}
         />
@@ -4148,6 +4411,16 @@ function PackageDetailContent({
             <p>No active blockers surfaced.</p>
           )}
         </DetailSection>
+        <DetailDisclosure title="Comments" meta={commentStatLabel(currentCommentStats.open_comment_count, currentCommentStats.comment_count)}>
+          <CommentsPanel
+            target={{ target_kind: "work_package", target_id: pkg.id }}
+            comments={packageComments}
+            onCommentsChange={setPackageComments}
+            onSubmitComment={onSubmitComment}
+            onResolveComment={onResolveComment}
+            canMutate={canMutateComments}
+          />
+        </DetailDisclosure>
         {selection.detail ? <RecentDecisionsDisclosure detail={selection.detail} /> : null}
         {lineageHasSignal(lineage) ? <LineageDisclosure lineage={lineage} /> : null}
         <DetailDisclosure title="Details" meta="PR, review, artifacts, and raw identifiers">
@@ -4172,6 +4445,130 @@ function PackageDetailContent({
         </DetailDisclosure>
       </div>
     </>
+  );
+}
+
+function CommentsPanel({
+  target,
+  comments,
+  onCommentsChange,
+  onSubmitComment,
+  onResolveComment,
+  canMutate,
+  textareaRef,
+}: {
+  target: CommentTarget;
+  comments: ContextComment[];
+  onCommentsChange: React.Dispatch<React.SetStateAction<ContextComment[]>>;
+  onSubmitComment: SubmitContextComment;
+  onResolveComment: ResolveContextComment;
+  canMutate: boolean;
+  textareaRef?: React.Ref<HTMLTextAreaElement>;
+}) {
+  const [draft, setDraft] = useState("");
+  const [pending, setPending] = useState(false);
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const targetKey = `${target.target_kind}:${target.target_id}`;
+
+  useEffect(() => {
+    setDraft("");
+    setPending(false);
+    setResolvingId(null);
+    setError(null);
+  }, [targetKey]);
+
+  const orderedComments = useMemo(() => {
+    return sortedCopy(comments, (left, right) => {
+      const leftTime = Date.parse(left.inserted_at || "");
+      const rightTime = Date.parse(right.inserted_at || "");
+      if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) return leftTime - rightTime;
+      return left.id.localeCompare(right.id);
+    });
+  }, [comments]);
+  const openCount = orderedComments.filter((comment) => comment.status !== "resolved").length;
+
+  async function submit() {
+    const body = draft.trim();
+    if (!body) return;
+
+    setPending(true);
+    setError(null);
+
+    try {
+      const comment = await onSubmitComment(target, body);
+      onCommentsChange((current) => [...current.filter((item) => item.id !== comment.id), comment]);
+      setDraft("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Comment was not recorded");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function resolve(comment: ContextComment) {
+    setResolvingId(comment.id);
+    setError(null);
+
+    try {
+      const resolved = await onResolveComment(comment.id);
+      onCommentsChange((current) => current.map((item) => (item.id === resolved.id ? resolved : item)));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Comment was not resolved");
+    } finally {
+      setResolvingId(null);
+    }
+  }
+
+  return (
+    <div className="grid gap-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant={openCount > 0 ? "warning" : "outline"}>{openCount} open</Badge>
+        <span className="text-xs text-muted-foreground">{orderedComments.length} total</span>
+      </div>
+      {orderedComments.length > 0 ? (
+        <div className="grid gap-2">
+          {orderedComments.map((comment) => {
+            const resolved = comment.status === "resolved";
+
+            return (
+              <div key={comment.id} className={cn("detail-list-item", resolved && "opacity-75")}>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-muted-foreground">
+                    {comment.author_name || comment.source_type || "comment"} / {detailDate(comment.inserted_at)}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Badge variant={resolved ? "secondary" : "info"}>{resolved ? "Resolved" : "Open"}</Badge>
+                    {canMutate && !resolved ? (
+                      <Button type="button" size="sm" variant="outline" onClick={() => void resolve(comment)} disabled={resolvingId === comment.id}>
+                        {resolvingId === comment.id ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+                        Resolve
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+                <p className="mt-2 whitespace-pre-wrap text-sm">{comment.body || "No comment body recorded."}</p>
+                {resolved && comment.resolved_by ? <p className="mt-2 text-xs text-muted-foreground">Resolved by {comment.resolved_by}</p> : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p>No comments yet.</p>
+      )}
+      {canMutate ? (
+        <div className="grid gap-2">
+          <Textarea ref={textareaRef} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Add a note..." disabled={pending} maxLength={COMMENT_BODY_MAX_LENGTH} />
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            {error ? <p className="text-xs text-destructive">{error}</p> : <span />}
+            <Button type="button" size="sm" onClick={() => void submit()} disabled={pending || draft.trim() === ""}>
+              {pending ? <Loader2 className="size-4 animate-spin" /> : <MessageSquareText className="size-4" />}
+              Add Comment
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -4433,6 +4830,58 @@ function requestSliceCounts(detail: WorkRequestDetail) {
   const total = Math.max(detail.planned_slices?.length || 0, planned + approved + dispatched + skipped);
 
   return { planned, approved, dispatched, skipped, total };
+}
+
+function commentStatLabel(openCount?: number | null, totalCount?: number | null) {
+  const open = openCount ?? 0;
+  const total = totalCount ?? open;
+  return open > 0 ? `${open} open / ${total} total` : String(total);
+}
+
+function commentStats(comments: ContextComment[]): CommentStats {
+  const commentCount = comments.length;
+  const openCommentCount = comments.filter((comment) => comment.status !== "resolved").length;
+  return { comment_count: commentCount, open_comment_count: openCommentCount };
+}
+
+function serverCommentStats(counts: { comment_count?: number | null; open_comment_count?: number | null } | null | undefined, fallbackComments: ContextComment[]): CommentStats {
+  const fallbackStats = commentStats(fallbackComments);
+
+  return {
+    comment_count: counts?.comment_count ?? fallbackStats.comment_count,
+    open_comment_count: counts?.open_comment_count ?? fallbackStats.open_comment_count,
+  };
+}
+
+function targetCommentStats(
+  counts: { comment_count?: number | null; open_comment_count?: number | null } | null | undefined,
+  initialComments: ContextComment[],
+  currentComments: ContextComment[],
+): CommentStats {
+  const base = serverCommentStats(counts, initialComments);
+  const initialStats = commentStats(initialComments);
+  const currentStats = commentStats(currentComments);
+
+  return {
+    comment_count: Math.max(0, base.comment_count + currentStats.comment_count - initialStats.comment_count),
+    open_comment_count: Math.max(0, base.open_comment_count + currentStats.open_comment_count - initialStats.open_comment_count),
+  };
+}
+
+function requestCommentStats(detail: WorkRequestDetail, requestComments: ContextComment[]): CommentStats {
+  const sliceComments = (detail.planned_slices || []).flatMap((slice) => slice.comments || []);
+  const base = serverCommentStats(detail.summary || detail.work_request, [...(detail.comments || []), ...sliceComments]);
+  const initialRequestStats = commentStats(detail.comments || []);
+  const currentRequestStats = commentStats(requestComments);
+
+  return {
+    comment_count: Math.max(0, base.comment_count + currentRequestStats.comment_count - initialRequestStats.comment_count),
+    open_comment_count: Math.max(0, base.open_comment_count + currentRequestStats.open_comment_count - initialRequestStats.open_comment_count),
+  };
+}
+
+function canMutateDashboardComments() {
+  return dashboardRuntimeConfig?.operatorMode === true;
 }
 
 function requestProgressText(detail: WorkRequestDetail) {

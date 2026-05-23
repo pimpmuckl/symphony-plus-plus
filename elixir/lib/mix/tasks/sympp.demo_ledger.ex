@@ -11,6 +11,8 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
+  alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
+  alias SymphonyElixir.SymphonyPlusPlus.Comments.Service, as: CommentService
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository, as: GuidanceRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
@@ -130,7 +132,7 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
   defp remove_existing_database(database) do
     [database, database <> "-shm", database <> "-wal", database <> "-journal"]
     |> Enum.reduce_while(:ok, fn path, :ok ->
-      case remove_existing_file(path, 10) do
+      case remove_existing_file(path, 100) do
         :ok -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -205,6 +207,7 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
            {:ok, work_packages} <- seed_work_packages(),
            {:ok, guidance_requests} <- seed_human_decision_prompts(),
            {:ok, planned_slices} <- seed_planned_slices(),
+           {:ok, comments} <- seed_comments(),
            {:ok, _evidence} <- seed_work_package_evidence(),
            {:ok, solo_sessions} <- seed_solo_sessions(),
            {_, nil} <- normalize_demo_timestamps() do
@@ -217,6 +220,7 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
             "guidance_requests" => Enum.map(guidance_requests, & &1.id),
             "planned_slices" => Enum.map(planned_slices, & &1.id),
             "work_packages" => Enum.map(work_packages, & &1.id),
+            "comments" => Enum.map(comments, & &1.id),
             "solo_sessions" => Enum.map(solo_sessions, & &1.id)
           }
         }
@@ -271,6 +275,41 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
       work_package_attrs("SYMPP-DEMO-WP-CLOSED-SPIKE", "Closed duplicate telemetry spike", "closed", work_package_kind("SYMPP-DEMO-WP-CLOSED-SPIKE"))
     ]
     |> insert_all(&WorkPackageRepository.create(Repo, &1))
+  end
+
+  defp seed_comments do
+    [
+      demo_comment_attrs(
+        "SYMPP-DEMO-COMMENT-WR-SLICED",
+        "work_request",
+        "SYMPP-DEMO-WR-SLICED",
+        "Demo unresolved comment on the WorkRequest card action row."
+      ),
+      demo_comment_attrs(
+        "SYMPP-DEMO-COMMENT-SLICE-DISPATCHED",
+        "planned_slice",
+        "SYMPP-DEMO-SLICE-DISPATCHED",
+        "Demo unresolved comment on a planned-slice card."
+      ),
+      demo_comment_attrs(
+        "SYMPP-DEMO-COMMENT-WP-ACTIVE",
+        "work_package",
+        "SYMPP-DEMO-WP-ACTIVE",
+        "Demo unresolved comment on a WorkPackage card."
+      )
+    ]
+    |> insert_all(&CommentService.create(Repo, &1))
+  end
+
+  defp demo_comment_attrs(id, target_kind, target_id, body) do
+    %{
+      id: id,
+      target_kind: target_kind,
+      target_id: target_id,
+      body: body,
+      source_type: "operator",
+      author_name: "demo-operator"
+    }
   end
 
   defp work_package_attrs(id, title, status, kind) do
@@ -772,7 +811,7 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
   end
 
   defp normalize_demo_timestamps do
-    Enum.each([AccessGrant, GuidanceRequest, WorkRequest, WorkPackage, ClarificationQuestion, PlannedSlice, SoloSession], fn schema ->
+    Enum.each([AccessGrant, GuidanceRequest, WorkRequest, WorkPackage, ClarificationQuestion, PlannedSlice, Comment, SoloSession], fn schema ->
       Repo.update_all(schema, set: [inserted_at: @demo_now, updated_at: @demo_now])
     end)
 

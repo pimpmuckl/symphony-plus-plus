@@ -63,6 +63,8 @@ Local operator mode:
 - lets the local operator prepare/replay a WorkRequest architect handoff with a
   scoped phase, architect anchor package, unclaimed architect grant, and
   redacted private handoff metadata;
+- lets the local operator add and resolve contextual comments on WorkRequests,
+  planned slices, and WorkPackages from detail views;
 - shows package guidance requests that need human input in the operator
   priority watchlist and lets the local operator answer only
   `human_info_needed` guidance from the WorkPackage detail page;
@@ -113,6 +115,7 @@ CI/review status
 Active blocker count
 Scope guard status
 Plan completion
+Open/total comment count
 ```
 
 WorkPackage card payloads preserve the raw lifecycle `status` for backend
@@ -182,6 +185,15 @@ to a merged package still reports raw `status: dispatched` while its operational
 state reports `Merged`. If a slice still appears idle while the linked package
 has started, the slice projection includes an attention item.
 
+WorkRequest, planned-slice, and WorkPackage projections may include
+`comment_count`, `open_comment_count`, and `comments` detail arrays. Comment
+bodies, author names, resolver names, and resolution notes are redacted in
+dashboard projections. Cards show an attention signal only when comments remain
+open; detail views show the scoped comment list and local operator add/resolve
+controls. The local operator mutation surface stamps operator provenance
+server-side, caps comment bodies at 4,000 characters and resolution notes at
+1,000 characters, and returns at most 100 comments per target in detail arrays.
+
 Local operator cockpit stream rail:
 
 - Local operator mode renders a compact Projects / Work Streams rail above the
@@ -218,6 +230,7 @@ Guidance requests
 Virtual task plan
 Findings
 Progress timeline
+Comments
 Artifacts
 Branch/PR state
 Review-suite state

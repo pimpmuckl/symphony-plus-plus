@@ -44,6 +44,21 @@
       "purpose": "Record that an active blocker was cleared."
     },
     {
+      "name": "add_comment",
+      "purpose": "Add a redacted contextual note to the current worker's WorkPackage, a planned slice linked to it, or the parent WorkRequest of that linked slice.",
+      "scope_policy": "Rejects sibling WorkPackages, unlinked planned slices, and unrelated WorkRequests without leaking target contents. Worker attribution is derived from the claimed MCP session. Comment bodies are capped at 4,000 characters."
+    },
+    {
+      "name": "list_comments",
+      "purpose": "List redacted contextual comments for a scoped WorkPackage, linked planned slice, or linked parent WorkRequest.",
+      "scope_policy": "Uses the same worker target scope as add_comment. Results are capped at 100 comments per target."
+    },
+    {
+      "name": "resolve_comment",
+      "purpose": "Mark a scoped comment resolved with server-owned worker attribution and an optional resolution note.",
+      "scope_policy": "A worker can resolve only comments attached to targets inside the current WorkPackage assignment scope; missing and foreign comment ids fail closed as out of scope. Resolution notes are capped at 1,000 characters."
+    },
+    {
       "name": "request_scope_expansion",
       "purpose": "Request broader scope; does not approve it.",
       "readiness_policy": "For investigation policies, this records the worker scope recommendation evidence."

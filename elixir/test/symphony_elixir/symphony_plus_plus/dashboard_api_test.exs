@@ -15,6 +15,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
+  alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
+  alias SymphonyElixir.SymphonyPlusPlus.Comments.Service, as: CommentService
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository, as: GuidanceRequestRepository
@@ -110,7 +112,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       "sympp_work_requests",
       "sympp_work_request_clarification_questions",
       "sympp_work_request_decision_logs",
-      "sympp_work_request_planned_slices"
+      "sympp_work_request_planned_slices",
+      "sympp_comments"
     ]
 
     def all(query) do
@@ -198,6 +201,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     repo.delete_all(SoloSessionEntry)
     repo.delete_all(SoloSession)
     repo.delete_all(GuidanceRequest)
+    repo.delete_all(Comment)
     repo.delete_all(AccessGrant)
     repo.delete_all(PlannedSlice)
     repo.delete_all(WorkPackage)
@@ -1040,7 +1044,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                "sympp_work_requests" => 1,
                "sympp_work_request_clarification_questions" => 1,
                "sympp_work_request_decision_logs" => 1,
-               "sympp_work_request_planned_slices" => 1
+               "sympp_work_request_planned_slices" => 1,
+               "sympp_comments" => 1
              }
     after
       WorkRequestCardCountingRepo.clear_counter()
@@ -1157,11 +1162,150 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              "answered_question_count" => 1,
              "closed_question_count" => 0,
              "decision_count" => 2,
+             "comment_count" => 0,
+             "open_comment_count" => 0,
              "planned_slice_count" => 2,
              "approved_slice_count" => 0,
              "dispatched_slice_count" => 0,
              "skipped_slice_count" => 0
            }
+  end
+
+  test "dashboard WorkRequest detail includes redacted comments and aggregate counts", %{repo: repo} do
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-COMMENT-ANCHOR",
+                 kind: "phase_child",
+                 status: "planning",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta"
+               )
+             )
+
+    work_request =
+      create_work_request!(
+        repo,
+        id: "WR-DASH-COMMENTS",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch
+      )
+
+    assert {:ok, slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-DASH-COMMENTS")
+             )
+
+    assert {:ok, request_comment} =
+             CommentService.create(repo, %{
+               target_kind: "work_request",
+               target_id: work_request.id,
+               body: "Request note includes sk-secret123",
+               source_type: "operator",
+               author_name: "operator"
+             })
+
+    assert {:ok, slice_comment} =
+             CommentService.create(repo, %{
+               target_kind: "planned_slice",
+               target_id: slice.id,
+               body: "Slice note",
+               source_type: "architect",
+               author_name: "architect"
+             })
+
+    request_comment_id = request_comment.id
+    slice_comment_id = slice_comment.id
+
+    assert {:ok, _resolved} =
+             CommentService.resolve(repo, slice_comment.id, %{
+               resolved_by: "operator",
+               resolved_source_type: "operator",
+               resolution_note: "Closed"
+             })
+
+    secret = create_architect_grant_secret(repo, anchor.id)
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-requests/#{work_request.id}"), 200)
+
+    assert payload["work_request"]["comment_count"] == 2
+    assert payload["work_request"]["open_comment_count"] == 1
+    assert payload["summary"]["comment_count"] == 2
+    assert payload["summary"]["open_comment_count"] == 1
+
+    assert [%{"id" => ^request_comment_id, "body" => "Request note includes [REDACTED]", "status" => "open"}] = payload["comments"]
+
+    assert [slice_payload] = payload["planned_slices"]
+    assert slice_payload["comment_count"] == 1
+    assert slice_payload["open_comment_count"] == 0
+    assert [%{"id" => ^slice_comment_id, "status" => "resolved", "resolution_note" => "Closed"}] = slice_payload["comments"]
+  end
+
+  test "dashboard WorkRequest detail caps comments per target to newest entries", %{repo: repo} do
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-COMMENT-CAP-ANCHOR",
+                 kind: "phase_child",
+                 status: "planning",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta"
+               )
+             )
+
+    work_request =
+      create_work_request!(
+        repo,
+        id: "WR-DASH-COMMENT-CAP",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch
+      )
+
+    assert {:ok, slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-DASH-COMMENT-CAP")
+             )
+
+    Enum.each(1..105, fn index ->
+      create_comment_at!(repo, index, %{
+        id: numbered_comment_id("comment-wr", index),
+        target_kind: "work_request",
+        target_id: work_request.id,
+        body: "Request comment #{index}",
+        source_type: "operator",
+        author_name: "operator"
+      })
+
+      create_comment_at!(repo, index, %{
+        id: numbered_comment_id("comment-slice", index),
+        target_kind: "planned_slice",
+        target_id: slice.id,
+        body: "Slice comment #{index}",
+        source_type: "operator",
+        author_name: "operator"
+      })
+    end)
+
+    expected_request_ids = Enum.map(6..105, &numbered_comment_id("comment-wr", &1))
+    expected_slice_ids = Enum.map(6..105, &numbered_comment_id("comment-slice", &1))
+
+    assert {:ok, listed_comments} = CommentService.list_for_target(repo, "work_request", work_request.id)
+    assert Enum.map(listed_comments, & &1.id) == expected_request_ids
+
+    secret = create_architect_grant_secret(repo, anchor.id)
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-requests/#{work_request.id}"), 200)
+
+    assert payload["work_request"]["comment_count"] == 210
+    assert payload["summary"]["comment_count"] == 210
+    assert Enum.map(payload["comments"], & &1["id"]) == expected_request_ids
+
+    assert [slice_payload] = payload["planned_slices"]
+    assert Enum.map(slice_payload["comments"], & &1["id"]) == expected_slice_ids
   end
 
   test "local WorkRequest detail includes planned-slice operational state from linked package activity", %{repo: repo} do
@@ -3949,6 +4093,60 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
+  test "local operator can create and resolve comments through the dashboard API", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      work_request = create_work_request!(repo, id: "WR-LOCAL-COMMENTS", status: "ready_for_slicing")
+
+      create_payload =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/comments", %{
+          "target_kind" => "work_request",
+          "target_id" => work_request.id,
+          "body" => "Operator note sk-secret123",
+          "source_type" => "worker",
+          "author_name" => "github_pat_12345678"
+        })
+        |> json_response(201)
+
+      assert %{"comment" => %{"id" => comment_id, "status" => "open"}} = create_payload
+      assert get_in(create_payload, ["comment", "body"]) == "Operator note [REDACTED]"
+      assert get_in(create_payload, ["comment", "source_type"]) == "operator"
+      assert get_in(create_payload, ["comment", "author_name"]) == "local-operator"
+      assert get_in(work_request_detail(create_payload["dashboard"], work_request.id), ["summary", "open_comment_count"]) == 1
+
+      assert {:ok, %Comment{source_type: "operator", author_name: "local-operator", body: "Operator note [REDACTED]"}} = CommentService.get(repo, comment_id)
+
+      resolve_payload =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/comments/#{comment_id}/resolve", %{
+          "resolved_by" => "spoofed-worker",
+          "resolved_source_type" => "worker",
+          "resolution_note" => "Handled bearer abcdefgh"
+        })
+        |> json_response(200)
+
+      assert get_in(resolve_payload, ["comment", "status"]) == "resolved"
+      assert get_in(resolve_payload, ["comment", "resolved_by"]) == "local-operator"
+      assert get_in(resolve_payload, ["comment", "resolved_source_type"]) == "operator"
+      assert get_in(resolve_payload, ["comment", "resolution_note"]) == "Handled [REDACTED]"
+      assert get_in(work_request_detail(resolve_payload["dashboard"], work_request.id), ["summary", "comment_count"]) == 1
+      assert get_in(work_request_detail(resolve_payload["dashboard"], work_request.id), ["summary", "open_comment_count"]) == 0
+      assert {:ok, %Comment{resolution_note: "Handled [REDACTED]"}} = CommentService.get(repo, comment_id)
+
+      overlong_payload =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/comments", %{
+          "target_kind" => "work_request",
+          "target_id" => work_request.id,
+          "body" => String.duplicate("x", Comment.max_body_length() + 1)
+        })
+        |> json_response(422)
+
+      assert get_in(overlong_payload, ["error", "code"]) == "invalid_request"
+      assert get_in(overlong_payload, ["error", "message"]) =~ "body"
+    end)
+  end
+
   test "local operator mutations require CSRF protection" do
     with_local_operator_endpoint(fn ->
       index = "<!doctype html><html><head></head><body><div id=\"root\"></div></body></html>"
@@ -4486,6 +4684,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end
   end
 
+  defp create_comment_at!(repo, offset_seconds, attrs) do
+    timestamp = DateTime.add(~U[2026-05-23 12:00:00.000000Z], offset_seconds, :second)
+
+    assert {:ok, comment} = CommentService.create(repo, attrs)
+    repo.update!(Ecto.Changeset.change(comment, inserted_at: timestamp, updated_at: timestamp))
+  end
+
+  defp numbered_comment_id(prefix, index), do: "#{prefix}-#{String.pad_leading(Integer.to_string(index), 3, "0")}"
+
   defp create_matching_work_package!(repo, work_request, planned_slice, overrides) do
     attrs =
       [
@@ -4928,6 +5135,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
   defp restore_fetched_app_env(key, {:ok, value}), do: Application.put_env(:symphony_elixir, key, value)
   defp restore_fetched_app_env(key, :error), do: Application.delete_env(:symphony_elixir, key)
+
+  defp work_request_detail(dashboard, work_request_id) do
+    dashboard
+    |> get_in(["work_request_details"])
+    |> Kernel.||([])
+    |> Enum.find(&(get_in(&1, ["work_request", "id"]) == work_request_id))
+  end
 
   defp auth_conn(secret) do
     build_conn()

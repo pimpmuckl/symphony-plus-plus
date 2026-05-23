@@ -188,6 +188,9 @@ append_progress(event, idempotency_key)
 set_status(status, reason, expected_status)
 report_blocker(summary, idempotency_key, blocker_id?)
 resolve_blocker(blocker_id, resolution, summary, idempotency_key)
+add_comment(target_kind, target_id, body)
+list_comments(target_kind, target_id)
+resolve_comment(comment_id, resolution_note?)
 request_scope_expansion(summary, idempotency_key, payload)
 attach_branch(branch, head_sha)
 attach_pr(url, head_sha)
@@ -195,6 +198,16 @@ sync_pr(url_or_number, metadata)
 submit_review_package(summary, tests, artifacts, head_sha)
 mark_ready()
 ```
+
+Worker comment tools are scoped to the current WorkPackage assignment. Workers
+can comment on their own WorkPackage, a planned slice linked to that package,
+or the parent WorkRequest of a linked planned slice. Sibling WorkPackages,
+unlinked planned slices, and unrelated WorkRequests fail closed as out of
+scope. Comment provenance is derived from the claimed MCP session rather than
+caller input, and comment payloads are redacted before they are returned
+through MCP. Comment bodies are capped at 4,000 characters, resolution notes
+are capped at 1,000 characters, and list responses are capped at 100 comments
+per target.
 
 ## Generic Solo Session MCP tools
 

@@ -79,7 +79,8 @@ defmodule SymphonyElixirWeb.ReactDashboardController do
       "apiBase" => prefixed_path(conn, "/api/v1/sympp/operator"),
       "basePath" => script_name_prefix(conn),
       "csrfToken" => Plug.CSRFProtection.get_csrf_token(),
-      "logoUrl" => prefixed_path(conn, "/splusplus-logo.png")
+      "logoUrl" => prefixed_path(conn, "/splusplus-logo.png"),
+      "operatorMode" => SymppDashboardApiController.local_operator_browser?(conn)
     }
 
     script = ~s(<script>window.SYMPP_DASHBOARD_CONFIG = #{Jason.encode!(config)};</script>)

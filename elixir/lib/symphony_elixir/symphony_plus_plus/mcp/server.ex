@@ -9,6 +9,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
+  alias SymphonyElixir.SymphonyPlusPlus.Comments.Service, as: CommentService
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.GitHub.{Client, DryClient, PullRequest, PullRequestArtifact}
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
@@ -71,6 +73,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "set_status",
     "report_blocker",
     "resolve_blocker",
+    "add_comment",
+    "list_comments",
+    "resolve_comment",
     "create_guidance_request",
     "read_guidance_request",
     "request_scope_expansion",
@@ -1251,8 +1256,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> Map.new(fn [_match, key, value] -> {normalize_server_dsn_key(key), trim_server_dsn_value(value)} end)
   end
 
-  defp server_database_dsn_values(_database), do: %{}
-
   defp normalize_server_dsn_key(key) do
     key
     |> String.downcase()
@@ -1300,12 +1303,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp repo_config_for_identity(repo) when is_atom(repo) do
     if Code.ensure_loaded?(repo) and function_exported?(repo, :config, 0) do
       repo.config()
+    else
+      []
     end
   rescue
-    _error -> nil
+    _error -> []
   end
-
-  defp repo_config_for_identity(_repo), do: nil
 
   defp repo_configured_database_for_identity(repo) do
     repo
@@ -1326,13 +1329,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       config |> Keyword.get(:database) |> normalized_database()
   end
 
-  defp configured_database_for_identity(_config), do: nil
-
   defp configured_server_database_for_identity(config) when is_list(config) do
     configured_database_url_for_identity(config) || configured_database_host_for_identity(config)
   end
-
-  defp configured_server_database_for_identity(_config), do: nil
 
   defp configured_database_url_for_identity(config) do
     config
@@ -1403,8 +1402,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         false
     end
   end
-
-  defp default_home_database_path?(_path), do: false
 
   defp unknown_ledger_identity(source), do: %{"kind" => "unknown", "source" => source}
 
@@ -1767,6 +1764,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       progress_properties()
       |> Map.merge(%{"blocker_id" => string_schema(), "resolution" => string_schema()}),
       ["blocker_id", "resolution", "summary", "idempotency_key"]
+    )
+  end
+
+  defp worker_tool_input_schema("add_comment") do
+    schema(
+      scoped_properties(%{
+        "target_kind" => string_enum_schema(Comment.target_kinds()),
+        "target_id" => string_schema(),
+        "body" => Map.put(string_schema(), "maxLength", Comment.max_body_length())
+      }),
+      ["target_kind", "target_id", "body"]
+    )
+  end
+
+  defp worker_tool_input_schema("list_comments") do
+    schema(
+      scoped_properties(%{
+        "target_kind" => string_enum_schema(Comment.target_kinds()),
+        "target_id" => string_schema()
+      }),
+      ["target_kind", "target_id"]
+    )
+  end
+
+  defp worker_tool_input_schema("resolve_comment") do
+    schema(
+      scoped_properties(%{
+        "comment_id" => string_schema(),
+        "resolution_note" => Map.put(string_schema(), "maxLength", Comment.max_resolution_note_length())
+      }),
+      ["comment_id"]
     )
   end
 
@@ -6178,6 +6206,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp worker_tool("add_comment", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- scoped_session(config.repo, session, arguments),
+         {:ok, target_kind} <- required_argument(arguments, "target_kind"),
+         :ok <- require_comment_target_kind(target_kind),
+         {:ok, target_id} <- required_argument(arguments, "target_id"),
+         :ok <- require_worker_comment_target_scope(config.repo, session, target_kind, target_id),
+         {:ok, body} <- required_argument(arguments, "body"),
+         {:ok, comment} <-
+           CommentService.create(config.repo, %{
+             "target_kind" => target_kind,
+             "target_id" => target_id,
+             "body" => body,
+             "source_type" => "worker",
+             "author_name" => worker_comment_actor(session)
+           }) do
+      {:ok, tool_result(%{"comment" => comment_payload(comment)})}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "add_comment", "reason" => reason}}
+      {:error, reason} -> worker_error(reason, "add_comment")
+    end
+  end
+
+  defp worker_tool("list_comments", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- scoped_session(config.repo, session, arguments),
+         {:ok, target_kind} <- required_argument(arguments, "target_kind"),
+         :ok <- require_comment_target_kind(target_kind),
+         {:ok, target_id} <- required_argument(arguments, "target_id"),
+         :ok <- require_worker_comment_target_scope(config.repo, session, target_kind, target_id),
+         {:ok, comments} <- CommentService.list_for_target(config.repo, target_kind, target_id) do
+      {:ok,
+       tool_result(%{
+         "comments" => Enum.map(comments, &comment_payload/1),
+         "target" => %{"kind" => target_kind, "id" => target_id}
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "list_comments", "reason" => reason}}
+      {:error, reason} -> worker_error(reason, "list_comments")
+    end
+  end
+
+  defp worker_tool("resolve_comment", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- scoped_session(config.repo, session, arguments),
+         {:ok, comment_id} <- required_argument(arguments, "comment_id"),
+         {:ok, _comment} <- scoped_worker_comment(config.repo, session, comment_id),
+         {:ok, resolved} <-
+           CommentService.resolve(config.repo, comment_id, %{
+             "resolved_by" => worker_comment_actor(session),
+             "resolved_source_type" => "worker",
+             "resolution_note" => optional_argument(arguments, "resolution_note", nil)
+           }) do
+      {:ok, tool_result(%{"comment" => comment_payload(resolved)})}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "resolve_comment", "reason" => reason}}
+      {:error, reason} -> worker_error(reason, "resolve_comment")
+    end
+  end
+
   defp worker_tool("create_guidance_request", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- scoped_session(config.repo, session, arguments),
          {:ok, summary} <- required_argument(arguments, "summary"),
@@ -9177,6 +9262,61 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp require_argument_scope(session, work_package_id) when work_package_id == session.assignment.work_package_id, do: {:ok, session}
   defp require_argument_scope(_session, _work_package_id), do: {:error, :forbidden}
 
+  defp require_comment_target_kind(target_kind) do
+    if target_kind in Comment.target_kinds(), do: :ok, else: {:tool_error, "invalid_target_kind"}
+  end
+
+  defp scoped_worker_comment(repo, %Session{} = session, comment_id) do
+    case CommentService.get(repo, comment_id) do
+      {:ok, %Comment{} = comment} ->
+        case require_worker_comment_target_scope(repo, session, comment.target_kind, comment.target_id) do
+          :ok -> {:ok, comment}
+          {:tool_error, _reason} -> {:tool_error, "comment_target_out_of_scope"}
+        end
+
+      {:error, :not_found} ->
+        {:tool_error, "comment_target_out_of_scope"}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp worker_comment_actor(%Session{} = session) do
+    assignment = Session.public_assignment(session)
+    assignment["claimed_by"] || assignment["grant_id"] || "worker"
+  end
+
+  defp require_worker_comment_target_scope(_repo, %Session{} = session, "work_package", target_id) do
+    if target_id == Session.work_package_id(session), do: :ok, else: {:tool_error, "comment_target_out_of_scope"}
+  end
+
+  defp require_worker_comment_target_scope(repo, %Session{} = session, "planned_slice", target_id) do
+    scoped? =
+      repo.exists?(
+        from(slice in PlannedSlice,
+          where: slice.id == ^target_id and slice.work_package_id == ^Session.work_package_id(session)
+        )
+      )
+
+    if scoped?, do: :ok, else: {:tool_error, "comment_target_out_of_scope"}
+  end
+
+  defp require_worker_comment_target_scope(repo, %Session{} = session, "work_request", target_id) do
+    scoped? =
+      repo.exists?(
+        from(slice in PlannedSlice,
+          where: slice.work_request_id == ^target_id and slice.work_package_id == ^Session.work_package_id(session)
+        )
+      )
+
+    if scoped?, do: :ok, else: {:tool_error, "comment_target_out_of_scope"}
+  end
+
+  defp require_worker_comment_target_scope(_repo, %Session{}, _target_kind, _target_id) do
+    {:tool_error, "invalid_target_kind"}
+  end
+
   defp authorize_solo_tool_call(%__MODULE__{session_refresh_required: true}, tool) do
     {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "claim_required", "action" => "claim_work_key"}}
   end
@@ -9632,6 +9772,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp guidance_request_cards(guidance_requests) do
     Enum.map(guidance_requests, &guidance_request_card_payload/1)
+  end
+
+  defp comment_payload(%Comment{} = comment) do
+    %{
+      "id" => comment.id,
+      "target_kind" => comment.target_kind,
+      "target_id" => comment.target_id,
+      "body" => Redactor.redact_text(comment.body),
+      "source_type" => comment.source_type,
+      "author_name" => Redactor.redact_text(comment.author_name),
+      "status" => comment.status,
+      "resolved_by" => Redactor.redact_text(comment.resolved_by),
+      "resolved_source_type" => comment.resolved_source_type,
+      "resolved_at" => timestamp(comment.resolved_at),
+      "resolution_note" => Redactor.redact_text(comment.resolution_note),
+      "inserted_at" => timestamp(comment.inserted_at),
+      "updated_at" => timestamp(comment.updated_at)
+    }
   end
 
   defp guidance_request_card_payload(%GuidanceRequest{} = guidance_request) do
