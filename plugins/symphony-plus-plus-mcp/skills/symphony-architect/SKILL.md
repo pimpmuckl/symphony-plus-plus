@@ -71,6 +71,16 @@ Use the local operator dashboard only for human/operator actions, such as
 answering package guidance escalated to `human_info_needed`. The dashboard is
 not a reason to bypass MCP permission boundaries.
 
+## Wakeups
+
+- While actively owning a WorkRequest, phase, review, or worker lane, keep one
+  Codex Automation wakeup active for this architecture thread every 30 minutes when
+  there is useful follow-up work after waits, disconnects, capacity pauses, or
+  worker/review completion.
+- Reuse or update the existing wakeup instead of creating duplicates. Delete it
+  when the lane is paused without near-term action, handed off, blocked on the
+  operator, or fully complete.
+
 ## Slice Design
 
 Design one PR-sized WorkPackage per slice unless the operator explicitly
