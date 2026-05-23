@@ -228,6 +228,22 @@
       "response_policy": "Returns safe JSON with WorkRequest id, planned slice id/status/work_package_id/dispatched_at, WorkPackage id metadata, and redacted worker handoff metadata. Dispatch-link failure responses may include sanitized WorkPackage id, worker grant id, cleanup status, and redacted handoff metadata. It never returns raw worker secrets, work keys, bearer tokens, API tokens, MCP auth tokens, private-store secret payloads, or secret-bearing claim URLs."
     },
     {
+      "name": "prepare_work_package_worktree",
+      "purpose": "Prepare a scoped WorkPackage git worktree under CODEX_HOME/worktrees/spp_worktrees and record only worktree_path.",
+      "required_capabilities": ["dispatch:work_request"],
+      "required_arguments": ["work_package_id", "repo_root", "base_branch", "branch"],
+      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope and verifies the WorkPackage is linked from a planned slice on an in-scope WorkRequest. It validates git ref names, requires base_branch to match the WorkPackage, resolves CODEX_HOME with fallback to ~/.codex, constructs a safe path under CODEX_HOME/worktrees/spp_worktrees/<repo-name>-<repo-hash>/<package-id>-<sanitized-branch>-<branch-hash>, fetches origin/<base_branch> into the local remote-tracking ref, creates the worktree from origin/<base_branch>, records only worktree_path, and replays already_prepared when the same recorded path still exists.",
+      "response_policy": "Returns safe JSON with WorkPackage id/kind/status/worktree_path, worktree path/status/repo_root/branch/base_branch, a compact worker launch block, scope, and redacted audit event metadata. It never returns raw worker secrets, work keys, bearer tokens, API tokens, MCP auth tokens, private-store secret payloads, or secret-bearing claim URLs."
+    },
+    {
+      "name": "cleanup_work_package_worktree",
+      "purpose": "Clean up a scoped WorkPackage git worktree after validating the recorded path and dirty state.",
+      "required_capabilities": ["dispatch:work_request"],
+      "required_arguments": ["work_package_id"],
+      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope and verifies the WorkPackage is linked from a planned slice on an in-scope WorkRequest. It reads the recorded worktree_path, verifies it remains under CODEX_HOME/worktrees/spp_worktrees, refuses dirty worktrees by default, proves the recorded worktree belongs to the configured/scoped repository, removes the git worktree, prunes git worktree metadata, clears worktree_path, and records redacted audit/progress evidence. Missing recorded paths replay as already_clean.",
+      "response_policy": "Returns safe JSON with WorkPackage id/kind/status/worktree_path, cleanup status/path metadata, scope, and redacted audit event metadata when cleanup acted on a recorded path. It never force-removes dirty worktrees and never returns raw worker secrets, work keys, bearer tokens, API tokens, MCP auth tokens, private-store secret payloads, or secret-bearing claim URLs."
+    },
+    {
       "name": "read_child_status",
       "purpose": "Read the architect grant's scoped anchor package status or a same-phase child work-package status.",
       "required_capabilities": ["read:child_progress", "read:child_findings"],

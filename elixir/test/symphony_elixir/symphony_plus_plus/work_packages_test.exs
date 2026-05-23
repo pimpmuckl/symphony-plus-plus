@@ -7,6 +7,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Service
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.StringList
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle
+  alias SymphonyElixir.TestSupport
   alias SymphonyElixir.WorkPackageFactory
 
   defmodule LockedWorkPackageRepo do
@@ -15,6 +17,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
 
   defmodule BrokenWorkPackageRepo do
     def get(_schema, _id), do: raise(%Exqlite.Error{message: "disk I/O failed"})
+  end
+
+  defmodule UpdateFailsWorkPackageRepo do
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    def get(schema, id), do: Repo.get(schema, id)
+    def update(_changeset), do: raise(%Exqlite.Error{message: "database is locked"})
   end
 
   setup_all do
@@ -167,6 +176,423 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
     assert fetched.allowed_file_globs == globs
   end
 
+  test "stores nullable worktree path through SQLite", %{repo: repo} do
+    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-P1-001"))
+    assert package.worktree_path == nil
+
+    worktree_path = Path.join(System.tmp_dir!(), "sympp-worktree-path")
+    assert {:ok, updated} = Repository.update(repo, package.id, %{worktree_path: worktree_path})
+    assert updated.worktree_path == worktree_path
+
+    assert {:ok, cleared} = Repository.update(repo, package.id, %{worktree_path: nil})
+    assert cleared.worktree_path == nil
+  end
+
+  test "prepares a package worktree under CODEX_HOME and replays the recorded path", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-001", kind: "mcp", base_branch: "main"))
+
+    assert {:ok, prepared} =
+             WorktreeLifecycle.prepare(
+               repo,
+               package.id,
+               %{
+                 "repo_root" => fixture.repo_root,
+                 "base_branch" => "main",
+                 "branch" => "feat/worktree-lifecycle"
+               },
+               codex_home: codex_home
+             )
+
+    expected_root =
+      Path.expand(
+        Path.join([
+          codex_home,
+          "worktrees",
+          "spp_worktrees"
+        ])
+      )
+
+    assert prepared.status == "prepared"
+    assert String.starts_with?(prepared.worktree_path, expected_root)
+    assert prepared.worktree_path =~ "SYMPP-WT-001"
+    assert prepared.branch == "feat/worktree-lifecycle"
+    assert prepared.base_branch == "main"
+    assert File.dir?(prepared.worktree_path)
+
+    assert {:ok, fetched} = Repository.get(repo, package.id)
+    assert fetched.worktree_path == prepared.worktree_path
+
+    assert {:ok, replayed} =
+             WorktreeLifecycle.prepare(
+               repo,
+               package.id,
+               %{
+                 "repo_root" => fixture.repo_root,
+                 "base_branch" => "main",
+                 "branch" => "feat/worktree-lifecycle"
+               },
+               codex_home: codex_home
+             )
+
+    assert replayed.status == "already_prepared"
+    assert replayed.worktree_path == prepared.worktree_path
+  end
+
+  test "cleanup refuses dirty worktrees and clears clean recorded worktrees", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-002", kind: "mcp", base_branch: "main"))
+
+    assert {:ok, prepared} =
+             WorktreeLifecycle.prepare(
+               repo,
+               package.id,
+               %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/cleanup"},
+               codex_home: codex_home
+             )
+
+    dirty_path = Path.join(prepared.worktree_path, "dirty.txt")
+    File.write!(dirty_path, "dirty")
+
+    assert {:error, :dirty_worktree} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
+    assert {:ok, dirty_package} = Repository.get(repo, package.id)
+    assert dirty_package.worktree_path == prepared.worktree_path
+
+    File.rm!(dirty_path)
+
+    assert {:ok, cleaned} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home, repo_root: fixture.repo_root)
+    assert cleaned.status == "cleaned"
+    assert cleaned.worktree_path == prepared.worktree_path
+    refute File.exists?(prepared.worktree_path)
+
+    assert {:ok, fetched} = Repository.get(repo, package.id)
+    assert fetched.worktree_path == nil
+
+    assert {:ok, replayed} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
+    assert replayed.status == "already_clean"
+
+    assert {:ok, prepared_again} =
+             WorktreeLifecycle.prepare(
+               repo,
+               package.id,
+               %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/cleanup"},
+               codex_home: codex_home
+             )
+
+    assert prepared_again.status == "prepared"
+    assert File.dir?(prepared_again.worktree_path)
+  end
+
+  test "cleanup recovers a stale recorded path after persistence failure", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-005", kind: "mcp", base_branch: "main"))
+
+    assert {:ok, prepared} =
+             WorktreeLifecycle.prepare(
+               repo,
+               package.id,
+               %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/cleanup-persistence"},
+               codex_home: codex_home
+             )
+
+    assert {:error, :database_busy} =
+             WorktreeLifecycle.cleanup(UpdateFailsWorkPackageRepo, package.id,
+               codex_home: codex_home,
+               repo_root: fixture.repo_root
+             )
+
+    refute File.exists?(prepared.worktree_path)
+
+    assert {:ok, fetched} = Repository.get(repo, package.id)
+    assert fetched.worktree_path == prepared.worktree_path
+
+    assert {:ok, recovered} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home, repo_root: fixture.repo_root)
+    assert recovered.status == "stale_record_cleared"
+
+    assert {:ok, cleared} = Repository.get(repo, package.id)
+    assert cleared.worktree_path == nil
+  end
+
+  test "prepare prunes stale git worktree metadata after missing-path cleanup", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-011", kind: "mcp", base_branch: "main"))
+
+    attrs = %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/stale-prune"}
+
+    assert {:ok, prepared} = WorktreeLifecycle.prepare(repo, package.id, attrs, codex_home: codex_home)
+
+    File.rm_rf!(prepared.worktree_path)
+
+    assert normalized_path(TestSupport.git_output!(fixture.repo_root, ["worktree", "list", "--porcelain"])) =~
+             normalized_path(prepared.worktree_path)
+
+    assert {:ok, recovered} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home, repo_root: fixture.repo_root)
+    assert recovered.status == "stale_record_cleared"
+
+    refute normalized_path(TestSupport.git_output!(fixture.repo_root, ["worktree", "list", "--porcelain"])) =~
+             normalized_path(prepared.worktree_path)
+
+    assert {:ok, prepared_again} = WorktreeLifecycle.prepare(repo, package.id, attrs, codex_home: codex_home)
+    assert prepared_again.status == "prepared"
+    assert prepared_again.worktree_path == prepared.worktree_path
+    assert File.dir?(prepared_again.worktree_path)
+  end
+
+  test "prepare returns sanitized git command failures", %{repo: repo} do
+    non_repo_root =
+      Path.join(System.tmp_dir!(), "sympp-worktree-secret-token-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(non_repo_root)
+    on_exit(fn -> File.rm_rf(non_repo_root) end)
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-012", kind: "mcp", base_branch: "main"))
+
+    attrs = %{"repo_root" => non_repo_root, "base_branch" => "main", "branch" => "feat/git-failure"}
+
+    assert {:error, {:git_failed, status} = reason} =
+             WorktreeLifecycle.prepare(repo, package.id, attrs, codex_home: Path.join(non_repo_root, "codex-home"))
+
+    assert is_integer(status)
+    refute inspect(reason) =~ "fatal"
+    refute inspect(reason) =~ "fetch"
+    refute inspect(reason) =~ "secret-token"
+  end
+
+  test "cleanup rejects worktrees that belong to another repository", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    other_fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle-other")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-014", kind: "mcp", base_branch: "main"))
+
+    assert {:ok, other_package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-015", kind: "mcp", base_branch: "main"))
+
+    assert {:ok, other_prepared} =
+             WorktreeLifecycle.prepare(
+               repo,
+               other_package.id,
+               %{"repo_root" => other_fixture.repo_root, "base_branch" => "main", "branch" => "feat/other-repo"},
+               codex_home: codex_home
+             )
+
+    assert {:ok, _corrupted} = Repository.update(repo, package.id, %{worktree_path: other_prepared.worktree_path})
+
+    assert {:error, :invalid_worktree_path} =
+             WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home, repo_root: fixture.repo_root)
+
+    assert File.dir?(other_prepared.worktree_path)
+    assert {:ok, recorded} = Repository.get(repo, package.id)
+    assert recorded.worktree_path == other_prepared.worktree_path
+  end
+
+  test "prepare updates the remote-tracking base before creating new branches", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+    updater_root = Path.join(fixture.root, "updater")
+
+    TestSupport.git_output!(fixture.repo_root, ["config", "--unset-all", "remote.origin.fetch"])
+    TestSupport.git_output!(fixture.root, ["clone", fixture.origin, updater_root])
+    TestSupport.git_output!(updater_root, ["checkout", "main"])
+    TestSupport.git_output!(updater_root, ["config", "user.email", "sympp@example.com"])
+    TestSupport.git_output!(updater_root, ["config", "user.name", "Symphony Test"])
+    File.write!(Path.join(updater_root, "remote-update.txt"), "remote update\n")
+    TestSupport.git_output!(updater_root, ["add", "remote-update.txt"])
+    TestSupport.git_output!(updater_root, ["commit", "-m", "Remote update"])
+    TestSupport.git_output!(updater_root, ["push", "origin", "main"])
+
+    stale_origin_revision = fixture.repo_root |> TestSupport.git_output!(["rev-parse", "origin/main"]) |> String.trim()
+    remote_revision = updater_root |> TestSupport.git_output!(["rev-parse", "HEAD"]) |> String.trim()
+    refute stale_origin_revision == remote_revision
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-013", kind: "mcp", base_branch: "main"))
+
+    assert {:ok, _prepared} =
+             WorktreeLifecycle.prepare(
+               repo,
+               package.id,
+               %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/fresh-base"},
+               codex_home: codex_home
+             )
+
+    assert fixture.repo_root |> TestSupport.git_output!(["rev-parse", "origin/main"]) |> String.trim() == remote_revision
+    assert fixture.repo_root |> TestSupport.git_output!(["rev-parse", "feat/fresh-base"]) |> String.trim() == remote_revision
+  end
+
+  test "prepare replay rejects recorded paths that are no longer git worktrees", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-009", kind: "mcp", base_branch: "main"))
+
+    attrs = %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/replay-invalid"}
+
+    assert {:ok, prepared} = WorktreeLifecycle.prepare(repo, package.id, attrs, codex_home: codex_home)
+
+    File.rm_rf!(prepared.worktree_path)
+    File.mkdir_p!(prepared.worktree_path)
+
+    assert {:error, :invalid_worktree_path} = WorktreeLifecycle.prepare(repo, package.id, attrs, codex_home: codex_home)
+
+    assert {:ok, recorded} = Repository.get(repo, package.id)
+    assert recorded.worktree_path == prepared.worktree_path
+  end
+
+  test "cleanup rejects recorded paths that exist as non-directories", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-010", kind: "mcp", base_branch: "main"))
+
+    assert {:ok, prepared} =
+             WorktreeLifecycle.prepare(
+               repo,
+               package.id,
+               %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/cleanup-invalid"},
+               codex_home: codex_home
+             )
+
+    File.rm_rf!(prepared.worktree_path)
+    File.write!(prepared.worktree_path, "not a directory")
+
+    assert {:error, :invalid_worktree_path} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
+
+    assert {:ok, recorded} = Repository.get(repo, package.id)
+    assert recorded.worktree_path == prepared.worktree_path
+  end
+
+  test "prepare rejects stale existing local branches", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-008", kind: "mcp", base_branch: "main"))
+
+    attrs = %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/stale"}
+
+    assert {:ok, prepared} = WorktreeLifecycle.prepare(repo, package.id, attrs, codex_home: codex_home)
+    assert {:ok, _cleaned} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home, repo_root: fixture.repo_root)
+
+    TestSupport.git_output!(fixture.repo_root, ["checkout", "feat/stale"])
+    File.write!(Path.join(fixture.repo_root, "stale.txt"), "stale\n")
+    TestSupport.git_output!(fixture.repo_root, ["add", "stale.txt"])
+    TestSupport.git_output!(fixture.repo_root, ["commit", "-m", "Stale branch commit"])
+
+    assert {:error, :stale_existing_branch} = WorktreeLifecycle.prepare(repo, package.id, attrs, codex_home: codex_home)
+    refute File.exists?(prepared.worktree_path)
+  end
+
+  test "prepare uses collision-resistant paths for distinct branch names", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, first_package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-006-A", kind: "mcp", base_branch: "main"))
+
+    assert {:ok, second_package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-006-B", kind: "mcp", base_branch: "main"))
+
+    assert {:ok, first} =
+             WorktreeLifecycle.prepare(
+               repo,
+               first_package.id,
+               %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/a-b"},
+               codex_home: codex_home
+             )
+
+    assert {:ok, second} =
+             WorktreeLifecycle.prepare(
+               repo,
+               second_package.id,
+               %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat-a/b"},
+               codex_home: codex_home
+             )
+
+    refute first.worktree_path == second.worktree_path
+    assert File.dir?(first.worktree_path)
+    assert File.dir?(second.worktree_path)
+  end
+
+  test "prepare rollback deletes the local branch it created when persistence fails", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-007", kind: "mcp", base_branch: "main"))
+
+    assert {:error, {:worktree_record_failed, :database_busy}} =
+             WorktreeLifecycle.prepare(
+               UpdateFailsWorkPackageRepo,
+               package.id,
+               %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/rollback"},
+               codex_home: codex_home
+             )
+
+    assert TestSupport.git_output!(fixture.repo_root, ["branch", "--list", "feat/rollback"]) == ""
+  end
+
+  test "cleanup rejects recorded worktree paths outside the managed root", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, package} =
+             Repository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-WT-003",
+                 kind: "mcp",
+                 base_branch: "main",
+                 worktree_path: Path.join(fixture.root, "outside")
+               )
+             )
+
+    assert {:error, :unsafe_worktree_path} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
+  end
+
+  test "prepare rejects existing unrecorded worktree target path", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-004", kind: "mcp", base_branch: "main"))
+
+    assert {:ok, prepared} =
+             WorktreeLifecycle.prepare(
+               repo,
+               package.id,
+               %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/collision"},
+               codex_home: codex_home
+             )
+
+    assert File.dir?(prepared.worktree_path)
+    assert {:ok, _cleared} = Repository.update(repo, package.id, %{worktree_path: nil})
+
+    assert {:error, :worktree_path_exists} =
+             WorktreeLifecycle.prepare(
+               repo,
+               package.id,
+               %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/collision"},
+               codex_home: codex_home
+             )
+  end
+
   test "string list type rejects malformed values" do
     assert StringList.type() == :string
     assert StringList.embed_as(:json) == :self
@@ -203,5 +629,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
         String.replace(acc, "%{#{key}}", inspect(value))
       end)
     end)
+  end
+
+  defp normalized_path(path) do
+    path
+    |> String.replace("\\", "/")
+    |> String.downcase()
   end
 end

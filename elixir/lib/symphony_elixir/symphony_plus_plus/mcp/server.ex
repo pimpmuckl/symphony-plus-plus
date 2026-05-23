@@ -4,6 +4,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   import Ecto.Query, only: [from: 2]
 
   alias Ecto.Adapters.SQL
+  alias SymphonyElixir.PathSafety
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
@@ -33,6 +34,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSession
   alias SymphonyElixir.SymphonyPlusPlus.SoloSessions.SoloSessionEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Service, as: WorkPackageService
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
@@ -99,6 +101,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "skip_work_request_planned_slice",
     "mark_work_request_sliced",
     "dispatch_work_request_planned_slice",
+    "prepare_work_package_worktree",
+    "cleanup_work_package_worktree",
     "read_child_status",
     "approve_scope_expansion",
     "read_phase_board",
@@ -542,16 +546,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp repo_query(repo, sql, params, opts) when is_atom(repo) do
-    cond do
-      repo_module_query?(repo) ->
-        repo.query(sql, params, opts)
-
-      true ->
-        case dynamic_repo_identity(repo) do
-          pid when is_pid(pid) -> SQL.query(pid, sql, params, opts)
-          dynamic_repo when is_atom(dynamic_repo) and dynamic_repo != repo -> SQL.query(dynamic_repo, sql, params, opts)
-          _repo -> SQL.query(repo, sql, params, opts)
-        end
+    if repo_module_query?(repo) do
+      repo.query(sql, params, opts)
+    else
+      case dynamic_repo_identity(repo) do
+        pid when is_pid(pid) -> SQL.query(pid, sql, params, opts)
+        dynamic_repo when is_atom(dynamic_repo) and dynamic_repo != repo -> SQL.query(dynamic_repo, sql, params, opts)
+        _repo -> SQL.query(repo, sql, params, opts)
+      end
     end
   end
 
@@ -1071,14 +1073,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp repo_reachable_ledger_health(repo, identity) do
-    try do
-      case repo_query(repo, "SELECT 1", [], log: false) do
-        {:ok, _result} -> %{"reachable" => true, "identity" => identity}
-        {:error, _reason} -> unavailable_ledger_health(identity)
-      end
-    rescue
-      _error -> unavailable_ledger_health(identity)
+    case repo_query(repo, "SELECT 1", [], log: false) do
+      {:ok, _result} -> %{"reachable" => true, "identity" => identity}
+      {:error, _reason} -> unavailable_ledger_health(identity)
     end
+  rescue
+    _error -> unavailable_ledger_health(identity)
   end
 
   defp unavailable_ledger_health(identity),
@@ -1390,15 +1390,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp default_home_database_path?(path) when is_binary(path) do
-    with home when is_binary(home) and home != "" <- System.user_home() do
-      default_home_database =
-        [home, ".agents", "splusplus", "symphony_plus_plus.sqlite3"]
-        |> Path.join()
-        |> Path.expand()
+    case System.user_home() do
+      home when is_binary(home) and home != "" ->
+        default_home_database =
+          [home, ".agents", "splusplus", "symphony_plus_plus.sqlite3"]
+          |> Path.join()
+          |> Path.expand()
 
-      Repo.same_database_path?(path, default_home_database)
-    else
-      _missing_home -> false
+        Repo.same_database_path?(path, default_home_database)
+
+      _missing_home ->
+        false
     end
   end
 
@@ -1561,6 +1563,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp architect_tool_description("dispatch_work_request_planned_slice") do
     "Dispatch one approved planned slice into a WorkPackage and private worker handoff."
+  end
+
+  defp architect_tool_description("prepare_work_package_worktree") do
+    "Prepare a scoped WorkPackage git worktree and record only its worktree_path."
+  end
+
+  defp architect_tool_description("cleanup_work_package_worktree") do
+    "Clean up a scoped WorkPackage git worktree after validating the recorded path and dirty state."
   end
 
   defp architect_tool_description("approve_scope_expansion") do
@@ -2021,6 +2031,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       },
       ["work_request_id", "planned_slice_id", "claimed_by"]
     )
+  end
+
+  defp architect_tool_input_schema("prepare_work_package_worktree") do
+    schema(
+      %{
+        "work_package_id" => string_schema(),
+        "repo_root" => string_schema(),
+        "base_branch" => string_schema(),
+        "branch" => string_schema()
+      },
+      ["work_package_id", "repo_root", "base_branch", "branch"]
+    )
+  end
+
+  defp architect_tool_input_schema("cleanup_work_package_worktree") do
+    schema(%{"work_package_id" => string_schema()}, ["work_package_id"])
   end
 
   defp architect_tool_input_schema("read_child_status"), do: schema(%{"work_package_id" => string_schema()}, ["work_package_id"])
@@ -3123,7 +3149,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, tool_result(Map.put(payload, "scope", scope))}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "read_work_request", "reason" => reason}}
-      {:error, :not_found} -> work_request_not_found_error("read_work_request")
+      {:error, :not_found} -> not_found_error("read_work_request")
       {:error, reason} -> architect_error(reason, "read_work_request")
     end
   end
@@ -3171,7 +3197,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        })}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "answer_guidance_request", "reason" => reason}}
-      {:error, :not_found} -> guidance_request_not_found_error("answer_guidance_request")
+      {:error, :not_found} -> not_found_error("answer_guidance_request")
       {:error, reason} -> architect_error(reason, "answer_guidance_request")
     end
   end
@@ -3194,7 +3220,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, tool_result(result)}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "escalate_guidance_request", "reason" => reason}}
-      {:error, :not_found} -> guidance_request_not_found_error("escalate_guidance_request")
+      {:error, :not_found} -> not_found_error("escalate_guidance_request")
       {:error, reason} -> architect_error(reason, "escalate_guidance_request")
     end
   end
@@ -3218,7 +3244,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        })}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "set_work_request_status", "reason" => reason}}
-      {:error, :not_found} -> work_request_not_found_error("set_work_request_status")
+      {:error, :not_found} -> not_found_error("set_work_request_status")
       {:error, reason} -> architect_error(reason, "set_work_request_status")
     end
   end
@@ -3264,7 +3290,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        })}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "ask_work_request_question", "reason" => reason}}
-      {:error, :not_found} -> work_request_not_found_error("ask_work_request_question")
+      {:error, :not_found} -> not_found_error("ask_work_request_question")
       {:error, reason} -> architect_error(reason, "ask_work_request_question")
     end
   end
@@ -3298,7 +3324,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        })}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "answer_work_request_question", "reason" => reason}}
-      {:error, :not_found} -> work_request_not_found_error("answer_work_request_question")
+      {:error, :not_found} -> not_found_error("answer_work_request_question")
       {:error, reason} -> architect_error(reason, "answer_work_request_question")
     end
   end
@@ -3326,7 +3352,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        })}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "close_work_request_question", "reason" => reason}}
-      {:error, :not_found} -> work_request_not_found_error("close_work_request_question")
+      {:error, :not_found} -> not_found_error("close_work_request_question")
       {:error, reason} -> architect_error(reason, "close_work_request_question")
     end
   end
@@ -3368,7 +3394,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        })}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "record_work_request_decision", "reason" => reason}}
-      {:error, :not_found} -> work_request_not_found_error("record_work_request_decision")
+      {:error, :not_found} -> not_found_error("record_work_request_decision")
       {:error, reason} -> architect_error(reason, "record_work_request_decision")
     end
   end
@@ -3426,7 +3452,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "add_work_request_planned_slice", "reason" => reason}}
       {:error, %Ecto.Changeset{}} -> {:error, -32_602, "Invalid params", %{"tool" => "add_work_request_planned_slice", "reason" => "invalid_planned_slice"}}
-      {:error, :not_found} -> work_request_not_found_error("add_work_request_planned_slice")
+      {:error, :not_found} -> not_found_error("add_work_request_planned_slice")
       {:error, reason} -> architect_error(reason, "add_work_request_planned_slice")
     end
   end
@@ -3457,7 +3483,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        })}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "mark_work_request_sliced", "reason" => reason}}
-      {:error, :not_found} -> work_request_not_found_error("mark_work_request_sliced")
+      {:error, :not_found} -> not_found_error("mark_work_request_sliced")
       {:error, reason} -> architect_error(reason, "mark_work_request_sliced")
     end
   end
@@ -3477,8 +3503,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, tool_result(dispatch_work_request_planned_slice_payload(dispatch, scope))}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "dispatch_work_request_planned_slice", "reason" => reason}}
-      {:error, :not_found} -> work_request_not_found_error("dispatch_work_request_planned_slice")
+      {:error, :not_found} -> not_found_error("dispatch_work_request_planned_slice")
       {:error, reason} -> dispatch_work_request_planned_slice_error(reason)
+    end
+  end
+
+  defp architect_tool("prepare_work_package_worktree", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "dispatch:work_request"),
+         {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
+         {:ok, repo_root} <- required_argument(arguments, "repo_root"),
+         {:ok, base_branch} <- required_argument(arguments, "base_branch"),
+         {:ok, branch} <- required_argument(arguments, "branch"),
+         {:ok, work_package, scope} <- scoped_worktree_work_package(config.repo, session, work_package_id),
+         :ok <- require_worktree_repo_root_scope(repo_root, config.repo_root),
+         :ok <- require_worktree_base_branch_scope(base_branch, work_package),
+         {:ok, result} <-
+           WorkPackageService.prepare_worktree(config.repo, work_package_id, %{
+             "repo_root" => repo_root,
+             "base_branch" => base_branch,
+             "branch" => branch
+           }),
+         {:ok, audit_event} <- append_worktree_lifecycle_audit(config.repo, session, work_package_id, "prepare_work_package_worktree", result) do
+      {:ok, tool_result(worktree_lifecycle_payload(result, scope, audit_event))}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "prepare_work_package_worktree", "reason" => reason}}
+      {:error, :not_found} -> not_found_error("prepare_work_package_worktree")
+      {:error, reason} -> architect_error(reason, "prepare_work_package_worktree")
+    end
+  end
+
+  defp architect_tool("cleanup_work_package_worktree", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, session} <- architect_session(config.repo, session, "dispatch:work_request"),
+         {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
+         {:ok, _work_package, scope} <- scoped_worktree_work_package(config.repo, session, work_package_id),
+         {:ok, result} <- WorkPackageService.cleanup_worktree(config.repo, work_package_id, repo_root: config.repo_root),
+         {:ok, audit_event} <- maybe_append_cleanup_worktree_audit(config.repo, session, work_package_id, result) do
+      {:ok, tool_result(worktree_lifecycle_payload(result, scope, audit_event))}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "cleanup_work_package_worktree", "reason" => reason}}
+      {:error, :not_found} -> not_found_error("cleanup_work_package_worktree")
+      {:error, reason} -> architect_error(reason, "cleanup_work_package_worktree")
     end
   end
 
@@ -3638,7 +3702,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        })}
     else
       {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason}}
-      {:error, :not_found} -> work_request_not_found_error(tool)
+      {:error, :not_found} -> not_found_error(tool)
       {:error, reason} -> architect_error(reason, tool)
     end
   end
@@ -3892,6 +3956,46 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp dispatch_work_request_planned_slice_error(reason), do: architect_error(reason, "dispatch_work_request_planned_slice")
 
+  defp append_worktree_lifecycle_audit(repo, %Session{} = session, work_package_id, source_tool, result) do
+    PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, work_package_id, %{
+      "summary" => worktree_lifecycle_summary(source_tool, result.status),
+      "status" => result.status,
+      "idempotency_key" => worktree_lifecycle_idempotency_key(work_package_id, source_tool, result),
+      "payload" => %{
+        "type" => "worktree_lifecycle",
+        "source_tool" => source_tool,
+        "work_package_id" => work_package_id,
+        "worktree_path" => audit_local_path(result.worktree_path),
+        "repo_root" => audit_local_path(result.repo_root),
+        "branch" => result.branch,
+        "base_branch" => result.base_branch,
+        "status" => result.status
+      }
+    })
+  end
+
+  defp maybe_append_cleanup_worktree_audit(_repo, _session, _work_package_id, %{status: "already_clean"}), do: {:ok, nil}
+
+  defp maybe_append_cleanup_worktree_audit(repo, %Session{} = session, work_package_id, result) do
+    append_worktree_lifecycle_audit(repo, session, work_package_id, "cleanup_work_package_worktree", result)
+  end
+
+  defp audit_local_path(nil), do: nil
+  defp audit_local_path(_path), do: "[REDACTED]"
+
+  defp worktree_lifecycle_summary("prepare_work_package_worktree", "already_prepared"), do: "WorkPackage worktree already prepared"
+  defp worktree_lifecycle_summary("prepare_work_package_worktree", _status), do: "Prepared WorkPackage worktree"
+  defp worktree_lifecycle_summary("cleanup_work_package_worktree", _status), do: "Cleaned WorkPackage worktree"
+
+  defp worktree_lifecycle_idempotency_key(work_package_id, source_tool, result) do
+    fingerprint =
+      :sha256
+      |> :crypto.hash([to_string(result.status), "\0", to_string(result.worktree_path), "\0", to_string(result.branch)])
+      |> Base.url_encode64(padding: false)
+
+    "worktree_lifecycle:#{source_tool}:#{work_package_id}:#{fingerprint}"
+  end
+
   defp require_architect_phase_board_grant(repo, %Session{} = session, phase_id) do
     with {:ok, grant} <- require_live_architect_grant(repo, session),
          {:ok, anchor} <- architect_anchor_work_package(repo, session),
@@ -4088,8 +4192,76 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     WorkRequestService.get_planned_slice(repo, work_request_id, planned_slice_id)
   end
 
+  defp scoped_worktree_work_package(repo, %Session{} = session, work_package_id) do
+    with {:ok, %WorkPackage{} = work_package} <- WorkPackageRepository.get(repo, work_package_id),
+         {:ok, filters, scope} <- scoped_work_request_filters(repo, session),
+         :ok <- require_worktree_work_package_scope(repo, work_package, filters) do
+      {:ok, work_package, scope}
+    else
+      {:error, :forbidden} -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_worktree_work_package_scope(repo, %WorkPackage{} = work_package, filters) do
+    with :ok <- require_work_package_scope(work_package, filters) do
+      case linked_work_request_for_work_package(repo, work_package.id) do
+        nil -> {:error, :forbidden}
+        %WorkRequest{} = work_request -> require_work_request_scope(work_request, filters)
+      end
+    end
+  end
+
+  defp require_worktree_base_branch_scope(base_branch, %WorkPackage{base_branch: base_branch}), do: :ok
+  defp require_worktree_base_branch_scope(_base_branch, %WorkPackage{}), do: {:tool_error, "base_branch_scope_mismatch"}
+
+  defp require_worktree_repo_root_scope(_repo_root, nil), do: {:error, :invalid_repo_root}
+
+  defp require_worktree_repo_root_scope(repo_root, scoped_repo_root) do
+    with {:ok, repo_root} <- PathSafety.canonicalize(repo_root),
+         {:ok, scoped_repo_root} <- PathSafety.canonicalize(scoped_repo_root),
+         true <- same_filesystem_path?(repo_root, scoped_repo_root) do
+      :ok
+    else
+      false -> {:error, :invalid_repo_root}
+      {:error, _reason} -> {:error, :invalid_repo_root}
+    end
+  end
+
+  defp same_filesystem_path?(left, right), do: comparable_filesystem_path(left) == comparable_filesystem_path(right)
+
+  defp comparable_filesystem_path(path) do
+    path =
+      path
+      |> Path.expand()
+      |> String.replace("\\", "/")
+      |> String.trim_trailing("/")
+
+    if match?({:win32, _name}, :os.type()), do: String.downcase(path), else: path
+  end
+
+  defp linked_work_request_for_work_package(repo, work_package_id) do
+    repo.one(
+      from(planned_slice in PlannedSlice,
+        join: work_request in WorkRequest,
+        on: work_request.id == planned_slice.work_request_id,
+        where: planned_slice.work_package_id == ^work_package_id,
+        select: work_request,
+        limit: 1
+      )
+    )
+  end
+
   defp require_work_request_scope(%WorkRequest{} = work_request, filters) do
     if work_request_matches_filters?(work_request, filters) do
+      :ok
+    else
+      {:error, :forbidden}
+    end
+  end
+
+  defp require_work_package_scope(%WorkPackage{} = work_package, filters) do
+    if work_package_matches_filters?(work_package, filters) do
       :ok
     else
       {:error, :forbidden}
@@ -4113,6 +4285,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {"base_branch", base_branch} when is_binary(base_branch) -> work_request.base_branch == base_branch
       {"status", status} when is_binary(status) -> work_request.status == status
       {"phase_id", phase_id} when is_binary(phase_id) -> ArchitectHandoff.phase_id_for_work_request(work_request) == phase_id
+      _filter -> true
+    end)
+  end
+
+  defp work_package_matches_filters?(%WorkPackage{} = work_package, filters) do
+    Enum.all?(filters, fn
+      {"repo", repo} when is_binary(repo) -> work_package.repo == repo
+      {"base_branch", base_branch} when is_binary(base_branch) -> work_package.base_branch == base_branch
       _filter -> true
     end)
   end
@@ -6157,7 +6337,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            GuidanceRequestService.get_for_worker(repo, session.assignment, guidance_request_id) do
       {:ok, tool_result(%{"guidance_request" => guidance_request_payload(guidance_request)})}
     else
-      {:error, :not_found} -> guidance_request_not_found_error("read_guidance_request")
+      {:error, :not_found} -> not_found_error("read_guidance_request")
       {:error, reason} -> worker_error(reason, "read_guidance_request")
     end
   end
@@ -6176,7 +6356,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          :ok <- require_guidance_request_work_package(guidance_request, work_package_id) do
       {:ok, tool_result(%{"guidance_request" => guidance_request_payload(guidance_request), "scope" => scope})}
     else
-      {:error, :not_found} -> guidance_request_not_found_error("read_guidance_request")
+      {:error, :not_found} -> not_found_error("read_guidance_request")
       {:error, reason} -> architect_error(reason, "read_guidance_request")
     end
   end
@@ -7015,6 +7195,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool_capability("skip_work_request_planned_slice"), do: "write:work_request"
   defp architect_tool_capability("mark_work_request_sliced"), do: "write:work_request"
   defp architect_tool_capability("dispatch_work_request_planned_slice"), do: "dispatch:work_request"
+  defp architect_tool_capability("prepare_work_package_worktree"), do: "dispatch:work_request"
+  defp architect_tool_capability("cleanup_work_package_worktree"), do: "dispatch:work_request"
   defp architect_tool_capability("read_phase_board"), do: "read:phase"
   defp architect_tool_capability("approve_scope_expansion"), do: "approve:scope_expansion"
   defp architect_tool_capability("request_child_replan"), do: "request:child_replan"
@@ -9701,11 +9883,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp timestamp(timestamp), do: mcp_timestamp(timestamp)
 
-  defp work_request_not_found_error(tool) do
-    {:error, -32_004, "Not found", %{"tool" => tool, "reason" => "not_found"}}
-  end
-
-  defp guidance_request_not_found_error(tool) do
+  defp not_found_error(tool) do
     {:error, -32_004, "Not found", %{"tool" => tool, "reason" => "not_found"}}
   end
 
@@ -9770,6 +9948,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
+  defp progress_event_payload(nil), do: nil
+
   defp artifact_payload(%Artifact{} = artifact) do
     %{
       "id" => artifact.id,
@@ -9779,6 +9959,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "uri" => Redactor.redact_text(artifact.uri),
       "metadata" => Redactor.redact_output(artifact.metadata || %{})
     }
+  end
+
+  defp worktree_lifecycle_payload(result, scope, audit_event) do
+    %{
+      "work_package" => work_package_worktree_payload(result.work_package),
+      "worktree" => %{
+        "status" => result.status,
+        "path" => Redactor.redact_text(result.worktree_path),
+        "repo_root" => Redactor.redact_text(result.repo_root),
+        "branch" => result.branch,
+        "base_branch" => result.base_branch
+      },
+      "worker_launch" => worktree_worker_launch_payload(result),
+      "audit_event" => progress_event_payload(audit_event),
+      "scope" => scope
+    }
+  end
+
+  defp worktree_worker_launch_payload(%{worktree_path: worktree_path, branch: branch, base_branch: base_branch})
+       when is_binary(worktree_path) and is_binary(branch) and is_binary(base_branch) do
+    %{
+      "workspace_path" => Redactor.redact_text(worktree_path),
+      "branch" => branch,
+      "base_branch" => base_branch,
+      "instruction" => "Use this worktree only for the assigned WorkPackage."
+    }
+  end
+
+  defp worktree_worker_launch_payload(_result), do: nil
+
+  defp work_package_worktree_payload(%WorkPackage{} = work_package) do
+    work_package
+    |> work_package_payload()
+    |> Map.put("worktree_path", Redactor.redact_text(work_package.worktree_path))
   end
 
   defp work_package_payload(%WorkPackage{} = work_package) do

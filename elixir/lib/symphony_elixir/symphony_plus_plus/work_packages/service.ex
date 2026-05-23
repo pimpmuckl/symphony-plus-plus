@@ -3,8 +3,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Service do
 
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle
 
-  @type error :: Repository.error()
+  @type error :: Repository.error() | WorktreeLifecycle.error()
 
   @spec create(Repository.repo(), map()) :: {:ok, WorkPackage.t()} | {:error, error()}
   def create(repo, attrs), do: Repository.create(repo, attrs)
@@ -17,4 +18,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Service do
 
   @spec update(Repository.repo(), String.t(), map()) :: {:ok, WorkPackage.t()} | {:error, error()}
   def update(repo, id, attrs), do: Repository.update(repo, id, attrs)
+
+  @spec prepare_worktree(Repository.repo(), String.t(), map()) ::
+          {:ok, WorktreeLifecycle.lifecycle_result()} | {:error, error()}
+  def prepare_worktree(repo, id, attrs), do: WorktreeLifecycle.prepare(repo, id, attrs)
+
+  @spec cleanup_worktree(Repository.repo(), String.t()) ::
+          {:ok, WorktreeLifecycle.lifecycle_result()} | {:error, error()}
+  @spec cleanup_worktree(Repository.repo(), String.t(), keyword()) ::
+          {:ok, WorktreeLifecycle.lifecycle_result()} | {:error, error()}
+  def cleanup_worktree(repo, id, opts \\ []), do: WorktreeLifecycle.cleanup(repo, id, opts)
 end
