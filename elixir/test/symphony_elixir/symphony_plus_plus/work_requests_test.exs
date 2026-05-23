@@ -2,20 +2,80 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
   use ExUnit.Case, async: false
 
   alias Ecto.Adapters.SQL
-  alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
+  alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
   alias SymphonyElixir.WorkPackageFactory
+
+  defmodule LockedWorkRequestUpdateRepo do
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    def all(query), do: Repo.all(query)
+    def get(schema, id), do: Repo.get(schema, id)
+    def rollback(reason), do: Repo.rollback(reason)
+    def transaction(fun), do: Repo.transaction(fun)
+    def update(_changeset), do: raise(%Exqlite.Error{message: "database is locked"})
+  end
+
+  defmodule ReopeningArchiveRepo do
+    import Ecto.Query, only: [from: 2]
+
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+    alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
+
+    @race_key :sympp_reopen_during_archive_id
+
+    def arm(work_request_id), do: Process.put(@race_key, work_request_id)
+    def disarm, do: Process.delete(@race_key)
+
+    def all(query), do: Repo.all(query)
+    def get(schema, id), do: Repo.get(schema, id)
+    def rollback(reason), do: Repo.rollback(reason)
+    def transaction(fun), do: Repo.transaction(fun)
+    def update(changeset), do: Repo.update(changeset)
+
+    def update_all(query, updates) do
+      case Process.get(@race_key) do
+        work_request_id when is_binary(work_request_id) ->
+          Process.delete(@race_key)
+
+          Repo.update_all(
+            from(work_request in WorkRequest, where: work_request.id == ^work_request_id),
+            set: [completed_at: nil, archived_at: nil, archive_reason: nil, updated_at: DateTime.utc_now(:microsecond)]
+          )
+
+        _race ->
+          :ok
+      end
+
+      Repo.update_all(query, updates)
+    end
+  end
+
+  defmodule CompletionClearLockedPlanningRepo do
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    def all(query), do: Repo.all(query)
+    def get(schema, id), do: Repo.get(schema, id)
+    def insert(changeset), do: Repo.insert(changeset)
+    def one(query), do: Repo.one(query)
+    def rollback(reason), do: Repo.rollback(reason)
+    def transaction(fun), do: Repo.transaction(fun)
+    def update_all(_query, _updates), do: raise(%Exqlite.Error{message: "database is locked"})
+  end
 
   setup_all do
     database_path = database_path()
@@ -211,9 +271,354 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert archived.status == "ready_for_slicing"
     assert archived.completed_at == completed.completed_at
     assert %DateTime{} = archived.archived_at
+    assert archived.archive_reason == "manual"
+    assert {:ok, []} = Repository.list(repo)
+    assert {:ok, [^archived]} = Repository.list(repo, include_archived: true)
+
+    assert {:ok, _manual_retention} =
+             Service.retention_pass(repo, now: DateTime.utc_now(:microsecond), archive_after_days: 3650)
+
+    assert {:ok, manually_archived} = Repository.get(repo, request.id)
+    assert manually_archived.archived_at == archived.archived_at
+    assert manually_archived.archive_reason == "manual"
+
+    assert {:ok, restored} = Service.restore(repo, request.id)
+    assert restored.archived_at == nil
+    assert restored.archive_reason == nil
+    assert DateTime.compare(restored.completed_at, completed.completed_at) in [:gt, :eq]
+  end
+
+  test "completion write failures are normalized", %{repo: repo} do
+    assert {:ok, request} = Repository.create(repo, attrs(id: "WR-COMPLETE-LOCKED", status: "ready_for_slicing"))
+    assert {:ok, slice} = Repository.add_planned_slice(repo, request.id, planned_slice_attrs(id: "WRS-COMPLETE-LOCKED"))
+    assert {:ok, _skipped} = Repository.skip_planned_slice(repo, request.id, slice.id, "planned")
+
+    assert {:error, :database_busy} = Service.refresh_completion(LockedWorkRequestUpdateRepo, request.id)
+    assert {:ok, unchanged} = Repository.get(repo, request.id)
+    assert unchanged.completed_at == nil
+    assert unchanged.archived_at == nil
+  end
+
+  test "archive rechecks current completion before hiding a request", %{repo: repo} do
+    request = completed_skipped_request!(repo, "WR-ARCHIVE-REOPEN-RACE", utc_usec(~U[2026-05-01 00:00:00Z]))
+
+    try do
+      ReopeningArchiveRepo.arm(request.id)
+      assert {:error, :not_completed} = Service.archive(ReopeningArchiveRepo, request.id)
+    after
+      ReopeningArchiveRepo.disarm()
+    end
+
+    assert {:ok, reopened} = Repository.get(repo, request.id)
+    assert reopened.completed_at == nil
+    assert reopened.archived_at == nil
+    assert reopened.archive_reason == nil
+  end
+
+  test "retention skips stale archive candidates", %{repo: repo} do
+    now = utc_usec(~U[2026-05-23 12:00:00Z])
+    request = completed_skipped_request!(repo, "WR-RETENTION-STALE-CANDIDATE", utc_usec(~U[2026-05-01 00:00:00Z]))
+
+    try do
+      ReopeningArchiveRepo.arm(request.id)
+
+      assert {:ok, summary} =
+               Service.retention_pass(ReopeningArchiveRepo,
+                 now: now,
+                 archive_after_days: 1
+               )
+
+      assert summary.archived_ids == []
+      assert summary.archived_count == 0
+    after
+      ReopeningArchiveRepo.disarm()
+    end
+
+    assert {:ok, reopened} = Repository.get(repo, request.id)
+    assert reopened.completed_at == nil
+    assert reopened.archived_at == nil
+  end
+
+  test "blocker reopen events roll back when completion clearing fails", %{repo: repo} do
+    assert {:ok, request} = Repository.create(repo, attrs(id: "WR-BLOCKER-ROLLBACK", status: "ready_for_slicing"))
+    assert {:ok, planned_slice} = Repository.add_planned_slice(repo, request.id, planned_slice_attrs(id: "WRS-BLOCKER-ROLLBACK"))
+    assert {:ok, approved_slice} = Repository.approve_planned_slice(repo, request.id, planned_slice.id, "planned")
+    linked_package = create_matching_work_package!(repo, request, approved_slice, id: "WP-BLOCKER-ROLLBACK", status: "merged")
+    assert {:ok, _dispatched} = Repository.dispatch_planned_slice(repo, request.id, approved_slice.id, "approved", linked_package.id)
+    assert {:ok, _completed} = Service.refresh_completion(repo, request.id)
+    assert {:ok, archived} = Service.archive(repo, request.id)
+
+    assert {:error, :database_busy} =
+             PlanningRepository.append_progress_event(CompletionClearLockedPlanningRepo, %{
+               work_package_id: linked_package.id,
+               summary: "Blocked",
+               status: "blocked",
+               idempotency_key: "blocker-clear-rollback",
+               payload: %{type: "blocker", source_tool: "report_blocker", blocker_id: "clear-rollback", active: true}
+             })
+
+    assert {:ok, []} = PlanningRepository.list_progress_events(repo, linked_package.id)
+    assert {:ok, still_archived} = Repository.get(repo, request.id)
+    assert still_archived.archived_at == archived.archived_at
+  end
+
+  test "retention archives completed work requests after fourteen days and preserves history", %{repo: repo} do
+    now = utc_usec(~U[2026-05-23 12:00:00Z])
+    old_completed_at = utc_usec(~U[2026-05-09 12:00:00Z])
+    recent_completed_at = utc_usec(~U[2026-05-20 12:00:00Z])
+
+    old_request = completed_skipped_request!(repo, "WR-RETENTION-OLD", old_completed_at)
+    recent_request = completed_skipped_request!(repo, "WR-RETENTION-RECENT", recent_completed_at)
+
+    assert {:ok, _decision} =
+             Repository.record_decision(repo, old_request.id, decision_attrs(id: "WRD-RETENTION-OLD"))
+
+    assert {:ok, summary} = Service.retention_pass(repo, now: now)
+    assert summary.archived_ids == [old_request.id]
+    assert summary.archived_count == 1
+
+    assert {:ok, archived} = Repository.get(repo, old_request.id)
+    assert archived.completed_at == old_completed_at
+    assert %DateTime{} = archived.archived_at
+
+    assert {:ok, [_slice]} = Repository.list_planned_slices(repo, old_request.id)
+    assert {:ok, [_decision]} = Repository.list_decisions(repo, old_request.id)
+
+    assert {:ok, [^recent_request]} = Repository.list(repo)
+    assert {:ok, all_requests} = Repository.list(repo, %{include_archived: true})
+    assert Enum.map(all_requests, & &1.id) == [old_request.id, recent_request.id]
+
+    assert {:ok, all_requests} = Repository.list(repo, %{"include_archived" => "true"})
+    assert Enum.map(all_requests, & &1.id) == [old_request.id, recent_request.id]
+
+    assert {:ok, all_requests} = Repository.list(repo, include_archived: true)
+    assert Enum.map(all_requests, & &1.id) == [old_request.id, recent_request.id]
+  end
+
+  test "retention accepts a custom archive day cutoff", %{repo: repo} do
+    now = utc_usec(~U[2026-05-23 12:00:00Z])
+    completed_at = utc_usec(~U[2026-05-20 12:00:00Z])
+    request = completed_skipped_request!(repo, "WR-RETENTION-CUSTOM-CUTOFF", completed_at)
+
+    assert {:ok, default_summary} = Service.retention_pass(repo, now: now)
+    assert default_summary.archived_ids == []
+
+    assert {:ok, custom_summary} = Service.retention_pass(repo, now: now, archive_after_days: 2)
+    assert custom_summary.archived_ids == [request.id]
+    assert {:ok, auto_archived} = Repository.get(repo, request.id)
+    assert auto_archived.archive_reason == "age"
+
+    assert {:ok, relaxed_summary} = Service.retention_pass(repo, now: now, archive_after_days: 14)
+    assert relaxed_summary.archived_ids == []
+    assert {:ok, relaxed} = Repository.get(repo, request.id)
+    assert relaxed.completed_at == completed_at
+    assert relaxed.archived_at == nil
+  end
+
+  test "retention caps visible completed work requests to ten per repo", %{repo: repo} do
+    now = utc_usec(~U[2026-05-23 12:00:00Z])
+    release_completed_at = utc_usec(~U[2026-05-11 00:00:00Z])
+
+    completed_requests =
+      for index <- 1..12 do
+        day = 10 + index
+
+        completed_at =
+          ~U[2026-05-01 12:00:00Z]
+          |> utc_usec()
+          |> DateTime.add((day - 1) * 24 * 60 * 60, :second)
+
+        completed_skipped_request!(repo, "WR-RETENTION-CAP-#{index}", completed_at)
+      end
+
+    release_request =
+      completed_skipped_request!(repo, "WR-RETENTION-CAP-RELEASE", release_completed_at, base_branch: "release/1.0")
+
+    assert {:ok, summary} = Service.retention_pass(repo, now: now)
+
+    assert summary.archived_ids == ["WR-RETENTION-CAP-1", "WR-RETENTION-CAP-2"]
+    assert summary.archived_count == 2
+    assert {:ok, first_overflow} = Repository.get(repo, "WR-RETENTION-CAP-1")
+    assert first_overflow.archive_reason == "limit"
+
+    assert {:ok, visible_requests} = Repository.list(repo)
+    assert Enum.map(visible_requests, & &1.id) == Enum.map(Enum.drop(completed_requests, 2), & &1.id) ++ [release_request.id]
+
+    assert {:ok, second_summary} = Service.retention_pass(repo, now: now)
+    assert second_summary.archived_ids == []
+    assert {:ok, first_overflow_after_second_pass} = Repository.get(repo, "WR-RETENTION-CAP-1")
+    assert first_overflow_after_second_pass.archived_at == first_overflow.archived_at
+    assert first_overflow_after_second_pass.archive_reason == "limit"
+  end
+
+  test "retention is idempotent and refuses unsafe completed-at rows", %{repo: repo} do
+    now = utc_usec(~U[2026-05-23 12:00:00Z])
+    stale_completed_at = utc_usec(~U[2026-05-01 12:00:00Z])
+    request = completed_skipped_request!(repo, "WR-RETENTION-UNSAFE", stale_completed_at)
+    assert {:ok, _question} = Repository.ask_question(repo, request.id, question_attrs(id: "WRQ-RETENTION-UNSAFE"))
+
+    assert {:ok, first} = Service.retention_pass(repo, now: now)
+    assert first.archived_ids == []
+
+    assert {:ok, refreshed} = Repository.get(repo, request.id)
+    assert refreshed.completed_at == nil
+    assert refreshed.archived_at == nil
+
+    assert {:ok, second} = Service.retention_pass(repo, now: now)
+    assert second.archived_ids == []
+    assert {:ok, [^refreshed]} = Repository.list(repo)
+  end
+
+  test "reopened archived work requests return to the visible list", %{repo: repo} do
+    completed_at = utc_usec(~U[2026-05-01 00:00:00Z])
+    request = completed_skipped_request!(repo, "WR-RETENTION-REOPEN", completed_at)
+    assert {:ok, archived} = Service.archive(repo, request.id)
+    assert %DateTime{} = archived.archived_at
+
+    assert {:ok, _question} = Repository.ask_question(repo, request.id, question_attrs(id: "WRQ-RETENTION-REOPEN"))
+    assert {:ok, reopened} = Repository.get(repo, request.id)
+    assert reopened.completed_at == nil
+    assert reopened.archived_at == nil
+
+    assert {:ok, visible_requests} = Repository.list(repo)
+    assert Enum.map(visible_requests, & &1.id) == [request.id]
+
+    status_request = completed_skipped_request!(repo, "WR-RETENTION-STATUS-REOPEN", completed_at)
+    assert {:ok, status_archived} = Service.archive(repo, status_request.id)
+    assert %DateTime{} = status_archived.archived_at
+
+    assert {:ok, _status_reopened} =
+             Repository.update_status(repo, status_request.id, "ready_for_slicing", "human_info_needed")
+
+    assert {:ok, reopened_by_status} = Repository.get(repo, status_request.id)
+    assert reopened_by_status.completed_at == nil
+    assert reopened_by_status.archived_at == nil
+    assert reopened_by_status.archive_reason == nil
+    assert {:ok, visible_requests} = Repository.list(repo)
+    assert Enum.map(visible_requests, & &1.id) == [request.id, status_request.id]
+  end
+
+  test "dependency lifecycle changes reopen archived work requests", %{repo: repo} do
+    assert {:ok, request} = Repository.create(repo, attrs(id: "WR-RETENTION-LINKED-REOPEN", status: "ready_for_slicing"))
+    assert {:ok, planned_slice} = Repository.add_planned_slice(repo, request.id, planned_slice_attrs(id: "WRS-RETENTION-LINKED-REOPEN"))
+    assert {:ok, approved_slice} = Repository.approve_planned_slice(repo, request.id, planned_slice.id, "planned")
+    linked_package = create_matching_work_package!(repo, request, approved_slice, id: "WP-RETENTION-LINKED-REOPEN", status: "merged")
+    assert {:ok, _dispatched} = Repository.dispatch_planned_slice(repo, request.id, approved_slice.id, "approved", linked_package.id)
+    assert {:ok, completed} = Service.refresh_completion(repo, request.id)
+    assert %DateTime{} = completed.completed_at
+    assert {:ok, archived} = Service.archive(repo, request.id)
+    assert %DateTime{} = archived.archived_at
+
+    assert {:ok, _closed_package} = WorkPackageRepository.update_status(repo, linked_package.id, "merged", "closed")
+    assert {:ok, still_archived} = Repository.get(repo, request.id)
+    assert still_archived.completed_at == archived.completed_at
+    assert still_archived.archived_at == archived.archived_at
+
+    assert {:ok, _reopened_package} = WorkPackageRepository.update_status(repo, linked_package.id, "closed", "planning")
+
+    assert {:ok, reopened} = Repository.get(repo, request.id)
+    assert reopened.completed_at == nil
+    assert reopened.archived_at == nil
+    assert {:ok, [^reopened]} = Repository.list(repo)
+
+    assert {:ok, merged_again} = WorkPackageRepository.update_status(repo, linked_package.id, "planning", "merged")
+    assert {:ok, recompleted} = Service.refresh_completion(repo, request.id)
+    assert DateTime.compare(recompleted.completed_at, merged_again.updated_at) in [:eq, :gt]
+
+    assert {:ok, archived_again} = Service.archive(repo, request.id)
+    assert %DateTime{} = archived_again.archived_at
+
+    assert {:ok, _note} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: linked_package.id,
+               summary: "Informational note",
+               status: "recorded",
+               idempotency_key: "note-does-not-reopen"
+             })
+
+    assert {:ok, still_archived_again} = Repository.get(repo, request.id)
+    assert still_archived_again.completed_at == archived_again.completed_at
+    assert still_archived_again.archived_at == archived_again.archived_at
+
+    assert {:ok, _non_canonical_blocker} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: linked_package.id,
+               summary: "Non-canonical blocker note",
+               status: "blocked",
+               idempotency_key: "non-canonical-blocker-does-not-reopen",
+               payload: %{type: "blocker", active: true, blocker_id: "non-canonical"}
+             })
+
+    assert {:ok, still_archived_with_non_canonical_blocker} = Repository.get(repo, request.id)
+    assert still_archived_with_non_canonical_blocker.completed_at == archived_again.completed_at
+    assert still_archived_with_non_canonical_blocker.archived_at == archived_again.archived_at
+
+    blocker = append_blocker_event!(repo, linked_package.id, "blocker-reopen-archived", true)
+
+    assert {:ok, blocker_reopened} = Repository.get(repo, request.id)
+    assert blocker_reopened.completed_at == nil
+    assert blocker_reopened.archived_at == nil
+    assert DateTime.compare(blocker_reopened.updated_at, blocker.created_at) in [:eq, :gt]
+  end
+
+  test "revoking expired grants does not reopen archived work requests", %{repo: repo} do
+    assert {:ok, request} = Repository.create(repo, attrs(id: "WR-RETENTION-GRANT-REVOKE", status: "ready_for_slicing"))
+    assert {:ok, planned_slice} = Repository.add_planned_slice(repo, request.id, planned_slice_attrs(id: "WRS-RETENTION-GRANT-REVOKE"))
+    assert {:ok, approved_slice} = Repository.approve_planned_slice(repo, request.id, planned_slice.id, "planned")
+
+    linked_package =
+      create_matching_work_package!(repo, request, approved_slice, id: "WP-RETENTION-GRANT-REVOKE", status: "merged")
+
+    assert {:ok, _dispatched} = Repository.dispatch_planned_slice(repo, request.id, approved_slice.id, "approved", linked_package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+
+    expired_at = utc_usec(~U[2026-05-01 00:00:00Z])
+
+    grant =
+      minted.grant
+      |> Ecto.Changeset.change(claimed_at: DateTime.add(expired_at, -60, :second), claimed_by: "worker-1", expires_at: expired_at)
+      |> repo.update!()
+
+    assert {:ok, completed} = Service.refresh_completion(repo, request.id)
+    assert %DateTime{} = completed.completed_at
+    assert {:ok, archived} = Service.archive(repo, request.id)
+    assert %DateTime{} = archived.archived_at
+
+    assert {:ok, _revoked_grant} = AccessGrantRepository.revoke(repo, grant.id, DateTime.utc_now(:microsecond))
+    assert {:ok, still_archived} = Repository.get(repo, request.id)
+    assert still_archived.completed_at == archived.completed_at
+    assert still_archived.archived_at == archived.archived_at
+  end
+
+  test "completion treats unnamed claimed grants as active runtime", %{repo: repo} do
+    assert {:ok, request} = Repository.create(repo, attrs(id: "WR-COMPLETE-UNNAMED-GRANT", status: "ready_for_slicing"))
+    assert {:ok, planned_slice} = Repository.add_planned_slice(repo, request.id, planned_slice_attrs(id: "WRS-COMPLETE-UNNAMED-GRANT"))
+    assert {:ok, approved_slice} = Repository.approve_planned_slice(repo, request.id, planned_slice.id, "planned")
+
+    linked_package =
+      create_matching_work_package!(repo, request, approved_slice, id: "WP-COMPLETE-UNNAMED-GRANT", status: "merged")
+
+    assert {:ok, _dispatched} = Repository.dispatch_planned_slice(repo, request.id, approved_slice.id, "approved", linked_package.id)
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+
+    minted.grant
+    |> Ecto.Changeset.change(claimed_at: DateTime.utc_now(:microsecond), claimed_by: nil)
+    |> repo.update!()
+
+    assert {:ok, with_grant} = Service.refresh_completion(repo, request.id)
+    assert with_grant.completed_at == nil
   end
 
   test "completion waits for questions blockers linked packages and active runtime", %{repo: repo} do
+    assert {:ok, human_request} = Repository.create(repo, attrs(id: "WR-COMPLETE-HUMAN", status: "ready_for_slicing"))
+    assert {:ok, human_slice} = Repository.add_planned_slice(repo, human_request.id, planned_slice_attrs(id: "WRS-COMPLETE-HUMAN"))
+    assert {:ok, _human_skipped} = Repository.skip_planned_slice(repo, human_request.id, human_slice.id, "planned")
+    human_request |> Ecto.Changeset.change(status: "human_info_needed") |> repo.update!()
+
+    assert {:ok, waiting_for_human} = Service.refresh_completion(repo, human_request.id)
+    assert waiting_for_human.completed_at == nil
+    assert {:error, :not_completed} = Service.archive(repo, human_request.id)
+
     assert {:ok, question_request} = Repository.create(repo, attrs(id: "WR-COMPLETE-QUESTION", status: "ready_for_slicing"))
     assert {:ok, question_slice} = Repository.add_planned_slice(repo, question_request.id, planned_slice_attrs(id: "WRS-COMPLETE-QUESTION"))
     assert {:ok, _skipped} = Repository.skip_planned_slice(repo, question_request.id, question_slice.id, "planned")
@@ -242,6 +647,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert %DateTime{} = unblocked.completed_at
     assert DateTime.compare(unblocked.completed_at, resolved_blocker.created_at) in [:eq, :gt]
 
+    assert {:ok, ordered_request} = Repository.create(repo, attrs(id: "WR-COMPLETE-BLOCKER-ORDER", status: "ready_for_slicing"))
+    assert {:ok, ordered_slice} = Repository.add_planned_slice(repo, ordered_request.id, planned_slice_attrs(id: "WRS-COMPLETE-BLOCKER-ORDER"))
+    assert {:ok, ordered_slice} = Repository.approve_planned_slice(repo, ordered_request.id, ordered_slice.id, "planned")
+    ordered_package = create_matching_work_package!(repo, ordered_request, ordered_slice, id: "WP-COMPLETE-BLOCKER-ORDER", status: "merged")
+    assert {:ok, _ordered_dispatched} = Repository.dispatch_planned_slice(repo, ordered_request.id, ordered_slice.id, "approved", ordered_package.id)
+
+    event_time = utc_usec(~U[2026-05-23 12:00:00Z])
+    append_blocker_event!(repo, ordered_package.id, "blocker-order", true, created_at: DateTime.add(event_time, 10, :second))
+    append_blocker_event!(repo, ordered_package.id, "blocker-order", false, created_at: DateTime.add(event_time, -10, :second))
+    assert {:ok, ordered_unblocked} = Service.refresh_completion(repo, ordered_request.id)
+    assert %DateTime{} = ordered_unblocked.completed_at
+
     assert {:ok, runtime_request} = Repository.create(repo, attrs(id: "WR-COMPLETE-RUNTIME", status: "ready_for_slicing"))
     assert {:ok, runtime_slice} = Repository.add_planned_slice(repo, runtime_request.id, planned_slice_attrs(id: "WRS-COMPLETE-RUNTIME"))
     assert {:ok, runtime_slice} = Repository.approve_planned_slice(repo, runtime_request.id, runtime_slice.id, "planned")
@@ -260,9 +677,87 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert {:ok, with_runtime} = Service.refresh_completion(repo, runtime_request.id)
     assert with_runtime.completed_at == nil
 
+    stale_seen_at = utc_usec(~U[2026-05-23 11:00:00Z])
+
+    run
+    |> Ecto.Changeset.change(last_seen_at: stale_seen_at, updated_at: DateTime.add(stale_seen_at, -60, :second))
+    |> repo.update!()
+
+    assert {:ok, stale_runtime} = Service.refresh_completion(repo, runtime_request.id)
+    assert DateTime.compare(stale_runtime.completed_at, DateTime.add(stale_seen_at, 300, :second)) in [:eq, :gt]
+
+    assert {:ok, archived_runtime} = Service.archive(repo, runtime_request.id)
+    assert %DateTime{} = archived_runtime.archived_at
+
     assert {:ok, _completed_run} = AgentRunRepository.mark_completed(repo, run.id, "done")
+    assert {:ok, still_archived_runtime} = Repository.get(repo, runtime_request.id)
+    assert still_archived_runtime.completed_at == archived_runtime.completed_at
+    assert still_archived_runtime.archived_at == archived_runtime.archived_at
+
     assert {:ok, without_runtime} = Service.refresh_completion(repo, runtime_request.id)
     assert %DateTime{} = without_runtime.completed_at
+  end
+
+  test "visible completion treats terminal package cards as terminal" do
+    updated_at = utc_usec(~U[2026-05-23 12:00:00Z])
+    work_request = %WorkRequest{id: "WR-COMPLETE-CARD", status: "ready_for_slicing", updated_at: updated_at}
+    planned_slice = %PlannedSlice{id: "WRS-COMPLETE-CARD", status: "dispatched", work_package_id: "WP-COMPLETE-CARD", updated_at: updated_at}
+
+    state =
+      Completion.visible_state(
+        work_request,
+        %{open_count: 0, latest_gate_at: nil},
+        [planned_slice],
+        %{"WP-COMPLETE-CARD" => %{card: %{operational_state: %{key: "merged"}}}}
+      )
+
+    assert state.completed? == true
+    assert state.completed_at == updated_at
+
+    running_state =
+      Completion.visible_state(
+        work_request,
+        %{open_count: 0, latest_gate_at: nil},
+        [planned_slice],
+        %{"WP-COMPLETE-CARD" => %{card: %{operational_state: %{"key" => "merged", "has_active_worker" => true}}}}
+      )
+
+    refute running_state.completed?
+
+    blocked_state =
+      Completion.visible_state(
+        work_request,
+        %{open_count: 0, latest_gate_at: nil},
+        [planned_slice],
+        %{"WP-COMPLETE-CARD" => %{card: %{operational_state: %{"key" => "merged", "attention_items" => [%{"key" => "active_blocker"}]}}}}
+      )
+
+    refute blocked_state.completed?
+  end
+
+  test "visible completion preserves persisted state when only some terminal slices are visible" do
+    completed_at = utc_usec(~U[2026-05-23 12:00:00Z])
+
+    work_request = %WorkRequest{
+      id: "WR-COMPLETE-FILTERED",
+      status: "ready_for_slicing",
+      completed_at: completed_at,
+      updated_at: completed_at
+    }
+
+    visible_slice = %PlannedSlice{id: "WRS-COMPLETE-FILTERED-1", status: "dispatched", work_package_id: "WP-COMPLETE-FILTERED-1", updated_at: completed_at}
+    filtered_slice = %PlannedSlice{id: "WRS-COMPLETE-FILTERED-2", status: "dispatched", work_package_id: "WP-COMPLETE-FILTERED-2", updated_at: completed_at}
+
+    state =
+      Completion.visible_state(
+        work_request,
+        %{open_count: 0, latest_gate_at: nil},
+        [visible_slice, filtered_slice],
+        %{"WP-COMPLETE-FILTERED-1" => %{card: %{operational_state: %{key: "merged"}}}}
+      )
+
+    assert state.completed? == true
+    assert state.completed_at == completed_at
   end
 
   test "returns not found for missing work requests", %{repo: repo} do
@@ -328,6 +823,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     Enum.into(overrides, defaults)
   end
 
+  defp decision_attrs(overrides) do
+    defaults = %{
+      source_type: "architect",
+      decision: "Archive only after completion.",
+      rationale: "The ledger remains the audit source.",
+      scope_impact: "No hard delete.",
+      created_by: "retention-test"
+    }
+
+    Enum.into(overrides, defaults)
+  end
+
+  defp completed_skipped_request!(repo, id, completed_at, overrides \\ []) do
+    assert {:ok, request} = Repository.create(repo, attrs(Keyword.merge([id: id, status: "ready_for_slicing"], overrides)))
+
+    assert {:ok, slice} =
+             Repository.add_planned_slice(repo, request.id, planned_slice_attrs(id: "WRS-#{id}", target_base_branch: request.base_branch))
+
+    assert {:ok, _skipped} = Repository.skip_planned_slice(repo, request.id, slice.id, "planned")
+    assert {:ok, completed} = Service.refresh_completion(repo, request.id)
+
+    completed
+    |> Ecto.Changeset.change(completed_at: completed_at, archived_at: nil)
+    |> repo.update!()
+  end
+
+  defp utc_usec(%DateTime{} = datetime), do: %{datetime | microsecond: {elem(datetime.microsecond, 0), 6}}
+
   defp create_matching_work_package!(repo, work_request, planned_slice, overrides) do
     attrs =
       [
@@ -347,15 +870,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     work_package
   end
 
-  defp append_blocker_event!(repo, work_package_id, blocker_id, active) do
+  defp append_blocker_event!(repo, work_package_id, blocker_id, active, overrides \\ []) do
     assert {:ok, event} =
-             PlanningRepository.append_progress_event(repo, %{
-               work_package_id: work_package_id,
-               summary: "Blocked",
-               status: if(active, do: "blocked", else: "unblocked"),
-               idempotency_key: "#{blocker_id}-#{active}-#{System.unique_integer([:positive])}",
-               payload: %{type: "blocker", source_tool: blocker_source_tool(active), blocker_id: blocker_id, active: active}
-             })
+             PlanningRepository.append_progress_event(
+               repo,
+               Enum.into(overrides, %{
+                 work_package_id: work_package_id,
+                 summary: "Blocked",
+                 status: if(active, do: "blocked", else: "unblocked"),
+                 idempotency_key: "#{blocker_id}-#{active}-#{System.unique_integer([:positive])}",
+                 payload: %{type: "blocker", source_tool: blocker_source_tool(active), blocker_id: blocker_id, active: active}
+               })
+             )
 
     event
   end

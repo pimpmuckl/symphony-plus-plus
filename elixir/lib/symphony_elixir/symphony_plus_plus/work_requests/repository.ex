@@ -8,6 +8,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
+  @completion_blocking_statuses ["human_info_needed"]
+
   import Ecto.Query, only: [from: 2]
 
   @default_sequence_retry_attempts 200
@@ -81,8 +83,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
   end
 
   @spec list(repo()) :: {:ok, [WorkRequest.t()]} | {:error, error()}
-  @spec list(repo(), map()) :: {:ok, [WorkRequest.t()]} | {:error, error()}
-  def list(repo, filters \\ %{}) when is_atom(repo) and is_map(filters) do
+  @spec list(repo(), map() | keyword()) :: {:ok, [WorkRequest.t()]} | {:error, error()}
+  def list(repo, filters \\ %{}) when is_atom(repo) and (is_map(filters) or is_list(filters)) do
     work_requests =
       repo.all(
         filters
@@ -91,6 +93,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
       )
 
     {:ok, work_requests}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  @spec clear_completion_for_work_package(repo(), String.t()) :: :ok | {:error, error()}
+  def clear_completion_for_work_package(repo, work_package_id) when is_atom(repo) and is_binary(work_package_id) do
+    now = DateTime.utc_now(:microsecond)
+
+    repo.update_all(
+      from(work_request in WorkRequest,
+        join: planned_slice in PlannedSlice,
+        on: planned_slice.work_request_id == work_request.id,
+        where: planned_slice.work_package_id == ^work_package_id,
+        where: not is_nil(work_request.completed_at) or not is_nil(work_request.archived_at)
+      ),
+      set: [completed_at: nil, archived_at: nil, archive_reason: nil, updated_at: now]
+    )
+
+    :ok
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
@@ -126,7 +147,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
       |> Map.put("work_request_id", work_request_id)
       |> Map.put("status", "open")
 
-    insert_with_sequence(repo, attrs, &next_question_sequence/2, &ClarificationQuestion.create_changeset/1)
+    changeset_fun = &ClarificationQuestion.create_changeset/1
+    insert_with_sequence(repo, attrs, &next_question_sequence/2, changeset_fun, clear_completion?: true)
   end
 
   @spec list_questions(repo(), String.t()) :: {:ok, [ClarificationQuestion.t()]} | {:error, error()}
@@ -182,7 +204,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
       |> Map.drop(@planned_slice_create_ignored_attrs)
       |> Map.put("work_request_id", work_request_id)
 
-    insert_with_sequence(repo, attrs, &next_planned_slice_sequence/2, &PlannedSlice.create_changeset/1)
+    changeset_fun = &PlannedSlice.create_changeset/1
+    insert_with_sequence(repo, attrs, &next_planned_slice_sequence/2, changeset_fun, clear_completion?: true)
   end
 
   @spec list_planned_slices(repo(), String.t()) :: {:ok, [PlannedSlice.t()]} | {:error, error()}
@@ -261,12 +284,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
   end
 
   defp list_query(filters) do
+    filters = normalize_keys(filters)
+
     base_query =
       from(work_request in WorkRequest,
         order_by: [asc: work_request.inserted_at, asc: work_request.id]
       )
 
+    base_query =
+      if include_archived?(filters) do
+        base_query
+      else
+        from(work_request in base_query, where: is_nil(work_request.archived_at))
+      end
+
     Enum.reduce(filters, base_query, fn
+      {"include_archived", _include_archived}, query ->
+        query
+
+      {:include_archived, _include_archived}, query ->
+        query
+
       {"status", status}, query when is_binary(status) and status != "" ->
         from(work_request in query, where: work_request.status == ^status)
 
@@ -281,13 +319,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     end)
   end
 
+  defp include_archived?(filters) do
+    (Map.get(filters, "include_archived") || Map.get(filters, :include_archived)) in [true, "true", "1"]
+  end
+
   defp update_valid_status(repo, id, current_status, next_status) do
     now = DateTime.utc_now(:microsecond)
 
     repo.transaction(fn ->
       id
       |> status_update_query(current_status)
-      |> repo.update_all(set: [status: next_status, updated_at: now])
+      |> repo.update_all(set: status_update_values(next_status, now))
       |> case do
         {1, _rows} -> repo.get!(WorkRequest, id)
         {0, _rows} -> repo.rollback(stale_status_error(repo, id))
@@ -300,6 +342,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
+
+  defp status_update_values(next_status, now) when next_status in @completion_blocking_statuses do
+    [status: next_status, completed_at: nil, archived_at: nil, archive_reason: nil, updated_at: now]
+  end
+
+  defp status_update_values(next_status, now), do: [status: next_status, updated_at: now]
 
   defp validate_status(status) do
     if status in WorkRequest.statuses() do
@@ -347,17 +395,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     )
   end
 
-  defp insert_with_sequence(repo, attrs, next_sequence, changeset_fun) do
-    do_insert_with_sequence(repo, attrs, next_sequence, changeset_fun, sequence_retry_attempts())
+  defp insert_with_sequence(repo, attrs, next_sequence, changeset_fun, opts \\ []) do
+    do_insert_with_sequence(repo, attrs, next_sequence, changeset_fun, opts, sequence_retry_attempts())
   end
 
-  defp do_insert_with_sequence(repo, attrs, next_sequence, changeset_fun, attempts_left) do
+  defp do_insert_with_sequence(repo, attrs, next_sequence, changeset_fun, opts, attempts_left) do
     repo
-    |> insert_sequence_transaction(attrs, next_sequence, changeset_fun)
-    |> handle_sequence_insert_result(repo, attrs, next_sequence, changeset_fun, attempts_left)
+    |> insert_sequence_transaction(attrs, next_sequence, changeset_fun, opts)
+    |> handle_sequence_insert_result(repo, attrs, next_sequence, changeset_fun, opts, attempts_left)
   end
 
-  defp insert_sequence_transaction(repo, attrs, next_sequence, changeset_fun) do
+  defp insert_sequence_transaction(repo, attrs, next_sequence, changeset_fun, opts) do
     repo.transaction(fn ->
       attrs = Map.put(attrs, "sequence", next_sequence.(repo, Map.fetch!(attrs, "work_request_id")))
 
@@ -365,10 +413,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
       |> changeset_fun.()
       |> repo.insert()
       |> normalize_insert_result()
-      |> case do
-        {:ok, record} -> record
-        {:error, reason} -> repo.rollback(reason)
-      end
+      |> return_inserted_record_or_rollback(repo, attrs, opts)
     end)
     |> normalize_transaction_result()
   rescue
@@ -376,7 +421,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
-  defp handle_sequence_insert_result({:ok, record}, _repo, _attrs, _next_sequence, _changeset_fun, _attempts_left) do
+  defp return_inserted_record_or_rollback({:ok, record}, repo, attrs, opts) do
+    case maybe_clear_completion_state(repo, attrs, opts) do
+      :ok -> record
+      {:error, reason} -> repo.rollback(reason)
+    end
+  end
+
+  defp return_inserted_record_or_rollback({:error, reason}, repo, _attrs, _opts), do: repo.rollback(reason)
+
+  defp handle_sequence_insert_result({:ok, record}, _repo, _attrs, _next_sequence, _changeset_fun, _opts, _attempts_left) do
     {:ok, record}
   end
 
@@ -386,29 +440,48 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
          attrs,
          next_sequence,
          changeset_fun,
+         opts,
          attempts_left
        ) do
     if sequence_constraint?(constraint) do
-      retry_or_error(repo, attrs, next_sequence, changeset_fun, attempts_left, :sequence_conflict)
+      retry_or_error(repo, attrs, next_sequence, changeset_fun, opts, attempts_left, :sequence_conflict)
     else
       {:error, {:constraint_failed, constraint}}
     end
   end
 
-  defp handle_sequence_insert_result({:error, :database_busy}, repo, attrs, next_sequence, changeset_fun, attempts_left) do
-    retry_or_error(repo, attrs, next_sequence, changeset_fun, attempts_left, :database_busy)
+  defp handle_sequence_insert_result({:error, :database_busy}, repo, attrs, next_sequence, changeset_fun, opts, attempts_left) do
+    retry_or_error(repo, attrs, next_sequence, changeset_fun, opts, attempts_left, :database_busy)
   end
 
-  defp handle_sequence_insert_result({:error, reason}, _repo, _attrs, _next_sequence, _changeset_fun, _attempts_left) do
+  defp handle_sequence_insert_result({:error, reason}, _repo, _attrs, _next_sequence, _changeset_fun, _opts, _attempts_left) do
     {:error, reason}
   end
 
-  defp retry_or_error(_repo, _attrs, _next_sequence, _changeset_fun, 0, terminal_error), do: {:error, terminal_error}
+  defp retry_or_error(_repo, _attrs, _next_sequence, _changeset_fun, _opts, 0, terminal_error), do: {:error, terminal_error}
 
-  defp retry_or_error(repo, attrs, next_sequence, changeset_fun, attempts_left, _terminal_error) do
+  defp retry_or_error(repo, attrs, next_sequence, changeset_fun, opts, attempts_left, _terminal_error) do
     Process.sleep(retry_delay_ms(attempts_left, sequence_retry_attempts()))
-    do_insert_with_sequence(repo, attrs, next_sequence, changeset_fun, attempts_left - 1)
+    do_insert_with_sequence(repo, attrs, next_sequence, changeset_fun, opts, attempts_left - 1)
   end
+
+  defp maybe_clear_completion_state(repo, %{"work_request_id" => work_request_id}, clear_completion?: true) do
+    now = DateTime.utc_now(:microsecond)
+
+    repo.update_all(
+      from(work_request in WorkRequest,
+        where: work_request.id == ^work_request_id,
+        where: not is_nil(work_request.completed_at) or not is_nil(work_request.archived_at)
+      ),
+      set: [completed_at: nil, archived_at: nil, archive_reason: nil, updated_at: now]
+    )
+
+    :ok
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp maybe_clear_completion_state(_repo, _attrs, _opts), do: :ok
 
   defp retry_delay_ms(attempts_left, total_attempts) do
     used_attempts = max(total_attempts - attempts_left, 0)
@@ -943,6 +1016,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
 
   defp normalize_keys(attrs) when is_map(attrs) do
     Map.new(attrs, fn {key, value} -> {normalize_key(key), value} end)
+  end
+
+  defp normalize_keys(attrs) when is_list(attrs) do
+    attrs
+    |> Map.new(fn {key, value} -> {normalize_key(key), value} end)
   end
 
   defp normalize_key(key) when is_atom(key), do: Atom.to_string(key)

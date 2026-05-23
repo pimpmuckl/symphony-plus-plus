@@ -5,7 +5,10 @@ defmodule Mix.Tasks.Sympp.Cockpit do
 
   alias SymphonyElixir.HttpServer
   alias SymphonyElixir.SymphonyPlusPlus.MCP.Config, as: MCPConfig
+  alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Service, as: OperatorSettingsService
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
   alias SymphonyElixirWeb.Endpoint
 
   @shortdoc "Starts the local Symphony++ operator cockpit"
@@ -130,6 +133,7 @@ defmodule Mix.Tasks.Sympp.Cockpit do
   defp run_cockpit(opts, wait_fun) when is_function(wait_fun, 0) do
     original_database = Application.get_env(:symphony_elixir, :sympp_repo_database)
     original_endpoint_config = Application.get_env(:symphony_elixir, Endpoint, [])
+    original_dynamic_repo = Repo.get_dynamic_repo()
 
     try do
       :ok = ensure_dashboard_assets(opts)
@@ -137,6 +141,7 @@ defmodule Mix.Tasks.Sympp.Cockpit do
       MCPConfig.source_revision()
       configure_cockpit(opts, original_endpoint_config)
       {:ok, _started} = ensure_runtime_started()
+      :ok = run_work_request_retention()
       :ok = start_http_server_or_raise(opts)
       port = wait_for_bound_port()
 
@@ -148,7 +153,9 @@ defmodule Mix.Tasks.Sympp.Cockpit do
     after
       restore_env(:sympp_repo_database, original_database)
       Application.put_env(:symphony_elixir, Endpoint, original_endpoint_config)
+      Repo.put_dynamic_repo(original_dynamic_repo)
       stop_owned_endpoint(Process.delete(:sympp_cockpit_endpoint_pid))
+      stop_owned_endpoint(Process.delete(:sympp_cockpit_repo_pid))
       stop_owned_processes(Process.delete(:sympp_cockpit_pubsub_pids))
     end
   end
@@ -313,6 +320,58 @@ defmodule Mix.Tasks.Sympp.Cockpit do
           {:error, reason} ->
             {:error, reason}
         end
+    end
+  end
+
+  defp run_work_request_retention do
+    case start_retention_repo() do
+      {:ok, repo_pid} ->
+        Process.put(:sympp_cockpit_repo_pid, repo_pid)
+        migrate_and_run_work_request_retention()
+
+      {:error, reason} ->
+        Mix.raise("Symphony++ cockpit WorkRequest ledger open failed: #{inspect(reason)}")
+    end
+  end
+
+  defp migrate_and_run_work_request_retention do
+    case WorkRequestRepository.migrate(Repo) do
+      :ok -> run_work_request_retention_pass()
+      {:error, reason} -> Mix.raise("Symphony++ cockpit WorkRequest ledger migration failed: #{inspect(reason)}")
+    end
+  end
+
+  defp run_work_request_retention_pass do
+    with {:ok, settings} <- OperatorSettingsService.get(Repo),
+         {:ok, _summary} <-
+           WorkRequestService.retention_pass(Repo,
+             archive_after_days: settings.work_request_archive_after_days
+           ) do
+      :ok
+    else
+      {:error, reason} -> skip_work_request_retention(reason)
+    end
+  end
+
+  defp skip_work_request_retention(reason) do
+    Mix.shell().info("Symphony++ cockpit retention skipped: #{inspect(reason)}")
+    :ok
+  end
+
+  defp start_retention_repo do
+    database = Repo.database_path()
+
+    case Repo.start_link(database: database, name: Repo.process_name(database), pool_size: 1, log: false) do
+      {:ok, pid} ->
+        Repo.put_dynamic_repo(pid)
+        {:ok, pid}
+
+      {:error, {:already_started, pid}} ->
+        Repo.put_dynamic_repo(pid)
+        {:ok, nil}
+
+      {:error, reason} ->
+        {:error, {:repo_start_failed, reason}}
     end
   end
 

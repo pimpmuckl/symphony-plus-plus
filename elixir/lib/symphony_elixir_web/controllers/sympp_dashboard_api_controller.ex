@@ -17,6 +17,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   alias SymphonyElixir.SymphonyPlusPlus.GitHub.{DefaultClient, MergeReconciler}
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service, as: GuidanceRequestService
   alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
+  alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Service, as: OperatorSettingsService
+  alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings, as: OperatorSettings
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
@@ -555,6 +557,41 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end)
   end
 
+  @spec operator_update_settings(Conn.t(), map()) :: Conn.t()
+  def operator_update_settings(conn, params) do
+    send_local_operator_response(conn, fn repo ->
+      with {:ok, settings} <- OperatorSettingsService.update(repo, operator_settings_attrs(params)),
+           {:ok, _summary} <-
+             WorkRequestService.retention_pass(repo,
+               archive_after_days: settings.work_request_archive_after_days
+             ),
+           {:ok, dashboard} <- operator_dashboard_payload(repo) do
+        json(conn, %{settings: operator_settings_payload(settings), dashboard: dashboard})
+      end
+    end)
+  end
+
+  @spec operator_archive_work_request(Conn.t(), map()) :: Conn.t()
+  def operator_archive_work_request(conn, %{"work_request_id" => work_request_id}) do
+    send_local_operator_response(conn, fn repo ->
+      with {:ok, work_request} <- WorkRequestService.archive(repo, work_request_id),
+           {:ok, dashboard} <- operator_dashboard_payload(repo) do
+        json(conn, %{work_request: archived_work_request_payload(work_request), dashboard: dashboard})
+      end
+    end)
+  end
+
+  @spec operator_restore_work_request(Conn.t(), map()) :: Conn.t()
+  def operator_restore_work_request(conn, %{"work_request_id" => work_request_id}) do
+    send_local_operator_response(conn, fn repo ->
+      with {:ok, work_request} <- WorkRequestService.restore(repo, work_request_id),
+           {:ok, dashboard} <- operator_dashboard_payload(repo),
+           {:ok, detail} <- dashboard_work_request_detail(dashboard, work_request.id) do
+        json(conn, %{work_request: detail, dashboard: dashboard})
+      end
+    end)
+  end
+
   @spec operator_create_comment(Conn.t(), map()) :: Conn.t()
   def operator_create_comment(conn, params) do
     send_local_operator_response(conn, fn repo ->
@@ -705,8 +742,14 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp operator_dashboard_payload(repo) do
     with {:ok, repo_identity_catalog} <- Dashboard.local_operator_repo_identity_catalog(repo),
          opts = [repo_identity_catalog: repo_identity_catalog],
+         {:ok, settings} <- OperatorSettingsService.get(repo),
+         {:ok, _retention} <-
+           WorkRequestService.retention_pass(repo,
+             archive_after_days: settings.work_request_archive_after_days
+           ),
          {:ok, board} <- Dashboard.operator_board(repo, opts),
          {:ok, work_requests} <- Dashboard.work_requests(repo, opts),
+         {:ok, archived_work_requests} <- Dashboard.archived_work_requests(repo, opts),
          {:ok, guidance_requests} <- Dashboard.human_guidance_requests(repo, opts),
          {:ok, solo_sessions} <- Dashboard.solo_sessions(repo, %{}, opts),
          {:ok, work_request_details} <-
@@ -720,7 +763,9 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
          ledger: %{database: dashboard_ledger_database(repo)},
          active_blocking_edges: active_blocking_edges,
          board: board,
+         settings: operator_settings_payload(settings),
          work_requests: work_requests,
+         archived_work_requests: archived_work_requests,
          work_request_details: work_request_details,
          guidance_requests: guidance_requests,
          solo_sessions: solo_sessions
@@ -766,6 +811,32 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       "creator_name" => text_param(params, "creator_name", @local_operator_actor),
       "created_via" => text_param(params, "created_via", "cockpit"),
       "constraints" => constraints_param(params)
+    }
+  end
+
+  defp operator_settings_attrs(params) do
+    archive_after_days =
+      Map.get(params, "work_request_archive_after_days") ||
+        Map.get(params, :work_request_archive_after_days) ||
+        OperatorSettings.default_work_request_archive_after_days()
+
+    %{
+      "work_request_archive_after_days" => archive_after_days
+    }
+  end
+
+  defp operator_settings_payload(%OperatorSettings{} = settings) do
+    %{
+      work_request_archive_after_days: settings.work_request_archive_after_days
+    }
+  end
+
+  defp archived_work_request_payload(work_request) do
+    %{
+      id: work_request.id,
+      completed_at: timestamp(work_request.completed_at),
+      archived_at: timestamp(work_request.archived_at),
+      archive_reason: work_request.archive_reason
     }
   end
 
@@ -1721,8 +1792,10 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp error_response(conn, :already_closed), do: error_response(conn, 409, "already_closed", "Question is already closed")
   defp error_response(conn, :already_resolved), do: error_response(conn, 409, "already_resolved", "Comment is already resolved")
   defp error_response(conn, :invalid_answer_choice), do: error_response(conn, 422, "invalid_answer_choice", "Answer choice is invalid")
+  defp error_response(conn, :invalid_archive_after_days), do: error_response(conn, 422, "invalid_archive_after_days", "Archive cutoff is invalid")
   defp error_response(conn, :missing_answer), do: error_response(conn, 422, "missing_answer", "Answer is required")
   defp error_response(conn, :invalid_target), do: error_response(conn, 422, "invalid_target", "Comment target is invalid")
+  defp error_response(conn, :not_completed), do: error_response(conn, 422, "not_completed", "WorkRequest is not complete")
 
   defp error_response(conn, :missing_custom_redirect_note) do
     error_response(conn, 422, "missing_custom_redirect_note", "A note is required for the custom answer")

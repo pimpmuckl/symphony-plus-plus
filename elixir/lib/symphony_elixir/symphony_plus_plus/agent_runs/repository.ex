@@ -6,6 +6,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
 
   alias Ecto.Changeset
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
+
+  @active_run_statuses AgentRun.active_statuses()
 
   @type repo :: module()
   @type error ::
@@ -135,17 +138,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
   defp start_run_transaction(repo, attrs, opts) do
     work_package_id = work_package_id(attrs)
 
-    with :ok <- release_previous_attempt(repo, Keyword.get(opts, :replace_agent_run_id), work_package_id, opts) do
-      case insert_run(repo, attrs) do
-        {:error, :active_run_exists} ->
-          repo
-          |> release_retrying_reservation(work_package_id, opts)
-          |> maybe_release_stale_starting_run(repo, work_package_id, Keyword.get(opts, :starting_stale_after_ms))
-          |> maybe_insert_after_stale_release(repo, attrs)
-
-        result ->
-          result
-      end
+    with :ok <- release_previous_attempt(repo, Keyword.get(opts, :replace_agent_run_id), work_package_id, opts),
+         {:ok, %AgentRun{} = agent_run} <- insert_run_with_recovery(repo, attrs, work_package_id, opts),
+         :ok <- clear_completion_for_active_run(repo, agent_run) do
+      {:ok, agent_run}
     end
   end
 
@@ -157,6 +153,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
   rescue
     error in Ecto.ConstraintError -> normalize_constraint_error(error)
     error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp insert_run_with_recovery(repo, attrs, work_package_id, opts) do
+    case insert_run(repo, attrs) do
+      {:error, :active_run_exists} ->
+        repo
+        |> release_retrying_reservation(work_package_id, opts)
+        |> maybe_release_stale_starting_run(repo, work_package_id, Keyword.get(opts, :starting_stale_after_ms))
+        |> maybe_insert_after_stale_release(repo, attrs)
+
+      result ->
+        result
+    end
   end
 
   defp release_previous_attempt(_repo, previous_agent_run_id, _work_package_id, _opts)
@@ -256,9 +265,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
       )
 
     case updated_count do
-      0 -> {:ok, :active}
-      1 -> {:ok, :released}
-      _count -> {:error, {:constraint_failed, "multiple_retrying_agent_runs"}}
+      0 ->
+        {:ok, :active}
+
+      1 ->
+        {:ok, :released}
+
+      _count ->
+        {:error, {:constraint_failed, "multiple_retrying_agent_runs"}}
     end
   end
 
@@ -323,9 +337,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
       )
 
     case updated_count do
-      0 -> {:ok, :active}
-      1 -> {:ok, :released}
-      _count -> {:error, {:constraint_failed, "multiple_active_agent_runs"}}
+      0 ->
+        {:ok, :active}
+
+      1 ->
+        with :ok <- WorkRequestRepository.clear_completion_for_work_package(repo, work_package_id) do
+          {:ok, :released}
+        end
+
+      _count ->
+        {:error, {:constraint_failed, "multiple_active_agent_runs"}}
     end
   end
 
@@ -341,6 +362,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
   defp work_package_id(attrs), do: Map.get(attrs, :work_package_id) || Map.get(attrs, "work_package_id")
 
   defp update_run(repo, id, attrs) do
+    case repo.transaction(fn -> update_run_or_rollback(repo, id, attrs) end) do
+      {:ok, agent_run} -> {:ok, agent_run}
+      {:error, reason} -> {:error, reason}
+    end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp update_run_or_rollback(repo, id, attrs) do
+    case update_run_transaction(repo, id, attrs) do
+      {:ok, agent_run} -> agent_run
+      {:error, reason} -> repo.rollback(reason)
+    end
+  end
+
+  defp update_run_transaction(repo, id, attrs) do
     with {:ok, agent_run} <- get(repo, id),
          :ok <- active_agent_run?(agent_run),
          {:ok, changes} <- update_changes(agent_run, attrs) do
@@ -369,11 +406,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository do
       )
 
     case updated_count do
-      1 -> get(repo, id)
-      0 -> {:error, :not_active}
-      _count -> {:error, {:constraint_failed, "multiple_agent_run_updates"}}
+      1 ->
+        with {:ok, %AgentRun{} = agent_run} <- get(repo, id),
+             :ok <- clear_completion_for_active_run(repo, agent_run) do
+          {:ok, agent_run}
+        end
+
+      0 ->
+        {:error, :not_active}
+
+      _count ->
+        {:error, {:constraint_failed, "multiple_agent_run_updates"}}
     end
   end
+
+  defp clear_completion_for_active_run(repo, %AgentRun{status: status, work_package_id: work_package_id})
+       when status in @active_run_statuses and is_binary(work_package_id) do
+    WorkRequestRepository.clear_completion_for_work_package(repo, work_package_id)
+  end
+
+  defp clear_completion_for_active_run(_repo, %AgentRun{}), do: :ok
 
   defp active_agent_run?(%AgentRun{status: status}) when status in ["starting", "running", "retrying"], do: :ok
   defp active_agent_run?(%AgentRun{}), do: {:error, :not_active}

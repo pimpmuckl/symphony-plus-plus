@@ -78,4 +78,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service do
 
   @spec archive(Repository.repo(), String.t()) :: {:ok, WorkRequest.t()} | {:error, error() | :not_completed}
   def archive(repo, work_request_id), do: Completion.archive(repo, work_request_id)
+
+  @spec restore(Repository.repo(), String.t()) :: {:ok, WorkRequest.t()} | {:error, error()}
+  def restore(repo, work_request_id), do: Completion.restore(repo, work_request_id)
+
+  @spec retention_pass(Repository.repo()) ::
+          {:ok, Completion.retention_summary()} | {:error, error() | :invalid_archive_after_days | :not_completed}
+  @spec retention_pass(Repository.repo(), keyword()) ::
+          {:ok, Completion.retention_summary()} | {:error, error() | :invalid_archive_after_days | :not_completed}
+  def retention_pass(repo, opts \\ []), do: Completion.retention_pass(repo, opts)
 end

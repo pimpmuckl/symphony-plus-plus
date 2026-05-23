@@ -3,6 +3,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
 
   alias Ecto.Changeset
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
+
+  @completion_terminal_statuses ["merged", "merged_into_phase", "closed", "abandoned"]
 
   import Ecto.Query, only: [from: 2]
 
@@ -105,13 +108,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository do
       |> status_update_query(current_status)
       |> repo.update_all(set: [status: next_status, updated_at: now])
       |> case do
-        {1, _rows} -> repo.get!(WorkPackage, id)
-        {0, _rows} -> repo.rollback(stale_status_error(repo, id))
+        {1, _rows} ->
+          return_status_updated_work_package_or_rollback(repo, id, next_status)
+
+        {0, _rows} ->
+          repo.rollback(stale_status_error(repo, id))
       end
     end)
     |> case do
       {:ok, work_package} -> {:ok, work_package}
       {:error, error} -> error
+    end
+  end
+
+  defp return_status_updated_work_package_or_rollback(repo, id, next_status) when next_status in @completion_terminal_statuses do
+    repo.get!(WorkPackage, id)
+  end
+
+  defp return_status_updated_work_package_or_rollback(repo, id, _next_status) do
+    case WorkRequestRepository.clear_completion_for_work_package(repo, id) do
+      :ok -> repo.get!(WorkPackage, id)
+      {:error, reason} -> repo.rollback(reason)
     end
   end
 

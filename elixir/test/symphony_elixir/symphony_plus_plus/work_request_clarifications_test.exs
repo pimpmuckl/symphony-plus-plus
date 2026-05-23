@@ -25,6 +25,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestClarificationsTest do
     end
 
     def one(_query), do: 0
+    def update_all(_query, _updates), do: {0, []}
 
     def insert(%Changeset{} = changeset) do
       Process.put(:insert_attempts, Process.get(:insert_attempts, 0) + 1)

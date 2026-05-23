@@ -20,6 +20,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
     def get(_schema, _id), do: raise(%Exqlite.Error{message: "disk I/O failed"})
   end
 
+  defmodule CompletionClearLockedAgentRunRepo do
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    def all(query), do: Repo.all(query)
+    def get(schema, id), do: Repo.get(schema, id)
+    def insert(changeset), do: Repo.insert(changeset)
+    def one(query), do: Repo.one(query)
+    def rollback(reason), do: Repo.rollback(reason)
+    def transaction(fun), do: Repo.transaction(fun)
+    def update(changeset), do: Repo.update(changeset)
+    def update_all(_query, _updates), do: raise(%Exqlite.Error{message: "database is locked"})
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
 
@@ -111,6 +124,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AgentRunsTest do
     assert first.status == "running"
 
     assert {:error, :active_run_exists} = Service.start_dispatch(repo, issue(work_package.id), attempt: 1)
+  end
+
+  test "start run rolls back when completion clearing fails", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-RUN-CLEAR-LOCKED", status: "ready_for_worker"))
+
+    assert {:error, :database_busy} =
+             Repository.start_run(CompletionClearLockedAgentRunRepo, %{
+               work_package_id: work_package.id,
+               status: "running",
+               attempt: 1,
+               worker_task_handle: "clear-lock"
+             })
+
+    assert {:error, :not_found} = Repository.active_for_work_package(repo, work_package.id)
   end
 
   test "starting reservation blocks duplicate dispatch until promoted", %{repo: repo} do

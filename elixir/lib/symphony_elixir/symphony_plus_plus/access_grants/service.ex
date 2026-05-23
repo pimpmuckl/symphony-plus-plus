@@ -10,6 +10,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service do
   @default_worker_capabilities ["worker:claim", "worker:lifecycle.transition"]
   @default_architect_capabilities ["read:phase"]
   @terminal_work_package_statuses ["merged", "merged_into_phase", "closed", "abandoned"]
+  @claim_database_busy_retries 5
+  @claim_database_busy_retry_delay_ms 5
 
   @type minted_grant :: %{grant: AccessGrant.t(), work_key: WorkKey.t()}
   @type error :: Repository.error() | WorkPackageRepository.error() | :missing_work_package_id | :outside_phase_scope | :work_package_terminal
@@ -86,12 +88,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service do
   @spec claim(Repository.repo(), String.t(), keyword() | map()) :: {:ok, Assignment.t()} | {:error, error()}
   def claim(repo, secret, opts \\ []) when is_atom(repo) and is_binary(secret) and (is_list(opts) or is_map(opts)) do
     opts = normalize_options(opts)
+    claim(repo, secret, opts, @claim_database_busy_retries)
+  end
+
+  defp claim(repo, secret, opts, retries_remaining) do
     now = option(opts, :now, DateTime.utc_now(:microsecond))
 
-    with :ok <- reject_display_key_only(secret),
-         {:ok, grant} <- Repository.find_by_secret_hash(repo, WorkKey.secret_hash(secret)),
-         :ok <- require_live_package_authority(repo, grant) do
-      Repository.claim(repo, secret, %{claimed_by: option(opts, :claimed_by, nil)}, now, terminal_work_package_statuses: @terminal_work_package_statuses)
+    result =
+      with :ok <- reject_display_key_only(secret),
+           {:ok, grant} <- Repository.find_by_secret_hash(repo, WorkKey.secret_hash(secret)),
+           :ok <- require_live_package_authority(repo, grant) do
+        Repository.claim(repo, secret, %{claimed_by: option(opts, :claimed_by, nil)}, now, terminal_work_package_statuses: @terminal_work_package_statuses)
+      end
+
+    case result do
+      {:error, :database_busy} when retries_remaining > 0 ->
+        Process.sleep(@claim_database_busy_retry_delay_ms)
+        claim(repo, secret, opts, retries_remaining - 1)
+
+      result ->
+        result
     end
   end
 

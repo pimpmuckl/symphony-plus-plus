@@ -3,6 +3,9 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
 
   alias Mix.Tasks.Sympp.Cockpit, as: CockpitTask
   alias SymphonyElixir.SymphonyPlusPlus.Repo
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
   alias SymphonyElixir.WorkPackageFactory
   alias SymphonyElixirWeb.Endpoint
 
@@ -13,6 +16,7 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
     previous_endpoint_config = Application.get_env(:symphony_elixir, Endpoint, [])
 
     Mix.shell(Mix.Shell.Process)
+    ensure_cockpit_dashboard_asset!()
 
     on_exit(fn ->
       Mix.shell(previous_shell)
@@ -141,6 +145,77 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
     end
   end
 
+  test "runs WorkRequest retention before serving the local operator cockpit" do
+    database_path = WorkPackageFactory.database_path()
+    original_dynamic_repo = Repo.get_dynamic_repo()
+
+    try do
+      pid = start_supervised!({Repo, database: database_path, name: Repo.process_name(database_path), pool_size: 1})
+      Repo.put_dynamic_repo(pid)
+      assert :ok = WorkRequestRepository.migrate(Repo)
+      request = completed_skipped_request!(~U[2026-05-01 00:00:00Z])
+
+      assert {:ok, opts} =
+               CockpitTask.parse_args_for_test([
+                 "--database",
+                 database_path,
+                 "--port",
+                 "0",
+                 "--dashboard-origin",
+                 "http://127.0.0.1:5174"
+               ])
+
+      CockpitTask.run_cockpit_for_test(opts, fn ->
+        port = wait_for_bound_port()
+
+        api_response =
+          Req.get!("http://127.0.0.1:#{port}/api/v1/sympp/operator/dashboard",
+            headers: [{"sec-fetch-site", "none"}]
+          )
+
+        send(self(), {:retention_payload, api_response.status, api_response.body})
+      end)
+
+      assert_received {:retention_payload, 200, payload}
+      assert payload["work_requests"]["work_requests"] == []
+
+      assert %WorkRequest{archived_at: %DateTime{}} = Repo.get!(WorkRequest, request.id)
+      assert [_slice] = Repo.all(PlannedSlice)
+    after
+      Repo.put_dynamic_repo(original_dynamic_repo)
+      File.rm(database_path)
+    end
+  end
+
+  test "reports an actionable error when WorkRequest retention cannot use the ledger" do
+    database_path =
+      System.tmp_dir!()
+      |> Path.join("sympp-cockpit-missing-#{System.unique_integer([:positive])}")
+      |> Path.join("ledger.sqlite3")
+
+    assert {:ok, opts} =
+             CockpitTask.parse_args_for_test([
+               "--database",
+               database_path,
+               "--port",
+               "0",
+               "--dashboard-origin",
+               "http://127.0.0.1:5174"
+             ])
+
+    try do
+      File.mkdir_p!(database_path)
+
+      assert_raise Mix.Error, ~r/Symphony\+\+ cockpit WorkRequest ledger (open|migration) failed:/, fn ->
+        CockpitTask.run_cockpit_for_test(opts, fn ->
+          assert is_integer(wait_for_bound_port())
+        end)
+      end
+    after
+      File.rm_rf(database_path)
+    end
+  end
+
   test "reports an actionable error when the configured port is already occupied" do
     {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, port} = :inet.port(socket)
@@ -188,6 +263,52 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
       end
     end)
   end
+
+  defp ensure_cockpit_dashboard_asset! do
+    index_path =
+      :symphony_elixir
+      |> :code.priv_dir()
+      |> Path.join("static/index.html")
+
+    File.mkdir_p!(Path.dirname(index_path))
+    File.write!(index_path, "<!doctype html><html><head></head><body><div id=\"root\"></div></body></html>")
+  end
+
+  defp completed_skipped_request!(completed_at) do
+    assert {:ok, request} =
+             WorkRequestRepository.create(Repo, %{
+               title: "Finished request",
+               repo: "symphony-plus-plus",
+               base_branch: "main",
+               work_type: "feature",
+               human_description: "Already done.",
+               constraints: %{},
+               desired_dispatch_shape: "single_package",
+               status: "ready_for_slicing"
+             })
+
+    assert {:ok, slice} =
+             WorkRequestRepository.add_planned_slice(Repo, request.id, %{
+               title: "Done slice",
+               goal: "Finish the request.",
+               work_package_kind: "mcp",
+               target_base_branch: "main",
+               owned_file_globs: ["elixir/lib/symphony_elixir/symphony_plus_plus/work_requests/**"],
+               forbidden_file_globs: [],
+               acceptance_criteria: ["Done."],
+               validation_steps: ["mix test"],
+               review_lanes: ["normal"],
+               stop_conditions: []
+             })
+
+    assert {:ok, _skipped} = WorkRequestRepository.skip_planned_slice(Repo, request.id, slice.id, "planned")
+
+    request
+    |> Ecto.Changeset.change(completed_at: utc_usec(completed_at))
+    |> Repo.update!()
+  end
+
+  defp utc_usec(%DateTime{} = datetime), do: %{datetime | microsecond: {elem(datetime.microsecond, 0), 6}}
 
   defp restore_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
   defp restore_env(key, value), do: Application.put_env(:symphony_elixir, key, value)

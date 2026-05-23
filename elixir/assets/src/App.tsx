@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   AlertTriangle,
+  Archive,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -11,6 +12,7 @@ import {
   MessageSquareText,
   Moon,
   RefreshCw,
+  RotateCcw,
   Route,
   Settings2,
   Sun,
@@ -87,6 +89,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -210,6 +213,7 @@ type CommentTarget = { target_kind: CommentTargetKind; target_id: string };
 type SubmitContextComment = (target: CommentTarget, body: string) => Promise<ContextComment>;
 type ResolveContextComment = (commentId: string, resolutionNote?: string) => Promise<ContextComment>;
 type CommentStats = { comment_count: number; open_comment_count: number };
+type WorkRequestMutation = (workRequestId: string) => Promise<void>;
 type ScopedHandoffCopy = {
   error: string | null;
   identity: string;
@@ -686,6 +690,34 @@ export default function App() {
     }
   }, [setDashboard]);
 
+  const updateArchiveAfterDays = useCallback(async (archiveAfterDays: number) => {
+    const response = await fetch(operatorApiUrl("/settings"), {
+      method: "POST",
+      headers: await mutationHeaders(),
+      body: JSON.stringify({ work_request_archive_after_days: archiveAfterDays }),
+    });
+    await applyDashboardResponse(response, "Settings were not saved", dashboardFromEnvelope);
+  }, [applyDashboardResponse]);
+
+  const archiveWorkRequest = useCallback<WorkRequestMutation>(async (workRequestId) => {
+    const response = await fetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/archive`), {
+      method: "POST",
+      headers: await mutationHeaders(),
+      body: JSON.stringify({}),
+    });
+    await applyDashboardResponse(response, "WorkRequest was not archived", dashboardFromEnvelope);
+    setSelectedCardDetail(null);
+  }, [applyDashboardResponse, setSelectedCardDetail]);
+
+  const restoreWorkRequest = useCallback<WorkRequestMutation>(async (workRequestId) => {
+    const response = await fetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/restore`), {
+      method: "POST",
+      headers: await mutationHeaders(),
+      body: JSON.stringify({}),
+    });
+    await applyDashboardResponse(response, "WorkRequest was not restored", dashboardFromEnvelope);
+  }, [applyDashboardResponse]);
+
   useEffect(() => {
     void loadDashboard("initial");
   }, [loadDashboard]);
@@ -736,7 +768,9 @@ export default function App() {
 
   const packages = useMemo(() => allPackages(dashboard), [dashboard]);
   const requests = useMemo(() => dashboard?.work_requests?.work_requests ?? [], [dashboard]);
+  const archivedRequests = useMemo(() => dashboard?.archived_work_requests?.work_requests ?? [], [dashboard]);
   const requestDetails = useMemo(() => dashboard?.work_request_details ?? [], [dashboard]);
+  const archiveAfterDays = dashboard?.settings?.work_request_archive_after_days ?? 14;
   const guidanceItems = useMemo(() => allGuidanceItems(dashboard), [dashboard]);
   const blockerItems = useMemo(() => activeBlockerItems(packages, requestDetails), [packages, requestDetails]);
   const finishedHighlights = useMemo(() => recentFinishedHighlights(packages, requests, requestDetails), [packages, requests, requestDetails]);
@@ -824,10 +858,13 @@ export default function App() {
               <LiveLedgerBadge error={error} databasePath={dashboard?.ledger?.database} />
               <ThemeToggle theme={theme} onToggle={toggleTheme} />
               <DashboardSettingsDialog
+                archiveAfterDays={archiveAfterDays}
                 hideEmptyWorkstreams={hideEmptyWorkstreams}
                 hiddenWorkstreamCount={hiddenWorkstreamCount}
+                onArchiveAfterDaysChange={updateArchiveAfterDays}
                 onHideEmptyWorkstreamsChange={setHideEmptyWorkstreams}
               />
+              <ArchivedRequestsDialog requests={archivedRequests} onRestoreWorkRequest={restoreWorkRequest} />
               <Button variant="outline" size="sm" onClick={() => void loadDashboard()} disabled={refreshing} className="button-lift">
                 {refreshing ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                 Refresh
@@ -894,6 +931,7 @@ export default function App() {
           }}
           onSelectGuidance={setSelectedGuidance}
           onCopyArchitectHandoff={copyArchitectHandoff}
+          onArchiveWorkRequest={archiveWorkRequest}
           onSubmitComment={submitComment}
           onResolveComment={resolveComment}
           canMutateComments={canMutateDashboardComments(runtimeConfig)}
@@ -2350,18 +2388,67 @@ function ThemeToggle({ theme, onToggle }: { theme: DashboardTheme; onToggle: () 
 }
 
 function DashboardSettingsDialog({
+  archiveAfterDays,
   hideEmptyWorkstreams,
   hiddenWorkstreamCount,
+  onArchiveAfterDaysChange,
   onHideEmptyWorkstreamsChange,
 }: {
+  archiveAfterDays: number;
   hideEmptyWorkstreams: boolean;
   hiddenWorkstreamCount: number;
+  onArchiveAfterDaysChange: (value: number) => Promise<void>;
   onHideEmptyWorkstreamsChange: (value: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const initialFocusRef = useRef<HTMLDivElement | null>(null);
+  const [archiveDaysDraftState, setArchiveDaysDraftState] = useState({
+    source: archiveAfterDays,
+    value: String(archiveAfterDays),
+  });
+  const [archiveDaysPending, setArchiveDaysPending] = useState(false);
+  const [archiveDaysErrorState, setArchiveDaysErrorState] = useState<{ source: number; message: string | null }>({
+    source: archiveAfterDays,
+    message: null,
+  });
   const visibilityLabel = hideEmptyWorkstreams
     ? workstreamHiddenSummary(hiddenWorkstreamCount)
     : "Showing repos even when they have no requests, slices, or work packages.";
+  const archiveDaysDraft =
+    archiveDaysDraftState.source === archiveAfterDays ? archiveDaysDraftState.value : String(archiveAfterDays);
+  const archiveDaysError = archiveDaysErrorState.source === archiveAfterDays ? archiveDaysErrorState.message : null;
+  const archiveDaysDraftValue = archiveDaysDraft.trim();
+  const archiveDaysValue = Number(archiveDaysDraftValue);
+  const archiveDaysValid =
+    /^\d+$/.test(archiveDaysDraftValue) && Number.isInteger(archiveDaysValue) && archiveDaysValue >= 1 && archiveDaysValue <= 3650;
+  const archiveDaysChanged = archiveDaysValid && archiveDaysValue !== archiveAfterDays;
+
+  function setArchiveDaysDraft(value: string) {
+    setArchiveDaysDraftState({ source: archiveAfterDays, value });
+  }
+
+  function setArchiveDaysError(message: string | null) {
+    setArchiveDaysErrorState({ source: archiveAfterDays, message });
+  }
+
+  async function saveArchiveDays(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!archiveDaysValid) {
+      setArchiveDaysError("Use a whole number from 1 to 3650.");
+      return;
+    }
+
+    setArchiveDaysPending(true);
+    setArchiveDaysError(null);
+
+    try {
+      await onArchiveAfterDaysChange(archiveDaysValue);
+    } catch (caught) {
+      setArchiveDaysError(caught instanceof Error ? caught.message : "Archive cutoff was not saved");
+    } finally {
+      setArchiveDaysPending(false);
+    }
+  }
 
   return (
     <>
@@ -2373,7 +2460,10 @@ function DashboardSettingsDialog({
             size="icon"
             className="button-lift"
             aria-label="Dashboard settings"
-            onClick={() => setOpen(true)}
+            onClick={() => {
+              setArchiveDaysError(null);
+              setOpen(true);
+            }}
           >
             <Settings2 className="size-4" />
           </Button>
@@ -2382,11 +2472,40 @@ function DashboardSettingsDialog({
       </Tooltip>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="dashboard-dialog-content max-w-md">
+        <DialogContent
+          className="dashboard-dialog-content max-w-md"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            initialFocusRef.current?.focus();
+          }}
+        >
           <DialogHeader>
             <DialogTitle>Settings</DialogTitle>
             <DialogDescription>Dashboard display preferences</DialogDescription>
           </DialogHeader>
+
+          <div ref={initialFocusRef} tabIndex={-1} className="grid gap-3 rounded-md border bg-card/60 p-3 outline-none">
+            <div>
+              <span className="block text-sm font-medium">Archive cutoff</span>
+              <span className="mt-1 block text-xs text-muted-foreground">Completed WorkRequests auto-archive after {archiveAfterDays} days.</span>
+            </div>
+            <form className="flex items-start gap-2" onSubmit={(event) => void saveArchiveDays(event)}>
+              <Input
+                aria-label="Archive cutoff days"
+                min={1}
+                max={3650}
+                step={1}
+                type="number"
+                value={archiveDaysDraft}
+                onChange={(event) => setArchiveDaysDraft(event.target.value)}
+              />
+              <Button type="submit" size="sm" disabled={archiveDaysPending || !archiveDaysChanged}>
+                {archiveDaysPending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+                Save
+              </Button>
+            </form>
+            {archiveDaysError ? <p className="text-xs text-destructive">{archiveDaysError}</p> : null}
+          </div>
 
           <div className="flex items-center justify-between gap-4 rounded-md border bg-card/60 p-3">
             <div className="min-w-0">
@@ -2421,6 +2540,100 @@ function DashboardSettingsDialog({
 function workstreamHiddenSummary(hiddenWorkstreamCount: number) {
   if (hiddenWorkstreamCount <= 0) return "Only repos with requests, slices, or work packages appear.";
   return hiddenWorkstreamCount === 1 ? "1 empty repo hidden" : `${hiddenWorkstreamCount} empty repos hidden`;
+}
+
+function ArchivedRequestsDialog({ requests, onRestoreWorkRequest }: { requests: WorkRequestCard[]; onRestoreWorkRequest: WorkRequestMutation }) {
+  const [open, setOpen] = useState(false);
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const sortedRequests = useMemo(() => sortedCopy(requests, (left, right) => sortableTime(right.archived_at) - sortableTime(left.archived_at)), [requests]);
+
+  async function restoreRequest(workRequestId: string) {
+    setPendingId(workRequestId);
+    setError(null);
+
+    try {
+      await onRestoreWorkRequest(workRequestId);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "WorkRequest was not restored");
+    } finally {
+      setPendingId(null);
+    }
+  }
+
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="button-lift relative"
+            aria-label="Archived requests"
+            onClick={() => {
+              setError(null);
+              setOpen(true);
+            }}
+          >
+            <Archive className="size-4" />
+            {requests.length > 0 ? (
+              <span className="absolute -right-1 -top-1 min-w-4 rounded-full bg-primary px-1 text-[10px] font-semibold leading-4 text-primary-foreground">
+                {requests.length}
+              </span>
+            ) : null}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Archived requests</TooltipContent>
+      </Tooltip>
+
+      <Dialog
+        open={open}
+        onOpenChange={(nextOpen) => {
+          if (nextOpen) setError(null);
+          setOpen(nextOpen);
+        }}
+      >
+        <DialogContent className="dashboard-dialog-content max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Archived Requests</DialogTitle>
+            <DialogDescription>Completed WorkRequests hidden from the active cockpit</DialogDescription>
+          </DialogHeader>
+
+          {error ? <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p> : null}
+
+          {sortedRequests.length > 0 ? (
+            <ScrollArea className="max-h-[55vh] pr-3">
+              <div className="grid gap-2">
+                {sortedRequests.map((request) => (
+                  <div key={request.id} className="detail-list-item flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <span className="block truncate text-sm font-medium">{request.title || request.id}</span>
+                      <span className="mt-1 block text-xs text-muted-foreground">
+                        {repoDisplayName(request)} / {request.base_branch || "main"} / archived {detailDate(request.archived_at)}
+                      </span>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={pendingId === request.id}
+                      onClick={() => void restoreRequest(request.id)}
+                    >
+                      {pendingId === request.id ? <Loader2 className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
+                      Restore
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </ScrollArea>
+          ) : (
+            <p className="rounded-md border bg-card/60 px-3 py-6 text-center text-sm text-muted-foreground">No archived requests.</p>
+          )}
+        </DialogContent>
+      </Dialog>
+    </>
+  );
 }
 
 function RepoSummaryPlate({
@@ -3725,6 +3938,7 @@ function CardDetailDialog({
   onOpenChange,
   onSelectGuidance,
   onCopyArchitectHandoff,
+  onArchiveWorkRequest,
   onSubmitComment,
   onResolveComment,
   canMutateComments,
@@ -3733,6 +3947,7 @@ function CardDetailDialog({
   onOpenChange: (open: boolean) => void;
   onSelectGuidance: (item: GuidanceItem) => void;
   onCopyArchitectHandoff: CopyArchitectHandoff;
+  onArchiveWorkRequest: WorkRequestMutation;
   onSubmitComment: SubmitContextComment;
   onResolveComment: ResolveContextComment;
   canMutateComments: boolean;
@@ -3803,6 +4018,7 @@ function CardDetailDialog({
               detail={selection.detail}
               onSelectGuidance={onSelectGuidance}
               onCopyArchitectHandoff={onCopyArchitectHandoff}
+              onArchiveWorkRequest={onArchiveWorkRequest}
               onSubmitComment={onSubmitComment}
               onResolveComment={onResolveComment}
               canMutateComments={canMutateComments}
@@ -3881,6 +4097,7 @@ function RequestDetailContent({
   detail,
   onSelectGuidance,
   onCopyArchitectHandoff,
+  onArchiveWorkRequest,
   onSubmitComment,
   onResolveComment,
   canMutateComments,
@@ -3888,15 +4105,17 @@ function RequestDetailContent({
   detail: WorkRequestDetail;
   onSelectGuidance: (item: GuidanceItem) => void;
   onCopyArchitectHandoff: CopyArchitectHandoff;
+  onArchiveWorkRequest: WorkRequestMutation;
   onSubmitComment: SubmitContextComment;
   onResolveComment: ResolveContextComment;
   canMutateComments: boolean;
 }) {
   const request = detail.work_request;
-  const [requestComments, setRequestComments] = useState(detail.comments || []);
+  const [requestComments, setRequestComments] = useSyncedComments(detail.comments || []);
   const [commentsOpen, setCommentsOpen] = useState(false);
+  const [archivePending, setArchivePending] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
   const commentTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const requestCommentsKey = `${request.id}:${(detail.comments || []).map((comment) => `${comment.id}:${comment.status}:${comment.updated_at || ""}`).join("|")}`;
   const operational = request.operational_state || null;
   const openQuestions = requestOpenQuestions(detail);
   const sliceCounts = requestSliceCounts(detail);
@@ -3906,6 +4125,7 @@ function RequestDetailContent({
   const handoffHasOpenQuestions = (openQuestions.length || request.open_question_count || 0) > 0;
   const handoffButtonLabel = handoffHasOpenQuestions ? "Copy Resume Handoff Prompt" : "Copy Agent Handoff Prompt";
   const handoffIdentity = `${handoffHasOpenQuestions}:${request.id}:${request.status || ""}:${request.updated_at || ""}`;
+  const canManualArchive = Boolean(request.completed_at && !request.archived_at);
   const {
     cachedHandoff,
     error: handoffError,
@@ -3914,10 +4134,6 @@ function RequestDetailContent({
     startCopy,
     state: handoffCopyState,
   } = useScopedHandoffCopy(handoffIdentity);
-
-  useEffect(() => {
-    setRequestComments(detail.comments || []);
-  }, [requestCommentsKey, detail.comments]);
 
   async function copyHandoff() {
     startCopy();
@@ -3933,6 +4149,19 @@ function RequestDetailContent({
     setCommentsOpen(true);
     window.setTimeout(() => commentTextareaRef.current?.focus(), 80);
   }, []);
+
+  async function archiveRequest() {
+    setArchivePending(true);
+    setArchiveError(null);
+
+    try {
+      await onArchiveWorkRequest(request.id);
+    } catch (caught) {
+      setArchiveError(caught instanceof Error ? caught.message : "WorkRequest was not archived");
+    } finally {
+      setArchivePending(false);
+    }
+  }
 
   return (
     <>
@@ -4003,6 +4232,7 @@ function RequestDetailContent({
           onOpenChange={setCommentsOpen}
         >
           <CommentsPanel
+            key={`work_request:${request.id}`}
             target={{ target_kind: "work_request", target_id: request.id }}
             comments={requestComments}
             onCommentsChange={setRequestComments}
@@ -4019,6 +4249,8 @@ function RequestDetailContent({
               ["Request ID", request.id],
               ["Dispatch Shape", formatStatus(request.desired_dispatch_shape)],
               ["Raw Lifecycle", statusLabel(request.status)],
+              ["Completed", detailDate(request.completed_at)],
+              ["Archived", detailDate(request.archived_at)],
               ["Created", detailDate(request.inserted_at)],
               ["Updated", detailDate(request.updated_at)],
             ]}
@@ -4026,6 +4258,15 @@ function RequestDetailContent({
           <DetailList title="Planned slices" items={(detail.planned_slices || []).map((slice) => slice.title || slice.id)} empty="No slices recorded." />
           <JsonDetail label="Constraints" value={request.constraints} />
         </DetailDisclosure>
+        {canManualArchive ? (
+          <div className="flex flex-col items-start gap-2 border-t pt-4">
+            <Button type="button" size="sm" variant="outline" disabled={archivePending} onClick={() => void archiveRequest()}>
+              {archivePending ? <Loader2 className="size-4 animate-spin" /> : <Archive className="size-4" />}
+              Archive Request
+            </Button>
+            {archiveError ? <p className="text-xs text-destructive">{archiveError}</p> : null}
+          </div>
+        ) : null}
       </div>
     </>
   );
@@ -4046,18 +4287,13 @@ function SliceDetailContent({
   onResolveComment: ResolveContextComment;
   canMutateComments: boolean;
 }) {
-  const [sliceComments, setSliceComments] = useState(slice.comments || []);
-  const sliceCommentsKey = `${slice.id}:${(slice.comments || []).map((comment) => `${comment.id}:${comment.status}:${comment.updated_at || ""}`).join("|")}`;
+  const [sliceComments, setSliceComments] = useSyncedComments(slice.comments || []);
   const status = slice.work_package_status || slice.status;
   const operational = sliceOperationalState(slice, pkg);
   const blockerCount = Math.max(pkg?.active_blocker_count || 0, pkg?.status === "blocked" || operational?.key === "blocked" ? 1 : 0);
   const reviewLanes = slice.review_lanes || [];
   const attentionItems = operational?.attention_items || [];
   const currentCommentStats = targetCommentStats(slice, slice.comments || [], sliceComments);
-
-  useEffect(() => {
-    setSliceComments(slice.comments || []);
-  }, [sliceCommentsKey, slice.comments]);
 
   return (
     <>
@@ -4095,6 +4331,7 @@ function SliceDetailContent({
         </DetailSection>
         <DetailDisclosure title="Comments" meta={commentStatLabel(currentCommentStats.open_comment_count, currentCommentStats.comment_count)}>
           <CommentsPanel
+            key={`planned_slice:${slice.id}`}
             target={{ target_kind: "planned_slice", target_id: slice.id }}
             comments={sliceComments}
             onCommentsChange={setSliceComments}
@@ -4141,8 +4378,7 @@ function PackageDetailContent({
   onResolveComment: ResolveContextComment;
   canMutateComments: boolean;
 }) {
-  const [packageComments, setPackageComments] = useState(detailPayload?.comments || []);
-  const packageCommentsKey = `${selection.pkg.id}:${(detailPayload?.comments || []).map((comment) => `${comment.id}:${comment.status}:${comment.updated_at || ""}`).join("|")}`;
+  const [packageComments, setPackageComments] = useSyncedComments(detailPayload?.comments || []);
   const pkg = { ...selection.pkg, ...(detailPayload?.work_package || {}) } as WorkPackageCard & {
     branch_pattern?: string | null;
     product_description?: string | null;
@@ -4159,10 +4395,6 @@ function PackageDetailContent({
   const attentionItems = operational?.attention_items || [];
   const blockerCount = blockers.length || summary?.active_blocker_count || pkg.active_blocker_count || (operational?.key === "blocked" || pkg.status === "blocked" ? 1 : 0);
   const currentCommentStats = targetCommentStats(summary || pkg, detailPayload?.comments || [], packageComments);
-
-  useEffect(() => {
-    setPackageComments(detailPayload?.comments || []);
-  }, [packageCommentsKey, detailPayload?.comments]);
 
   return (
     <>
@@ -4215,6 +4447,7 @@ function PackageDetailContent({
         </DetailSection>
         <DetailDisclosure title="Comments" meta={commentStatLabel(currentCommentStats.open_comment_count, currentCommentStats.comment_count)}>
           <CommentsPanel
+            key={`work_package:${pkg.id}`}
             target={{ target_kind: "work_package", target_id: pkg.id }}
             comments={packageComments}
             onCommentsChange={setPackageComments}
@@ -4271,14 +4504,6 @@ function CommentsPanel({
   const [pending, setPending] = useState(false);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const targetKey = `${target.target_kind}:${target.target_id}`;
-
-  useEffect(() => {
-    setDraft("");
-    setPending(false);
-    setResolvingId(null);
-    setError(null);
-  }, [targetKey]);
 
   const orderedComments = useMemo(() => {
     return sortedCopy(comments, (left, right) => {
@@ -4372,6 +4597,46 @@ function CommentsPanel({
       ) : null}
     </div>
   );
+}
+
+function useSyncedComments(sourceComments: ContextComment[]) {
+  const sourceIdentity = useMemo(() => commentsIdentity(sourceComments), [sourceComments]);
+  const [state, setState] = useState<{ sourceIdentity: string; comments: ContextComment[] }>(() => ({
+    sourceIdentity,
+    comments: sourceComments,
+  }));
+  const comments = state.sourceIdentity === sourceIdentity ? state.comments : sourceComments;
+  const setComments = useCallback<React.Dispatch<React.SetStateAction<ContextComment[]>>>(
+    (nextComments) => {
+      setState((current) => {
+        const base = current.sourceIdentity === sourceIdentity ? current.comments : sourceComments;
+        const comments =
+          typeof nextComments === "function"
+            ? (nextComments as (currentComments: ContextComment[]) => ContextComment[])(base)
+            : nextComments;
+
+        return { sourceIdentity, comments };
+      });
+    },
+    [sourceIdentity, sourceComments],
+  );
+
+  return [comments, setComments] as const;
+}
+
+function commentsIdentity(comments: ContextComment[]) {
+  return comments
+    .map((comment) =>
+      [
+        comment.id,
+        comment.status || "",
+        comment.updated_at || "",
+        comment.resolved_at || "",
+        comment.resolution_note || "",
+        comment.body || "",
+      ].join(":"),
+    )
+    .join("|");
 }
 
 function SoloSessionDetailContent({
