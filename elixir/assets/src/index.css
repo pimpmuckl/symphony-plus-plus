@@ -1048,7 +1048,7 @@
 
   .board-wire-path {
     fill: none;
-    stroke: var(--wire-color, rgb(148 163 184));
+    stroke: var(--wire-stroke, var(--wire-color, rgb(148 163 184)));
     stroke-linecap: round;
     stroke-linejoin: round;
     stroke-width: 2.25;
@@ -1058,6 +1058,21 @@
       stroke 180ms ease,
       opacity 180ms ease,
       filter 180ms ease;
+  }
+
+  .board-wire-gradient-stop-source {
+    stop-color: var(--wire-start-color-light, var(--wire-color, rgb(148 163 184)));
+    stop-opacity: var(--wire-start-opacity-light, 1);
+  }
+
+  .board-wire-gradient-stop-target {
+    stop-color: var(--wire-end-color, var(--wire-color, rgb(148 163 184)));
+    stop-opacity: 1;
+  }
+
+  .dark .board-wire-gradient-stop-source {
+    stop-color: var(--wire-start-color-dark, var(--wire-start-color-light, var(--wire-color, rgb(148 163 184))));
+    stop-opacity: var(--wire-start-opacity-dark, var(--wire-start-opacity-light, 1));
   }
 
   .board-wire-group[data-wire-kind="blocker"] .board-wire-path {
