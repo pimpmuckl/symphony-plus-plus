@@ -3966,8 +3966,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "type" => "worktree_lifecycle",
         "source_tool" => source_tool,
         "work_package_id" => work_package_id,
-        "worktree_path" => result.worktree_path,
-        "repo_root" => result.repo_root,
+        "worktree_path" => audit_local_path(result.worktree_path),
+        "repo_root" => audit_local_path(result.repo_root),
         "branch" => result.branch,
         "base_branch" => result.base_branch,
         "status" => result.status
@@ -3980,6 +3980,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp maybe_append_cleanup_worktree_audit(repo, %Session{} = session, work_package_id, result) do
     append_worktree_lifecycle_audit(repo, session, work_package_id, "cleanup_work_package_worktree", result)
   end
+
+  defp audit_local_path(nil), do: nil
+  defp audit_local_path(_path), do: "[REDACTED]"
 
   defp worktree_lifecycle_summary("prepare_work_package_worktree", "already_prepared"), do: "WorkPackage worktree already prepared"
   defp worktree_lifecycle_summary("prepare_work_package_worktree", _status), do: "Prepared WorkPackage worktree"

@@ -287,7 +287,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
     assert File.dir?(prepared_again.worktree_path)
   end
 
-  test "cleanup persistence failures leave the recorded worktree intact", %{repo: repo} do
+  test "cleanup recovers a stale recorded path after persistence failure", %{repo: repo} do
     fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
     codex_home = Path.join(fixture.root, "codex-home")
 
@@ -303,10 +303,37 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
              )
 
     assert {:error, :database_busy} = WorktreeLifecycle.cleanup(UpdateFailsWorkPackageRepo, package.id, codex_home: codex_home)
-    assert File.dir?(prepared.worktree_path)
+    refute File.exists?(prepared.worktree_path)
 
     assert {:ok, fetched} = Repository.get(repo, package.id)
     assert fetched.worktree_path == prepared.worktree_path
+
+    assert {:ok, recovered} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
+    assert recovered.status == "already_clean"
+
+    assert {:ok, cleared} = Repository.get(repo, package.id)
+    assert cleared.worktree_path == nil
+  end
+
+  test "prepare rejects stale existing local branches", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-008", kind: "mcp", base_branch: "main"))
+
+    attrs = %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/stale"}
+
+    assert {:ok, prepared} = WorktreeLifecycle.prepare(repo, package.id, attrs, codex_home: codex_home)
+    assert {:ok, _cleaned} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
+
+    TestSupport.git_output!(fixture.repo_root, ["checkout", "feat/stale"])
+    File.write!(Path.join(fixture.repo_root, "stale.txt"), "stale\n")
+    TestSupport.git_output!(fixture.repo_root, ["add", "stale.txt"])
+    TestSupport.git_output!(fixture.repo_root, ["commit", "-m", "Stale branch commit"])
+
+    assert {:error, :stale_existing_branch} = WorktreeLifecycle.prepare(repo, package.id, attrs, codex_home: codex_home)
+    refute File.exists?(prepared.worktree_path)
   end
 
   test "prepare uses collision-resistant paths for distinct branch names", %{repo: repo} do

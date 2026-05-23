@@ -6126,6 +6126,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       assert prepare_payload["worker_launch"]["workspace_path"] == prepare_payload["worktree"]["path"]
       assert prepare_payload["worker_launch"]["instruction"] =~ "Use this worktree only"
       assert prepare_payload["audit_event"]["payload"]["source_tool"] == "prepare_work_package_worktree"
+      assert prepare_payload["audit_event"]["payload"]["worktree_path"] == "[REDACTED]"
+      assert prepare_payload["audit_event"]["payload"]["repo_root"] == "[REDACTED]"
       assert File.dir?(prepare_payload["worktree"]["path"])
 
       cleanup_response =
@@ -6143,6 +6145,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       assert cleanup_payload["worktree"]["status"] == "cleaned"
       assert cleanup_payload["work_package"]["worktree_path"] == nil
       assert cleanup_payload["audit_event"]["payload"]["source_tool"] == "cleanup_work_package_worktree"
+      assert cleanup_payload["audit_event"]["payload"]["worktree_path"] == "[REDACTED]"
+      assert cleanup_payload["audit_event"]["payload"]["repo_root"] == "[REDACTED]"
       refute File.exists?(prepare_payload["worktree"]["path"])
     after
       restore_env("CODEX_HOME", previous_codex_home)

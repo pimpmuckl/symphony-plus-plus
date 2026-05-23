@@ -23,6 +23,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
           | :invalid_repo_root
           | :invalid_worktree_path
           | :recorded_worktree_missing
+          | :stale_existing_branch
           | :unsafe_worktree_path
           | :worktree_path_exists
           | :worktree_path_missing_on_disk
@@ -163,8 +164,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     end
   end
 
-  defp add_worktree(repo_root, worktree_path, _base_branch, branch, true, opts) do
-    git(repo_root, ["worktree", "add", worktree_path, branch], opts)
+  defp add_worktree(repo_root, worktree_path, base_branch, branch, true, opts) do
+    with :ok <- require_existing_branch_matches_base(repo_root, branch, base_branch, opts) do
+      git(repo_root, ["worktree", "add", worktree_path, branch], opts)
+    end
   end
 
   defp add_worktree(repo_root, worktree_path, base_branch, branch, false, opts) do
@@ -177,6 +180,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
 
   defp maybe_delete_created_branch(_repo_root, _branch, false, _opts), do: :ok
 
+  defp require_existing_branch_matches_base(repo_root, branch, base_branch, opts) do
+    with {:ok, branch_revision} <- git_revision(repo_root, branch, opts),
+         {:ok, base_revision} <- git_revision(repo_root, "origin/#{base_branch}", opts),
+         true <- branch_revision == base_revision do
+      :ok
+    else
+      false -> {:error, :stale_existing_branch}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp cleanup_recorded_worktree(_repo, %WorkPackage{worktree_path: nil} = work_package, _opts) do
     {:ok, result(work_package, "already_clean", nil, nil, nil, nil)}
   end
@@ -184,27 +198,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   defp cleanup_recorded_worktree(repo, %WorkPackage{} = work_package, opts) do
     with {:ok, root} <- worktree_root(opts),
          {:ok, worktree_path} <- canonicalize(work_package.worktree_path),
-         :ok <- require_inside_root(worktree_path, root),
-         true <- File.dir?(worktree_path),
-         {:ok, status_output} <- git_output(worktree_path, ["status", "--porcelain"], opts),
+         :ok <- require_inside_root(worktree_path, root) do
+      cleanup_existing_or_missing_worktree(repo, work_package, worktree_path, opts)
+    end
+  end
+
+  defp cleanup_existing_or_missing_worktree(repo, %WorkPackage{} = work_package, worktree_path, opts) do
+    if File.dir?(worktree_path) do
+      cleanup_existing_worktree(repo, work_package, worktree_path, opts)
+    else
+      clear_missing_recorded_worktree(repo, work_package)
+    end
+  end
+
+  defp cleanup_existing_worktree(repo, %WorkPackage{} = work_package, worktree_path, opts) do
+    with {:ok, status_output} <- git_output(worktree_path, ["status", "--porcelain"], opts),
          :ok <- require_clean(status_output),
          {:ok, repo_root} <- repo_root_from_worktree(worktree_path, opts),
+         :ok <- git(repo_root, ["worktree", "remove", worktree_path], opts),
+         :ok <- git(repo_root, ["worktree", "prune"], opts),
          {:ok, updated_work_package} <- Repository.update(repo, work_package.id, %{worktree_path: nil}) do
-      remove_recorded_worktree(repo, updated_work_package, worktree_path, repo_root, opts)
+      {:ok, result(updated_work_package, "cleaned", worktree_path, nil, nil, repo_root)}
     else
-      false -> {:error, :worktree_path_missing_on_disk}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp remove_recorded_worktree(repo, %WorkPackage{} = work_package, worktree_path, repo_root, opts) do
-    with :ok <- git(repo_root, ["worktree", "remove", worktree_path], opts),
-         :ok <- git(repo_root, ["worktree", "prune"], opts) do
-      {:ok, result(work_package, "cleaned", worktree_path, nil, nil, repo_root)}
-    else
-      {:error, reason} ->
-        _ = Repository.update(repo, work_package.id, %{worktree_path: worktree_path})
-        {:error, reason}
+  defp clear_missing_recorded_worktree(repo, %WorkPackage{} = work_package) do
+    with {:ok, updated_work_package} <- Repository.update(repo, work_package.id, %{worktree_path: nil}) do
+      {:ok, result(updated_work_package, "already_clean", nil, nil, nil, nil)}
     end
   end
 
@@ -303,6 +325,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     case git_output(repo_root, args, opts) do
       {:ok, _output} -> :ok
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp git_revision(repo_root, ref, opts) do
+    with {:ok, output} <- git_output(repo_root, ["rev-parse", "--verify", ref], opts) do
+      {:ok, output |> String.trim() |> first_line()}
     end
   end
 
