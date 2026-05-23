@@ -509,7 +509,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @spec operator_package_detail(Conn.t(), map()) :: Conn.t()
   def operator_package_detail(conn, %{"work_package_id" => work_package_id}) do
     send_local_operator_response(conn, fn repo ->
-      with {:ok, payload} <- Dashboard.detail(repo, normalize_package_route_id(work_package_id)) do
+      with {:ok, repo_identity_catalog} <- Dashboard.repo_identity_catalog(repo),
+           {:ok, payload} <- Dashboard.detail(repo, normalize_package_route_id(work_package_id), repo_identity_catalog: repo_identity_catalog) do
         json(conn, payload)
       end
     end)
@@ -528,7 +529,9 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @spec operator_solo_session_detail(Conn.t(), map()) :: Conn.t()
   def operator_solo_session_detail(conn, %{"solo_session_id" => solo_session_id}) do
     send_local_operator_response(conn, fn repo ->
-      with {:ok, payload} <- Dashboard.solo_session_detail(repo, solo_session_id) do
+      with {:ok, repo_identity_catalog} <- Dashboard.repo_identity_catalog(repo),
+           {:ok, payload} <-
+             Dashboard.solo_session_detail(repo, solo_session_id, repo_identity_catalog: repo_identity_catalog) do
         json(conn, payload)
       end
     end)
@@ -540,8 +543,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       attrs = work_request_attrs(params)
 
       with {:ok, work_request} <- WorkRequestService.create(repo, attrs),
-           {:ok, detail} <- Dashboard.work_request_detail(repo, work_request.id),
-           {:ok, dashboard} <- operator_dashboard_payload(repo) do
+           {:ok, dashboard} <- operator_dashboard_payload(repo),
+           {:ok, detail} <- dashboard_work_request_detail(dashboard, work_request.id) do
         conn
         |> put_status(201)
         |> json(%{work_request: detail, dashboard: dashboard})
@@ -556,8 +559,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
            :ok <- require_open_question(question),
            {:ok, attrs} <- local_operator_question_answer_attrs(question, params),
            {:ok, _answered} <- WorkRequestService.answer_question(repo, question.id, question.status, attrs),
-           {:ok, detail} <- Dashboard.work_request_detail(repo, work_request_id),
-           {:ok, dashboard} <- operator_dashboard_payload(repo) do
+           {:ok, dashboard} <- operator_dashboard_payload(repo),
+           {:ok, detail} <- dashboard_work_request_detail(dashboard, work_request_id) do
         json(conn, %{work_request: detail, dashboard: dashboard})
       end
     end)
@@ -674,11 +677,14 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   end
 
   defp operator_dashboard_payload(repo) do
-    with {:ok, board} <- Dashboard.operator_board(repo),
-         {:ok, work_requests} <- Dashboard.work_requests(repo),
-         {:ok, work_request_details} <- operator_work_request_details(repo, Map.get(work_requests, :work_requests, [])),
-         {:ok, guidance_requests} <- Dashboard.human_guidance_requests(repo),
-         {:ok, solo_sessions} <- Dashboard.solo_sessions(repo, %{}) do
+    with {:ok, repo_identity_catalog} <- Dashboard.repo_identity_catalog(repo),
+         opts = [repo_identity_catalog: repo_identity_catalog],
+         {:ok, board} <- Dashboard.operator_board(repo, opts),
+         {:ok, work_requests} <- Dashboard.work_requests(repo, opts),
+         {:ok, guidance_requests} <- Dashboard.human_guidance_requests(repo, opts),
+         {:ok, solo_sessions} <- Dashboard.solo_sessions(repo, %{}, opts),
+         {:ok, work_request_details} <-
+           operator_work_request_details(repo, Map.get(work_requests, :work_requests, []), repo_identity_catalog) do
       active_blocking_edges = Map.get(board, :active_blocking_edges, [])
       board = Map.delete(board, :active_blocking_edges)
 
@@ -696,12 +702,21 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
-  defp operator_work_request_details(repo, work_request_cards) when is_list(work_request_cards) do
+  defp dashboard_work_request_detail(%{work_request_details: details}, work_request_id) when is_list(details) do
+    details
+    |> Enum.find(&(get_in(&1, [:work_request, :id]) == work_request_id))
+    |> case do
+      nil -> {:error, :not_found}
+      detail -> {:ok, detail}
+    end
+  end
+
+  defp operator_work_request_details(repo, work_request_cards, repo_identity_catalog) when is_list(work_request_cards) do
     work_request_cards
     |> Enum.map(&Map.get(&1, :id))
     |> Enum.reject(&is_nil/1)
     |> Enum.reduce_while({:ok, []}, fn work_request_id, {:ok, details} ->
-      case Dashboard.work_request_detail(repo, work_request_id) do
+      case Dashboard.work_request_detail(repo, work_request_id, repo_identity_catalog: repo_identity_catalog) do
         {:ok, detail} -> {:cont, {:ok, [detail | details]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end

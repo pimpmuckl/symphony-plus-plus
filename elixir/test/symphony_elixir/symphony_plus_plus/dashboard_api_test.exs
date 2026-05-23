@@ -16,6 +16,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
+  alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
+  alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository, as: GuidanceRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
@@ -195,6 +197,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     repo.delete_all(PlanNode)
     repo.delete_all(SoloSessionEntry)
     repo.delete_all(SoloSession)
+    repo.delete_all(GuidanceRequest)
     repo.delete_all(AccessGrant)
     repo.delete_all(PlannedSlice)
     repo.delete_all(WorkPackage)
@@ -591,6 +594,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
            }
   end
 
+  test "phase board status filters keep repo identity from the phase scope", %{repo: repo} do
+    with_trusted_repo_remotes(["Pimpmuckl/symphony-plus-plus"], fn ->
+      assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-dashboard-repo-identity", title: "Repo identity phase"})
+
+      assert {:ok, bare} =
+               WorkPackageRepository.create(
+                 repo,
+                 WorkPackageFactory.attrs(
+                   id: "SYMPP-DASH-PHASE-REPO-BARE",
+                   kind: "phase_child",
+                   phase_id: phase.id,
+                   status: "planning",
+                   repo: "symphony-plus-plus",
+                   base_branch: "main"
+                 )
+               )
+
+      assert {:ok, _owner} =
+               WorkPackageRepository.create(
+                 repo,
+                 WorkPackageFactory.attrs(
+                   id: "SYMPP-DASH-PHASE-REPO-OWNER",
+                   kind: "phase_child",
+                   phase_id: phase.id,
+                   status: "blocked",
+                   repo: "Pimpmuckl/symphony-plus-plus",
+                   base_branch: "main"
+                 )
+               )
+
+      assert {:ok, board} = Dashboard.phase_board(repo, phase.id, status: "planning")
+      assert [%{id: bare_id} = card] = board.groups["planning"]
+      assert bare_id == bare.id
+      assert card.repo == "symphony-plus-plus"
+      assert card.repo_key == "symphony-plus-plus"
+      assert card.repo_display == "symphony-plus-plus"
+      assert card.repo_remote == "Pimpmuckl/symphony-plus-plus"
+      assert card.repo_aliases == ["Pimpmuckl/symphony-plus-plus", "symphony-plus-plus"]
+    end)
+  end
+
   test "legacy null phase grants derive dashboard scope from their phased anchor", %{repo: repo} do
     assert {:ok, phase} = PhaseRepository.create(repo, %{id: "phase-dashboard-legacy", title: "Legacy phase"})
 
@@ -751,7 +795,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  id: "SYMPP-DASH-SCOPED-ANCHOR",
                  kind: "phase_child",
                  status: "planning",
-                 repo: "nextide/symphony-plus-plus",
+                 repo: "symphony-plus-plus",
                  base_branch: "symphony-plus-plus/beta"
                )
              )
@@ -763,7 +807,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  id: "SYMPP-DASH-SCOPED-SIBLING",
                  kind: "phase_child",
                  status: "blocked",
-                 repo: "nextide/symphony-plus-plus",
+                 repo: "symphony-plus-plus",
                  base_branch: "symphony-plus-plus/beta"
                )
              )
@@ -775,7 +819,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  id: "SYMPP-DASH-SCOPED-OTHER-REPO",
                  kind: "phase_child",
                  status: "planning",
-                 repo: "nextide/other-repo",
+                 repo: "Pimpmuckl/symphony-plus-plus",
                  base_branch: "symphony-plus-plus/beta"
                )
              )
@@ -787,7 +831,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  id: "SYMPP-DASH-SCOPED-OTHER-BASE",
                  kind: "phase_child",
                  status: "planning",
-                 repo: "nextide/symphony-plus-plus",
+                 repo: "symphony-plus-plus",
                  base_branch: "main"
                )
              )
@@ -807,6 +851,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     encoded = Jason.encode!(payload)
 
     assert payload["total_count"] == 2
+
+    visible_cards =
+      payload["groups"]
+      |> Map.values()
+      |> List.flatten()
+
+    assert Enum.map(visible_cards, & &1["id"]) |> Enum.sort() == Enum.sort([anchor.id, in_scope_sibling.id])
+    assert Enum.all?(visible_cards, &(&1["repo"] == "symphony-plus-plus"))
+    assert Enum.all?(visible_cards, &(&1["repo_key"] == "symphony-plus-plus"))
+    assert Enum.all?(visible_cards, &(&1["repo_remote"] == nil))
+    assert Enum.all?(visible_cards, &(&1["repo_aliases"] == ["symphony-plus-plus"]))
+
     assert encoded =~ anchor.id
     assert encoded =~ in_scope_sibling.id
     refute encoded =~ other_repo.id
@@ -3312,6 +3368,272 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
+  test "local operator dashboard exposes canonical repo identity across backend payloads", %{repo: repo} do
+    with_trusted_repo_remotes(["Pimpmuckl/symphony-plus-plus"], fn ->
+      with_local_operator_endpoint(fn ->
+        assert {:ok, work_package} =
+                 WorkPackageRepository.create(
+                   repo,
+                   WorkPackageFactory.attrs(
+                     id: "SYMPP-REPO-IDENTITY",
+                     repo: "symphony-plus-plus",
+                     base_branch: "main"
+                   )
+                 )
+
+        assert {:ok, _work_request} =
+                 WorkRequestRepository.create(repo, %{
+                   title: "Operator intake",
+                   repo: "symphony-plus-plus",
+                   base_branch: "main",
+                   work_type: "feature",
+                   human_description: "Build the dashboard.",
+                   constraints: %{},
+                   desired_dispatch_shape: "architect_led_feature_branch",
+                   status: "ready_for_clarification"
+                 })
+
+        assert {:ok, owner_session} =
+                 SoloSessionsService.create_or_attach_current(repo, %{
+                   repo: "Pimpmuckl/symphony-plus-plus",
+                   base_branch: "main",
+                   workspace_path: Path.join(@repo_root, "repo-identity-owner"),
+                   caller_id: "repo-identity-owner",
+                   title: "Owner scoped solo"
+                 })
+
+        assert {:ok, bare_session} =
+                 SoloSessionsService.create_or_attach_current(repo, %{
+                   repo: "symphony-plus-plus",
+                   base_branch: "main",
+                   workspace_path: Path.join(@repo_root, "repo-identity-bare"),
+                   caller_id: "repo-identity-bare",
+                   title: "Bare scoped solo"
+                 })
+
+        guidance_grant = create_claimed_worker_grant(repo, work_package.id, "repo-identity-worker")
+
+        assert {:ok, _guidance_request} =
+                 GuidanceRequestRepository.create(repo, %{
+                   work_package_id: work_package.id,
+                   requester_grant_id: guidance_grant.id,
+                   requested_by: "repo-identity-worker",
+                   idempotency_key: "repo-identity-guidance",
+                   summary: "Needs repo identity decision",
+                   question: "Which repo identity should the dashboard show?",
+                   context: "Operator dashboard canonical repo identity coverage.",
+                   status: "human_info_needed"
+                 })
+
+        payload = json_response(get(local_operator_conn(), "/api/v1/sympp/operator/dashboard"), 200)
+
+        package_card =
+          payload["board"]["groups"]["created"]
+          |> Enum.find(&(&1["id"] == work_package.id))
+
+        assert package_card["repo"] == "symphony-plus-plus"
+        assert package_card["repo_key"] == "symphony-plus-plus"
+        assert package_card["repo_display"] == "symphony-plus-plus"
+        assert package_card["repo_remote"] == "Pimpmuckl/symphony-plus-plus"
+        assert package_card["repo_aliases"] == ["Pimpmuckl/symphony-plus-plus", "symphony-plus-plus"]
+
+        assert [%{"repo_key" => "symphony-plus-plus", "repo_remote" => "Pimpmuckl/symphony-plus-plus"}] =
+                 payload["work_requests"]["work_requests"]
+
+        assert [%{"work_request" => %{"repo_key" => "symphony-plus-plus", "repo_remote" => "Pimpmuckl/symphony-plus-plus"}}] =
+                 payload["work_request_details"]
+
+        assert [
+                 %{
+                   "repo" => "symphony-plus-plus",
+                   "repo_key" => "symphony-plus-plus",
+                   "repo_display" => "symphony-plus-plus",
+                   "repo_remote" => "Pimpmuckl/symphony-plus-plus",
+                   "repo_aliases" => ["Pimpmuckl/symphony-plus-plus", "symphony-plus-plus"]
+                 }
+               ] = payload["guidance_requests"]["guidance_requests"]
+
+        solo_sessions = payload["solo_sessions"]["solo_sessions"]
+        assert Enum.map(solo_sessions, & &1["id"]) |> Enum.sort() == Enum.sort([owner_session.id, bare_session.id])
+        assert Enum.all?(solo_sessions, &(&1["repo_key"] == "symphony-plus-plus"))
+        assert Enum.all?(solo_sessions, &(&1["repo_display"] == "symphony-plus-plus"))
+        assert Enum.all?(solo_sessions, &(&1["repo_remote"] == "Pimpmuckl/symphony-plus-plus"))
+
+        assert {:ok, repo_identity_catalog} = Dashboard.repo_identity_catalog(repo)
+        assert {:ok, streams} = Dashboard.solo_session_streams(repo, repo_identity_catalog: repo_identity_catalog)
+
+        assert [
+                 %{
+                   repo_key: "symphony-plus-plus",
+                   repo_display: "symphony-plus-plus",
+                   repo_remote: "Pimpmuckl/symphony-plus-plus",
+                   repo_aliases: ["Pimpmuckl/symphony-plus-plus", "symphony-plus-plus"],
+                   base_branch: "main",
+                   solo_session_count: 2
+                 } = stream
+               ] = streams
+
+        assert stream.repo == "symphony-plus-plus"
+      end)
+    end)
+  end
+
+  test "package detail repo identity stays scoped to the authorized package", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-REPO-DETAIL-SCOPED",
+                 repo: "symphony-plus-plus",
+                 base_branch: "main"
+               )
+             )
+
+    assert {:ok, _unrelated} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-REPO-DETAIL-UNRELATED",
+                 repo: "Pimpmuckl/symphony-plus-plus",
+                 base_branch: "main"
+               )
+             )
+
+    secret = create_worker_grant_secret(repo, work_package.id, "repo-detail-worker")
+    payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-packages/#{work_package.id}"), 200)
+
+    assert payload["work_package"]["repo"] == "symphony-plus-plus"
+    assert payload["work_package"]["repo_key"] == "symphony-plus-plus"
+    assert payload["work_package"]["repo_display"] == "symphony-plus-plus"
+    assert payload["work_package"]["repo_remote"] == nil
+    assert payload["work_package"]["repo_aliases"] == ["symphony-plus-plus"]
+  end
+
+  test "record detail repo identity stays scoped unless a catalog is passed", %{repo: repo} do
+    with_trusted_repo_remotes(["Pimpmuckl/symphony-plus-plus"], fn ->
+      assert {:ok, _unrelated} =
+               WorkPackageRepository.create(
+                 repo,
+                 WorkPackageFactory.attrs(
+                   id: "SYMPP-REPO-DETAIL-CATALOG-SOURCE",
+                   repo: "Pimpmuckl/symphony-plus-plus",
+                   base_branch: "main"
+                 )
+               )
+
+      assert {:ok, work_request} =
+               WorkRequestRepository.create(repo, %{
+                 title: "Scoped detail request",
+                 repo: "symphony-plus-plus",
+                 base_branch: "main",
+                 work_type: "feature",
+                 human_description: "Keep detail identity scoped.",
+                 constraints: %{},
+                 desired_dispatch_shape: "architect_led_feature_branch",
+                 status: "ready_for_clarification"
+               })
+
+      assert {:ok, solo_session} =
+               SoloSessionsService.create_or_attach_current(repo, %{
+                 repo: "symphony-plus-plus",
+                 base_branch: "main",
+                 workspace_path: Path.join(@repo_root, "repo-detail-scoped-solo"),
+                 caller_id: "repo-detail-scoped-solo",
+                 title: "Scoped solo detail"
+               })
+
+      assert {:ok, request_detail} = Dashboard.work_request_detail(repo, work_request.id)
+      assert request_detail.work_request.repo_remote == nil
+      assert request_detail.work_request.repo_aliases == ["symphony-plus-plus"]
+
+      assert {:ok, solo_detail} = Dashboard.solo_session_detail(repo, solo_session.id)
+      assert solo_detail.solo_session.repo_remote == nil
+      assert solo_detail.solo_session.repo_aliases == ["symphony-plus-plus"]
+    end)
+  end
+
+  test "dashboard repo identity keeps conflicting owner-qualified repos separate", %{repo: repo} do
+    assert {:ok, alpha} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-REPO-CONFLICT-A", repo: "alpha/shared", base_branch: "main")
+             )
+
+    assert {:ok, beta} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-REPO-CONFLICT-B", repo: "beta/shared", base_branch: "main")
+             )
+
+    assert {:ok, alpha_request} =
+             WorkRequestRepository.create(repo, %{
+               title: "Alpha shared request",
+               repo: "alpha/shared",
+               base_branch: "main",
+               work_type: "feature",
+               human_description: "Alpha-owned shared repo work.",
+               constraints: %{},
+               desired_dispatch_shape: "architect_led_feature_branch",
+               status: "ready_for_clarification"
+             })
+
+    assert {:ok, beta_request} =
+             WorkRequestRepository.create(repo, %{
+               title: "Beta shared request",
+               repo: "beta/shared",
+               base_branch: "main",
+               work_type: "feature",
+               human_description: "Beta-owned shared repo work.",
+               constraints: %{},
+               desired_dispatch_shape: "architect_led_feature_branch",
+               status: "ready_for_clarification"
+             })
+
+    assert {:ok, board} = Dashboard.operator_board(repo)
+
+    cards_by_id =
+      board.groups["created"]
+      |> Map.new(&{&1.id, &1})
+
+    assert cards_by_id[alpha.id].repo == "alpha/shared"
+    assert cards_by_id[alpha.id].repo_key == "alpha/shared"
+    assert cards_by_id[alpha.id].repo_display == "alpha/shared"
+    assert cards_by_id[alpha.id].repo_aliases == ["alpha/shared"]
+
+    assert cards_by_id[beta.id].repo == "beta/shared"
+    assert cards_by_id[beta.id].repo_key == "beta/shared"
+    assert cards_by_id[beta.id].repo_display == "beta/shared"
+    assert cards_by_id[beta.id].repo_aliases == ["beta/shared"]
+
+    assert {:ok, work_requests} = Dashboard.work_requests(repo)
+
+    request_cards_by_id =
+      work_requests.work_requests
+      |> Map.new(&{&1.id, &1})
+
+    assert request_cards_by_id[alpha_request.id].repo == "alpha/shared"
+    assert request_cards_by_id[alpha_request.id].repo_key == "alpha/shared"
+    assert request_cards_by_id[alpha_request.id].repo_display == "alpha/shared"
+    assert request_cards_by_id[alpha_request.id].repo_aliases == ["alpha/shared"]
+
+    assert request_cards_by_id[beta_request.id].repo == "beta/shared"
+    assert request_cards_by_id[beta_request.id].repo_key == "beta/shared"
+    assert request_cards_by_id[beta_request.id].repo_display == "beta/shared"
+    assert request_cards_by_id[beta_request.id].repo_aliases == ["beta/shared"]
+
+    assert {:ok, alpha_detail} = Dashboard.work_request_detail(repo, alpha_request.id)
+    assert alpha_detail.work_request.repo == "alpha/shared"
+    assert alpha_detail.work_request.repo_key == "alpha/shared"
+    assert alpha_detail.work_request.repo_display == "alpha/shared"
+    assert alpha_detail.work_request.repo_aliases == ["alpha/shared"]
+
+    assert {:ok, beta_detail} = Dashboard.work_request_detail(repo, beta_request.id)
+    assert beta_detail.work_request.repo == "beta/shared"
+    assert beta_detail.work_request.repo_key == "beta/shared"
+    assert beta_detail.work_request.repo_display == "beta/shared"
+    assert beta_detail.work_request.repo_aliases == ["beta/shared"]
+  end
+
   test "local operator dashboard exposes active blocking edges", %{repo: repo} do
     with_local_operator_endpoint(fn ->
       work_request =
@@ -4557,6 +4879,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   end
 
   defp create_claimed_worker_grant(repo, work_package_id, claimed_by) do
+    {grant, _work_key} = create_claimed_worker_key(repo, work_package_id, claimed_by)
+    grant
+  end
+
+  defp create_worker_grant_secret(repo, work_package_id, claimed_by) do
+    {_grant, work_key} = create_claimed_worker_key(repo, work_package_id, claimed_by)
+    work_key.secret
+  end
+
+  defp create_claimed_worker_key(repo, work_package_id, claimed_by) do
     work_key = WorkKey.generate()
 
     assert {:ok, grant} =
@@ -4573,7 +4905,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              AccessGrantRepository.claim(repo, work_key.secret, %{claimed_by: claimed_by}, DateTime.utc_now(:microsecond))
 
     assert {:ok, grant} = AccessGrantRepository.get(repo, grant.id)
-    grant
+    {grant, work_key}
   end
 
   defp credential_target(%WorkPackage{id: work_package_id}, %AccessGrant{} = worker_grant) do
@@ -4582,6 +4914,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
   defp restore_store_dir_env(nil), do: Application.delete_env(:symphony_elixir, :sympp_worker_secret_store_dir)
   defp restore_store_dir_env(store_dir), do: Application.put_env(:symphony_elixir, :sympp_worker_secret_store_dir, store_dir)
+
+  defp with_trusted_repo_remotes(remotes, fun) when is_list(remotes) and is_function(fun, 0) do
+    original = Application.fetch_env(:symphony_elixir, :sympp_repo_identity_trusted_remotes)
+    Application.put_env(:symphony_elixir, :sympp_repo_identity_trusted_remotes, remotes)
+
+    try do
+      fun.()
+    after
+      restore_fetched_app_env(:sympp_repo_identity_trusted_remotes, original)
+    end
+  end
+
+  defp restore_fetched_app_env(key, {:ok, value}), do: Application.put_env(:symphony_elixir, key, value)
+  defp restore_fetched_app_env(key, :error), do: Application.delete_env(:symphony_elixir, key)
 
   defp auth_conn(secret) do
     build_conn()
