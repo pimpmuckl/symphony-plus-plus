@@ -572,7 +572,8 @@ defmodule SymphonyElixirWeb.SymppDetailLive do
   end
 
   defp load_detail(repo, work_package_id, nil) do
-    with {:ok, detail} <- Dashboard.detail(repo, work_package_id),
+    with {:ok, repo_identity_catalog} <- Dashboard.local_operator_repo_identity_catalog(repo),
+         {:ok, detail} <- Dashboard.detail(repo, work_package_id, repo_identity_catalog: repo_identity_catalog),
          {:ok, timeline} <- Dashboard.timeline(repo, work_package_id) do
       {:ok, %{detail: detail, timeline: timeline}}
     end

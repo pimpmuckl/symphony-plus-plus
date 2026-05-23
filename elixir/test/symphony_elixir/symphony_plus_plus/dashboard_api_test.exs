@@ -3368,8 +3368,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
-  test "local operator dashboard exposes canonical repo identity across backend payloads", %{repo: repo} do
-    with_trusted_repo_remotes(["Pimpmuckl/symphony-plus-plus"], fn ->
+  test "local operator dashboard infers canonical repo identity from local origin", %{repo: repo} do
+    with_local_repo_origin("https://github.com/Pimpmuckl/symphony-plus-plus.git", fn ->
       with_local_operator_endpoint(fn ->
         assert {:ok, work_package} =
                  WorkPackageRepository.create(
@@ -3459,7 +3459,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
         assert Enum.all?(solo_sessions, &(&1["repo_display"] == "symphony-plus-plus"))
         assert Enum.all?(solo_sessions, &(&1["repo_remote"] == "Pimpmuckl/symphony-plus-plus"))
 
-        assert {:ok, repo_identity_catalog} = Dashboard.repo_identity_catalog(repo)
+        assert {:ok, repo_identity_catalog} = Dashboard.local_operator_repo_identity_catalog(repo)
         assert {:ok, streams} = Dashboard.solo_session_streams(repo, repo_identity_catalog: repo_identity_catalog)
 
         assert [
@@ -3553,85 +3553,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   end
 
   test "dashboard repo identity keeps conflicting owner-qualified repos separate", %{repo: repo} do
-    assert {:ok, alpha} =
-             WorkPackageRepository.create(
-               repo,
-               WorkPackageFactory.attrs(id: "SYMPP-REPO-CONFLICT-A", repo: "alpha/shared", base_branch: "main")
-             )
+    with_local_repo_origin("https://github.com/alpha/shared.git", fn ->
+      repo_cases = [
+        {:bare, "SYMPP-REPO-CONFLICT-BARE", "shared"},
+        {:alpha, "SYMPP-REPO-CONFLICT-A", "alpha/shared"},
+        {:beta, "SYMPP-REPO-CONFLICT-B", "beta/shared"}
+      ]
 
-    assert {:ok, beta} =
-             WorkPackageRepository.create(
-               repo,
-               WorkPackageFactory.attrs(id: "SYMPP-REPO-CONFLICT-B", repo: "beta/shared", base_branch: "main")
-             )
+      packages = Map.new(repo_cases, &create_repo_identity_package!(repo, &1))
+      requests = Map.new(repo_cases, &create_repo_identity_request!(repo, &1))
+      expectations = Map.new(repo_cases, fn {key, _id, raw_repo} -> {key, repo_identity_expectation(raw_repo)} end)
 
-    assert {:ok, alpha_request} =
-             WorkRequestRepository.create(repo, %{
-               title: "Alpha shared request",
-               repo: "alpha/shared",
-               base_branch: "main",
-               work_type: "feature",
-               human_description: "Alpha-owned shared repo work.",
-               constraints: %{},
-               desired_dispatch_shape: "architect_led_feature_branch",
-               status: "ready_for_clarification"
-             })
+      assert {:ok, repo_identity_catalog} = Dashboard.local_operator_repo_identity_catalog(repo)
+      opts = [repo_identity_catalog: repo_identity_catalog]
 
-    assert {:ok, beta_request} =
-             WorkRequestRepository.create(repo, %{
-               title: "Beta shared request",
-               repo: "beta/shared",
-               base_branch: "main",
-               work_type: "feature",
-               human_description: "Beta-owned shared repo work.",
-               constraints: %{},
-               desired_dispatch_shape: "architect_led_feature_branch",
-               status: "ready_for_clarification"
-             })
+      assert {:ok, board} = Dashboard.operator_board(repo, opts)
 
-    assert {:ok, board} = Dashboard.operator_board(repo)
+      cards_by_id =
+        board.groups["created"]
+        |> Map.new(&{&1.id, &1})
 
-    cards_by_id =
-      board.groups["created"]
-      |> Map.new(&{&1.id, &1})
+      Enum.each(repo_cases, fn {key, _id, _raw_repo} ->
+        package_card = Map.fetch!(cards_by_id, Map.fetch!(packages, key).id)
+        assert_repo_identity(package_card, Map.fetch!(expectations, key))
+      end)
 
-    assert cards_by_id[alpha.id].repo == "alpha/shared"
-    assert cards_by_id[alpha.id].repo_key == "alpha/shared"
-    assert cards_by_id[alpha.id].repo_display == "alpha/shared"
-    assert cards_by_id[alpha.id].repo_aliases == ["alpha/shared"]
+      assert {:ok, work_requests} = Dashboard.work_requests(repo, opts)
 
-    assert cards_by_id[beta.id].repo == "beta/shared"
-    assert cards_by_id[beta.id].repo_key == "beta/shared"
-    assert cards_by_id[beta.id].repo_display == "beta/shared"
-    assert cards_by_id[beta.id].repo_aliases == ["beta/shared"]
+      request_cards_by_id =
+        work_requests.work_requests
+        |> Map.new(&{&1.id, &1})
 
-    assert {:ok, work_requests} = Dashboard.work_requests(repo)
+      Enum.each(repo_cases, fn {key, _id, _raw_repo} ->
+        request = Map.fetch!(requests, key)
 
-    request_cards_by_id =
-      work_requests.work_requests
-      |> Map.new(&{&1.id, &1})
+        request_card = Map.fetch!(request_cards_by_id, request.id)
+        assert_repo_identity(request_card, Map.fetch!(expectations, key))
 
-    assert request_cards_by_id[alpha_request.id].repo == "alpha/shared"
-    assert request_cards_by_id[alpha_request.id].repo_key == "alpha/shared"
-    assert request_cards_by_id[alpha_request.id].repo_display == "alpha/shared"
-    assert request_cards_by_id[alpha_request.id].repo_aliases == ["alpha/shared"]
-
-    assert request_cards_by_id[beta_request.id].repo == "beta/shared"
-    assert request_cards_by_id[beta_request.id].repo_key == "beta/shared"
-    assert request_cards_by_id[beta_request.id].repo_display == "beta/shared"
-    assert request_cards_by_id[beta_request.id].repo_aliases == ["beta/shared"]
-
-    assert {:ok, alpha_detail} = Dashboard.work_request_detail(repo, alpha_request.id)
-    assert alpha_detail.work_request.repo == "alpha/shared"
-    assert alpha_detail.work_request.repo_key == "alpha/shared"
-    assert alpha_detail.work_request.repo_display == "alpha/shared"
-    assert alpha_detail.work_request.repo_aliases == ["alpha/shared"]
-
-    assert {:ok, beta_detail} = Dashboard.work_request_detail(repo, beta_request.id)
-    assert beta_detail.work_request.repo == "beta/shared"
-    assert beta_detail.work_request.repo_key == "beta/shared"
-    assert beta_detail.work_request.repo_display == "beta/shared"
-    assert beta_detail.work_request.repo_aliases == ["beta/shared"]
+        assert {:ok, detail} = Dashboard.work_request_detail(repo, request.id, opts)
+        assert_repo_identity(detail.work_request, Map.fetch!(expectations, key))
+      end)
+    end)
   end
 
   test "local operator dashboard exposes active blocking edges", %{repo: repo} do
@@ -4923,6 +4885,89 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       fun.()
     after
       restore_fetched_app_env(:sympp_repo_identity_trusted_remotes, original)
+    end
+  end
+
+  defp create_repo_identity_package!(repo, {key, id, raw_repo}) do
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: id, repo: raw_repo, base_branch: "main")
+             )
+
+    {key, package}
+  end
+
+  defp create_repo_identity_request!(repo, {key, id, raw_repo}) do
+    assert {:ok, request} =
+             WorkRequestRepository.create(repo, %{
+               title: "#{id} request",
+               repo: raw_repo,
+               base_branch: "main",
+               work_type: "feature",
+               human_description: "#{raw_repo} repo identity coverage.",
+               constraints: %{},
+               desired_dispatch_shape: "architect_led_feature_branch",
+               status: "ready_for_clarification"
+             })
+
+    {key, request}
+  end
+
+  defp repo_identity_expectation(raw_repo) do
+    %{
+      repo: raw_repo,
+      repo_key: String.downcase(raw_repo),
+      repo_display: raw_repo,
+      repo_remote: if(String.contains?(raw_repo, "/"), do: raw_repo),
+      repo_aliases: [raw_repo]
+    }
+  end
+
+  defp assert_repo_identity(record, expected) do
+    Enum.each(expected, fn {field, value} ->
+      assert Map.fetch!(record, field) == value
+    end)
+  end
+
+  defp with_local_repo_origin(origin, fun) when is_binary(origin) and is_function(fun, 0) do
+    original_repo_root = Application.fetch_env(:symphony_elixir, :sympp_repo_root)
+    original_trusted_remotes = Application.fetch_env(:symphony_elixir, :sympp_repo_identity_trusted_remotes)
+    repo_root = temporary_git_repo_with_origin!(origin)
+
+    Application.put_env(:symphony_elixir, :sympp_repo_root, repo_root)
+    Application.delete_env(:symphony_elixir, :sympp_repo_identity_trusted_remotes)
+
+    try do
+      fun.()
+    after
+      restore_fetched_app_env(:sympp_repo_root, original_repo_root)
+      restore_fetched_app_env(:sympp_repo_identity_trusted_remotes, original_trusted_remotes)
+      File.rm_rf(repo_root)
+    end
+  end
+
+  defp temporary_git_repo_with_origin!(origin) do
+    repo_root = Path.join(System.tmp_dir!(), "sympp-dashboard-repo-root-#{System.unique_integer([:positive])}")
+    script_path = Path.join([repo_root, "scripts", "sympp-worker-secret.ps1"])
+
+    File.mkdir_p!(Path.dirname(script_path))
+    File.write!(script_path, "# test fixture\n")
+
+    git!(repo_root, ["init"])
+    git!(repo_root, ["remote", "add", "origin", origin])
+
+    repo_root
+  end
+
+  defp git!(repo_root, args) do
+    git = System.find_executable("git") || System.find_executable("git.exe") || flunk("git executable is required for local repo origin tests")
+    {output, status} = System.cmd(git, ["-C", repo_root | args], stderr_to_stdout: true)
+
+    if status == 0 do
+      output
+    else
+      flunk("git #{Enum.join(args, " ")} failed with exit #{status}:\n#{output}")
     end
   end
 
