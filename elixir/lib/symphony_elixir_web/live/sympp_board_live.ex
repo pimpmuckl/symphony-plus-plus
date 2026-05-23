@@ -421,7 +421,7 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
              {:ok, guidance_requests} <- Dashboard.human_guidance_requests(repo, opts),
              {:ok, solo_sessions} <- Dashboard.solo_sessions(repo, solo_session_dashboard_filters(filters), opts),
              {:ok, solo_session_repos} <- Dashboard.solo_session_repos(repo),
-             {:ok, solo_session_streams} <- Dashboard.solo_session_streams(repo, opts),
+             {:ok, solo_session_streams} <- Dashboard.solo_session_streams(repo),
              {:ok, solo_session_total_count} <- Dashboard.solo_session_count(repo) do
           {:ok,
            %{
