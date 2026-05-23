@@ -6148,6 +6148,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       assert cleanup_payload["audit_event"]["payload"]["worktree_path"] == "[REDACTED]"
       assert cleanup_payload["audit_event"]["payload"]["repo_root"] == "[REDACTED]"
       refute File.exists?(prepare_payload["worktree"]["path"])
+
+      stale_prepare_response =
+        mcp_tool(
+          repo,
+          session,
+          "prepare_work_package_worktree",
+          %{
+            "work_package_id" => package.id,
+            "repo_root" => fixture.repo_root,
+            "base_branch" => anchor.base_branch,
+            "branch" => "feat/worktree-lifecycle-stale"
+          },
+          config: config
+        )
+
+      stale_prepare_payload = get_in(stale_prepare_response, ["result", "structuredContent"])
+      assert stale_prepare_payload["worktree"]["status"] == "prepared"
+      File.rm_rf!(stale_prepare_payload["worktree"]["path"])
+
+      stale_cleanup_response =
+        mcp_tool(
+          repo,
+          session,
+          "cleanup_work_package_worktree",
+          %{
+            "work_package_id" => package.id
+          },
+          config: config
+        )
+
+      stale_cleanup_payload = get_in(stale_cleanup_response, ["result", "structuredContent"])
+      assert stale_cleanup_payload["worktree"]["status"] == "stale_record_cleared"
+      assert stale_cleanup_payload["work_package"]["worktree_path"] == nil
+      assert stale_cleanup_payload["audit_event"]["payload"]["source_tool"] == "cleanup_work_package_worktree"
+      assert stale_cleanup_payload["audit_event"]["payload"]["status"] == "stale_record_cleared"
     after
       restore_env("CODEX_HOME", previous_codex_home)
     end
@@ -6164,6 +6199,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert Enum.map(events, & &1.payload["source_tool"]) == [
+             "prepare_work_package_worktree",
+             "cleanup_work_package_worktree",
              "prepare_work_package_worktree",
              "cleanup_work_package_worktree"
            ]

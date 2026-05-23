@@ -115,12 +115,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     end
   end
 
-  defp maybe_replay_prepared(_repo, %WorkPackage{worktree_path: recorded_path} = work_package, repo_root, base_branch, branch, worktree_path, _opts)
+  defp maybe_replay_prepared(_repo, %WorkPackage{worktree_path: recorded_path} = work_package, repo_root, base_branch, branch, worktree_path, opts)
        when is_binary(recorded_path) do
-    if File.dir?(worktree_path) do
+    with true <- File.dir?(worktree_path),
+         :ok <- require_git_worktree(worktree_path, repo_root, opts) do
       {:ok, result(work_package, "already_prepared", worktree_path, branch, base_branch, repo_root)}
     else
-      {:error, :recorded_worktree_missing}
+      false -> {:error, :recorded_worktree_missing}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -204,10 +206,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   end
 
   defp cleanup_existing_or_missing_worktree(repo, %WorkPackage{} = work_package, worktree_path, opts) do
-    if File.dir?(worktree_path) do
-      cleanup_existing_worktree(repo, work_package, worktree_path, opts)
-    else
-      clear_missing_recorded_worktree(repo, work_package)
+    cond do
+      File.dir?(worktree_path) -> cleanup_existing_worktree(repo, work_package, worktree_path, opts)
+      File.exists?(worktree_path) -> {:error, :invalid_worktree_path}
+      true -> clear_missing_recorded_worktree(repo, work_package)
     end
   end
 
@@ -226,7 +228,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
 
   defp clear_missing_recorded_worktree(repo, %WorkPackage{} = work_package) do
     with {:ok, updated_work_package} <- Repository.update(repo, work_package.id, %{worktree_path: nil}) do
-      {:ok, result(updated_work_package, "already_clean", nil, nil, nil, nil)}
+      {:ok, result(updated_work_package, "stale_record_cleared", nil, nil, nil, nil)}
     end
   end
 
@@ -249,6 +251,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
       Path.dirname(common_dir)
     else
       common_dir
+    end
+  end
+
+  defp require_git_worktree(worktree_path, expected_repo_root, opts) do
+    with {:ok, inside_worktree} <- git_output(worktree_path, ["rev-parse", "--is-inside-work-tree"], opts),
+         true <- String.trim(inside_worktree) == "true",
+         {:ok, repo_root} <- repo_root_from_worktree(worktree_path, opts),
+         true <- same_path?(repo_root, expected_repo_root) do
+      :ok
+    else
+      false -> {:error, :invalid_worktree_path}
+      {:error, _reason} -> {:error, :invalid_worktree_path}
     end
   end
 

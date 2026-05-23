@@ -309,10 +309,54 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
     assert fetched.worktree_path == prepared.worktree_path
 
     assert {:ok, recovered} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
-    assert recovered.status == "already_clean"
+    assert recovered.status == "stale_record_cleared"
 
     assert {:ok, cleared} = Repository.get(repo, package.id)
     assert cleared.worktree_path == nil
+  end
+
+  test "prepare replay rejects recorded paths that are no longer git worktrees", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-009", kind: "mcp", base_branch: "main"))
+
+    attrs = %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/replay-invalid"}
+
+    assert {:ok, prepared} = WorktreeLifecycle.prepare(repo, package.id, attrs, codex_home: codex_home)
+
+    File.rm_rf!(prepared.worktree_path)
+    File.mkdir_p!(prepared.worktree_path)
+
+    assert {:error, :invalid_worktree_path} = WorktreeLifecycle.prepare(repo, package.id, attrs, codex_home: codex_home)
+
+    assert {:ok, recorded} = Repository.get(repo, package.id)
+    assert recorded.worktree_path == prepared.worktree_path
+  end
+
+  test "cleanup rejects recorded paths that exist as non-directories", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-010", kind: "mcp", base_branch: "main"))
+
+    assert {:ok, prepared} =
+             WorktreeLifecycle.prepare(
+               repo,
+               package.id,
+               %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/cleanup-invalid"},
+               codex_home: codex_home
+             )
+
+    File.rm_rf!(prepared.worktree_path)
+    File.write!(prepared.worktree_path, "not a directory")
+
+    assert {:error, :invalid_worktree_path} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
+
+    assert {:ok, recorded} = Repository.get(repo, package.id)
+    assert recorded.worktree_path == prepared.worktree_path
   end
 
   test "prepare rejects stale existing local branches", %{repo: repo} do
