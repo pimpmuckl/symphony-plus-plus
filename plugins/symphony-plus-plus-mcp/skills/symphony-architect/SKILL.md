@@ -113,6 +113,9 @@ Worker guidance must include:
   review profile/provider requirements, and stop conditions.
 - The plugin-installed `symphony-plus-plus-mcp:symphony-work-package` worker
   skill or the equivalent repo-local worker skill path.
+- Workers track progress in their assigned WorkPackage through S++ MCP:
+  `read_task_plan`, `update_task_plan`, `append_finding`, and
+  `append_progress`.
 - A private-store MCP bootstrap or redacted handoff metadata, never the raw
   worker secret or full secret-bearing command text.
 - Dependency summaries and recorded decisions needed to avoid scope drift.
