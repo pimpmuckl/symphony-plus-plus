@@ -28,6 +28,15 @@ import {
   LaneGroupLabel,
 } from "@/components/dashboard/board-lanes";
 import {
+  ALIGNED_ROW_MIN_HEIGHT,
+  useAlignedBoardLayout,
+  useBoardLayoutMotion,
+} from "@/components/dashboard/board-layout";
+import type {
+  BoardLayoutMeasurementRow,
+  BoardLayoutMode as WorkstreamLayoutMode,
+} from "@/components/dashboard/board-layout";
+import {
   DetailDisclosure,
   DetailFacts,
   DetailHeader,
@@ -124,9 +133,7 @@ const CUSTOM_CHOICE = "__custom_redirect__";
 const DASHBOARD_UI_STATE_KEY = "symphony-plus-plus.dashboard.ui-state.v1";
 const DASHBOARD_THEME_KEY = "symphony-plus-plus.dashboard.theme.v1";
 const DASHBOARD_DEBUG_ANIMATIONS_KEY = "symphony-plus-plus.dashboard.debug-animations";
-const ALIGNED_ROW_MIN_HEIGHT = 112;
-const ALIGNED_SLOT_MIN_HEIGHT = 76;
-const BOARD_LAYOUT_MOTION_MS = 360;
+const REPO_WORKSTREAM_MOTION_MS = 360;
 const DASHBOARD_POLL_INTERVAL_MS = 7000;
 const LOCAL_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 const TOP_PANEL_ORDER: TopPanelKey[] = ["guidance", "blockers", "finished"];
@@ -178,7 +185,6 @@ type OperationalAttention = NonNullable<OperationalState["attention_items"]>[num
 type PackageLineageProjection = NonNullable<WorkPackageCard["lineage"]>;
 type WorkspaceTab = "workstreams" | "solo";
 type WorkspaceTabPhase = "idle" | "swapping";
-type WorkstreamLayoutMode = "jira" | "aligned";
 type DashboardTheme = "light" | "dark";
 type UpdateMotionsAction =
   | { type: "clear" }
@@ -2181,7 +2187,7 @@ function RepoWorkstream({
       openMotionTimerRef.current = window.setTimeout(() => {
         setOpenMotion(false);
         openMotionTimerRef.current = null;
-      }, BOARD_LAYOUT_MOTION_MS + 120);
+      }, REPO_WORKSTREAM_MOTION_MS + 120);
     }
     previousOpenRef.current = open;
   }, [open]);
@@ -2396,8 +2402,19 @@ function WorkstreamBoard({
     () => workstreamRows(sortedDetails, sliceEntries, activePackages, implementingPackages, finishedPackages),
     [activePackages, finishedPackages, implementingPackages, sliceEntries, sortedDetails],
   );
-  const { templates: alignedSlotTemplates, key: alignedSlotTemplateKey } = useAlignedSlotTemplates(boardRef, alignedRows, layoutMode);
-  const rowTemplate = useAlignedRowTemplate(boardRef, alignedRows, layoutMode, alignedSlotTemplateKey);
+  const alignedMeasurementRows = useMemo<BoardLayoutMeasurementRow[]>(
+    () =>
+      alignedRows.map((row, index) => ({
+        activeSlotKeys: row.active.map(({ slice }) => slice.id),
+        minHeight: row.minHeight,
+        rowKey: workstreamRowKey(row, index),
+      })),
+    [alignedRows],
+  );
+  const {
+    rowTemplate,
+    slotTemplates: alignedSlotTemplates,
+  } = useAlignedBoardLayout(boardRef, alignedMeasurementRows, layoutMode);
   const wires = useMemo(() => workstreamWires(sortedDetails, packages, activeBlockingEdges), [activeBlockingEdges, sortedDetails, packages]);
   const { paths: wirePaths, size: wireSize } = useBoardWirePaths(boardRef, wires, layoutMode);
   const layoutMotion = useBoardLayoutMotion(shellRef, boardRef, layoutMode);
@@ -2693,295 +2710,6 @@ function AlignedWorkstreamColumns({
       </BoardLaneColumn>
     </>
   );
-}
-
-function useBoardLayoutMotion(
-  shellRef: React.RefObject<HTMLDivElement | null>,
-  boardRef: React.RefObject<HTMLDivElement | null>,
-  motionKey: string,
-) {
-  const [active, dispatchLayoutActive] = useReducer((_: boolean, next: boolean) => next, false);
-  const previousKeyRef = useRef(motionKey);
-  const lastHeightRef = useRef<number | null>(null);
-  const timersRef = useRef<number[]>([]);
-
-  useEffect(
-    () => () => {
-      timersRef.current.forEach((timer) => window.clearTimeout(timer));
-      timersRef.current = [];
-    },
-    [],
-  );
-
-  useLayoutEffect(() => {
-    const board = boardRef.current;
-    if (!board || active || previousKeyRef.current !== motionKey) return;
-    lastHeightRef.current = measureBoardHeight(board);
-  });
-
-  useLayoutEffect(() => {
-    const shell = shellRef.current;
-    const board = boardRef.current;
-    if (!shell || !board) return;
-
-    const measuredHeight = measureBoardHeight(board);
-    if (dashboardPrefersReducedMotion()) {
-      lastHeightRef.current = measuredHeight;
-      previousKeyRef.current = motionKey;
-      dispatchLayoutActive(false);
-      return;
-    }
-
-    if (lastHeightRef.current === null) {
-      lastHeightRef.current = measuredHeight;
-      previousKeyRef.current = motionKey;
-      return;
-    }
-
-    if (previousKeyRef.current === motionKey) {
-      lastHeightRef.current = measuredHeight;
-      return;
-    }
-
-    timersRef.current.forEach((timer) => window.clearTimeout(timer));
-    timersRef.current = [];
-
-    const startHeight = lastHeightRef.current;
-    const previousStyleText = shell.getAttribute("style");
-    previousKeyRef.current = motionKey;
-    lastHeightRef.current = measuredHeight;
-    dispatchLayoutActive(true);
-
-    applyBoardShellMotionStyle(shell, previousStyleText, startHeight);
-
-    const syncHeight = () => {
-      const nextHeight = measureBoardHeight(board);
-      if (nextHeight <= 0) return;
-      lastHeightRef.current = nextHeight;
-      shell.style.height = `${nextHeight}px`;
-    };
-
-    const observer = new ResizeObserver(syncHeight);
-    observer.observe(board);
-
-    void shell.offsetHeight;
-    syncHeight();
-
-    let settled = false;
-    const settleTimer = window.setTimeout(() => {
-      settled = true;
-      observer.disconnect();
-      timersRef.current = timersRef.current.filter((timer) => timer !== settleTimer);
-      lastHeightRef.current = measureBoardHeight(board);
-      restoreElementStyle(shell, previousStyleText);
-      dispatchLayoutActive(false);
-    }, BOARD_LAYOUT_MOTION_MS + 90);
-    timersRef.current.push(settleTimer);
-
-    return () => {
-      observer.disconnect();
-      if (settled) return;
-      window.clearTimeout(settleTimer);
-      timersRef.current = timersRef.current.filter((timer) => timer !== settleTimer);
-      restoreElementStyle(shell, previousStyleText);
-      dispatchLayoutActive(false);
-    };
-  }, [boardRef, motionKey, shellRef]);
-
-  return active;
-}
-
-function measureBoardHeight(board: HTMLDivElement) {
-  return Math.max(0, Math.ceil(board.getBoundingClientRect().height));
-}
-
-function applyBoardShellMotionStyle(shell: HTMLDivElement, previousStyleText: string | null, height: number) {
-  const base = previousStyleText ? `${previousStyleText}; ` : "";
-  shell.style.cssText = `${base}height: ${height}px; overflow: clip; transition: height ${BOARD_LAYOUT_MOTION_MS}ms cubic-bezier(0.16, 1, 0.3, 1); will-change: height;`;
-}
-
-function restoreElementStyle(element: HTMLElement, previousStyleText: string | null) {
-  if (previousStyleText) {
-    element.setAttribute("style", previousStyleText);
-  } else {
-    element.removeAttribute("style");
-  }
-}
-
-function useAlignedSlotTemplates(boardRef: React.RefObject<HTMLDivElement | null>, rows: WorkstreamRow[], layoutMode: WorkstreamLayoutMode) {
-  const rowSlots = useMemo(
-    () =>
-      rows.map((row, index) => ({
-        rowKey: workstreamRowKey(row, index),
-        slotKeys: row.active.map(({ slice }) => slice.id),
-      })),
-    [rows],
-  );
-  const measurementKey = rowSlots.map(({ rowKey, slotKeys }) => `${rowKey}:${slotKeys.join(",")}`).join("|");
-  const [measuredTemplates, setMeasuredTemplates] = useState<{ key: string; templates: Record<string, string> }>({ key: "", templates: {} });
-
-  useLayoutEffect(() => {
-    const board = boardRef.current;
-    if (!board || layoutMode !== "aligned") return;
-
-    let frame: number | null = null;
-    const timers: number[] = [];
-
-    const measure = () => {
-      frame = null;
-      const heightsByRow = new Map<string, Map<string, number>>();
-
-      board.querySelectorAll<HTMLElement>(".aligned-card-slot[data-feature-row][data-slot-key]").forEach((slotNode) => {
-        const rowKey = slotNode.dataset.featureRow;
-        const slotKey = slotNode.dataset.slotKey;
-        if (!rowKey || !slotKey) return;
-
-        const height = alignedSlotContentHeight(slotNode);
-        if (height <= 0) return;
-
-        const rowHeights = heightsByRow.get(rowKey) || new Map<string, number>();
-        rowHeights.set(slotKey, Math.max(rowHeights.get(slotKey) || 0, height));
-        heightsByRow.set(rowKey, rowHeights);
-      });
-
-      const templates = rowSlots.reduce<Record<string, string>>((result, { rowKey, slotKeys }) => {
-        if (slotKeys.length === 0) return result;
-
-        const rowHeights = heightsByRow.get(rowKey);
-        result[rowKey] = slotKeys
-          .map((slotKey) => `${Math.max(ALIGNED_SLOT_MIN_HEIGHT, Math.ceil(rowHeights?.get(slotKey) || 0))}px`)
-          .join(" ");
-        return result;
-      }, {});
-
-      setMeasuredTemplates((previous) =>
-        previous.key === measurementKey && sameStringRecords(previous.templates, templates)
-          ? previous
-          : { key: measurementKey, templates },
-      );
-    };
-
-    const schedule = () => {
-      if (frame !== null) return;
-      frame = window.requestAnimationFrame(measure);
-    };
-
-    schedule();
-    timers.push(window.setTimeout(schedule, 160), window.setTimeout(schedule, 420));
-
-    const observer = new ResizeObserver(schedule);
-    observer.observe(board);
-    board.querySelectorAll<HTMLElement>(".aligned-card-slot, .aligned-card-slot > .stagger-item").forEach((node) => {
-      observer.observe(node);
-    });
-    window.addEventListener("resize", schedule);
-
-    return () => {
-      if (frame !== null) {
-        window.cancelAnimationFrame(frame);
-      }
-      timers.forEach((timer) => window.clearTimeout(timer));
-      observer.disconnect();
-      window.removeEventListener("resize", schedule);
-    };
-  }, [boardRef, layoutMode, measurementKey, rowSlots]);
-
-  return measuredTemplates.key === measurementKey ? measuredTemplates : { key: measurementKey, templates: {} };
-}
-
-function alignedSlotContentHeight(slotNode: HTMLElement) {
-  return Array.from(slotNode.children)
-    .filter((child): child is HTMLElement => child instanceof HTMLElement)
-    .reduce((height, child) => Math.max(height, child.offsetHeight), 0);
-}
-
-function useAlignedRowTemplate(
-  boardRef: React.RefObject<HTMLDivElement | null>,
-  rows: WorkstreamRow[],
-  layoutMode: WorkstreamLayoutMode,
-  slotTemplateKey = "",
-) {
-  const baseHeights = useMemo(() => rows.map((row) => row.minHeight), [rows]);
-  const rowKeys = useMemo(() => rows.map((row, index) => workstreamRowKey(row, index)), [rows]);
-  const baseKey = baseHeights.join(",");
-  const rowKey = rowKeys.join("|");
-  const measurementKey = `${baseKey}|${rowKey}|${slotTemplateKey}`;
-  const [measuredRows, setMeasuredRows] = useState<{ key: string; heights: number[] }>({ key: "", heights: [] });
-
-  useLayoutEffect(() => {
-    const board = boardRef.current;
-    if (!board || layoutMode !== "aligned") return;
-
-    let frame: number | null = null;
-    const timers: number[] = [];
-    const rowIndex = new Map(rowKeys.map((key, index) => [key, index]));
-
-    const measure = () => {
-      frame = null;
-      const next = [...baseHeights];
-
-      board.querySelectorAll<HTMLElement>(".feature-lane-row[data-feature-row]").forEach((rowNode) => {
-        const index = rowIndex.get(rowNode.dataset.featureRow || "");
-        if (index === undefined) return;
-        next[index] = Math.max(next[index], featureRowContentHeight(rowNode));
-      });
-
-      setMeasuredRows((previous) => (previous.key === measurementKey && sameNumbers(previous.heights, next) ? previous : { key: measurementKey, heights: next }));
-    };
-
-    const schedule = () => {
-      if (frame !== null) return;
-      frame = window.requestAnimationFrame(measure);
-    };
-
-    schedule();
-    timers.push(window.setTimeout(schedule, 160), window.setTimeout(schedule, 420));
-
-    const observer = new ResizeObserver(schedule);
-    observer.observe(board);
-    board.querySelectorAll<HTMLElement>(".feature-lane-row[data-feature-row], .feature-lane-row[data-feature-row] .stagger-item").forEach((node) => {
-      observer.observe(node);
-    });
-    window.addEventListener("resize", schedule);
-
-    return () => {
-      if (frame !== null) {
-        window.cancelAnimationFrame(frame);
-      }
-      timers.forEach((timer) => window.clearTimeout(timer));
-      observer.disconnect();
-      window.removeEventListener("resize", schedule);
-    };
-  }, [baseHeights, boardRef, layoutMode, measurementKey, rowKeys]);
-
-  const heights = layoutMode === "aligned" && measuredRows.key === measurementKey ? measuredRows.heights : baseHeights;
-  return heights.map((height) => `${height}px`).join(" ");
-}
-
-function featureRowContentHeight(rowNode: HTMLElement) {
-  const computed = window.getComputedStyle(rowNode);
-  const paddingY = cssPixelValue(computed.paddingTop) + cssPixelValue(computed.paddingBottom);
-  const rowGap = cssPixelValue(computed.rowGap);
-  const children = Array.from(rowNode.children).filter((child): child is HTMLElement => child instanceof HTMLElement);
-  const childrenHeight = children.reduce((total, child) => total + child.offsetHeight, 0);
-  const gapHeight = Math.max(0, children.length - 1) * rowGap;
-
-  return Math.ceil(paddingY + childrenHeight + gapHeight + 1);
-}
-
-function cssPixelValue(value: string) {
-  const parsed = Number.parseFloat(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function sameNumbers(left: number[], right: number[]) {
-  return left.length === right.length && left.every((value, index) => Math.abs(value - right[index]) < 1);
-}
-
-function sameStringRecords(left: Record<string, string>, right: Record<string, string>) {
-  const leftKeys = Object.keys(left);
-  const rightKeys = Object.keys(right);
-  return leftKeys.length === rightKeys.length && leftKeys.every((key) => left[key] === right[key]);
 }
 
 function stateCardBodyMotionKey(...parts: Array<string | number | boolean | null | undefined>) {
