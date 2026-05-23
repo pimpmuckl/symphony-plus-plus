@@ -18,9 +18,15 @@ import {
   Sun,
 } from "lucide-react";
 import type * as React from "react";
-import { Children, FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
+import {
+  AlignedCardSlot,
+  BoardLaneColumn,
+  FeatureLaneRow,
+  LaneGroupLabel,
+} from "@/components/dashboard/board-lanes";
 import {
   DetailDisclosure,
   DetailFacts,
@@ -167,7 +173,6 @@ type TopPanelKey = "guidance" | "blockers" | "finished";
 type TopPanelDirection = "forward" | "backward";
 type TopPanelPhase = "idle" | "opening" | "closing" | "pre-resize" | "swapping" | "post-resize";
 type BoardLane = "slices" | "implementing" | "finished";
-type FeatureLane = "requested" | "slices" | "packages";
 type OperationalState = NonNullable<WorkPackageCard["operational_state"]>;
 type OperationalAttention = NonNullable<OperationalState["attention_items"]>[number];
 type PackageLineageProjection = NonNullable<WorkPackageCard["lineage"]>;
@@ -2577,206 +2582,116 @@ function AlignedWorkstreamColumns({
   return (
     <>
       <BoardLaneColumn title="Requests" count={requestedCount} emptyLabel="No requested work" bodyStyle={rowStyle} aligned>
-        {rows.map((row, index) => (
-          <FeatureLaneRow key={workstreamRowKey(row, index)} row={row} lane="requested" index={index}>
-            {row.detail ? (
-              <RequestCard
-                detail={row.detail}
-                onSelectGuidance={onSelectGuidance}
-                onSelectCard={() => onSelectCard({ kind: "request", detail: row.detail! })}
-                onCopyArchitectHandoff={onCopyArchitectHandoff}
-                index={index}
-                nodeId={requestNodeId(row.detail)}
-                motion={updateAnimations.motionFor(requestUpdateKey(row.detail))}
-              />
-            ) : null}
-          </FeatureLaneRow>
-        ))}
+        {rows.map((row, index) => {
+          const rowKey = workstreamRowKey(row, index);
+
+          return (
+            <FeatureLaneRow key={rowKey} rowKey={rowKey} lane="requested">
+              {row.detail ? (
+                <RequestCard
+                  detail={row.detail}
+                  onSelectGuidance={onSelectGuidance}
+                  onSelectCard={() => onSelectCard({ kind: "request", detail: row.detail! })}
+                  onCopyArchitectHandoff={onCopyArchitectHandoff}
+                  index={index}
+                  nodeId={requestNodeId(row.detail)}
+                  motion={updateAnimations.motionFor(requestUpdateKey(row.detail))}
+                />
+              ) : null}
+            </FeatureLaneRow>
+          );
+        })}
       </BoardLaneColumn>
       <BoardLaneColumn title="Slices" count={sliceCount} emptyLabel="No slices ready" bodyStyle={rowStyle} aligned>
-        {rows.map((row, index) => (
-          <FeatureLaneRow key={workstreamRowKey(row, index)} row={row} lane="slices" index={index} slotTemplate={slotTemplates[workstreamRowKey(row, index)]}>
-            {row.active.map(({ detail, slice, pkg }, sliceIndex) => (
-              <AlignedCardSlot key={slice.id} row={row} rowIndex={index} slotKey={slice.id} lane="slices">
-                <SliceCard
-                  slice={slice}
+        {rows.map((row, index) => {
+          const rowKey = workstreamRowKey(row, index);
+
+          return (
+            <FeatureLaneRow key={rowKey} rowKey={rowKey} lane="slices" slotTemplate={slotTemplates[rowKey]}>
+              {row.active.map(({ detail, slice, pkg }, sliceIndex) => (
+                <AlignedCardSlot key={slice.id} rowKey={rowKey} slotKey={slice.id} lane="slices">
+                  <SliceCard
+                    slice={slice}
+                    pkg={pkg}
+                    lane="slices"
+                    index={sliceIndex}
+                    nodeId={sliceNodeId(slice)}
+                    onSelectCard={() => onSelectCard({ kind: "slice", detail, slice, pkg })}
+                    motion={updateAnimations.motionFor(sliceUpdateKey(slice))}
+                  />
+                </AlignedCardSlot>
+              ))}
+              {row.activePackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
+              {row.activePackages.map((pkg, packageIndex) => (
+                <PackageCard
+                  key={pkg.id}
                   pkg={pkg}
                   lane="slices"
-                  index={sliceIndex}
-                  nodeId={sliceNodeId(slice)}
-                  onSelectCard={() => onSelectCard({ kind: "slice", detail, slice, pkg })}
-                  motion={updateAnimations.motionFor(sliceUpdateKey(slice))}
+                  index={row.active.length + packageIndex}
+                  nodeId={packageNodeId(pkg)}
+                  onSelectCard={() => onSelectCard({ kind: "package", pkg })}
+                  motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
                 />
-              </AlignedCardSlot>
-            ))}
-            {row.activePackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
-            {row.activePackages.map((pkg, packageIndex) => (
-              <PackageCard
-                key={pkg.id}
-                pkg={pkg}
-                lane="slices"
-                index={row.active.length + packageIndex}
-                nodeId={packageNodeId(pkg)}
-                onSelectCard={() => onSelectCard({ kind: "package", pkg })}
-                motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
-              />
-            ))}
-          </FeatureLaneRow>
-        ))}
+              ))}
+            </FeatureLaneRow>
+          );
+        })}
       </BoardLaneColumn>
       <BoardLaneColumn title="Work Packages" count={workPackageCount} emptyLabel="No work packages yet" bodyStyle={rowStyle} aligned>
-        {rows.map((row, index) => (
-          <FeatureLaneRow
-            key={workstreamRowKey(row, index)}
-            row={row}
-            lane="packages"
-            index={index}
-            slotTemplate={slotTemplates[workstreamRowKey(row, index)]}
-            emptyOverride={!row.active.some(({ pkg }) => pkg) && row.implementingPackages.length + row.finishedPackages.length === 0}
-          >
-            {row.active.map(({ detail, slice, pkg }, sliceIndex) => (
-              <AlignedCardSlot key={slice.id} row={row} rowIndex={index} slotKey={slice.id} lane="packages" empty={!pkg}>
-                {pkg ? (
-                  <PackageCard
-                    pkg={pkg}
-                    lane={sliceLane(slice, pkg)}
-                    index={sliceIndex}
-                    nodeId={packageNodeId(pkg)}
-                    sequence={slice.sequence}
-                    onSelectCard={() => onSelectCard({ kind: "package", pkg, detail, slice })}
-                    motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
-                  />
-                ) : null}
-              </AlignedCardSlot>
-            ))}
-            {row.implementingPackages.length + row.finishedPackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
-            {row.implementingPackages.map((pkg, packageIndex) => (
-              <PackageCard
-                key={pkg.id}
-                pkg={pkg}
-                lane="implementing"
-                index={row.implementing.length + row.finished.length + packageIndex}
-                nodeId={packageNodeId(pkg)}
-                onSelectCard={() => onSelectCard({ kind: "package", pkg })}
-                motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
-              />
-            ))}
-            {row.finishedPackages.map((pkg, packageIndex) => (
-              <PackageCard
-                key={pkg.id}
-                pkg={pkg}
-                lane="finished"
-                index={row.implementing.length + row.finished.length + row.implementingPackages.length + packageIndex}
-                nodeId={packageNodeId(pkg)}
-                onSelectCard={() => onSelectCard({ kind: "package", pkg })}
-                motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
-              />
-            ))}
-          </FeatureLaneRow>
-        ))}
+        {rows.map((row, index) => {
+          const rowKey = workstreamRowKey(row, index);
+
+          return (
+            <FeatureLaneRow
+              key={rowKey}
+              rowKey={rowKey}
+              lane="packages"
+              slotTemplate={slotTemplates[rowKey]}
+              emptyOverride={!row.active.some(({ pkg }) => pkg) && row.implementingPackages.length + row.finishedPackages.length === 0}
+            >
+              {row.active.map(({ detail, slice, pkg }, sliceIndex) => (
+                <AlignedCardSlot key={slice.id} rowKey={rowKey} slotKey={slice.id} lane="packages" empty={!pkg}>
+                  {pkg ? (
+                    <PackageCard
+                      pkg={pkg}
+                      lane={sliceLane(slice, pkg)}
+                      index={sliceIndex}
+                      nodeId={packageNodeId(pkg)}
+                      sequence={slice.sequence}
+                      onSelectCard={() => onSelectCard({ kind: "package", pkg, detail, slice })}
+                      motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
+                    />
+                  ) : null}
+                </AlignedCardSlot>
+              ))}
+              {row.implementingPackages.length + row.finishedPackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
+              {row.implementingPackages.map((pkg, packageIndex) => (
+                <PackageCard
+                  key={pkg.id}
+                  pkg={pkg}
+                  lane="implementing"
+                  index={row.implementing.length + row.finished.length + packageIndex}
+                  nodeId={packageNodeId(pkg)}
+                  onSelectCard={() => onSelectCard({ kind: "package", pkg })}
+                  motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
+                />
+              ))}
+              {row.finishedPackages.map((pkg, packageIndex) => (
+                <PackageCard
+                  key={pkg.id}
+                  pkg={pkg}
+                  lane="finished"
+                  index={row.implementing.length + row.finished.length + row.implementingPackages.length + packageIndex}
+                  nodeId={packageNodeId(pkg)}
+                  onSelectCard={() => onSelectCard({ kind: "package", pkg })}
+                  motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
+                />
+              ))}
+            </FeatureLaneRow>
+          );
+        })}
       </BoardLaneColumn>
     </>
-  );
-}
-
-function BoardLaneColumn({
-  title,
-  count,
-  emptyLabel,
-  children,
-  className,
-  bodyStyle,
-  aligned = false,
-}: {
-  title: string;
-  count: number;
-  emptyLabel: string;
-  children: React.ReactNode;
-  className?: string;
-  bodyStyle?: React.CSSProperties;
-  aligned?: boolean;
-}) {
-  const hasChildren = Children.count(children) > 0;
-
-  return (
-    <section className={cn("jira-lane", className)}>
-      <div className="jira-lane-header">
-        <span>{title}</span>
-        <span className="jira-lane-count">{count}</span>
-      </div>
-      <div className={cn("jira-lane-body", aligned && "jira-lane-body-aligned")} style={bodyStyle}>
-        {count > 0 || (aligned && hasChildren) ? children : <div className="jira-lane-empty">{emptyLabel}</div>}
-      </div>
-    </section>
-  );
-}
-
-function FeatureLaneRow({
-  row,
-  lane,
-  index,
-  slotTemplate,
-  emptyOverride,
-  children,
-}: {
-  row: WorkstreamRow;
-  lane: FeatureLane;
-  index: number;
-  slotTemplate?: string;
-  emptyOverride?: boolean;
-  children: React.ReactNode;
-}) {
-  const renderedChildren = Children.toArray(children);
-  const empty = emptyOverride ?? renderedChildren.length === 0;
-
-  return (
-    <div
-      className="feature-lane-row"
-      data-feature-row={workstreamRowKey(row, index)}
-      data-lane={lane}
-      data-empty={empty ? "true" : undefined}
-      style={slotTemplate ? { gridTemplateRows: slotTemplate } : undefined}
-    >
-      {renderedChildren}
-      {empty && renderedChildren.length === 0 ? <div className="feature-lane-empty" /> : null}
-    </div>
-  );
-}
-
-function AlignedCardSlot({
-  row,
-  rowIndex,
-  slotKey,
-  lane,
-  empty = false,
-  children,
-}: {
-  row: WorkstreamRow;
-  rowIndex: number;
-  slotKey: string;
-  lane: FeatureLane;
-  empty?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <div
-      className="aligned-card-slot"
-      data-feature-row={workstreamRowKey(row, rowIndex)}
-      data-slot-key={slotKey}
-      data-lane={lane}
-      data-empty={empty ? "true" : undefined}
-    >
-      {children}
-    </div>
-  );
-}
-
-function LaneGroupLabel({ label }: { label: string }) {
-  return (
-    <div className="flex items-center gap-2 px-1 pt-1 text-xs font-medium text-muted-foreground">
-      <Route className="size-3.5" />
-      {label}
-    </div>
   );
 }
 
