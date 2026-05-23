@@ -12,6 +12,7 @@ import {
   Moon,
   RefreshCw,
   Route,
+  Settings2,
   Sun,
 } from "lucide-react";
 import type * as React from "react";
@@ -81,6 +82,9 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
@@ -204,6 +208,7 @@ type DashboardUiState = {
   topPanel?: TopPanelKey | null;
   repoWorkstreams?: Record<string, boolean>;
   workstreamLayout?: WorkstreamLayoutMode;
+  hideEmptyWorkstreams?: boolean;
   theme?: DashboardTheme;
 };
 
@@ -365,6 +370,7 @@ type AppState = {
   error: string | null;
   workspaceTab: WorkspaceTab;
   workstreamLayout: WorkstreamLayoutMode;
+  hideEmptyWorkstreams: boolean;
   theme: DashboardTheme;
 };
 
@@ -381,6 +387,7 @@ function createInitialAppState(): AppState {
     error: null,
     workspaceTab: readStoredWorkspaceTab(),
     workstreamLayout: readStoredWorkstreamLayout(),
+    hideEmptyWorkstreams: readStoredHideEmptyWorkstreams(),
     theme: readStoredTheme(),
   };
 }
@@ -441,7 +448,7 @@ function updateMotionsReducer(current: Record<string, UpdateMotion>, action: Upd
 
 export default function App() {
   const [appState, dispatchApp] = useReducer(appStateReducer, null, createInitialAppState);
-  const { dashboard, error, loading, refreshing, theme, workspaceTab, workstreamLayout } = appState;
+  const { dashboard, error, hideEmptyWorkstreams, loading, refreshing, theme, workspaceTab, workstreamLayout } = appState;
   const [dialogState, dispatchDialog] = useReducer(appDialogReducer, initialAppDialogState);
   const showUpdateSimulationControls = useMemo(() => shouldShowUpdateSimulationControls(), []);
   const loadInFlightRef = useRef(false);
@@ -464,6 +471,9 @@ export default function App() {
   }, []);
   const setWorkstreamLayout = useCallback((nextWorkstreamLayout: WorkstreamLayoutMode) => {
     dispatchApp({ type: "patch", state: { workstreamLayout: nextWorkstreamLayout } });
+  }, []);
+  const setHideEmptyWorkstreams = useCallback((nextHideEmptyWorkstreams: boolean) => {
+    dispatchApp({ type: "patch", state: { hideEmptyWorkstreams: nextHideEmptyWorkstreams } });
   }, []);
   const setSelectedGuidance = useCallback((selectedGuidance: GuidanceItem | null) => {
     dispatchDialog({ type: "guidance", selectedGuidance });
@@ -640,6 +650,10 @@ export default function App() {
   }, [workstreamLayout]);
 
   useEffect(() => {
+    writeDashboardUiStateValue("hideEmptyWorkstreams", hideEmptyWorkstreams);
+  }, [hideEmptyWorkstreams]);
+
+  useEffect(() => {
     applyDashboardTheme(theme);
   }, [theme]);
 
@@ -663,6 +677,11 @@ export default function App() {
     soloSessions,
     requestDetails,
   ]);
+  const workstreamRepos = useMemo(
+    () => (hideEmptyWorkstreams ? repos.filter(repoWorkstreamHasWorkItems) : repos),
+    [hideEmptyWorkstreams, repos],
+  );
+  const hiddenWorkstreamCount = repos.length - workstreamRepos.length;
   const updateAnimations = useDashboardUpdateAnimations({
     blockerItems,
     finishedHighlights,
@@ -676,7 +695,8 @@ export default function App() {
     () => ({
       workstreams: (
         <WorkstreamsPane
-          repos={repos}
+          repos={workstreamRepos}
+          hiddenRepoCount={hiddenWorkstreamCount}
           requestDetails={requestDetails}
           activeBlockingEdges={dashboard?.active_blocking_edges ?? []}
           onSelectGuidance={setSelectedGuidance}
@@ -691,12 +711,13 @@ export default function App() {
     [
       copyArchitectHandoff,
       dashboard?.active_blocking_edges,
-      repos,
+      hiddenWorkstreamCount,
       requestDetails,
       setSelectedCardDetail,
       setSelectedGuidance,
       soloSessions,
       updateAnimations,
+      workstreamRepos,
       workstreamLayout,
     ],
   );
@@ -731,6 +752,11 @@ export default function App() {
               {showUpdateSimulationControls ? <UpdateSimulationControls updateAnimations={updateAnimations} /> : null}
               <LiveLedgerBadge error={error} databasePath={dashboard?.ledger?.database} />
               <ThemeToggle theme={theme} onToggle={toggleTheme} />
+              <DashboardSettingsDialog
+                hideEmptyWorkstreams={hideEmptyWorkstreams}
+                hiddenWorkstreamCount={hiddenWorkstreamCount}
+                onHideEmptyWorkstreamsChange={setHideEmptyWorkstreams}
+              />
               <Button variant="outline" size="sm" onClick={() => void loadDashboard()} disabled={refreshing} className="button-lift">
                 {refreshing ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                 Refresh
@@ -1163,6 +1189,7 @@ function isBlockedStatus(status?: string | null) {
 
 function WorkstreamsPane({
   repos,
+  hiddenRepoCount,
   requestDetails,
   activeBlockingEdges,
   onSelectGuidance,
@@ -1172,6 +1199,7 @@ function WorkstreamsPane({
   updateAnimations,
 }: {
   repos: RepoSummary[];
+  hiddenRepoCount: number;
   requestDetails: WorkRequestDetail[];
   activeBlockingEdges: ActiveBlockingEdge[];
   onSelectGuidance: (item: GuidanceItem) => void;
@@ -1180,7 +1208,9 @@ function WorkstreamsPane({
   layoutMode: WorkstreamLayoutMode;
   updateAnimations: DashboardUpdateAnimations;
 }) {
-  if (repos.length === 0) return <EmptyPanel title="No workstreams yet" />;
+  if (repos.length === 0) {
+    return <EmptyPanel title={hiddenRepoCount > 0 ? "No active workstreams" : "No workstreams yet"} />;
+  }
 
   return (
     <div className="grid gap-5">
@@ -2243,6 +2273,80 @@ function ThemeToggle({ theme, onToggle }: { theme: DashboardTheme; onToggle: () 
       <TooltipContent>{label}</TooltipContent>
     </Tooltip>
   );
+}
+
+function DashboardSettingsDialog({
+  hideEmptyWorkstreams,
+  hiddenWorkstreamCount,
+  onHideEmptyWorkstreamsChange,
+}: {
+  hideEmptyWorkstreams: boolean;
+  hiddenWorkstreamCount: number;
+  onHideEmptyWorkstreamsChange: (value: boolean) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const visibilityLabel = hideEmptyWorkstreams
+    ? workstreamHiddenSummary(hiddenWorkstreamCount)
+    : "Showing repos even when they have no requests, slices, or work packages.";
+
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="button-lift"
+            aria-label="Dashboard settings"
+            onClick={() => setOpen(true)}
+          >
+            <Settings2 className="size-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Settings</TooltipContent>
+      </Tooltip>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="dashboard-dialog-content max-w-md">
+          <DialogHeader>
+            <DialogTitle>Settings</DialogTitle>
+            <DialogDescription>Dashboard display preferences</DialogDescription>
+          </DialogHeader>
+
+          <div className="flex items-center justify-between gap-4 rounded-md border bg-card/60 p-3">
+            <div className="min-w-0">
+              <span className="block text-sm font-medium">Hide empty workstreams</span>
+              <span className="mt-1 block text-xs text-muted-foreground">{visibilityLabel}</span>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={hideEmptyWorkstreams}
+              aria-label="Hide empty workstreams"
+              className={cn(
+                "relative h-6 w-11 shrink-0 rounded-full bg-muted transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                hideEmptyWorkstreams && "bg-primary",
+              )}
+              onClick={() => onHideEmptyWorkstreamsChange(!hideEmptyWorkstreams)}
+            >
+              <span
+                className={cn(
+                  "absolute left-1 top-1 size-4 rounded-full bg-background shadow transition-transform",
+                  hideEmptyWorkstreams && "translate-x-5",
+                )}
+              />
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+function workstreamHiddenSummary(hiddenWorkstreamCount: number) {
+  if (hiddenWorkstreamCount <= 0) return "Only repos with requests, slices, or work packages appear.";
+  return hiddenWorkstreamCount === 1 ? "1 empty repo hidden" : `${hiddenWorkstreamCount} empty repos hidden`;
 }
 
 function RepoSummaryPlate({
@@ -4843,6 +4947,11 @@ function readStoredWorkstreamLayout(): WorkstreamLayoutMode {
   return isWorkstreamLayoutMode(storedLayout) ? storedLayout : "jira";
 }
 
+function readStoredHideEmptyWorkstreams() {
+  const storedValue = readDashboardUiState().hideEmptyWorkstreams;
+  return typeof storedValue === "boolean" ? storedValue : true;
+}
+
 function readStoredRepoWorkstreamOpen(stateKey: string, fallback: boolean) {
   const repoWorkstreams = readDashboardUiState().repoWorkstreams;
   const storedOpen = repoWorkstreams?.[stateKey];
@@ -4951,6 +5060,12 @@ function repoWorkstreamHasActivity(
   repo: Pick<RepoSummary, "requested" | "active" | "implementing" | "finished" | "guidanceCount" | "blockerCount">,
 ) {
   return repo.requested + repo.active + repo.implementing + repo.finished + repo.guidanceCount + repo.blockerCount > 0;
+}
+
+function repoWorkstreamHasWorkItems(
+  repo: Pick<RepoSummary, "requested" | "active" | "implementing" | "finished" | "packages" | "requests">,
+) {
+  return repo.requests.length + repo.packages.length + repo.requested + repo.active + repo.implementing + repo.finished > 0;
 }
 
 function isWorkspaceTab(value: unknown): value is WorkspaceTab {
