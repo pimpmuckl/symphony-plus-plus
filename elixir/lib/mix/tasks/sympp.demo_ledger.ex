@@ -130,7 +130,7 @@ defmodule Mix.Tasks.Sympp.DemoLedger do
   defp remove_existing_database(database) do
     [database, database <> "-shm", database <> "-wal", database <> "-journal"]
     |> Enum.reduce_while(:ok, fn path, :ok ->
-      case remove_existing_file(path, 10) do
+      case remove_existing_file(path, 100) do
         :ok -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
