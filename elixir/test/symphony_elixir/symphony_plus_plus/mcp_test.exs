@@ -6228,6 +6228,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
       cleanup_payload = get_in(cleanup_response, ["result", "structuredContent"])
       assert cleanup_payload["worktree"]["status"] == "cleaned"
+      assert cleanup_payload["audit_event"]["summary"] == "Success removing worktree. Subagent can be closed now."
       assert cleanup_payload["work_package"]["worktree_path"] == nil
       assert cleanup_payload["audit_event"]["payload"]["source_tool"] == "cleanup_work_package_worktree"
       assert cleanup_payload["audit_event"]["payload"]["worktree_path"] == "[REDACTED]"

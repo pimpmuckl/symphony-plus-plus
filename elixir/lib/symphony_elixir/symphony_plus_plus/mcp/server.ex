@@ -3984,7 +3984,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp worktree_lifecycle_summary("prepare_work_package_worktree", "already_prepared"), do: "WorkPackage worktree already prepared"
   defp worktree_lifecycle_summary("prepare_work_package_worktree", _status), do: "Prepared WorkPackage worktree"
-  defp worktree_lifecycle_summary("cleanup_work_package_worktree", _status), do: "Cleaned WorkPackage worktree"
+  defp worktree_lifecycle_summary("cleanup_work_package_worktree", _status), do: "Success removing worktree. Subagent can be closed now."
 
   defp worktree_lifecycle_idempotency_key(work_package_id, source_tool, result) do
     fingerprint =
