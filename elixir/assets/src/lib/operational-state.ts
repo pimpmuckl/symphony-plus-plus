@@ -69,6 +69,7 @@ const BOARD_LANES: Record<string, BoardLane> = {
   ci_waiting: "implementing",
   claimed: "implementing",
   closed: "finished",
+  created: "implementing",
   implementing: "implementing",
   in_progress: "implementing",
   merge_ready: "implementing",
@@ -80,6 +81,7 @@ const BOARD_LANES: Record<string, BoardLane> = {
   planning: "implementing",
   ready_for_architect_merge: "implementing",
   ready_for_human_merge: "implementing",
+  ready_for_worker: "implementing",
   reviewing: "implementing",
   skipped: "finished",
   started_paused: "implementing",
@@ -90,14 +92,20 @@ const REQUEST_LANES: Record<string, RequestLane> = {
   abandoned: "finished",
   blocked: "slices",
   ci_waiting: "slices",
+  claimed: "slices",
   closed: "finished",
   implementing: "slices",
+  in_progress: "slices",
   merge_ready: "slices",
   merged: "finished",
   merged_into_phase: "finished",
   merging: "slices",
+  merging_into_phase: "slices",
   needs_attention: "slices",
   planned: "slices",
+  planning: "slices",
+  ready_for_architect_merge: "slices",
+  ready_for_human_merge: "slices",
   ready_for_slicing: "slices",
   ready_for_worker: "slices",
   reviewing: "slices",
@@ -202,12 +210,11 @@ export function operationalBadgeVariant(operational?: WorkPackageCard["operation
   if (!operational) return statusVariant(fallbackStatus);
   const key = operational.key || "";
 
-  const badgeTone = BADGE_TONES[key];
-
+  if (operational.tone === "critical") return "danger";
   if (key === "merge_ready") return operational.tone === "warning" ? "warning" : "ready";
-  if (key === "blocked" || operational.tone === "critical") return "danger";
-  if (badgeTone === "success" || operational.tone === "success") return "success";
-  if (badgeTone === "secondary") return "secondary";
+  if (key === "blocked") return "danger";
+  if (["merged", "merged_into_phase", "closed"].includes(key) || operational.tone === "success") return "success";
+  if (["abandoned", "skipped"].includes(key)) return "secondary";
   if (operational.tone === "warning") return "warning";
   if (operational.tone === "info") return "info";
   return statusVariant(key || operational.raw_status || fallbackStatus);
@@ -215,7 +222,7 @@ export function operationalBadgeVariant(operational?: WorkPackageCard["operation
 
 export function packageAttentionSignal(pkg: WorkPackageCard): { label: string; value: string; tone: SignalTone } | null {
   const operational = pkg.operational_state || null;
-  const firstAttention = firstOperationalAttention(operational);
+  const firstAttention = (operational?.attention_items || [])[0] || null;
   const blockers = packageBlockerSignal(pkg, operational);
   if (blockers) return blockers;
 
@@ -238,15 +245,8 @@ export function packageBlockerSignal(pkg?: WorkPackageCard, operational?: WorkPa
 
   if (blockerCount <= 0 && !hasBlockerAttention && !isBlocked) return null;
 
-  return blockerSignal(blockerCount || 1);
-}
-
-function blockerSignal(count: number): { label: string; value: string; tone: SignalTone } {
+  const count = blockerCount || 1;
   return { label: "Blockers", value: `${count} ${plural("blocker", count)}`, tone: "danger" };
-}
-
-function firstOperationalAttention(operational?: WorkPackageCard["operational_state"]) {
-  return (operational?.attention_items || [])[0] || null;
 }
 
 export function attentionTone(attention?: PackageOperationalAttention | null): SignalTone {
