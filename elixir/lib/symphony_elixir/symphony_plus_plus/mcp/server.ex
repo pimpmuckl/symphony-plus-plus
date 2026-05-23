@@ -4,6 +4,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   import Ecto.Query, only: [from: 2]
 
   alias Ecto.Adapters.SQL
+  alias SymphonyElixir.PathSafety
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
@@ -3516,6 +3517,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, base_branch} <- required_argument(arguments, "base_branch"),
          {:ok, branch} <- required_argument(arguments, "branch"),
          {:ok, _work_package, scope} <- scoped_worktree_work_package(config.repo, session, work_package_id),
+         :ok <- require_worktree_repo_root_scope(repo_root, config.repo_root),
          {:ok, result} <-
            WorkPackageService.prepare_worktree(config.repo, work_package_id, %{
              "repo_root" => repo_root,
@@ -4204,6 +4206,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       nil -> {:error, :forbidden}
       %WorkRequest{} = work_request -> require_work_request_scope(work_request, filters)
     end
+  end
+
+  defp require_worktree_repo_root_scope(_repo_root, nil), do: {:error, :invalid_repo_root}
+
+  defp require_worktree_repo_root_scope(repo_root, scoped_repo_root) do
+    with {:ok, repo_root} <- PathSafety.canonicalize(repo_root),
+         {:ok, scoped_repo_root} <- PathSafety.canonicalize(scoped_repo_root),
+         true <- same_filesystem_path?(repo_root, scoped_repo_root) do
+      :ok
+    else
+      false -> {:error, :invalid_repo_root}
+      {:error, _reason} -> {:error, :invalid_repo_root}
+    end
+  end
+
+  defp same_filesystem_path?(left, right), do: comparable_filesystem_path(left) == comparable_filesystem_path(right)
+
+  defp comparable_filesystem_path(path) do
+    path =
+      path
+      |> Path.expand()
+      |> String.replace("\\", "/")
+      |> String.trim_trailing("/")
+
+    if match?({:win32, _name}, :os.type()), do: String.downcase(path), else: path
   end
 
   defp linked_work_request_for_work_package(repo, work_package_id) do

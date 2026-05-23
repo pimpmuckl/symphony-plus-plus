@@ -6034,7 +6034,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
   test "WorkPackage worktree MCP tools prepare, audit, and cleanup a linked package", %{repo: repo} do
     fixture = TestSupport.git_repo_fixture!("symphony-plus-plus/beta", prefix: "sympp-mcp-worktree")
+    other_fixture = TestSupport.git_repo_fixture!("symphony-plus-plus/beta", prefix: "sympp-mcp-other-worktree")
     codex_home = Path.join(fixture.root, "codex-home")
+    config = Config.default(repo: repo, repo_root: fixture.repo_root)
 
     {anchor, session, _grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-WORKTREE-LIFECYCLE", [
@@ -6088,13 +6090,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     try do
       System.put_env("CODEX_HOME", codex_home)
 
+      wrong_root_response =
+        mcp_tool(
+          repo,
+          session,
+          "prepare_work_package_worktree",
+          %{
+            "work_package_id" => package.id,
+            "repo_root" => other_fixture.repo_root,
+            "base_branch" => anchor.base_branch,
+            "branch" => "feat/wrong-root"
+          },
+          config: config
+        )
+
+      assert get_in(wrong_root_response, ["error", "data", "reason"]) == "invalid_repo_root"
+
       prepare_response =
-        mcp_tool(repo, session, "prepare_work_package_worktree", %{
-          "work_package_id" => package.id,
-          "repo_root" => fixture.repo_root,
-          "base_branch" => anchor.base_branch,
-          "branch" => "feat/worktree-lifecycle"
-        })
+        mcp_tool(
+          repo,
+          session,
+          "prepare_work_package_worktree",
+          %{
+            "work_package_id" => package.id,
+            "repo_root" => fixture.repo_root,
+            "base_branch" => anchor.base_branch,
+            "branch" => "feat/worktree-lifecycle"
+          },
+          config: config
+        )
 
       prepare_payload = get_in(prepare_response, ["result", "structuredContent"])
       assert prepare_payload["worktree"]["status"] == "prepared"
@@ -6105,9 +6129,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       assert File.dir?(prepare_payload["worktree"]["path"])
 
       cleanup_response =
-        mcp_tool(repo, session, "cleanup_work_package_worktree", %{
-          "work_package_id" => package.id
-        })
+        mcp_tool(
+          repo,
+          session,
+          "cleanup_work_package_worktree",
+          %{
+            "work_package_id" => package.id
+          },
+          config: config
+        )
 
       cleanup_payload = get_in(cleanup_response, ["result", "structuredContent"])
       assert cleanup_payload["worktree"]["status"] == "cleaned"

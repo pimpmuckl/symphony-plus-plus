@@ -40,7 +40,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
          {:ok, base_branch} <- ref_name(attrs, "base_branch", :invalid_base_branch, repo_root, opts),
          :ok <- require_base_branch(work_package, base_branch),
          {:ok, branch} <- ref_name(attrs, "branch", :invalid_branch, repo_root, opts),
-         {:ok, worktree_path} <- worktree_path(repo_root, branch, opts),
+         {:ok, worktree_path} <- worktree_path(work_package, repo_root, branch, opts),
          :ok <- validate_recorded_prepare_path(work_package, worktree_path),
          {:ok, result} <- maybe_replay_prepared(repo, work_package, repo_root, base_branch, branch, worktree_path, opts) do
       {:ok, result}
@@ -90,11 +90,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   defp require_base_branch(%WorkPackage{base_branch: base_branch}, base_branch), do: :ok
   defp require_base_branch(%WorkPackage{}, _base_branch), do: {:error, :invalid_base_branch}
 
-  defp worktree_path(repo_root, branch, opts) do
+  defp worktree_path(%WorkPackage{} = work_package, repo_root, branch, opts) do
     with {:ok, root} <- worktree_root(opts),
-         {:ok, safe_branch} <- safe_segment(branch),
-         {:ok, repo_name} <- safe_segment(Path.basename(repo_root)),
-         candidate <- Path.join([root, repo_name, safe_branch]),
+         {:ok, branch_segment} <- unique_segment(branch, branch),
+         {:ok, package_segment} <- safe_segment(work_package.id),
+         {:ok, repo_segment} <- unique_segment(Path.basename(repo_root), repo_root),
+         candidate <- Path.join([root, repo_segment, "#{package_segment}-#{branch_segment}"]),
          {:ok, candidate} <- canonicalize(candidate),
          :ok <- require_inside_root(candidate, root) do
       {:ok, candidate}
@@ -133,14 +134,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   defp create_worktree(repo, %WorkPackage{} = work_package, repo_root, base_branch, branch, worktree_path, opts) do
     with :ok <- File.mkdir_p(Path.dirname(worktree_path)),
          :ok <- git(repo_root, ["fetch", "origin", base_branch], opts),
-         :ok <- git(repo_root, ["worktree", "add", "-b", branch, worktree_path, "origin/#{base_branch}"], opts) do
-      record_prepared_worktree(repo, work_package, repo_root, base_branch, branch, worktree_path, opts)
+         {:ok, branch_exists?} <- local_branch_exists?(repo_root, branch, opts),
+         :ok <- add_worktree(repo_root, worktree_path, base_branch, branch, branch_exists?, opts) do
+      record_prepared_worktree(repo, work_package, repo_root, base_branch, branch, worktree_path, !branch_exists?, opts)
     else
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp record_prepared_worktree(repo, %WorkPackage{} = work_package, repo_root, base_branch, branch, worktree_path, opts) do
+  defp record_prepared_worktree(repo, %WorkPackage{} = work_package, repo_root, base_branch, branch, worktree_path, branch_created?, opts) do
     case Repository.update(repo, work_package.id, %{worktree_path: worktree_path}) do
       {:ok, updated_work_package} ->
         {:ok, result(updated_work_package, "prepared", worktree_path, branch, base_branch, repo_root)}
@@ -148,9 +150,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
       {:error, reason} ->
         _ = git(repo_root, ["worktree", "remove", worktree_path], opts)
         _ = git(repo_root, ["worktree", "prune"], opts)
+        _ = maybe_delete_created_branch(repo_root, branch, branch_created?, opts)
         {:error, {:worktree_record_failed, reason}}
     end
   end
+
+  defp local_branch_exists?(repo_root, branch, opts) do
+    case git(repo_root, ["show-ref", "--verify", "--quiet", "refs/heads/#{branch}"], opts) do
+      :ok -> {:ok, true}
+      {:error, {:git_failed, _args, 1, _output}} -> {:ok, false}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp add_worktree(repo_root, worktree_path, _base_branch, branch, true, opts) do
+    git(repo_root, ["worktree", "add", worktree_path, branch], opts)
+  end
+
+  defp add_worktree(repo_root, worktree_path, base_branch, branch, false, opts) do
+    git(repo_root, ["worktree", "add", "-b", branch, worktree_path, "origin/#{base_branch}"], opts)
+  end
+
+  defp maybe_delete_created_branch(repo_root, branch, true, opts) do
+    git(repo_root, ["branch", "-D", branch], opts)
+  end
+
+  defp maybe_delete_created_branch(_repo_root, _branch, false, _opts), do: :ok
 
   defp cleanup_recorded_worktree(_repo, %WorkPackage{worktree_path: nil} = work_package, _opts) do
     {:ok, result(work_package, "already_clean", nil, nil, nil, nil)}
@@ -164,13 +189,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
          {:ok, status_output} <- git_output(worktree_path, ["status", "--porcelain"], opts),
          :ok <- require_clean(status_output),
          {:ok, repo_root} <- repo_root_from_worktree(worktree_path, opts),
-         :ok <- git(repo_root, ["worktree", "remove", worktree_path], opts),
-         :ok <- git(repo_root, ["worktree", "prune"], opts),
          {:ok, updated_work_package} <- Repository.update(repo, work_package.id, %{worktree_path: nil}) do
-      {:ok, result(updated_work_package, "cleaned", worktree_path, nil, nil, repo_root)}
+      remove_recorded_worktree(repo, updated_work_package, worktree_path, repo_root, opts)
     else
       false -> {:error, :worktree_path_missing_on_disk}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp remove_recorded_worktree(repo, %WorkPackage{} = work_package, worktree_path, repo_root, opts) do
+    with :ok <- git(repo_root, ["worktree", "remove", worktree_path], opts),
+         :ok <- git(repo_root, ["worktree", "prune"], opts) do
+      {:ok, result(work_package, "cleaned", worktree_path, nil, nil, repo_root)}
+    else
+      {:error, reason} ->
+        _ = Repository.update(repo, work_package.id, %{worktree_path: worktree_path})
+        {:error, reason}
     end
   end
 
@@ -222,6 +256,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     else
       {:ok, value}
     end
+  end
+
+  defp unique_segment(display_value, fingerprint_value) do
+    with {:ok, safe_value} <- safe_segment(display_value) do
+      {:ok, "#{safe_value}-#{short_hash(fingerprint_value)}"}
+    end
+  end
+
+  defp short_hash(value) when is_binary(value) do
+    :sha256
+    |> :crypto.hash(value)
+    |> Base.url_encode64(padding: false)
+    |> binary_part(0, 10)
   end
 
   defp require_inside_root(path, root) do

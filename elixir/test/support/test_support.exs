@@ -141,6 +141,8 @@ defmodule SymphonyElixir.TestSupport do
     %{root: root, origin: origin, repo_root: repo_root}
   end
 
+  def git_output!(cwd, args), do: git!(cwd, args)
+
   def stop_default_http_server do
     case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn
            {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
