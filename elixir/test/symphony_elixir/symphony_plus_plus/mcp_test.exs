@@ -12137,6 +12137,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     sync_pr_state(repo, session, "https://github.com/example/repo/pull/790", "head-b")
 
     attach_tool(repo, session, "attach_pr", %{"url" => "https://github.com/example/repo/pull/790", "head_sha" => "head-b"})
+    move_latest_attach_pr_created_at_before_prior_sync(repo, package.id)
 
     reattach_after_sync_response =
       MCPHarness.request(
@@ -14716,6 +14717,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "merge_state" => %{"state" => "clean"}
       }
     })
+  end
+
+  defp move_latest_attach_pr_created_at_before_prior_sync(repo, work_package_id) do
+    assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, work_package_id)
+
+    event =
+      progress_events
+      |> Enum.filter(fn event ->
+        payload = event.payload || %{}
+        payload["source_tool"] == "attach_pr" and payload["head_sha"] == "head-b"
+      end)
+      |> Enum.max_by(&(&1.sequence || 0))
+
+    assert {1, nil} =
+             repo.update_all(
+               from(progress_event in ProgressEvent, where: progress_event.id == ^event.id),
+               set: [created_at: ~U[2020-01-01 00:00:00Z]]
+             )
   end
 
   defp append_done_plan(repo, work_package_id) do

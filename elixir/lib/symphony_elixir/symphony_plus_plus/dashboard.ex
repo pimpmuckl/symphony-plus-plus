@@ -3393,7 +3393,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp metadata_present?(_progress_events, _type, _head_sha), do: false
 
   defp current_pr_state_present?(progress_events, head_sha) when is_binary(head_sha) do
-    case latest_attached_pr_ref_with_sequence(progress_events) do
+    case latest_attached_pr_ref_with_ledger_sequence(progress_events) do
       {:ok, attached_ref, attach_sequence} ->
         Enum.any?(progress_events, fn
           %ProgressEvent{payload: payload} = event when is_map(payload) ->
@@ -3674,6 +3674,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
+  defp latest_attached_pr_ref_with_ledger_sequence(progress_events) do
+    progress_events
+    |> Enum.sort_by(&progress_event_sequence_order/1)
+    |> Enum.reverse()
+    |> Enum.find_value(&attached_pr_ref_with_sequence/1)
+    |> case do
+      nil -> {:error, :not_found}
+      {ref, sequence} -> {:ok, ref, sequence}
+    end
+  end
+
   defp attached_pr_ref_with_sequence(%ProgressEvent{payload: payload, sequence: sequence} = event) when is_map(payload) do
     if payload_type?(event, "pr", "attach_pr"), do: pr_payload_ref_with_sequence(payload, sequence)
   end
@@ -3801,6 +3812,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp progress_event_order(%ProgressEvent{} = event) do
     {timestamp_sort_value(event.created_at), event.sequence || 0, event.id || ""}
+  end
+
+  defp progress_event_sequence_order(%ProgressEvent{sequence: sequence} = event) when is_integer(sequence) do
+    {1, sequence, timestamp_sort_value(event.created_at), event.id || ""}
+  end
+
+  defp progress_event_sequence_order(%ProgressEvent{} = event) do
+    {0, timestamp_sort_value(event.created_at), event.id || ""}
   end
 
   defp payload_type?(%ProgressEvent{payload: payload}, type, source_tool) when is_map(payload) and is_list(source_tool) do
