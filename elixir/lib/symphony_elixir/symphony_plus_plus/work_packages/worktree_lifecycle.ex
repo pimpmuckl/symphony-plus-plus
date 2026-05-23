@@ -233,9 +233,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   end
 
   defp repo_root_from_worktree(worktree_path, opts) do
-    with {:ok, common_dir} <- git_output(worktree_path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], opts),
-         common_dir <- common_dir |> String.trim() |> first_line(),
-         {:ok, common_dir} <- canonicalize(common_dir),
+    with {:ok, common_dir} <- git_common_dir(worktree_path, opts),
          repo_root <- repo_root_from_common_dir(common_dir),
          {:ok, repo_root} <- canonicalize(repo_root),
          true <- File.dir?(repo_root) do
@@ -243,6 +241,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     else
       false -> {:error, :invalid_repo_root}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp git_common_dir(path, opts) do
+    with {:ok, common_dir} <- git_output(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], opts),
+         common_dir <- common_dir |> String.trim() |> first_line() do
+      canonicalize(common_dir)
     end
   end
 
@@ -257,8 +262,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   defp require_git_worktree(worktree_path, expected_repo_root, opts) do
     with {:ok, inside_worktree} <- git_output(worktree_path, ["rev-parse", "--is-inside-work-tree"], opts),
          true <- String.trim(inside_worktree) == "true",
-         {:ok, repo_root} <- repo_root_from_worktree(worktree_path, opts),
-         true <- same_path?(repo_root, expected_repo_root) do
+         {:ok, worktree_common_dir} <- git_common_dir(worktree_path, opts),
+         {:ok, expected_common_dir} <- git_common_dir(expected_repo_root, opts),
+         true <- same_path?(worktree_common_dir, expected_common_dir) do
       :ok
     else
       false -> {:error, :invalid_worktree_path}
