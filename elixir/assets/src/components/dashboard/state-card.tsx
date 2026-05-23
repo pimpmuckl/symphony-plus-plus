@@ -118,18 +118,46 @@ export function CardSignal({
   onClick?: () => void;
   ariaLabel?: string;
 }) {
-  const signalClassName = cn(
-    "min-w-0 max-w-full w-full rounded-md border px-2.5 py-2 text-xs",
-    CARD_SIGNAL_TONE_CLASSES[tone],
-    onClick &&
-      "card-signal-action cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2",
-    className,
-  );
   const content = (
     <>
       <p className="text-[11px] leading-none opacity-70">{label}</p>
       <p className="mt-1 truncate font-semibold">{value}</p>
     </>
+  );
+
+  return (
+    <CardSignalFrame
+      tone={tone}
+      className={cn("w-full px-2.5 py-2", className)}
+      onClick={onClick}
+      ariaLabel={ariaLabel}
+    >
+      {content}
+    </CardSignalFrame>
+  );
+}
+
+export function CardSignalFrame({
+  children,
+  tone,
+  className,
+  onClick,
+  ariaLabel,
+  title,
+}: {
+  children: ReactNode;
+  tone: SignalTone;
+  className?: string;
+  onClick?: () => void;
+  ariaLabel?: string;
+  title?: string;
+}) {
+  const signalClassName = cn(
+    "min-w-0 max-w-full rounded-md border text-xs",
+    CARD_SIGNAL_TONE_CLASSES[tone],
+    onClick &&
+      "card-signal-action cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2",
+    className,
   );
 
   if (onClick) {
@@ -142,16 +170,17 @@ export function CardSignal({
           onClick();
         }}
         aria-label={ariaLabel}
+        title={title}
         data-card-signal
       >
-        {content}
+        {children}
       </button>
     );
   }
 
   return (
-    <div className={signalClassName} data-card-signal>
-      {content}
+    <div className={signalClassName} aria-label={ariaLabel} title={title} data-card-signal>
+      {children}
     </div>
   );
 }

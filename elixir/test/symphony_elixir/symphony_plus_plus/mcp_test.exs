@@ -15,6 +15,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
+  alias SymphonyElixir.SymphonyPlusPlus.Comments.Service, as: CommentService
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
   alias SymphonyElixir.SymphonyPlusPlus.MCP.{Auth, Config, Server, Session, Stdio}
   alias SymphonyElixir.SymphonyPlusPlus.MCP.Repository, as: MCPRepository
@@ -305,6 +307,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     repo.delete_all(PlanNode)
     repo.delete_all(SoloSessionEntry)
     repo.delete_all(SoloSession)
+    repo.delete_all(Comment)
     repo.delete_all(AccessGrant)
     repo.delete_all(WorkRequest)
     repo.delete_all(WorkPackage)
@@ -1304,6 +1307,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["set_status", "inputSchema", "required"]) == ["status", "expected_status"]
     assert get_in(tools_by_name, ["report_blocker", "inputSchema", "properties", "blocker_id", "type"]) == "string"
     assert get_in(tools_by_name, ["resolve_blocker", "inputSchema", "required"]) == ["blocker_id", "resolution", "summary", "idempotency_key"]
+    assert get_in(tools_by_name, ["add_comment", "inputSchema", "required"]) == ["target_kind", "target_id", "body"]
+    assert get_in(tools_by_name, ["add_comment", "inputSchema", "properties", "target_kind", "enum"]) == ["work_request", "planned_slice", "work_package"]
+    assert get_in(tools_by_name, ["add_comment", "inputSchema", "properties", "body", "maxLength"]) == Comment.max_body_length()
+    assert get_in(tools_by_name, ["list_comments", "inputSchema", "required"]) == ["target_kind", "target_id"]
+    assert get_in(tools_by_name, ["resolve_comment", "inputSchema", "required"]) == ["comment_id"]
+    assert get_in(tools_by_name, ["resolve_comment", "inputSchema", "properties", "resolution_note", "maxLength"]) == Comment.max_resolution_note_length()
     assert get_in(tools_by_name, ["attach_branch", "inputSchema", "required"]) == ["branch", "head_sha"]
     assert get_in(tools_by_name, ["attach_branch", "inputSchema", "properties", "head_sha", "type"]) == "string"
 
@@ -1367,6 +1376,107 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       forbidden = Map.take(schema, @codex_forbidden_top_level_schema_keys)
       assert forbidden == %{}, "#{surface} #{tool["name"]} has Codex-rejected top-level schema keys: #{inspect(Map.keys(forbidden))}"
     end
+  end
+
+  test "worker comment tools create list and resolve scoped comments", %{repo: repo} do
+    assert {:ok, work_package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-MCP-COMMENTS", kind: "mcp", repo: "nextide/symphony-plus-plus", base_branch: "main"))
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, work_package.id)
+    assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    session = MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
+
+    work_request =
+      create_work_request!(
+        repo,
+        id: "WR-MCP-COMMENTS",
+        repo: work_package.repo,
+        base_branch: work_package.base_branch
+      )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(id: "WRS-MCP-COMMENTS", target_base_branch: work_package.base_branch)
+             )
+
+    repo.update!(Ecto.Changeset.change(planned_slice, status: "dispatched", work_package_id: work_package.id))
+
+    overlong_response =
+      mcp_tool(repo, session, "add_comment", %{
+        "work_package_id" => work_package.id,
+        "target_kind" => "work_request",
+        "target_id" => work_request.id,
+        "body" => String.duplicate("x", Comment.max_body_length() + 1)
+      })
+
+    assert get_in(overlong_response, ["error", "data", "reason"]) =~ "body"
+
+    add_response =
+      mcp_tool(repo, session, "add_comment", %{
+        "work_package_id" => work_package.id,
+        "target_kind" => "work_request",
+        "target_id" => work_request.id,
+        "body" => "Check sk-secret123 before merge"
+      })
+
+    assert comment_id = get_in(add_response, ["result", "structuredContent", "comment", "id"])
+    assert get_in(add_response, ["result", "structuredContent", "comment", "body"]) == "Check [REDACTED] before merge"
+
+    list_response =
+      mcp_tool(repo, session, "list_comments", %{
+        "work_package_id" => work_package.id,
+        "target_kind" => "work_request",
+        "target_id" => work_request.id
+      })
+
+    assert [%{"id" => ^comment_id, "status" => "open"}] = get_in(list_response, ["result", "structuredContent", "comments"])
+
+    resolve_response =
+      mcp_tool(repo, session, "resolve_comment", %{
+        "comment_id" => comment_id,
+        "resolution_note" => "Handled"
+      })
+
+    assert get_in(resolve_response, ["result", "structuredContent", "comment", "status"]) == "resolved"
+    assert {:ok, %Comment{status: "resolved", source_type: "worker", author_name: "worker-1", resolved_by: "worker-1", resolved_source_type: "worker"}} = CommentService.get(repo, comment_id)
+
+    assert {:ok, other_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-MCP-COMMENTS-OTHER", kind: "mcp"))
+
+    assert {:ok, foreign_comment} =
+             CommentService.create(repo, %{
+               target_kind: "work_package",
+               target_id: other_package.id,
+               body: "Foreign",
+               source_type: "worker",
+               author_name: "other-worker"
+             })
+
+    out_of_scope_response =
+      mcp_tool(repo, session, "list_comments", %{
+        "work_package_id" => work_package.id,
+        "target_kind" => "work_package",
+        "target_id" => other_package.id
+      })
+
+    assert get_in(out_of_scope_response, ["error", "data", "reason"]) == "comment_target_out_of_scope"
+
+    out_of_scope_resolve_response =
+      mcp_tool(repo, session, "resolve_comment", %{
+        "work_package_id" => work_package.id,
+        "comment_id" => foreign_comment.id
+      })
+
+    assert get_in(out_of_scope_resolve_response, ["error", "data", "reason"]) == "comment_target_out_of_scope"
+
+    missing_resolve_response =
+      mcp_tool(repo, session, "resolve_comment", %{
+        "work_package_id" => work_package.id,
+        "comment_id" => "comment_missing"
+      })
+
+    assert get_in(missing_resolve_response, ["error", "data", "reason"]) == "comment_target_out_of_scope"
   end
 
   test "tools list advertises Solo tools only for unbound sessions", %{repo: repo} do

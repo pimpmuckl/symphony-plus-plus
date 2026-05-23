@@ -51,6 +51,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     "set_status",
     "report_blocker",
     "resolve_blocker",
+    "add_comment",
+    "list_comments",
+    "resolve_comment",
     "request_scope_expansion",
     "attach_branch",
     "attach_pr",
@@ -73,8 +76,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert skill =~ "--work-key-secret-env <env-var> --claimed-by <stable-worker-id>"
     assert skill =~ "Do not ask for, paste, print, or log the raw secret."
     assert skill =~ "Do not create local `task_plan.md`, `findings.md`, or `progress.md` files as"
+    assert skill =~ "add_comment(target_kind, target_id, body)"
+    assert skill =~ "resolve_comment(comment_id, resolution_note?)"
     assert skill =~ "Worker grants are scoped to exactly one WorkPackage."
     assert skill =~ "`state_key` preserves initialized MCP handshake continuity only."
+    refute skill =~ "add_comment(target_kind, target_id, body, idempotency_key)"
+    refute skill =~ "resolve_comment(comment_id, resolution, idempotency_key)"
     refute skill =~ "request_context"
   end
 

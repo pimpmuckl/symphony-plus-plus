@@ -45,14 +45,25 @@ export function DetailDisclosure({
   meta,
   children,
   defaultOpen = false,
+  open,
+  onOpenChange,
 }: {
   title: string;
   meta?: string;
   children: ReactNode;
   defaultOpen?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   return (
-    <Collapsible defaultOpen={defaultOpen} className="detail-disclosure" data-guidance-section style={{ animationDelay: "120ms" }}>
+    <Collapsible
+      defaultOpen={open === undefined ? defaultOpen : undefined}
+      open={open}
+      onOpenChange={onOpenChange}
+      className="detail-disclosure"
+      data-guidance-section
+      style={{ animationDelay: "120ms" }}
+    >
       <CollapsibleTrigger className="detail-disclosure-trigger">
         <span className="flex min-w-0 items-center gap-2">
           <ChevronRight className="detail-disclosure-chevron size-4 shrink-0 transition-transform duration-150" />

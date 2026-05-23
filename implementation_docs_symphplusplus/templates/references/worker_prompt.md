@@ -32,10 +32,12 @@ During coding:
    `append_progress(event, idempotency_key)`.
 4. Use `report_blocker(summary, idempotency_key, blocker_id?)` and
    `resolve_blocker(blocker_id, resolution, summary, idempotency_key)` for blockers.
-5. Use `request_scope_expansion(summary, idempotency_key, payload)` instead of
+5. Use `add_comment`, `list_comments`, and `resolve_comment` when package-scoped
+   implementation comments should stay visible in the cockpit.
+6. Use `request_scope_expansion(summary, idempotency_key, payload)` instead of
    silently expanding scope.
-6. Do not create local planning files as the WorkPackage source of truth.
-7. Do not use broad Linear/GitHub state as permission authority.
+7. Do not create local planning files as the WorkPackage source of truth.
+8. Do not use broad Linear/GitHub state as permission authority.
 
 Before ready:
 1. Run relevant validation.

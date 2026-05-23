@@ -5,6 +5,7 @@ defmodule Mix.Tasks.Sympp.DemoLedgerTest do
 
   alias Ecto.Adapters.SQL
   alias Mix.Tasks.Sympp.DemoLedger, as: DemoLedgerTask
+  alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
   alias SymphonyElixir.SymphonyPlusPlus.Repo
@@ -126,6 +127,18 @@ defmodule Mix.Tasks.Sympp.DemoLedgerTest do
           "SYMPP-DEMO-SLICE-CLOSED-SPIKE" => "dispatched"
         })
 
+        assert payload["seed"]["comments"] == [
+                 "SYMPP-DEMO-COMMENT-WR-SLICED",
+                 "SYMPP-DEMO-COMMENT-SLICE-DISPATCHED",
+                 "SYMPP-DEMO-COMMENT-WP-ACTIVE"
+               ]
+
+        assert_statuses(repo, Comment, %{
+          "SYMPP-DEMO-COMMENT-WR-SLICED" => "open",
+          "SYMPP-DEMO-COMMENT-SLICE-DISPATCHED" => "open",
+          "SYMPP-DEMO-COMMENT-WP-ACTIVE" => "open"
+        })
+
         question = repo.get!(ClarificationQuestion, "SYMPP-DEMO-WRQ-STRUCTURED")
         assert question.decision_prompt["tl_dr"] == "Choose who owns the first cockpit guidance slice."
 
@@ -147,6 +160,17 @@ defmodule Mix.Tasks.Sympp.DemoLedgerTest do
 
         planning = Enum.find(cards, &(&1.id == "SYMPP-DEMO-WP-PLANNING"))
         assert planning.active_blocker_count == 1
+
+        active = Enum.find(cards, &(&1.id == "SYMPP-DEMO-WP-ACTIVE"))
+        assert active.open_comment_count == 1
+
+        assert {:ok, work_request_board} = Dashboard.work_requests(repo)
+        sliced_request = Enum.find(work_request_board.work_requests, &(&1.id == "SYMPP-DEMO-WR-SLICED"))
+        assert sliced_request.open_comment_count == 2
+
+        assert {:ok, sliced_detail} = Dashboard.work_request_detail(repo, "SYMPP-DEMO-WR-SLICED")
+        dispatched_slice = Enum.find(sliced_detail.planned_slices, &(&1.id == "SYMPP-DEMO-SLICE-DISPATCHED"))
+        assert dispatched_slice.open_comment_count == 1
 
         assert {:ok, operator_board} = Dashboard.operator_board(repo)
 

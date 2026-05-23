@@ -17,12 +17,23 @@ This document mirrors `mcp_tools_contract.json` in readable form.
 | set_status | Request a valid state transition. |
 | report_blocker | Record an active blocker. |
 | resolve_blocker | Record that an active blocker was cleared. |
+| add_comment | Add a redacted contextual note to a scoped WorkPackage, linked planned slice, or parent WorkRequest. |
+| list_comments | List redacted comments for a scoped WorkPackage, linked planned slice, or parent WorkRequest. |
+| resolve_comment | Mark a scoped comment resolved with server-owned worker attribution. |
 | request_scope_expansion | Request broader scope; does not approve it. |
 | attach_branch | Attach branch metadata with the current branch head SHA. |
 | attach_pr | Attach PR metadata. |
 | sync_pr | Refresh metadata for the already attached PR. |
 | submit_review_package | Attach summary/tests/artifacts for the current head review package. |
 | mark_ready | Move to ready state only if gates pass. |
+
+Worker comment tools stay inside the bound WorkPackage assignment. They do not
+broaden worker authority, mutate sibling targets, or expose raw note text after
+the normal planning redactor has matched a secret-like value. Worker comment
+author and resolver attribution are derived from the claimed MCP session rather
+than accepted from caller input. Comment bodies are capped at 4,000 characters,
+resolution notes at 1,000 characters, and list responses at 100 comments per
+target.
 
 ## Bootstrap tools
 

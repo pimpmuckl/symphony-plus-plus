@@ -1372,14 +1372,21 @@
   }
 
   .handoff-action-panel {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.875rem;
-    padding: 0.875rem;
+    display: grid;
+    gap: 0.5rem;
+    padding: 0.75rem;
   }
 
-  .handoff-action-panel > button {
+  .handoff-action-row {
+    display: flex;
+    min-width: 0;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.625rem;
+  }
+
+  .handoff-action-row > button {
+    min-height: 2.25rem;
     flex-shrink: 0;
   }
 
@@ -1423,10 +1430,49 @@
   }
 
   @media (max-width: 520px) {
-    .handoff-action-panel {
-      align-items: stretch;
-      flex-direction: column;
+    .handoff-action-row > button {
+      flex: 1 1 12rem;
     }
+  }
+
+  .comment-card-signal {
+    display: inline-flex;
+    width: 3rem;
+    min-width: 3rem;
+    min-height: 3rem;
+    align-items: center;
+    justify-content: center;
+    gap: 0.25rem;
+    font-size: 0.75rem;
+    font-weight: 750;
+    line-height: 1;
+  }
+
+  .comment-card-signal-expanded {
+    width: auto;
+    min-width: 0;
+    flex: 1 1 100%;
+    justify-content: flex-start;
+    gap: 0.5rem;
+    padding: 0 0.75rem;
+  }
+
+  .comment-card-signal-label {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0;
+  }
+
+  .comment-card-signal-count {
+    display: inline-flex;
+    min-width: 1rem;
+    align-items: center;
+    justify-content: center;
   }
 
   .detail-stat-grid {

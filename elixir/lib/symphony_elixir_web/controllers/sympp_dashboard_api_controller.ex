@@ -11,10 +11,13 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
   alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
+  alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
+  alias SymphonyElixir.SymphonyPlusPlus.Comments.Service, as: CommentService
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.GitHub.{DefaultClient, MergeReconciler}
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Service, as: GuidanceRequestService
   alias SymphonyElixir.SymphonyPlusPlus.HumanDecisionPrompt
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.Repo
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.TrackerAdapter
@@ -552,6 +555,28 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end)
   end
 
+  @spec operator_create_comment(Conn.t(), map()) :: Conn.t()
+  def operator_create_comment(conn, params) do
+    send_local_operator_response(conn, fn repo ->
+      with {:ok, comment} <- CommentService.create(repo, local_operator_comment_attrs(params)),
+           {:ok, dashboard} <- operator_dashboard_payload(repo) do
+        conn
+        |> put_status(201)
+        |> json(%{comment: comment_payload(comment), dashboard: dashboard})
+      end
+    end)
+  end
+
+  @spec operator_resolve_comment(Conn.t(), map()) :: Conn.t()
+  def operator_resolve_comment(conn, %{"comment_id" => comment_id} = params) do
+    send_local_operator_response(conn, fn repo ->
+      with {:ok, comment} <- CommentService.resolve(repo, comment_id, local_operator_comment_resolution_attrs(params)),
+           {:ok, dashboard} <- operator_dashboard_payload(repo) do
+        json(conn, %{comment: comment_payload(comment), dashboard: dashboard})
+      end
+    end)
+  end
+
   @spec operator_answer_question(Conn.t(), map()) :: Conn.t()
   def operator_answer_question(conn, %{"work_request_id" => work_request_id, "question_id" => question_id} = params) do
     send_local_operator_response(conn, fn repo ->
@@ -663,7 +688,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       apiBase: prefixed_path(conn, "/api/v1/sympp/operator"),
       basePath: script_name_prefix(conn),
       csrfToken: Plug.CSRFProtection.get_csrf_token(),
-      logoUrl: prefixed_path(conn, "/splusplus-logo.png")
+      logoUrl: prefixed_path(conn, "/splusplus-logo.png"),
+      operatorMode: local_operator_api_request?(conn)
     }
   end
 
@@ -742,6 +768,45 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       "constraints" => constraints_param(params)
     }
   end
+
+  defp local_operator_comment_attrs(params) do
+    %{
+      "target_kind" => text_param(params, "target_kind"),
+      "target_id" => text_param(params, "target_id"),
+      "body" => text_param(params, "body"),
+      "source_type" => "operator",
+      "author_name" => @local_operator_actor
+    }
+  end
+
+  defp local_operator_comment_resolution_attrs(params) do
+    %{
+      "resolved_by" => @local_operator_actor,
+      "resolved_source_type" => "operator",
+      "resolution_note" => text_param(params, "resolution_note", "")
+    }
+  end
+
+  defp comment_payload(%Comment{} = comment) do
+    %{
+      id: comment.id,
+      target_kind: comment.target_kind,
+      target_id: comment.target_id,
+      body: Redactor.redact_text(comment.body),
+      source_type: comment.source_type,
+      author_name: Redactor.redact_text(comment.author_name),
+      status: comment.status,
+      resolved_by: Redactor.redact_text(comment.resolved_by),
+      resolved_source_type: comment.resolved_source_type,
+      resolved_at: timestamp(comment.resolved_at),
+      resolution_note: Redactor.redact_text(comment.resolution_note),
+      inserted_at: timestamp(comment.inserted_at),
+      updated_at: timestamp(comment.updated_at)
+    }
+  end
+
+  defp timestamp(%DateTime{} = timestamp), do: DateTime.to_iso8601(timestamp)
+  defp timestamp(nil), do: nil
 
   defp constraints_param(%{"constraints" => constraints}) when is_map(constraints), do: constraints
   defp constraints_param(%{constraints: constraints}) when is_map(constraints), do: constraints
@@ -1654,8 +1719,10 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp error_response(conn, :database_busy), do: error_response(conn, 503, "database_busy", "Dashboard ledger is busy")
   defp error_response(conn, :already_answered), do: error_response(conn, 409, "already_answered", "Question is already answered")
   defp error_response(conn, :already_closed), do: error_response(conn, 409, "already_closed", "Question is already closed")
+  defp error_response(conn, :already_resolved), do: error_response(conn, 409, "already_resolved", "Comment is already resolved")
   defp error_response(conn, :invalid_answer_choice), do: error_response(conn, 422, "invalid_answer_choice", "Answer choice is invalid")
   defp error_response(conn, :missing_answer), do: error_response(conn, 422, "missing_answer", "Answer is required")
+  defp error_response(conn, :invalid_target), do: error_response(conn, 422, "invalid_target", "Comment target is invalid")
 
   defp error_response(conn, :missing_custom_redirect_note) do
     error_response(conn, 422, "missing_custom_redirect_note", "A note is required for the custom answer")
