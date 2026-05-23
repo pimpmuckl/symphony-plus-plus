@@ -317,6 +317,35 @@ export type GuidanceRequest = {
   blocker_id?: string | null;
 };
 
+export type GuidanceItem =
+  | {
+      source: "guidance";
+      id: string;
+      repo: string;
+      title: string;
+      packageId: string;
+      prompt?: DecisionPrompt | null;
+      detail: string;
+      guidance: GuidanceRequest;
+    }
+  | {
+      source: "clarification";
+      id: string;
+      repo: string;
+      title: string;
+      workRequestId: string;
+      prompt?: DecisionPrompt | null;
+      detail: string;
+      question: ClarificationQuestion;
+      request: WorkRequestCard;
+    };
+
+export type GuidanceAnswerSubmission = {
+  answer?: string;
+  answer_choice: string;
+  answer_note: string;
+};
+
 export type SoloSession = {
   id: string;
   title?: string | null;
