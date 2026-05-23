@@ -50,6 +50,12 @@ import {
   useFlipList,
 } from "@/components/dashboard/motion";
 import type { UpdateMotion, UpdateMotionKind } from "@/components/dashboard/motion";
+import {
+  CardSignal,
+  StateCard,
+  wireToneStyle,
+} from "@/components/dashboard/state-card";
+import type { SignalTone, StateCardTone } from "@/components/dashboard/state-card";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -158,16 +164,9 @@ type TopPanelDirection = "forward" | "backward";
 type TopPanelPhase = "idle" | "opening" | "closing" | "pre-resize" | "swapping" | "post-resize";
 type BoardLane = "slices" | "implementing" | "finished";
 type FeatureLane = "requested" | "slices" | "packages";
-type SignalTone = "muted" | "info" | "warning" | "danger" | "success";
-type StateCardTone = "request" | "queued" | "slice" | "implementing" | "review" | "merge" | "guidance" | "blocked" | "finished" | "muted";
-type BoardWireTone = StateCardTone;
 type OperationalState = NonNullable<WorkPackageCard["operational_state"]>;
 type OperationalAttention = NonNullable<OperationalState["attention_items"]>[number];
 type PackageLineageProjection = NonNullable<WorkPackageCard["lineage"]>;
-type StateToneStyle = {
-  card: string;
-  accent: string;
-};
 type WorkspaceTab = "workstreams" | "solo";
 type WorkspaceTabPhase = "idle" | "swapping";
 type WorkstreamLayoutMode = "jira" | "aligned";
@@ -350,7 +349,7 @@ type BoardWire = {
   id: string;
   from: string;
   to: string;
-  tone: BoardWireTone;
+  tone: StateCardTone;
   kind?: BoardWireKind;
 };
 
@@ -405,19 +404,6 @@ type MeasuredBoardWire = BoardWire & {
   trackIndex: number;
   trackCount: number;
   trackSide: WireTrackSide;
-};
-
-const STATE_CARD_TONES: Record<StateCardTone, StateToneStyle> = {
-  request: { card: "border-slate-200 bg-slate-50/80 dark:border-slate-700/80 dark:bg-slate-900/70", accent: "rgb(203 213 225)" },
-  queued: { card: "border-teal-200/80 bg-teal-50/80 dark:border-teal-700/70 dark:bg-teal-950/45", accent: "rgb(45 212 191)" },
-  slice: { card: "border-cyan-200/80 bg-cyan-50/80 dark:border-cyan-700/70 dark:bg-cyan-950/45", accent: "rgb(34 211 238)" },
-  implementing: { card: "border-sky-200/80 bg-sky-50/80 dark:border-sky-700/70 dark:bg-sky-950/45", accent: "rgb(56 189 248)" },
-  review: { card: "border-indigo-200/80 bg-indigo-50/80 dark:border-indigo-700/70 dark:bg-indigo-950/45", accent: "rgb(129 140 248)" },
-  merge: { card: "border-lime-200/80 bg-lime-50/80 dark:border-lime-700/70 dark:bg-lime-950/45", accent: "rgb(163 230 53)" },
-  guidance: { card: "border-violet-200/80 bg-violet-50/80 dark:border-violet-700/70 dark:bg-violet-950/45", accent: "rgb(167 139 250)" },
-  blocked: { card: "border-rose-200/80 bg-rose-50/80 dark:border-rose-700/70 dark:bg-rose-950/45", accent: "rgb(251 113 133)" },
-  finished: { card: "border-emerald-200/80 bg-emerald-50/80 dark:border-emerald-700/70 dark:bg-emerald-950/45", accent: "rgb(52 211 153)" },
-  muted: { card: "border-zinc-200/80 bg-zinc-50/80 dark:border-zinc-700/80 dark:bg-zinc-900/70", accent: "rgb(212 212 216)" },
 };
 
 type SliceEntry = {
@@ -2021,13 +2007,11 @@ function GuidancePreviewCard({
   const tone: StateCardTone = item.source === "guidance" ? "guidance" : "queued";
 
   return (
-    <button
-      type="button"
-      className={stateCardClassName(
-        tone,
-        "stagger-item grid gap-4 p-4 text-left hover:border-primary/50 hover:shadow-dashboard",
-      )}
-      style={stateCardStyle(tone, { animationDelay: `${index * 45}ms` })}
+    <StateCard
+      as="button"
+      tone={tone}
+      className="stagger-item grid gap-4 p-4 text-left hover:border-primary/50 hover:shadow-dashboard focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      style={{ animationDelay: `${index * 45}ms` }}
       onClick={() => onSelect(item)}
       data-flip-id={guidanceUpdateKey(item)}
       {...updateMotionAttributes(motion)}
@@ -2051,7 +2035,7 @@ function GuidancePreviewCard({
           variant={item.source === "guidance" ? "danger" : "warning"}
         />
       </div>
-    </button>
+    </StateCard>
   );
 }
 
@@ -2075,9 +2059,10 @@ function BlockerPreviewCard({
   motion?: UpdateMotion;
 }) {
   return (
-    <div
-      className={stateCardClassName("blocked", cn("stagger-item p-4", onSelectCard && "card-detail-trigger"))}
-      style={stateCardStyle("blocked", { animationDelay: `${index * 45}ms` })}
+    <StateCard
+      tone="blocked"
+      className={cn("stagger-item p-4", onSelectCard && "card-detail-trigger")}
+      style={{ animationDelay: `${index * 45}ms` }}
       data-flip-id={blockerUpdateKey(item)}
       data-card-detail-kind={cardDetailDataKind(item.selection)}
       {...updateMotionAttributes(motion)}
@@ -2095,7 +2080,7 @@ function BlockerPreviewCard({
         <AlertTriangle className="size-4" />
         {item.blockerCount} active blocker{item.blockerCount === 1 ? "" : "s"}
       </div>
-    </div>
+    </StateCard>
   );
 }
 
@@ -2163,9 +2148,10 @@ function FinishedHighlightCard({
   motion?: UpdateMotion;
 }) {
   return (
-    <div
-      className={stateCardClassName("finished", cn("stagger-item p-3", onSelectCard && "card-detail-trigger"))}
-      style={stateCardStyle("finished", { animationDelay: `${index * 30}ms` })}
+    <StateCard
+      tone="finished"
+      className={cn("stagger-item p-3", onSelectCard && "card-detail-trigger")}
+      style={{ animationDelay: `${index * 30}ms` }}
       data-flip-id={finishedHighlightUpdateKey(item)}
       data-card-detail-kind={cardDetailDataKind(item.selection)}
       {...updateMotionAttributes(motion)}
@@ -2187,7 +2173,7 @@ function FinishedHighlightCard({
           </span>
         ) : null}
       </div>
-    </div>
+    </StateCard>
   );
 }
 
@@ -2410,26 +2396,6 @@ function RepoSummaryPlate({
       <span className="whitespace-nowrap">{label}</span>
     </div>
   );
-}
-
-function stateCardClassName(tone: StateCardTone, className?: string) {
-  return cn(
-    "min-w-0 max-w-full rounded-lg border border-l-4 shadow-sm transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out",
-    STATE_CARD_TONES[tone].card,
-    className,
-  );
-}
-
-function stateCardStyle(tone: StateCardTone, style?: React.CSSProperties) {
-  return { ...style, "--state-accent": STATE_CARD_TONES[tone].accent, borderLeftColor: STATE_CARD_TONES[tone].accent } as React.CSSProperties;
-}
-
-function stateCardBodyMotionKey(...parts: Array<string | number | boolean | null | undefined>) {
-  return parts.map((part) => (part === null || part === undefined ? "" : String(part))).join("|");
-}
-
-function wireToneStyle(tone: BoardWireTone) {
-  return { "--wire-color": STATE_CARD_TONES[tone].accent } as React.CSSProperties;
 }
 
 function WorkstreamBoard({
@@ -2886,14 +2852,14 @@ function BoardWireLayer({ paths, width, height }: { paths: BoardWirePath[]; widt
       <svg className="board-wire-layer" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
         {maskedPaths.length > 0 ? (
           <defs>
-            {maskedPaths.map(({ wire, maskId }) => (
-              <mask key={maskId} id={maskId} maskUnits="userSpaceOnUse">
-                <rect x="0" y="0" width={width} height={height} fill="white" />
-                {wire.hiddenRects.map((rect, rectIndex) => (
-                  <rect key={rectIndex} x={rect.x} y={rect.y} width={rect.width} height={rect.height} fill="black" />
-                ))}
-              </mask>
-            ))}
+          {maskedPaths.map(({ wire, maskId }) => (
+            <mask key={maskId} id={maskId} maskUnits="userSpaceOnUse">
+              <rect x="0" y="0" width={width} height={height} fill="white" />
+              {wire.hiddenRects.map((rect, rectIndex) => (
+                <rect key={rectIndex} x={rect.x} y={rect.y} width={rect.width} height={rect.height} fill="black" />
+              ))}
+            </mask>
+          ))}
           </defs>
         ) : null}
         {paths.map((wire, index) => {
@@ -3873,21 +3839,38 @@ function clampNumber(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function interactiveCardProps(onSelect?: () => void) {
-  if (!onSelect) return {};
+function stateCardBodyMotionKey(...parts: Array<string | number | boolean | null | undefined>) {
+  return parts.map((part) => (part === null || part === undefined ? "" : String(part))).join("|");
+}
+
+function interactiveCardProps(onActivate?: () => void): React.HTMLAttributes<HTMLDivElement> {
+  if (!onActivate) return {};
 
   return {
     role: "button",
     tabIndex: 0,
-    onClick: onSelect,
-    onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (event.target !== event.currentTarget) return;
+    onClick: onActivate,
+    onKeyDown: (event) => {
+      if (event.defaultPrevented || event.target !== event.currentTarget) return;
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
-        onSelect();
+        onActivate();
       }
     },
   };
+}
+
+function SequenceBadge({ sequence }: { sequence?: number | null }) {
+  if (!sequence) return null;
+
+  return (
+    <span
+      className="inline-flex h-5 shrink-0 items-center rounded-md border border-border/70 bg-background/70 px-1.5 text-[11px] font-semibold leading-none text-muted-foreground shadow-sm"
+      title={`Slice ${sequence}`}
+    >
+      S{sequence}
+    </span>
+  );
 }
 
 function RequestCard({
@@ -3910,10 +3893,13 @@ function RequestCard({
   const request = detail.work_request;
   const openQuestions = detail.clarification_questions?.filter((question) => question.status === "open") ?? [];
   const questionCount = openQuestions.length || request.open_question_count || 0;
-  const question = openQuestions[0];
-  const description = firstParagraph(request.human_description);
+  const operational = requestOperationalState(request);
+  const requestStatus = request.status || "";
+  const quietMerged = [operational?.key, request.status].some(isFinishedBoardStatus);
+  const question = quietMerged ? undefined : openQuestions[0];
+  const description = quietMerged ? null : firstParagraph(request.human_description);
   const handoffEligible = architectHandoffEligibleRequest(request);
-  const handoffHasOpenQuestions = questionCount > 0;
+  const handoffHasOpenQuestions = !quietMerged && questionCount > 0;
   const handoffIdentity = `${questionCount}:${request.id}:${request.status || ""}:${request.updated_at || ""}`;
   const {
     cachedHandoff,
@@ -3924,17 +3910,15 @@ function RequestCard({
   } = useScopedHandoffCopy(handoffIdentity);
 
   const answerQuestion = question
-    ? (event: React.MouseEvent<HTMLButtonElement>) => {
-        event.stopPropagation();
+    ? () => {
         onSelectGuidance(clarificationGuidanceItem(detail, question));
       }
     : undefined;
-  const canCopyHandoff = handoffEligible && Boolean(onCopyArchitectHandoff);
+  const canCopyHandoff = !quietMerged && handoffEligible && Boolean(onCopyArchitectHandoff);
   const copyHandoff = useCallback(
-    async (event: React.MouseEvent<HTMLButtonElement>) => {
+    async () => {
       if (!onCopyArchitectHandoff) return;
 
-      event.stopPropagation();
       startCopy();
 
       try {
@@ -3945,11 +3929,16 @@ function RequestCard({
     },
     [cachedHandoff, onCopyArchitectHandoff, recordCopyError, recordCopyResult, request.id, startCopy],
   );
-  const tone = requestCardTone(detail, questionCount);
-  const operational = requestOperationalState(request);
+  const operationalTone = operationalCardTone(operational, requestStatus);
+  const tone = operationalTone && quietMerged
+    ? operationalTone
+    : questionCount > 0 || requestStatus === "human_info_needed"
+      ? "guidance"
+      : operationalTone || requestStatusFallbackCardTone(requestStatus);
   const bodyMotionKey = stateCardBodyMotionKey(
     "request",
     request.id,
+    quietMerged,
     description,
     questionCount,
     question?.id,
@@ -3960,18 +3949,19 @@ function RequestCard({
   );
 
   return (
-    <div
-      className={stateCardClassName(tone, cn("stagger-item p-3", onSelectCard && "card-detail-trigger"))}
+    <StateCard
+      tone={tone}
+      className={cn("stagger-item p-3", onSelectCard && "card-detail-trigger")}
       data-wire-id={nodeId}
       data-card-detail-kind="request"
-      style={stateCardStyle(tone, { animationDelay: `${index * 30}ms` })}
+      style={{ animationDelay: `${index * 30}ms` }}
       {...updateMotionAttributes(motion)}
       {...interactiveCardProps(onSelectCard)}
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold">{request.title || request.id}</p>
-          <p className="mt-1 text-xs text-muted-foreground">{request.work_type || "feature"}</p>
+          {!quietMerged ? <p className="mt-1 text-xs text-muted-foreground">{request.work_type || "feature"}</p> : null}
         </div>
         <AnimatedBadge
           label={operationalLabel(operational, request.status)}
@@ -3981,7 +3971,7 @@ function RequestCard({
       </div>
       <AnimatedCardBody motionKey={bodyMotionKey}>
         {description ? <p className="request-card-description mt-3 text-xs leading-relaxed text-muted-foreground">{description}</p> : null}
-        {questionCount > 0 ? (
+        {!quietMerged && questionCount > 0 ? (
           <CardSignal
             className="mt-3"
             label="Open Questions"
@@ -4003,7 +3993,7 @@ function RequestCard({
           />
         ) : null}
       </AnimatedCardBody>
-    </div>
+    </StateCard>
   );
 }
 
@@ -4040,11 +4030,12 @@ function SliceCard({
   );
 
   return (
-    <div
-      className={stateCardClassName(tone, cn("stagger-item p-3", onSelectCard && "card-detail-trigger"))}
+    <StateCard
+      tone={tone}
+      className={cn("stagger-item p-3", onSelectCard && "card-detail-trigger")}
       data-wire-id={nodeId}
       data-card-detail-kind={pkg && lane !== "slices" ? "package" : "slice"}
-      style={stateCardStyle(tone, { animationDelay: `${index * 30}ms` })}
+      style={{ animationDelay: `${index * 30}ms` }}
       {...updateMotionAttributes(motion)}
       {...interactiveCardProps(onSelectCard)}
     >
@@ -4067,28 +4058,12 @@ function SliceCard({
             label={blockerSignal.label}
             value={blockerSignal.value}
             tone={blockerSignal.tone}
-            onClick={onSelectCard ? (event) => {
-              event.stopPropagation();
-              onSelectCard();
-            } : undefined}
+            onClick={onSelectCard}
             ariaLabel={`Open blockers for ${slice.title || pkg?.title || slice.id}`}
           />
         ) : null}
       </AnimatedCardBody>
-    </div>
-  );
-}
-
-function SequenceBadge({ sequence }: { sequence?: number | null }) {
-  if (!sequence) return null;
-
-  return (
-    <span
-      className="inline-flex h-5 shrink-0 items-center rounded-md border border-border/70 bg-background/70 px-1.5 text-[11px] font-semibold leading-none text-muted-foreground shadow-sm"
-      title={`Slice ${sequence}`}
-    >
-      S{sequence}
-    </span>
+    </StateCard>
   );
 }
 
@@ -4098,14 +4073,10 @@ function sliceCardSubtitle(
   operational: WorkPackageCard["operational_state"],
   status?: string | null,
 ) {
-  if (quietTerminalCard(operational, status, pkg?.status)) return null;
+  const terminal = [operational?.key, status, pkg?.status].some((key) => key === "blocked" || isFinishedBoardStatus(key));
+  if (terminal) return null;
   if (pkg) return `Linked package: ${operationalLabel(pkg.operational_state, pkg.status)}.`;
   return slice.goal || slice.work_package_kind;
-}
-
-function quietTerminalCard(operational?: WorkPackageCard["operational_state"], ...statuses: Array<string | null | undefined>) {
-  const keys = [operational?.key, ...statuses].filter(Boolean);
-  return keys.some((key) => ["blocked", "merged", "merged_into_phase", "closed"].includes(key || ""));
 }
 
 function cardBlockerSignal(pkg?: WorkPackageCard, operational?: WorkPackageCard["operational_state"]): { label: string; value: string; tone: SignalTone } | null {
@@ -4147,11 +4118,12 @@ function PackageCard({
   const bodyMotionKey = stateCardBodyMotionKey("package", pkg.id, attention?.label, attention?.value, attention?.tone);
 
   return (
-    <div
-      className={stateCardClassName(tone, cn("stagger-item p-3", onSelectCard && "card-detail-trigger"))}
+    <StateCard
+      tone={tone}
+      className={cn("stagger-item p-3", onSelectCard && "card-detail-trigger")}
       data-wire-id={nodeId}
       data-card-detail-kind="package"
-      style={stateCardStyle(tone, { animationDelay: `${index * 30}ms` })}
+      style={{ animationDelay: `${index * 30}ms` }}
       {...updateMotionAttributes(motion)}
       {...interactiveCardProps(onSelectCard)}
     >
@@ -4165,73 +4137,13 @@ function PackageCard({
       <AnimatedCardBody motionKey={bodyMotionKey}>
         {attention ? <CardSignal className="mt-3" label={attention.label} value={attention.value} tone={attention.tone} /> : null}
       </AnimatedCardBody>
-    </div>
+    </StateCard>
   );
 }
 
-function CardSignal({
-  label,
-  value,
-  tone,
-  className,
-  onClick,
-  ariaLabel,
-}: {
-  label: string;
-  value: string;
-  tone: SignalTone;
-  className?: string;
-  onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void;
-  ariaLabel?: string;
-}) {
-  const toneClasses: Record<SignalTone, string> = {
-    muted: "border-transparent bg-muted text-foreground",
-    info: "border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-700/70 dark:bg-sky-950/50 dark:text-sky-200",
-    warning: "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-700/70 dark:bg-amber-950/50 dark:text-amber-200",
-    danger: "border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-700/70 dark:bg-rose-950/50 dark:text-rose-200",
-    success: "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-700/70 dark:bg-emerald-950/50 dark:text-emerald-200",
-  };
-  const signalClassName = cn(
-    "min-w-0 max-w-full w-full rounded-md border px-2.5 py-2 text-xs",
-    toneClasses[tone],
-    onClick &&
-      "card-signal-action cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2",
-    className,
-  );
-  const content = (
-    <>
-      <p className="text-[11px] leading-none opacity-70">{label}</p>
-      <p className="mt-1 truncate font-semibold">{value}</p>
-    </>
-  );
-
-  if (onClick) {
-    return (
-      <button type="button" className={signalClassName} onClick={onClick} aria-label={ariaLabel} data-card-signal>
-        {content}
-      </button>
-    );
-  }
-
-  return (
-    <div className={signalClassName} data-card-signal>
-      {content}
-    </div>
-  );
-}
-
-function requestCardTone(detail: WorkRequestDetail, questionCount?: number): StateCardTone {
-  const request = detail.work_request;
-  const status = request.status || "";
-  const operational = requestOperationalState(request);
-  const openQuestions = questionCount ?? request.open_question_count ?? 0;
-
-  if (openQuestions > 0 || status === "human_info_needed") return "guidance";
-  const tone = operationalCardTone(operational, status);
-  if (tone) return tone;
+function requestStatusFallbackCardTone(status: string): StateCardTone {
   if (status === "ready_for_slicing") return "queued";
   if (status === "sliced") return "slice";
-  if (status === "draft" || status === "clarifying" || status === "ready_for_clarification") return "request";
   return "request";
 }
 
@@ -4697,9 +4609,10 @@ function SoloSessionCard({
   );
 
   return (
-    <div
-      className={stateCardClassName(tone, "stagger-item card-detail-trigger p-3")}
-      style={stateCardStyle(tone, { animationDelay: `${index * 35}ms` })}
+    <StateCard
+      tone={tone}
+      className="stagger-item card-detail-trigger p-3"
+      style={{ animationDelay: `${index * 35}ms` }}
       data-card-detail-kind="solo"
       {...updateMotionAttributes(motion)}
       {...interactiveCardProps(onSelectCard)}
@@ -4736,7 +4649,7 @@ function SoloSessionCard({
 
         <p className="mt-3 text-xs text-muted-foreground">Updated {detailDate(session.last_activity_at || session.updated_at || session.inserted_at)}</p>
       </AnimatedCardBody>
-    </div>
+    </StateCard>
   );
 }
 
@@ -6826,10 +6739,14 @@ const IMPLEMENTING_BOARD_STATUSES = new Set([
   "blocked",
 ]);
 
+function isFinishedBoardStatus(status?: string | null) {
+  return FINISHED_BOARD_STATUSES.has(status || "");
+}
+
 function boardLaneForStatus(status?: string | null): BoardLane {
   const key = status || "";
 
-  if (FINISHED_BOARD_STATUSES.has(key)) return "finished";
+  if (isFinishedBoardStatus(key)) return "finished";
   if (IMPLEMENTING_BOARD_STATUSES.has(key)) return "implementing";
   return "slices";
 }
@@ -6969,7 +6886,7 @@ function workstreamWires(details: WorkRequestDetail[], packages: WorkPackageCard
           id: `${targetNode}->${packageTargetNode}:${index}:package`,
           from: targetNode,
           to: packageTargetNode,
-          tone: wireToneForPackageTarget(pkg, sliceLane(target, pkg)),
+          tone: packageCardTone(pkg, sliceLane(target, pkg)),
         });
       }
 
@@ -6998,10 +6915,10 @@ function activeBlockingWires(details: WorkRequestDetail[], packages: WorkPackage
   const context = blockerWireContext(details, packages);
 
   return activeBlockingEdges.flatMap((edge) => {
-    const target = blockerEndpointNodeId(edge.to, context, "target");
+    const target = blockerEndpoint(edge.to, context, "target");
     if (!target) return [];
 
-    const source = blockerEndpointNodeId(edge.from, context, "source") || blockerFallbackSourceNode(edge, context);
+    const source = blockerEndpoint(edge.from, context, "source") || blockerFallbackSourceEndpoint(edge, context);
     if (!source || source === target) return [];
 
     return [
@@ -7032,11 +6949,11 @@ function blockerWireContext(details: WorkRequestDetail[], packages: WorkPackageC
   return { detailById, detailBySliceId, packageById, sliceById };
 }
 
-function blockerEndpointNodeId(
+function blockerEndpoint(
   endpoint: ActiveBlockingEdge["from"],
   context: ReturnType<typeof blockerWireContext>,
   role: "source" | "target",
-) {
+): string | undefined {
   if (endpoint.kind === "work_package") {
     return context.packageById.has(endpoint.id) ? packageNodeId(endpoint.id) : undefined;
   }
@@ -7047,14 +6964,11 @@ function blockerEndpointNodeId(
   const pkg = context.packageById.get(slice.work_package_id || "");
   if (pkg) return packageNodeId(pkg);
 
-  if (sliceLane(slice, pkg) === "slices") {
-    return sliceNodeId(slice);
-  }
-
+  if (sliceLane(slice, pkg) === "slices") return sliceNodeId(slice);
   return role === "target" ? sliceNodeId(slice) : undefined;
 }
 
-function blockerFallbackSourceNode(edge: ActiveBlockingEdge, context: ReturnType<typeof blockerWireContext>) {
+function blockerFallbackSourceEndpoint(edge: ActiveBlockingEdge, context: ReturnType<typeof blockerWireContext>) {
   if (edge.from.kind === "slice") {
     const detail = context.detailBySliceId.get(edge.from.id);
     if (detail) return requestNodeId(detail);
@@ -7066,10 +6980,6 @@ function blockerFallbackSourceNode(edge: ActiveBlockingEdge, context: ReturnType
   }
 
   return undefined;
-}
-
-function wireToneForPackageTarget(pkg: WorkPackageCard, lane: BoardLane): BoardWireTone {
-  return packageCardTone(pkg, lane);
 }
 
 function statusVariant(status?: string | null): BadgeTone {
