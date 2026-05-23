@@ -66,6 +66,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
           allowed_file_globs: [String.t()] | nil,
           policy_template: String.t() | nil,
           acceptance_criteria: [String.t()] | nil,
+          worktree_path: String.t() | nil,
           status: String.t() | nil,
           parent_id: String.t() | nil,
           phase_id: String.t() | nil,
@@ -85,6 +86,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
     field(:allowed_file_globs, StringList, default: [])
     field(:policy_template, :string)
     field(:acceptance_criteria, StringList, default: [])
+    field(:worktree_path, :string)
     field(:status, :string)
     field(:parent_id, :string)
     field(:phase_id, :string)
@@ -133,6 +135,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage do
       :allowed_file_globs,
       :policy_template,
       :acceptance_criteria,
+      :worktree_path,
       :status,
       :parent_id,
       :phase_id,

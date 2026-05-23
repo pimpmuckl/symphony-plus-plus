@@ -384,6 +384,8 @@ approve_work_request_planned_slice(work_request_id, planned_slice_id, current_st
 skip_work_request_planned_slice(work_request_id, planned_slice_id, current_status)
 mark_work_request_sliced(work_request_id, current_status)
 dispatch_work_request_planned_slice(work_request_id, planned_slice_id, claimed_by, secret_handoff?, secret_store_dir?, repo_root?)
+prepare_work_package_worktree(work_package_id, repo_root, base_branch, branch)
+cleanup_work_package_worktree(work_package_id)
 read_child_status(work_package_id)
 read_phase_board(phase_id)
 request_child_replan(work_package_id, reason)
@@ -505,6 +507,22 @@ include only WorkRequest id, planned-slice status/linkage, WorkPackage id
 metadata, and redacted worker handoff metadata. They must not include raw worker
 secrets, work keys, bearer tokens, API tokens, MCP auth tokens, private-store
 secret payloads, or secret-bearing claim URLs.
+
+`prepare_work_package_worktree` and `cleanup_work_package_worktree` are
+architect dispatch tools gated by `dispatch:work_request`. They act only on
+WorkPackages linked from planned slices on WorkRequests in the current
+architect grant's frozen repo/base-branch/phase scope. `prepare` takes a
+WorkPackage id, repo root, base branch, and concrete branch name; resolves
+`CODEX_HOME` with fallback to `~/.codex`; creates a path below
+`CODEX_HOME/worktrees/spp_worktrees/<repo-name>/<sanitized-branch>`; runs the
+equivalent of `git fetch origin <base_branch>` and `git worktree add -b
+<branch> <path> origin/<base_branch>`; records only `worktree_path`; and
+returns workspace path, branch, base branch, and use-this-worktree-only launch
+guidance. `cleanup` reads the recorded path, proves it remains below the
+managed S++ worktree root, refuses dirty worktrees, removes the git worktree,
+prunes stale worktree metadata, clears `worktree_path`, and records redacted
+audit/progress evidence. These tools do not add frontend UI, mutate secrets, or
+run automatic cleanup on package lifecycle transitions.
 
 Phase-dependent architect tools revalidate the grant's explicit phase scope plus
 the anchor repo/base-branch scope frozen when the phase architect grant was

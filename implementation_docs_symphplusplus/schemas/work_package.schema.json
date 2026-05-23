@@ -64,6 +64,12 @@
         "type": "string"
       }
     },
+    "worktree_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "status": {
       "type": "string"
     },

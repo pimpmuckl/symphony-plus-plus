@@ -7,6 +7,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Service
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.StringList
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle
+  alias SymphonyElixir.TestSupport
   alias SymphonyElixir.WorkPackageFactory
 
   defmodule LockedWorkPackageRepo do
@@ -165,6 +167,146 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackagesTest do
 
     assert {:ok, fetched} = Repository.get(repo, package.id)
     assert fetched.allowed_file_globs == globs
+  end
+
+  test "stores nullable worktree path through SQLite", %{repo: repo} do
+    assert {:ok, package} = Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-P1-001"))
+    assert package.worktree_path == nil
+
+    worktree_path = Path.join(System.tmp_dir!(), "sympp-worktree-path")
+    assert {:ok, updated} = Repository.update(repo, package.id, %{worktree_path: worktree_path})
+    assert updated.worktree_path == worktree_path
+
+    assert {:ok, cleared} = Repository.update(repo, package.id, %{worktree_path: nil})
+    assert cleared.worktree_path == nil
+  end
+
+  test "prepares a package worktree under CODEX_HOME and replays the recorded path", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-001", kind: "mcp", base_branch: "main"))
+
+    assert {:ok, prepared} =
+             WorktreeLifecycle.prepare(
+               repo,
+               package.id,
+               %{
+                 "repo_root" => fixture.repo_root,
+                 "base_branch" => "main",
+                 "branch" => "feat/worktree-lifecycle"
+               },
+               codex_home: codex_home
+             )
+
+    expected_path =
+      Path.expand(
+        Path.join([
+          codex_home,
+          "worktrees",
+          "spp_worktrees",
+          Path.basename(fixture.repo_root),
+          "feat-worktree-lifecycle"
+        ])
+      )
+
+    assert prepared.status == "prepared"
+    assert prepared.worktree_path == expected_path
+    assert prepared.branch == "feat/worktree-lifecycle"
+    assert prepared.base_branch == "main"
+    assert File.dir?(expected_path)
+
+    assert {:ok, fetched} = Repository.get(repo, package.id)
+    assert fetched.worktree_path == expected_path
+
+    assert {:ok, replayed} =
+             WorktreeLifecycle.prepare(
+               repo,
+               package.id,
+               %{
+                 "repo_root" => fixture.repo_root,
+                 "base_branch" => "main",
+                 "branch" => "feat/worktree-lifecycle"
+               },
+               codex_home: codex_home
+             )
+
+    assert replayed.status == "already_prepared"
+    assert replayed.worktree_path == expected_path
+  end
+
+  test "cleanup refuses dirty worktrees and clears clean recorded worktrees", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-002", kind: "mcp", base_branch: "main"))
+
+    assert {:ok, prepared} =
+             WorktreeLifecycle.prepare(
+               repo,
+               package.id,
+               %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/cleanup"},
+               codex_home: codex_home
+             )
+
+    dirty_path = Path.join(prepared.worktree_path, "dirty.txt")
+    File.write!(dirty_path, "dirty")
+
+    assert {:error, :dirty_worktree} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
+    assert {:ok, dirty_package} = Repository.get(repo, package.id)
+    assert dirty_package.worktree_path == prepared.worktree_path
+
+    File.rm!(dirty_path)
+
+    assert {:ok, cleaned} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
+    assert cleaned.status == "cleaned"
+    assert cleaned.worktree_path == prepared.worktree_path
+    refute File.exists?(prepared.worktree_path)
+
+    assert {:ok, fetched} = Repository.get(repo, package.id)
+    assert fetched.worktree_path == nil
+
+    assert {:ok, replayed} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
+    assert replayed.status == "already_clean"
+  end
+
+  test "cleanup rejects recorded worktree paths outside the managed root", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    assert {:ok, package} =
+             Repository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-WT-003",
+                 kind: "mcp",
+                 base_branch: "main",
+                 worktree_path: Path.join(fixture.root, "outside")
+               )
+             )
+
+    assert {:error, :unsafe_worktree_path} = WorktreeLifecycle.cleanup(repo, package.id, codex_home: codex_home)
+  end
+
+  test "prepare rejects existing unrecorded worktree target path", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("main", prefix: "sympp-worktree-lifecycle")
+    codex_home = Path.join(fixture.root, "codex-home")
+    repo_name = Path.basename(fixture.repo_root)
+    existing_path = Path.join([codex_home, "worktrees", "spp_worktrees", repo_name, "feat-collision"])
+    File.mkdir_p!(existing_path)
+
+    assert {:ok, package} =
+             Repository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-WT-004", kind: "mcp", base_branch: "main"))
+
+    assert {:error, :worktree_path_exists} =
+             WorktreeLifecycle.prepare(
+               repo,
+               package.id,
+               %{"repo_root" => fixture.repo_root, "base_branch" => "main", "branch" => "feat/collision"},
+               codex_home: codex_home
+             )
   end
 
   test "string list type rejects malformed values" do

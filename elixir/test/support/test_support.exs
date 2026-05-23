@@ -118,6 +118,29 @@ defmodule SymphonyElixir.TestSupport do
     Enum.join([path, existing_path], path_separator())
   end
 
+  def git_repo_fixture!(base_branch, opts \\ []) when is_binary(base_branch) do
+    prefix = Keyword.get(opts, :prefix, "sympp-git-fixture")
+    root = Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}")
+    origin = Path.join(root, "origin.git")
+    repo_root = Path.join(root, "repo")
+
+    File.mkdir_p!(root)
+    git!(root, ["init", "--bare", origin])
+    git!(root, ["init", repo_root])
+    git!(repo_root, ["checkout", "-b", base_branch])
+    git!(repo_root, ["config", "user.email", "sympp@example.com"])
+    git!(repo_root, ["config", "user.name", "Symphony Test"])
+    File.write!(Path.join(repo_root, "README.md"), "# fixture\n")
+    git!(repo_root, ["add", "README.md"])
+    git!(repo_root, ["commit", "-m", "Initial commit"])
+    git!(repo_root, ["remote", "add", "origin", origin])
+    git!(repo_root, ["push", "-u", "origin", base_branch])
+
+    ExUnit.Callbacks.on_exit(fn -> File.rm_rf(root) end)
+
+    %{root: root, origin: origin, repo_root: repo_root}
+  end
+
   def stop_default_http_server do
     case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn
            {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
@@ -271,6 +294,20 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   defp windows_bash_path(path), do: String.replace(path, "\\", "/")
+
+  defp git!(cwd, args) do
+    git =
+      System.find_executable("git") ||
+        ExUnit.Assertions.flunk("git executable is required for worktree lifecycle tests")
+
+    {output, status} = System.cmd(git, ["-C", cwd | args], stderr_to_stdout: true)
+
+    if status != 0 do
+      ExUnit.Assertions.flunk("git #{Enum.join(args, " ")} failed with #{status}: #{output}")
+    end
+
+    output
+  end
 
   defp shell_escape(value) do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"

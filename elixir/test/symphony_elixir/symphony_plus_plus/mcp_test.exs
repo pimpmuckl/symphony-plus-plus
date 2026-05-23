@@ -38,6 +38,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
+  alias SymphonyElixir.TestSupport
   alias SymphonyElixir.WorkPackageFactory
 
   @architect_phase_id "phase-mcp-architect-test"
@@ -62,6 +63,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     "skip_work_request_planned_slice",
     "mark_work_request_sliced",
     "dispatch_work_request_planned_slice",
+    "prepare_work_package_worktree",
+    "cleanup_work_package_worktree",
     "read_child_status",
     "approve_scope_expansion",
     "read_phase_board",
@@ -1864,6 +1867,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_handoff", "type"]) == "string"
     assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_store_dir", "type"]) == "string"
     assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "repo_root", "type"]) == "string"
+
+    assert get_in(tools_by_name, ["prepare_work_package_worktree", "inputSchema", "required"]) == [
+             "work_package_id",
+             "repo_root",
+             "base_branch",
+             "branch"
+           ]
+
+    assert get_in(tools_by_name, ["cleanup_work_package_worktree", "inputSchema", "required"]) == ["work_package_id"]
     assert get_in(tools_by_name, ["read_child_status", "inputSchema", "required"]) == ["work_package_id"]
     assert get_in(tools_by_name, ["read_child_status", "inputSchema", "properties", "work_package_id", "type"]) == "string"
     assert get_in(tools_by_name, ["read_phase_board", "inputSchema", "required"]) == ["phase_id"]
@@ -5988,6 +6000,141 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)} == counts_before_branch_mismatch
   end
 
+  test "WorkPackage worktree MCP tools fail closed outside linked WorkRequest scope", %{repo: repo} do
+    {_anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WORKTREE-SCOPE", [
+        "dispatch:work_request"
+      ])
+
+    assert {:ok, unlinked_package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(id: "SYMPP-WORKTREE-UNLINKED", kind: "mcp", base_branch: "main")
+             )
+
+    prepare_response =
+      mcp_tool(repo, session, "prepare_work_package_worktree", %{
+        "work_package_id" => unlinked_package.id,
+        "repo_root" => test_repo_root(),
+        "base_branch" => "main",
+        "branch" => "feat/worktree"
+      })
+
+    assert get_in(prepare_response, ["error", "code"]) == -32_004
+    assert get_in(prepare_response, ["error", "data", "reason"]) == "not_found"
+
+    cleanup_response =
+      mcp_tool(repo, session, "cleanup_work_package_worktree", %{
+        "work_package_id" => unlinked_package.id
+      })
+
+    assert get_in(cleanup_response, ["error", "code"]) == -32_004
+    assert get_in(cleanup_response, ["error", "data", "reason"]) == "not_found"
+  end
+
+  test "WorkPackage worktree MCP tools prepare, audit, and cleanup a linked package", %{repo: repo} do
+    fixture = TestSupport.git_repo_fixture!("symphony-plus-plus/beta", prefix: "sympp-mcp-worktree")
+    codex_home = Path.join(fixture.root, "codex-home")
+
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WORKTREE-LIFECYCLE", [
+        "dispatch:work_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WORKTREE-LIFECYCLE",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "sliced"
+      )
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-WORKTREE-LIFECYCLE",
+                 title: "Prepare package worktree",
+                 target_base_branch: anchor.base_branch,
+                 branch_pattern: "feat/worktree-lifecycle",
+                 owned_file_globs: ["elixir/lib/symphony_elixir/symphony_plus_plus/work_packages/**"],
+                 acceptance_criteria: ["Prepare and clean worktrees."]
+               )
+             )
+
+    assert {:ok, package} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-WORKTREE-LIFECYCLE",
+                 kind: planned_slice.work_package_kind,
+                 title: planned_slice.title,
+                 repo: work_request.repo,
+                 base_branch: planned_slice.target_base_branch,
+                 branch_pattern: planned_slice.branch_pattern,
+                 product_description: work_request.human_description,
+                 allowed_file_globs: planned_slice.owned_file_globs,
+                 acceptance_criteria: planned_slice.acceptance_criteria,
+                 status: "ready_for_worker"
+               )
+             )
+
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+    assert {:ok, _linked_slice} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", package.id)
+
+    previous_codex_home = System.get_env("CODEX_HOME")
+
+    try do
+      System.put_env("CODEX_HOME", codex_home)
+
+      prepare_response =
+        mcp_tool(repo, session, "prepare_work_package_worktree", %{
+          "work_package_id" => package.id,
+          "repo_root" => fixture.repo_root,
+          "base_branch" => anchor.base_branch,
+          "branch" => "feat/worktree-lifecycle"
+        })
+
+      prepare_payload = get_in(prepare_response, ["result", "structuredContent"])
+      assert prepare_payload["worktree"]["status"] == "prepared"
+      assert prepare_payload["work_package"]["worktree_path"] == prepare_payload["worktree"]["path"]
+      assert prepare_payload["worker_launch"]["workspace_path"] == prepare_payload["worktree"]["path"]
+      assert prepare_payload["worker_launch"]["instruction"] =~ "Use this worktree only"
+      assert prepare_payload["audit_event"]["payload"]["source_tool"] == "prepare_work_package_worktree"
+      assert File.dir?(prepare_payload["worktree"]["path"])
+
+      cleanup_response =
+        mcp_tool(repo, session, "cleanup_work_package_worktree", %{
+          "work_package_id" => package.id
+        })
+
+      cleanup_payload = get_in(cleanup_response, ["result", "structuredContent"])
+      assert cleanup_payload["worktree"]["status"] == "cleaned"
+      assert cleanup_payload["work_package"]["worktree_path"] == nil
+      assert cleanup_payload["audit_event"]["payload"]["source_tool"] == "cleanup_work_package_worktree"
+      refute File.exists?(prepare_payload["worktree"]["path"])
+    after
+      restore_env("CODEX_HOME", previous_codex_home)
+    end
+
+    assert {:ok, cleaned_package} = WorkPackageRepository.get(repo, package.id)
+    assert cleaned_package.worktree_path == nil
+
+    events =
+      repo.all(
+        from(progress_event in ProgressEvent,
+          where: progress_event.work_package_id == ^package.id,
+          order_by: [asc: progress_event.sequence]
+        )
+      )
+
+    assert Enum.map(events, & &1.payload["source_tool"]) == [
+             "prepare_work_package_worktree",
+             "cleanup_work_package_worktree"
+           ]
+  end
+
   test "mark WorkRequest sliced MCP tool preserves approved-slice requirement", %{repo: repo} do
     {anchor, session, _grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-SLICE-GUARD", [
@@ -6112,6 +6259,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(read_only_dispatch_response, ["error", "code"]) == -32_001
     assert get_in(read_only_dispatch_response, ["error", "data", "reason"]) == "insufficient_capability"
 
+    read_only_prepare_response =
+      mcp_tool(repo, read_session, "prepare_work_package_worktree", %{
+        "work_package_id" => "wp-missing",
+        "repo_root" => test_repo_root(),
+        "base_branch" => "main",
+        "branch" => "feat/denied"
+      })
+
+    assert get_in(read_only_prepare_response, ["error", "code"]) == -32_001
+    assert get_in(read_only_prepare_response, ["error", "data", "reason"]) == "insufficient_capability"
+
     read_only_tools =
       MCPHarness.request(
         %{"jsonrpc" => "2.0", "id" => "read-only-tools", "method" => "tools/list", "params" => %{}},
@@ -6127,6 +6285,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Map.has_key?(read_only_tools, "skip_work_request_planned_slice")
     assert Map.has_key?(read_only_tools, "mark_work_request_sliced")
     assert Map.has_key?(read_only_tools, "dispatch_work_request_planned_slice")
+    assert Map.has_key?(read_only_tools, "prepare_work_package_worktree")
+    assert Map.has_key?(read_only_tools, "cleanup_work_package_worktree")
 
     assert {:ok, legacy_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-WR-MUTATE-LEGACY", kind: "mcp"))
@@ -14653,6 +14813,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   defp test_repo_root do
     Path.expand("../../../..", __DIR__)
   end
+
+  defp restore_env(key, nil), do: System.delete_env(key)
+  defp restore_env(key, value), do: System.put_env(key, value)
 
   defp child_worker_template(secret_handoff_overrides \\ %{}) do
     %{

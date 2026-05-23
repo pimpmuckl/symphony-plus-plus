@@ -66,6 +66,8 @@ ledger identity for operator diagnosis:
 | skip_work_request_planned_slice | Skip a planned slice that belongs to a scoped WorkRequest. |
 | mark_work_request_sliced | Mark a scoped WorkRequest sliced using the existing approved-slice requirement. |
 | dispatch_work_request_planned_slice | Dispatch one approved planned slice into a WorkPackage and private worker handoff. |
+| prepare_work_package_worktree | Prepare a scoped WorkPackage git worktree under `CODEX_HOME/worktrees/spp_worktrees` and record only `worktree_path`. |
+| cleanup_work_package_worktree | Clean up a scoped WorkPackage git worktree after validating the recorded path and dirty state. |
 | read_child_status | Read the architect grant's scoped anchor package status, or a same-phase child work-package status when the architect grant has child read capabilities. |
 | read_phase_board | Read the architect grant's scoped phase board, filtered to the frozen repo/base branch for explicit phase grants, including merged-child phase progress. |
 | request_child_replan | Phase 7 stub for child replan requests; returns `phase7_not_implemented` after architect authorization. |
@@ -234,6 +236,24 @@ sanitized recovery identifiers such as WorkPackage id, worker grant id, cleanup
 status, and redacted handoff metadata. It must not include raw worker secrets,
 work keys, bearer tokens, API tokens, MCP auth tokens, private-store secret
 payloads, or secret-bearing claim URLs.
+`prepare_work_package_worktree` and `cleanup_work_package_worktree` are
+architect dispatch tools gated by `dispatch:work_request`. They require the
+target `work_package_id` to be linked from a planned slice on a WorkRequest in
+the architect grant's frozen repo/base-branch/phase scope, and out-of-scope or
+unlinked packages fail closed as not found. `prepare_work_package_worktree`
+requires `repo_root`, `base_branch`, and a concrete `branch`, validates git ref
+names, requires `base_branch` to match the WorkPackage, resolves `CODEX_HOME`
+with fallback to `~/.codex`, builds a safe path under
+`CODEX_HOME/worktrees/spp_worktrees/<repo-name>/<sanitized-branch>`, fetches
+`origin/<base_branch>`, creates the linked worktree from that remote branch,
+records only `worktree_path`, and returns a compact worker launch block.
+Replays with the same recorded existing path return `already_prepared`.
+`cleanup_work_package_worktree` reads the recorded path, verifies it remains
+inside the managed S++ worktree root, refuses dirty worktrees, removes the git
+worktree through the owning repository, prunes stale worktree metadata, clears
+`worktree_path`, and appends redacted progress/audit evidence. It does not
+force-remove dirty worktrees, clean arbitrary paths, alter worker secrets, or
+perform automatic cleanup when package statuses change.
 `read_child_status` requires both `read:child_progress` and
 `read:child_findings` because its summary includes progress, findings, and
 artifact counts. `approve_child_ready_state` revalidates the ready child against
