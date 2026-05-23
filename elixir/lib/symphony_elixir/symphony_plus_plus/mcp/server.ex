@@ -3516,8 +3516,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, repo_root} <- required_argument(arguments, "repo_root"),
          {:ok, base_branch} <- required_argument(arguments, "base_branch"),
          {:ok, branch} <- required_argument(arguments, "branch"),
-         {:ok, _work_package, scope} <- scoped_worktree_work_package(config.repo, session, work_package_id),
+         {:ok, work_package, scope} <- scoped_worktree_work_package(config.repo, session, work_package_id),
          :ok <- require_worktree_repo_root_scope(repo_root, config.repo_root),
+         :ok <- require_worktree_base_branch_scope(base_branch, work_package),
          {:ok, result} <-
            WorkPackageService.prepare_worktree(config.repo, work_package_id, %{
              "repo_root" => repo_root,
@@ -4205,11 +4206,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp require_worktree_work_package_scope(repo, %WorkPackage{} = work_package, filters) do
-    case linked_work_request_for_work_package(repo, work_package.id) do
-      nil -> {:error, :forbidden}
-      %WorkRequest{} = work_request -> require_work_request_scope(work_request, filters)
+    with :ok <- require_work_package_scope(work_package, filters) do
+      case linked_work_request_for_work_package(repo, work_package.id) do
+        nil -> {:error, :forbidden}
+        %WorkRequest{} = work_request -> require_work_request_scope(work_request, filters)
+      end
     end
   end
+
+  defp require_worktree_base_branch_scope(base_branch, %WorkPackage{base_branch: base_branch}), do: :ok
+  defp require_worktree_base_branch_scope(_base_branch, %WorkPackage{}), do: {:tool_error, "base_branch_scope_mismatch"}
 
   defp require_worktree_repo_root_scope(_repo_root, nil), do: {:error, :invalid_repo_root}
 
@@ -4256,6 +4262,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp require_work_package_scope(%WorkPackage{} = work_package, filters) do
+    if work_package_matches_filters?(work_package, filters) do
+      :ok
+    else
+      {:error, :forbidden}
+    end
+  end
+
   defp require_planned_slice_target_base_branch_scope(%WorkRequest{} = work_request, target_base_branch) do
     if work_request.base_branch == target_base_branch do
       :ok
@@ -4273,6 +4287,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {"base_branch", base_branch} when is_binary(base_branch) -> work_request.base_branch == base_branch
       {"status", status} when is_binary(status) -> work_request.status == status
       {"phase_id", phase_id} when is_binary(phase_id) -> ArchitectHandoff.phase_id_for_work_request(work_request) == phase_id
+      _filter -> true
+    end)
+  end
+
+  defp work_package_matches_filters?(%WorkPackage{} = work_package, filters) do
+    Enum.all?(filters, fn
+      {"repo", repo} when is_binary(repo) -> work_package.repo == repo
+      {"base_branch", base_branch} when is_binary(base_branch) -> work_package.base_branch == base_branch
       _filter -> true
     end)
   end
