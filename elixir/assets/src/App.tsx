@@ -4,54 +4,102 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
-  CircleDot,
   Clock3,
   Copy,
   GitBranch,
   Loader2,
   MessageSquareText,
   Moon,
-  Plus,
   RefreshCw,
   Route,
-  Send,
   Sun,
 } from "lucide-react";
 import type * as React from "react";
-import { Children, FormEvent, isValidElement, useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
+import {
+  AlignedCardSlot,
+  BoardLaneColumn,
+  FeatureLaneRow,
+  LaneGroupLabel,
+} from "@/components/dashboard/board-lanes";
+import {
+  ALIGNED_ROW_MIN_HEIGHT,
+  useAlignedBoardLayout,
+  useBoardLayoutMotion,
+} from "@/components/dashboard/board-layout";
+import type {
+  BoardLayoutMeasurementRow,
+  BoardLayoutMode as WorkstreamLayoutMode,
+} from "@/components/dashboard/board-layout";
+import {
+  DetailDisclosure,
+  DetailFacts,
+  DetailHeader,
+  DetailList,
+  DetailSection,
+  DetailStatGrid,
+  JsonDetail,
+} from "@/components/dashboard/detail-layout";
+import { GuidanceDialog } from "@/components/dashboard/guidance-dialog";
+import { NewRequestDialog } from "@/components/dashboard/new-request-dialog";
+import type { NewRequestForm } from "@/components/dashboard/new-request-dialog";
+import {
+  BoardWireLayer,
+  useBoardWirePaths,
+} from "@/components/dashboard/board-wires";
+import type { BoardWire } from "@/components/dashboard/board-wires";
+import { MarkdownBlock } from "@/components/dashboard/markdown-block";
+import {
+  AnimatedBadge,
+  AnimatedCardBody,
+  AnimatedTopGrid,
+  NumberWheel,
+  TOP_PANEL_RESIZE_MS,
+  TOP_PANEL_SLIDE_MS,
+  UPDATE_ANIMATION_TTL_MS,
+  WORKSPACE_TAB_SLIDE_MS,
+  clearMotionTimers,
+  dashboardPrefersReducedMotion,
+  later,
+  measureElementHeight,
+  nextFrame,
+  updateMotionAttributes,
+  useCountMotion,
+  useFlipList,
+} from "@/components/dashboard/motion";
+import type { UpdateMotion, UpdateMotionKind } from "@/components/dashboard/motion";
+import {
+  CardSignal,
+  StateCard,
+} from "@/components/dashboard/state-card";
+import type { SignalTone, StateCardTone } from "@/components/dashboard/state-card";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { sortedCopy, uniqueNonEmpty } from "@/lib/collections";
+import { formatStatus, statusLabel } from "@/lib/status-labels";
 import { cn } from "@/lib/utils";
 import type {
   ActiveBlockingEdge,
   ArchitectHandoff,
+  ArchitectHandoffCopyResult,
   ArchitectHandoffPayload,
   ClarificationQuestion,
+  CopyArchitectHandoff,
   CreateWorkRequestPayload,
   DashboardPayload,
-  DecisionOption,
-  DecisionPrompt,
-  GuidanceRequest,
+  GuidanceAnswerSubmission,
+  GuidanceItem,
   PackageAlertIndicator,
   PlannedSlice,
   SoloSession,
@@ -74,23 +122,13 @@ declare global {
   }
 }
 
-const CUSTOM_CHOICE = "__custom_redirect__";
 const DASHBOARD_UI_STATE_KEY = "symphony-plus-plus.dashboard.ui-state.v1";
 const DASHBOARD_THEME_KEY = "symphony-plus-plus.dashboard.theme.v1";
 const DASHBOARD_DEBUG_ANIMATIONS_KEY = "symphony-plus-plus.dashboard.debug-animations";
-const ALIGNED_ROW_MIN_HEIGHT = 112;
-const ALIGNED_SLOT_MIN_HEIGHT = 76;
-const BOARD_WIRE_TRACK_CLEARANCE = 40;
-const BOARD_LAYOUT_MOTION_MS = 360;
+const REPO_WORKSTREAM_MOTION_MS = 360;
 const DASHBOARD_POLL_INTERVAL_MS = 7000;
 const LOCAL_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 const TOP_PANEL_ORDER: TopPanelKey[] = ["guidance", "blockers", "finished"];
-const TOP_PANEL_RESIZE_MS = 210;
-const TOP_PANEL_SLIDE_MS = 360;
-const UPDATE_ANIMATION_TTL_MS = 1800;
-const WORKSPACE_TAB_SLIDE_MS = 360;
-const BADGE_TEXT_PUSH_MS = 220;
-const BADGE_RESIZE_MS = 150;
 const DEFAULT_DASHBOARD_API_BASE = "/api/v1/sympp/operator";
 const PR_SYNC_INTERVAL_MS = 60_000;
 
@@ -100,56 +138,27 @@ type DashboardRuntimeConfig = {
   csrfToken?: string;
   logoUrl?: string;
 };
+type DashboardApiResponse = unknown;
+type DashboardResponseSelector = (payload: DashboardApiResponse) => DashboardPayload | null | undefined;
 
 let dashboardRuntimeConfig: DashboardRuntimeConfig | undefined = typeof window === "undefined" ? undefined : window.SYMPP_DASHBOARD_CONFIG;
 let dashboardRuntimeConfigPromise: Promise<DashboardRuntimeConfig | undefined> | null = null;
 const DASHBOARD_LOGO_URL = dashboardRuntimeConfig?.logoUrl || "/splusplus-logo.png";
 
-type GuidanceItem =
-  | {
-      source: "guidance";
-      id: string;
-      repo: string;
-      title: string;
-      packageId: string;
-      prompt?: DecisionPrompt | null;
-      detail: string;
-      guidance: GuidanceRequest;
-    }
-  | {
-      source: "clarification";
-      id: string;
-      repo: string;
-      title: string;
-      workRequestId: string;
-      prompt?: DecisionPrompt | null;
-      detail: string;
-      question: ClarificationQuestion;
-      request: WorkRequestCard;
-    };
-
 type TopPanelKey = "guidance" | "blockers" | "finished";
 type TopPanelDirection = "forward" | "backward";
 type TopPanelPhase = "idle" | "opening" | "closing" | "pre-resize" | "swapping" | "post-resize";
 type BoardLane = "slices" | "implementing" | "finished";
-type FeatureLane = "requested" | "slices" | "packages";
-type SignalTone = "muted" | "info" | "warning" | "danger" | "success";
-type StateCardTone = "request" | "queued" | "slice" | "implementing" | "review" | "merge" | "guidance" | "blocked" | "finished" | "muted";
-type BoardWireTone = StateCardTone;
 type OperationalState = NonNullable<WorkPackageCard["operational_state"]>;
 type OperationalAttention = NonNullable<OperationalState["attention_items"]>[number];
 type PackageLineageProjection = NonNullable<WorkPackageCard["lineage"]>;
-type StateToneStyle = {
-  card: string;
-  accent: string;
-};
 type WorkspaceTab = "workstreams" | "solo";
 type WorkspaceTabPhase = "idle" | "swapping";
-type WorkstreamLayoutMode = "jira" | "aligned";
 type DashboardTheme = "light" | "dark";
-type UpdateMotionKind = "added" | "changed" | "guidance" | "blocker" | "finished";
-type UpdateMotion = { kind: UpdateMotionKind | "settled"; token: number };
-type BadgePushPhase = "idle" | "measure" | "resize-first" | "push" | "resize-last";
+type UpdateMotionsAction =
+  | { type: "clear" }
+  | { type: "merge"; motions: Record<string, UpdateMotion> }
+  | { type: "settle"; entries: [string, UpdateMotion][] };
 type UpdateAnimationEntity = {
   signature: string;
   status?: string | null;
@@ -162,12 +171,6 @@ type DashboardUpdateAnimations = {
   motionFor: (key?: string | null) => UpdateMotion | undefined;
   simulate: (kind: UpdateMotionKind) => void;
 };
-type ArchitectHandoffCopyResult = {
-  handoff: ArchitectHandoff;
-  copied: boolean;
-  copyError?: string;
-};
-type CopyArchitectHandoff = (workRequestId: string, cachedHandoff?: ArchitectHandoff | null) => Promise<ArchitectHandoffCopyResult>;
 type CardDetailSelection =
   | { kind: "request"; detail: WorkRequestDetail }
   | { kind: "slice"; detail: WorkRequestDetail; slice: PlannedSlice; pkg?: WorkPackageCard }
@@ -175,6 +178,11 @@ type CardDetailSelection =
   | { kind: "solo"; session: SoloSession };
 type CardDetailSelect = (selection: CardDetailSelection) => void;
 type HandoffCopyState = "idle" | "copying" | "copied" | "error";
+type ScopedHandoffCopy = {
+  error: string | null;
+  identity: string;
+  state: HandoffCopyState;
+};
 type DashboardUiState = {
   workspaceTab?: WorkspaceTab;
   topPanel?: TopPanelKey | null;
@@ -206,6 +214,16 @@ function jsonHeaders({ csrf = false, content = false }: { csrf?: boolean; conten
   }
 
   return headers;
+}
+
+function dashboardErrorMessage(payload: DashboardApiResponse) {
+  if (!isRecord(payload) || !isRecord(payload.error)) return null;
+  return typeof payload.error.message === "string" ? payload.error.message : null;
+}
+
+function dashboardFromEnvelope(payload: DashboardApiResponse) {
+  if (!isRecord(payload) || !isRecord(payload.dashboard)) return null;
+  return payload.dashboard as DashboardPayload;
 }
 
 async function ensureDashboardRuntimeConfig() {
@@ -253,6 +271,36 @@ async function copyTextToClipboard(value: string) {
   }
 }
 
+function useScopedHandoffCopy(identity: string) {
+  const [copy, setCopy] = useState<ScopedHandoffCopy>({ error: null, identity, state: "idle" });
+  const handoffRef = useRef<{ handoff: ArchitectHandoff | null; identity: string }>({ handoff: null, identity: "" });
+
+  const current = copy.identity === identity ? copy : { error: null, identity, state: "idle" as const };
+  const cachedHandoff = useCallback(() => (handoffRef.current.identity === identity ? handoffRef.current.handoff : null), [identity]);
+  const startCopy = useCallback(() => setCopy({ error: null, identity, state: "copying" }), [identity]);
+  const recordCopyResult = useCallback(
+    (result: ArchitectHandoffCopyResult) => {
+      handoffRef.current = { handoff: result.handoff, identity };
+      setCopy({
+        error: result.copyError ? `Handoff is ready, but clipboard copy failed: ${result.copyError}` : null,
+        identity,
+        state: result.copied ? "copied" : "error",
+      });
+    },
+    [identity],
+  );
+  const recordCopyError = useCallback((error: string) => setCopy({ error, identity, state: "error" }), [identity]);
+
+  return {
+    cachedHandoff,
+    error: current.error,
+    recordCopyError,
+    recordCopyResult,
+    startCopy,
+    state: current.state,
+  };
+}
+
 type BlockerItem = {
   id: string;
   title: string;
@@ -275,80 +323,6 @@ type FinishedHighlight = {
 
 type FinishedHighlightKind = "Request" | "Slice" | "Work Package";
 
-type BoardWire = {
-  id: string;
-  from: string;
-  to: string;
-  tone: BoardWireTone;
-  kind?: BoardWireKind;
-};
-
-type BoardWireKind = "progress" | "blocker";
-
-type BoardWirePath = BoardWire & {
-  path: string;
-  sourceX: number;
-  sourceY: number;
-  targetX: number;
-  targetY: number;
-  trackX: number;
-  trackIndex: number;
-  trackCount: number;
-  trackSide: WireTrackSide;
-  hiddenRects: BoardWireHiddenRect[];
-};
-
-type BoardWireHiddenRect = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-};
-
-type BoardWireHorizontalSegment = {
-  x1: number;
-  x2: number;
-  y: number;
-};
-
-type BoardWireVerticalSegment = {
-  x: number;
-  y1: number;
-  y2: number;
-};
-
-type WireTrackSide = "source" | "target" | "spread";
-
-type MeasuredBoardWire = BoardWire & {
-  source: HTMLElement;
-  target: HTMLElement;
-  sourceLane: number;
-  targetLane: number;
-  sourceRect: BoardWireHiddenRect;
-  targetRect: BoardWireHiddenRect;
-  sourceX: number;
-  sourceY: number;
-  targetX: number;
-  targetY: number;
-  trackX: number;
-  trackIndex: number;
-  trackCount: number;
-  trackSide: WireTrackSide;
-};
-
-const STATE_CARD_TONES: Record<StateCardTone, StateToneStyle> = {
-  request: { card: "border-slate-200 bg-slate-50/80 dark:border-slate-700/80 dark:bg-slate-900/70", accent: "rgb(203 213 225)" },
-  queued: { card: "border-teal-200/80 bg-teal-50/80 dark:border-teal-700/70 dark:bg-teal-950/45", accent: "rgb(45 212 191)" },
-  slice: { card: "border-cyan-200/80 bg-cyan-50/80 dark:border-cyan-700/70 dark:bg-cyan-950/45", accent: "rgb(34 211 238)" },
-  implementing: { card: "border-sky-200/80 bg-sky-50/80 dark:border-sky-700/70 dark:bg-sky-950/45", accent: "rgb(56 189 248)" },
-  review: { card: "border-indigo-200/80 bg-indigo-50/80 dark:border-indigo-700/70 dark:bg-indigo-950/45", accent: "rgb(129 140 248)" },
-  merge: { card: "border-lime-200/80 bg-lime-50/80 dark:border-lime-700/70 dark:bg-lime-950/45", accent: "rgb(163 230 53)" },
-  guidance: { card: "border-violet-200/80 bg-violet-50/80 dark:border-violet-700/70 dark:bg-violet-950/45", accent: "rgb(167 139 250)" },
-  blocked: { card: "border-rose-200/80 bg-rose-50/80 dark:border-rose-700/70 dark:bg-rose-950/45", accent: "rgb(251 113 133)" },
-  finished: { card: "border-emerald-200/80 bg-emerald-50/80 dark:border-emerald-700/70 dark:bg-emerald-950/45", accent: "rgb(52 211 153)" },
-  muted: { card: "border-zinc-200/80 bg-zinc-50/80 dark:border-zinc-700/80 dark:bg-zinc-900/70", accent: "rgb(212 212 216)" },
-};
-
 type SliceEntry = {
   detail: WorkRequestDetail;
   slice: PlannedSlice;
@@ -366,15 +340,6 @@ type WorkstreamRow = {
   finishedPackages: WorkPackageCard[];
   minHeight: number;
   unlinked?: boolean;
-};
-
-type NewRequestForm = {
-  title: string;
-  repo: string;
-  base_branch: string;
-  work_type: string;
-  desired_dispatch_shape: string;
-  human_description: string;
 };
 
 type BadgeTone = "default" | "secondary" | "outline" | "success" | "warning" | "danger" | "info" | "ready";
@@ -438,61 +403,25 @@ function appDialogReducer(state: AppDialogState, action: AppDialogAction): AppDi
   }
 }
 
-const initialRequestForm: NewRequestForm = {
-  title: "",
-  repo: "symphony-plus-plus",
-  base_branch: "main",
-  work_type: "feature",
-  desired_dispatch_shape: "architect_led_feature_branch",
-  human_description: "",
-};
-
-type NewRequestDialogState = {
-  submitting: boolean;
-  createdRequest: WorkRequestDetail | null;
-  architectHandoff: ArchitectHandoff | null;
-  handoffCopyState: HandoffCopyState;
-  error: string | null;
-};
-
-type NewRequestDialogAction =
-  | { type: "reset" }
-  | { type: "startSubmit" }
-  | { type: "created"; request: WorkRequestDetail }
-  | { type: "failed"; error: string }
-  | { type: "newRequest" }
-  | { type: "startCopy" }
-  | { type: "copyResult"; result: ArchitectHandoffCopyResult };
-
-const initialNewRequestDialogState: NewRequestDialogState = {
-  submitting: false,
-  createdRequest: null,
-  architectHandoff: null,
-  handoffCopyState: "idle",
-  error: null,
-};
-
-function newRequestDialogReducer(state: NewRequestDialogState, action: NewRequestDialogAction): NewRequestDialogState {
+function updateMotionsReducer(current: Record<string, UpdateMotion>, action: UpdateMotionsAction): Record<string, UpdateMotion> {
   switch (action.type) {
-    case "reset":
-      return initialNewRequestDialogState;
-    case "startSubmit":
-      return { ...state, submitting: true, error: null };
-    case "created":
-      return { ...state, submitting: false, createdRequest: action.request, architectHandoff: null, handoffCopyState: "idle", error: null };
-    case "failed":
-      return { ...state, submitting: false, handoffCopyState: "error", error: action.error };
-    case "newRequest":
-      return { ...initialNewRequestDialogState, createdRequest: null };
-    case "startCopy":
-      return { ...state, handoffCopyState: "copying", error: null };
-    case "copyResult":
-      return {
-        ...state,
-        architectHandoff: action.result.handoff,
-        handoffCopyState: action.result.copied ? "copied" : "error",
-        error: action.result.copyError ? `Handoff is ready, but clipboard copy failed: ${action.result.copyError}` : null,
-      };
+    case "clear":
+      return Object.keys(current).length === 0 ? current : {};
+    case "merge":
+      return { ...current, ...action.motions };
+    case "settle": {
+      let changed = false;
+      const next = { ...current };
+
+      action.entries.forEach(([key, motion]) => {
+        if (next[key]?.token === motion.token) {
+          next[key] = { kind: "settled", token: motion.token };
+          changed = true;
+        }
+      });
+
+      return changed ? next : current;
+    }
   }
 }
 
@@ -500,10 +429,10 @@ export default function App() {
   const [appState, dispatchApp] = useReducer(appStateReducer, null, createInitialAppState);
   const { dashboard, error, loading, refreshing, theme, workspaceTab, workstreamLayout } = appState;
   const [dialogState, dispatchDialog] = useReducer(appDialogReducer, initialAppDialogState);
-  const showUpdateSimulationControls = useMemo(shouldShowUpdateSimulationControls, []);
+  const showUpdateSimulationControls = useMemo(() => shouldShowUpdateSimulationControls(), []);
   const loadInFlightRef = useRef(false);
   const prSyncInFlightRef = useRef(false);
-  const lastPrSyncAtRef = useRef(Date.now());
+  const lastPrSyncAtRef = useRef(0);
   const setDashboard = useCallback((nextDashboard: DashboardPayload | null) => {
     dispatchApp({ type: "patch", state: { dashboard: nextDashboard } });
   }, []);
@@ -533,11 +462,11 @@ export default function App() {
   }, []);
 
   const applyDashboardResponse = useCallback(
-    async (response: Response, fallbackMessage: string, selectDashboard: (payload: any) => DashboardPayload = (payload) => payload) => {
-      const payload = await response.json();
+    async (response: Response, fallbackMessage: string, selectDashboard: DashboardResponseSelector = (payload) => payload as DashboardPayload) => {
+      const payload = (await response.json()) as DashboardApiResponse;
 
       if (!response.ok) {
-        throw new Error(payload?.error?.message || fallbackMessage);
+        throw new Error(dashboardErrorMessage(payload) || fallbackMessage);
       }
 
       const nextDashboard = selectDashboard(payload);
@@ -547,9 +476,40 @@ export default function App() {
 
       setDashboard(nextDashboard);
       setError(null);
+      return nextDashboard;
     },
-    [],
+    [setDashboard, setError],
   );
+
+  const submitGuidanceAnswer = useCallback(async (item: GuidanceItem, submission: GuidanceAnswerSubmission) => {
+    const response = await fetch(guidanceAnswerUrl(item), {
+      method: "POST",
+      headers: await mutationHeaders(),
+      body: JSON.stringify(submission),
+    });
+    await applyDashboardResponse(response, "Answer was not recorded", dashboardFromEnvelope);
+    setSelectedGuidance(null);
+  }, [applyDashboardResponse, setSelectedGuidance]);
+
+  const createWorkRequest = useCallback(async (form: NewRequestForm) => {
+    const response = await fetch(operatorApiUrl("/work-requests"), {
+      method: "POST",
+      headers: await mutationHeaders(),
+      body: JSON.stringify(form),
+    });
+    const payload = (await response.json()) as CreateWorkRequestPayload & { error?: { message?: string } };
+
+    if (!response.ok) {
+      throw new Error(payload?.error?.message || "Request was not created");
+    }
+    if (!payload.dashboard || !payload.work_request) {
+      throw new Error("Request was created, but the dashboard response was incomplete");
+    }
+
+    setDashboard(payload.dashboard);
+    setError(null);
+    return payload.work_request;
+  }, [setDashboard, setError]);
 
   const loadDashboard = useCallback(async (mode: "initial" | "refresh" | "silent" = "refresh") => {
     if (loadInFlightRef.current && mode === "silent") return;
@@ -571,7 +531,7 @@ export default function App() {
       setLoading(false);
       if (mode === "refresh") setRefreshing(false);
     }
-  }, [applyDashboardResponse]);
+  }, [applyDashboardResponse, setError, setLoading, setRefreshing]);
 
   const syncPullRequests = useCallback(async () => {
     if (prSyncInFlightRef.current) return;
@@ -584,13 +544,13 @@ export default function App() {
         headers,
         body: JSON.stringify({ mode: "auto" }),
       });
-      await applyDashboardResponse(response, "GitHub PR sync unavailable", (payload) => payload.dashboard);
+      await applyDashboardResponse(response, "GitHub PR sync unavailable", dashboardFromEnvelope);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "GitHub PR sync unavailable");
     } finally {
       prSyncInFlightRef.current = false;
     }
-  }, [applyDashboardResponse]);
+  }, [applyDashboardResponse, setError]);
 
   const copyArchitectHandoff = useCallback<CopyArchitectHandoff>(async (workRequestId, cachedHandoff) => {
     let handoff = cachedHandoff || null;
@@ -636,6 +596,10 @@ export default function App() {
   }, [loadDashboard]);
 
   useEffect(() => {
+    lastPrSyncAtRef.current = Date.now();
+  }, []);
+
+  useEffect(() => {
     const interval = window.setInterval(() => {
       if (document.visibilityState !== "visible" || loadInFlightRef.current || prSyncInFlightRef.current) {
         return;
@@ -672,12 +636,12 @@ export default function App() {
   }, [theme]);
 
   const packages = useMemo(() => allPackages(dashboard), [dashboard]);
-  const requests = dashboard?.work_requests?.work_requests ?? [];
-  const requestDetails = dashboard?.work_request_details ?? [];
+  const requests = useMemo(() => dashboard?.work_requests?.work_requests ?? [], [dashboard]);
+  const requestDetails = useMemo(() => dashboard?.work_request_details ?? [], [dashboard]);
   const guidanceItems = useMemo(() => allGuidanceItems(dashboard), [dashboard]);
   const blockerItems = useMemo(() => activeBlockerItems(packages, requestDetails), [packages, requestDetails]);
   const finishedHighlights = useMemo(() => recentFinishedHighlights(packages, requests, requestDetails), [packages, requests, requestDetails]);
-  const soloSessions = dashboard?.solo_sessions?.solo_sessions ?? [];
+  const soloSessions = useMemo(() => dashboard?.solo_sessions?.solo_sessions ?? [], [dashboard]);
   const repos = useMemo(() => repoSummaries(packages, requests, guidanceItems, soloSessions, requestDetails), [
     packages,
     requests,
@@ -710,7 +674,17 @@ export default function App() {
       ),
       solo: <SoloSessions sessions={soloSessions} onSelectCard={setSelectedCardDetail} updateAnimations={updateAnimations} />,
     }),
-    [copyArchitectHandoff, dashboard?.active_blocking_edges, repos, requestDetails, soloSessions, updateAnimations, workstreamLayout],
+    [
+      copyArchitectHandoff,
+      dashboard?.active_blocking_edges,
+      repos,
+      requestDetails,
+      setSelectedCardDetail,
+      setSelectedGuidance,
+      soloSessions,
+      updateAnimations,
+      workstreamLayout,
+    ],
   );
 
   if (loading) {
@@ -748,13 +722,11 @@ export default function App() {
                 Refresh
               </Button>
               <NewRequestDialog
+                canCopyArchitectHandoff={architectHandoffEligibleRequest}
+                onCopyArchitectHandoff={copyArchitectHandoff}
+                onCreateRequest={createWorkRequest}
                 open={dialogState.newRequestOpen}
                 onOpenChange={setNewRequestOpen}
-                onCreated={(payload) => {
-                  setDashboard(payload);
-                }}
-                onCopyArchitectHandoff={copyArchitectHandoff}
-                defaultRepo={repos[0]?.repo}
                 repos={repos}
               />
             </div>
@@ -802,10 +774,7 @@ export default function App() {
           onOpenChange={(open) => {
             if (!open) setSelectedGuidance(null);
           }}
-          onAnswered={(payload) => {
-            setDashboard(payload);
-            setSelectedGuidance(null);
-          }}
+          onSubmitAnswer={submitGuidanceAnswer}
         />
         <CardDetailDialog
           selection={dialogState.selectedCardDetail}
@@ -841,29 +810,17 @@ function useDashboardUpdateAnimations({
   const latestSnapshotRef = useRef<Map<string, UpdateAnimationEntity>>(new Map());
   const timersRef = useRef<number[]>([]);
   const tokenRef = useRef(0);
-  const [motions, setMotions] = useState<Record<string, UpdateMotion>>({});
+  const [motions, dispatchMotions] = useReducer(updateMotionsReducer, {});
   const [countPulses, setCountPulses] = useState<Record<TopPanelKey, number>>({ blockers: 0, finished: 0, guidance: 0 });
 
   const applyMotions = useCallback((nextMotions: Record<string, UpdateMotion>) => {
     const motionEntries = Object.entries(nextMotions);
     if (motionEntries.length === 0) return;
 
-    setMotions((current) => ({ ...current, ...nextMotions }));
+    dispatchMotions({ type: "merge", motions: nextMotions });
 
     const timer = window.setTimeout(() => {
-      setMotions((current) => {
-        let changed = false;
-        const next = { ...current };
-
-        motionEntries.forEach(([key, motion]) => {
-          if (next[key]?.token === motion.token) {
-            next[key] = { kind: "settled", token: motion.token };
-            changed = true;
-          }
-        });
-
-        return changed ? next : current;
-      });
+      dispatchMotions({ type: "settle", entries: motionEntries });
     }, UPDATE_ANIMATION_TTL_MS);
 
     timersRef.current.push(timer);
@@ -881,7 +838,7 @@ function useDashboardUpdateAnimations({
     if (!ready) {
       latestSnapshotRef.current = new Map();
       previousSnapshotRef.current = null;
-      setMotions((current) => (Object.keys(current).length > 0 ? {} : current));
+      dispatchMotions({ type: "clear" });
       return;
     }
 
@@ -907,7 +864,7 @@ function useDashboardUpdateAnimations({
     applyMotions(nextMotions);
   }, [applyMotions, blockerItems, finishedHighlights, guidanceItems, packages, ready, requestDetails, soloSessions]);
 
-  const motionFor = useCallback((key?: string | null) => (key ? motions[key] : undefined), [motions]);
+  const motionFor = useCallback((key?: string | null) => (ready && key ? motions[key] : undefined), [motions, ready]);
   const countPulseFor = useCallback((panel: TopPanelKey) => countPulses[panel] || 0, [countPulses]);
   const simulate = useCallback(
     (kind: UpdateMotionKind) => {
@@ -1190,124 +1147,6 @@ function isBlockedStatus(status?: string | null) {
   return status === "blocked";
 }
 
-function updateMotionAttributes(motion?: UpdateMotion) {
-  if (motion?.kind === "settled") return { "data-update-settled": "true" };
-  return motion ? { "data-update-kind": motion.kind, "data-update-token": motion.token } : {};
-}
-
-function useCountMotion(value: number, pulseToken = 0) {
-  const currentRef = useRef(value);
-  const pulseRef = useRef(pulseToken);
-  const tokenRef = useRef(0);
-  const [motion, setMotion] = useState({
-    active: false,
-    current: value,
-    direction: "idle" as "idle" | "up" | "down",
-    previous: value,
-    token: 0,
-  });
-
-  useEffect(() => {
-    const previous = currentRef.current;
-    const pulsing = pulseRef.current !== pulseToken;
-    if (previous === value && !pulsing) return;
-
-    pulseRef.current = pulseToken;
-    currentRef.current = value;
-    const token = (tokenRef.current += 1);
-    const direction = value >= previous ? "up" : "down";
-    const displayedPrevious = pulsing && previous === value ? Math.max(0, value - 1) : previous;
-
-    setMotion({ active: true, current: value, direction, previous: displayedPrevious, token });
-
-    const timer = window.setTimeout(() => {
-      setMotion({ active: false, current: value, direction: "idle", previous: value, token });
-    }, 760);
-
-    return () => window.clearTimeout(timer);
-  }, [pulseToken, value]);
-
-  return motion;
-}
-
-function NumberWheel({
-  value,
-  motion,
-  compact = false,
-}: {
-  value: number;
-  motion: ReturnType<typeof useCountMotion>;
-  compact?: boolean;
-}) {
-  return (
-    <span
-      key={motion.token}
-      className={cn("number-wheel", compact && "number-wheel-compact")}
-      data-direction={motion.active ? motion.direction : undefined}
-      data-animating={motion.active ? "true" : undefined}
-    >
-      <span className="number-wheel-value number-wheel-old">{motion.previous}</span>
-      <span className="number-wheel-value number-wheel-new">{value}</span>
-    </span>
-  );
-}
-
-function AnimatedTopGrid({ children, className }: { children: React.ReactNode; className?: string }) {
-  const layoutKey = Children.toArray(children)
-    .map((child, index) => (isValidElement(child) ? child.key ?? index : index))
-    .join("|");
-  const flipRef = useFlipList(layoutKey);
-
-  return (
-    <div className={className} ref={flipRef}>
-      {children}
-    </div>
-  );
-}
-
-function useFlipList(layoutKey: string) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const previousRectsRef = useRef<Map<string, DOMRect>>(new Map());
-
-  useLayoutEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
-    const nextRects = new Map<string, DOMRect>();
-    const nodes = Array.from(container.querySelectorAll<HTMLElement>("[data-flip-id]"));
-
-    nodes.forEach((node) => {
-      const id = node.dataset.flipId;
-      if (!id) return;
-
-      const rect = node.getBoundingClientRect();
-      const previous = previousRectsRef.current.get(id);
-      nextRects.set(id, rect);
-
-      if (!previous) return;
-
-      const deltaX = previous.left - rect.left;
-      const deltaY = previous.top - rect.top;
-      if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1) return;
-
-      node.animate(
-        [
-          { transform: `translate3d(${deltaX}px, ${deltaY}px, 0)` },
-          { transform: "translate3d(0, 0, 0)" },
-        ],
-        {
-          duration: 360,
-          easing: "cubic-bezier(0.16, 1, 0.3, 1)",
-        },
-      );
-    });
-
-    previousRectsRef.current = nextRects;
-  }, [layoutKey]);
-
-  return containerRef;
-}
-
 function WorkstreamsPane({
   repos,
   requestDetails,
@@ -1405,7 +1244,7 @@ function WorkspaceTabCarousel({
 
   useEffect(
     () => () => {
-      clearTopPanelTimers(timersRef, framesRef);
+      clearMotionTimers(timersRef, framesRef);
     },
     [],
   );
@@ -1414,7 +1253,7 @@ function WorkspaceTabCarousel({
     const oldTab = latestTabRef.current;
     if (oldTab === activeTab) return;
 
-    clearTopPanelTimers(timersRef, framesRef);
+    clearMotionTimers(timersRef, framesRef);
 
     latestTabRef.current = activeTab;
     transitionTokenRef.current += 1;
@@ -1690,7 +1529,7 @@ function TopPanelCarousel({
 
   useEffect(
     () => () => {
-      clearTopPanelTimers(timersRef, framesRef);
+      clearMotionTimers(timersRef, framesRef);
     },
     [],
   );
@@ -1699,7 +1538,7 @@ function TopPanelCarousel({
     const oldPanel = latestPanelRef.current;
     if (oldPanel === activePanel) return;
 
-    clearTopPanelTimers(timersRef, framesRef);
+    clearMotionTimers(timersRef, framesRef);
 
     const oldHeight = measureElementHeight(visibleRef.current) || measureElementHeight(viewportRef.current);
     const newHeight = activePanel ? measureElementHeight(measureRef.current) : 0;
@@ -2030,13 +1869,11 @@ function GuidancePreviewCard({
   const tone: StateCardTone = item.source === "guidance" ? "guidance" : "queued";
 
   return (
-    <button
-      type="button"
-      className={stateCardClassName(
-        tone,
-        "stagger-item grid gap-4 p-4 text-left hover:border-primary/50 hover:shadow-dashboard",
-      )}
-      style={stateCardStyle(tone, { animationDelay: `${index * 45}ms` })}
+    <StateCard
+      as="button"
+      tone={tone}
+      className="stagger-item grid gap-4 p-4 text-left hover:border-primary/50 hover:shadow-dashboard focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      style={{ animationDelay: `${index * 45}ms` }}
       onClick={() => onSelect(item)}
       data-flip-id={guidanceUpdateKey(item)}
       {...updateMotionAttributes(motion)}
@@ -2060,7 +1897,7 @@ function GuidancePreviewCard({
           variant={item.source === "guidance" ? "danger" : "warning"}
         />
       </div>
-    </button>
+    </StateCard>
   );
 }
 
@@ -2084,9 +1921,10 @@ function BlockerPreviewCard({
   motion?: UpdateMotion;
 }) {
   return (
-    <div
-      className={stateCardClassName("blocked", cn("stagger-item p-4", onSelectCard && "card-detail-trigger"))}
-      style={stateCardStyle("blocked", { animationDelay: `${index * 45}ms` })}
+    <StateCard
+      tone="blocked"
+      className={cn("stagger-item p-4", onSelectCard && "card-detail-trigger")}
+      style={{ animationDelay: `${index * 45}ms` }}
       data-flip-id={blockerUpdateKey(item)}
       data-card-detail-kind={cardDetailDataKind(item.selection)}
       {...updateMotionAttributes(motion)}
@@ -2104,7 +1942,7 @@ function BlockerPreviewCard({
         <AlertTriangle className="size-4" />
         {item.blockerCount} active blocker{item.blockerCount === 1 ? "" : "s"}
       </div>
-    </div>
+    </StateCard>
   );
 }
 
@@ -2172,9 +2010,10 @@ function FinishedHighlightCard({
   motion?: UpdateMotion;
 }) {
   return (
-    <div
-      className={stateCardClassName("finished", cn("stagger-item p-3", onSelectCard && "card-detail-trigger"))}
-      style={stateCardStyle("finished", { animationDelay: `${index * 30}ms` })}
+    <StateCard
+      tone="finished"
+      className={cn("stagger-item p-3", onSelectCard && "card-detail-trigger")}
+      style={{ animationDelay: `${index * 30}ms` }}
       data-flip-id={finishedHighlightUpdateKey(item)}
       data-card-detail-kind={cardDetailDataKind(item.selection)}
       {...updateMotionAttributes(motion)}
@@ -2196,7 +2035,7 @@ function FinishedHighlightCard({
           </span>
         ) : null}
       </div>
-    </div>
+    </StateCard>
   );
 }
 
@@ -2256,7 +2095,7 @@ function RepoWorkstream({
       openMotionTimerRef.current = window.setTimeout(() => {
         setOpenMotion(false);
         openMotionTimerRef.current = null;
-      }, BOARD_LAYOUT_MOTION_MS + 120);
+      }, REPO_WORKSTREAM_MOTION_MS + 120);
     }
     previousOpenRef.current = open;
   }, [open]);
@@ -2421,133 +2260,6 @@ function RepoSummaryPlate({
   );
 }
 
-function AnimatedBadge({
-  label,
-  variant,
-  className,
-}: {
-  label: string;
-  variant?: React.ComponentProps<typeof Badge>["variant"];
-  className?: string;
-}) {
-  const [state, dispatch] = useReducer(animatedBadgeReducer, label, initialAnimatedBadgeState);
-  const badgeRef = useRef<HTMLDivElement | null>(null);
-  const currentTextRef = useRef<HTMLSpanElement | null>(null);
-  const measureRef = useRef<HTMLSpanElement | null>(null);
-  const timersRef = useRef<number[]>([]);
-  const framesRef = useRef<number[]>([]);
-
-  useEffect(
-    () => () => {
-      clearTopPanelTimers(timersRef, framesRef);
-    },
-    [],
-  );
-
-  useLayoutEffect(() => {
-    if (label === state.currentLabel) return;
-
-    clearTopPanelTimers(timersRef, framesRef);
-
-    const oldWidth = measureElementWidth(badgeRef.current);
-    const oldTextWidth = measureElementWidth(currentTextRef.current);
-    const chromeWidth = Math.max(0, oldWidth - oldTextWidth);
-
-    dispatch({ type: "start", label, previousLabel: state.currentLabel, width: oldWidth });
-
-    nextFrame(framesRef, () => {
-      const newTextWidth = measureElementWidth(measureRef.current);
-      const newWidth = Math.ceil(newTextWidth + chromeWidth);
-      const wider = newWidth > oldWidth + 1;
-
-      if (wider) {
-        dispatch({ type: "patch", state: { phase: "resize-first", width: newWidth } });
-
-        later(timersRef, BADGE_RESIZE_MS, () => {
-          dispatch({ type: "patch", state: { phase: "push" } });
-          later(timersRef, BADGE_TEXT_PUSH_MS, () => dispatch({ type: "settle" }));
-        });
-      } else {
-        dispatch({ type: "patch", state: { phase: "push" } });
-
-        later(timersRef, BADGE_TEXT_PUSH_MS, () => {
-          dispatch({ type: "patch", state: { phase: "resize-last", width: newWidth } });
-          later(timersRef, BADGE_RESIZE_MS, () => dispatch({ type: "settle" }));
-        });
-      }
-    });
-  }, [label, state.currentLabel]);
-
-  return (
-    <Badge
-      ref={badgeRef}
-      variant={variant}
-      className={cn("state-update-badge", className)}
-      data-badge-phase={state.phase}
-      data-badge-has-previous={state.previousLabel ? "true" : "false"}
-      style={state.width === null ? undefined : { width: `${Math.max(state.width, 0)}px` }}
-    >
-      <span ref={measureRef} className="badge-push-measure">
-        {state.currentLabel}
-      </span>
-      <span className="badge-push-stack">
-        {state.previousLabel ? <span className="badge-push-old">{state.previousLabel}</span> : null}
-        <span ref={currentTextRef} className="badge-push-new">
-          {state.currentLabel}
-        </span>
-      </span>
-    </Badge>
-  );
-}
-
-type AnimatedBadgeState = {
-  currentLabel: string;
-  previousLabel: string | null;
-  phase: BadgePushPhase;
-  width: number | null;
-};
-
-type AnimatedBadgeAction =
-  | { type: "start"; label: string; previousLabel: string; width: number }
-  | { type: "patch"; state: Partial<AnimatedBadgeState> }
-  | { type: "settle" };
-
-function initialAnimatedBadgeState(label: string): AnimatedBadgeState {
-  return {
-    currentLabel: label,
-    previousLabel: null,
-    phase: "idle",
-    width: null,
-  };
-}
-
-function animatedBadgeReducer(state: AnimatedBadgeState, action: AnimatedBadgeAction): AnimatedBadgeState {
-  switch (action.type) {
-    case "start":
-      return { currentLabel: action.label, previousLabel: action.previousLabel, phase: "measure", width: action.width };
-    case "patch":
-      return { ...state, ...action.state };
-    case "settle":
-      return { ...state, previousLabel: null, phase: "idle", width: null };
-  }
-}
-
-function stateCardClassName(tone: StateCardTone, className?: string) {
-  return cn(
-    "min-w-0 max-w-full rounded-lg border border-l-4 shadow-sm transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out",
-    STATE_CARD_TONES[tone].card,
-    className,
-  );
-}
-
-function stateCardStyle(tone: StateCardTone, style?: React.CSSProperties) {
-  return { ...style, "--state-accent": STATE_CARD_TONES[tone].accent, borderLeftColor: STATE_CARD_TONES[tone].accent } as React.CSSProperties;
-}
-
-function wireToneStyle(tone: BoardWireTone) {
-  return { "--wire-color": STATE_CARD_TONES[tone].accent } as React.CSSProperties;
-}
-
 function WorkstreamBoard({
   repoDetails,
   packages,
@@ -2598,8 +2310,19 @@ function WorkstreamBoard({
     () => workstreamRows(sortedDetails, sliceEntries, activePackages, implementingPackages, finishedPackages),
     [activePackages, finishedPackages, implementingPackages, sliceEntries, sortedDetails],
   );
-  const { templates: alignedSlotTemplates, key: alignedSlotTemplateKey } = useAlignedSlotTemplates(boardRef, alignedRows, layoutMode);
-  const rowTemplate = useAlignedRowTemplate(boardRef, alignedRows, layoutMode, alignedSlotTemplateKey);
+  const alignedMeasurementRows = useMemo<BoardLayoutMeasurementRow[]>(
+    () =>
+      alignedRows.map((row, index) => ({
+        activeSlotKeys: row.active.map(({ slice }) => slice.id),
+        minHeight: row.minHeight,
+        rowKey: workstreamRowKey(row, index),
+      })),
+    [alignedRows],
+  );
+  const {
+    rowTemplate,
+    slotTemplates: alignedSlotTemplates,
+  } = useAlignedBoardLayout(boardRef, alignedMeasurementRows, layoutMode);
   const wires = useMemo(() => workstreamWires(sortedDetails, packages, activeBlockingEdges), [activeBlockingEdges, sortedDetails, packages]);
   const { paths: wirePaths, size: wireSize } = useBoardWirePaths(boardRef, wires, layoutMode);
   const layoutMotion = useBoardLayoutMotion(shellRef, boardRef, layoutMode);
@@ -2784,1230 +2507,151 @@ function AlignedWorkstreamColumns({
   return (
     <>
       <BoardLaneColumn title="Requests" count={requestedCount} emptyLabel="No requested work" bodyStyle={rowStyle} aligned>
-        {rows.map((row, index) => (
-          <FeatureLaneRow key={workstreamRowKey(row, index)} row={row} lane="requested" index={index}>
-            {row.detail ? (
-              <RequestCard
-                detail={row.detail}
-                onSelectGuidance={onSelectGuidance}
-                onSelectCard={() => onSelectCard({ kind: "request", detail: row.detail! })}
-                onCopyArchitectHandoff={onCopyArchitectHandoff}
-                index={index}
-                nodeId={requestNodeId(row.detail)}
-                motion={updateAnimations.motionFor(requestUpdateKey(row.detail))}
-              />
-            ) : null}
-          </FeatureLaneRow>
-        ))}
-      </BoardLaneColumn>
-      <BoardLaneColumn title="Slices" count={sliceCount} emptyLabel="No slices ready" bodyStyle={rowStyle} aligned>
-        {rows.map((row, index) => (
-          <FeatureLaneRow key={workstreamRowKey(row, index)} row={row} lane="slices" index={index} slotTemplate={slotTemplates[workstreamRowKey(row, index)]}>
-            {row.active.map(({ detail, slice, pkg }, sliceIndex) => (
-              <AlignedCardSlot key={slice.id} row={row} rowIndex={index} slotKey={slice.id} lane="slices">
-                <SliceCard
-                  slice={slice}
-                  pkg={pkg}
-                  lane="slices"
-                  index={sliceIndex}
-                  nodeId={sliceNodeId(slice)}
-                  onSelectCard={() => onSelectCard({ kind: "slice", detail, slice, pkg })}
-                  motion={updateAnimations.motionFor(sliceUpdateKey(slice))}
-                />
-              </AlignedCardSlot>
-            ))}
-            {row.activePackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
-            {row.activePackages.map((pkg, packageIndex) => (
-              <PackageCard
-                key={pkg.id}
-                pkg={pkg}
-                lane="slices"
-                index={row.active.length + packageIndex}
-                nodeId={packageNodeId(pkg)}
-                onSelectCard={() => onSelectCard({ kind: "package", pkg })}
-                motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
-              />
-            ))}
-          </FeatureLaneRow>
-        ))}
-      </BoardLaneColumn>
-      <BoardLaneColumn title="Work Packages" count={workPackageCount} emptyLabel="No work packages yet" bodyStyle={rowStyle} aligned>
-        {rows.map((row, index) => (
-          <FeatureLaneRow
-            key={workstreamRowKey(row, index)}
-            row={row}
-            lane="packages"
-            index={index}
-            slotTemplate={slotTemplates[workstreamRowKey(row, index)]}
-            emptyOverride={!row.active.some(({ pkg }) => pkg) && row.implementingPackages.length + row.finishedPackages.length === 0}
-          >
-            {row.active.map(({ detail, slice, pkg }, sliceIndex) => (
-              <AlignedCardSlot key={slice.id} row={row} rowIndex={index} slotKey={slice.id} lane="packages" empty={!pkg}>
-                {pkg ? (
-                  <PackageCard
-                    pkg={pkg}
-                    lane={sliceLane(slice, pkg)}
-                    index={sliceIndex}
-                    nodeId={packageNodeId(pkg)}
-                    sequence={slice.sequence}
-                    onSelectCard={() => onSelectCard({ kind: "package", pkg, detail, slice })}
-                    motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
-                  />
-                ) : null}
-              </AlignedCardSlot>
-            ))}
-            {row.implementingPackages.length + row.finishedPackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
-            {row.implementingPackages.map((pkg, packageIndex) => (
-              <PackageCard
-                key={pkg.id}
-                pkg={pkg}
-                lane="implementing"
-                index={row.implementing.length + row.finished.length + packageIndex}
-                nodeId={packageNodeId(pkg)}
-                onSelectCard={() => onSelectCard({ kind: "package", pkg })}
-                motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
-              />
-            ))}
-            {row.finishedPackages.map((pkg, packageIndex) => (
-              <PackageCard
-                key={pkg.id}
-                pkg={pkg}
-                lane="finished"
-                index={row.implementing.length + row.finished.length + row.implementingPackages.length + packageIndex}
-                nodeId={packageNodeId(pkg)}
-                onSelectCard={() => onSelectCard({ kind: "package", pkg })}
-                motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
-              />
-            ))}
-          </FeatureLaneRow>
-        ))}
-      </BoardLaneColumn>
-    </>
-  );
-}
-
-function BoardLaneColumn({
-  title,
-  count,
-  emptyLabel,
-  children,
-  className,
-  bodyStyle,
-  aligned = false,
-}: {
-  title: string;
-  count: number;
-  emptyLabel: string;
-  children: React.ReactNode;
-  className?: string;
-  bodyStyle?: React.CSSProperties;
-  aligned?: boolean;
-}) {
-  const hasChildren = Children.count(children) > 0;
-
-  return (
-    <section className={cn("jira-lane", className)}>
-      <div className="jira-lane-header">
-        <span>{title}</span>
-        <span className="jira-lane-count">{count}</span>
-      </div>
-      <div className={cn("jira-lane-body", aligned && "jira-lane-body-aligned")} style={bodyStyle}>
-        {count > 0 || (aligned && hasChildren) ? children : <div className="jira-lane-empty">{emptyLabel}</div>}
-      </div>
-    </section>
-  );
-}
-
-function FeatureLaneRow({
-  row,
-  lane,
-  index,
-  slotTemplate,
-  emptyOverride,
-  children,
-}: {
-  row: WorkstreamRow;
-  lane: FeatureLane;
-  index: number;
-  slotTemplate?: string;
-  emptyOverride?: boolean;
-  children: React.ReactNode;
-}) {
-  const renderedChildren = Children.toArray(children);
-  const empty = emptyOverride ?? renderedChildren.length === 0;
-
-  return (
-    <div
-      className="feature-lane-row"
-      data-feature-row={workstreamRowKey(row, index)}
-      data-lane={lane}
-      data-empty={empty ? "true" : undefined}
-      style={slotTemplate ? { gridTemplateRows: slotTemplate } : undefined}
-    >
-      {renderedChildren}
-      {empty && renderedChildren.length === 0 ? <div className="feature-lane-empty" /> : null}
-    </div>
-  );
-}
-
-function AlignedCardSlot({
-  row,
-  rowIndex,
-  slotKey,
-  lane,
-  empty = false,
-  children,
-}: {
-  row: WorkstreamRow;
-  rowIndex: number;
-  slotKey: string;
-  lane: FeatureLane;
-  empty?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <div
-      className="aligned-card-slot"
-      data-feature-row={workstreamRowKey(row, rowIndex)}
-      data-slot-key={slotKey}
-      data-lane={lane}
-      data-empty={empty ? "true" : undefined}
-    >
-      {children}
-    </div>
-  );
-}
-
-function LaneGroupLabel({ label }: { label: string }) {
-  return (
-    <div className="flex items-center gap-2 px-1 pt-1 text-xs font-medium text-muted-foreground">
-      <Route className="size-3.5" />
-      {label}
-    </div>
-  );
-}
-
-function BoardWireLayer({ paths, width, height }: { paths: BoardWirePath[]; width: number; height: number }) {
-  const layerId = useId().replace(/:/g, "");
-  if (paths.length === 0 || width <= 0 || height <= 0) return null;
-  const maskedPaths = paths.reduce<Array<{ wire: BoardWirePath; maskId: string }>>((result, wire, index) => {
-    if (wire.hiddenRects.length > 0) {
-      result.push({ wire, maskId: `${layerId}-board-wire-mask-${index}` });
-    }
-    return result;
-  }, []);
-
-  return (
-    <>
-      <svg className="board-wire-layer" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
-        {maskedPaths.length > 0 ? (
-          <defs>
-            {maskedPaths.map(({ wire, maskId }) => (
-              <mask key={maskId} id={maskId} maskUnits="userSpaceOnUse">
-                <rect x="0" y="0" width={width} height={height} fill="white" />
-                {wire.hiddenRects.map((rect, rectIndex) => (
-                  <rect key={rectIndex} x={rect.x} y={rect.y} width={rect.width} height={rect.height} fill="black" />
-                ))}
-              </mask>
-            ))}
-          </defs>
-        ) : null}
-        {paths.map((wire, index) => {
-          const maskId = wire.hiddenRects.length > 0 ? `${layerId}-board-wire-mask-${index}` : undefined;
+        {rows.map((row, index) => {
+          const rowKey = workstreamRowKey(row, index);
 
           return (
-            <g
-              className="board-wire-group"
-              key={wire.id}
-              data-wire-kind={wire.kind || "progress"}
-              data-wire-tone={wire.tone}
-              data-wire-from={wire.from}
-              data-wire-to={wire.to}
-              data-wire-track-x={wire.trackX.toFixed(2)}
-              data-wire-track-index={wire.trackIndex}
-              data-wire-track-count={wire.trackCount}
-              data-wire-track-side={wire.trackSide}
-              data-mask-rects={wire.hiddenRects.length}
-              style={wireToneStyle(wire.tone)}
-            >
-              <path className="board-wire-path" d={wire.path} mask={maskId ? `url(#${maskId})` : undefined} />
-            </g>
+            <FeatureLaneRow key={rowKey} rowKey={rowKey} lane="requested">
+              {row.detail ? (
+                <RequestCard
+                  detail={row.detail}
+                  onSelectGuidance={onSelectGuidance}
+                  onSelectCard={() => onSelectCard({ kind: "request", detail: row.detail! })}
+                  onCopyArchitectHandoff={onCopyArchitectHandoff}
+                  index={index}
+                  nodeId={requestNodeId(row.detail)}
+                  motion={updateAnimations.motionFor(requestUpdateKey(row.detail))}
+                />
+              ) : null}
+            </FeatureLaneRow>
           );
         })}
-      </svg>
-      <svg className="board-wire-node-layer" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
-        {paths.map((wire) => (
-          <g
-            className="board-wire-node-group"
-            key={wire.id}
-            data-wire-kind={wire.kind || "progress"}
-            data-wire-tone={wire.tone}
-            data-wire-from={wire.from}
-            data-wire-to={wire.to}
-            data-wire-track-x={wire.trackX.toFixed(2)}
-            data-wire-track-index={wire.trackIndex}
-            data-wire-track-count={wire.trackCount}
-            style={wireToneStyle(wire.tone)}
-          >
-            {wire.kind === "blocker" ? (
-              <path className="board-wire-node board-wire-node-target board-wire-node-blocker-target" d={diamondPath(wire.targetX, wire.targetY, 5.25)} />
-            ) : (
-              <circle className="board-wire-node board-wire-node-target" cx={wire.targetX} cy={wire.targetY} r={4} />
-            )}
-          </g>
-        ))}
-      </svg>
+      </BoardLaneColumn>
+      <BoardLaneColumn title="Slices" count={sliceCount} emptyLabel="No slices ready" bodyStyle={rowStyle} aligned>
+        {rows.map((row, index) => {
+          const rowKey = workstreamRowKey(row, index);
+
+          return (
+            <FeatureLaneRow key={rowKey} rowKey={rowKey} lane="slices" slotTemplate={slotTemplates[rowKey]}>
+              {row.active.map(({ detail, slice, pkg }, sliceIndex) => (
+                <AlignedCardSlot key={slice.id} rowKey={rowKey} slotKey={slice.id} lane="slices">
+                  <SliceCard
+                    slice={slice}
+                    pkg={pkg}
+                    lane="slices"
+                    index={sliceIndex}
+                    nodeId={sliceNodeId(slice)}
+                    onSelectCard={() => onSelectCard({ kind: "slice", detail, slice, pkg })}
+                    motion={updateAnimations.motionFor(sliceUpdateKey(slice))}
+                  />
+                </AlignedCardSlot>
+              ))}
+              {row.activePackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
+              {row.activePackages.map((pkg, packageIndex) => (
+                <PackageCard
+                  key={pkg.id}
+                  pkg={pkg}
+                  lane="slices"
+                  index={row.active.length + packageIndex}
+                  nodeId={packageNodeId(pkg)}
+                  onSelectCard={() => onSelectCard({ kind: "package", pkg })}
+                  motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
+                />
+              ))}
+            </FeatureLaneRow>
+          );
+        })}
+      </BoardLaneColumn>
+      <BoardLaneColumn title="Work Packages" count={workPackageCount} emptyLabel="No work packages yet" bodyStyle={rowStyle} aligned>
+        {rows.map((row, index) => {
+          const rowKey = workstreamRowKey(row, index);
+
+          return (
+            <FeatureLaneRow
+              key={rowKey}
+              rowKey={rowKey}
+              lane="packages"
+              slotTemplate={slotTemplates[rowKey]}
+              emptyOverride={!row.active.some(({ pkg }) => pkg) && row.implementingPackages.length + row.finishedPackages.length === 0}
+            >
+              {row.active.map(({ detail, slice, pkg }, sliceIndex) => (
+                <AlignedCardSlot key={slice.id} rowKey={rowKey} slotKey={slice.id} lane="packages" empty={!pkg}>
+                  {pkg ? (
+                    <PackageCard
+                      pkg={pkg}
+                      lane={sliceLane(slice, pkg)}
+                      index={sliceIndex}
+                      nodeId={packageNodeId(pkg)}
+                      sequence={slice.sequence}
+                      onSelectCard={() => onSelectCard({ kind: "package", pkg, detail, slice })}
+                      motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
+                    />
+                  ) : null}
+                </AlignedCardSlot>
+              ))}
+              {row.implementingPackages.length + row.finishedPackages.length > 0 ? <LaneGroupLabel label="Unlinked packages" /> : null}
+              {row.implementingPackages.map((pkg, packageIndex) => (
+                <PackageCard
+                  key={pkg.id}
+                  pkg={pkg}
+                  lane="implementing"
+                  index={row.implementing.length + row.finished.length + packageIndex}
+                  nodeId={packageNodeId(pkg)}
+                  onSelectCard={() => onSelectCard({ kind: "package", pkg })}
+                  motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
+                />
+              ))}
+              {row.finishedPackages.map((pkg, packageIndex) => (
+                <PackageCard
+                  key={pkg.id}
+                  pkg={pkg}
+                  lane="finished"
+                  index={row.implementing.length + row.finished.length + row.implementingPackages.length + packageIndex}
+                  nodeId={packageNodeId(pkg)}
+                  onSelectCard={() => onSelectCard({ kind: "package", pkg })}
+                  motion={updateAnimations.motionFor(packageUpdateKey(pkg))}
+                />
+              ))}
+            </FeatureLaneRow>
+          );
+        })}
+      </BoardLaneColumn>
     </>
   );
 }
 
-function useBoardLayoutMotion(
-  shellRef: React.RefObject<HTMLDivElement | null>,
-  boardRef: React.RefObject<HTMLDivElement | null>,
-  motionKey: string,
-) {
-  const [active, dispatchLayoutActive] = useReducer((_: boolean, next: boolean) => next, false);
-  const previousKeyRef = useRef(motionKey);
-  const lastHeightRef = useRef<number | null>(null);
-  const timersRef = useRef<number[]>([]);
-
-  useEffect(
-    () => () => {
-      timersRef.current.forEach((timer) => window.clearTimeout(timer));
-      timersRef.current = [];
-    },
-    [],
-  );
-
-  useLayoutEffect(() => {
-    const board = boardRef.current;
-    if (!board || active || previousKeyRef.current !== motionKey) return;
-    lastHeightRef.current = measureBoardHeight(board);
-  });
-
-  useLayoutEffect(() => {
-    const shell = shellRef.current;
-    const board = boardRef.current;
-    if (!shell || !board) return;
-
-    const measuredHeight = measureBoardHeight(board);
-    if (dashboardPrefersReducedMotion()) {
-      lastHeightRef.current = measuredHeight;
-      previousKeyRef.current = motionKey;
-      dispatchLayoutActive(false);
-      return;
-    }
-
-    if (lastHeightRef.current === null) {
-      lastHeightRef.current = measuredHeight;
-      previousKeyRef.current = motionKey;
-      return;
-    }
-
-    if (previousKeyRef.current === motionKey) {
-      lastHeightRef.current = measuredHeight;
-      return;
-    }
-
-    timersRef.current.forEach((timer) => window.clearTimeout(timer));
-    timersRef.current = [];
-
-    const startHeight = lastHeightRef.current;
-    const previousStyleText = shell.getAttribute("style");
-    previousKeyRef.current = motionKey;
-    lastHeightRef.current = measuredHeight;
-    dispatchLayoutActive(true);
-
-    applyBoardShellMotionStyle(shell, previousStyleText, startHeight);
-
-    const syncHeight = () => {
-      const nextHeight = measureBoardHeight(board);
-      if (nextHeight <= 0) return;
-      lastHeightRef.current = nextHeight;
-      shell.style.height = `${nextHeight}px`;
-    };
-
-    const observer = new ResizeObserver(syncHeight);
-    observer.observe(board);
-
-    void shell.offsetHeight;
-    syncHeight();
-
-    let settled = false;
-    const settleTimer = window.setTimeout(() => {
-      settled = true;
-      observer.disconnect();
-      timersRef.current = timersRef.current.filter((timer) => timer !== settleTimer);
-      lastHeightRef.current = measureBoardHeight(board);
-      restoreElementStyle(shell, previousStyleText);
-      dispatchLayoutActive(false);
-    }, BOARD_LAYOUT_MOTION_MS + 90);
-    timersRef.current.push(settleTimer);
-
-    return () => {
-      observer.disconnect();
-      if (settled) return;
-      window.clearTimeout(settleTimer);
-      timersRef.current = timersRef.current.filter((timer) => timer !== settleTimer);
-      restoreElementStyle(shell, previousStyleText);
-      dispatchLayoutActive(false);
-    };
-  }, [boardRef, motionKey, shellRef]);
-
-  return active;
+function stateCardBodyMotionKey(...parts: Array<string | number | boolean | null | undefined>) {
+  return parts.map((part) => (part === null || part === undefined ? "" : String(part))).join("|");
 }
 
-function measureBoardHeight(board: HTMLDivElement) {
-  return Math.max(0, Math.ceil(board.getBoundingClientRect().height));
-}
-
-function applyBoardShellMotionStyle(shell: HTMLDivElement, previousStyleText: string | null, height: number) {
-  const base = previousStyleText ? `${previousStyleText}; ` : "";
-  shell.style.cssText = `${base}height: ${height}px; overflow: clip; transition: height ${BOARD_LAYOUT_MOTION_MS}ms cubic-bezier(0.16, 1, 0.3, 1); will-change: height;`;
-}
-
-function restoreElementStyle(element: HTMLElement, previousStyleText: string | null) {
-  if (previousStyleText) {
-    element.setAttribute("style", previousStyleText);
-  } else {
-    element.removeAttribute("style");
-  }
-}
-
-function dashboardPrefersReducedMotion() {
-  return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
-
-function diamondPath(x: number, y: number, radius: number) {
-  return `M ${x} ${y - radius} L ${x + radius} ${y} L ${x} ${y + radius} L ${x - radius} ${y} Z`;
-}
-
-function useBoardWirePaths(boardRef: React.RefObject<HTMLDivElement | null>, wires: BoardWire[], measureKey: string) {
-  const [paths, setPaths] = useState<BoardWirePath[]>([]);
-  const [size, setSize] = useState({ width: 0, height: 0 });
-
-  useLayoutEffect(() => {
-    const board = boardRef.current;
-    if (!board) return;
-
-    let frame: number | null = null;
-    const timers: number[] = [];
-    const schedule = () => {
-      if (frame !== null) return;
-      frame = window.requestAnimationFrame(() => {
-        frame = null;
-        const measured = measureBoardWires(board, wires);
-        setPaths(measured.paths);
-        setSize(measured.size);
-      });
-    };
-
-    schedule();
-    timers.push(window.setTimeout(schedule, 180), window.setTimeout(schedule, 420));
-
-    const observer = new ResizeObserver(schedule);
-    observer.observe(board);
-    board.querySelectorAll<HTMLElement>("[data-wire-id]").forEach((node) => observer.observe(node));
-    window.addEventListener("resize", schedule);
-
-    return () => {
-      if (frame !== null) {
-        window.cancelAnimationFrame(frame);
-      }
-      timers.forEach((timer) => window.clearTimeout(timer));
-      observer.disconnect();
-      window.removeEventListener("resize", schedule);
-    };
-  }, [boardRef, measureKey, wires]);
-
-  return { paths, size };
-}
-
-function useAlignedSlotTemplates(boardRef: React.RefObject<HTMLDivElement | null>, rows: WorkstreamRow[], layoutMode: WorkstreamLayoutMode) {
-  const rowSlots = useMemo(
-    () =>
-      rows.map((row, index) => ({
-        rowKey: workstreamRowKey(row, index),
-        slotKeys: row.active.map(({ slice }) => slice.id),
-      })),
-    [rows],
-  );
-  const measurementKey = rowSlots.map(({ rowKey, slotKeys }) => `${rowKey}:${slotKeys.join(",")}`).join("|");
-  const [measuredTemplates, setMeasuredTemplates] = useState<{ key: string; templates: Record<string, string> }>({ key: "", templates: {} });
-
-  useLayoutEffect(() => {
-    const board = boardRef.current;
-    if (!board || layoutMode !== "aligned") return;
-
-    let frame: number | null = null;
-    const timers: number[] = [];
-
-    const measure = () => {
-      frame = null;
-      const heightsByRow = new Map<string, Map<string, number>>();
-
-      board.querySelectorAll<HTMLElement>(".aligned-card-slot[data-feature-row][data-slot-key]").forEach((slotNode) => {
-        const rowKey = slotNode.dataset.featureRow;
-        const slotKey = slotNode.dataset.slotKey;
-        if (!rowKey || !slotKey) return;
-
-        const height = alignedSlotContentHeight(slotNode);
-        if (height <= 0) return;
-
-        const rowHeights = heightsByRow.get(rowKey) || new Map<string, number>();
-        rowHeights.set(slotKey, Math.max(rowHeights.get(slotKey) || 0, height));
-        heightsByRow.set(rowKey, rowHeights);
-      });
-
-      const templates = rowSlots.reduce<Record<string, string>>((result, { rowKey, slotKeys }) => {
-        if (slotKeys.length === 0) return result;
-
-        const rowHeights = heightsByRow.get(rowKey);
-        result[rowKey] = slotKeys
-          .map((slotKey) => `${Math.max(ALIGNED_SLOT_MIN_HEIGHT, Math.ceil(rowHeights?.get(slotKey) || 0))}px`)
-          .join(" ");
-        return result;
-      }, {});
-
-      setMeasuredTemplates((previous) =>
-        previous.key === measurementKey && sameStringRecords(previous.templates, templates)
-          ? previous
-          : { key: measurementKey, templates },
-      );
-    };
-
-    const schedule = () => {
-      if (frame !== null) return;
-      frame = window.requestAnimationFrame(measure);
-    };
-
-    schedule();
-    timers.push(window.setTimeout(schedule, 160), window.setTimeout(schedule, 420));
-
-    const observer = new ResizeObserver(schedule);
-    observer.observe(board);
-    board.querySelectorAll<HTMLElement>(".aligned-card-slot, .aligned-card-slot > .stagger-item").forEach((node) => {
-      observer.observe(node);
-    });
-    window.addEventListener("resize", schedule);
-
-    return () => {
-      if (frame !== null) {
-        window.cancelAnimationFrame(frame);
-      }
-      timers.forEach((timer) => window.clearTimeout(timer));
-      observer.disconnect();
-      window.removeEventListener("resize", schedule);
-    };
-  }, [boardRef, layoutMode, measurementKey, rowSlots]);
-
-  return measuredTemplates.key === measurementKey ? measuredTemplates : { key: measurementKey, templates: {} };
-}
-
-function alignedSlotContentHeight(slotNode: HTMLElement) {
-  return Array.from(slotNode.children)
-    .filter((child): child is HTMLElement => child instanceof HTMLElement)
-    .reduce((height, child) => Math.max(height, child.offsetHeight), 0);
-}
-
-function useAlignedRowTemplate(
-  boardRef: React.RefObject<HTMLDivElement | null>,
-  rows: WorkstreamRow[],
-  layoutMode: WorkstreamLayoutMode,
-  slotTemplateKey = "",
-) {
-  const baseHeights = useMemo(() => rows.map((row) => row.minHeight), [rows]);
-  const rowKeys = useMemo(() => rows.map((row, index) => workstreamRowKey(row, index)), [rows]);
-  const baseKey = baseHeights.join(",");
-  const rowKey = rowKeys.join("|");
-  const measurementKey = `${baseKey}|${rowKey}|${slotTemplateKey}`;
-  const [measuredRows, setMeasuredRows] = useState<{ key: string; heights: number[] }>({ key: "", heights: [] });
-
-  useLayoutEffect(() => {
-    const board = boardRef.current;
-    if (!board || layoutMode !== "aligned") return;
-
-    let frame: number | null = null;
-    const timers: number[] = [];
-    const rowIndex = new Map(rowKeys.map((key, index) => [key, index]));
-
-    const measure = () => {
-      frame = null;
-      const next = [...baseHeights];
-
-      board.querySelectorAll<HTMLElement>(".feature-lane-row[data-feature-row]").forEach((rowNode) => {
-        const index = rowIndex.get(rowNode.dataset.featureRow || "");
-        if (index === undefined) return;
-        next[index] = Math.max(next[index], featureRowContentHeight(rowNode));
-      });
-
-      setMeasuredRows((previous) => (previous.key === measurementKey && sameNumbers(previous.heights, next) ? previous : { key: measurementKey, heights: next }));
-    };
-
-    const schedule = () => {
-      if (frame !== null) return;
-      frame = window.requestAnimationFrame(measure);
-    };
-
-    schedule();
-    timers.push(window.setTimeout(schedule, 160), window.setTimeout(schedule, 420));
-
-    const observer = new ResizeObserver(schedule);
-    observer.observe(board);
-    board.querySelectorAll<HTMLElement>(".feature-lane-row[data-feature-row], .feature-lane-row[data-feature-row] .stagger-item").forEach((node) => {
-      observer.observe(node);
-    });
-    window.addEventListener("resize", schedule);
-
-    return () => {
-      if (frame !== null) {
-        window.cancelAnimationFrame(frame);
-      }
-      timers.forEach((timer) => window.clearTimeout(timer));
-      observer.disconnect();
-      window.removeEventListener("resize", schedule);
-    };
-  }, [baseHeights, boardRef, layoutMode, measurementKey, rowKeys]);
-
-  const heights = layoutMode === "aligned" && measuredRows.key === measurementKey ? measuredRows.heights : baseHeights;
-  return heights.map((height) => `${height}px`).join(" ");
-}
-
-function featureRowContentHeight(rowNode: HTMLElement) {
-  const computed = window.getComputedStyle(rowNode);
-  const paddingY = cssPixelValue(computed.paddingTop) + cssPixelValue(computed.paddingBottom);
-  const rowGap = cssPixelValue(computed.rowGap);
-  const children = Array.from(rowNode.children).filter((child): child is HTMLElement => child instanceof HTMLElement);
-  const childrenHeight = children.reduce((total, child) => total + child.offsetHeight, 0);
-  const gapHeight = Math.max(0, children.length - 1) * rowGap;
-
-  return Math.ceil(paddingY + childrenHeight + gapHeight + 1);
-}
-
-function cssPixelValue(value: string) {
-  const parsed = Number.parseFloat(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function sameNumbers(left: number[], right: number[]) {
-  return left.length === right.length && left.every((value, index) => Math.abs(value - right[index]) < 1);
-}
-
-function sameStringRecords(left: Record<string, string>, right: Record<string, string>) {
-  const leftKeys = Object.keys(left);
-  const rightKeys = Object.keys(right);
-  return leftKeys.length === rightKeys.length && leftKeys.every((key) => left[key] === right[key]);
-}
-
-function measureBoardWires(board: HTMLDivElement, wires: BoardWire[]) {
-  const boardRect = layoutRectWithinBoard(board, board);
-  const width = Math.ceil(board.scrollWidth || boardRect.width);
-  const height = Math.ceil(board.scrollHeight || boardRect.height);
-  const nodes = new Map<string, HTMLElement>();
-  const lanes = Array.from(board.querySelectorAll<HTMLElement>(".jira-lane")).map((lane) => ({
-    node: lane,
-    rect: layoutRectWithinBoard(lane, board),
-  }));
-
-  board.querySelectorAll<HTMLElement>("[data-wire-id]").forEach((node) => {
-    const id = node.dataset.wireId;
-    if (id) nodes.set(id, node);
-  });
-
-  const measuredWires = wires.flatMap<MeasuredBoardWire>((wire) => {
-    const source = nodes.get(wire.from);
-    const target = nodes.get(wire.to);
-    if (!source || !target) return [];
-
-    const sourceLane = lanes.findIndex((lane) => lane.node.contains(source));
-    const targetLane = lanes.findIndex((lane) => lane.node.contains(target));
-    if (sourceLane < 0 || targetLane < 0) return [];
-
-    const sourceRect = layoutRectWithinBoard(source, board);
-    const targetRect = layoutRectWithinBoard(target, board);
-    const sameLaneSide = sourceLane === targetLane ? sameLaneBoardWireSide(sourceLane, lanes) : undefined;
-    const forward = targetLane >= sourceLane;
-    const sourceX = sameLaneSide === "left" ? sourceRect.x : sameLaneSide === "right" ? sourceRect.x + sourceRect.width : forward ? sourceRect.x + sourceRect.width : sourceRect.x;
-    const targetX = sameLaneSide === "left" ? targetRect.x : sameLaneSide === "right" ? targetRect.x + targetRect.width : forward ? targetRect.x : targetRect.x + targetRect.width;
-    const sourceY = sourceRect.y + sourceRect.height / 2;
-    const targetY = targetRect.y + targetRect.height / 2;
-
-    return [
-      {
-        ...wire,
-        source,
-        target,
-        sourceLane,
-        targetLane,
-        sourceRect,
-        targetRect,
-        sourceX,
-        sourceY,
-        targetX,
-        targetY,
-        trackX: sourceLane === targetLane ? sameLaneBoardWireTrackX(sourceLane, lanes, 0, 1) : defaultBoardWireTrackX(sourceX, targetX),
-        trackIndex: 0,
-        trackCount: 1,
-        trackSide: sourceLane === targetLane ? "spread" : "source",
-      },
-    ];
-  });
-  const routedWires = assignBoardWireTracks(applyBoardWireAnchorSlots(measuredWires), lanes);
-
-  return {
-    size: { width, height },
-    paths: routedWires.map<BoardWirePath>((wire) => ({
-      id: wire.id,
-      from: wire.from,
-      to: wire.to,
-      tone: wire.tone,
-      kind: wire.kind,
-      path: boardWirePath(wire.sourceX, wire.sourceY, wire.targetX, wire.targetY, wire.trackX, boardWireBendRadius(wire, lanes)),
-      sourceX: wire.sourceX,
-      sourceY: wire.sourceY,
-      targetX: wire.targetX,
-      targetY: wire.targetY,
-      trackX: wire.trackX,
-      trackIndex: wire.trackIndex,
-      trackCount: wire.trackCount,
-      trackSide: wire.trackSide,
-      hiddenRects: skippedLaneRects(wire.source, wire.target, lanes),
-    })),
-  };
-}
-
-function applyBoardWireAnchorSlots(wires: MeasuredBoardWire[]) {
-  const next = wires.map((wire) => ({ ...wire }));
-
-  groupedWires(next, (wire) => wire.from).forEach((group) => {
-    if (group.length <= 1) return;
-    sortedCopy(group, (left, right) => left.targetY - right.targetY)
-      .forEach((wire, index) => {
-        wire.sourceY = edgeSlotY(wire.sourceRect, index, group.length);
-      });
-  });
-
-  groupedWires(next, (wire) => wire.to).forEach((group) => {
-    if (group.length <= 1) return;
-    sortedCopy(group, (left, right) => left.sourceY - right.sourceY)
-      .forEach((wire, index) => {
-        wire.targetY = edgeSlotY(wire.targetRect, index, group.length);
-      });
-  });
-
-  return next;
-}
-
-function assignBoardWireTracks(wires: MeasuredBoardWire[], lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>) {
-  const groups = new Map<string, MeasuredBoardWire[]>();
-  const fanoutSources = new Map<string, number>();
-  const fanoutGaps = new Set<number>();
-
-  wires.forEach((wire) => {
-    const gapIndex = primaryBoardWireGapIndex(wire);
-    if (wire.sourceLane === wire.targetLane) return;
-    if (gapIndex < 0 || gapIndex >= lanes.length - 1) return;
-    const key = `${gapIndex}:${wire.from}`;
-    fanoutSources.set(key, (fanoutSources.get(key) || 0) + 1);
-  });
-  fanoutSources.forEach((count, key) => {
-    if (count > 1) fanoutGaps.add(Number(key.split(":")[0]));
-  });
-
-  wires.forEach((wire) => {
-    const gapIndex = primaryBoardWireGapIndex(wire);
-    if (wire.sourceLane !== wire.targetLane && (gapIndex < 0 || gapIndex >= lanes.length - 1)) return;
-
-    wire.trackSide = fanoutGaps.has(gapIndex) ? "spread" : boardWireTrackSide(wire);
-    const key = boardWireTrackGroupKey(wire, lanes);
-    const group = groups.get(key) || [];
-    group.push(wire);
-    groups.set(key, group);
-  });
-
-  groups.forEach((group) => {
-    const tracks: number[] = [];
-    const sorted = sortedCopy(group, (left, right) => {
-      const leftSpan = boardWireVerticalSpan(left);
-      const rightSpan = boardWireVerticalSpan(right);
-      if (leftSpan.start !== rightSpan.start) return leftSpan.start - rightSpan.start;
-      return leftSpan.end - rightSpan.end;
-    });
-
-    sorted.forEach((wire) => {
-      const span = boardWireVerticalSpan(wire);
-      const reusableTrack = tracks.findIndex((endY) => endY + BOARD_WIRE_TRACK_CLEARANCE < span.start);
-      const trackIndex = reusableTrack >= 0 ? reusableTrack : tracks.length;
-      tracks[trackIndex] = span.end;
-      wire.trackIndex = trackIndex;
-    });
-
-    group.forEach((wire) => {
-      wire.trackCount = Math.max(1, tracks.length);
-    });
-    if (group[0]?.trackSide === "spread") {
-      reorderSpreadTracks(group, lanes);
-    } else {
-      reorderSameSourceFanoutTracks(group, lanes);
-    }
-    group.forEach((wire) => {
-      wire.trackX = boardWireTrackX(wire, lanes);
-    });
-  });
-
-  return wires;
-}
-
-function reorderSpreadTracks(wires: MeasuredBoardWire[], lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>) {
-  if (wires.length <= 1) return;
-
-  const trackCount = wires.length;
-  const sorted = sortedCopy(wires, (left, right) => {
-      if (left.targetY !== right.targetY) return left.targetY - right.targetY;
-      return left.sourceY - right.sourceY;
-    });
-  const assignment = bestSpreadTrackAssignment(sorted, lanes, trackCount);
-
-  sorted.forEach((wire, index) => {
-    wire.trackCount = Math.max(wire.trackCount, trackCount);
-    wire.trackIndex = assignment[index] ?? wire.trackIndex;
-  });
-}
-
-function bestSpreadTrackAssignment(
-  wires: MeasuredBoardWire[],
-  lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>,
-  trackCount: number,
-) {
-  const indices = Array.from({ length: trackCount }, (_, index) => index);
-  const initial = [...indices].reverse();
-
-  if (wires.length > 8) {
-    return optimizeSpreadTrackAssignment(wires, lanes, initial, trackCount);
-  }
-
-  let best = initial;
-  let bestCost = boardWireAssignmentCost(wires, lanes, initial, trackCount);
-  const used = new Set<number>();
-  const current: number[] = [];
-
-  const visit = () => {
-    if (current.length === wires.length) {
-      const candidate = [...current];
-      const cost = boardWireAssignmentCost(wires, lanes, candidate, trackCount);
-      if (cost < bestCost) {
-        best = candidate;
-        bestCost = cost;
-      }
-      return;
-    }
-
-    indices.forEach((index) => {
-      if (used.has(index)) return;
-      used.add(index);
-      current.push(index);
-      visit();
-      current.pop();
-      used.delete(index);
-    });
-  };
-
-  visit();
-  return best;
-}
-
-function optimizeSpreadTrackAssignment(
-  wires: MeasuredBoardWire[],
-  lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>,
-  initial: number[],
-  trackCount: number,
-) {
-  const assignment = [...initial];
-  let bestCost = boardWireAssignmentCost(wires, lanes, assignment, trackCount);
-  let improved = true;
-
-  while (improved) {
-    improved = false;
-    for (let left = 0; left < assignment.length; left += 1) {
-      for (let right = left + 1; right < assignment.length; right += 1) {
-        [assignment[left], assignment[right]] = [assignment[right], assignment[left]];
-        const cost = boardWireAssignmentCost(wires, lanes, assignment, trackCount);
-        if (cost < bestCost) {
-          bestCost = cost;
-          improved = true;
-        } else {
-          [assignment[left], assignment[right]] = [assignment[right], assignment[left]];
-        }
-      }
-    }
-  }
-
-  return assignment;
-}
-
-function boardWireAssignmentCost(
-  wires: MeasuredBoardWire[],
-  lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>,
-  assignment: number[],
-  trackCount: number,
-) {
-  const routes = wires.map((wire, index) => boardWireRouteSegments(wire, boardWireTrackX(wire, lanes, assignment[index], trackCount)));
-  let cost = 0;
-
-  routes.forEach((route) => {
-    cost += (route.source.x2 - route.source.x1 + route.target.x2 - route.target.x1) * 0.01;
-  });
-
-  for (let left = 0; left < routes.length; left += 1) {
-    for (let right = left + 1; right < routes.length; right += 1) {
-      cost += boardWireRoutePairCost(routes[left], routes[right]);
-    }
-  }
-
-  return cost;
-}
-
-function boardWireRouteSegments(wire: MeasuredBoardWire, trackX: number) {
-  return {
-    source: horizontalSegment(wire.sourceX, trackX, wire.sourceY),
-    trunk: verticalSegment(trackX, wire.sourceY, wire.targetY),
-    target: horizontalSegment(trackX, wire.targetX, wire.targetY),
-  };
-}
-
-function boardWireRoutePairCost(
-  left: { source: BoardWireHorizontalSegment; trunk: BoardWireVerticalSegment; target: BoardWireHorizontalSegment },
-  right: { source: BoardWireHorizontalSegment; trunk: BoardWireVerticalSegment; target: BoardWireHorizontalSegment },
-) {
-  let cost = 0;
-  [left.source, left.target].forEach((horizontal) => {
-    cost += horizontalVerticalCrossingCost(horizontal, right.trunk);
-  });
-  [right.source, right.target].forEach((horizontal) => {
-    cost += horizontalVerticalCrossingCost(horizontal, left.trunk);
-  });
-  cost += horizontalOverlapCost(left.source, right.source);
-  cost += horizontalOverlapCost(left.target, right.target);
-  return cost;
-}
-
-function horizontalSegment(leftX: number, rightX: number, y: number): BoardWireHorizontalSegment {
-  return { x1: Math.min(leftX, rightX), x2: Math.max(leftX, rightX), y };
-}
-
-function verticalSegment(x: number, topY: number, bottomY: number): BoardWireVerticalSegment {
-  return { x, y1: Math.min(topY, bottomY), y2: Math.max(topY, bottomY) };
-}
-
-function horizontalVerticalCrossingCost(horizontal: BoardWireHorizontalSegment, vertical: BoardWireVerticalSegment) {
-  const crossing =
-    vertical.x > horizontal.x1 + 2 &&
-    vertical.x < horizontal.x2 - 2 &&
-    horizontal.y > vertical.y1 + 2 &&
-    horizontal.y < vertical.y2 - 2;
-
-  return crossing ? 1000 : 0;
-}
-
-function horizontalOverlapCost(left: BoardWireHorizontalSegment, right: BoardWireHorizontalSegment) {
-  if (Math.abs(left.y - right.y) > 3) return 0;
-  const overlap = Math.min(left.x2, right.x2) - Math.max(left.x1, right.x1);
-  return overlap > 0 ? overlap * 0.25 : 0;
-}
-
-function reorderSameSourceFanoutTracks(wires: MeasuredBoardWire[], lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>) {
-  groupedWires(wires, (wire) => wire.from).forEach((group) => {
-    if (group.length <= 1) return;
-
-    const indices = sortedCopy([...new Set(group.map((wire) => wire.trackIndex))], (left, right) => left - right);
-    if (indices.length <= 1) return;
-    const sample = group[0];
-
-    if (sample.trackSide === "spread") {
-      const trackCount = group.length;
-      const leftToRight = Array.from({ length: trackCount }, (_, index) => index);
-      const rightToLeft = [...leftToRight].reverse();
-      const forward = sample.targetLane >= sample.sourceLane;
-      const aboveSource = sortedCopy(
-        group.filter((wire) => wire.targetY < wire.sourceY),
-        (left, right) => left.targetY - right.targetY,
-      );
-      const belowSource = sortedCopy(
-        group.filter((wire) => wire.targetY >= wire.sourceY),
-        (left, right) => left.targetY - right.targetY,
-      );
-      const aboveIndices = (forward ? leftToRight : rightToLeft).slice(0, aboveSource.length);
-      const belowIndices = (forward ? rightToLeft : leftToRight).slice(0, belowSource.length);
-
-      aboveSource.forEach((wire, index) => {
-        wire.trackCount = Math.max(wire.trackCount, trackCount);
-        wire.trackIndex = aboveIndices[index] ?? wire.trackIndex;
-      });
-      belowSource.forEach((wire, index) => {
-        wire.trackCount = Math.max(wire.trackCount, trackCount);
-        wire.trackIndex = belowIndices[index] ?? wire.trackIndex;
-      });
-      return;
-    }
-
-    const indicesFromOutsideIn = indices.sort((left, right) => {
-      const leftDistance = Math.abs(boardWireTrackX(sample, lanes, left) - sample.sourceX);
-      const rightDistance = Math.abs(boardWireTrackX(sample, lanes, right) - sample.sourceX);
-      return rightDistance - leftDistance;
-    });
-
-    sortedCopy(group, (left, right) => {
-        const leftDistance = Math.abs(left.targetY - left.sourceY);
-        const rightDistance = Math.abs(right.targetY - right.sourceY);
-        if (leftDistance !== rightDistance) return leftDistance - rightDistance;
-        return left.targetY - right.targetY;
-      })
-      .forEach((wire, index) => {
-        wire.trackIndex = indicesFromOutsideIn[Math.min(index, indicesFromOutsideIn.length - 1)] ?? wire.trackIndex;
-      });
-  });
-}
-
-function groupedWires(wires: MeasuredBoardWire[], keyFor: (wire: MeasuredBoardWire) => string) {
-  const groups = new Map<string, MeasuredBoardWire[]>();
-  wires.forEach((wire) => {
-    const key = keyFor(wire);
-    const group = groups.get(key) || [];
-    group.push(wire);
-    groups.set(key, group);
-  });
-  return groups;
-}
-
-function edgeSlotY(rect: BoardWireHiddenRect, index: number, count: number) {
-  const centerY = rect.y + rect.height / 2;
-  const guard = Math.min(22, Math.max(4, rect.height / 4));
-  const offset = clampNumber((index - (count - 1) / 2) * 10, -24, 24);
-  return clampNumber(centerY + offset, rect.y + guard, rect.y + rect.height - guard);
-}
-
-function primaryBoardWireGapIndex(wire: MeasuredBoardWire) {
-  if (wire.sourceLane === wire.targetLane) return -1;
-  return Math.min(wire.sourceLane, wire.targetLane);
-}
-
-function boardWireTrackSide(wire: MeasuredBoardWire): WireTrackSide {
-  if (wire.sourceLane === wire.targetLane) return "spread";
-  return wire.targetY >= wire.sourceY ? "source" : "target";
-}
-
-function boardWireTrackGroupKey(wire: MeasuredBoardWire, lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>) {
-  if (wire.sourceLane === wire.targetLane) {
-    const side = sameLaneBoardWireSide(wire.sourceLane, lanes);
-    return `same-gap:${sameLaneBoardWireGapIndex(wire.sourceLane, side)}`;
-  }
-
-  return `${primaryBoardWireGapIndex(wire)}:${wire.trackSide}`;
-}
-
-function boardWireVerticalSpan(wire: MeasuredBoardWire) {
-  return {
-    start: Math.min(wire.sourceY, wire.targetY),
-    end: Math.max(wire.sourceY, wire.targetY),
-  };
-}
-
-function boardWireTrackX(
-  wire: MeasuredBoardWire,
-  lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>,
-  trackIndex = wire.trackIndex,
-  trackCount = wire.trackCount,
-) {
-  if (wire.sourceLane === wire.targetLane) {
-    return sameLaneBoardWireTrackX(wire.sourceLane, lanes, trackIndex, trackCount);
-  }
-
-  const gapIndex = primaryBoardWireGapIndex(wire);
-  const leftLane = lanes[gapIndex];
-  const rightLane = lanes[gapIndex + 1];
-  if (!leftLane || !rightLane) return defaultBoardWireTrackX(wire.sourceX, wire.targetX);
-
-  const gapStart = leftLane.rect.x + leftLane.rect.width;
-  const gapEnd = rightLane.rect.x;
-  const minX = Math.min(gapStart, gapEnd) + 4;
-  const maxX = Math.max(gapStart, gapEnd) - 4;
-  if (maxX <= minX) return defaultBoardWireTrackX(wire.sourceX, wire.targetX);
-
-  const safeTrackCount = Math.max(1, trackCount);
-  const trackRatio = safeTrackCount === 1 ? 0.5 : trackIndex / (safeTrackCount - 1);
-
-  if (wire.trackSide === "spread") {
-    return clampNumber(minX + (maxX - minX) * trackRatio, minX, maxX);
-  }
-
-  const forward = wire.targetLane >= wire.sourceLane;
-  const sourceSideIsStart = forward;
-  const useSourceSide = wire.trackSide === "source";
-  const preferStart = useSourceSide ? sourceSideIsStart : !sourceSideIsStart;
-  const centerX = (minX + maxX) / 2;
-  const bandGap = Math.min(6, (maxX - minX) / 6);
-  const bandStart = preferStart ? minX : centerX + bandGap;
-  const bandEnd = preferStart ? centerX - bandGap : maxX;
-  if (bandEnd <= bandStart) return preferStart ? minX : maxX;
-
-  const rawX = preferStart
-    ? bandStart + (bandEnd - bandStart) * trackRatio
-    : bandEnd - (bandEnd - bandStart) * trackRatio;
-
-  return clampNumber(rawX, bandStart, bandEnd);
-}
-
-function sameLaneBoardWireSide(laneIndex: number, lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>) {
-  return laneIndex < lanes.length - 1 ? "right" : "left";
-}
-
-function sameLaneBoardWireGapIndex(laneIndex: number, side: "left" | "right") {
-  return side === "right" ? laneIndex : laneIndex - 1;
-}
-
-function sameLaneBoardWireTrackX(
-  laneIndex: number,
-  lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>,
-  trackIndex = 0,
-  trackCount = 1,
-) {
-  const lane = lanes[laneIndex];
-  if (!lane) return 0;
-
-  const side = sameLaneBoardWireSide(laneIndex, lanes);
-  const neighbor = side === "right" ? lanes[laneIndex + 1] : lanes[laneIndex - 1];
-  if (!neighbor) return side === "right" ? lane.rect.x + lane.rect.width + 12 : lane.rect.x - 12;
-
-  const gapStart = side === "right" ? lane.rect.x + lane.rect.width : neighbor.rect.x + neighbor.rect.width;
-  const gapEnd = side === "right" ? neighbor.rect.x : lane.rect.x;
-  const minX = Math.min(gapStart, gapEnd) + 4;
-  const maxX = Math.max(gapStart, gapEnd) - 4;
-  if (maxX <= minX) return side === "right" ? gapStart + 8 : gapEnd - 8;
-
-  const safeTrackCount = Math.max(1, trackCount);
-  const trackRatio = safeTrackCount === 1 ? 0.5 : trackIndex / (safeTrackCount - 1);
-  const rawX = minX + (maxX - minX) * trackRatio;
-  return clampNumber(rawX, minX, maxX);
-}
-
-function boardWireBendRadius(wire: MeasuredBoardWire, lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>) {
-  if (wire.trackCount <= 1) return 14;
-  const adjacentTrackGap = Math.abs(boardWireTrackX(wire, lanes, 1, wire.trackCount) - boardWireTrackX(wire, lanes, 0, wire.trackCount));
-  return clampNumber(adjacentTrackGap / 2, 3, 8);
-}
-
-function layoutRectWithinBoard(node: HTMLElement, board: HTMLElement): BoardWireHiddenRect {
-  if (node === board) {
-    return {
-      x: 0,
-      y: 0,
-      width: board.offsetWidth,
-      height: board.offsetHeight,
-    };
-  }
-
-  let x = node.offsetLeft;
-  let y = node.offsetTop;
-  let parent = node.offsetParent;
-
-  while (parent instanceof HTMLElement && parent !== board) {
-    x += parent.offsetLeft;
-    y += parent.offsetTop;
-    parent = parent.offsetParent;
-  }
-
-  if (parent !== board) {
-    const nodeRect = node.getBoundingClientRect();
-    const boardRect = board.getBoundingClientRect();
-
-    return {
-      x: Math.max(0, nodeRect.left - boardRect.left),
-      y: Math.max(0, nodeRect.top - boardRect.top),
-      width: Math.max(0, nodeRect.width),
-      height: Math.max(0, nodeRect.height),
-    };
-  }
-
-  return {
-    x: Math.max(0, x),
-    y: Math.max(0, y),
-    width: Math.max(0, node.offsetWidth),
-    height: Math.max(0, node.offsetHeight),
-  };
-}
-
-function skippedLaneRects(
-  source: HTMLElement,
-  target: HTMLElement,
-  lanes: Array<{ node: HTMLElement; rect: BoardWireHiddenRect }>,
-): BoardWireHiddenRect[] {
-  const sourceLane = lanes.findIndex((lane) => lane.node.contains(source));
-  const targetLane = lanes.findIndex((lane) => lane.node.contains(target));
-  if (sourceLane < 0 || targetLane < 0 || Math.abs(targetLane - sourceLane) <= 1) return [];
-
-  const start = Math.min(sourceLane, targetLane) + 1;
-  const end = Math.max(sourceLane, targetLane);
-
-  return lanes.slice(start, end).map(({ rect }) => ({
-    x: Math.max(0, rect.x),
-    y: Math.max(0, rect.y),
-    width: Math.max(0, rect.width),
-    height: Math.max(0, rect.height),
-  }));
-}
-
-function boardWirePath(sourceX: number, sourceY: number, targetX: number, targetY: number, trackX = defaultBoardWireTrackX(sourceX, targetX), maxRadius = 14) {
-  const deltaX = targetX - sourceX;
-  if (Math.abs(targetY - sourceY) < 2) {
-    return `M ${sourceX} ${sourceY} H ${targetX}`;
-  }
-
-  const xTurn = Math.abs(deltaX) <= 2 ? (trackX >= sourceX ? 1 : -1) : deltaX >= 0 ? 1 : -1;
-  const yTurn = targetY >= sourceY ? 1 : -1;
-  const minBendX = Math.min(sourceX, targetX) + 10;
-  const maxBendX = Math.max(sourceX, targetX) - 10;
-  const bendX = minBendX <= maxBendX ? clampNumber(trackX, minBendX, maxBendX) : trackX;
-  const radius = Math.min(maxRadius, Math.abs(targetY - sourceY) / 2, Math.abs(bendX - sourceX) / 2, Math.abs(targetX - bendX) / 2);
-
-  if (radius < 1) {
-    return [`M ${sourceX} ${sourceY}`, `H ${bendX}`, `V ${targetY}`, `H ${targetX}`].join(" ");
-  }
-
-  return [
-    `M ${sourceX} ${sourceY}`,
-    `H ${bendX - xTurn * radius}`,
-    `Q ${bendX} ${sourceY} ${bendX} ${sourceY + yTurn * radius}`,
-    `V ${targetY - yTurn * radius}`,
-    `Q ${bendX} ${targetY} ${bendX + xTurn * radius} ${targetY}`,
-    `H ${targetX}`,
-  ].join(" ");
-}
-
-function defaultBoardWireTrackX(sourceX: number, targetX: number) {
-  const deltaX = targetX - sourceX;
-  const direction = deltaX >= 0 ? 1 : -1;
-  return sourceX + direction * Math.max(28, Math.min(96, Math.abs(deltaX) * 0.46));
-}
-
-function clampNumber(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function interactiveCardProps(onSelect?: () => void) {
-  if (!onSelect) return {};
+function interactiveCardProps(onActivate?: () => void): React.HTMLAttributes<HTMLDivElement> {
+  if (!onActivate) return {};
 
   return {
     role: "button",
     tabIndex: 0,
-    onClick: onSelect,
-    onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (event.target !== event.currentTarget) return;
+    onClick: onActivate,
+    onKeyDown: (event) => {
+      if (event.defaultPrevented || event.target !== event.currentTarget) return;
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
-        onSelect();
+        onActivate();
       }
     },
   };
+}
+
+function SequenceBadge({ sequence }: { sequence?: number | null }) {
+  if (!sequence) return null;
+
+  return (
+    <span
+      className="inline-flex h-5 shrink-0 items-center rounded-md border border-border/70 bg-background/70 px-1.5 text-[11px] font-semibold leading-none text-muted-foreground shadow-sm"
+      title={`Slice ${sequence}`}
+    >
+      S{sequence}
+    </span>
+  );
 }
 
 function RequestCard({
@@ -4030,54 +2674,69 @@ function RequestCard({
   const request = detail.work_request;
   const openQuestions = detail.clarification_questions?.filter((question) => question.status === "open") ?? [];
   const questionCount = openQuestions.length || request.open_question_count || 0;
-  const question = openQuestions[0];
-  const description = firstParagraph(request.human_description);
+  const operational = requestOperationalState(request);
+  const quietMerged = [operational?.key, request.status].some(isFinishedBoardStatus);
+  const question = quietMerged ? undefined : openQuestions[0];
+  const description = quietMerged ? null : firstParagraph(request.human_description);
   const handoffEligible = architectHandoffEligibleRequest(request);
-  const handoffHasOpenQuestions = questionCount > 0;
-  const [handoffCopyState, setHandoffCopyState] = useState<HandoffCopyState>("idle");
-  const architectHandoffRef = useRef<ArchitectHandoff | null>(null);
-
-  useEffect(() => {
-    setHandoffCopyState("idle");
-    architectHandoffRef.current = null;
-  }, [questionCount, request.id, request.status, request.updated_at]);
+  const handoffHasOpenQuestions = !quietMerged && questionCount > 0;
+  const handoffIdentity = `${questionCount}:${request.id}:${request.status || ""}:${request.updated_at || ""}`;
+  const {
+    cachedHandoff,
+    recordCopyError,
+    recordCopyResult,
+    startCopy,
+    state: handoffCopyState,
+  } = useScopedHandoffCopy(handoffIdentity);
 
   const answerQuestion = question
-    ? (event: React.MouseEvent<HTMLButtonElement>) => {
-        event.stopPropagation();
+    ? () => {
         onSelectGuidance(clarificationGuidanceItem(detail, question));
       }
     : undefined;
-  const copyHandoff = handoffEligible && onCopyArchitectHandoff
-    ? async (event: React.MouseEvent<HTMLButtonElement>) => {
-        event.stopPropagation();
-        setHandoffCopyState("copying");
+  const canCopyHandoff = !quietMerged && handoffEligible && Boolean(onCopyArchitectHandoff);
+  const copyHandoff = useCallback(
+    async () => {
+      if (!onCopyArchitectHandoff) return;
 
-        try {
-          const result = await onCopyArchitectHandoff(request.id, architectHandoffRef.current);
-          architectHandoffRef.current = result.handoff;
-          setHandoffCopyState(result.copied ? "copied" : "error");
-        } catch {
-          setHandoffCopyState("error");
-        }
+      startCopy();
+
+      try {
+        recordCopyResult(await onCopyArchitectHandoff(request.id, cachedHandoff()));
+      } catch {
+        recordCopyError("Architect handoff could not be copied");
       }
-    : undefined;
-  const tone = requestCardTone(detail, questionCount);
-  const operational = requestOperationalState(request);
+    },
+    [cachedHandoff, onCopyArchitectHandoff, recordCopyError, recordCopyResult, request.id, startCopy],
+  );
+  const tone = requestToneForState(request.status || "", operational, questionCount);
+  const bodyMotionKey = stateCardBodyMotionKey(
+    "request",
+    request.id,
+    quietMerged,
+    description,
+    questionCount,
+    question?.id,
+    question?.question,
+    canCopyHandoff,
+    handoffHasOpenQuestions,
+    handoffCopyState,
+  );
 
   return (
-    <div
-      className={stateCardClassName(tone, cn("stagger-item p-3", onSelectCard && "card-detail-trigger"))}
+    <StateCard
+      tone={tone}
+      className={cn("stagger-item p-3", onSelectCard && "card-detail-trigger")}
       data-wire-id={nodeId}
       data-card-detail-kind="request"
-      style={stateCardStyle(tone, { animationDelay: `${index * 30}ms` })}
+      style={{ animationDelay: `${index * 30}ms` }}
       {...updateMotionAttributes(motion)}
       {...interactiveCardProps(onSelectCard)}
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold">{request.title || request.id}</p>
-          <p className="mt-1 text-xs text-muted-foreground">{request.work_type || "feature"}</p>
+          {!quietMerged ? <p className="mt-1 text-xs text-muted-foreground">{request.work_type || "feature"}</p> : null}
         </div>
         <AnimatedBadge
           label={operationalLabel(operational, request.status)}
@@ -4085,29 +2744,31 @@ function RequestCard({
           className="shrink-0"
         />
       </div>
-      {description ? <p className="request-card-description mt-3 text-xs leading-relaxed text-muted-foreground">{description}</p> : null}
-      {questionCount > 0 ? (
-        <CardSignal
-          className="mt-3"
-          label="Open Questions"
-          value={String(questionCount)}
-          tone="danger"
-          onClick={answerQuestion}
-          ariaLabel={question ? `Answer open question for ${request.title || request.id}` : undefined}
-        />
-      ) : null}
-      {question ? <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{question.question}</p> : null}
-      {copyHandoff ? (
-        <CardSignal
-          className="mt-3"
-          label={handoffHasOpenQuestions ? "Architect Handoff" : "Agent Handoff"}
-          value={handoffSignalLabel(handoffCopyState, handoffHasOpenQuestions)}
-          tone={handoffHasOpenQuestions ? "muted" : "info"}
-          onClick={copyHandoff}
-          ariaLabel={`Copy agent handoff for ${request.title || request.id}`}
-        />
-      ) : null}
-    </div>
+      <AnimatedCardBody motionKey={bodyMotionKey}>
+        {description ? <p className="request-card-description mt-3 text-xs leading-relaxed text-muted-foreground">{description}</p> : null}
+        {!quietMerged && questionCount > 0 ? (
+          <CardSignal
+            className="mt-3"
+            label="Open Questions"
+            value={String(questionCount)}
+            tone="danger"
+            onClick={answerQuestion}
+            ariaLabel={question ? `Answer open question for ${request.title || request.id}` : undefined}
+          />
+        ) : null}
+        {question ? <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{question.question}</p> : null}
+        {canCopyHandoff ? (
+          <CardSignal
+            className="mt-3"
+            label={handoffHasOpenQuestions ? "Architect Handoff" : "Agent Handoff"}
+            value={handoffSignalLabel(handoffCopyState, handoffHasOpenQuestions)}
+            tone={handoffHasOpenQuestions ? "muted" : "info"}
+            onClick={copyHandoff}
+            ariaLabel={`Copy agent handoff for ${request.title || request.id}`}
+          />
+        ) : null}
+      </AnimatedCardBody>
+    </StateCard>
   );
 }
 
@@ -4133,13 +2794,23 @@ function SliceCard({
   const tone = sliceCardTone(slice, pkg, lane);
   const detail = slice.status === "skipped" ? null : sliceCardSubtitle(slice, pkg, operational, rawStatus);
   const blockerSignal = lane === "slices" ? null : cardBlockerSignal(pkg, operational);
+  const bodyMotionKey = stateCardBodyMotionKey(
+    "slice",
+    slice.id,
+    lane,
+    detail,
+    blockerSignal?.label,
+    blockerSignal?.value,
+    blockerSignal?.tone,
+  );
 
   return (
-    <div
-      className={stateCardClassName(tone, cn("stagger-item p-3", onSelectCard && "card-detail-trigger"))}
+    <StateCard
+      tone={tone}
+      className={cn("stagger-item p-3", onSelectCard && "card-detail-trigger")}
       data-wire-id={nodeId}
       data-card-detail-kind={pkg && lane !== "slices" ? "package" : "slice"}
-      style={stateCardStyle(tone, { animationDelay: `${index * 30}ms` })}
+      style={{ animationDelay: `${index * 30}ms` }}
       {...updateMotionAttributes(motion)}
       {...interactiveCardProps(onSelectCard)}
     >
@@ -4154,34 +2825,20 @@ function SliceCard({
           className="shrink-0"
         />
       </div>
-      {detail ? <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{detail}</p> : null}
-      {blockerSignal ? (
-        <CardSignal
-          className="mt-3"
-          label={blockerSignal.label}
-          value={blockerSignal.value}
-          tone={blockerSignal.tone}
-          onClick={onSelectCard ? (event) => {
-            event.stopPropagation();
-            onSelectCard();
-          } : undefined}
-          ariaLabel={`Open blockers for ${slice.title || pkg?.title || slice.id}`}
-        />
-      ) : null}
-    </div>
-  );
-}
-
-function SequenceBadge({ sequence }: { sequence?: number | null }) {
-  if (!sequence) return null;
-
-  return (
-    <span
-      className="inline-flex h-5 shrink-0 items-center rounded-md border border-border/70 bg-background/70 px-1.5 text-[11px] font-semibold leading-none text-muted-foreground shadow-sm"
-      title={`Slice ${sequence}`}
-    >
-      S{sequence}
-    </span>
+      <AnimatedCardBody motionKey={bodyMotionKey}>
+        {detail ? <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{detail}</p> : null}
+        {blockerSignal ? (
+          <CardSignal
+            className="mt-3"
+            label={blockerSignal.label}
+            value={blockerSignal.value}
+            tone={blockerSignal.tone}
+            onClick={onSelectCard}
+            ariaLabel={`Open blockers for ${slice.title || pkg?.title || slice.id}`}
+          />
+        ) : null}
+      </AnimatedCardBody>
+    </StateCard>
   );
 }
 
@@ -4191,14 +2848,10 @@ function sliceCardSubtitle(
   operational: WorkPackageCard["operational_state"],
   status?: string | null,
 ) {
-  if (quietTerminalCard(operational, status, pkg?.status)) return null;
+  const terminal = [operational?.key, status, pkg?.status].some((key) => key === "blocked" || isFinishedBoardStatus(key));
+  if (terminal) return null;
   if (pkg) return `Linked package: ${operationalLabel(pkg.operational_state, pkg.status)}.`;
   return slice.goal || slice.work_package_kind;
-}
-
-function quietTerminalCard(operational?: WorkPackageCard["operational_state"], ...statuses: Array<string | null | undefined>) {
-  const keys = [operational?.key, ...statuses].filter(Boolean);
-  return keys.some((key) => ["blocked", "merged", "merged_into_phase", "closed"].includes(key || ""));
 }
 
 function cardBlockerSignal(pkg?: WorkPackageCard, operational?: WorkPackageCard["operational_state"]): { label: string; value: string; tone: SignalTone } | null {
@@ -4237,13 +2890,15 @@ function PackageCard({
   const tone = packageCardTone(pkg, lane);
   const attention = packageAttentionSignal(pkg);
   const operational = packageOperationalState(pkg);
+  const bodyMotionKey = stateCardBodyMotionKey("package", pkg.id, attention?.label, attention?.value, attention?.tone);
 
   return (
-    <div
-      className={stateCardClassName(tone, cn("stagger-item p-3", onSelectCard && "card-detail-trigger"))}
+    <StateCard
+      tone={tone}
+      className={cn("stagger-item p-3", onSelectCard && "card-detail-trigger")}
       data-wire-id={nodeId}
       data-card-detail-kind="package"
-      style={stateCardStyle(tone, { animationDelay: `${index * 30}ms` })}
+      style={{ animationDelay: `${index * 30}ms` }}
       {...updateMotionAttributes(motion)}
       {...interactiveCardProps(onSelectCard)}
     >
@@ -4254,75 +2909,34 @@ function PackageCard({
         </div>
         <AnimatedBadge label={operationalLabel(operational, pkg.status)} variant={operationalBadgeVariant(operational, pkg.status)} className="shrink-0" />
       </div>
-      {attention ? <CardSignal className="mt-3" label={attention.label} value={attention.value} tone={attention.tone} /> : null}
-    </div>
+      <AnimatedCardBody motionKey={bodyMotionKey}>
+        {attention ? <CardSignal className="mt-3" label={attention.label} value={attention.value} tone={attention.tone} /> : null}
+      </AnimatedCardBody>
+    </StateCard>
   );
 }
 
-function CardSignal({
-  label,
-  value,
-  tone,
-  className,
-  onClick,
-  ariaLabel,
-}: {
-  label: string;
-  value: string;
-  tone: SignalTone;
-  className?: string;
-  onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void;
-  ariaLabel?: string;
-}) {
-  const toneClasses: Record<SignalTone, string> = {
-    muted: "border-transparent bg-muted text-foreground",
-    info: "border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-700/70 dark:bg-sky-950/50 dark:text-sky-200",
-    warning: "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-700/70 dark:bg-amber-950/50 dark:text-amber-200",
-    danger: "border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-700/70 dark:bg-rose-950/50 dark:text-rose-200",
-    success: "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-700/70 dark:bg-emerald-950/50 dark:text-emerald-200",
-  };
-  const signalClassName = cn(
-    "min-w-0 max-w-full w-full rounded-md border px-2.5 py-2 text-xs",
-    toneClasses[tone],
-    onClick &&
-      "card-signal-action cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2",
-    className,
-  );
-  const content = (
-    <>
-      <p className="text-[11px] leading-none opacity-70">{label}</p>
-      <p className="mt-1 truncate font-semibold">{value}</p>
-    </>
-  );
-
-  if (onClick) {
-    return (
-      <button type="button" className={signalClassName} onClick={onClick} aria-label={ariaLabel} data-card-signal>
-        {content}
-      </button>
-    );
-  }
-
-  return (
-    <div className={signalClassName} data-card-signal>
-      {content}
-    </div>
-  );
+function requestStatusFallbackCardTone(status: string): StateCardTone {
+  if (status === "ready_for_slicing") return "queued";
+  if (status === "sliced") return "slice";
+  return "request";
 }
 
-function requestCardTone(detail: WorkRequestDetail, questionCount?: number): StateCardTone {
+function requestStateCardTone(detail: WorkRequestDetail): StateCardTone {
   const request = detail.work_request;
   const status = request.status || "";
   const operational = requestOperationalState(request);
-  const openQuestions = questionCount ?? request.open_question_count ?? 0;
+  const detailOpenQuestions = detail.clarification_questions?.filter((question) => question.status === "open").length || request.open_question_count || 0;
+  return requestToneForState(status, operational, detailOpenQuestions);
+}
 
+function requestToneForState(status: string, operational: WorkPackageCard["operational_state"], openQuestions: number): StateCardTone {
+  const operationalTone = operationalCardTone(operational, status);
+  const quietFinished = [operational?.key, status].some(isFinishedBoardStatus);
+
+  if (operationalTone && quietFinished) return operationalTone;
   if (openQuestions > 0 || status === "human_info_needed") return "guidance";
-  const tone = operationalCardTone(operational, status);
-  if (tone) return tone;
-  if (status === "ready_for_slicing") return "queued";
-  if (status === "sliced") return "slice";
-  if (status === "draft" || status === "clarifying" || status === "ready_for_clarification") return "request";
-  return "request";
+  return operationalTone || requestStatusFallbackCardTone(status);
 }
 
 function architectHandoffEligibleRequest(request: WorkRequestCard) {
@@ -4457,10 +3071,6 @@ function signalToneForBackendTone(tone?: string | null): SignalTone {
   }
 }
 
-function operationalSignalTone(operational?: WorkPackageCard["operational_state"]): SignalTone {
-  return signalToneForBackendTone(operational?.tone);
-}
-
 function operationalBadgeVariant(operational?: WorkPackageCard["operational_state"], fallbackStatus?: string | null): BadgeTone {
   if (!operational) return statusVariant(fallbackStatus);
   const key = operational.key || "";
@@ -4502,133 +3112,6 @@ function attentionTone(attention?: OperationalAttention | null): SignalTone {
   return signalToneForBackendTone(attention?.tone);
 }
 
-function sliceSignal(slice: PlannedSlice, pkg: WorkPackageCard | undefined, lane: BoardLane) {
-  const operational = sliceOperationalState(slice, pkg);
-  const attention = firstOperationalAttention(operational);
-
-  if (operational && attention) {
-    return { label: "Attention", value: attention.label || operational.label || formatStatus(attention.key), tone: attentionTone(attention) };
-  }
-
-  if (operational && operational.key && operational.key !== "planned") {
-    return { label: "State", value: operational.label || formatStatus(operational.key), tone: operationalSignalTone(operational) };
-  }
-
-  if (pkg) {
-    return packageSignal(pkg, lane);
-  }
-
-  if (lane === "finished") {
-    return { label: "Finished", value: formatStatus(slice.status), tone: "success" as const };
-  }
-
-  if (slice.status === "approved") {
-    return { label: "Slice", value: "Approved to dispatch", tone: "info" as const };
-  }
-
-  if (slice.status === "planned") {
-    return { label: "Slice", value: "Planned", tone: "muted" as const };
-  }
-
-  if (slice.status === "skipped") {
-    return { label: "Slice", value: "Skipped", tone: "muted" as const };
-  }
-
-  return { label: lane === "implementing" ? "Worker" : "Slice", value: formatStatus(slice.work_package_status || slice.status), tone: "info" as const };
-}
-
-function packageSignal(pkg: WorkPackageCard, lane: BoardLane): { label: string; value: string; tone: SignalTone } {
-  const status = pkg.status || "";
-  const blockerCount = pkg.active_blocker_count || 0;
-  const operational = packageOperationalState(pkg);
-  const attention = firstOperationalAttention(operational);
-
-  if (operational?.key === "blocked" || blockerCount > 0 || status === "blocked") {
-    return { label: "Blockers", value: `${blockerCount || 1} ${plural("blocker", blockerCount || 1)}`, tone: "danger" };
-  }
-
-  if (["merged", "merged_into_phase", "closed"].includes(operational?.key || "") || lane === "finished" || packageLane(pkg) === "finished") {
-    return { label: "Finished", value: operationalLabel(operational, status), tone: operational ? operationalSignalTone(operational) : "success" };
-  }
-
-  if (attention) {
-    return { label: "Attention", value: attention.label || formatStatus(attention.key), tone: attentionTone(attention) };
-  }
-
-  if (operational?.key === "merge_ready") {
-    return { label: "Merge", value: packagePrLabel(pkg) || operational.label || "Ready for merge", tone: operationalSignalTone(operational) };
-  }
-
-  if (operational?.key === "in_progress") {
-    return packageRuntimeSignal(pkg) || { label: "Implementation", value: planProgressLabel(pkg) || "In progress", tone: "info" };
-  }
-
-  if (operational?.key === "ready_for_worker" && status === "ready_for_worker") {
-    return { label: "Worker", value: "Queued for worker", tone: "muted" };
-  }
-
-  if (operational?.key && operational.key !== status) {
-    return { label: "State", value: operational.label || formatStatus(operational.key), tone: operationalSignalTone(operational) };
-  }
-
-  if (status === "reviewing") {
-    return packageReviewSignal(pkg) || { label: "Review", value: "Reviewing", tone: "info" };
-  }
-
-  if (status === "ci_waiting") {
-    return { label: "CI", value: "Waiting", tone: "info" };
-  }
-
-  if (status === "ready_for_human_merge") {
-    return { label: "Merge", value: packagePrLabel(pkg) || "Ready for human", tone: "warning" };
-  }
-
-  if (status === "ready_for_architect_merge") {
-    return { label: "Merge", value: packagePrLabel(pkg) || "Ready for architect", tone: "warning" };
-  }
-
-  if (status === "merging_into_phase") {
-    return { label: "Merge", value: "Merging", tone: "info" };
-  }
-
-  if (status === "implementing") {
-    return packageRuntimeSignal(pkg) || { label: "Implementation", value: planProgressLabel(pkg) || "Active", tone: "info" };
-  }
-
-  if (status === "created" || status === "ready_for_worker") {
-    return { label: "Worker", value: "Queued for worker", tone: "muted" };
-  }
-
-  if (status === "claimed") {
-    return { label: "Worker", value: "Claimed", tone: "info" };
-  }
-
-  if (status === "planning") {
-    return { label: "Architect", value: "Planning", tone: "info" };
-  }
-
-  return { label: lane === "slices" ? "Slice" : "State", value: planProgressLabel(pkg) || formatStatus(status), tone: "muted" };
-}
-
-function packageRuntimeSignal(pkg: WorkPackageCard) {
-  const run = pkg.active_agent_run;
-  const runtime = pkg.runtime || {};
-
-  if (run?.stale === true || runtimeBoolean(runtime, "stale_count")) {
-    return { label: "Worker", value: "Stale run", tone: "warning" as const };
-  }
-
-  if (run?.runtime_state === "queued" || runtimeBoolean(runtime, "queued_count")) {
-    return { label: "Worker", value: "Queued", tone: "muted" as const };
-  }
-
-  if (run || runtimeBoolean(runtime, "active_count")) {
-    return { label: "Worker", value: "Active run", tone: "info" as const };
-  }
-
-  return null;
-}
-
 function runtimeBoolean(runtime: Record<string, unknown>, key: string) {
   const value = runtime[key];
   return typeof value === "number" && value > 0;
@@ -4641,7 +3124,7 @@ function packageReviewSignal(pkg: WorkPackageCard) {
   return pkg.status === "reviewing" ? progressSignal || resultSignal : resultSignal || progressSignal;
 }
 
-function reviewPackageSignal(reviewPackage: WorkPackageCard["metadata"] extends infer _Metadata ? NonNullable<WorkPackageCard["metadata"]>["review_package"] : never) {
+function reviewPackageSignal(reviewPackage: NonNullable<WorkPackageCard["metadata"]>["review_package"]) {
   if (!reviewPackage) return null;
 
   const reviews = Array.isArray(reviewPackage.reviews) ? reviewPackage.reviews : [];
@@ -4771,12 +3254,6 @@ function planProgressLabel(pkg: WorkPackageCard) {
   const open = pkg.plan?.open_count || 0;
 
   return open > 0 ? `${open} open / ${total} total` : `${done}/${total} done`;
-}
-
-function terminalPackageLabel(pkg: WorkPackageCard) {
-  if (pkg.status === "merged" || pkg.status === "merged_into_phase") return "Merged";
-  if (pkg.status === "closed") return "Closed";
-  return "Finished";
 }
 
 function plural(word: string, count: number) {
@@ -4909,11 +3386,25 @@ function SoloSessionCard({
   const latestSignalValue = latest?.status ? formatStatus(latest.status) : latestText;
   const tone = soloSessionCardTone(session);
   const showLatest = latest && latestText && !soloSessionLatestIsRedundant(session, latestText);
+  const bodyMotionKey = stateCardBodyMotionKey(
+    "solo",
+    session.id,
+    attention.guidanceCount,
+    attention.blockerCount,
+    latestSignalValue,
+    showLatest,
+    latest?.kind_label,
+    latest?.kind,
+    latestText,
+    session.last_activity_at,
+    session.updated_at,
+  );
 
   return (
-    <div
-      className={stateCardClassName(tone, "stagger-item card-detail-trigger p-3")}
-      style={stateCardStyle(tone, { animationDelay: `${index * 35}ms` })}
+    <StateCard
+      tone={tone}
+      className="stagger-item card-detail-trigger p-3"
+      style={{ animationDelay: `${index * 35}ms` }}
       data-card-detail-kind="solo"
       {...updateMotionAttributes(motion)}
       {...interactiveCardProps(onSelectCard)}
@@ -4926,29 +3417,31 @@ function SoloSessionCard({
         <AnimatedBadge label={formatStatus(session.status)} variant={soloSessionStatusVariant(session.status)} className="shrink-0" />
       </div>
 
-      {attention.guidanceCount > 0 || attention.blockerCount > 0 ? (
-        <div className="mt-3 flex flex-wrap gap-1.5">
-          {attention.guidanceCount > 0 ? <RepoSummaryPlate label="Guidance Needed" value={attention.guidanceCount} tone="guidance" /> : null}
-          {attention.blockerCount > 0 ? <RepoSummaryPlate label="Active Blockers" value={attention.blockerCount} tone="blocker" /> : null}
-        </div>
-      ) : latestSignalValue ? (
-        <CardSignal className="mt-3" label={soloSessionLatestSignalLabel(session)} value={latestSignalValue} tone={soloSessionLatestSignalTone(session)} />
-      ) : null}
-
-      {showLatest ? (
-        <>
-          <Separator className="my-3" />
-          <div className="flex min-w-0 items-start gap-2">
-            <Badge variant="secondary" className="shrink-0">
-              {latest.kind_label || formatStatus(latest.kind)}
-            </Badge>
-            <p className="line-clamp-2 min-w-0 text-sm text-muted-foreground">{latestText}</p>
+      <AnimatedCardBody motionKey={bodyMotionKey}>
+        {attention.guidanceCount > 0 || attention.blockerCount > 0 ? (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {attention.guidanceCount > 0 ? <RepoSummaryPlate label="Guidance Needed" value={attention.guidanceCount} tone="guidance" /> : null}
+            {attention.blockerCount > 0 ? <RepoSummaryPlate label="Active Blockers" value={attention.blockerCount} tone="blocker" /> : null}
           </div>
-        </>
-      ) : null}
+        ) : latestSignalValue ? (
+          <CardSignal className="mt-3" label={soloSessionLatestSignalLabel(session)} value={latestSignalValue} tone={soloSessionLatestSignalTone(session)} />
+        ) : null}
 
-      <p className="mt-3 text-xs text-muted-foreground">Updated {detailDate(session.last_activity_at || session.updated_at || session.inserted_at)}</p>
-    </div>
+        {showLatest ? (
+          <>
+            <Separator className="my-3" />
+            <div className="flex min-w-0 items-start gap-2">
+              <Badge variant="secondary" className="shrink-0">
+                {latest.kind_label || formatStatus(latest.kind)}
+              </Badge>
+              <p className="line-clamp-2 min-w-0 text-sm text-muted-foreground">{latestText}</p>
+            </div>
+          </>
+        ) : null}
+
+        <p className="mt-3 text-xs text-muted-foreground">Updated {detailDate(session.last_activity_at || session.updated_at || session.inserted_at)}</p>
+      </AnimatedCardBody>
+    </StateCard>
   );
 }
 
@@ -5065,18 +3558,6 @@ function soloSessionCardTone(session: SoloSession): StateCardTone {
   if (latestText.includes("validation")) return latestText.includes("completed") ? "finished" : "implementing";
   if (status === "paused") return "merge";
   return "implementing";
-}
-
-function soloSessionSignalTone(status?: string | null): SignalTone {
-  if (["completed", "archived", "finished", "closed"].includes(status || "")) return "success";
-  if (["blocked", "human_info_needed"].includes(status || "")) return "danger";
-  if (status === "paused") return "warning";
-  return "info";
-}
-
-function soloSessionStateLabel(session: SoloSession) {
-  const lastActivity = session.last_activity_at ? formatDate(session.last_activity_at) : null;
-  return lastActivity ? `${formatStatus(session.status)} / ${lastActivity}` : formatStatus(session.status);
 }
 
 function soloSessionLatestSignalLabel(session: SoloSession) {
@@ -5219,508 +3700,6 @@ function stripMarkdown(value?: string | null) {
 
 function firstSentence(value: string) {
   return value.match(/^(.+?[.!?])(?:\s|$)/)?.[1] || value;
-}
-
-type GuidanceDialogState = {
-  selectedChoice: string;
-  notes: Record<string, string>;
-  openNotes: Record<string, boolean>;
-  submitting: boolean;
-  error: string | null;
-};
-
-type GuidanceDialogAction =
-  | { type: "reset"; selectedChoice: string }
-  | { type: "select"; optionId: string }
-  | { type: "toggleNote"; optionId: string }
-  | { type: "focusNote"; optionId: string }
-  | { type: "note"; optionId: string; value: string }
-  | { type: "submitting"; submitting: boolean }
-  | { type: "error"; error: string | null };
-
-const initialGuidanceDialogState: GuidanceDialogState = {
-  selectedChoice: "",
-  notes: {},
-  openNotes: {},
-  submitting: false,
-  error: null,
-};
-
-function guidanceDialogReducer(state: GuidanceDialogState, action: GuidanceDialogAction): GuidanceDialogState {
-  switch (action.type) {
-    case "reset":
-      return { ...initialGuidanceDialogState, selectedChoice: action.selectedChoice };
-    case "select":
-      return { ...state, selectedChoice: action.optionId };
-    case "toggleNote":
-      return {
-        ...state,
-        selectedChoice: action.optionId,
-        openNotes: { ...state.openNotes, [action.optionId]: !state.openNotes[action.optionId] },
-      };
-    case "focusNote":
-      return {
-        ...state,
-        selectedChoice: action.optionId,
-        openNotes: action.optionId === CUSTOM_CHOICE ? state.openNotes : { ...state.openNotes, [action.optionId]: true },
-      };
-    case "note":
-      return {
-        ...state,
-        selectedChoice: action.optionId,
-        notes: { ...state.notes, [action.optionId]: action.value },
-        openNotes: action.optionId === CUSTOM_CHOICE ? state.openNotes : { ...state.openNotes, [action.optionId]: true },
-      };
-    case "submitting":
-      return { ...state, submitting: action.submitting, error: action.submitting ? null : state.error };
-    case "error":
-      return { ...state, error: action.error };
-  }
-}
-
-function GuidanceDialog({
-  item,
-  onOpenChange,
-  onAnswered,
-}: {
-  item: GuidanceItem | null;
-  onOpenChange: (open: boolean) => void;
-  onAnswered: (dashboard: DashboardPayload) => void;
-}) {
-  const [state, dispatch] = useReducer(guidanceDialogReducer, initialGuidanceDialogState);
-
-  const options = useMemo(() => guidanceOptions(item?.prompt), [item?.prompt]);
-
-  useEffect(() => {
-    if (item) {
-      dispatch({ type: "reset", selectedChoice: options[0]?.id || CUSTOM_CHOICE });
-    }
-  }, [item, options]);
-
-  function selectChoice(optionId: string) {
-    dispatch({ type: "select", optionId });
-  }
-
-  function toggleNote(optionId: string) {
-    dispatch({ type: "toggleNote", optionId });
-  }
-
-  function focusNote(optionId: string) {
-    dispatch({ type: "focusNote", optionId });
-  }
-
-  function updateNote(optionId: string, value: string) {
-    dispatch({ type: "note", optionId, value });
-  }
-
-  async function submitAnswer() {
-    if (!item || !state.selectedChoice) return;
-
-    dispatch({ type: "submitting", submitting: true });
-
-    try {
-      const answerNote = state.notes[state.selectedChoice] || "";
-      const body = JSON.stringify({
-        answer_choice: state.selectedChoice,
-        answer_note: answerNote,
-        answer: state.selectedChoice === CUSTOM_CHOICE ? answerNote : undefined,
-      });
-
-      const response = await fetch(guidanceAnswerUrl(item), {
-        method: "POST",
-        headers: await mutationHeaders(),
-        body,
-      });
-      const payload = await response.json();
-
-      if (!response.ok) {
-        throw new Error(payload?.error?.message || "Answer was not recorded");
-      }
-
-      onAnswered(payload.dashboard);
-    } catch (caught) {
-      dispatch({ type: "error", error: caught instanceof Error ? caught.message : "Answer was not recorded" });
-    } finally {
-      dispatch({ type: "submitting", submitting: false });
-    }
-  }
-
-  return (
-    <Dialog open={Boolean(item)} onOpenChange={onOpenChange}>
-      <DialogContent className="dashboard-dialog-content">
-        {item ? (
-          <>
-            <DialogHeader data-guidance-section style={{ animationDelay: "35ms" }}>
-              <DialogTitle>{item.prompt?.tl_dr || item.title}</DialogTitle>
-              <DialogDescription>{item.repo}</DialogDescription>
-            </DialogHeader>
-            <div className="grid gap-4">
-              <section className="rounded-lg border bg-muted/40 p-4" data-guidance-section style={{ animationDelay: "70ms" }}>
-                <p className="text-sm font-medium">TL;DR</p>
-                <p className="mt-2 text-sm text-muted-foreground">{item.prompt?.tl_dr || item.title}</p>
-              </section>
-              <section className="rounded-lg border p-4" data-guidance-section style={{ animationDelay: "95ms" }}>
-                <p className="text-sm font-medium">Details</p>
-                <p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">{item.prompt?.details || item.detail}</p>
-              </section>
-              <div className="grid gap-3" role="radiogroup" aria-label="Guidance options" data-guidance-section style={{ animationDelay: "120ms" }}>
-                {options.map((option, index) => {
-                  const isCustom = option.id === CUSTOM_CHOICE;
-                  const selected = state.selectedChoice === option.id;
-                  const noteOpen = isCustom || Boolean(state.openNotes[option.id]);
-
-                  return (
-                    <div
-                      key={option.id}
-                      className={cn(
-                        "guidance-option rounded-lg border p-4 text-left outline-none transition-colors",
-                        selected ? "border-primary bg-primary/5" : "bg-background hover:border-primary/50",
-                      )}
-                      role="radio"
-                      aria-checked={selected}
-                      tabIndex={0}
-                      onClick={() => selectChoice(option.id)}
-                      onKeyDown={(event) => {
-                        if (event.target !== event.currentTarget) return;
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault();
-                          selectChoice(option.id);
-                        }
-                      }}
-                      style={{ animationDelay: `${index * 35}ms` }}
-                    >
-                      <div className="flex items-start gap-3">
-                        <CircleDot className={cn("mt-0.5 size-4", selected ? "text-primary" : "text-muted-foreground")} />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                            <div className="min-w-0">
-                              <p className="text-sm font-semibold">{option.label}</p>
-                              {option.description ? <p className="mt-1 text-sm text-muted-foreground">{option.description}</p> : null}
-                            </div>
-                            {!isCustom ? (
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="button-lift h-8 shrink-0 justify-start px-2 text-xs"
-                                aria-expanded={noteOpen}
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  toggleNote(option.id);
-                                }}
-                              >
-                                <ChevronDown className={cn("size-3.5 transition-transform duration-200", noteOpen && "rotate-180")} />
-                                Add Extra Note
-                              </Button>
-                            ) : null}
-                          </div>
-                          {!isCustom ? <ProsCons option={option} /> : null}
-                          <Collapsible open={noteOpen}>
-                            <CollapsibleContent className="collapsible-content option-note-content">
-                              <div className="px-0.5 pb-0.5 pt-3">
-                                <Label className="block text-xs text-muted-foreground">
-                                  {isCustom ? "None of the above, do this instead:" : "Extra note"}
-                                </Label>
-                                <Textarea
-                                  className="mt-1 min-h-[72px]"
-                                  placeholder={isCustom ? "Tell the architect what to do instead." : "Add optional context for this answer."}
-                                  value={state.notes[option.id] || ""}
-                                  onFocus={() => focusNote(option.id)}
-                                  onChange={(event) => updateNote(option.id, event.target.value)}
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    focusNote(option.id);
-                                  }}
-                                />
-                              </div>
-                            </CollapsibleContent>
-                          </Collapsible>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              {state.error ? <p className="text-sm text-destructive">{state.error}</p> : null}
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => onOpenChange(false)}>
-                Cancel
-              </Button>
-              <Button onClick={submitAnswer} disabled={state.submitting || (state.selectedChoice === CUSTOM_CHOICE && !state.notes[state.selectedChoice]?.trim())}>
-                {state.submitting ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-                Answer
-              </Button>
-            </DialogFooter>
-          </>
-        ) : null}
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function ProsCons({ option }: { option: DecisionOption }) {
-  if (!option.pros?.length && !option.cons?.length) return null;
-
-  return (
-    <div className="mt-3 grid gap-2 md:grid-cols-2">
-      <div className="rounded-md bg-emerald-50 p-3 text-xs text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200">
-        <p className="font-semibold">Pros</p>
-        <ul className="mt-1 space-y-1">
-          {(option.pros || ["No specific pros recorded"]).map((pro) => (
-            <li key={pro}>{pro}</li>
-          ))}
-        </ul>
-      </div>
-      <div className="rounded-md bg-rose-50 p-3 text-xs text-rose-800 dark:bg-rose-950/50 dark:text-rose-200">
-        <p className="font-semibold">Cons</p>
-        <ul className="mt-1 space-y-1">
-          {(option.cons || ["No specific cons recorded"]).map((con) => (
-            <li key={con}>{con}</li>
-          ))}
-        </ul>
-      </div>
-    </div>
-  );
-}
-
-function NewRequestDialog({
-  open,
-  onOpenChange,
-  onCreated,
-  onCopyArchitectHandoff,
-  defaultRepo,
-  repos,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onCreated: (dashboard: DashboardPayload) => void;
-  onCopyArchitectHandoff: CopyArchitectHandoff;
-  defaultRepo?: string;
-  repos: RepoSummary[];
-}) {
-  const repoChoices = useMemo(() => repoOptions(repos, defaultRepo), [defaultRepo, repos]);
-  const initialRepo = defaultRepo || repoChoices[0] || initialRequestForm.repo;
-  const [form, setForm] = useState<NewRequestForm>({
-    ...initialRequestForm,
-    repo: initialRepo,
-    base_branch: baseBranchOptionsForRepo(repos, initialRepo)[0] || initialRequestForm.base_branch,
-  });
-  const branchChoices = useMemo(() => baseBranchOptionsForRepo(repos, form.repo), [form.repo, repos]);
-  const [dialogState, dispatchDialog] = useReducer(newRequestDialogReducer, initialNewRequestDialogState);
-  const { architectHandoff, createdRequest, error, handoffCopyState, submitting } = dialogState;
-
-  useEffect(() => {
-    if (!open || createdRequest) return;
-
-    setForm((current) => {
-      const repo = repoChoices.includes(current.repo) ? current.repo : repoChoices[0] || initialRequestForm.repo;
-      const branches = baseBranchOptionsForRepo(repos, repo);
-      const baseBranch = branches.includes(current.base_branch) ? current.base_branch : branches[0] || initialRequestForm.base_branch;
-
-      if (repo === current.repo && baseBranch === current.base_branch) {
-        return current;
-      }
-
-      return { ...current, repo, base_branch: baseBranch };
-    });
-    dispatchDialog({ type: "reset" });
-  }, [createdRequest, open, repoChoices, repos]);
-
-  async function copyCreatedHandoff() {
-    if (!createdRequest) return;
-
-    dispatchDialog({ type: "startCopy" });
-
-    try {
-      const result = await onCopyArchitectHandoff(createdRequest.work_request.id, architectHandoff);
-      dispatchDialog({ type: "copyResult", result });
-    } catch (caught) {
-      dispatchDialog({ type: "failed", error: caught instanceof Error ? caught.message : "Architect handoff could not be copied" });
-    }
-  }
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    dispatchDialog({ type: "startSubmit" });
-
-    try {
-      const response = await fetch(operatorApiUrl("/work-requests"), {
-        method: "POST",
-        headers: await mutationHeaders(),
-        body: JSON.stringify({
-          title: form.title,
-          repo: form.repo,
-          base_branch: form.base_branch,
-          work_type: form.work_type,
-          desired_dispatch_shape: form.desired_dispatch_shape,
-          human_description: form.human_description,
-        }),
-      });
-      const payload: CreateWorkRequestPayload & { error?: { message?: string } } = await response.json();
-
-      if (!response.ok) {
-        throw new Error(payload?.error?.message || "Request was not created");
-      }
-
-      if (!payload.dashboard || !payload.work_request) {
-        throw new Error("Request was created, but the dashboard response was incomplete");
-      }
-
-      setForm({ ...initialRequestForm, repo: form.repo, base_branch: form.base_branch });
-      dispatchDialog({ type: "created", request: payload.work_request });
-      onCreated(payload.dashboard);
-    } catch (caught) {
-      dispatchDialog({ type: "failed", error: caught instanceof Error ? caught.message : "Request was not created" });
-    }
-  }
-
-  function handleOpenChange(nextOpen: boolean) {
-    if (!nextOpen) {
-      dispatchDialog({ type: "reset" });
-    }
-
-    onOpenChange(nextOpen);
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger asChild>
-        <Button size="sm">
-          <Plus className="size-4" />
-          New Request
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="dashboard-dialog-content">
-        <AnimatedDetailBody motionKey={createdRequest ? `created:${createdRequest.work_request.id}:${handoffCopyState}` : "new-request:form"}>
-          {createdRequest ? (
-            <div className="grid gap-5">
-              <DialogHeader>
-                <DialogTitle>Request Created</DialogTitle>
-                <DialogDescription>Ready for an architecture agent</DialogDescription>
-              </DialogHeader>
-              <div className="handoff-success-panel" data-guidance-section>
-                <div className="flex min-w-0 items-start gap-3">
-                  <div className="handoff-success-icon">
-                    <CheckCircle2 className="size-5" />
-                  </div>
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold">{createdRequest.work_request.title || createdRequest.work_request.id}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {repoName(createdRequest.work_request.repo)} / {createdRequest.work_request.base_branch || "main"}
-                    </p>
-                  </div>
-                </div>
-                <p className="mt-3 text-sm text-muted-foreground">
-                  The request is in the ledger. Copy the agent handoff and paste it into the architect Codex session that will own this WorkRequest.
-                </p>
-              </div>
-              {error ? <p className="text-sm text-destructive">{error}</p> : null}
-              <DialogFooter>
-                <Button type="button" variant="outline" onClick={() => dispatchDialog({ type: "newRequest" })}>
-                  New Request
-                </Button>
-                <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
-                  Close
-                </Button>
-                <Button type="button" onClick={() => void copyCreatedHandoff()} disabled={handoffCopyState === "copying" || !architectHandoffEligibleRequest(createdRequest.work_request)}>
-                  {handoffCopyState === "copying" ? <Loader2 className="size-4 animate-spin" /> : handoffCopyState === "copied" ? <CheckCircle2 className="size-4" /> : <Copy className="size-4" />}
-                  {handoffCopyState === "copied" ? "Copied Agent Handoff" : "Copy Agent Handoff"}
-                </Button>
-              </DialogFooter>
-            </div>
-          ) : (
-            <form onSubmit={submit} className="grid gap-5">
-              <DialogHeader>
-                <DialogTitle>New Request</DialogTitle>
-                <DialogDescription>Architect-owned intake</DialogDescription>
-              </DialogHeader>
-              <div className="grid gap-4 md:grid-cols-2">
-                <Field label="Title">
-                  <Input value={form.title} onChange={(event) => setFormValue(setForm, "title", event.target.value)} required />
-                </Field>
-                <Field label="Repository">
-                  <Select
-                    value={form.repo}
-                    onValueChange={(value) => {
-                      const branches = baseBranchOptionsForRepo(repos, value);
-                      setForm((current) => ({ ...current, repo: value, base_branch: branches[0] || initialRequestForm.base_branch }));
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {repoChoices.map((value) => (
-                        <SelectItem key={value} value={value}>
-                          {value}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-                <Field label="Base Branch">
-                  <Select value={form.base_branch} onValueChange={(value) => setFormValue(setForm, "base_branch", value)}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {branchChoices.map((value) => (
-                        <SelectItem key={value} value={value}>
-                          {value}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-                <Field label="Work Type">
-                  <Select value={form.work_type} onValueChange={(value) => setFormValue(setForm, "work_type", value)}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {["feature", "bugfix", "hotfix", "refactor", "investigation", "docs", "review"].map((value) => (
-                        <SelectItem key={value} value={value}>
-                          {formatStatus(value)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-                <Field label="Dispatch Shape">
-                  <Select value={form.desired_dispatch_shape} onValueChange={(value) => setFormValue(setForm, "desired_dispatch_shape", value)}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {["architect_led_feature_branch", "single_package", "direct_main_fix", "investigation_first", "review_only"].map((value) => (
-                        <SelectItem key={value} value={value}>
-                          {formatStatus(value)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-              </div>
-              <Field label="Description">
-                <Textarea value={form.human_description} onChange={(event) => setFormValue(setForm, "human_description", event.target.value)} required />
-              </Field>
-              {error ? <p className="text-sm text-destructive">{error}</p> : null}
-              <DialogFooter>
-                <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={submitting}>
-                  {submitting ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-                  Create
-                </Button>
-              </DialogFooter>
-            </form>
-          )}
-        </AnimatedDetailBody>
-      </DialogContent>
-    </Dialog>
-  );
 }
 
 type DetailResourceState<T> = {
@@ -5888,75 +3867,6 @@ function NaturalDetailBody({ motionKey, children }: { motionKey: string; childre
   );
 }
 
-function AnimatedDetailBody({ motionKey, children }: { motionKey: string; children: React.ReactNode }) {
-  const innerRef = useRef<HTMLDivElement>(null);
-  const animationFrameRef = useRef<number | null>(null);
-  const settleTimerRef = useRef<number | null>(null);
-  const [height, setHeight] = useState<number | null>(null);
-
-  const measure = useCallback(() => {
-    const node = innerRef.current;
-    if (!node) return;
-
-    const nextHeight = Math.ceil(node.getBoundingClientRect().height);
-    if (nextHeight <= 0) return;
-
-    setHeight((currentHeight) => (currentHeight === nextHeight ? currentHeight : nextHeight));
-
-    if (settleTimerRef.current !== null) {
-      window.clearTimeout(settleTimerRef.current);
-    }
-
-    settleTimerRef.current = window.setTimeout(() => {
-      setHeight(null);
-      settleTimerRef.current = null;
-    }, 340);
-  }, []);
-
-  useLayoutEffect(() => {
-    measure();
-    const frame = window.requestAnimationFrame(measure);
-    return () => window.cancelAnimationFrame(frame);
-  }, [measure, motionKey]);
-
-  useEffect(() => {
-    const node = innerRef.current;
-    if (!node || typeof ResizeObserver === "undefined") return;
-
-    const observer = new ResizeObserver(() => {
-      if (animationFrameRef.current !== null) {
-        window.cancelAnimationFrame(animationFrameRef.current);
-      }
-
-      animationFrameRef.current = window.requestAnimationFrame(measure);
-    });
-
-    observer.observe(node);
-
-    return () => {
-      observer.disconnect();
-
-      if (animationFrameRef.current !== null) {
-        window.cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
-      }
-
-      if (settleTimerRef.current !== null) {
-        window.clearTimeout(settleTimerRef.current);
-        settleTimerRef.current = null;
-      }
-    };
-  }, [measure]);
-
-  return (
-    <div className="detail-modal-size-frame" data-detail-motion-key={motionKey} style={height === null ? undefined : { height }}>
-      <div ref={innerRef} className="detail-modal-size-inner">
-        {children}
-      </div>
-    </div>
-  );
-}
-
 function cardDetailMotionKey(
   selection: CardDetailSelection | null,
   state: {
@@ -6004,28 +3914,23 @@ function RequestDetailContent({
   const handoffEligible = architectHandoffEligibleRequest(request);
   const handoffHasOpenQuestions = (openQuestions.length || request.open_question_count || 0) > 0;
   const handoffButtonLabel = handoffHasOpenQuestions ? "Copy Resume Handoff" : "Copy Agent Handoff";
-  const [handoffCopyState, setHandoffCopyState] = useState<HandoffCopyState>("idle");
-  const architectHandoffRef = useRef<ArchitectHandoff | null>(null);
-  const [handoffError, setHandoffError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setHandoffCopyState("idle");
-    architectHandoffRef.current = null;
-    setHandoffError(null);
-  }, [handoffHasOpenQuestions, request.id, request.status, request.updated_at]);
+  const handoffIdentity = `${handoffHasOpenQuestions}:${request.id}:${request.status || ""}:${request.updated_at || ""}`;
+  const {
+    cachedHandoff,
+    error: handoffError,
+    recordCopyError,
+    recordCopyResult,
+    startCopy,
+    state: handoffCopyState,
+  } = useScopedHandoffCopy(handoffIdentity);
 
   async function copyHandoff() {
-    setHandoffCopyState("copying");
-    setHandoffError(null);
+    startCopy();
 
     try {
-      const result = await onCopyArchitectHandoff(request.id, architectHandoffRef.current);
-      architectHandoffRef.current = result.handoff;
-      setHandoffCopyState(result.copied ? "copied" : "error");
-      setHandoffError(result.copyError ? `Handoff is ready, but clipboard copy failed: ${result.copyError}` : null);
+      recordCopyResult(await onCopyArchitectHandoff(request.id, cachedHandoff()));
     } catch (caught) {
-      setHandoffCopyState("error");
-      setHandoffError(caught instanceof Error ? caught.message : "Architect handoff could not be copied");
+      recordCopyError(caught instanceof Error ? caught.message : "Architect handoff could not be copied");
     }
   }
 
@@ -6410,69 +4315,6 @@ function SoloPlanningGroup({
   );
 }
 
-function DetailHeader({ title, eyebrow, badge }: { title: string; eyebrow: string; badge?: React.ReactNode }) {
-  return (
-    <DialogHeader data-guidance-section style={{ animationDelay: "35ms" }}>
-      <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <DialogTitle className="pr-6">{title}</DialogTitle>
-          <DialogDescription className="mt-1 truncate">{eyebrow}</DialogDescription>
-        </div>
-        {badge ? <div className="shrink-0 sm:pr-6">{badge}</div> : null}
-      </div>
-    </DialogHeader>
-  );
-}
-
-function DetailStatGrid({ stats }: { stats: Array<{ label: string; value: string }> }) {
-  return (
-    <div className="detail-stat-grid" data-guidance-section style={{ animationDelay: "70ms" }}>
-      {stats.map((stat) => (
-        <div key={stat.label} className="detail-stat">
-          <span>{stat.label}</span>
-          <strong>{stat.value}</strong>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="detail-section" data-guidance-section style={{ animationDelay: "95ms" }}>
-      <h3>{title}</h3>
-      <div className="detail-section-body">{children}</div>
-    </section>
-  );
-}
-
-function DetailDisclosure({
-  title,
-  meta,
-  children,
-  defaultOpen = false,
-}: {
-  title: string;
-  meta?: string;
-  children: React.ReactNode;
-  defaultOpen?: boolean;
-}) {
-  return (
-    <Collapsible defaultOpen={defaultOpen} className="detail-disclosure" data-guidance-section style={{ animationDelay: "120ms" }}>
-      <CollapsibleTrigger className="detail-disclosure-trigger">
-        <span className="flex min-w-0 items-center gap-2">
-          <ChevronRight className="detail-disclosure-chevron size-4 shrink-0 transition-transform duration-150" />
-          <span className="truncate">{title}</span>
-        </span>
-        {meta ? <span className="truncate text-xs text-muted-foreground">{meta}</span> : null}
-      </CollapsibleTrigger>
-      <CollapsibleContent className="collapsible-content">
-        <div className="detail-disclosure-body">{children}</div>
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
-
 function RecentDecisionsDisclosure({ detail }: { detail: WorkRequestDetail }) {
   const decisions = latestDecisionLogs(detail);
 
@@ -6526,41 +4368,6 @@ function detailActivityKey(item: { title?: string | null; body?: string | null; 
   return `activity:${hashText([item.title, item.body, item.at].filter(Boolean).join("|"))}`;
 }
 
-function DetailFacts({ facts }: { facts: Array<[string, string | null | undefined]> }) {
-  return (
-    <dl className="detail-facts">
-      {facts.map(([label, value]) => (
-        <div key={label}>
-          <dt>{label}</dt>
-          <dd>{value || "Not recorded"}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
-function DetailList({ title, items, empty }: { title: string; items: string[]; empty: string }) {
-  const visibleItems = items.filter(Boolean).slice(0, 4);
-
-  return (
-    <div className="grid gap-2">
-      <p className="text-xs font-semibold text-muted-foreground">{title}</p>
-      {visibleItems.length > 0 ? (
-        <ul className="grid gap-1.5 text-sm text-muted-foreground">
-          {visibleItems.map((item) => (
-            <li key={item} className="detail-bullet">
-              {item}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="text-sm text-muted-foreground">{empty}</p>
-      )}
-      {items.length > visibleItems.length ? <p className="text-xs text-muted-foreground">+{items.length - visibleItems.length} more</p> : null}
-    </div>
-  );
-}
-
 function DetailAttentionList({ items }: { items: OperationalAttention[] }) {
   const visibleItems = items.slice(0, 3);
 
@@ -6603,204 +4410,6 @@ function LineageDisclosure({ lineage }: { lineage: WorkPackageCard["lineage"] })
       </div>
     </DetailDisclosure>
   );
-}
-
-function JsonDetail({ label, value }: { label: string; value?: Record<string, unknown> }) {
-  if (!value || Object.keys(value).length === 0) return null;
-
-  return (
-    <div className="grid gap-2">
-      <p className="text-xs font-semibold text-muted-foreground">{label}</p>
-      <pre className="detail-json">{JSON.stringify(value, null, 2)}</pre>
-    </div>
-  );
-}
-
-type MarkdownNode =
-  | { key: string; type: "heading"; depth: number; text: string }
-  | { key: string; type: "paragraph"; text: string }
-  | { key: string; type: "list"; ordered: boolean; items: MarkdownListItem[] }
-  | { key: string; type: "code"; text: string };
-
-type MarkdownListItem = {
-  key: string;
-  text: string;
-};
-
-type MarkdownInlineNode =
-  | { key: string; type: "code"; text: string }
-  | { key: string; type: "strong"; text: string }
-  | { key: string; type: "text"; text: string };
-
-function MarkdownBlock({ value }: { value?: string | null }) {
-  const nodes = markdownNodes(value);
-
-  if (nodes.length === 0) {
-    return <p className="solo-markdown-empty">No details recorded.</p>;
-  }
-
-  return (
-    <div className="solo-markdown">
-      {nodes.map((node) => (
-        <MarkdownNodeView key={node.key} node={node} />
-      ))}
-    </div>
-  );
-}
-
-function MarkdownNodeView({ node }: { node: MarkdownNode }) {
-  if (node.type === "heading") {
-    if (node.depth === 1) return <h4><MarkdownInline text={node.text} /></h4>;
-    if (node.depth === 2) return <h5><MarkdownInline text={node.text} /></h5>;
-    return <h6><MarkdownInline text={node.text} /></h6>;
-  }
-
-  if (node.type === "list") {
-    const List = node.ordered ? "ol" : "ul";
-    return (
-      <List>
-        {node.items.map((item) => (
-          <li key={item.key}><MarkdownInline text={item.text} /></li>
-        ))}
-      </List>
-    );
-  }
-
-  if (node.type === "code") {
-    return <pre>{node.text}</pre>;
-  }
-
-  return <p><MarkdownInline text={node.text} /></p>;
-}
-
-function MarkdownInline({ text }: { text: string }) {
-  return markdownInlineNodes(text).map((part) => {
-    if (part.type === "code") return <code key={part.key}>{part.text}</code>;
-    if (part.type === "strong") return <strong key={part.key}>{part.text}</strong>;
-    return <span key={part.key}>{part.text}</span>;
-  });
-}
-
-function markdownInlineNodes(text: string): MarkdownInlineNode[] {
-  const nodes: MarkdownInlineNode[] = [];
-  const pattern = /(`[^`]+`|\*\*[^*]+\*\*)/g;
-  let offset = 0;
-
-  for (const match of text.matchAll(pattern)) {
-    const index = match.index ?? 0;
-    if (index > offset) {
-      nodes.push(markdownInlineNode("text", text.slice(offset, index), offset));
-    }
-
-    const token = match[0];
-    if (token.startsWith("`") && token.endsWith("`")) {
-      nodes.push(markdownInlineNode("code", token.slice(1, -1), index));
-    } else {
-      nodes.push(markdownInlineNode("strong", token.slice(2, -2), index));
-    }
-    offset = index + token.length;
-  }
-
-  if (offset < text.length) {
-    nodes.push(markdownInlineNode("text", text.slice(offset), offset));
-  }
-
-  return nodes;
-}
-
-function markdownInlineNode(type: MarkdownInlineNode["type"], text: string, offset: number): MarkdownInlineNode {
-  return { key: `${type}:${offset}:${hashText(text)}`, type, text } as MarkdownInlineNode;
-}
-
-function markdownNodes(value?: string | null): MarkdownNode[] {
-  if (!value?.trim()) return [];
-
-  const nodes: MarkdownNode[] = [];
-  const lines = value.replace(/\r\n/g, "\n").split("\n");
-  let paragraph: string[] = [];
-  let list: { ordered: boolean; items: MarkdownListItem[] } | null = null;
-  let code: string[] | null = null;
-
-  const flushParagraph = () => {
-    if (paragraph.length > 0) {
-      const text = paragraph.join(" ").trim();
-      nodes.push({ key: markdownNodeKey("paragraph", text, nodes.length), type: "paragraph", text });
-      paragraph = [];
-    }
-  };
-
-  const flushList = () => {
-    if (list) {
-      const text = list.items.map((item) => item.text).join("\n");
-      nodes.push({ key: markdownNodeKey("list", text, nodes.length), type: "list", ordered: list.ordered, items: list.items });
-      list = null;
-    }
-  };
-
-  for (const [lineNumber, line] of lines.entries()) {
-    if (line.trim().startsWith("```")) {
-      if (code) {
-        const text = code.join("\n").trimEnd();
-        nodes.push({ key: markdownNodeKey("code", text, nodes.length), type: "code", text });
-        code = null;
-      } else {
-        flushParagraph();
-        flushList();
-        code = [];
-      }
-      continue;
-    }
-
-    if (code) {
-      code.push(line);
-      continue;
-    }
-
-    if (line.trim() === "") {
-      flushParagraph();
-      flushList();
-      continue;
-    }
-
-    const heading = line.match(/^(#{1,3})\s+(.+)$/);
-    if (heading) {
-      flushParagraph();
-      flushList();
-      const text = heading[2].trim();
-      nodes.push({ key: markdownNodeKey("heading", text, nodes.length), type: "heading", depth: heading[1].length, text });
-      continue;
-    }
-
-    const bullet = line.match(/^\s*[-*]\s+(.+)$/);
-    const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
-    if (bullet || ordered) {
-      flushParagraph();
-      const orderedList = Boolean(ordered);
-      if (!list || list.ordered !== orderedList) {
-        flushList();
-        list = { ordered: orderedList, items: [] };
-      }
-      const text = (bullet?.[1] || ordered?.[1] || "").trim();
-      list.items.push({ key: `item:${lineNumber}:${hashText(text)}`, text });
-      continue;
-    }
-
-    flushList();
-    paragraph.push(line.trim());
-  }
-
-  flushParagraph();
-  flushList();
-  if (code) {
-    const text = code.join("\n").trimEnd();
-    nodes.push({ key: markdownNodeKey("code", text, nodes.length), type: "code", text });
-  }
-
-  return nodes;
-}
-
-function markdownNodeKey(type: MarkdownNode["type"], text: string, ordinal: number) {
-  return `${type}:${ordinal}:${hashText(text)}`;
 }
 
 function hashText(text: string) {
@@ -7016,15 +4625,6 @@ function detailDate(value?: string | null) {
 
 function firstParagraph(value?: string | null) {
   return value?.split(/\n\s*\n/)[0]?.trim() || "";
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="grid gap-2">
-      <Label>{label}</Label>
-      {children}
-    </div>
-  );
 }
 
 function EmptyPanel({ title, compact = false }: { title: string; compact?: boolean }) {
@@ -7272,47 +4872,6 @@ function repoSummaries(
   return sortedCopy([...repos.values()], (a, b) => a.repo.localeCompare(b.repo));
 }
 
-function dashboardTotals(packages: WorkPackageCard[], requests: WorkRequestCard[], guidance: GuidanceItem[]) {
-  return {
-    guidance: guidance.length,
-    active: requests.filter((request) => requestLane(request) === "slices").length + packages.filter((pkg) => packageLane(pkg) === "slices").length,
-    implementing: packages.filter((pkg) => packageLane(pkg) === "implementing").length,
-    finished: packages.filter((pkg) => packageLane(pkg) === "finished").length,
-  };
-}
-
-function guidanceOptions(prompt?: DecisionPrompt | null): DecisionOption[] {
-  const options = prompt?.options?.length
-    ? prompt.options
-    : [
-        {
-          id: "continue",
-          label: "Continue",
-          description: "Proceed with the proposed direction.",
-          pros: ["Fastest path forward"],
-          cons: ["Can preserve ambiguity"],
-          answer: "Continue with the proposed direction.",
-        },
-        {
-          id: "narrow",
-          label: "Narrow scope",
-          description: "Reduce or clarify the scope before implementation.",
-          pros: ["Lower delivery risk"],
-          cons: ["Adds clarification time"],
-          answer: "Narrow the scope before continuing.",
-        },
-      ];
-
-  return [
-    ...options,
-    {
-      id: CUSTOM_CHOICE,
-      label: "None of the above, do this instead:",
-      description: "Give the architect or worker a different direction.",
-    },
-  ];
-}
-
 function guidanceAnswerUrl(item: GuidanceItem) {
   if (item.source === "guidance") {
     return operatorApiUrl(`/work-packages/${encodeURIComponent(item.packageId)}/guidance/${encodeURIComponent(item.id)}/answer`);
@@ -7367,10 +4926,14 @@ const IMPLEMENTING_BOARD_STATUSES = new Set([
   "blocked",
 ]);
 
+function isFinishedBoardStatus(status?: string | null) {
+  return FINISHED_BOARD_STATUSES.has(status || "");
+}
+
 function boardLaneForStatus(status?: string | null): BoardLane {
   const key = status || "";
 
-  if (FINISHED_BOARD_STATUSES.has(key)) return "finished";
+  if (isFinishedBoardStatus(key)) return "finished";
   if (IMPLEMENTING_BOARD_STATUSES.has(key)) return "implementing";
   return "slices";
 }
@@ -7437,10 +5000,6 @@ function sortableTime(value?: string | null) {
   return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
-function sortedCopy<T>(values: readonly T[], compare: (left: T, right: T) => number) {
-  return values.slice().sort(compare);
-}
-
 function workstreamRows(
   details: WorkRequestDetail[],
   sliceEntries: SliceEntry[],
@@ -7492,16 +5051,19 @@ function workstreamWires(details: WorkRequestDetail[], packages: WorkPackageCard
   const packageMap = new Map(packages.map((pkg) => [pkg.id, pkg]));
   const progressWires = details.flatMap((detail) => {
     const source = requestNodeId(detail);
+    const sourceTone = requestStateCardTone(detail);
     const slices = sortPlannedSlices(detail.planned_slices || []);
 
     return slices.flatMap((target, index) => {
       const pkg = packageMap.get(target.work_package_id || "");
       const targetNode = sliceNodeId(target);
+      const targetTone = sliceCardTone(target, pkg, "slices");
       const wires: BoardWire[] = [{
         id: `${source}->${targetNode}:${index}:slice`,
         from: source,
         to: targetNode,
-        tone: sliceCardTone(target, pkg, "slices"),
+        sourceTone,
+        tone: targetTone,
       }];
 
       if (pkg) {
@@ -7510,7 +5072,8 @@ function workstreamWires(details: WorkRequestDetail[], packages: WorkPackageCard
           id: `${targetNode}->${packageTargetNode}:${index}:package`,
           from: targetNode,
           to: packageTargetNode,
-          tone: wireToneForPackageTarget(pkg, sliceLane(target, pkg)),
+          sourceTone: targetTone,
+          tone: packageCardTone(pkg, sliceLane(target, pkg)),
         });
       }
 
@@ -7539,10 +5102,10 @@ function activeBlockingWires(details: WorkRequestDetail[], packages: WorkPackage
   const context = blockerWireContext(details, packages);
 
   return activeBlockingEdges.flatMap((edge) => {
-    const target = blockerEndpointNodeId(edge.to, context, "target");
+    const target = blockerEndpoint(edge.to, context, "target");
     if (!target) return [];
 
-    const source = blockerEndpointNodeId(edge.from, context, "source") || blockerFallbackSourceNode(edge, context);
+    const source = blockerEndpoint(edge.from, context, "source") || blockerFallbackSourceEndpoint(edge, context);
     if (!source || source === target) return [];
 
     return [
@@ -7550,6 +5113,7 @@ function activeBlockingWires(details: WorkRequestDetail[], packages: WorkPackage
         id: `blocker:${edge.id}`,
         from: source,
         to: target,
+        sourceTone: "blocked",
         tone: "blocked",
         kind: "blocker",
       },
@@ -7573,11 +5137,11 @@ function blockerWireContext(details: WorkRequestDetail[], packages: WorkPackageC
   return { detailById, detailBySliceId, packageById, sliceById };
 }
 
-function blockerEndpointNodeId(
+function blockerEndpoint(
   endpoint: ActiveBlockingEdge["from"],
   context: ReturnType<typeof blockerWireContext>,
   role: "source" | "target",
-) {
+): string | undefined {
   if (endpoint.kind === "work_package") {
     return context.packageById.has(endpoint.id) ? packageNodeId(endpoint.id) : undefined;
   }
@@ -7588,14 +5152,11 @@ function blockerEndpointNodeId(
   const pkg = context.packageById.get(slice.work_package_id || "");
   if (pkg) return packageNodeId(pkg);
 
-  if (sliceLane(slice, pkg) === "slices") {
-    return sliceNodeId(slice);
-  }
-
+  if (sliceLane(slice, pkg) === "slices") return sliceNodeId(slice);
   return role === "target" ? sliceNodeId(slice) : undefined;
 }
 
-function blockerFallbackSourceNode(edge: ActiveBlockingEdge, context: ReturnType<typeof blockerWireContext>) {
+function blockerFallbackSourceEndpoint(edge: ActiveBlockingEdge, context: ReturnType<typeof blockerWireContext>) {
   if (edge.from.kind === "slice") {
     const detail = context.detailBySliceId.get(edge.from.id);
     if (detail) return requestNodeId(detail);
@@ -7607,10 +5168,6 @@ function blockerFallbackSourceNode(edge: ActiveBlockingEdge, context: ReturnType
   }
 
   return undefined;
-}
-
-function wireToneForPackageTarget(pkg: WorkPackageCard, lane: BoardLane): BoardWireTone {
-  return packageCardTone(pkg, lane);
 }
 
 function statusVariant(status?: string | null): BadgeTone {
@@ -7638,23 +5195,6 @@ function statusVariant(status?: string | null): BadgeTone {
   return "secondary";
 }
 
-function formatStatus(status?: string | null) {
-  return status ? status.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : "Unknown";
-}
-
-function statusLabel(status?: string | null) {
-  if (status === "active") return "Active";
-  if (status === "merge_ready") return "Ready For Merge";
-  if (status === "in_progress") return "Active";
-  if (status === "needs_attention") return "Needs Attention";
-  if (status === "started_paused") return "Started / Paused";
-  if (status === "merging") return "Merging";
-  if (status === "ready_for_human_merge" || status === "ready_for_architect_merge") return "Merge Ready";
-  if (status === "merging_into_phase") return "Merging";
-  if (status === "ci_waiting") return "CI Waiting";
-  return formatStatus(status);
-}
-
 function formatDate(value: string) {
   const timestamp = Date.parse(value);
 
@@ -7675,33 +5215,6 @@ function addBranch(summary: RepoSummary, branch?: string | null) {
   if (value && !summary.baseBranches.includes(value)) {
     summary.baseBranches.push(value);
   }
-}
-
-const BRANCH_INTAKE_OPTIONS = ["main", "beta", "dev", "beta/dev"];
-
-function repoOptions(repos: RepoSummary[], defaultRepo?: string) {
-  const dashboardRepos = uniqueNonEmpty(repos.map((repo) => repo.repo));
-  if (dashboardRepos.length > 0) {
-    return dashboardRepos;
-  }
-
-  return uniqueNonEmpty([defaultRepo, initialRequestForm.repo]);
-}
-
-function baseBranchOptionsForRepo(repos: RepoSummary[], repo: string) {
-  const summary = repos.find((candidate) => candidate.repo === repo);
-  const exposedBranches = uniqueNonEmpty(summary?.baseBranches || []);
-  const branchOptions = BRANCH_INTAKE_OPTIONS.filter((branch) => exposedBranches.includes(branch));
-  return branchOptions.length > 0 ? branchOptions : [initialRequestForm.base_branch];
-}
-
-function uniqueNonEmpty(values: Array<string | undefined | null>) {
-  const unique = new Set<string>();
-  values.forEach((value) => {
-    const trimmed = value?.trim();
-    if (trimmed) unique.add(trimmed);
-  });
-  return [...unique];
 }
 
 function readStoredWorkspaceTab(): WorkspaceTab {
@@ -7858,36 +5371,4 @@ function topPanelDirection(from: TopPanelKey | null, to: TopPanelKey | null): To
 
 function workspaceTabDirection(from: WorkspaceTab, to: WorkspaceTab): TopPanelDirection {
   return to === "solo" && from === "workstreams" ? "forward" : "backward";
-}
-
-function measureElementHeight(element: HTMLElement | null) {
-  return element?.getBoundingClientRect().height || 0;
-}
-
-function measureElementWidth(element: HTMLElement | null) {
-  return element?.getBoundingClientRect().width || 0;
-}
-
-function nextFrame(refs: React.MutableRefObject<number[]>, callback: () => void) {
-  const id = window.requestAnimationFrame(callback);
-  refs.current.push(id);
-}
-
-function later(refs: React.MutableRefObject<number[]>, delay: number, callback: () => void) {
-  const id = window.setTimeout(callback, delay);
-  refs.current.push(id);
-}
-
-function clearTopPanelTimers(
-  timersRef: React.MutableRefObject<number[]>,
-  framesRef: React.MutableRefObject<number[]>,
-) {
-  timersRef.current.forEach((id) => window.clearTimeout(id));
-  framesRef.current.forEach((id) => window.cancelAnimationFrame(id));
-  timersRef.current = [];
-  framesRef.current = [];
-}
-
-function setFormValue(setForm: React.Dispatch<React.SetStateAction<NewRequestForm>>, key: keyof NewRequestForm, value: string) {
-  setForm((current) => ({ ...current, [key]: value }));
 }

@@ -185,6 +185,14 @@ export type ArchitectHandoffPayload = {
   dashboard?: DashboardPayload;
 };
 
+export type ArchitectHandoffCopyResult = {
+  handoff: ArchitectHandoff;
+  copied: boolean;
+  copyError?: string;
+};
+
+export type CopyArchitectHandoff = (workRequestId: string, cachedHandoff?: ArchitectHandoff | null) => Promise<ArchitectHandoffCopyResult>;
+
 export type CreateWorkRequestPayload = {
   work_request?: WorkRequestDetail;
   dashboard?: DashboardPayload;
@@ -315,6 +323,35 @@ export type GuidanceRequest = {
   decision_prompt?: DecisionPrompt | null;
   status?: string | null;
   blocker_id?: string | null;
+};
+
+export type GuidanceItem =
+  | {
+      source: "guidance";
+      id: string;
+      repo: string;
+      title: string;
+      packageId: string;
+      prompt?: DecisionPrompt | null;
+      detail: string;
+      guidance: GuidanceRequest;
+    }
+  | {
+      source: "clarification";
+      id: string;
+      repo: string;
+      title: string;
+      workRequestId: string;
+      prompt?: DecisionPrompt | null;
+      detail: string;
+      question: ClarificationQuestion;
+      request: WorkRequestCard;
+    };
+
+export type GuidanceAnswerSubmission = {
+  answer?: string;
+  answer_choice: string;
+  answer_note: string;
 };
 
 export type SoloSession = {
