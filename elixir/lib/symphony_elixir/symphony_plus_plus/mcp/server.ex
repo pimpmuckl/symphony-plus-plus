@@ -1245,13 +1245,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       (Map.has_key?(values, "database") and (Map.has_key?(values, "port") or Map.has_key?(values, "trustedconnection")))
   end
 
-  defp server_database_dsn_values(database) when is_binary(database) do
-    ~r/(?:^|[;\s])([A-Za-z][A-Za-z _-]*)\s*=\s*([^;\s]+)/
-    |> Regex.scan(database)
-    |> Map.new(fn [_match, key, value] -> {normalize_server_dsn_key(key), trim_server_dsn_value(value)} end)
-  end
+  defp server_database_dsn_values(database) do
+    case normalized_database(database) do
+      nil ->
+        %{}
 
-  defp server_database_dsn_values(_database), do: %{}
+      database ->
+        ~r/(?:^|[;\s])([A-Za-z][A-Za-z _-]*)\s*=\s*([^;\s]+)/
+        |> Regex.scan(database)
+        |> Map.new(fn [_match, key, value] -> {normalize_server_dsn_key(key), trim_server_dsn_value(value)} end)
+    end
+  end
 
   defp normalize_server_dsn_key(key) do
     key
@@ -1332,8 +1336,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     configured_database_url_for_identity(config) || configured_database_host_for_identity(config)
   end
 
-  defp configured_server_database_for_identity(_config), do: nil
-
   defp configured_database_url_for_identity(config) do
     config
     |> Keyword.get(:url)
@@ -1389,22 +1391,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
-  defp default_home_database_path?(path) when is_binary(path) do
-    case System.user_home() do
-      home when is_binary(home) and home != "" ->
-        default_home_database =
-          [home, ".agents", "splusplus", "symphony_plus_plus.sqlite3"]
-          |> Path.join()
-          |> Path.expand()
+  defp default_home_database_path?(path) do
+    with path when is_binary(path) <- normalized_database(path),
+         home when is_binary(home) and home != "" <- System.user_home() do
+      default_home_database =
+        [home, ".agents", "splusplus", "symphony_plus_plus.sqlite3"]
+        |> Path.join()
+        |> Path.expand()
 
-        Repo.same_database_path?(path, default_home_database)
-
-      _missing_home ->
-        false
+      Repo.same_database_path?(path, default_home_database)
+    else
+      _unmatched -> false
     end
   end
-
-  defp default_home_database_path?(_path), do: false
 
   defp unknown_ledger_identity(source), do: %{"kind" => "unknown", "source" => source}
 
