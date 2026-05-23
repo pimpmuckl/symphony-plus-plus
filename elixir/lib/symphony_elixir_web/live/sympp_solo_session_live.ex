@@ -137,7 +137,7 @@ defmodule SymphonyElixirWeb.SymppSoloSessionLive do
   end
 
   defp load_page(true, solo_session_id) when is_binary(solo_session_id) and solo_session_id != "" do
-    case SymppBoardLive.with_dashboard_repo(&Dashboard.solo_session_detail(&1, solo_session_id)) do
+    case SymppBoardLive.with_dashboard_repo(&local_operator_solo_session_detail(&1, solo_session_id)) do
       {:ok, page} -> Map.put(page, :error, nil)
       {:error, reason} -> unavailable_page(reason)
     end
@@ -145,6 +145,12 @@ defmodule SymphonyElixirWeb.SymppSoloSessionLive do
 
   defp load_page(true, _solo_session_id), do: unavailable_page(:not_found)
   defp load_page(false, _solo_session_id), do: unavailable_page(:forbidden)
+
+  defp local_operator_solo_session_detail(repo, solo_session_id) do
+    with {:ok, repo_identity_catalog} <- Dashboard.local_operator_repo_identity_catalog(repo) do
+      Dashboard.solo_session_detail(repo, solo_session_id, repo_identity_catalog: repo_identity_catalog)
+    end
+  end
 
   defp unavailable_page(reason), do: %{error: error_message(reason), solo_session: nil, entries: [], entry_count: 0}
 

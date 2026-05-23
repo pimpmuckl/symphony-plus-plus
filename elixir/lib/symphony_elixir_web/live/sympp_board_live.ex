@@ -414,12 +414,14 @@ defmodule SymphonyElixirWeb.SymppBoardLive do
   defp load_board(filters, :local_operator) do
     with_dashboard_repo(
       fn repo ->
-        with {:ok, board} <- Dashboard.board(repo),
-             {:ok, work_requests} <- Dashboard.work_requests(repo),
-             {:ok, guidance_requests} <- Dashboard.human_guidance_requests(repo),
-             {:ok, solo_sessions} <- Dashboard.solo_sessions(repo, solo_session_dashboard_filters(filters)),
+        with {:ok, repo_identity_catalog} <- Dashboard.local_operator_repo_identity_catalog(repo),
+             opts = [repo_identity_catalog: repo_identity_catalog],
+             {:ok, board} <- Dashboard.board(repo, opts),
+             {:ok, work_requests} <- Dashboard.work_requests(repo, opts),
+             {:ok, guidance_requests} <- Dashboard.human_guidance_requests(repo, opts),
+             {:ok, solo_sessions} <- Dashboard.solo_sessions(repo, solo_session_dashboard_filters(filters), opts),
              {:ok, solo_session_repos} <- Dashboard.solo_session_repos(repo),
-             {:ok, solo_session_streams} <- Dashboard.solo_session_streams(repo),
+             {:ok, solo_session_streams} <- Dashboard.solo_session_streams(repo, opts),
              {:ok, solo_session_total_count} <- Dashboard.solo_session_count(repo) do
           {:ok,
            %{

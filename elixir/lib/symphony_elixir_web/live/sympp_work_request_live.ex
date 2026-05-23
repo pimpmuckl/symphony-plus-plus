@@ -1278,7 +1278,9 @@ defmodule SymphonyElixirWeb.SymppWorkRequestLive do
   defp load_page(:show, :local_operator, _work_request_id), do: error_page(:not_found)
 
   defp local_operator_work_request_detail(repo, work_request_id) do
-    with {:ok, payload} <- Dashboard.work_request_detail(repo, work_request_id) do
+    with {:ok, repo_identity_catalog} <- Dashboard.local_operator_repo_identity_catalog(repo),
+         {:ok, payload} <-
+           Dashboard.work_request_detail(repo, work_request_id, repo_identity_catalog: repo_identity_catalog) do
       {:ok, Map.put(payload, :architect_handoff, existing_architect_handoff(repo, work_request_id))}
     end
   end
