@@ -106,9 +106,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
         join: planned_slice in PlannedSlice,
         on: planned_slice.work_request_id == work_request.id,
         where: planned_slice.work_package_id == ^work_package_id,
+        where: is_nil(work_request.completion_source) or work_request.completion_source != "operator",
         where: not is_nil(work_request.completed_at) or not is_nil(work_request.archived_at)
       ),
-      set: [completed_at: nil, archived_at: nil, archive_reason: nil, updated_at: now]
+      set: [completed_at: nil, completion_source: nil, archived_at: nil, archive_reason: nil, updated_at: now]
     )
 
     :ok
@@ -344,7 +345,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
   end
 
   defp status_update_values(next_status, now) when next_status in @completion_blocking_statuses do
-    [status: next_status, completed_at: nil, archived_at: nil, archive_reason: nil, updated_at: now]
+    [
+      status: next_status,
+      completed_at: nil,
+      completion_source: nil,
+      archived_at: nil,
+      archive_reason: nil,
+      updated_at: now
+    ]
   end
 
   defp status_update_values(next_status, now), do: [status: next_status, updated_at: now]
@@ -473,7 +481,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
         where: work_request.id == ^work_request_id,
         where: not is_nil(work_request.completed_at) or not is_nil(work_request.archived_at)
       ),
-      set: [completed_at: nil, archived_at: nil, archive_reason: nil, updated_at: now]
+      set: [completed_at: nil, completion_source: nil, archived_at: nil, archive_reason: nil, updated_at: now]
     )
 
     :ok

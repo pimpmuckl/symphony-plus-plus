@@ -4245,6 +4245,87 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
+  test "local operator can mark WorkPackages merged and refresh WorkRequest completion", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      work_request = create_work_request!(repo, id: "WR-LOCAL-MARK-PACKAGE-MERGED", status: "ready_for_slicing")
+
+      assert {:ok, slice} =
+               WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-LOCAL-MARK-PACKAGE-MERGED"))
+
+      assert {:ok, approved} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, slice.id, "planned")
+
+      work_package =
+        create_matching_work_package!(repo, work_request, approved,
+          id: "WP-LOCAL-MARK-PACKAGE-MERGED",
+          status: "implementing"
+        )
+
+      assert {:ok, _dispatched} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved.id, "approved", work_package.id)
+
+      payload =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/work-packages/#{work_package.id}/state", %{"status" => "merged"})
+        |> json_response(200)
+
+      assert {:ok, persisted_package} = WorkPackageRepository.get(repo, work_package.id)
+      assert persisted_package.status == "merged"
+      assert get_in(work_request_detail(payload["dashboard"], work_request.id), ["work_request", "operational_state", "key"]) == "completed"
+    end)
+  end
+
+  test "local operator cannot mark non-merged terminal WorkPackages merged", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      assert {:ok, work_package} =
+               WorkPackageRepository.create(
+                 repo,
+                 WorkPackageFactory.attrs(id: "WP-LOCAL-MARK-CLOSED", status: "closed")
+               )
+
+      local_operator_csrf_conn()
+      |> post("/api/v1/sympp/operator/work-packages/#{work_package.id}/state", %{"status" => "merged"})
+      |> json_response(422)
+
+      assert {:ok, persisted_package} = WorkPackageRepository.get(repo, work_package.id)
+      assert persisted_package.status == "closed"
+    end)
+  end
+
+  test "local operator can force complete an unfinished WorkRequest", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      work_request = create_work_request!(repo, id: "WR-LOCAL-COMPLETE-STATE", status: "ready_for_slicing")
+
+      assert {:ok, planned_slice} =
+               WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-LOCAL-COMPLETE-STATE"))
+
+      assert {:ok, open_question} =
+               WorkRequestRepository.ask_question(repo, work_request.id, question_attrs(id: "WRQ-LOCAL-COMPLETE-STATE"))
+
+      payload =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/work-requests/#{work_request.id}/state", %{"state" => "completed"})
+        |> json_response(200)
+
+      assert get_in(payload, ["work_request", "work_request", "operational_state", "key"]) == "completed"
+      assert get_in(payload, ["work_request", "work_request", "completion_source"]) == "operator"
+
+      assert {:ok, persisted_request} = WorkRequestRepository.get(repo, work_request.id)
+      assert %DateTime{} = persisted_request.completed_at
+      assert persisted_request.completion_source == "operator"
+
+      assert {:ok, [persisted_slice]} = WorkRequestRepository.list_planned_slices(repo, work_request.id)
+      assert persisted_slice.id == planned_slice.id
+      assert persisted_slice.status == "planned"
+
+      assert {:ok, [persisted_question]} = WorkRequestRepository.list_questions(repo, work_request.id)
+      assert persisted_question.id == open_question.id
+      assert persisted_question.status == "open"
+
+      assert {:ok, refreshed_request} = WorkRequestService.refresh_completion(repo, work_request.id)
+      assert refreshed_request.completed_at == persisted_request.completed_at
+      assert refreshed_request.completion_source == "operator"
+    end)
+  end
+
   test "local operator can create and resolve comments through the dashboard API", %{repo: repo} do
     with_local_operator_endpoint(fn ->
       work_request = create_work_request!(repo, id: "WR-LOCAL-COMMENTS", status: "ready_for_slicing")

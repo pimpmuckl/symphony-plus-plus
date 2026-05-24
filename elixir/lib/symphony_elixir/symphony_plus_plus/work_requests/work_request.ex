@@ -51,6 +51,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest do
           created_via: String.t() | nil,
           status: String.t() | nil,
           completed_at: DateTime.t() | nil,
+          completion_source: String.t() | nil,
           archived_at: DateTime.t() | nil,
           archive_reason: String.t() | nil,
           inserted_at: DateTime.t() | nil,
@@ -70,6 +71,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest do
     field(:created_via, :string)
     field(:status, :string)
     field(:completed_at, :utc_datetime_usec)
+    field(:completion_source, :string)
     field(:archived_at, :utc_datetime_usec)
     field(:archive_reason, :string)
 
@@ -96,7 +98,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest do
       |> put_new_value("id", stable_id())
       |> put_new_value("status", "draft")
       |> put_new_value("constraints", %{})
-      |> Map.drop(["completed_at", "archived_at", "archive_reason"])
+      |> Map.drop(["completed_at", "completion_source", "archived_at", "archive_reason"])
 
     %__MODULE__{}
     |> changeset(attrs)
@@ -108,7 +110,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest do
     attrs = normalize_keys(attrs)
 
     work_request
-    |> changeset(Map.drop(attrs, ["id", "status", "completed_at", "archived_at", "archive_reason", "inserted_at", "updated_at", "created_at"]))
+    |> changeset(Map.drop(attrs, ["id", "status", "completed_at", "completion_source", "archived_at", "archive_reason", "inserted_at", "updated_at", "created_at"]))
     |> reject_generic_status_update(attrs)
   end
 
@@ -129,6 +131,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest do
       :created_via,
       :status,
       :completed_at,
+      :completion_source,
       :archived_at,
       :archive_reason
     ])

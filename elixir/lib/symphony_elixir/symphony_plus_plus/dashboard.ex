@@ -1298,6 +1298,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
              dispatched_slice_count: status_count(planned_slice_counts, work_request.id, "dispatched"),
              skipped_slice_count: status_count(planned_slice_counts, work_request.id, "skipped"),
              completed_at: timestamp(completion_state.completed_at),
+             completion_source: work_request.completion_source,
              archived_at: timestamp(completion_state.archived_at),
              operational_state: operational_state
            }}
@@ -1724,6 +1725,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     work_request
     |> work_request_payload(repo_identity_catalog)
     |> Map.put(:completed_at, timestamp(completion_state.completed_at))
+    |> Map.put(:completion_source, work_request.completion_source)
     |> Map.put(:archived_at, timestamp(completion_state.archived_at))
     |> Map.put(:archive_reason, work_request.archive_reason)
     |> Map.put(:operational_state, work_request_operational_state(work_request, planned_slices, work_package_contexts, completion_state))
@@ -1736,7 +1738,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
     cond do
       completion_state.completed? ->
-        completed_work_request_operational_state(work_request.status, attention_items)
+        completed_work_request_operational_state(work_request, attention_items)
 
       work_request.status == "human_info_needed" ->
         base_work_request_operational_state("human_info_needed", attention_items)
@@ -1752,13 +1754,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
-  defp completed_work_request_operational_state(raw_status, attention_items) do
+  defp completed_work_request_operational_state(%WorkRequest{completion_source: "operator"} = work_request, attention_items) do
+    operational_state(
+      "completed",
+      "Completed",
+      "success",
+      "WorkRequest was manually marked completed by the local operator.",
+      work_request.status,
+      attention_items
+    )
+  end
+
+  defp completed_work_request_operational_state(%WorkRequest{} = work_request, attention_items) do
     operational_state(
       "completed",
       "Completed",
       "success",
       "All WorkRequest questions, slices, linked packages, blockers, and active runtimes are terminal.",
-      raw_status,
+      work_request.status,
       attention_items
     )
   end
