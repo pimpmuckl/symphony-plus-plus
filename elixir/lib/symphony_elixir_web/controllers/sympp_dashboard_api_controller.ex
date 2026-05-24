@@ -597,7 +597,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   def operator_update_work_request_state(conn, %{"work_request_id" => work_request_id} = params) do
     send_local_operator_response(conn, fn repo ->
       with {:ok, "completed"} <- local_operator_work_request_state(params),
-           {:ok, work_request} <- complete_work_request_for_local_operator(repo, work_request_id),
+           {:ok, work_request} <- WorkRequestService.force_complete(repo, work_request_id),
            {:ok, dashboard} <- operator_dashboard_payload(repo),
            {:ok, detail} <- dashboard_work_request_detail(dashboard, work_request.id) do
         json(conn, %{work_request: detail, dashboard: dashboard})
@@ -879,76 +879,6 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end
   end
 
-  defp complete_work_request_for_local_operator(repo, work_request_id) do
-    repo.transaction(fn ->
-      with {:ok, planned_slices} <- WorkRequestService.list_planned_slices(repo, work_request_id),
-           :ok <- validate_planned_slices_for_local_operator(repo, planned_slices),
-           :ok <- complete_planned_slices_for_local_operator(repo, work_request_id, planned_slices),
-           {:ok, work_request} <- WorkRequestService.refresh_completion(repo, work_request_id),
-           :ok <- require_completed_work_request(work_request) do
-        work_request
-      else
-        {:error, reason} -> repo.rollback(reason)
-      end
-    end)
-    |> normalize_local_operator_transaction_result()
-  end
-
-  defp validate_planned_slices_for_local_operator(repo, planned_slices) do
-    Enum.reduce_while(planned_slices, :ok, fn planned_slice, :ok ->
-      case validate_planned_slice_for_local_operator(repo, planned_slice) do
-        :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-  end
-
-  defp validate_planned_slice_for_local_operator(_repo, %{status: status})
-       when status in ["skipped", "planned", "approved"],
-       do: :ok
-
-  defp validate_planned_slice_for_local_operator(repo, %{status: "dispatched", work_package_id: work_package_id})
-       when is_binary(work_package_id) do
-    with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id) do
-      validate_local_operator_package_mergeable(work_package)
-    end
-  end
-
-  defp validate_planned_slice_for_local_operator(_repo, %{status: "dispatched"}), do: {:error, :not_completed}
-  defp validate_planned_slice_for_local_operator(_repo, _planned_slice), do: {:error, :invalid_status}
-
-  defp complete_planned_slices_for_local_operator(repo, work_request_id, planned_slices) do
-    Enum.reduce_while(planned_slices, :ok, fn planned_slice, :ok ->
-      case complete_planned_slice_for_local_operator(repo, work_request_id, planned_slice) do
-        :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-  end
-
-  defp complete_planned_slice_for_local_operator(_repo, _work_request_id, %{status: "skipped"}), do: :ok
-
-  defp complete_planned_slice_for_local_operator(repo, work_request_id, %{id: id, status: status})
-       when status in ["planned", "approved"] do
-    case WorkRequestService.skip_planned_slice(repo, work_request_id, id, status) do
-      {:ok, _planned_slice} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp complete_planned_slice_for_local_operator(repo, _work_request_id, %{status: "dispatched", work_package_id: work_package_id})
-       when is_binary(work_package_id) do
-    case mark_work_package_merged_for_local_operator(repo, work_package_id) do
-      {:ok, _work_package} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp complete_planned_slice_for_local_operator(_repo, _work_request_id, _planned_slice), do: :ok
-
-  defp require_completed_work_request(%{completed_at: %DateTime{}}), do: :ok
-  defp require_completed_work_request(_work_request), do: {:error, :not_completed}
-
   defp mark_work_package_merged_and_refresh_for_local_operator(repo, work_package_id) do
     repo.transaction(fn ->
       with {:ok, work_package} <- mark_work_package_merged_for_local_operator(repo, work_package_id),
@@ -978,13 +908,6 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       end
     end
   end
-
-  defp validate_local_operator_package_mergeable(%{status: status})
-       when status in @local_operator_nonmergeable_terminal_package_statuses,
-       do: {:error, :invalid_status}
-
-  defp validate_local_operator_package_mergeable(%{status: status}) when is_binary(status), do: :ok
-  defp validate_local_operator_package_mergeable(_work_package), do: {:error, :invalid_status}
 
   defp normalize_local_operator_transaction_result({:ok, value}), do: {:ok, value}
   defp normalize_local_operator_transaction_result({:error, reason}), do: {:error, reason}
