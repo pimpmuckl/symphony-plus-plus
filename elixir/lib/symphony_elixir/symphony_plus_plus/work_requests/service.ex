@@ -4,12 +4,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
-  @type error :: Repository.error()
+  @type error :: Repository.error() | DeliveryCloseout.error()
 
   @spec create(Repository.repo(), map()) :: {:ok, WorkRequest.t()} | {:error, error()}
   def create(repo, attrs), do: Repository.create(repo, attrs)
@@ -56,7 +57,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service do
   @spec record_planned_slice_delivery(Repository.repo(), String.t(), String.t(), map()) ::
           {:ok, PlannedSliceDelivery.t()} | {:error, error()}
   def record_planned_slice_delivery(repo, work_request_id, planned_slice_id, attrs),
-    do: Repository.record_planned_slice_delivery(repo, work_request_id, planned_slice_id, attrs)
+    do: DeliveryCloseout.record(repo, work_request_id, planned_slice_id, attrs)
 
   @spec approve_planned_slice(Repository.repo(), String.t(), String.t(), String.t()) ::
           {:ok, PlannedSlice.t()} | {:error, error()}
