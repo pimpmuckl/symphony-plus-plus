@@ -214,6 +214,8 @@ type SubmitContextComment = (target: CommentTarget, body: string) => Promise<Con
 type ResolveContextComment = (commentId: string, resolutionNote?: string) => Promise<ContextComment>;
 type CommentStats = { comment_count: number; open_comment_count: number };
 type WorkRequestMutation = (workRequestId: string) => Promise<void>;
+type WorkRequestStateMutation = (workRequestId: string, nextState: "completed") => Promise<void>;
+type WorkPackageStateMutation = (workPackageId: string, nextStatus: "merged") => Promise<void>;
 type ScopedHandoffCopy = {
   error: string | null;
   identity: string;
@@ -223,6 +225,7 @@ type DashboardUiState = {
   workspaceTab?: WorkspaceTab;
   topPanel?: TopPanelKey | null;
   repoWorkstreams?: Record<string, boolean>;
+  finishedRequestChildren?: Record<string, boolean>;
   workstreamLayout?: WorkstreamLayoutMode;
   hideEmptyWorkstreams?: boolean;
   theme?: DashboardTheme;
@@ -724,6 +727,26 @@ export default function App() {
     await applyDashboardResponse(response, "WorkRequest was not restored", dashboardFromEnvelope);
   }, [applyDashboardResponse]);
 
+  const changeWorkRequestState = useCallback<WorkRequestStateMutation>(async (workRequestId, nextState) => {
+    const response = await fetch(operatorApiUrl(`/work-requests/${encodeURIComponent(workRequestId)}/state`), {
+      method: "POST",
+      headers: await mutationHeaders(),
+      body: JSON.stringify({ state: nextState }),
+    });
+    await applyDashboardResponse(response, "WorkRequest state was not changed", dashboardFromEnvelope);
+    setSelectedCardDetail(null);
+  }, [applyDashboardResponse, setSelectedCardDetail]);
+
+  const changeWorkPackageState = useCallback<WorkPackageStateMutation>(async (workPackageId, nextStatus) => {
+    const response = await fetch(operatorApiUrl(`/work-packages/${encodeURIComponent(workPackageId)}/state`), {
+      method: "POST",
+      headers: await mutationHeaders(),
+      body: JSON.stringify({ status: nextStatus }),
+    });
+    await applyDashboardResponse(response, "WorkPackage state was not changed", dashboardFromEnvelope);
+    setSelectedCardDetail(null);
+  }, [applyDashboardResponse, setSelectedCardDetail]);
+
   useEffect(() => {
     void loadDashboard("initial");
   }, [loadDashboard]);
@@ -938,6 +961,8 @@ export default function App() {
           onSelectGuidance={setSelectedGuidance}
           onCopyArchitectHandoff={copyArchitectHandoff}
           onArchiveWorkRequest={archiveWorkRequest}
+          onChangeWorkRequestState={changeWorkRequestState}
+          onChangeWorkPackageState={changeWorkPackageState}
           onSubmitComment={submitComment}
           onResolveComment={resolveComment}
           canMutateComments={canMutateDashboardComments(runtimeConfig)}
@@ -1922,7 +1947,7 @@ function StatusTile({
     <button
       type="button"
       className={cn(
-        "dashboard-glass-surface status-tile motion-card group flex min-h-[104px] items-center justify-between rounded-lg border bg-card p-5 text-left shadow-sm outline-none transition-all hover:-translate-y-0.5 hover:shadow-dashboard focus-visible:ring-2 focus-visible:ring-ring",
+        "dashboard-glass-surface status-tile motion-card group flex min-h-[104px] items-center justify-between rounded-lg border bg-card p-5 text-left shadow-sm outline-none transition-all hover:shadow-dashboard focus-visible:ring-2 focus-visible:ring-ring",
         open && tones[tone].card,
       )}
       data-count-motion={countMotion.direction}
@@ -2230,9 +2255,17 @@ function RepoWorkstream({
     () => repo.packages.filter((pkg) => !packageLinkedToRequest(pkg, requestDetails)),
     [repo.packages, requestDetails],
   );
+  const [expandedFinishedRequests, setExpandedFinishedRequests] = useState(() => readStoredFinishedRequestChildren());
+  const setFinishedRequestChildrenOpen = useCallback((workRequestId: string, open: boolean) => {
+    setExpandedFinishedRequests((current) => {
+      const next = { ...current, [finishedRequestChildrenStorageKey(stateKey, workRequestId)]: open };
+      writeStoredFinishedRequestChildren(next);
+      return next;
+    });
+  }, [stateKey]);
   const categoryCounts = useMemo(
-    () => workstreamCategoryCounts(repoDetails, repo.packages, unlinkedPackages),
-    [repo.packages, repoDetails, unlinkedPackages],
+    () => workstreamCategoryCounts(repoDetails, repo.packages, unlinkedPackages, expandedFinishedRequests, stateKey),
+    [expandedFinishedRequests, repo.packages, repoDetails, stateKey, unlinkedPackages],
   );
   const [open, setOpen] = useState(() => readStoredRepoWorkstreamOpen(stateKey, defaultRepoWorkstreamOpen(repo)));
   const [openMotion, setOpenMotion] = useState(false);
@@ -2316,6 +2349,9 @@ function RepoWorkstream({
               onSelectCard={onSelectCard}
               onCopyArchitectHandoff={onCopyArchitectHandoff}
               layoutMode={layoutMode}
+              expandedFinishedRequests={expandedFinishedRequests}
+              finishedRequestScopeKey={stateKey}
+              onSetFinishedRequestChildrenOpen={setFinishedRequestChildrenOpen}
               updateAnimations={updateAnimations}
             />
           </CardContent>
@@ -2695,6 +2731,9 @@ function WorkstreamBoard({
   onSelectCard,
   onCopyArchitectHandoff,
   layoutMode,
+  expandedFinishedRequests,
+  finishedRequestScopeKey,
+  onSetFinishedRequestChildrenOpen,
   updateAnimations,
 }: {
   repoDetails: WorkRequestDetail[];
@@ -2705,6 +2744,9 @@ function WorkstreamBoard({
   onSelectCard: CardDetailSelect;
   onCopyArchitectHandoff: CopyArchitectHandoff;
   layoutMode: WorkstreamLayoutMode;
+  expandedFinishedRequests: Record<string, boolean>;
+  finishedRequestScopeKey: string;
+  onSetFinishedRequestChildrenOpen: (workRequestId: string, open: boolean) => void;
   updateAnimations: DashboardUpdateAnimations;
 }) {
   const shellRef = useRef<HTMLDivElement | null>(null);
@@ -2724,8 +2766,13 @@ function WorkstreamBoard({
       ),
     [packageById, sortedDetails],
   );
-  const active = useMemo(() => sortSliceEntries(sliceEntries), [sliceEntries]);
-  const packageEntries = useMemo(() => sortSliceEntries(sliceEntries.filter((entry) => entry.pkg)), [sliceEntries]);
+  const visibleSliceEntries = useMemo(
+    () => sliceEntries.filter((entry) => requestChildrenVisible(entry.detail, expandedFinishedRequests, finishedRequestScopeKey)),
+    [expandedFinishedRequests, finishedRequestScopeKey, sliceEntries],
+  );
+  const visibleWireDetails = useMemo(() => detailsWithVisibleSlices(sortedDetails, visibleSliceEntries), [sortedDetails, visibleSliceEntries]);
+  const active = useMemo(() => sortSliceEntries(visibleSliceEntries), [visibleSliceEntries]);
+  const packageEntries = useMemo(() => sortSliceEntries(visibleSliceEntries.filter((entry) => entry.pkg)), [visibleSliceEntries]);
   const implementing = useMemo(() => packageEntries.filter((entry) => sliceLane(entry.slice, entry.pkg) !== "finished"), [packageEntries]);
   const finished = useMemo(() => packageEntries.filter((entry) => sliceLane(entry.slice, entry.pkg) === "finished"), [packageEntries]);
   const sortedUnlinkedPackages = useMemo(() => sortPackages(unlinkedPackages), [unlinkedPackages]);
@@ -2733,8 +2780,8 @@ function WorkstreamBoard({
   const implementingPackages = useMemo(() => sortedUnlinkedPackages.filter((pkg) => packageLane(pkg) !== "finished"), [sortedUnlinkedPackages]);
   const finishedPackages = useMemo(() => sortedUnlinkedPackages.filter((pkg) => packageLane(pkg) === "finished"), [sortedUnlinkedPackages]);
   const alignedRows = useMemo(
-    () => workstreamRows(sortedDetails, sliceEntries, activePackages, implementingPackages, finishedPackages),
-    [activePackages, finishedPackages, implementingPackages, sliceEntries, sortedDetails],
+    () => workstreamRows(sortedDetails, visibleSliceEntries, activePackages, implementingPackages, finishedPackages),
+    [activePackages, finishedPackages, implementingPackages, visibleSliceEntries, sortedDetails],
   );
   const alignedMeasurementRows = useMemo<BoardLayoutMeasurementRow[]>(
     () =>
@@ -2749,7 +2796,7 @@ function WorkstreamBoard({
     rowTemplate,
     slotTemplates: alignedSlotTemplates,
   } = useAlignedBoardLayout(boardRef, alignedMeasurementRows, layoutMode);
-  const wires = useMemo(() => workstreamWires(sortedDetails, packages, activeBlockingEdges), [activeBlockingEdges, sortedDetails, packages]);
+  const wires = useMemo(() => workstreamWires(visibleWireDetails, packages, activeBlockingEdges), [activeBlockingEdges, visibleWireDetails, packages]);
   const { paths: wirePaths, size: wireSize } = useBoardWirePaths(boardRef, wires, layoutMode);
   const layoutMotion = useBoardLayoutMotion(shellRef, boardRef, layoutMode);
 
@@ -2772,6 +2819,10 @@ function WorkstreamBoard({
             onSelectGuidance={onSelectGuidance}
             onSelectCard={onSelectCard}
             onCopyArchitectHandoff={onCopyArchitectHandoff}
+            expandedFinishedRequests={expandedFinishedRequests}
+            finishedRequestScopeKey={finishedRequestScopeKey}
+            packageById={packageById}
+            onSetFinishedRequestChildrenOpen={onSetFinishedRequestChildrenOpen}
             updateAnimations={updateAnimations}
             slotTemplates={alignedSlotTemplates}
           />
@@ -2787,6 +2838,10 @@ function WorkstreamBoard({
             onSelectGuidance={onSelectGuidance}
             onSelectCard={onSelectCard}
             onCopyArchitectHandoff={onCopyArchitectHandoff}
+            expandedFinishedRequests={expandedFinishedRequests}
+            finishedRequestScopeKey={finishedRequestScopeKey}
+            packageById={packageById}
+            onSetFinishedRequestChildrenOpen={onSetFinishedRequestChildrenOpen}
             updateAnimations={updateAnimations}
           />
         )}
@@ -2806,6 +2861,10 @@ function StackedWorkstreamColumns({
   onSelectGuidance,
   onSelectCard,
   onCopyArchitectHandoff,
+  expandedFinishedRequests,
+  finishedRequestScopeKey,
+  packageById,
+  onSetFinishedRequestChildrenOpen,
   updateAnimations,
 }: {
   requested: WorkRequestDetail[];
@@ -2818,6 +2877,10 @@ function StackedWorkstreamColumns({
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   onCopyArchitectHandoff: CopyArchitectHandoff;
+  expandedFinishedRequests: Record<string, boolean>;
+  finishedRequestScopeKey: string;
+  packageById: Map<string, WorkPackageCard>;
+  onSetFinishedRequestChildrenOpen: (workRequestId: string, open: boolean) => void;
   updateAnimations: DashboardUpdateAnimations;
 }) {
   const workPackageEntries = sortSliceEntries([...implementing, ...finished]);
@@ -2834,6 +2897,11 @@ function StackedWorkstreamColumns({
             onCopyArchitectHandoff={onCopyArchitectHandoff}
             index={index}
             nodeId={requestNodeId(detail)}
+            childrenExpanded={requestChildrenVisible(detail, expandedFinishedRequests, finishedRequestScopeKey)}
+            childCount={requestChildCount(detail, packageById)}
+            onToggleChildren={() =>
+              onSetFinishedRequestChildrenOpen(detail.work_request.id, !requestChildrenVisible(detail, expandedFinishedRequests, finishedRequestScopeKey))
+            }
             motion={updateAnimations.motionFor(requestUpdateKey(detail))}
           />
         ))}
@@ -2915,6 +2983,10 @@ function AlignedWorkstreamColumns({
   onSelectGuidance,
   onSelectCard,
   onCopyArchitectHandoff,
+  expandedFinishedRequests,
+  finishedRequestScopeKey,
+  packageById,
+  onSetFinishedRequestChildrenOpen,
   updateAnimations,
 }: {
   rows: WorkstreamRow[];
@@ -2926,6 +2998,10 @@ function AlignedWorkstreamColumns({
   onSelectGuidance: (item: GuidanceItem) => void;
   onSelectCard: CardDetailSelect;
   onCopyArchitectHandoff: CopyArchitectHandoff;
+  expandedFinishedRequests: Record<string, boolean>;
+  finishedRequestScopeKey: string;
+  packageById: Map<string, WorkPackageCard>;
+  onSetFinishedRequestChildrenOpen: (workRequestId: string, open: boolean) => void;
   updateAnimations: DashboardUpdateAnimations;
 }) {
   const rowStyle = { gridTemplateRows: rowTemplate } as React.CSSProperties;
@@ -2946,6 +3022,11 @@ function AlignedWorkstreamColumns({
                   onCopyArchitectHandoff={onCopyArchitectHandoff}
                   index={index}
                   nodeId={requestNodeId(row.detail)}
+                  childrenExpanded={requestChildrenVisible(row.detail, expandedFinishedRequests, finishedRequestScopeKey)}
+                  childCount={requestChildCount(row.detail, packageById)}
+                  onToggleChildren={() =>
+                    onSetFinishedRequestChildrenOpen(row.detail!.work_request.id, !requestChildrenVisible(row.detail!, expandedFinishedRequests, finishedRequestScopeKey))
+                  }
                   motion={updateAnimations.motionFor(requestUpdateKey(row.detail))}
                 />
               ) : null}
@@ -3088,6 +3169,9 @@ function RequestCard({
   index = 0,
   nodeId,
   motion,
+  childrenExpanded,
+  childCount = 0,
+  onToggleChildren,
 }: {
   detail: WorkRequestDetail;
   onSelectGuidance: (item: GuidanceItem) => void;
@@ -3096,16 +3180,20 @@ function RequestCard({
   index?: number;
   nodeId?: string;
   motion?: UpdateMotion;
+  childrenExpanded?: boolean;
+  childCount?: number;
+  onToggleChildren?: () => void;
 }) {
   const request = detail.work_request;
   const openQuestions = detail.clarification_questions?.filter((question) => question.status === "open") ?? [];
   const questionCount = openQuestions.length || request.open_question_count || 0;
   const operational = request.operational_state || null;
-  const quietMerged = [operational?.key, request.status].some(isFinishedBoardStatus);
-  const question = quietMerged ? undefined : openQuestions[0];
-  const description = quietMerged ? null : firstParagraph(request.human_description);
+  const finishedRequest = [operational?.key, request.status].some(isFinishedBoardStatus);
+  const collapsedFinished = finishedRequest && !childrenExpanded;
+  const question = collapsedFinished ? undefined : openQuestions[0];
+  const description = collapsedFinished ? null : firstParagraph(request.human_description);
   const handoffEligible = architectHandoffEligibleRequest(request);
-  const handoffHasOpenQuestions = !quietMerged && questionCount > 0;
+  const handoffHasOpenQuestions = !finishedRequest && questionCount > 0;
   const handoffIdentity = `${questionCount}:${request.id}:${request.status || ""}:${request.updated_at || ""}`;
   const commentSignal = cardCommentSignal(request.open_comment_count, request.comment_count);
   const {
@@ -3121,7 +3209,8 @@ function RequestCard({
         onSelectGuidance(clarificationGuidanceItem(detail, question));
       }
     : undefined;
-  const canCopyHandoff = !quietMerged && handoffEligible && Boolean(onCopyArchitectHandoff);
+  const canCopyHandoff = !finishedRequest && handoffEligible && Boolean(onCopyArchitectHandoff);
+  const canToggleChildren = finishedRequest && childCount > 0 && Boolean(onToggleChildren);
   const handoffSignalValue =
     handoffCopyState === "copying"
       ? "Copying..."
@@ -3150,7 +3239,8 @@ function RequestCard({
   const bodyMotionKey = stateCardBodyMotionKey(
     "request",
     request.id,
-    quietMerged,
+    collapsedFinished,
+    childrenExpanded,
     description,
     questionCount,
     question?.id,
@@ -3174,17 +3264,36 @@ function RequestCard({
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold">{request.title || request.id}</p>
-          {!quietMerged ? <p className="mt-1 text-xs text-muted-foreground">{request.work_type || "feature"}</p> : null}
+          {!collapsedFinished ? <p className="mt-1 text-xs text-muted-foreground">{request.work_type || "feature"}</p> : null}
         </div>
-        <AnimatedBadge
-          label={operationalLabel(operational, request.status)}
-          variant={operationalBadgeVariant(operational, request.status)}
-          className="shrink-0"
-        />
+        <div className="flex shrink-0 items-center gap-1.5">
+          <AnimatedBadge
+            label={operationalLabel(operational, request.status)}
+            variant={operationalBadgeVariant(operational, request.status)}
+            className="shrink-0"
+          />
+          {canToggleChildren ? (
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="request-children-toggle size-7"
+              aria-expanded={childrenExpanded}
+              aria-label={`${childrenExpanded ? "Hide" : "Show"} ${childCount} child item${childCount === 1 ? "" : "s"} for ${request.title || request.id}`}
+              title={`${childrenExpanded ? "Hide" : "Show"} child slices and packages`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleChildren?.();
+              }}
+            >
+              <ChevronRight className={cn("size-4 transition-transform duration-200", childrenExpanded && "rotate-90")} />
+            </Button>
+          ) : null}
+        </div>
       </div>
       <AnimatedCardBody motionKey={bodyMotionKey}>
         {description ? <p className="request-card-description mt-3 text-xs leading-relaxed text-muted-foreground">{description}</p> : null}
-        {!quietMerged && questionCount > 0 ? (
+        {!collapsedFinished && questionCount > 0 ? (
           <CardSignal
             className="mt-3"
             label="Open Questions"
@@ -3960,6 +4069,8 @@ function CardDetailDialog({
   onSelectGuidance,
   onCopyArchitectHandoff,
   onArchiveWorkRequest,
+  onChangeWorkRequestState,
+  onChangeWorkPackageState,
   onSubmitComment,
   onResolveComment,
   canMutateComments,
@@ -3969,6 +4080,8 @@ function CardDetailDialog({
   onSelectGuidance: (item: GuidanceItem) => void;
   onCopyArchitectHandoff: CopyArchitectHandoff;
   onArchiveWorkRequest: WorkRequestMutation;
+  onChangeWorkRequestState: WorkRequestStateMutation;
+  onChangeWorkPackageState: WorkPackageStateMutation;
   onSubmitComment: SubmitContextComment;
   onResolveComment: ResolveContextComment;
   canMutateComments: boolean;
@@ -4040,6 +4153,7 @@ function CardDetailDialog({
               onSelectGuidance={onSelectGuidance}
               onCopyArchitectHandoff={onCopyArchitectHandoff}
               onArchiveWorkRequest={onArchiveWorkRequest}
+              onChangeWorkRequestState={onChangeWorkRequestState}
               onSubmitComment={onSubmitComment}
               onResolveComment={onResolveComment}
               canMutateComments={canMutateComments}
@@ -4061,6 +4175,7 @@ function CardDetailDialog({
               detailPayload={state.package.payload}
               loading={effectiveLoadingPackage}
               error={state.package.error}
+              onChangeWorkPackageState={onChangeWorkPackageState}
               onSubmitComment={onSubmitComment}
               onResolveComment={onResolveComment}
               canMutateComments={canMutateComments}
@@ -4119,6 +4234,7 @@ function RequestDetailContent({
   onSelectGuidance,
   onCopyArchitectHandoff,
   onArchiveWorkRequest,
+  onChangeWorkRequestState,
   onSubmitComment,
   onResolveComment,
   canMutateComments,
@@ -4127,6 +4243,7 @@ function RequestDetailContent({
   onSelectGuidance: (item: GuidanceItem) => void;
   onCopyArchitectHandoff: CopyArchitectHandoff;
   onArchiveWorkRequest: WorkRequestMutation;
+  onChangeWorkRequestState: WorkRequestStateMutation;
   onSubmitComment: SubmitContextComment;
   onResolveComment: ResolveContextComment;
   canMutateComments: boolean;
@@ -4136,17 +4253,21 @@ function RequestDetailContent({
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [archivePending, setArchivePending] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [statePending, setStatePending] = useState(false);
+  const [stateError, setStateError] = useState<string | null>(null);
   const commentTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const operational = request.operational_state || null;
+  const detailFinished = [operational?.key, request.status].some(isFinishedBoardStatus);
   const openQuestions = requestOpenQuestions(detail);
   const sliceCounts = requestSliceCounts(detail);
   const currentCommentStats = requestCommentStats(detail, requestComments);
   const requestOnlyCommentStats = commentStats(requestComments);
-  const handoffEligible = architectHandoffEligibleRequest(request);
+  const handoffEligible = !detailFinished && architectHandoffEligibleRequest(request);
   const handoffHasOpenQuestions = (openQuestions.length || request.open_question_count || 0) > 0;
   const handoffButtonLabel = handoffHasOpenQuestions ? "Copy Resume Handoff Prompt" : "Copy Agent Handoff Prompt";
   const handoffIdentity = `${handoffHasOpenQuestions}:${request.id}:${request.status || ""}:${request.updated_at || ""}`;
   const canManualArchive = Boolean(request.completed_at && !request.archived_at);
+  const canCompleteRequest = !detailFinished;
   const {
     cachedHandoff,
     error: handoffError,
@@ -4184,6 +4305,18 @@ function RequestDetailContent({
     }
   }
 
+  async function completeRequest() {
+    setStatePending(true);
+    setStateError(null);
+
+    try {
+      await onChangeWorkRequestState(request.id, "completed");
+    } catch (caught) {
+      setStateError(caught instanceof Error ? caught.message : "WorkRequest state was not changed");
+      setStatePending(false);
+    }
+  }
+
   return (
     <>
       <DetailHeader
@@ -4192,9 +4325,15 @@ function RequestDetailContent({
         badge={<Badge variant={operationalBadgeVariant(operational, request.status)}>{operationalLabel(operational, request.status)}</Badge>}
       />
       <div className="grid gap-4">
-        {handoffEligible || canMutateComments ? (
+        {handoffEligible || canMutateComments || canCompleteRequest ? (
           <div className={cn("handoff-action-panel", handoffHasOpenQuestions && "handoff-action-panel-muted")} data-guidance-section style={{ animationDelay: "58ms" }}>
             <div className="handoff-action-row">
+              {canCompleteRequest ? (
+                <Button type="button" size="sm" variant="outline" onClick={() => void completeRequest()} disabled={statePending}>
+                  {statePending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+                  Change State: Completed
+                </Button>
+              ) : null}
               {handoffEligible ? (
                 <Button type="button" size="sm" variant={handoffHasOpenQuestions ? "outline" : "default"} onClick={() => void copyHandoff()} disabled={handoffCopyState === "copying"}>
                   {handoffCopyState === "copying" ? <Loader2 className="size-4 animate-spin" /> : handoffCopyState === "copied" ? <CheckCircle2 className="size-4" /> : <Copy className="size-4" />}
@@ -4208,6 +4347,7 @@ function RequestDetailContent({
                 </Button>
               ) : null}
             </div>
+            {stateError ? <p className="text-xs text-destructive">{stateError}</p> : null}
             {handoffError ? <p className="text-xs text-destructive">{handoffError}</p> : null}
           </div>
         ) : null}
@@ -4387,6 +4527,7 @@ function PackageDetailContent({
   detailPayload,
   loading,
   error,
+  onChangeWorkPackageState,
   onSubmitComment,
   onResolveComment,
   canMutateComments,
@@ -4395,11 +4536,14 @@ function PackageDetailContent({
   detailPayload: WorkPackageDetailPayload | null;
   loading: boolean;
   error: string | null;
+  onChangeWorkPackageState: WorkPackageStateMutation;
   onSubmitComment: SubmitContextComment;
   onResolveComment: ResolveContextComment;
   canMutateComments: boolean;
 }) {
   const [packageComments, setPackageComments] = useSyncedComments(detailPayload?.comments || []);
+  const [statePending, setStatePending] = useState(false);
+  const [stateError, setStateError] = useState<string | null>(null);
   const pkg = { ...selection.pkg, ...(detailPayload?.work_package || {}) } as WorkPackageCard & {
     branch_pattern?: string | null;
     product_description?: string | null;
@@ -4416,6 +4560,19 @@ function PackageDetailContent({
   const attentionItems = operational?.attention_items || [];
   const blockerCount = blockers.length || summary?.active_blocker_count || pkg.active_blocker_count || (operational?.key === "blocked" || pkg.status === "blocked" ? 1 : 0);
   const currentCommentStats = targetCommentStats(summary || pkg, detailPayload?.comments || [], packageComments);
+  const canMarkMerged = !isFinishedBoardStatus(operational?.key || pkg.status);
+
+  async function markMerged() {
+    setStatePending(true);
+    setStateError(null);
+
+    try {
+      await onChangeWorkPackageState(pkg.id, "merged");
+    } catch (caught) {
+      setStateError(caught instanceof Error ? caught.message : "WorkPackage state was not changed");
+      setStatePending(false);
+    }
+  }
 
   return (
     <>
@@ -4425,6 +4582,17 @@ function PackageDetailContent({
         badge={<Badge variant={operationalBadgeVariant(operational, pkg.status)}>{operationalLabel(operational, pkg.status)}</Badge>}
       />
       <div className="grid gap-4">
+        {canMarkMerged ? (
+          <div className="handoff-action-panel" data-guidance-section style={{ animationDelay: "58ms" }}>
+            <div className="handoff-action-row">
+              <Button type="button" size="sm" variant="outline" onClick={() => void markMerged()} disabled={statePending}>
+                {statePending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+                Change State: Merged
+              </Button>
+            </div>
+            {stateError ? <p className="text-xs text-destructive">{stateError}</p> : null}
+          </div>
+        ) : null}
         <DetailStatGrid
           stats={[
             { label: "State", value: operationalLabel(operational, pkg.status) },
@@ -5481,6 +5649,8 @@ function workstreamCategoryCounts(
   details: WorkRequestDetail[],
   packages: WorkPackageCard[],
   unlinkedPackages: WorkPackageCard[],
+  expandedFinishedRequests: Record<string, boolean>,
+  finishedRequestScopeKey: string,
 ): WorkstreamCategoryCounts {
   // Mirrors the workstream board's lane-card counts for the collapsed repo header.
   const packageIds = new Set(packages.map((pkg) => pkg.id));
@@ -5488,6 +5658,7 @@ function workstreamCategoryCounts(
   let linkedWorkPackages = 0;
 
   details.forEach((detail) => {
+    if (!requestChildrenVisible(detail, expandedFinishedRequests, finishedRequestScopeKey)) return;
     (detail.planned_slices || []).forEach((slice) => {
       slices += 1;
       if (slice.work_package_id && packageIds.has(slice.work_package_id)) {
@@ -5543,6 +5714,44 @@ function workstreamRows(
   }
 
   return rows;
+}
+
+function requestDetailFinished(detail: WorkRequestDetail) {
+  const request = detail.work_request;
+  return [request.operational_state?.key, request.status].some(isFinishedBoardStatus);
+}
+
+function requestChildrenVisible(detail: WorkRequestDetail, expandedFinishedRequests: Record<string, boolean>, scopeKey: string) {
+  if (!requestDetailFinished(detail)) return true;
+  return expandedFinishedRequests[finishedRequestChildrenStorageKey(scopeKey, detail.work_request.id)] === true;
+}
+
+function requestChildCount(detail: WorkRequestDetail, packageById: Map<string, WorkPackageCard>) {
+  const slices = detail.planned_slices || [];
+  const linkedPackages = slices.filter((slice) => slice.work_package_id && packageById.has(slice.work_package_id)).length;
+  return slices.length + linkedPackages;
+}
+
+function detailsWithVisibleSlices(details: WorkRequestDetail[], visibleEntries: SliceEntry[]) {
+  const visibleSliceIdsByRequest = visibleEntries.reduce<Map<string, Set<string>>>((byRequest, entry) => {
+    const workRequestId = entry.detail.work_request.id;
+    const sliceIds = byRequest.get(workRequestId) || new Set<string>();
+    sliceIds.add(entry.slice.id);
+    byRequest.set(workRequestId, sliceIds);
+    return byRequest;
+  }, new Map());
+
+  return details.map((detail) => {
+    const slices = detail.planned_slices || [];
+    const visibleSliceIds = visibleSliceIdsByRequest.get(detail.work_request.id);
+    if (!visibleSliceIds) return slices.length === 0 ? detail : { ...detail, planned_slices: [] };
+    if (visibleSliceIds.size === slices.length) return detail;
+    return { ...detail, planned_slices: slices.filter((slice) => visibleSliceIds.has(slice.id)) };
+  });
+}
+
+function finishedRequestChildrenStorageKey(scopeKey: string, workRequestId: string) {
+  return `${scopeKey}::${workRequestId}`;
 }
 
 function workstreamRowKey(row: WorkstreamRow, index: number) {
@@ -5751,6 +5960,15 @@ function writeStoredRepoWorkstreamOpen(stateKey: string, open: boolean) {
       [stateKey]: open,
     },
   }));
+}
+
+function readStoredFinishedRequestChildren() {
+  const stored = readDashboardUiState().finishedRequestChildren;
+  return isRecord(stored) ? Object.fromEntries(Object.entries(stored).filter(([, open]) => typeof open === "boolean")) as Record<string, boolean> : {};
+}
+
+function writeStoredFinishedRequestChildren(finishedRequestChildren: Record<string, boolean>) {
+  updateDashboardUiState((state) => ({ ...state, finishedRequestChildren }));
 }
 
 function writeDashboardUiStateValue<Key extends keyof DashboardUiState>(key: Key, value: DashboardUiState[Key]) {

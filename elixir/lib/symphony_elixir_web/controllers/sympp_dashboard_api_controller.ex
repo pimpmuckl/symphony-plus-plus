@@ -39,6 +39,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @access_grant_lazy_migration_columns ["phase_id", "scope_repo", "scope_base_branch", "provenance"]
   @local_operator_actor "local-operator"
   @local_operator_worker "local-operator-worker"
+  @local_operator_nonmergeable_terminal_package_statuses ["merged_into_phase", "closed", "abandoned"]
 
   @spec authorize_board_browser(Conn.t(), term()) :: Conn.t()
   def authorize_board_browser(conn, _opts) do
@@ -592,6 +593,30 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
     end)
   end
 
+  @spec operator_update_work_request_state(Conn.t(), map()) :: Conn.t()
+  def operator_update_work_request_state(conn, %{"work_request_id" => work_request_id} = params) do
+    send_local_operator_response(conn, fn repo ->
+      with {:ok, "completed"} <- local_operator_work_request_state(params),
+           {:ok, work_request} <- complete_work_request_for_local_operator(repo, work_request_id),
+           {:ok, dashboard} <- operator_dashboard_payload(repo),
+           {:ok, detail} <- dashboard_work_request_detail(dashboard, work_request.id) do
+        json(conn, %{work_request: detail, dashboard: dashboard})
+      end
+    end)
+  end
+
+  @spec operator_update_work_package_state(Conn.t(), map()) :: Conn.t()
+  def operator_update_work_package_state(conn, %{"work_package_id" => work_package_id} = params) do
+    send_local_operator_response(conn, fn repo ->
+      with {:ok, "merged"} <- local_operator_work_package_status(params),
+           {:ok, work_package} <-
+             mark_work_package_merged_and_refresh_for_local_operator(repo, normalize_package_route_id(work_package_id)),
+           {:ok, dashboard} <- operator_dashboard_payload(repo) do
+        json(conn, %{work_package_id: work_package.id, dashboard: dashboard})
+      end
+    end)
+  end
+
   @spec operator_create_comment(Conn.t(), map()) :: Conn.t()
   def operator_create_comment(conn, params) do
     send_local_operator_response(conn, fn repo ->
@@ -838,6 +863,164 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       archived_at: timestamp(work_request.archived_at),
       archive_reason: work_request.archive_reason
     }
+  end
+
+  defp local_operator_work_request_state(params) do
+    case text_param(params, "state") || text_param(params, "status") do
+      "completed" -> {:ok, "completed"}
+      _state -> {:error, :invalid_status}
+    end
+  end
+
+  defp local_operator_work_package_status(params) do
+    case text_param(params, "status") do
+      "merged" -> {:ok, "merged"}
+      _status -> {:error, :invalid_status}
+    end
+  end
+
+  defp complete_work_request_for_local_operator(repo, work_request_id) do
+    repo.transaction(fn ->
+      with {:ok, planned_slices} <- WorkRequestService.list_planned_slices(repo, work_request_id),
+           :ok <- validate_planned_slices_for_local_operator(repo, planned_slices),
+           :ok <- complete_planned_slices_for_local_operator(repo, work_request_id, planned_slices),
+           {:ok, work_request} <- WorkRequestService.refresh_completion(repo, work_request_id),
+           :ok <- require_completed_work_request(work_request) do
+        work_request
+      else
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+    |> normalize_local_operator_transaction_result()
+  end
+
+  defp validate_planned_slices_for_local_operator(repo, planned_slices) do
+    Enum.reduce_while(planned_slices, :ok, fn planned_slice, :ok ->
+      case validate_planned_slice_for_local_operator(repo, planned_slice) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp validate_planned_slice_for_local_operator(_repo, %{status: status})
+       when status in ["skipped", "planned", "approved"],
+       do: :ok
+
+  defp validate_planned_slice_for_local_operator(repo, %{status: "dispatched", work_package_id: work_package_id})
+       when is_binary(work_package_id) do
+    with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id) do
+      validate_local_operator_package_mergeable(work_package)
+    end
+  end
+
+  defp validate_planned_slice_for_local_operator(_repo, %{status: "dispatched"}), do: {:error, :not_completed}
+  defp validate_planned_slice_for_local_operator(_repo, _planned_slice), do: {:error, :invalid_status}
+
+  defp complete_planned_slices_for_local_operator(repo, work_request_id, planned_slices) do
+    Enum.reduce_while(planned_slices, :ok, fn planned_slice, :ok ->
+      case complete_planned_slice_for_local_operator(repo, work_request_id, planned_slice) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp complete_planned_slice_for_local_operator(_repo, _work_request_id, %{status: "skipped"}), do: :ok
+
+  defp complete_planned_slice_for_local_operator(repo, work_request_id, %{id: id, status: status})
+       when status in ["planned", "approved"] do
+    case WorkRequestService.skip_planned_slice(repo, work_request_id, id, status) do
+      {:ok, _planned_slice} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp complete_planned_slice_for_local_operator(repo, _work_request_id, %{status: "dispatched", work_package_id: work_package_id})
+       when is_binary(work_package_id) do
+    case mark_work_package_merged_for_local_operator(repo, work_package_id) do
+      {:ok, _work_package} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp complete_planned_slice_for_local_operator(_repo, _work_request_id, _planned_slice), do: :ok
+
+  defp require_completed_work_request(%{completed_at: %DateTime{}}), do: :ok
+  defp require_completed_work_request(_work_request), do: {:error, :not_completed}
+
+  defp mark_work_package_merged_and_refresh_for_local_operator(repo, work_package_id) do
+    repo.transaction(fn ->
+      with {:ok, work_package} <- mark_work_package_merged_for_local_operator(repo, work_package_id),
+           :ok <- refresh_work_requests_for_work_package(repo, work_package.id) do
+        work_package
+      else
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+    |> normalize_local_operator_transaction_result()
+  end
+
+  defp mark_work_package_merged_for_local_operator(repo, work_package_id) do
+    with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id) do
+      case work_package.status do
+        "merged" ->
+          {:ok, work_package}
+
+        status when status in @local_operator_nonmergeable_terminal_package_statuses ->
+          {:error, :invalid_status}
+
+        status when is_binary(status) ->
+          WorkPackageRepository.update_status(repo, work_package.id, status, "merged")
+
+        _status ->
+          {:error, :invalid_status}
+      end
+    end
+  end
+
+  defp validate_local_operator_package_mergeable(%{status: status})
+       when status in @local_operator_nonmergeable_terminal_package_statuses,
+       do: {:error, :invalid_status}
+
+  defp validate_local_operator_package_mergeable(%{status: status}) when is_binary(status), do: :ok
+  defp validate_local_operator_package_mergeable(_work_package), do: {:error, :invalid_status}
+
+  defp normalize_local_operator_transaction_result({:ok, value}), do: {:ok, value}
+  defp normalize_local_operator_transaction_result({:error, reason}), do: {:error, reason}
+
+  defp refresh_work_requests_for_work_package(repo, work_package_id) do
+    with {:ok, work_requests} <- WorkRequestService.list(repo, %{include_archived: true}) do
+      refresh_linked_work_requests(repo, work_requests, work_package_id)
+    end
+  end
+
+  defp refresh_linked_work_requests(repo, work_requests, work_package_id) do
+    Enum.reduce_while(work_requests, :ok, fn work_request, :ok ->
+      repo
+      |> refresh_work_request_if_linked_to_package(work_request, work_package_id)
+      |> reduce_linked_work_request_refresh()
+    end)
+  end
+
+  defp reduce_linked_work_request_refresh(:ok), do: {:cont, :ok}
+  defp reduce_linked_work_request_refresh({:error, reason}), do: {:halt, {:error, reason}}
+
+  defp refresh_work_request_if_linked_to_package(repo, work_request, work_package_id) do
+    with {:ok, planned_slices} <- WorkRequestService.list_planned_slices(repo, work_request.id),
+         true <- Enum.any?(planned_slices, &(&1.work_package_id == work_package_id)) do
+      refresh_work_request_completion(repo, work_request.id)
+    else
+      false -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp refresh_work_request_completion(repo, work_request_id) do
+    case WorkRequestService.refresh_completion(repo, work_request_id) do
+      {:ok, _work_request} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp local_operator_comment_attrs(params) do

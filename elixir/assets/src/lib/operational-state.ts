@@ -13,6 +13,7 @@ const CARD_TONES: Record<string, StateCardTone> = {
   ci_waiting: "review",
   claimed: "queued",
   closed: "finished",
+  completed: "finished",
   created: "queued",
   dispatched: "slice",
   implementing: "implementing",
@@ -42,6 +43,7 @@ const BADGE_TONES: Record<string, BadgeTone> = {
   ci_waiting: "info",
   claimed: "info",
   closed: "success",
+  completed: "success",
   created: "info",
   human_info_needed: "danger",
   implementing: "info",
@@ -69,6 +71,7 @@ const BOARD_LANES: Record<string, BoardLane> = {
   ci_waiting: "implementing",
   claimed: "implementing",
   closed: "finished",
+  completed: "finished",
   created: "implementing",
   implementing: "implementing",
   in_progress: "implementing",
@@ -94,6 +97,7 @@ const REQUEST_LANES: Record<string, RequestLane> = {
   ci_waiting: "slices",
   claimed: "slices",
   closed: "finished",
+  completed: "finished",
   implementing: "slices",
   in_progress: "slices",
   merge_ready: "slices",
@@ -213,7 +217,7 @@ export function operationalBadgeVariant(operational?: WorkPackageCard["operation
   if (operational.tone === "critical") return "danger";
   if (key === "merge_ready") return operational.tone === "warning" ? "warning" : "ready";
   if (key === "blocked") return "danger";
-  if (["merged", "merged_into_phase", "closed"].includes(key) || operational.tone === "success") return "success";
+  if (["merged", "merged_into_phase", "closed", "completed"].includes(key) || operational.tone === "success") return "success";
   if (["abandoned", "skipped"].includes(key)) return "secondary";
   if (operational.tone === "warning") return "warning";
   if (operational.tone === "info") return "info";
