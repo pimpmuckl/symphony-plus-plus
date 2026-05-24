@@ -259,6 +259,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
           {:ok, PlannedSliceDelivery.t()} | {:error, error()}
   def record_planned_slice_delivery(repo, work_request_id, planned_slice_id, attrs)
       when is_atom(repo) and is_binary(work_request_id) and is_binary(planned_slice_id) and is_map(attrs) do
+    repo.transaction(fn ->
+      case record_planned_slice_delivery_in_transaction(repo, work_request_id, planned_slice_id, attrs) do
+        {:ok, delivery} -> delivery
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+    |> normalize_transaction_result()
+  rescue
+    error in Ecto.ConstraintError -> normalize_constraint_error(error)
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  @doc false
+  @spec record_planned_slice_delivery_in_transaction(repo(), String.t(), String.t(), map()) ::
+          {:ok, PlannedSliceDelivery.t()} | {:error, error()}
+  def record_planned_slice_delivery_in_transaction(repo, work_request_id, planned_slice_id, attrs)
+      when is_atom(repo) and is_binary(work_request_id) and is_binary(planned_slice_id) and is_map(attrs) do
     attrs =
       attrs
       |> normalize_keys()
@@ -268,8 +285,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
 
     changeset = PlannedSliceDelivery.create_changeset(attrs)
 
-    with {:ok, candidate} <- Changeset.apply_action(changeset, :insert) do
-      insert_or_replay_planned_slice_delivery(repo, work_request_id, planned_slice_id, changeset, candidate)
+    with {:ok, candidate} <- Changeset.apply_action(changeset, :insert),
+         :ok <- validate_planned_slice_delivery_scope(repo, work_request_id, planned_slice_id, candidate) do
+      {:ok, insert_or_replay_scoped_planned_slice_delivery(repo, planned_slice_id, changeset, candidate)}
     end
   rescue
     error in Ecto.ConstraintError -> normalize_constraint_error(error)
@@ -644,19 +662,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
       %ClarificationQuestion{status: status} when status != current_status -> :stale_status
       %ClarificationQuestion{} -> :stale_status
     end
-  end
-
-  defp insert_or_replay_planned_slice_delivery(repo, work_request_id, planned_slice_id, changeset, candidate) do
-    repo.transaction(fn ->
-      case validate_planned_slice_delivery_scope(repo, work_request_id, planned_slice_id, candidate) do
-        :ok -> insert_or_replay_scoped_planned_slice_delivery(repo, planned_slice_id, changeset, candidate)
-        {:error, reason} -> repo.rollback(reason)
-      end
-    end)
-    |> normalize_transaction_result()
-  rescue
-    error in Ecto.ConstraintError -> normalize_constraint_error(error)
-    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   defp validate_planned_slice_delivery_scope(repo, work_request_id, planned_slice_id, candidate) do

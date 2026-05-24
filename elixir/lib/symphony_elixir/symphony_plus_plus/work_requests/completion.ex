@@ -1,13 +1,12 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   @moduledoc false
 
-  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
-  alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
-  alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
   import Ecto.Query, only: [from: 2]
@@ -17,8 +16,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   @completion_blocking_work_request_statuses ["human_info_needed"]
   @operator_completion_source "operator"
   @restorable_archive_reasons ["age"]
-  @active_grant_roles ["worker", "architect"]
-  @stale_heartbeat_after_seconds 300
   @default_archive_after_days 14
   @completed_visible_limit 10
 
@@ -35,12 +32,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
 
   @spec blocker_event_payload?(map()) :: boolean()
   def blocker_event_payload?(payload) when is_map(payload) do
-    map_value(payload, :type) == "blocker" and map_value(payload, :source_tool) in ["report_blocker", "resolve_blocker"]
+    WorkPackageActivity.blocker_event_payload?(payload)
   end
 
-  @spec state(WorkRequest.t(), map(), [PlannedSlice.t()], %{optional(String.t()) => context()}) :: state()
-  def state(%WorkRequest{} = work_request, question_state, planned_slices, work_package_contexts)
-      when is_map(question_state) and is_list(planned_slices) and is_map(work_package_contexts) do
+  @spec state(WorkRequest.t(), map(), [PlannedSlice.t()], %{optional(String.t()) => context()}) ::
+          state()
+  @spec state(WorkRequest.t(), map(), [PlannedSlice.t()], %{optional(String.t()) => context()}, %{
+          optional(String.t()) => PlannedSliceDelivery.t()
+        }) :: state()
+  def state(
+        %WorkRequest{} = work_request,
+        question_state,
+        planned_slices,
+        work_package_contexts,
+        deliveries_by_slice_id \\ %{}
+      )
+      when is_map(question_state) and is_list(planned_slices) and is_map(work_package_contexts) and
+             is_map(deliveries_by_slice_id) do
     if operator_completed?(work_request) do
       %{
         completed?: true,
@@ -48,29 +56,62 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
         archived_at: work_request.archived_at
       }
     else
-      derived_state(work_request, question_state, planned_slices, work_package_contexts)
+      derived_state(work_request, question_state, planned_slices, work_package_contexts, deliveries_by_slice_id)
     end
   end
 
-  defp derived_state(%WorkRequest{} = work_request, question_state, planned_slices, work_package_contexts)
-       when is_map(question_state) and is_list(planned_slices) and is_map(work_package_contexts) do
-    open_question_count = Map.get(question_state, :open_count, 0)
-
+  defp derived_state(
+         %WorkRequest{} = work_request,
+         question_state,
+         planned_slices,
+         work_package_contexts,
+         deliveries_by_slice_id
+       )
+       when is_map(question_state) and is_list(planned_slices) and is_map(work_package_contexts) and
+              is_map(deliveries_by_slice_id) do
     completed? =
-      completion_status_allowed?(work_request) and open_question_count == 0 and planned_slices != [] and
-        Enum.all?(planned_slices, &terminal_slice?(&1, Map.get(work_package_contexts, &1.work_package_id)))
+      derived_completed?(
+        work_request,
+        question_state,
+        planned_slices,
+        work_package_contexts
+      )
 
     completed_at =
-      if completed? do
-        work_request.completed_at ||
-          derived_completed_at(work_request, planned_slices, work_package_contexts, Map.get(question_state, :latest_gate_at))
-      end
+      derived_completed_at_if_complete(
+        completed?,
+        work_request,
+        question_state,
+        planned_slices,
+        work_package_contexts,
+        deliveries_by_slice_id
+      )
 
     %{
       completed?: completed?,
       completed_at: completed_at,
       archived_at: if(completed?, do: work_request.archived_at)
     }
+  end
+
+  defp derived_completed?(%WorkRequest{} = work_request, question_state, planned_slices, work_package_contexts) do
+    completion_status_allowed?(work_request) and
+      Map.get(question_state, :open_count, 0) == 0 and
+      planned_slices != [] and
+      Enum.all?(planned_slices, &terminal_slice?(&1, Map.get(work_package_contexts, &1.work_package_id)))
+  end
+
+  defp derived_completed_at_if_complete(false, %WorkRequest{}, _question_state, _planned_slices, _work_package_contexts, _deliveries_by_slice_id), do: nil
+
+  defp derived_completed_at_if_complete(true, %WorkRequest{} = work_request, question_state, planned_slices, work_package_contexts, deliveries_by_slice_id) do
+    work_request.completed_at ||
+      derived_completed_at(
+        work_request,
+        planned_slices,
+        work_package_contexts,
+        deliveries_by_slice_id,
+        Map.get(question_state, :latest_gate_at)
+      )
   end
 
   @spec visible_state(WorkRequest.t(), map(), [PlannedSlice.t()], %{optional(String.t()) => context()}) :: state()
@@ -93,12 +134,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
-  defp refresh_in_transaction(repo, work_request_id) do
+  @doc false
+  @spec refresh_in_transaction(Repository.repo(), String.t()) :: {:ok, WorkRequest.t()} | {:error, Repository.error()}
+  def refresh_in_transaction(repo, work_request_id) do
     with {:ok, work_request} <- Repository.get(repo, work_request_id),
          {:ok, question_state} <- question_state(repo, work_request_id),
          {:ok, planned_slices} <- Repository.list_planned_slices(repo, work_request_id),
-         {:ok, contexts} <- linked_work_package_contexts(repo, planned_slices) do
-      state = state(work_request, question_state, planned_slices, contexts)
+         {:ok, contexts} <- linked_work_package_contexts(repo, planned_slices),
+         {:ok, deliveries_by_slice_id} <- planned_slice_deliveries_by_id(repo, planned_slices) do
+      state = state(work_request, question_state, planned_slices, contexts, deliveries_by_slice_id)
       persist_state(repo, work_request, state)
     end
   end
@@ -454,22 +498,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     work_packages =
       repo.all(from(work_package in WorkPackage, where: work_package.id in ^work_package_ids))
 
-    progress_events_by_id = grouped_progress_events(repo, work_package_ids)
-    grants_by_id = grouped_access_grants(repo, work_package_ids)
-    agent_runs_by_id = grouped_agent_runs(repo, work_package_ids)
+    activity_contexts = WorkPackageActivity.contexts(repo, work_package_ids)
 
     contexts =
       Map.new(work_packages, fn %WorkPackage{} = work_package ->
-        progress_events = Map.get(progress_events_by_id, work_package.id, [])
-        grants = Map.get(grants_by_id, work_package.id, [])
-        agent_runs = Map.get(agent_runs_by_id, work_package.id, [])
-
         {work_package.id,
-         %{
-           work_package: work_package,
-           blocker_state: blocker_state(progress_events),
-           runtime_state: runtime_state(grants, agent_runs)
-         }}
+         activity_contexts
+         |> Map.get(work_package.id, WorkPackageActivity.empty_context())
+         |> Map.put(:work_package, work_package)}
       end)
 
     {:ok, contexts}
@@ -477,32 +513,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
-  defp grouped_progress_events(repo, work_package_ids) do
-    repo.all(
-      from(progress_event in ProgressEvent,
-        where: progress_event.work_package_id in ^work_package_ids,
-        order_by: [asc: progress_event.work_package_id, asc: progress_event.sequence, asc: progress_event.created_at]
-      )
-    )
-    |> Enum.group_by(& &1.work_package_id)
-  end
+  defp planned_slice_deliveries_by_id(_repo, []), do: {:ok, %{}}
 
-  defp grouped_access_grants(repo, work_package_ids) do
-    repo.all(
-      from(access_grant in AccessGrant,
-        where: access_grant.work_package_id in ^work_package_ids
-      )
-    )
-    |> Enum.group_by(& &1.work_package_id)
-  end
+  defp planned_slice_deliveries_by_id(repo, planned_slices) do
+    planned_slice_ids = Enum.map(planned_slices, & &1.id)
 
-  defp grouped_agent_runs(repo, work_package_ids) do
-    repo.all(
-      from(agent_run in AgentRun,
-        where: agent_run.work_package_id in ^work_package_ids
+    deliveries =
+      repo.all(
+        from(delivery in PlannedSliceDelivery,
+          where: delivery.planned_slice_id in ^planned_slice_ids
+        )
       )
-    )
-    |> Enum.group_by(& &1.work_package_id)
+
+    {:ok, Map.new(deliveries, &{&1.planned_slice_id, &1})}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   defp terminal_slice?(%PlannedSlice{status: status}, _context) when status in @terminal_planned_slice_statuses, do: true
@@ -549,7 +574,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
 
   defp map_value(map, key) when is_map(map) and is_atom(key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
 
-  defp derived_completed_at(%WorkRequest{} = work_request, planned_slices, work_package_contexts, question_gate_at) do
+  defp derived_completed_at(%WorkRequest{} = work_request, planned_slices, work_package_contexts, deliveries_by_slice_id, question_gate_at) do
     work_package_timestamps =
       work_package_contexts
       |> Map.values()
@@ -568,89 +593,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
         ]
       end)
 
-    latest_timestamp([work_request.updated_at, question_gate_at] ++ Enum.map(planned_slices, & &1.updated_at) ++ work_package_timestamps ++ gate_timestamps) ||
+    delivery_timestamps =
+      deliveries_by_slice_id
+      |> Map.values()
+      |> Enum.flat_map(&[&1.recorded_at, &1.updated_at])
+
+    latest_timestamp([work_request.updated_at, question_gate_at] ++ Enum.map(planned_slices, & &1.updated_at) ++ work_package_timestamps ++ gate_timestamps ++ delivery_timestamps) ||
       DateTime.utc_now(:microsecond)
   end
-
-  defp blocker_state(progress_events) do
-    blocker_events =
-      progress_events
-      |> Enum.filter(&blocker_event?/1)
-      |> Enum.sort_by(&progress_event_order/1)
-
-    active_by_id =
-      Enum.reduce(blocker_events, %{}, fn %ProgressEvent{} = event, active_by_id ->
-        Map.put(active_by_id, blocker_id(event), map_value(event.payload || %{}, :active) == true)
-      end)
-
-    %{active?: Enum.any?(Map.values(active_by_id), & &1), latest_gate_at: latest_timestamp(Enum.map(blocker_events, & &1.created_at))}
-  end
-
-  defp blocker_event?(%ProgressEvent{payload: payload}) when is_map(payload) do
-    blocker_event_payload?(payload)
-  end
-
-  defp blocker_event?(%ProgressEvent{}), do: false
-
-  defp blocker_id(%ProgressEvent{payload: payload, idempotency_key: idempotency_key, id: id}) do
-    payload = payload || %{}
-
-    map_value(payload, :blocker_id)
-    |> Kernel.||(idempotency_key)
-    |> Kernel.||(id)
-    |> normalize_blocker_id()
-  end
-
-  defp progress_event_order(%ProgressEvent{} = event) do
-    {event.sequence || 0, timestamp_sort_value(event.created_at), event.id || ""}
-  end
-
-  defp runtime_state(grants, agent_runs) do
-    %{active?: Enum.any?(grants, &active_grant?/1) or Enum.any?(agent_runs, &active_agent_run?/1), latest_gate_at: latest_runtime_gate_at(grants, agent_runs)}
-  end
-
-  defp active_grant?(%AccessGrant{grant_role: role, claimed_at: %DateTime{}, revoked_at: nil, expires_at: expires_at})
-       when role in @active_grant_roles do
-    is_nil(expires_at) or DateTime.compare(expires_at, DateTime.utc_now(:microsecond)) == :gt
-  end
-
-  defp active_grant?(%AccessGrant{}), do: false
-
-  defp active_agent_run?(%AgentRun{status: status} = run), do: status in AgentRun.active_statuses() and not stale_agent_run?(run)
-
-  defp stale_agent_run?(%AgentRun{status: status, last_seen_at: %DateTime{} = last_seen_at}) when status in ["starting", "running", "retrying"] do
-    DateTime.diff(DateTime.utc_now(:microsecond), last_seen_at, :second) >= @stale_heartbeat_after_seconds
-  end
-
-  defp stale_agent_run?(%AgentRun{}), do: false
-
-  defp latest_runtime_gate_at(grants, agent_runs) do
-    grant_timestamps =
-      grants
-      |> Enum.reject(&active_grant?/1)
-      |> Enum.map(fn %AccessGrant{} = grant -> grant.revoked_at || expired_at(grant) || grant.updated_at end)
-
-    run_timestamps =
-      agent_runs
-      |> Enum.reject(&active_agent_run?/1)
-      |> Enum.map(&agent_run_gate_at/1)
-
-    latest_timestamp(grant_timestamps ++ run_timestamps)
-  end
-
-  defp agent_run_gate_at(%AgentRun{finished_at: %DateTime{} = finished_at}), do: finished_at
-
-  defp agent_run_gate_at(%AgentRun{status: status, last_seen_at: %DateTime{} = last_seen_at}) when status in ["starting", "running", "retrying"] do
-    DateTime.add(last_seen_at, @stale_heartbeat_after_seconds, :second)
-  end
-
-  defp agent_run_gate_at(%AgentRun{} = run), do: run.updated_at
-
-  defp expired_at(%AccessGrant{expires_at: %DateTime{} = expires_at}) do
-    if DateTime.compare(expires_at, DateTime.utc_now(:microsecond)) in [:lt, :eq], do: expires_at
-  end
-
-  defp expired_at(%AccessGrant{}), do: nil
 
   defp latest_timestamp(timestamps) do
     timestamps
@@ -660,9 +610,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
 
   defp timestamp_sort_value(%DateTime{} = datetime), do: DateTime.to_unix(datetime, :microsecond)
   defp timestamp_sort_value(_timestamp), do: -1
-
-  defp normalize_blocker_id(value) when is_binary(value), do: String.trim(value)
-  defp normalize_blocker_id(value), do: to_string(value)
 
   defp filled_string?(value), do: is_binary(value) and String.trim(value) != ""
 
