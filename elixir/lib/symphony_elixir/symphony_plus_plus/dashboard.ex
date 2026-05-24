@@ -111,7 +111,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       {:ok,
        repo
        |> repo_identity_repo_values()
-       |> build_repo_identity_catalog(local_operator_trusted_repo_remotes())}
+       |> build_repo_identity_catalog(local_operator_trusted_repo_remotes(), local_path_remotes?: true)}
     end)
   end
 
@@ -1168,8 +1168,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     build_repo_identity_catalog(repo_values, configured_trusted_repo_remotes())
   end
 
-  defp build_repo_identity_catalog(repo_values, trusted_remotes) when is_list(trusted_remotes) do
-    RepoIdentity.catalog(repo_values, trusted_remotes: Enum.uniq(trusted_remotes))
+  defp build_repo_identity_catalog(repo_values, trusted_remotes, opts \\ []) when is_list(trusted_remotes) do
+    repo_identity_opts =
+      opts
+      |> Keyword.put(:trusted_remotes, Enum.uniq(trusted_remotes))
+
+    RepoIdentity.catalog(repo_values, repo_identity_opts)
   end
 
   defp configured_trusted_repo_remotes do
@@ -1185,24 +1189,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
 
   defp local_operator_origin_remotes do
     SecretHandoff.local_operator_repo_root()
-    |> git_origin_remote()
+    |> RepoIdentity.local_git_origin_remote()
     |> List.wrap()
   end
-
-  defp git_origin_remote(repo_root) when is_binary(repo_root) do
-    with git when is_binary(git) <- System.find_executable("git") || System.find_executable("git.exe"),
-         {origin, 0} <- System.cmd(git, ["-C", repo_root, "remote", "get-url", "origin"], stderr_to_stdout: true),
-         origin <- String.trim(origin),
-         false <- origin == "" do
-      origin
-    else
-      _result -> nil
-    end
-  rescue
-    _error -> nil
-  end
-
-  defp git_origin_remote(_repo_root), do: nil
 
   defp safe_read(fun) when is_function(fun, 0) do
     fun.()
