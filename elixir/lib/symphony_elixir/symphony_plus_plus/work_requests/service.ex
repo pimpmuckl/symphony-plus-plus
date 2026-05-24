@@ -76,6 +76,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service do
   @spec refresh_completion(Repository.repo(), String.t()) :: {:ok, WorkRequest.t()} | {:error, error()}
   def refresh_completion(repo, work_request_id), do: Completion.refresh(repo, work_request_id)
 
+  @spec force_complete(Repository.repo(), String.t()) :: {:ok, WorkRequest.t()} | {:error, error()}
+  def force_complete(repo, work_request_id), do: Completion.force_complete(repo, work_request_id)
+
   @spec archive(Repository.repo(), String.t()) :: {:ok, WorkRequest.t()} | {:error, error() | :not_completed}
   def archive(repo, work_request_id), do: Completion.archive(repo, work_request_id)
 

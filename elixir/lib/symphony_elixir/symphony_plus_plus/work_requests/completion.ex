@@ -15,6 +15,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   @terminal_planned_slice_statuses ["skipped"]
   @terminal_work_package_statuses ["merged", "merged_into_phase", "closed", "abandoned"]
   @completion_blocking_work_request_statuses ["human_info_needed"]
+  @operator_completion_source "operator"
   @restorable_archive_reasons ["age"]
   @active_grant_roles ["worker", "architect"]
   @stale_heartbeat_after_seconds 300
@@ -40,6 +41,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   @spec state(WorkRequest.t(), map(), [PlannedSlice.t()], %{optional(String.t()) => context()}) :: state()
   def state(%WorkRequest{} = work_request, question_state, planned_slices, work_package_contexts)
       when is_map(question_state) and is_list(planned_slices) and is_map(work_package_contexts) do
+    if operator_completed?(work_request) do
+      %{
+        completed?: true,
+        completed_at: work_request.completed_at,
+        archived_at: work_request.archived_at
+      }
+    else
+      derived_state(work_request, question_state, planned_slices, work_package_contexts)
+    end
+  end
+
+  defp derived_state(%WorkRequest{} = work_request, question_state, planned_slices, work_package_contexts)
+       when is_map(question_state) and is_list(planned_slices) and is_map(work_package_contexts) do
     open_question_count = Map.get(question_state, :open_count, 0)
 
     completed? =
@@ -89,6 +103,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
     end
   end
 
+  @spec force_complete(Repository.repo(), String.t()) :: {:ok, WorkRequest.t()} | {:error, Repository.error()}
+  def force_complete(repo, work_request_id) when is_atom(repo) and is_binary(work_request_id) do
+    repo.transaction(fn ->
+      with {:ok, %WorkRequest{} = work_request} <- Repository.get(repo, work_request_id),
+           {:ok, updated} <- force_complete_work_request(repo, work_request) do
+        updated
+      else
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
   @spec archive(Repository.repo(), String.t()) :: {:ok, WorkRequest.t()} | {:error, Repository.error() | :not_completed}
   def archive(repo, work_request_id) when is_atom(repo) and is_binary(work_request_id) do
     with {:ok, %WorkRequest{} = work_request} <- refresh(repo, work_request_id) do
@@ -134,12 +162,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   defp persist_state(repo, %WorkRequest{} = work_request, %{completed?: true} = state) do
     attrs = %{
       completed_at: state.completed_at || DateTime.utc_now(:microsecond),
+      completion_source: work_request.completion_source,
       archived_at: state.archived_at,
       archive_reason: if(state.archived_at, do: work_request.archive_reason)
     }
 
-    if work_request.completed_at == attrs.completed_at and work_request.archived_at == attrs.archived_at and
-         work_request.archive_reason == attrs.archive_reason do
+    unchanged? =
+      work_request.completed_at == attrs.completed_at and work_request.archived_at == attrs.archived_at and
+        work_request.archive_reason == attrs.archive_reason and
+        work_request.completion_source == attrs.completion_source
+
+    if unchanged? do
       {:ok, work_request}
     else
       work_request
@@ -149,9 +182,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   end
 
   defp persist_state(repo, %WorkRequest{} = work_request, %{completed?: false}) do
-    attrs = %{completed_at: nil, archived_at: nil, archive_reason: nil}
+    attrs = %{completed_at: nil, completion_source: nil, archived_at: nil, archive_reason: nil}
 
-    if is_nil(work_request.completed_at) and is_nil(work_request.archived_at) do
+    if is_nil(work_request.completed_at) and is_nil(work_request.archived_at) and
+         is_nil(work_request.completion_source) do
       {:ok, work_request}
     else
       work_request
@@ -176,6 +210,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion do
   end
 
   defp preserve_persisted_visible_state(state, %WorkRequest{}, _question_state, _planned_slices, _work_package_contexts), do: state
+
+  defp force_complete_work_request(repo, %WorkRequest{} = work_request) do
+    attrs = %{
+      completed_at: work_request.completed_at || DateTime.utc_now(:microsecond),
+      completion_source: @operator_completion_source,
+      archived_at: nil,
+      archive_reason: nil
+    }
+
+    work_request
+    |> Ecto.Changeset.change(attrs)
+    |> update_work_request(repo)
+  end
+
+  defp operator_completed?(%WorkRequest{completed_at: %DateTime{}, completion_source: @operator_completion_source}), do: true
+  defp operator_completed?(%WorkRequest{}), do: false
 
   defp filtered_completion_context?(question_state, planned_slices, work_package_contexts) do
     Map.get(question_state, :open_count, 0) == 0 and planned_slices != [] and

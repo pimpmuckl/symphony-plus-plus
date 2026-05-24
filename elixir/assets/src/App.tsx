@@ -2257,8 +2257,8 @@ function RepoWorkstream({
   );
   const [expandedFinishedRequests, setExpandedFinishedRequests] = useState(() => readStoredFinishedRequestChildren());
   const setFinishedRequestChildrenOpen = useCallback((workRequestId: string, open: boolean) => {
-    setExpandedFinishedRequests((current) => {
-      const next = { ...current, [finishedRequestChildrenStorageKey(stateKey, workRequestId)]: open };
+    setExpandedFinishedRequests(() => {
+      const next = { ...readStoredFinishedRequestChildren(), [finishedRequestChildrenStorageKey(stateKey, workRequestId)]: open };
       writeStoredFinishedRequestChildren(next);
       return next;
     });
@@ -3251,10 +3251,10 @@ function RequestCard({
     commentSignal ? `${commentSignal.open}:${commentSignal.total}` : null,
   );
 
-  return (
+  const card = (
     <StateCard
       tone={tone}
-      className={cn("stagger-item p-3", onSelectCard && "card-detail-trigger")}
+      className={cn("stagger-item p-3", canToggleChildren && "pr-10", onSelectCard && "card-detail-trigger")}
       data-wire-id={nodeId}
       data-card-detail-kind="request"
       style={{ animationDelay: `${index * 30}ms` }}
@@ -3272,23 +3272,6 @@ function RequestCard({
             variant={operationalBadgeVariant(operational, request.status)}
             className="shrink-0"
           />
-          {canToggleChildren ? (
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              className="request-children-toggle size-7"
-              aria-expanded={childrenExpanded}
-              aria-label={`${childrenExpanded ? "Hide" : "Show"} ${childCount} child item${childCount === 1 ? "" : "s"} for ${request.title || request.id}`}
-              title={`${childrenExpanded ? "Hide" : "Show"} child slices and packages`}
-              onClick={(event) => {
-                event.stopPropagation();
-                onToggleChildren?.();
-              }}
-            >
-              <ChevronRight className={cn("size-4 transition-transform duration-200", childrenExpanded && "rotate-90")} />
-            </Button>
-          ) : null}
         </div>
       </div>
       <AnimatedCardBody motionKey={bodyMotionKey}>
@@ -3328,6 +3311,26 @@ function RequestCard({
         ) : null}
       </AnimatedCardBody>
     </StateCard>
+  );
+
+  if (!canToggleChildren) return card;
+
+  return (
+    <div className="relative min-w-0 max-w-full">
+      {card}
+      <Button
+        type="button"
+        size="icon"
+        variant="ghost"
+        className="request-children-toggle absolute right-2 top-2 size-7"
+        aria-expanded={childrenExpanded}
+        aria-label={`${childrenExpanded ? "Hide" : "Show"} ${childCount} child item${childCount === 1 ? "" : "s"} for ${request.title || request.id}`}
+        title={`${childrenExpanded ? "Hide" : "Show"} child slices and packages`}
+        onClick={onToggleChildren}
+      >
+        <ChevronRight className={cn("size-4 transition-transform duration-200", childrenExpanded && "rotate-90")} />
+      </Button>
+    </div>
   );
 }
 
@@ -4253,6 +4256,7 @@ function RequestDetailContent({
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [archivePending, setArchivePending] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [completeConfirmOpen, setCompleteConfirmOpen] = useState(false);
   const [statePending, setStatePending] = useState(false);
   const [stateError, setStateError] = useState<string | null>(null);
   const commentTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -4311,8 +4315,10 @@ function RequestDetailContent({
 
     try {
       await onChangeWorkRequestState(request.id, "completed");
+      setCompleteConfirmOpen(false);
     } catch (caught) {
       setStateError(caught instanceof Error ? caught.message : "WorkRequest state was not changed");
+    } finally {
       setStatePending(false);
     }
   }
@@ -4325,15 +4331,9 @@ function RequestDetailContent({
         badge={<Badge variant={operationalBadgeVariant(operational, request.status)}>{operationalLabel(operational, request.status)}</Badge>}
       />
       <div className="grid gap-4">
-        {handoffEligible || canMutateComments || canCompleteRequest ? (
+        {handoffEligible || canMutateComments ? (
           <div className={cn("handoff-action-panel", handoffHasOpenQuestions && "handoff-action-panel-muted")} data-guidance-section style={{ animationDelay: "58ms" }}>
             <div className="handoff-action-row">
-              {canCompleteRequest ? (
-                <Button type="button" size="sm" variant="outline" onClick={() => void completeRequest()} disabled={statePending}>
-                  {statePending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
-                  Change State: Completed
-                </Button>
-              ) : null}
               {handoffEligible ? (
                 <Button type="button" size="sm" variant={handoffHasOpenQuestions ? "outline" : "default"} onClick={() => void copyHandoff()} disabled={handoffCopyState === "copying"}>
                   {handoffCopyState === "copying" ? <Loader2 className="size-4 animate-spin" /> : handoffCopyState === "copied" ? <CheckCircle2 className="size-4" /> : <Copy className="size-4" />}
@@ -4347,7 +4347,6 @@ function RequestDetailContent({
                 </Button>
               ) : null}
             </div>
-            {stateError ? <p className="text-xs text-destructive">{stateError}</p> : null}
             {handoffError ? <p className="text-xs text-destructive">{handoffError}</p> : null}
           </div>
         ) : null}
@@ -4419,17 +4418,78 @@ function RequestDetailContent({
           <DetailList title="Planned slices" items={(detail.planned_slices || []).map((slice) => slice.title || slice.id)} empty="No slices recorded." />
           <JsonDetail label="Constraints" value={request.constraints} />
         </DetailDisclosure>
-        {canManualArchive ? (
-          <div className="flex flex-col items-start gap-2 border-t pt-4">
-            <Button type="button" size="sm" variant="outline" disabled={archivePending} onClick={() => void archiveRequest()}>
-              {archivePending ? <Loader2 className="size-4 animate-spin" /> : <Archive className="size-4" />}
-              Archive Request
-            </Button>
+        {canCompleteRequest || canManualArchive ? (
+          <div className="flex flex-col items-start gap-2 border-t border-destructive/20 pt-4">
+            <div className="flex flex-wrap gap-2">
+              {canCompleteRequest ? (
+                <Button type="button" size="sm" variant="destructive" onClick={() => setCompleteConfirmOpen(true)} disabled={statePending}>
+                  {statePending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+                  Change State: Completed
+                </Button>
+              ) : null}
+              {canManualArchive ? (
+                <Button type="button" size="sm" variant="outline" disabled={archivePending} onClick={() => void archiveRequest()}>
+                  {archivePending ? <Loader2 className="size-4 animate-spin" /> : <Archive className="size-4" />}
+                  Archive Request
+                </Button>
+              ) : null}
+            </div>
+            {stateError ? <p className="text-xs text-destructive">{stateError}</p> : null}
             {archiveError ? <p className="text-xs text-destructive">{archiveError}</p> : null}
           </div>
         ) : null}
       </div>
+      <DangerousStateConfirmationDialog
+        open={completeConfirmOpen}
+        onOpenChange={setCompleteConfirmOpen}
+        title="Complete WorkRequest?"
+        description="This manually marks the request Completed for the local dashboard even if unfinished slices, packages, or questions still exist."
+        confirmLabel="Complete WorkRequest"
+        pending={statePending}
+        onConfirm={() => void completeRequest()}
+      />
     </>
+  );
+}
+
+function DangerousStateConfirmationDialog({
+  open,
+  onOpenChange,
+  title,
+  description,
+  confirmLabel,
+  pending,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: string;
+  description: string;
+  confirmLabel: string;
+  pending: boolean;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => (!pending ? onOpenChange(nextOpen) : undefined)}>
+      <DialogContent className="sm:max-w-[420px]">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <AlertTriangle className="size-4 text-destructive" />
+            {title}
+          </DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" disabled={pending} onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button type="button" variant="destructive" disabled={pending} onClick={onConfirm}>
+            {pending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+            {confirmLabel}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -4561,6 +4621,7 @@ function PackageDetailContent({
   const blockerCount = blockers.length || summary?.active_blocker_count || pkg.active_blocker_count || (operational?.key === "blocked" || pkg.status === "blocked" ? 1 : 0);
   const currentCommentStats = targetCommentStats(summary || pkg, detailPayload?.comments || [], packageComments);
   const canMarkMerged = !isFinishedBoardStatus(operational?.key || pkg.status);
+  const [mergeConfirmOpen, setMergeConfirmOpen] = useState(false);
 
   async function markMerged() {
     setStatePending(true);
@@ -4568,8 +4629,10 @@ function PackageDetailContent({
 
     try {
       await onChangeWorkPackageState(pkg.id, "merged");
+      setMergeConfirmOpen(false);
     } catch (caught) {
       setStateError(caught instanceof Error ? caught.message : "WorkPackage state was not changed");
+    } finally {
       setStatePending(false);
     }
   }
@@ -4582,17 +4645,6 @@ function PackageDetailContent({
         badge={<Badge variant={operationalBadgeVariant(operational, pkg.status)}>{operationalLabel(operational, pkg.status)}</Badge>}
       />
       <div className="grid gap-4">
-        {canMarkMerged ? (
-          <div className="handoff-action-panel" data-guidance-section style={{ animationDelay: "58ms" }}>
-            <div className="handoff-action-row">
-              <Button type="button" size="sm" variant="outline" onClick={() => void markMerged()} disabled={statePending}>
-                {statePending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
-                Change State: Merged
-              </Button>
-            </div>
-            {stateError ? <p className="text-xs text-destructive">{stateError}</p> : null}
-          </div>
-        ) : null}
         <DetailStatGrid
           stats={[
             { label: "State", value: operationalLabel(operational, pkg.status) },
@@ -4667,7 +4719,25 @@ function PackageDetailContent({
           <DetailList title="Acceptance" items={pkg.acceptance_criteria || selection.slice?.acceptance_criteria || []} empty="No acceptance criteria recorded." />
           <DetailList title="Alerts" items={activeAlertLabels(detailPayload?.alert_indicators || pkg.alert_indicators || [])} empty="No active alerts." />
         </DetailDisclosure>
+        {canMarkMerged ? (
+          <div className="flex flex-col items-start gap-2 border-t border-destructive/20 pt-4">
+            <Button type="button" size="sm" variant="destructive" onClick={() => setMergeConfirmOpen(true)} disabled={statePending}>
+              {statePending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+              Change State: Merged
+            </Button>
+            {stateError ? <p className="text-xs text-destructive">{stateError}</p> : null}
+          </div>
+        ) : null}
       </div>
+      <DangerousStateConfirmationDialog
+        open={mergeConfirmOpen}
+        onOpenChange={setMergeConfirmOpen}
+        title="Merge WorkPackage?"
+        description="This manually marks the package Merged for the local dashboard. Use it only when the external merge or worker handoff was missed."
+        confirmLabel="Mark Merged"
+        pending={statePending}
+        onConfirm={() => void markMerged()}
+      />
     </>
   );
 }

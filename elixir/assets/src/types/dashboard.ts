@@ -180,6 +180,7 @@ export type WorkRequestCard = RepoIdentityFields & {
   status?: string | null;
   operational_state?: PackageOperationalState | null;
   completed_at?: string | null;
+  completion_source?: string | null;
   archived_at?: string | null;
   archive_reason?: string | null;
   open_question_count?: number;
