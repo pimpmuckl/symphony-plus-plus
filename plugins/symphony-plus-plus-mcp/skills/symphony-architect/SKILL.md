@@ -146,6 +146,10 @@ security-sensitive changes, live smoke ownership, or cross-package release
 verification. They are not a substitute for the implementing worker's normal
 review-suite obligations.
 
+As architecture agent, do not take over reviews yourself. Workers must bring
+you a fully reviewed and finished PR. You may ask a worker to fix important or
+missed review findings, but the worker owns that execution.
+
 ## Guidance Routing
 
 Workers ask the architect first when ambiguity appears.

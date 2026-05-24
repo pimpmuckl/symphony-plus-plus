@@ -118,6 +118,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentityTest do
     assert RepoIdentity.fields(catalog, repo_path) == expected
   end
 
+  test "derives canonical identity from local bare git repo paths" do
+    origin = "https://github.com/Pimpmuckl/nextide-saas-live-chat.git"
+    repo_path = Path.join(System.tmp_dir!(), "sympp-repo-identity-bare-#{System.unique_integer([:positive])}.git")
+
+    ExUnit.Callbacks.on_exit(fn -> File.rm_rf(repo_path) end)
+
+    File.mkdir_p!(repo_path)
+    TestSupport.git_output!(repo_path, ["init", "--bare"])
+    TestSupport.git_output!(repo_path, ["remote", "add", "origin", origin])
+
+    catalog = RepoIdentity.catalog([repo_path], local_path_remotes?: true)
+
+    assert RepoIdentity.fields(catalog, repo_path) == %{
+             repo_key: "nextide-saas-live-chat",
+             repo_display: "nextide-saas-live-chat",
+             repo_remote: "Pimpmuckl/nextide-saas-live-chat",
+             repo_aliases:
+               Enum.sort_by(
+                 [repo_path, "nextide-saas-live-chat", "Pimpmuckl/nextide-saas-live-chat"],
+                 &String.downcase/1
+               )
+           }
+  end
+
   test "keeps path-derived origin trust scoped to the path entry" do
     origin = "https://github.com/Pimpmuckl/nextide-saas-live-chat.git"
     repo_path = TestSupport.git_repo_with_origin_fixture!(origin, prefix: "sympp-repo-identity-scoped")

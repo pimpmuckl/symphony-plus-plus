@@ -205,8 +205,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
     |> do_parse_repo(raw)
   end
 
-  defp parse_repo(_raw), do: nil
-
   defp repo_value_key(raw) when is_binary(raw), do: {:repo, String.trim(raw)}
   defp repo_value_key(raw), do: {:other, raw}
 
@@ -258,10 +256,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
   defp local_path_repo_infos(_raw, _repo_path, false), do: []
 
   defp local_git_repo_path?(repo_path) when is_binary(repo_path) do
-    local_absolute_path?(repo_path) and File.dir?(repo_path) and File.exists?(Path.join(repo_path, ".git"))
+    local_absolute_path?(repo_path) and File.dir?(repo_path) and
+      (File.exists?(Path.join(repo_path, ".git")) or bare_git_repo_path?(repo_path))
   end
 
-  defp local_git_repo_path?(_repo_path), do: false
+  defp bare_git_repo_path?(repo_path) do
+    File.regular?(Path.join(repo_path, "config")) and File.regular?(Path.join(repo_path, "HEAD")) and
+      File.dir?(Path.join(repo_path, "objects"))
+  end
 
   defp local_absolute_path?(path) do
     absolute_path?(path) and not unc_path?(path)
