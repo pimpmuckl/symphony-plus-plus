@@ -5,6 +5,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
@@ -51,6 +52,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service do
 
   @spec get_planned_slice(Repository.repo(), String.t(), String.t()) :: {:ok, PlannedSlice.t()} | {:error, error()}
   def get_planned_slice(repo, work_request_id, id), do: Repository.get_planned_slice(repo, work_request_id, id)
+
+  @spec record_planned_slice_delivery(Repository.repo(), String.t(), String.t(), map()) ::
+          {:ok, PlannedSliceDelivery.t()} | {:error, error()}
+  def record_planned_slice_delivery(repo, work_request_id, planned_slice_id, attrs),
+    do: Repository.record_planned_slice_delivery(repo, work_request_id, planned_slice_id, attrs)
 
   @spec approve_planned_slice(Repository.repo(), String.t(), String.t(), String.t()) ::
           {:ok, PlannedSlice.t()} | {:error, error()}

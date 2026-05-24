@@ -6,9 +6,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
   @completion_blocking_statuses ["human_info_needed"]
+  @planned_slice_delivery_replay_fields [
+    :work_request_id,
+    :planned_slice_id,
+    :outcome,
+    :idempotency_key,
+    :recorded_by,
+    :pr_url,
+    :pr_number,
+    :pr_repository,
+    :pr_merged_at,
+    :merge_commit_sha,
+    :no_pr_evidence,
+    :successor_planned_slice_id,
+    :successor_work_package_id,
+    :superseded_reason,
+    :abandoned_rationale
+  ]
 
   import Ecto.Query, only: [from: 2]
 
@@ -37,6 +55,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
           :already_answered
           | :already_closed
           | :database_busy
+          | :delivery_outcome_conflict
           | :last_approved_slice
           | :no_approved_slices
           | :not_found
@@ -233,6 +252,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
       %PlannedSlice{} -> {:error, :not_found}
     end
   rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  @spec record_planned_slice_delivery(repo(), String.t(), String.t(), map()) ::
+          {:ok, PlannedSliceDelivery.t()} | {:error, error()}
+  def record_planned_slice_delivery(repo, work_request_id, planned_slice_id, attrs)
+      when is_atom(repo) and is_binary(work_request_id) and is_binary(planned_slice_id) and is_map(attrs) do
+    attrs =
+      attrs
+      |> normalize_keys()
+      |> Map.drop(["id", "inserted_at", "recorded_at", "updated_at"])
+      |> Map.put("work_request_id", work_request_id)
+      |> Map.put("planned_slice_id", planned_slice_id)
+
+    changeset = PlannedSliceDelivery.create_changeset(attrs)
+
+    with {:ok, candidate} <- Changeset.apply_action(changeset, :insert) do
+      insert_or_replay_planned_slice_delivery(repo, work_request_id, planned_slice_id, changeset, candidate)
+    end
+  rescue
+    error in Ecto.ConstraintError -> normalize_constraint_error(error)
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
@@ -604,6 +644,111 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository do
       %ClarificationQuestion{status: status} when status != current_status -> :stale_status
       %ClarificationQuestion{} -> :stale_status
     end
+  end
+
+  defp insert_or_replay_planned_slice_delivery(repo, work_request_id, planned_slice_id, changeset, candidate) do
+    repo.transaction(fn ->
+      case validate_planned_slice_delivery_scope(repo, work_request_id, planned_slice_id, candidate) do
+        :ok -> insert_or_replay_scoped_planned_slice_delivery(repo, planned_slice_id, changeset, candidate)
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+    |> normalize_transaction_result()
+  rescue
+    error in Ecto.ConstraintError -> normalize_constraint_error(error)
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp validate_planned_slice_delivery_scope(repo, work_request_id, planned_slice_id, candidate) do
+    cond do
+      not planned_slice_in_scope?(repo, work_request_id, planned_slice_id) -> {:error, :not_found}
+      not successor_planned_slice_in_scope?(repo, work_request_id, candidate) -> {:error, :not_found}
+      true -> :ok
+    end
+  end
+
+  defp insert_or_replay_scoped_planned_slice_delivery(repo, planned_slice_id, changeset, candidate) do
+    case existing_planned_slice_delivery(repo, planned_slice_id) do
+      %PlannedSliceDelivery{} = existing -> replay_planned_slice_delivery(repo, existing, candidate)
+      nil -> insert_planned_slice_delivery(repo, planned_slice_id, changeset, candidate)
+    end
+  end
+
+  defp insert_planned_slice_delivery(repo, planned_slice_id, changeset, candidate) do
+    case repo.insert(changeset) do
+      {:ok, delivery} ->
+        delivery
+
+      {:error, %Changeset{} = changeset} ->
+        replay_unique_planned_slice_delivery(repo, planned_slice_id, candidate, changeset)
+
+      {:error, reason} ->
+        repo.rollback(reason)
+    end
+  end
+
+  defp planned_slice_in_scope?(repo, work_request_id, planned_slice_id) do
+    repo.exists?(
+      from(planned_slice in PlannedSlice,
+        where: planned_slice.id == ^planned_slice_id,
+        where: planned_slice.work_request_id == ^work_request_id,
+        select: 1,
+        limit: 1
+      )
+    )
+  end
+
+  defp successor_planned_slice_in_scope?(_repo, _work_request_id, %PlannedSliceDelivery{outcome: outcome})
+       when outcome != "superseded",
+       do: true
+
+  defp successor_planned_slice_in_scope?(repo, work_request_id, %PlannedSliceDelivery{
+         successor_planned_slice_id: successor_planned_slice_id
+       }) do
+    planned_slice_in_scope?(repo, work_request_id, successor_planned_slice_id)
+  end
+
+  defp existing_planned_slice_delivery(repo, planned_slice_id) do
+    repo.one(
+      from(delivery in PlannedSliceDelivery,
+        where: delivery.planned_slice_id == ^planned_slice_id,
+        limit: 1
+      )
+    )
+  end
+
+  defp replay_unique_planned_slice_delivery(repo, planned_slice_id, candidate, changeset) do
+    cond do
+      not planned_slice_delivery_unique_conflict?(changeset) ->
+        repo.rollback(changeset)
+
+      existing = existing_planned_slice_delivery(repo, planned_slice_id) ->
+        replay_planned_slice_delivery(repo, existing, candidate)
+
+      true ->
+        repo.rollback(changeset)
+    end
+  end
+
+  defp replay_planned_slice_delivery(repo, existing, candidate) do
+    if planned_slice_delivery_replay?(existing, candidate) do
+      existing
+    else
+      repo.rollback(:delivery_outcome_conflict)
+    end
+  end
+
+  defp planned_slice_delivery_replay?(%PlannedSliceDelivery{} = existing, %PlannedSliceDelivery{} = candidate) do
+    Enum.all?(@planned_slice_delivery_replay_fields, fn field ->
+      Map.get(existing, field) == Map.get(candidate, field)
+    end)
+  end
+
+  defp planned_slice_delivery_unique_conflict?(%Changeset{errors: errors}) do
+    Enum.any?(errors, fn
+      {:planned_slice_id, {_message, options}} -> Keyword.get(options, :constraint) == :unique
+      _error -> false
+    end)
   end
 
   defp update_planned_slice_status(repo, work_request_id, id, current_status, next_status, allowed_current_statuses) do
