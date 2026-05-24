@@ -12,6 +12,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.State
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion, as: WorkRequestCompletion
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
 
   @default_append_retry_attempts 200
   @default_state_read_retry_attempts 50
@@ -61,7 +63,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
 
   @spec append_progress_event(repo(), map()) :: {:ok, ProgressEvent.t()} | {:error, error()}
   def append_progress_event(repo, attrs) when is_atom(repo) and is_map(attrs) do
-    append_progress_event(repo, attrs, &ProgressEvent.create_changeset/1, trusted_audit_metadata: false)
+    repo.transaction(fn ->
+      changeset_fun = &ProgressEvent.create_changeset/1
+      opts = [trusted_audit_metadata: false]
+
+      case append_progress_event_in_transaction(repo, attrs, changeset_fun, opts) do
+        {:ok, event} -> event
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
   @spec append_audit_progress_event(repo(), Assignment.t(), map()) :: {:ok, ProgressEvent.t()} | {:error, error()}
@@ -95,7 +107,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
       with :not_found <- existing_progress_event_by_idempotency_key_with_retry(repo, attrs, append_retry_attempts()),
            :ok <- lock_valid_assignment(repo, assignment),
            {:ok, event} <-
-             append_progress_event(
+             append_progress_event_in_transaction(
                repo,
                attrs,
                &ProgressEvent.create_changeset(&1, trusted_audit_metadata: true),
@@ -122,7 +134,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
     end
   end
 
-  defp append_progress_event(repo, attrs, changeset_fun, opts) do
+  defp append_progress_event_in_transaction(repo, attrs, changeset_fun, opts) do
     with {:ok, attrs} <- normalize_append_attrs(attrs, Keyword.fetch!(opts, :trusted_audit_metadata)),
          :not_found <-
            existing_progress_event_by_idempotency_key_with_retry(repo, attrs, append_retry_attempts()) do
@@ -134,8 +146,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Planning.Repository do
         changeset_fun
       )
       |> fetch_after_idempotency_conflict(repo, attrs)
+      |> clear_work_request_completion_after_reopening_progress(repo)
     end
   end
+
+  defp clear_work_request_completion_after_reopening_progress({:ok, %ProgressEvent{} = event}, repo) do
+    if reopening_progress_event?(event) do
+      clear_work_request_completion_after_progress(event, repo)
+    else
+      {:ok, event}
+    end
+  end
+
+  defp clear_work_request_completion_after_reopening_progress(result, _repo), do: result
+
+  defp clear_work_request_completion_after_progress(%ProgressEvent{work_package_id: work_package_id} = event, repo) do
+    case WorkRequestRepository.clear_completion_for_work_package(repo, work_package_id) do
+      :ok -> {:ok, event}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp reopening_progress_event?(%ProgressEvent{work_package_id: work_package_id, payload: payload})
+       when is_binary(work_package_id) and is_map(payload) do
+    WorkRequestCompletion.blocker_event_payload?(payload) and (Map.get(payload, "active") || Map.get(payload, :active)) == true
+  end
+
+  defp reopening_progress_event?(%ProgressEvent{}), do: false
 
   defp normalize_append_attrs(attrs, trusted_audit_metadata?) do
     with :ok <- reject_conflicting_key(attrs, :work_package_id, & &1),

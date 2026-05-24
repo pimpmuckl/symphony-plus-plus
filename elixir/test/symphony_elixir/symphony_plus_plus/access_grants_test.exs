@@ -38,6 +38,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrantsTest do
     def insert(changeset), do: Repo.insert(changeset)
     def one(query), do: Repo.one(query)
     def update(changeset), do: Repo.update(changeset)
+    def transaction(fun), do: Repo.transaction(fun)
+    def rollback(reason), do: Repo.rollback(reason)
 
     def update_all(query, updates) do
       case Process.get(@race_key) do

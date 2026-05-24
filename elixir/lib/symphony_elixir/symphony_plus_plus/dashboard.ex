@@ -32,6 +32,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion, as: WorkRequestCompletion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
@@ -140,9 +141,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   def work_requests_for_grant(repo, %AccessGrant{} = grant, opts) when is_atom(repo) and is_list(opts) do
     safe_read(fn ->
       with {:ok, filters} <- work_request_filters_for_grant(repo, grant),
-           {:ok, work_requests} <- WorkRequestRepository.list(repo, Map.new(filters)),
+           {:ok, work_requests} <- WorkRequestRepository.list(repo, filters |> Map.new() |> Map.put(:include_archived, true)),
            repo_identity_catalog = repo_identity_catalog_from_opts(opts, Enum.map(work_requests, & &1.repo)),
            {:ok, cards} <- work_request_cards(repo, ordered_work_requests(work_requests), Keyword.merge(opts, grant: grant, repo_identity_catalog: repo_identity_catalog)) do
+        cards = visible_work_request_cards(cards)
+
         {:ok,
          %{
            work_requests: cards,
@@ -160,9 +163,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   @spec work_requests(repo(), keyword()) :: {:ok, map()} | {:error, dashboard_error()}
   def work_requests(repo, opts) when is_atom(repo) and is_list(opts) do
     safe_read(fn ->
-      with {:ok, work_requests} <- WorkRequestRepository.list(repo),
+      with {:ok, work_requests} <- WorkRequestRepository.list(repo, %{include_archived: true}),
            {:ok, repo_identity_catalog} <- repo_identity_catalog_from_repo(repo, opts, Enum.map(work_requests, & &1.repo)),
            {:ok, cards} <- work_request_cards(repo, ordered_work_requests(work_requests), Keyword.put(opts, :repo_identity_catalog, repo_identity_catalog)) do
+        cards = visible_work_request_cards(cards)
+
+        {:ok,
+         %{
+           work_requests: cards,
+           total_count: length(cards)
+         }}
+      end
+    end)
+  end
+
+  @spec archived_work_requests(repo()) :: {:ok, map()} | {:error, dashboard_error()}
+  def archived_work_requests(repo) when is_atom(repo) do
+    archived_work_requests(repo, [])
+  end
+
+  @spec archived_work_requests(repo(), keyword()) :: {:ok, map()} | {:error, dashboard_error()}
+  def archived_work_requests(repo, opts) when is_atom(repo) and is_list(opts) do
+    safe_read(fn ->
+      with {:ok, work_requests} <- WorkRequestRepository.list(repo, %{include_archived: true}),
+           archived_work_requests = Enum.filter(work_requests, &(not is_nil(&1.archived_at))),
+           {:ok, repo_identity_catalog} <-
+             repo_identity_catalog_from_repo(repo, opts, Enum.map(archived_work_requests, & &1.repo)),
+           {:ok, cards} <-
+             work_request_cards(
+               repo,
+               ordered_work_requests(archived_work_requests),
+               Keyword.put(opts, :repo_identity_catalog, repo_identity_catalog)
+             ) do
+        cards = Enum.filter(cards, &(not is_nil(&1.archived_at)))
+
         {:ok,
          %{
            work_requests: cards,
@@ -352,6 +386,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
         work_request_payload =
           work_request_payload(
             work_request,
+            questions,
             planned_slices,
             work_package_contexts,
             repo_identity_catalog,
@@ -395,6 +430,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
         work_request_payload =
           work_request_payload(
             work_request,
+            questions,
             planned_slices,
             work_package_contexts,
             repo_identity_catalog,
@@ -1059,6 +1095,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     end
   end
 
+  defp visible_work_request_cards(cards) do
+    Enum.reject(cards, &(not is_nil(&1.archived_at)))
+  end
+
   defp ordered_work_requests(work_requests) do
     Enum.sort_by(work_requests, fn %WorkRequest{} = work_request ->
       {sortable_timestamp(work_request.inserted_at), work_request.id || ""}
@@ -1223,11 +1263,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   defp work_request_card_summaries(repo, work_requests, opts) do
     work_request_ids = Enum.map(work_requests, & &1.id)
 
-    with {:ok, question_counts} <- work_request_question_counts(repo, work_request_ids),
+    with {:ok, question_context} <- work_request_question_context(repo, work_request_ids),
          {:ok, decision_counts} <- work_request_decision_counts(repo, work_request_ids),
          {:ok, planned_slices} <- work_request_planned_slices(repo, work_request_ids),
          {:ok, comment_context} <- work_request_card_comment_context(repo, work_requests, planned_slices),
          {:ok, work_package_contexts} <- work_request_card_work_package_contexts(repo, planned_slices, opts) do
+      question_counts = question_context.counts
+
       planned_slice_counts =
         planned_slices
         |> Enum.map(&{&1.work_request_id, &1.status})
@@ -1239,10 +1281,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
         Map.new(work_requests, fn %WorkRequest{} = work_request ->
           planned_slices = Map.get(planned_slices_by_request, work_request.id, [])
           comment_counts = work_request_comment_counts(comment_context, work_request, planned_slices)
+          open_question_count = status_count(question_counts, work_request.id, "open")
+
+          question_state =
+            Map.get(question_context.states, work_request.id, %{
+              open_count: open_question_count,
+              latest_gate_at: nil
+            })
+
+          completion_state =
+            work_request
+            |> WorkRequestCompletion.visible_state(question_state, planned_slices, work_package_contexts)
+
+          operational_state =
+            work_request_operational_state(work_request, planned_slices, work_package_contexts, completion_state)
 
           {work_request.id,
            %{
-             open_question_count: status_count(question_counts, work_request.id, "open"),
+             open_question_count: open_question_count,
              answered_question_count: status_count(question_counts, work_request.id, "answered"),
              closed_question_count: status_count(question_counts, work_request.id, "closed"),
              decision_count: Map.get(decision_counts, work_request.id, 0),
@@ -1252,7 +1308,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
              approved_slice_count: status_count(planned_slice_counts, work_request.id, "approved"),
              dispatched_slice_count: status_count(planned_slice_counts, work_request.id, "dispatched"),
              skipped_slice_count: status_count(planned_slice_counts, work_request.id, "skipped"),
-             operational_state: work_request_operational_state(work_request, planned_slices, work_package_contexts)
+             completed_at: timestamp(completion_state.completed_at),
+             archived_at: timestamp(completion_state.archived_at),
+             operational_state: operational_state
            }}
         end)
 
@@ -1329,17 +1387,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     |> Map.put(:open_comment_count, Map.get(counts, :open_comment_count, 0))
   end
 
-  defp work_request_question_counts(repo, work_request_ids) do
+  defp work_request_question_context(repo, work_request_ids) do
     rows =
       chunked_work_request_rows(work_request_ids, fn chunk ->
         from(question in ClarificationQuestion,
           where: question.work_request_id in ^chunk,
-          select: {question.work_request_id, question.status}
+          select: {question.work_request_id, question.status, question.updated_at}
         )
         |> repo.all()
       end)
 
-    {:ok, status_counts(rows)}
+    counts =
+      rows
+      |> Enum.map(fn {work_request_id, status, _updated_at} -> {work_request_id, status} end)
+      |> status_counts()
+
+    states =
+      rows
+      |> Enum.group_by(fn {work_request_id, _status, _updated_at} -> work_request_id end)
+      |> Map.new(fn {work_request_id, questions} ->
+        {work_request_id,
+         %{
+           open_count: Enum.count(questions, fn {_work_request_id, status, _updated_at} -> status == "open" end),
+           latest_gate_at: latest_datetime(Enum.map(questions, fn {_work_request_id, _status, updated_at} -> updated_at end))
+         }}
+      end)
+
+    {:ok, %{counts: counts, states: states}}
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
@@ -1648,18 +1722,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     }
   end
 
-  defp work_request_payload(%WorkRequest{} = work_request, planned_slices, work_package_contexts, repo_identity_catalog, comment_context) do
+  defp work_request_payload(%WorkRequest{} = work_request, questions, planned_slices, work_package_contexts, repo_identity_catalog, comment_context) do
+    question_state = %{
+      open_count: Enum.count(questions, &(&1.status == "open")),
+      latest_gate_at: latest_datetime(Enum.map(questions, & &1.updated_at))
+    }
+
+    completion_state =
+      work_request
+      |> WorkRequestCompletion.visible_state(question_state, planned_slices, work_package_contexts)
+
     work_request
     |> work_request_payload(repo_identity_catalog)
-    |> Map.put(:operational_state, work_request_operational_state(work_request, planned_slices, work_package_contexts))
+    |> Map.put(:completed_at, timestamp(completion_state.completed_at))
+    |> Map.put(:archived_at, timestamp(completion_state.archived_at))
+    |> Map.put(:archive_reason, work_request.archive_reason)
+    |> Map.put(:operational_state, work_request_operational_state(work_request, planned_slices, work_package_contexts, completion_state))
     |> put_comment_counts(work_request_comment_counts(comment_context, work_request, planned_slices))
   end
 
-  defp work_request_operational_state(%WorkRequest{} = work_request, planned_slices, work_package_contexts) do
+  defp work_request_operational_state(%WorkRequest{} = work_request, planned_slices, work_package_contexts, completion_state) do
     slice_states = planned_slice_operational_states(planned_slices, work_package_contexts)
     attention_items = aggregate_operational_attention(slice_states)
 
     cond do
+      completion_state.completed? ->
+        completed_work_request_operational_state(work_request.status, attention_items)
+
       work_request.status == "human_info_needed" ->
         base_work_request_operational_state("human_info_needed", attention_items)
 
@@ -1672,6 +1761,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       true ->
         base_work_request_operational_state(work_request.status, attention_items)
     end
+  end
+
+  defp completed_work_request_operational_state(raw_status, attention_items) do
+    operational_state(
+      "completed",
+      "Completed",
+      "success",
+      "All WorkRequest questions, slices, linked packages, blockers, and active runtimes are terminal.",
+      raw_status,
+      attention_items
+    )
   end
 
   defp base_work_request_operational_state("human_info_needed" = status, attention_items) do

@@ -20,6 +20,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.GuidanceRequest
   alias SymphonyElixir.SymphonyPlusPlus.GuidanceRequests.Repository, as: GuidanceRequestRepository
+  alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Service, as: OperatorSettingsService
+  alias SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings, as: OperatorSettings
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Artifact
@@ -39,6 +41,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
   alias SymphonyElixir.WorkPackageFactory
   alias SymphonyElixirWeb.ReactDashboardController
@@ -209,6 +212,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     repo.delete_all(DecisionLogEntry)
     repo.delete_all(ClarificationQuestion)
     repo.delete_all(WorkRequest)
+    repo.delete_all(OperatorSettings)
     :ok
   end
 
@@ -1438,7 +1442,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert request_card.operational_state.has_active_worker == true
   end
 
-  test "WorkRequest and dispatched slice show merged package truth without mutating raw lifecycle", %{repo: repo} do
+  test "WorkRequest completion shows completed while dispatched slice preserves merged package truth", %{repo: repo} do
     work_request = create_work_request!(repo, id: "WR-DASH-OP-MERGED", status: "ready_for_slicing")
 
     assert {:ok, planned_slice} =
@@ -1459,8 +1463,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     assert {:ok, payload} = Dashboard.work_request_detail(repo, work_request.id)
     assert payload.work_request.status == "ready_for_slicing"
-    assert payload.work_request.operational_state.key == "merged"
+    assert payload.work_request.completed_at != nil
+    assert payload.work_request.archived_at == nil
+    assert payload.work_request.operational_state.key == "completed"
+    assert payload.work_request.operational_state.label == "Completed"
     assert payload.work_request.operational_state.raw_status == "ready_for_slicing"
+
+    assert {:ok, read_request} = WorkRequestRepository.get(repo, work_request.id)
+    assert read_request.completed_at == nil
 
     [slice] = payload.planned_slices
     assert slice.status == "dispatched"
@@ -1516,10 +1526,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     [card] = Enum.filter(list_payload["work_requests"], &(&1["id"] == work_request.id))
 
     assert card["status"] == "ready_for_slicing"
-    assert card["operational_state"]["key"] == "merged"
+    assert card["completed_at"] != nil
+    assert card["archived_at"] == nil
+    assert card["operational_state"]["key"] == "completed"
+    assert card["operational_state"]["label"] == "Completed"
     assert card["operational_state"]["raw_status"] == "ready_for_slicing"
 
     assert detail_payload["work_request"]["operational_state"]["key"] == card["operational_state"]["key"]
+    assert detail_payload["work_request"]["completed_at"] == card["completed_at"]
     assert [%{"status" => "dispatched"} = grant_slice] = detail_payload["planned_slices"]
     refute Map.has_key?(grant_slice, "work_package_status")
     refute Map.has_key?(grant_slice, "operational_state")
@@ -3504,11 +3518,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                  status: "ready_for_clarification"
                })
 
+      assert {:ok, archived_request} =
+               WorkRequestRepository.create(repo, %{
+                 title: "Archived operator intake",
+                 repo: "symphony-plus-plus",
+                 base_branch: "main",
+                 work_type: "feature",
+                 human_description: "Completed earlier.",
+                 constraints: %{},
+                 desired_dispatch_shape: "single_package",
+                 status: "ready_for_slicing"
+               })
+
+      assert {:ok, slice} = WorkRequestRepository.add_planned_slice(repo, archived_request.id, planned_slice_attrs(id: "WRS-OPERATOR-ARCHIVE"))
+      assert {:ok, _skipped} = WorkRequestRepository.skip_planned_slice(repo, archived_request.id, slice.id, "planned")
+
+      archived_request
+      |> Ecto.Changeset.change(completed_at: %{~U[2026-05-01 00:00:00Z] | microsecond: {0, 6}})
+      |> Ecto.Changeset.change(archived_at: %{~U[2026-05-16 00:00:00Z] | microsecond: {0, 6}})
+      |> repo.update!()
+
       payload = json_response(get(local_operator_conn(), "/api/v1/sympp/operator/dashboard"), 200)
 
       assert payload["work_requests"]["total_count"] == 1
       assert [%{"work_request" => %{"id" => work_request_id}}] = payload["work_request_details"]
       assert work_request_id == work_request.id
+      refute Enum.any?(payload["work_requests"]["work_requests"], &(&1["id"] == archived_request.id))
+
+      assert {:ok, archived} = WorkRequestRepository.get(repo, archived_request.id)
+      assert %DateTime{} = archived.archived_at
     end)
   end
 
@@ -4052,6 +4090,83 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
       assert {:ok, [stored]} = WorkRequestRepository.list(repo)
       assert stored.title == "Fresh dashboard request"
+    end)
+  end
+
+  test "local operator can tune archive cutoff and restore archived WorkRequests", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      completed_at = DateTime.add(DateTime.utc_now(:microsecond), -2 * 24 * 60 * 60, :second)
+      request = create_completed_skipped_work_request!(repo, "WR-LOCAL-ARCHIVE-SETTINGS", completed_at)
+
+      dashboard_payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/dashboard")
+        |> json_response(200)
+
+      assert dashboard_payload["settings"]["work_request_archive_after_days"] == 14
+      assert Enum.any?(dashboard_payload["work_requests"]["work_requests"], &(&1["id"] == request.id))
+      assert dashboard_payload["archived_work_requests"]["work_requests"] == []
+
+      archive_payload =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/settings", %{"work_request_archive_after_days" => 1})
+        |> json_response(200)
+
+      assert archive_payload["settings"]["work_request_archive_after_days"] == 1
+      refute Enum.any?(archive_payload["dashboard"]["work_requests"]["work_requests"], &(&1["id"] == request.id))
+      assert [%{"id" => "WR-LOCAL-ARCHIVE-SETTINGS", "archived_at" => archived_at}] = archive_payload["dashboard"]["archived_work_requests"]["work_requests"]
+      assert is_binary(archived_at)
+
+      restore_payload =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/work-requests/#{request.id}/restore", %{})
+        |> json_response(200)
+
+      assert Enum.any?(restore_payload["dashboard"]["work_requests"]["work_requests"], &(&1["id"] == request.id))
+      refute Enum.any?(restore_payload["dashboard"]["archived_work_requests"]["work_requests"], &(&1["id"] == request.id))
+      assert get_in(restore_payload, ["work_request", "work_request", "archived_at"]) == nil
+    end)
+  end
+
+  test "local operator dashboard refresh applies archive retention", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      assert {:ok, _settings} = OperatorSettingsService.update(repo, %{"work_request_archive_after_days" => 1})
+
+      completed_at = DateTime.add(DateTime.utc_now(:microsecond), -2 * 24 * 60 * 60, :second)
+      request = create_completed_skipped_work_request!(repo, "WR-LOCAL-REFRESH-RETENTION", completed_at)
+
+      payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/dashboard")
+        |> json_response(200)
+
+      refute Enum.any?(payload["work_requests"]["work_requests"], &(&1["id"] == request.id))
+      assert [%{"id" => "WR-LOCAL-REFRESH-RETENTION", "archived_at" => archived_at}] = payload["archived_work_requests"]["work_requests"]
+      assert is_binary(archived_at)
+    end)
+  end
+
+  test "local operator can manually archive completed WorkRequests only", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      completed_at = DateTime.add(DateTime.utc_now(:microsecond), -24 * 60 * 60, :second)
+      completed = create_completed_skipped_work_request!(repo, "WR-LOCAL-MANUAL-ARCHIVE", completed_at)
+
+      archive_payload =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/work-requests/#{completed.id}/archive", %{})
+        |> json_response(200)
+
+      refute Enum.any?(archive_payload["dashboard"]["work_requests"]["work_requests"], &(&1["id"] == completed.id))
+      assert [%{"id" => "WR-LOCAL-MANUAL-ARCHIVE"}] = archive_payload["dashboard"]["archived_work_requests"]["work_requests"]
+
+      incomplete = create_work_request!(repo, id: "WR-LOCAL-MANUAL-NOT-COMPLETE", status: "ready_for_slicing")
+
+      error_payload =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/work-requests/#{incomplete.id}/archive", %{})
+        |> json_response(422)
+
+      assert error_payload["error"]["code"] == "not_completed"
     end)
   end
 
@@ -4634,6 +4749,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   defp create_work_request!(repo, overrides) do
     assert {:ok, work_request} = WorkRequestRepository.create(repo, work_request_attrs(overrides))
     work_request
+  end
+
+  defp create_completed_skipped_work_request!(repo, id, completed_at) do
+    work_request = create_work_request!(repo, id: id, status: "ready_for_slicing")
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-#{id}"))
+
+    assert {:ok, _skipped} = WorkRequestRepository.skip_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+    assert {:ok, completed} = WorkRequestService.refresh_completion(repo, work_request.id)
+
+    completed
+    |> Ecto.Changeset.change(completed_at: completed_at, archived_at: nil)
+    |> repo.update!()
   end
 
   defp create_work_package!(repo, overrides) do

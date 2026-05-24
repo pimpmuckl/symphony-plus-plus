@@ -10,6 +10,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
 
   @type repo :: module()
 
@@ -187,11 +188,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
       )
       |> scope_live_package_authority(terminal_statuses)
 
-    case repo.update_all(query, set: [claimed_at: now, claimed_by: claimed_by, updated_at: now]) do
-      {1, _rows} -> get(repo, access_grant.id)
-      {0, _rows} -> reload_claim_error(repo, access_grant.id, now, terminal_statuses)
+    repo.transaction(fn ->
+      case repo.update_all(query, set: [claimed_at: now, claimed_by: claimed_by, updated_at: now]) do
+        {1, _rows} ->
+          repo
+          |> get(access_grant.id)
+          |> clear_completion_after_grant(repo)
+          |> return_claim_or_rollback(repo)
+
+        {0, _rows} ->
+          repo
+          |> reload_claim_error(access_grant.id, now, terminal_statuses)
+          |> rollback_claim_error(repo)
+      end
+    end)
+    |> case do
+      {:ok, grant} -> {:ok, grant}
+      {:error, reason} -> {:error, reason}
     end
   end
+
+  defp return_claim_or_rollback({:ok, %AccessGrant{} = grant}, _repo), do: grant
+  defp return_claim_or_rollback({:error, reason}, repo), do: repo.rollback(reason)
+
+  defp rollback_claim_error({:error, reason}, repo), do: repo.rollback(reason)
+
+  defp clear_completion_after_grant({:ok, %AccessGrant{work_package_id: work_package_id} = grant}, repo)
+       when is_binary(work_package_id) do
+    case WorkRequestRepository.clear_completion_for_work_package(repo, work_package_id) do
+      :ok -> {:ok, grant}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp clear_completion_after_grant(result, _repo), do: result
 
   defp scope_live_package_authority(query, []), do: query
 

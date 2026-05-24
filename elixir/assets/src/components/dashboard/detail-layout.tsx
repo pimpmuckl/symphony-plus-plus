@@ -99,8 +99,8 @@ export function DetailList({ title, items, empty }: { title: string; items: stri
       <p className="text-xs font-semibold text-muted-foreground">{title}</p>
       {visibleItems.length > 0 ? (
         <ul className="grid gap-1.5 text-sm text-muted-foreground">
-          {visibleItems.map((item) => (
-            <li key={item} className="detail-bullet">
+          {visibleItems.map((item, index) => (
+            <li key={`${index}:${item}`} className="detail-bullet">
               {item}
             </li>
           ))}

@@ -8,6 +8,7 @@ export function statusLabel(status?: string | null) {
   if (status === "in_progress") return "Active";
   if (status === "needs_attention") return "Needs Attention";
   if (status === "started_paused") return "Started / Paused";
+  if (status === "completed") return "Completed";
   if (status === "merging") return "Merging";
   if (status === "ready_for_human_merge" || status === "ready_for_architect_merge") return "Merge Ready";
   if (status === "merging_into_phase") return "Merging";

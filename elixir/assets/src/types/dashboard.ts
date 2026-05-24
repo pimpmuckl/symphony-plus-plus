@@ -179,6 +179,9 @@ export type WorkRequestCard = RepoIdentityFields & {
   desired_dispatch_shape?: string | null;
   status?: string | null;
   operational_state?: PackageOperationalState | null;
+  completed_at?: string | null;
+  archived_at?: string | null;
+  archive_reason?: string | null;
   open_question_count?: number;
   answered_question_count?: number;
   planned_slice_count?: number;
@@ -224,6 +227,10 @@ export type HandoffCopyState = "idle" | "copying" | "copied" | "error";
 export type CreateWorkRequestPayload = {
   work_request?: WorkRequestDetail;
   dashboard?: DashboardPayload;
+};
+
+export type DashboardSettings = {
+  work_request_archive_after_days?: number;
 };
 
 export type DecisionOption = {
@@ -527,12 +534,17 @@ export type DashboardPayload = {
   ledger?: {
     database?: string | null;
   };
+  settings?: DashboardSettings;
   active_blocking_edges?: ActiveBlockingEdge[];
   board?: {
     groups?: Record<string, WorkPackageCard[]>;
     total_count?: number;
   };
   work_requests?: {
+    work_requests?: WorkRequestCard[];
+    total_count?: number;
+  };
+  archived_work_requests?: {
     work_requests?: WorkRequestCard[];
     total_count?: number;
   };

@@ -34,10 +34,13 @@ defmodule SymphonyElixirWeb.Router do
 
     get("/api/v1/sympp/operator/config", SymppDashboardApiController, :operator_config)
     get("/api/v1/sympp/operator/dashboard", SymppDashboardApiController, :operator_dashboard)
+    post("/api/v1/sympp/operator/settings", SymppDashboardApiController, :operator_update_settings)
     post("/api/v1/sympp/operator/github/sync-prs", SymppDashboardApiController, :operator_sync_github_prs)
     get("/api/v1/sympp/operator/work-packages/:work_package_id", SymppDashboardApiController, :operator_package_detail)
     get("/api/v1/sympp/operator/solo-sessions/:solo_session_id", SymppDashboardApiController, :operator_solo_session_detail)
     post("/api/v1/sympp/operator/work-requests", SymppDashboardApiController, :operator_create_work_request)
+    post("/api/v1/sympp/operator/work-requests/:work_request_id/archive", SymppDashboardApiController, :operator_archive_work_request)
+    post("/api/v1/sympp/operator/work-requests/:work_request_id/restore", SymppDashboardApiController, :operator_restore_work_request)
     post("/api/v1/sympp/operator/comments", SymppDashboardApiController, :operator_create_comment)
     post("/api/v1/sympp/operator/comments/:comment_id/resolve", SymppDashboardApiController, :operator_resolve_comment)
 
@@ -84,10 +87,13 @@ defmodule SymphonyElixirWeb.Router do
     match(:*, "/api/v1/sympp/operator/config", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/sympp/board", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/sympp/operator/dashboard", ObservabilityApiController, :method_not_allowed)
+    match(:*, "/api/v1/sympp/operator/settings", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/sympp/operator/github/sync-prs", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/sympp/operator/work-packages/:work_package_id", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/sympp/operator/solo-sessions/:solo_session_id", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/sympp/operator/work-requests", ObservabilityApiController, :method_not_allowed)
+    match(:*, "/api/v1/sympp/operator/work-requests/:work_request_id/archive", ObservabilityApiController, :method_not_allowed)
+    match(:*, "/api/v1/sympp/operator/work-requests/:work_request_id/restore", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/sympp/operator/comments", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/sympp/operator/comments/:comment_id/resolve", ObservabilityApiController, :method_not_allowed)
 
