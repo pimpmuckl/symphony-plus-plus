@@ -1,5 +1,7 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
   @moduledoc false
+  @git_origin_timeout_ms 1_000
+  @max_git_origin_output_bytes 8_192
 
   @type identity :: %{
           repo_key: String.t() | nil,
@@ -9,21 +11,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
         }
 
   @type catalog :: %{optional(String.t()) => identity()}
-  @type catalog_opts :: [trusted_remotes: [String.t()]]
+  @type catalog_opts :: [trusted_remotes: [String.t()], local_path_remotes?: boolean()]
 
   @spec catalog([term()]) :: catalog()
   @spec catalog([term()], catalog_opts()) :: catalog()
   def catalog(repo_values, opts \\ []) do
+    local_path_remotes? = Keyword.get(opts, :local_path_remotes?, false)
+
     infos =
       repo_values
-      |> Enum.map(&parse_repo/1)
-      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq_by(&repo_value_key/1)
+      |> Enum.flat_map(&parse_repo_infos(&1, local_path_remotes?))
 
-    groups = Enum.group_by(infos, & &1.name_key)
+    groups = Enum.group_by(infos, & &1.group_key)
     trusted_remote_keys = trusted_remote_keys(opts)
+    remote_conflict_name_keys = remote_conflict_name_keys(infos)
 
-    Map.new(infos, fn info ->
-      {info.raw, identity(info, Map.fetch!(groups, info.name_key), trusted_remote_keys)}
+    infos
+    |> Enum.filter(& &1.catalog_key?)
+    |> Map.new(fn info ->
+      {info.raw, identity(info, Map.fetch!(groups, info.group_key), trusted_remote_keys, remote_conflict_name_keys)}
     end)
   end
 
@@ -34,13 +41,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
 
   def fields(_catalog, _raw_repo), do: empty_identity()
 
+  @spec local_git_origin_remote(term()) :: String.t() | nil
+  def local_git_origin_remote(repo_path) when is_binary(repo_path) do
+    with true <- local_git_repo_path?(repo_path),
+         git when is_binary(git) <- System.find_executable("git") || System.find_executable("git.exe"),
+         {:ok, origin} <- git_origin_remote(git, repo_path),
+         origin <- String.trim(origin),
+         false <- origin == "" do
+      origin
+    else
+      _result -> nil
+    end
+  end
+
+  def local_git_origin_remote(_repo_path), do: nil
+
   defp fallback_fields(raw_repo) do
     [raw_repo]
     |> catalog()
     |> Map.get(raw_repo, empty_identity())
   end
 
-  defp identity(info, group, trusted_remote_keys) do
+  defp identity(info, group, trusted_remote_keys, remote_conflict_name_keys) do
+    if path_derived_group?(group) and MapSet.member?(remote_conflict_name_keys, info.name_key) do
+      owner_qualified_identity(group)
+    else
+      collapsed_identity(info, group, trusted_remote_keys)
+    end
+  end
+
+  defp collapsed_identity(info, group, trusted_remote_keys) do
     collapsed_group? = collapsed_group?(group, trusted_remote_keys)
     identity_infos = identity_infos(group, info, collapsed_group?)
     remote = identity_infos |> Enum.find(&(&1.kind == :remote)) |> remote_display()
@@ -50,6 +80,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
       repo_display: repo_display(info, group, collapsed_group?),
       repo_remote: remote,
       repo_aliases: aliases(identity_infos)
+    }
+  end
+
+  defp owner_qualified_identity(group) do
+    remote = Enum.find(group, &(&1.kind == :remote))
+
+    %{
+      repo_key: remote.full_key,
+      repo_display: remote.full_display,
+      repo_remote: remote.full_display,
+      repo_aliases: group |> Enum.reject(& &1.generated_local_bare?) |> aliases()
     }
   end
 
@@ -85,12 +126,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
     cond do
       remote_keys == [] -> true
       length(remote_keys) > 1 -> false
-      bare_alias?(group) -> MapSet.member?(trusted_remote_keys, hd(remote_keys))
+      bare_alias?(group) -> MapSet.member?(trusted_remote_keys, hd(remote_keys)) or derived_remote_alias?(group, hd(remote_keys))
       true -> false
     end
   end
 
   defp bare_alias?(group), do: Enum.any?(group, &(&1.kind == :bare))
+
+  defp path_derived_group?(group), do: Enum.any?(group, & &1.derived_trusted_remote?)
+
+  defp derived_remote_alias?(group, remote_key) do
+    Enum.any?(group, &(&1.derived_trusted_remote? and &1.full_key == remote_key))
+  end
+
+  defp remote_conflict_name_keys(infos) do
+    infos
+    |> Enum.filter(&(&1.kind == :remote))
+    |> Enum.group_by(& &1.name_key)
+    |> Enum.filter(fn {_name_key, remotes} ->
+      remotes
+      |> Enum.map(& &1.full_key)
+      |> Enum.uniq()
+      |> length() > 1
+    end)
+    |> Enum.map(fn {name_key, _remotes} -> name_key end)
+    |> MapSet.new()
+  end
 
   defp trusted_remote_keys(opts) do
     opts
@@ -120,6 +181,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
   defp remote_display(nil), do: nil
   defp remote_display(info), do: info.full_display
 
+  defp parse_repo_infos(raw, local_path_remotes?) when is_binary(raw) do
+    repo = String.trim(raw)
+
+    case local_path_repo_infos(raw, repo, local_path_remotes?) do
+      [] ->
+        repo
+        |> normalized_repo_path()
+        |> do_parse_repo(raw)
+        |> List.wrap()
+
+      infos ->
+        infos
+    end
+  end
+
+  defp parse_repo_infos(_raw, _local_path_remotes?), do: []
+
   defp parse_repo(raw) when is_binary(raw) do
     raw
     |> String.trim()
@@ -128,6 +206,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
   end
 
   defp parse_repo(_raw), do: nil
+
+  defp repo_value_key(raw) when is_binary(raw), do: {:repo, String.trim(raw)}
+  defp repo_value_key(raw), do: {:other, raw}
 
   defp do_parse_repo("", _raw), do: nil
 
@@ -150,15 +231,110 @@ defmodule SymphonyElixir.SymphonyPlusPlus.RepoIdentity do
     end
   end
 
-  defp repo_info(raw, kind, full_display, name_display) do
+  defp local_path_repo_infos(raw, repo_path, true) do
+    with true <- local_git_repo_path?(repo_path),
+         origin when is_binary(origin) <- local_git_origin_remote(repo_path),
+         %{kind: :remote} = remote <- parse_repo(origin) do
+      group_key = {:local_path, key(raw)}
+
+      [
+        repo_info(raw, :bare, remote.name_display, remote.name_display, alias: raw, group_key: group_key),
+        repo_info(remote.name_display, :bare, remote.name_display, remote.name_display,
+          catalog_key?: false,
+          generated_local_bare?: true,
+          group_key: group_key
+        ),
+        repo_info(remote.full_display, :remote, remote.full_display, remote.name_display,
+          catalog_key?: false,
+          derived_trusted_remote?: true,
+          group_key: group_key
+        )
+      ]
+    else
+      _result -> []
+    end
+  end
+
+  defp local_path_repo_infos(_raw, _repo_path, false), do: []
+
+  defp local_git_repo_path?(repo_path) when is_binary(repo_path) do
+    local_absolute_path?(repo_path) and File.dir?(repo_path) and File.exists?(Path.join(repo_path, ".git"))
+  end
+
+  defp local_git_repo_path?(_repo_path), do: false
+
+  defp local_absolute_path?(path) do
+    absolute_path?(path) and not unc_path?(path)
+  end
+
+  defp absolute_path?(path) do
+    Path.type(path) == :absolute or Regex.match?(~r/\A(?:[a-zA-Z]:[\\\/]|\\\\)/, path)
+  end
+
+  defp unc_path?(path) do
+    path = String.replace(path, "/", "\\")
+
+    cond do
+      String.starts_with?(path, "\\\\?\\UNC\\") -> true
+      String.starts_with?(path, "\\\\?\\") -> false
+      true -> String.starts_with?(path, "\\\\")
+    end
+  end
+
+  defp git_origin_remote(git, repo_path) do
+    port =
+      Port.open({:spawn_executable, git}, [
+        :binary,
+        :exit_status,
+        :stderr_to_stdout,
+        args: ["-C", repo_path, "remote", "get-url", "origin"]
+      ])
+
+    collect_git_origin_remote(port, "", @max_git_origin_output_bytes)
+  rescue
+    _error -> nil
+  end
+
+  defp collect_git_origin_remote(port, output, remaining_bytes) do
+    receive do
+      {^port, {:data, data}} when byte_size(data) <= remaining_bytes ->
+        collect_git_origin_remote(port, output <> data, remaining_bytes - byte_size(data))
+
+      {^port, {:data, _data}} ->
+        close_port(port)
+        nil
+
+      {^port, {:exit_status, 0}} ->
+        {:ok, output}
+
+      {^port, {:exit_status, _status}} ->
+        nil
+    after
+      @git_origin_timeout_ms ->
+        close_port(port)
+        nil
+    end
+  end
+
+  defp close_port(port) do
+    Port.close(port)
+  rescue
+    _error -> :ok
+  end
+
+  defp repo_info(raw, kind, full_display, name_display, opts \\ []) do
     %{
       raw: raw,
       kind: kind,
       name_key: key(name_display),
       name_display: name_display,
+      group_key: Keyword.get(opts, :group_key, key(name_display)),
       full_key: key(full_display),
       full_display: full_display,
-      alias: full_display
+      alias: Keyword.get(opts, :alias, full_display),
+      catalog_key?: Keyword.get(opts, :catalog_key?, true),
+      generated_local_bare?: Keyword.get(opts, :generated_local_bare?, false),
+      derived_trusted_remote?: Keyword.get(opts, :derived_trusted_remote?, false)
     }
   end
 

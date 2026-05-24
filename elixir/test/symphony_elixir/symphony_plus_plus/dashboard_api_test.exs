@@ -9,6 +9,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.FakeGitHubClient
   alias SymphonyElixir.GitHubPullRequestFixtures
   alias SymphonyElixir.GitHubTestSupport
+  alias SymphonyElixir.TestSupport
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
@@ -3660,6 +3661,80 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
+  test "local operator dashboard projects persisted local path repos through their git origin", %{repo: repo} do
+    repo_path =
+      TestSupport.git_repo_with_origin_fixture!(
+        "https://github.com/Pimpmuckl/nextide-saas-live-chat.git",
+        prefix: "sympp-dashboard-repo-path"
+      )
+
+    try do
+      with_local_operator_endpoint(fn ->
+        assert {:ok, work_package} =
+                 WorkPackageRepository.create(
+                   repo,
+                   WorkPackageFactory.attrs(
+                     id: "SYMPP-REPO-PATH-IDENTITY",
+                     repo: repo_path,
+                     base_branch: "main"
+                   )
+                 )
+
+        assert {:ok, work_request} =
+                 WorkRequestRepository.create(repo, %{
+                   title: "Path repo projection",
+                   repo: repo_path,
+                   base_branch: "main",
+                   work_type: "feature",
+                   human_description: "Project the path repo through local git origin.",
+                   constraints: %{},
+                   desired_dispatch_shape: "architect_led_feature_branch",
+                   status: "ready_for_clarification"
+                 })
+
+        assert {:ok, solo_session} =
+                 SoloSessionsService.create_or_attach_current(repo, %{
+                   repo: repo_path,
+                   base_branch: "main",
+                   workspace_path: Path.join(@repo_root, "repo-path-identity-solo"),
+                   caller_id: "repo-path-identity-solo",
+                   title: "Path scoped solo"
+                 })
+
+        payload = json_response(get(local_operator_conn(), "/api/v1/sympp/operator/dashboard"), 200)
+        expected_aliases = Enum.sort_by([repo_path, "nextide-saas-live-chat", "Pimpmuckl/nextide-saas-live-chat"], &String.downcase/1)
+
+        package_card =
+          payload["board"]["groups"]["created"]
+          |> Enum.find(&(&1["id"] == work_package.id))
+
+        assert package_card["repo"] == repo_path
+        assert package_card["repo_key"] == "nextide-saas-live-chat"
+        assert package_card["repo_display"] == "nextide-saas-live-chat"
+        assert package_card["repo_remote"] == "Pimpmuckl/nextide-saas-live-chat"
+        assert package_card["repo_aliases"] == expected_aliases
+
+        assert [%{"repo" => ^repo_path, "repo_key" => "nextide-saas-live-chat", "repo_remote" => "Pimpmuckl/nextide-saas-live-chat"}] =
+                 payload["work_requests"]["work_requests"]
+
+        solo_session_id = solo_session.id
+
+        assert [%{"id" => ^solo_session_id, "repo" => ^repo_path, "repo_key" => "nextide-saas-live-chat", "repo_remote" => "Pimpmuckl/nextide-saas-live-chat"}] =
+                 payload["solo_sessions"]["solo_sessions"]
+
+        assert {:ok, persisted_package} = WorkPackageRepository.get(repo, work_package.id)
+        assert {:ok, persisted_request} = WorkRequestRepository.get(repo, work_request.id)
+        assert {:ok, persisted_session} = SoloSessionsService.get(repo, solo_session.id)
+
+        assert persisted_package.repo == repo_path
+        assert persisted_request.repo == repo_path
+        assert persisted_session.repo == repo_path
+      end)
+    after
+      File.rm_rf(repo_path)
+    end
+  end
+
   test "package detail repo identity stays scoped to the authorized package", %{repo: repo} do
     assert {:ok, work_package} =
              WorkPackageRepository.create(
@@ -5269,7 +5344,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   defp with_local_repo_origin(origin, fun) when is_binary(origin) and is_function(fun, 0) do
     original_repo_root = Application.fetch_env(:symphony_elixir, :sympp_repo_root)
     original_trusted_remotes = Application.fetch_env(:symphony_elixir, :sympp_repo_identity_trusted_remotes)
-    repo_root = temporary_git_repo_with_origin!(origin)
+    repo_root = TestSupport.git_repo_with_origin_fixture!(origin, prefix: "sympp-dashboard-repo-root")
+    script_path = Path.join([repo_root, "scripts", "sympp-worker-secret.ps1"])
+
+    File.mkdir_p!(Path.dirname(script_path))
+    File.write!(script_path, "# test fixture\n")
 
     Application.put_env(:symphony_elixir, :sympp_repo_root, repo_root)
     Application.delete_env(:symphony_elixir, :sympp_repo_identity_trusted_remotes)
@@ -5279,31 +5358,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     after
       restore_fetched_app_env(:sympp_repo_root, original_repo_root)
       restore_fetched_app_env(:sympp_repo_identity_trusted_remotes, original_trusted_remotes)
-      File.rm_rf(repo_root)
-    end
-  end
-
-  defp temporary_git_repo_with_origin!(origin) do
-    repo_root = Path.join(System.tmp_dir!(), "sympp-dashboard-repo-root-#{System.unique_integer([:positive])}")
-    script_path = Path.join([repo_root, "scripts", "sympp-worker-secret.ps1"])
-
-    File.mkdir_p!(Path.dirname(script_path))
-    File.write!(script_path, "# test fixture\n")
-
-    git!(repo_root, ["init"])
-    git!(repo_root, ["remote", "add", "origin", origin])
-
-    repo_root
-  end
-
-  defp git!(repo_root, args) do
-    git = System.find_executable("git") || System.find_executable("git.exe") || flunk("git executable is required for local repo origin tests")
-    {output, status} = System.cmd(git, ["-C", repo_root | args], stderr_to_stdout: true)
-
-    if status == 0 do
-      output
-    else
-      flunk("git #{Enum.join(args, " ")} failed with exit #{status}:\n#{output}")
     end
   end
 
