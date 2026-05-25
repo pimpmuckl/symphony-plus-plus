@@ -64,6 +64,9 @@ Prefer MCP tools when the session grants them:
   `approve_work_request_planned_slice`, `skip_work_request_planned_slice`,
   `mark_work_request_sliced`.
 - Dispatch: `dispatch_work_request_planned_slice`.
+- Delivery closeout: `read_work_request_delivery_board`,
+  `record_planned_slice_delivery`, `reconcile_work_request`,
+  `revoke_planned_slice_worker_key`.
 - Guidance: `list_guidance_requests`, `read_guidance_request`,
   `answer_guidance_request`, `escalate_guidance_request`.
 
@@ -103,6 +106,8 @@ Feature work normally uses one feature branch with smaller PRs targeting that
 branch. Direct `main` PRs are appropriate only for narrow changes when the
 architect plan records why a feature branch would add overhead without reducing
 risk.
+For large or uncapped repositories, add slice-specific PR-size or line-budget
+stop conditions in the planned slice or dispatch prompt.
 
 Approve a planned slice only after the product questions and decision log make
 the package boundary defensible. Skip stale or superseded slices instead of
@@ -131,6 +136,9 @@ Worker guidance must include:
 - Dependency summaries and recorded decisions needed to avoid scope drift.
 - Instruction to ask the architect first for product, architecture, dependency,
   or slice-boundary ambiguity.
+- Instruction that workers bring current WorkPackage evidence and a mergeable
+  green PR when a PR exists, but do not record WorkRequest delivery closeout or
+  mark product delivery merged/closed directly.
 
 Implementing workers use the current Review Suite plugin/orchestrator when it
 is installed, choosing `brief`, `normal`, `deep`, or `emergency` from package
@@ -149,6 +157,33 @@ review-suite obligations.
 As architecture agent, do not take over reviews yourself. Workers must bring
 you a fully reviewed and finished PR. You may ask a worker to fix important or
 missed review findings, but the worker owns that execution.
+
+## Delivery Closeout
+
+For WorkRequest-led delivery, read `read_work_request_delivery_board` first.
+The WR delivery board is the primary delivery surface after dispatch because it
+shows raw slice/package state, closeout truth, linked package evidence, stale
+attention codes, and successor context together.
+
+Decisions are rationale. Delivery closeout records lifecycle truth. Use
+`record_planned_slice_delivery` after a slice is actually delivered, completed
+without a PR, superseded, or abandoned. Use `reconcile_work_request` to dry-run
+or apply closeout only from structured PR/GitHub merge evidence. Do not infer
+closeout from decision prose, chat history, or a terminal package status alone.
+
+Outcome guide:
+
+- `pr_merged`: requires PR URL and merged-at timestamp; linked packages also
+  require strong merge evidence through `merge_commit_sha`.
+- `completed_no_pr`: requires direct no-PR evidence.
+- `superseded`: requires successor planned-slice id and reason; include the
+  successor WorkPackage id only when it is linked to that successor slice.
+- `abandoned`: requires a rationale.
+
+Phase-child PR merges remain phase controlled: call `merge_child_into_phase`
+before recording `pr_merged` delivery closeout. If a stale worker grant still
+exists for a closeout-ready planned slice, use `revoke_planned_slice_worker_key`
+with a redacted reason before final closeout.
 
 ## Guidance Routing
 

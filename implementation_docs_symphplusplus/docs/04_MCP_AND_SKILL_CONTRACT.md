@@ -387,6 +387,10 @@ mint_child_worker_key(work_package_id, template)
 revoke_child_worker_key(grant_id, reason)
 list_work_requests(status?)
 read_work_request(work_request_id)
+read_work_request_delivery_board(work_request_id)
+reconcile_work_request(work_request_id, apply?, recorded_by?)
+record_planned_slice_delivery(work_request_id, planned_slice_id, outcome, idempotency_key, recorded_by?, pr_url?, pr_number?, pr_repository?, pr_merged_at?, merge_commit_sha?, no_pr_evidence?, successor_planned_slice_id?, successor_work_package_id?, superseded_reason?, abandoned_rationale?)
+revoke_planned_slice_worker_key(work_request_id, planned_slice_id, grant_id, reason)
 set_work_request_status(work_request_id, current_status, next_status)
 ask_work_request_question(work_request_id, category, question, why_needed, asked_by_agent_run_id?, decision_prompt?)
 answer_work_request_question(work_request_id, question_id, current_status, answer, answered_by?)
@@ -451,6 +455,90 @@ Missing and out-of-scope WorkRequests fail closed as not found without leaking
 sibling request content. Returned payloads are JSON-safe and redact
 secret-looking values; they do not include work-key secrets, private handoff
 payloads, tokens, or worker secret material.
+
+`read_work_request_delivery_board(work_request_id)` is the primary
+WorkRequest-led delivery view for closeout. It is read-only and gated by
+`read:work_request`. It returns the scoped WorkRequest, ordered planned-slice
+delivery rows, counts, scope, raw slice status, linked WorkPackage summaries,
+delivery outcome summaries, operational state, attention reason codes, and
+successor context. It preserves raw lifecycle state while projecting human
+delivery truth; out-of-scope linked packages are reported as hidden instead of
+leaking package details.
+
+`record_planned_slice_delivery` is the write path for lifecycle truth. It is
+gated by `write:work_request`, requires `work_request_id`, `planned_slice_id`,
+`outcome`, and `idempotency_key`, verifies the planned slice and any linked or
+successor package stay inside the architect grant's frozen repo/base-branch
+scope, records one delivery outcome for the planned slice, and returns a fresh
+delivery board. Exact retries with the same idempotency key and evidence replay
+the existing delivery. Conflicting outcome/evidence for the same key or an
+already closed-out slice is rejected.
+
+Delivery outcomes are:
+
+- `pr_merged`: requires `pr_url` and ISO-8601 `pr_merged_at`; linked packages
+  also require `merge_commit_sha` as strong merge evidence. Standalone linked
+  packages move to `merged`. Phase-child PR delivery requires
+  `merge_child_into_phase` first; after the child is already
+  `merged_into_phase`, closeout records the delivery without redoing the phase
+  merge.
+- `completed_no_pr`: requires `no_pr_evidence` and closes a compatible linked
+  package to `closed`.
+- `superseded`: requires `successor_planned_slice_id` and
+  `superseded_reason`; optional `successor_work_package_id` must be linked to
+  that successor slice and in scope. A compatible linked package closes to
+  `closed`.
+- `abandoned`: requires `abandoned_rationale` and moves a compatible linked
+  package to `abandoned`.
+
+Linked package mutation is transactional with the delivery record. The service
+rejects mismatched package metadata, active blockers, active runtime evidence,
+stale terminal status conflicts, weak PR evidence, and closeout progress
+idempotency collisions. When all planned slices are terminal, closeout refreshes
+the WorkRequest completion projection. Decision-log entries remain rationale
+and scope history; they do not prove delivery happened.
+
+`reconcile_work_request` repairs stale closeout state only from structured
+PR/GitHub evidence. Omitted or false `apply` is a `read:work_request` dry-run
+that reports proposed actions and the current delivery board without writing.
+`apply: true` requires `write:work_request` and applies proposed PR-merged
+closeouts through `record_planned_slice_delivery`. The reconciler checks
+repository, base branch, current head, merged-at, and merge-commit evidence; it
+does not infer no-PR completion from decision prose or terminal package status.
+For the compact operator sequence and stale-board verification fixture, see
+`implementation_docs_symphplusplus/runbooks/WORK_REQUEST_DELIVERY_CLOSEOUT.md`.
+
+Example no-PR closeout:
+
+```json
+{
+  "work_request_id": "wr_example",
+  "planned_slice_id": "wrs_docs",
+  "outcome": "completed_no_pr",
+  "idempotency_key": "closeout-wrs-docs-direct",
+  "no_pr_evidence": "Operator confirmed the docs-only change landed directly."
+}
+```
+
+Example supersession closeout:
+
+```json
+{
+  "work_request_id": "wr_example",
+  "planned_slice_id": "wrs_old",
+  "outcome": "superseded",
+  "idempotency_key": "closeout-wrs-old-recut",
+  "successor_planned_slice_id": "wrs_new",
+  "successor_work_package_id": "wp_new",
+  "superseded_reason": "Recut with narrower owned files."
+}
+```
+
+`revoke_planned_slice_worker_key` is gated by `write:work_request` and revokes
+one live worker grant for the WorkPackage linked to the scoped planned slice
+after the worker has reached a closeout-ready state. It accepts the grant id
+and a redacted reason, records redacted audit evidence, and never accepts or
+returns raw worker secrets.
 
 `set_work_request_status`, `ask_work_request_question`,
 `answer_work_request_question`, `close_work_request_question`, and
