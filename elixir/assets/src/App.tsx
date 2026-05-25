@@ -91,6 +91,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -215,7 +216,9 @@ type ResolveContextComment = (commentId: string, resolutionNote?: string) => Pro
 type CommentStats = { comment_count: number; open_comment_count: number };
 type WorkRequestMutation = (workRequestId: string) => Promise<void>;
 type WorkRequestStateMutation = (workRequestId: string, nextState: "completed") => Promise<void>;
-type WorkPackageStateMutation = (workPackageId: string, nextStatus: "merged") => Promise<void>;
+type WorkPackageStateAction = "merged" | "merged_and_archive" | "closed_and_archive" | "completed_no_pr";
+type WorkPackageStateMutation = (workPackageId: string, action: WorkPackageStateAction, options?: { noPrEvidence?: string }) => Promise<void>;
+type WorkPackageArchiveMutation = (workPackageId: string) => Promise<void>;
 type ScopedHandoffCopy = {
   error: string | null;
   identity: string;
@@ -737,13 +740,23 @@ export default function App() {
     setSelectedCardDetail(null);
   }, [applyDashboardResponse, setSelectedCardDetail]);
 
-  const changeWorkPackageState = useCallback<WorkPackageStateMutation>(async (workPackageId, nextStatus) => {
+  const changeWorkPackageState = useCallback<WorkPackageStateMutation>(async (workPackageId, action, options) => {
     const response = await fetch(operatorApiUrl(`/work-packages/${encodeURIComponent(workPackageId)}/state`), {
       method: "POST",
       headers: await mutationHeaders(),
-      body: JSON.stringify({ status: nextStatus }),
+      body: JSON.stringify({ status: action, no_pr_evidence: options?.noPrEvidence }),
     });
     await applyDashboardResponse(response, "WorkPackage state was not changed", dashboardFromEnvelope);
+    setSelectedCardDetail(null);
+  }, [applyDashboardResponse, setSelectedCardDetail]);
+
+  const archiveWorkPackage = useCallback<WorkPackageArchiveMutation>(async (workPackageId) => {
+    const response = await fetch(operatorApiUrl(`/work-packages/${encodeURIComponent(workPackageId)}/archive`), {
+      method: "POST",
+      headers: await mutationHeaders(),
+      body: JSON.stringify({}),
+    });
+    await applyDashboardResponse(response, "WorkPackage was not archived", dashboardFromEnvelope);
     setSelectedCardDetail(null);
   }, [applyDashboardResponse, setSelectedCardDetail]);
 
@@ -799,6 +812,7 @@ export default function App() {
   const requests = useMemo(() => dashboard?.work_requests?.work_requests ?? [], [dashboard]);
   const archivedRequests = useMemo(() => dashboard?.archived_work_requests?.work_requests ?? [], [dashboard]);
   const requestDetails = useMemo(() => dashboard?.work_request_details ?? [], [dashboard]);
+  const linkedWorkPackageIds = useMemo(() => new Set(dashboard?.linked_work_package_ids ?? []), [dashboard]);
   const archiveAfterDays = dashboard?.settings?.work_request_archive_after_days ?? 14;
   const guidanceItems = useMemo(() => allGuidanceItems(dashboard), [dashboard]);
   const blockerItems = useMemo(() => activeBlockerItems(packages, requestDetails), [packages, requestDetails]);
@@ -963,6 +977,8 @@ export default function App() {
           onArchiveWorkRequest={archiveWorkRequest}
           onChangeWorkRequestState={changeWorkRequestState}
           onChangeWorkPackageState={changeWorkPackageState}
+          onArchiveWorkPackage={archiveWorkPackage}
+          linkedWorkPackageIds={linkedWorkPackageIds}
           onSubmitComment={submitComment}
           onResolveComment={resolveComment}
           canMutateComments={canMutateDashboardComments(runtimeConfig)}
@@ -2544,7 +2560,7 @@ function DashboardSettingsDialog({
           <div ref={initialFocusRef} tabIndex={-1} className="grid gap-3 rounded-md border bg-card/60 p-3 outline-none">
             <div>
               <span className="block text-sm font-medium">Archive cutoff</span>
-              <span className="mt-1 block text-xs text-muted-foreground">Completed WorkRequests auto-archive after {archiveAfterDays} days.</span>
+              <span className="mt-1 block text-xs text-muted-foreground">Delivered WorkRequests auto-archive after {archiveAfterDays} days.</span>
             </div>
             <form className="flex items-start gap-2" onSubmit={(event) => void saveArchiveDays(event)}>
               <Input
@@ -2654,7 +2670,7 @@ function ArchivedRequestsDialog({ requests, onRestoreWorkRequest }: { requests: 
         <DialogContent className="dashboard-dialog-content max-w-lg">
           <DialogHeader>
             <DialogTitle>Archived Requests</DialogTitle>
-            <DialogDescription>Completed WorkRequests hidden from the active cockpit</DialogDescription>
+            <DialogDescription>Delivered WorkRequests hidden from the active cockpit</DialogDescription>
           </DialogHeader>
 
           {error ? <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p> : null}
@@ -4105,6 +4121,8 @@ function CardDetailDialog({
   onArchiveWorkRequest,
   onChangeWorkRequestState,
   onChangeWorkPackageState,
+  onArchiveWorkPackage,
+  linkedWorkPackageIds,
   onSubmitComment,
   onResolveComment,
   canMutateComments,
@@ -4116,6 +4134,8 @@ function CardDetailDialog({
   onArchiveWorkRequest: WorkRequestMutation;
   onChangeWorkRequestState: WorkRequestStateMutation;
   onChangeWorkPackageState: WorkPackageStateMutation;
+  onArchiveWorkPackage: WorkPackageArchiveMutation;
+  linkedWorkPackageIds: Set<string>;
   onSubmitComment: SubmitContextComment;
   onResolveComment: ResolveContextComment;
   canMutateComments: boolean;
@@ -4210,6 +4230,8 @@ function CardDetailDialog({
               loading={effectiveLoadingPackage}
               error={state.package.error}
               onChangeWorkPackageState={onChangeWorkPackageState}
+              onArchiveWorkPackage={onArchiveWorkPackage}
+              linkedWorkPackageIds={linkedWorkPackageIds}
               onSubmitComment={onSubmitComment}
               onResolveComment={onResolveComment}
               canMutateComments={canMutateComments}
@@ -4287,7 +4309,7 @@ function RequestDetailContent({
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [archivePending, setArchivePending] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
-  const [completeConfirmOpen, setCompleteConfirmOpen] = useState(false);
+  const [deliverConfirmOpen, setDeliverConfirmOpen] = useState(false);
   const [statePending, setStatePending] = useState(false);
   const [stateError, setStateError] = useState<string | null>(null);
   const commentTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -4302,7 +4324,7 @@ function RequestDetailContent({
   const handoffButtonLabel = handoffHasOpenQuestions ? "Copy Resume Handoff Prompt" : "Copy Agent Handoff Prompt";
   const handoffIdentity = `${handoffHasOpenQuestions}:${request.id}:${request.status || ""}:${request.updated_at || ""}`;
   const canManualArchive = Boolean(request.completed_at && !request.archived_at);
-  const canCompleteRequest = !detailFinished;
+  const canMarkDelivered = !detailFinished;
   const {
     cachedHandoff,
     error: handoffError,
@@ -4340,13 +4362,13 @@ function RequestDetailContent({
     }
   }
 
-  async function completeRequest() {
+  async function markDelivered() {
     setStatePending(true);
     setStateError(null);
 
     try {
       await onChangeWorkRequestState(request.id, "completed");
-      setCompleteConfirmOpen(false);
+      setDeliverConfirmOpen(false);
     } catch (caught) {
       setStateError(caught instanceof Error ? caught.message : "WorkRequest state was not changed");
     } finally {
@@ -4440,7 +4462,7 @@ function RequestDetailContent({
               ["Request ID", request.id],
               ["Dispatch Shape", formatStatus(request.desired_dispatch_shape)],
               ["Raw Lifecycle", statusLabel(request.status)],
-              ["Completed", detailDate(request.completed_at)],
+              ["Delivered", detailDate(request.completed_at)],
               ["Archived", detailDate(request.archived_at)],
               ["Created", detailDate(request.inserted_at)],
               ["Updated", detailDate(request.updated_at)],
@@ -4449,13 +4471,13 @@ function RequestDetailContent({
           <DetailList title="Planned slices" items={(detail.planned_slices || []).map((slice) => slice.title || slice.id)} empty="No slices recorded." />
           <JsonDetail label="Constraints" value={request.constraints} />
         </DetailDisclosure>
-        {canCompleteRequest || canManualArchive ? (
+        {canMarkDelivered || canManualArchive ? (
           <div className="flex flex-col items-start gap-2 border-t border-destructive/20 pt-4">
             <div className="flex flex-wrap gap-2">
-              {canCompleteRequest ? (
-                <Button type="button" size="sm" variant="destructive" onClick={() => setCompleteConfirmOpen(true)} disabled={statePending}>
+              {canMarkDelivered ? (
+                <Button type="button" size="sm" variant="destructive" onClick={() => setDeliverConfirmOpen(true)} disabled={statePending}>
                   {statePending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
-                  Change State: Completed
+                  Mark Delivered
                 </Button>
               ) : null}
               {canManualArchive ? (
@@ -4471,13 +4493,13 @@ function RequestDetailContent({
         ) : null}
       </div>
       <DangerousStateConfirmationDialog
-        open={completeConfirmOpen}
-        onOpenChange={setCompleteConfirmOpen}
-        title="Complete WorkRequest?"
-        description="This manually marks the request Completed for the local dashboard even if unfinished slices, packages, or questions still exist."
-        confirmLabel="Complete WorkRequest"
+        open={deliverConfirmOpen}
+        onOpenChange={setDeliverConfirmOpen}
+        title="Mark WorkRequest Delivered?"
+        description="This manually marks the request Delivered for the local dashboard even if unfinished slices, packages, or questions still exist."
+        confirmLabel="Mark Delivered"
         pending={statePending}
-        onConfirm={() => void completeRequest()}
+        onConfirm={() => void markDelivered()}
       />
     </>
   );
@@ -4627,6 +4649,8 @@ function PackageDetailContent({
   loading,
   error,
   onChangeWorkPackageState,
+  onArchiveWorkPackage,
+  linkedWorkPackageIds,
   onSubmitComment,
   onResolveComment,
   canMutateComments,
@@ -4636,6 +4660,8 @@ function PackageDetailContent({
   loading: boolean;
   error: string | null;
   onChangeWorkPackageState: WorkPackageStateMutation;
+  onArchiveWorkPackage: WorkPackageArchiveMutation;
+  linkedWorkPackageIds: Set<string>;
   onSubmitComment: SubmitContextComment;
   onResolveComment: ResolveContextComment;
   canMutateComments: boolean;
@@ -4660,19 +4686,70 @@ function PackageDetailContent({
   const blockerCount = blockers.length || summary?.active_blocker_count || pkg.active_blocker_count || (operational?.key === "blocked" || pkg.status === "blocked" ? 1 : 0);
   const currentCommentStats = targetCommentStats(summary || pkg, detailPayload?.comments || [], packageComments);
   const canMarkMerged = !isFinishedBoardStatus(operational?.key || pkg.status);
-  const [mergeConfirmOpen, setMergeConfirmOpen] = useState(false);
+  const isLinkedPackage = linkedWorkPackageIds.has(pkg.id);
+  const canArchiveUnlinked = !isLinkedPackage && ["merged", "merged_into_phase", "closed"].includes(pkg.status || "");
+  const canCloseWithEvidence = Boolean(isLinkedPackage && canMarkMerged);
+  const stateActions: Array<{ value: WorkPackageStateAction; label: string }> = isLinkedPackage
+    ? [
+        ...(canMarkMerged ? [{ value: "merged" as const, label: "Mark Merged" }] : []),
+        ...(canCloseWithEvidence ? [{ value: "completed_no_pr" as const, label: "Close With Evidence" }] : []),
+      ]
+    : !isLinkedPackage && canMarkMerged
+      ? [
+          { value: "merged_and_archive", label: "Merged + Archive" },
+          { value: "closed_and_archive", label: "Closed + Archive" },
+        ]
+      : [];
+  const [stateConfirmOpen, setStateConfirmOpen] = useState(false);
+  const [pendingStateAction, setPendingStateAction] = useState<WorkPackageStateAction | null>(null);
+  const [evidenceDialogOpen, setEvidenceDialogOpen] = useState(false);
+  const [noPrEvidence, setNoPrEvidence] = useState("");
+  const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
+  const [archivePending, setArchivePending] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
 
-  async function markMerged() {
+  function selectStateAction(action: string) {
+    const nextAction = action as WorkPackageStateAction;
+    setStateError(null);
+    setNoPrEvidence("");
+
+    if (nextAction === "completed_no_pr") {
+      setEvidenceDialogOpen(true);
+      return;
+    }
+
+    setPendingStateAction(nextAction);
+    setStateConfirmOpen(true);
+  }
+
+  async function changePackageState(action: WorkPackageStateAction, options?: { noPrEvidence?: string }) {
     setStatePending(true);
     setStateError(null);
 
     try {
-      await onChangeWorkPackageState(pkg.id, "merged");
-      setMergeConfirmOpen(false);
+      await onChangeWorkPackageState(pkg.id, action, options);
+      setStateConfirmOpen(false);
+      setEvidenceDialogOpen(false);
+      setPendingStateAction(null);
+      setNoPrEvidence("");
     } catch (caught) {
       setStateError(caught instanceof Error ? caught.message : "WorkPackage state was not changed");
     } finally {
       setStatePending(false);
+    }
+  }
+
+  async function archivePackage() {
+    setArchivePending(true);
+    setArchiveError(null);
+
+    try {
+      await onArchiveWorkPackage(pkg.id);
+      setArchiveConfirmOpen(false);
+    } catch (caught) {
+      setArchiveError(caught instanceof Error ? caught.message : "WorkPackage was not archived");
+    } finally {
+      setArchivePending(false);
     }
   }
 
@@ -4758,24 +4835,102 @@ function PackageDetailContent({
           <DetailList title="Acceptance" items={pkg.acceptance_criteria || selection.slice?.acceptance_criteria || []} empty="No acceptance criteria recorded." />
           <DetailList title="Alerts" items={activeAlertLabels(detailPayload?.alert_indicators || pkg.alert_indicators || [])} empty="No active alerts." />
         </DetailDisclosure>
-        {canMarkMerged ? (
+        {stateActions.length > 0 || canArchiveUnlinked ? (
           <div className="flex flex-col items-start gap-2 border-t border-destructive/20 pt-4">
-            <Button type="button" size="sm" variant="destructive" onClick={() => setMergeConfirmOpen(true)} disabled={statePending}>
-              {statePending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
-              Change State: Merged
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              {stateActions.length > 0 ? (
+                <Select value="" onValueChange={selectStateAction} disabled={statePending}>
+                  <SelectTrigger className="h-9 w-[190px] border-destructive/40 text-xs">
+                    <SelectValue placeholder="Change State" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {stateActions.map((action) => (
+                      <SelectItem key={action.value} value={action.value}>
+                        {action.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : null}
+              {canArchiveUnlinked ? (
+                <Button type="button" size="sm" variant="outline" onClick={() => setArchiveConfirmOpen(true)} disabled={archivePending}>
+                  {archivePending ? <Loader2 className="size-4 animate-spin" /> : <Archive className="size-4" />}
+                  Archive Package
+                </Button>
+              ) : null}
+            </div>
             {stateError ? <p className="text-xs text-destructive">{stateError}</p> : null}
+            {archiveError ? <p className="text-xs text-destructive">{archiveError}</p> : null}
           </div>
         ) : null}
       </div>
       <DangerousStateConfirmationDialog
-        open={mergeConfirmOpen}
-        onOpenChange={setMergeConfirmOpen}
-        title="Merge WorkPackage?"
-        description="This manually marks the package Merged for the local dashboard. Use it only when the external merge or worker handoff was missed."
-        confirmLabel="Mark Merged"
+        open={stateConfirmOpen}
+        onOpenChange={(open) => {
+          setStateConfirmOpen(open);
+          if (!open) setPendingStateAction(null);
+        }}
+        title={pendingStateAction === "closed_and_archive" ? "Close and Archive WorkPackage?" : "Merge WorkPackage?"}
+        description={
+          pendingStateAction === "merged_and_archive"
+            ? "This marks the unlinked package Merged and hides it from the active operator board. The package record stays in the local ledger."
+            : pendingStateAction === "closed_and_archive"
+              ? "This marks the unlinked package Closed and hides it from the active operator board. The package record stays in the local ledger."
+              : "This manually marks the package Merged for the local dashboard. Use it only when the external merge or worker handoff was missed."
+        }
+        confirmLabel={
+          pendingStateAction === "merged_and_archive"
+            ? "Merged + Archive"
+            : pendingStateAction === "closed_and_archive"
+              ? "Closed + Archive"
+              : "Mark Merged"
+        }
         pending={statePending}
-        onConfirm={() => void markMerged()}
+        onConfirm={() => {
+          if (pendingStateAction) void changePackageState(pendingStateAction);
+        }}
+      />
+      <Dialog open={evidenceDialogOpen} onOpenChange={setEvidenceDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Close With Evidence</DialogTitle>
+            <DialogDescription>Record a completed-without-PR delivery for the linked planned slice.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <Textarea
+              value={noPrEvidence}
+              onChange={(event) => setNoPrEvidence(event.target.value)}
+              placeholder="Evidence note..."
+              disabled={statePending}
+              maxLength={COMMENT_BODY_MAX_LENGTH}
+            />
+            {stateError ? <p className="text-xs text-destructive">{stateError}</p> : null}
+            <div className="flex justify-end gap-2">
+              <Button type="button" size="sm" variant="outline" onClick={() => setEvidenceDialogOpen(false)} disabled={statePending}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="destructive"
+                onClick={() => void changePackageState("completed_no_pr", { noPrEvidence: noPrEvidence.trim() })}
+                disabled={statePending || noPrEvidence.trim().length === 0}
+              >
+                {statePending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+                Mark Completed Without PR
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <DangerousStateConfirmationDialog
+        open={archiveConfirmOpen}
+        onOpenChange={setArchiveConfirmOpen}
+        title="Archive Unlinked WorkPackage?"
+        description="This hides the delivered unlinked package from the active operator board. The package record stays in the local ledger."
+        confirmLabel="Archive Package"
+        pending={archivePending}
+        onConfirm={() => void archivePackage()}
       />
     </>
   );

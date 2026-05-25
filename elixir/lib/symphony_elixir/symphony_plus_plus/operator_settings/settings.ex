@@ -5,6 +5,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings do
 
   import Ecto.Changeset
 
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.StringList
+
   @settings_id "local_operator"
   @default_work_request_archive_after_days 14
   @max_work_request_archive_after_days 3650
@@ -13,12 +15,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings do
   @type t :: %__MODULE__{
           id: String.t(),
           work_request_archive_after_days: pos_integer(),
+          hidden_work_package_ids: [String.t()],
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
 
   schema "sympp_operator_settings" do
     field(:work_request_archive_after_days, :integer, default: @default_work_request_archive_after_days)
+    field(:hidden_work_package_ids, StringList, default: [])
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -33,7 +37,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings do
   def default do
     %__MODULE__{
       id: @settings_id,
-      work_request_archive_after_days: @default_work_request_archive_after_days
+      work_request_archive_after_days: @default_work_request_archive_after_days,
+      hidden_work_package_ids: []
     }
   end
 
@@ -51,12 +56,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.OperatorSettings.Settings do
 
   defp changeset(settings, attrs) do
     settings
-    |> cast(attrs, [:id, :work_request_archive_after_days])
+    |> cast(attrs, [:id, :work_request_archive_after_days, :hidden_work_package_ids])
     |> validate_required([:id, :work_request_archive_after_days])
     |> validate_number(:work_request_archive_after_days,
       greater_than_or_equal_to: 1,
       less_than_or_equal_to: @max_work_request_archive_after_days
     )
+    |> validate_change(:hidden_work_package_ids, fn :hidden_work_package_ids, values ->
+      if Enum.all?(values, &(is_binary(&1) and String.trim(&1) != "")) do
+        []
+      else
+        [hidden_work_package_ids: "must contain nonblank strings"]
+      end
+    end)
     |> unique_constraint(:id, name: :sympp_operator_settings_id_unique_index)
   end
 
