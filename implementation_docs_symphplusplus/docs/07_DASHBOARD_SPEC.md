@@ -185,6 +185,14 @@ to a merged package still reports raw `status: dispatched` while its operational
 state reports `Merged`. If a slice still appears idle while the linked package
 has started, the slice projection includes an attention item.
 
+WorkRequest-led delivery closeout is projected through the backend delivery
+board. Delivery closeout, not raw dispatched slice status, is the source of
+human delivery truth after work lands. A stale dispatched slice linked to a raw
+`ready_for_worker` or otherwise stale package can project as `Needs Closeout`
+from structured merged-PR evidence before closeout, then as `Delivered`,
+`Completed Without PR`, `Superseded`, or `Abandoned` after closeout while raw
+status remains available for audit.
+
 WorkRequest, planned-slice, and WorkPackage projections may include
 `comment_count`, `open_comment_count`, and `comments` detail arrays. Comment
 bodies, author names, resolver names, and resolution notes are redacted in
@@ -277,6 +285,13 @@ transitions. Grant-scoped WorkRequest list and detail responses promote only
 linked WorkPackages that remain inside the grant's frozen repo/base scope;
 out-of-scope links are treated as unavailable instead of leaking hidden package
 state.
+
+The delivery-board projection is the closeout detail source for WorkRequest-led
+delivery. It shows per-slice delivery outcomes, closeout evidence summaries,
+linked package raw status, attention reason codes, successor links, and counts
+such as `needs_closeout`. Dashboard clients should display those backend
+projections rather than deriving delivery truth from package cards or decision
+text.
 
 `/sympp/work-requests/new` behaves differently by mode:
 

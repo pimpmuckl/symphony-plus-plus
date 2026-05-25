@@ -35,6 +35,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   @mcp_plugin_wiring_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/skills/symphony-work-package/references/mcp_wiring.md")
   @handoff_path Path.join(@repo_root, "implementation_docs_symphplusplus/docs/00_ARCHITECT_AGENT_HANDOFF.md")
   @runbook_path Path.join(@repo_root, "implementation_docs_symphplusplus/docs/09_OPERATIONAL_RUNBOOK.md")
+  @mcp_skill_contract_path Path.join(@repo_root, "implementation_docs_symphplusplus/docs/04_MCP_AND_SKILL_CONTRACT.md")
+  @dashboard_spec_path Path.join(@repo_root, "implementation_docs_symphplusplus/docs/07_DASHBOARD_SPEC.md")
+  @closeout_runbook_path Path.join(@repo_root, "implementation_docs_symphplusplus/runbooks/WORK_REQUEST_DELIVERY_CLOSEOUT.md")
   @template_skill_path Path.join(@repo_root, "implementation_docs_symphplusplus/templates/SKILL.md")
   @template_prompt_path Path.join(@repo_root, "implementation_docs_symphplusplus/templates/worker_agent_prompt.md")
   @template_references_dir Path.join(@repo_root, "implementation_docs_symphplusplus/templates/references")
@@ -83,6 +86,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     refute skill =~ "add_comment(target_kind, target_id, body, idempotency_key)"
     refute skill =~ "resolve_comment(comment_id, resolution, idempotency_key)"
     refute skill =~ "request_context"
+  end
+
+  test "MCP plugin skills and docs make delivery closeout the default" do
+    architect_skill = @mcp_plugin_architect_skill_path |> File.read!() |> normalize_newlines()
+    worker_skill = @mcp_plugin_skill_path |> File.read!() |> normalize_newlines()
+    skill_contract = @mcp_skill_contract_path |> File.read!() |> normalize_newlines()
+    dashboard_spec = @dashboard_spec_path |> File.read!() |> normalize_newlines()
+    closeout_runbook = @closeout_runbook_path |> File.read!() |> normalize_newlines()
+
+    for marker <- [
+          "## Delivery Closeout",
+          "WR delivery board",
+          "Decisions are rationale",
+          "Delivery closeout records lifecycle truth",
+          "read_work_request_delivery_board",
+          "record_planned_slice_delivery",
+          "reconcile_work_request",
+          "add slice-specific PR-size or line-budget",
+          "do not record WorkRequest delivery closeout"
+        ] do
+      assert architect_skill =~ marker
+    end
+
+    for marker <- [
+          "Stay inside the assigned WorkPackage",
+          "Worker grants are scoped to exactly one WorkPackage."
+        ] do
+      assert worker_skill =~ marker
+    end
+
+    for marker <- [
+          "read_work_request_delivery_board(work_request_id)",
+          "record_planned_slice_delivery(work_request_id, planned_slice_id, outcome, idempotency_key",
+          "`completed_no_pr`",
+          "`no_pr_evidence`",
+          "`superseded`",
+          "`successor_planned_slice_id`",
+          "`reconcile_work_request`",
+          "PR/GitHub evidence",
+          "WORK_REQUEST_DELIVERY_CLOSEOUT.md"
+        ] do
+      assert skill_contract =~ marker
+    end
+
+    for marker <- ["Delivery closeout", "stale dispatched slice", "`ready_for_worker`"] do
+      assert dashboard_spec =~ marker
+    end
+
+    for marker <- [
+          "Kraken-Style Stale Delivery-Board Verification",
+          "`ready_for_worker`",
+          "Expected projection before closeout",
+          "Expected projection after closeout",
+          "record_planned_slice_delivery"
+        ] do
+      assert closeout_runbook =~ marker
+    end
   end
 
   test "worker prompt is paste-ready and MCP-backed" do
