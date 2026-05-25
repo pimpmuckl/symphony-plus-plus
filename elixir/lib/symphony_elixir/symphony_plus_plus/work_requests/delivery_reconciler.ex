@@ -29,8 +29,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
          {:ok, delivery_outcomes} <- delivery_outcomes(repo, planned_slices) do
       results = Enum.map(planned_slices, &reconcile_slice(repo, work_request, &1, delivery_outcomes, mode, opts))
 
-      with {:ok, final_planned_slices} <- final_board_planned_slices(repo, work_request_id, planned_slices, mode),
-           {:ok, final_board} <- delivery_board(repo, work_request, final_planned_slices, final_board_opts(mode, opts)) do
+      with {:ok, final_planned_slices} <-
+             final_board_planned_slices(repo, work_request_id, planned_slices, mode),
+           {:ok, final_board} <-
+             delivery_board(repo, work_request, final_planned_slices, final_board_opts(mode, opts)) do
         {:ok, summary(work_request.id, mode, results, final_board)}
       end
     end
@@ -243,20 +245,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
     end)
   end
 
-  defp pr_snapshot_payload?(%{"type" => "pr", "source_tool" => source_tool}, source_tools), do: source_tool in source_tools
+  defp pr_snapshot_payload?(%{"type" => "pr", "source_tool" => source_tool}, source_tools) do
+    source_tool in source_tools
+  end
+
   defp pr_snapshot_payload?(_payload, _source_tools), do: false
 
   defp evidence_from(pr_payload, pr_sync, merge_payload, ref) do
+    source_tool =
+      first_present([
+        map_value(merge_payload, "source_tool"),
+        map_value(pr_sync, "source_tool"),
+        map_value(pr_payload, "source_tool")
+      ])
+
+    base_branch_values = [map_value(pr_sync, "base_branch"), map_value(pr_payload, "base_branch")]
+    head_sha_values = [map_value(merge_payload, "head_sha"), map_value(pr_sync, "head_sha"), map_value(pr_payload, "head_sha")]
+    merged_at_values = [map_value(pr_sync, "merged_at"), map_value(merge_payload, "merged_at"), map_value(pr_payload, "merged_at")]
+
+    base_branch = clean_string(first_present(base_branch_values))
+    head_sha = clean_string(first_present(head_sha_values))
+    merged_at = first_present(merged_at_values)
+
+    merge_commit_sha =
+      first_present([
+        map_value(pr_sync, "merge_commit_sha"),
+        map_value(merge_payload, "merge_commit_sha"),
+        map_value(pr_payload, "merge_commit_sha")
+      ])
+
     %{
-      source_tool: first_present([map_value(merge_payload, "source_tool"), map_value(pr_sync, "source_tool"), map_value(pr_payload, "source_tool")]),
+      source_tool: source_tool,
       url: ref.url,
       repository: ref.repository,
       number: ref.number,
       ref: ref,
-      base_branch: clean_string(first_present([map_value(pr_sync, "base_branch"), map_value(pr_payload, "base_branch")])),
-      head_sha: clean_string(first_present([map_value(merge_payload, "head_sha"), map_value(pr_sync, "head_sha"), map_value(pr_payload, "head_sha")])),
-      merged_at: first_present([map_value(pr_sync, "merged_at"), map_value(merge_payload, "merged_at"), map_value(pr_payload, "merged_at")]),
-      merge_commit_sha: first_present([map_value(pr_sync, "merge_commit_sha"), map_value(merge_payload, "merge_commit_sha"), map_value(pr_payload, "merge_commit_sha")])
+      base_branch: base_branch,
+      head_sha: head_sha,
+      merged_at: merged_at,
+      merge_commit_sha: merge_commit_sha
     }
   end
 
@@ -305,8 +332,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
         {:skip, "missing_head_evidence", %{actual_head_sha: evidence.head_sha}}
     end
   end
-
-  defp validate_head(_events, evidence), do: {:skip, "missing_head_evidence", %{actual_head_sha: evidence.head_sha}}
 
   defp required_merged_at(evidence) do
     case parse_datetime(evidence.merged_at) do

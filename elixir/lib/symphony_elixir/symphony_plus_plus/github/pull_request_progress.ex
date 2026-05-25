@@ -109,7 +109,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequestProgress do
   defp stringify_nested_keys(value), do: value
 
   defp map_value(%{} = map, key), do: Map.get(map, key) || Map.get(map, to_string(key))
-  defp map_value(_value, _key), do: nil
 
   defp clean_string(value) when is_binary(value) do
     value = String.trim(value)

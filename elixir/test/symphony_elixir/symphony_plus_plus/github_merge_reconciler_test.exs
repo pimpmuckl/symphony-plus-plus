@@ -8,7 +8,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
   alias SymphonyElixir.GitHubTestSupport
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
-  alias SymphonyElixir.SymphonyPlusPlus.GitHub.{DefaultClient, GhCliClient, HttpClient, MergeReconciler, PullRequestProgress}
+
+  alias SymphonyElixir.SymphonyPlusPlus.GitHub.{
+    DefaultClient,
+    GhCliClient,
+    HttpClient,
+    MergeReconciler,
+    PullRequestProgress
+  }
+
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
