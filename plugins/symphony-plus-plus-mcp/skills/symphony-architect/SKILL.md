@@ -5,219 +5,103 @@ description: Use when assigned a Symphony++ WorkRequest, architect WorkPackage, 
 
 # Symphony++ Architect
 
-Use this skill as the owning architect agent for a v2 Symphony++ flow. Your job
-is to clarify product intent, record decisions, design approved WorkPackage
-slices, dispatch bounded workers, route package guidance, and keep agents from
-inventing product behavior.
+Own product clarification, slicing, worker dispatch, guidance routing, and
+delivery closeout. Do not implement worker packages yourself.
 
 ## Start
 
-1. Read the current assignment, WorkRequest, or architect package context from
-   the Symphony++ MCP server and MCP resources before planning. `tools/list`
-   may advertise WorkRequest and architect schemas before claim; schema
-   visibility is not authorization. If an architect tool call returns
-   `claim_required`, missing-session, or another session-binding denial, treat
-   the session as pre-claim/bootstrap and use the local architect
-   handoff/private-store bootstrap to bind it before reading the WorkRequest.
-2. For WorkRequest-led lanes, use `list_work_requests(status?)` and
-   `read_work_request(work_request_id)` to find the scoped request and its
-   questions, decisions, planned slices, and status summary.
-3. For architect WorkPackages, read the package resources and any linked
-   WorkRequest reference before authoring or dispatching slices.
-4. If the required MCP session, phase binding, or resources are unavailable,
-   record the blocker and fall back only to dashboard/operator docs or the
-   operator-approved artifact. Do not invent missing state.
-5. Keep raw secrets out of prompts, files, PRs, review text, logs, and command
-   output. Never paste or store work keys, bearer tokens, MCP auth tokens,
-   GitHub tokens, Linear tokens, private-store payloads, full secret-bearing
-   commands, or grant verifiers.
+1. Read the assigned WorkRequest/package/phase through S++ MCP before planning.
+   Tool visibility is not authorization; if a tool returns `claim_required` or
+   another binding denial, bind through the redacted private handoff first.
+2. For WorkRequest lanes, read `read_work_request(work_request_id)` and
+   `list_guidance_requests` before slicing.
+3. If MCP/session/scope state is unavailable, record/report the blocker. Do not
+   invent state.
+4. Never expose raw work keys, bearer/API/GitHub/Linear/MCP tokens, grant
+   verifiers, private handoff payloads, or secret-bearing commands.
 
-## Clarify First
+## Clarify
 
-Clarification is a product and architecture step, not implementation.
+- Ask focused product/architecture questions before slicing when intent,
+  compatibility, branch strategy, acceptance, validation, or ownership is
+  unclear.
+- Use `ask_work_request_question` with `decision_prompt` for material choices;
+  use plain questions for simple facts.
+- Record durable decisions with `record_work_request_decision`. Valid
+  `source_type`: `human`, `architect`, `operator`, `ask_pro_advisory`.
+- Escalate to `human_info_needed` when the human must decide. Do not choose
+  product behavior just to keep work moving.
 
-- Ask focused questions before slicing when product intent, branch strategy,
-  compatibility stance, validation expectations, or scope ownership is unclear.
-- Record durable answers with the WorkRequest question tools when available.
-- Use a plain clarification question for missing facts the human can answer in
-  one sentence. Use `decision_prompt` for higher-impact product choices where
-  the human should compare concrete options.
-- Record decisions with rationale, scope impact, and explicit assumptions using
-  `record_work_request_decision`. Use only the advertised `source_type` enum:
-  `human`, `architect`, `operator`, or `ask_pro_advisory`.
-- Use `human_info_needed` when the human must decide. Do not choose behavior
-  just to keep the lane moving.
-- Generated ask-pro output, chat history, local scratch notes, and review
-  comments can inform decisions, but they are not product truth until the
-  decision or human answer is recorded in the WorkRequest/package state.
+## Slice
 
-## WorkRequest Tools
+Design one PR-sized WorkPackage per slice unless the operator approves another
+shape. Each slice needs:
 
-Prefer MCP tools when the session grants them:
-
-- Read: `list_work_requests(status?)`, `read_work_request(work_request_id)`.
-- Status: `set_work_request_status`.
-- Clarification: `ask_work_request_question`,
-  `answer_work_request_question`, `close_work_request_question`.
-- Decisions: `record_work_request_decision`.
-- Planned slices: `add_work_request_planned_slice`,
-  `approve_work_request_planned_slice`, `skip_work_request_planned_slice`,
-  `mark_work_request_sliced`.
-- Dispatch: `dispatch_work_request_planned_slice`.
-- Delivery closeout: `read_work_request_delivery_board`,
-  `record_planned_slice_delivery`, `reconcile_work_request`,
-  `revoke_planned_slice_worker_key`.
-- Guidance: `list_guidance_requests`, `read_guidance_request`,
-  `answer_guidance_request`, `escalate_guidance_request`.
-
-Use the local operator dashboard only for human/operator actions, such as
-answering package guidance escalated to `human_info_needed`. The dashboard is
-not a reason to bypass MCP permission boundaries.
-
-## Wakeups
-
-- While actively owning a WorkRequest, phase, review, or worker lane, keep one
-  Codex Automation wakeup active for this architecture thread every 30 minutes when
-  there is useful follow-up work after waits, disconnects, capacity pauses, or
-  worker/review completion.
-- Reuse or update the existing wakeup instead of creating duplicates. Delete it
-  when the lane is paused without near-term action, handed off, blocked on the
-  operator, or fully complete.
-
-## Slice Design
-
-Design one PR-sized WorkPackage per slice unless the operator explicitly
-approves a different shape.
-
-Each planned slice should include:
-
-- A short title and outcome-focused goal.
-- A dispatchable `work_package_kind` from the MCP tool-schema enum, not an invented category.
-- Owned files or globs and forbidden paths.
-- Acceptance criteria that the worker can prove.
+- Outcome-focused title and goal.
+- Valid `work_package_kind`.
+- Owned globs, forbidden globs, target base branch, and branch strategy.
+- Acceptance criteria the worker can prove.
 - Validation commands or blocked-validation owner.
-- Required review profile, provider expectations, and current-head review evidence.
+- Review profile/provider requirements.
+- PR-size or line-budget guidance.
 - Stop conditions and guidance routing.
-- Dependency order and target base branch.
-- Branch strategy, especially whether feature work targets a feature branch or
-  a narrow direct-main PR.
+- Dependencies and recorded decisions needed to avoid scope drift.
 
-Feature work normally uses one feature branch with smaller PRs targeting that
-branch. Direct `main` PRs are appropriate only for narrow changes when the
-architect plan records why a feature branch would add overhead without reducing
-risk.
-For large or uncapped repositories, add slice-specific PR-size or line-budget
-stop conditions in the planned slice or dispatch prompt.
+Approve slices only when the boundary is defensible. Skip stale/superseded
+slices. Mark the WorkRequest sliced once approved slices cover the request.
 
-Approve a planned slice only after the product questions and decision log make
-the package boundary defensible. Skip stale or superseded slices instead of
-dispatching them. Once approved slices satisfy the request, use
-`mark_work_request_sliced` so the WorkRequest lifecycle records that slicing is
-complete.
+## Dispatch
 
-## Dispatch Workers
+Dispatch only approved slices with `dispatch_work_request_planned_slice`.
 
-Dispatch only approved slices inside the WorkRequest scope. Planned-slice
-dispatch creates WorkPackage, worker grant, and private handoff side effects, so
-use `dispatch_work_request_planned_slice` only from an explicit phase-scoped
-session with dispatch capability and a live file-backed ledger.
+Worker prompts must include:
 
-Worker guidance must include:
+- `symphony-plus-plus-mcp:symphony-worker`.
+- For assigned WorkPackages, `symphony-plus-plus-mcp:symphony-work-package`.
+- WorkPackage id, branch/base, scope, acceptance, validation, review profile,
+  line/PR-size budget, and stop conditions.
+- Redacted handoff/bootstrap only; never raw secrets.
+- Relevant decisions/dependencies.
+- Instruction to ask the architect about product, architecture, dependency,
+  slice-boundary, or reviewer-driven scope ambiguity.
+- Requirement to return a green merge-ready PR, or no-PR evidence when the
+  slice is investigation/docs/read-only.
 
-- WorkPackage id, branch/base guidance, owned paths, acceptance, validation,
-  review profile/provider requirements, and stop conditions.
-- The plugin-installed `symphony-plus-plus-mcp:symphony-work-package` worker
-  skill or the equivalent repo-local worker skill path.
-- Workers track progress in their assigned WorkPackage through S++ MCP:
-  `read_task_plan`, `update_task_plan`, `append_finding`, and
-  `append_progress`.
-- A private-store MCP bootstrap or redacted handoff metadata, never the raw
-  worker secret or full secret-bearing command text.
-- Dependency summaries and recorded decisions needed to avoid scope drift.
-- Instruction to ask the architect first for product, architecture, dependency,
-  or slice-boundary ambiguity.
-- Instruction that workers bring current WorkPackage evidence and a mergeable
-  green PR when a PR exists, but do not record WorkRequest delivery closeout or
-  mark product delivery merged/closed directly.
+Keep prompts short. The worker skill is the baseline playbook; the prompt only
+needs task-specific scope, evidence, constraints, and deviations.
 
-Implementing workers use the current Review Suite plugin/orchestrator when it
-is installed, choosing `brief`, `normal`, `deep`, or `emergency` from package
-policy and risk. If Review Suite is not installed, workers may use another
-approved review provider, but they must report review start/progress/final
-evidence through Symphony++ MCP. After a higher-confidence/current review has
-run, rerun the same required review profile after material changes. GitHub
-review can be required as an additional anchored step by package policy, but it
-is separate from the local review profile.
+Workers own implementation, tests, Review Suite, GitHub review when required,
+CI/static gates when present, and PR readiness. Do not take over their review
+loop; send important findings back to the worker.
 
-Dedicated reviewer agents are optional for high-risk business logic,
-security-sensitive changes, live smoke ownership, or cross-package release
-verification. They are not a substitute for the implementing worker's normal
-review-suite obligations.
+## Guidance
 
-As architecture agent, do not take over reviews yourself. Workers must bring
-you a fully reviewed and finished PR. You may ask a worker to fix important or
-missed review findings, but the worker owns that execution.
+- Answer package guidance when recorded intent already decides it.
+- Escalate with `escalate_guidance_request` when human product input is needed.
+- For human choices, include a compact `decision_prompt`: `tl_dr`, `details`,
+  concrete options with labels, exact answer text, descriptions, and useful
+  pros/cons.
 
-## Delivery Closeout
+## Delivery
 
-For WorkRequest-led delivery, read `read_work_request_delivery_board` first.
-The WR delivery board is the primary delivery surface after dispatch because it
-shows raw slice/package state, closeout truth, linked package evidence, stale
-attention codes, and successor context together.
+Use `read_work_request_delivery_board` as the delivery surface after dispatch.
+Decisions are rationale; delivery closeout is lifecycle truth.
 
-Decisions are rationale. Delivery closeout records lifecycle truth. Use
-`record_planned_slice_delivery` after a slice is actually delivered, completed
-without a PR, superseded, or abandoned. Use `reconcile_work_request` to dry-run
-or apply closeout only from structured PR/GitHub merge evidence. Do not infer
-closeout from decision prose, chat history, or a terminal package status alone.
+Record terminal outcomes with `record_planned_slice_delivery`:
 
-Outcome guide:
+- `pr_merged`: PR URL, merged-at timestamp, and merge commit for linked
+  packages.
+- `completed_no_pr`: direct no-PR evidence.
+- `superseded`: successor slice id and reason.
+- `abandoned`: rationale.
 
-- `pr_merged`: requires PR URL and merged-at timestamp; linked packages also
-  require strong merge evidence through `merge_commit_sha`.
-- `completed_no_pr`: requires direct no-PR evidence.
-- `superseded`: requires successor planned-slice id and reason; include the
-  successor WorkPackage id only when it is linked to that successor slice.
-- `abandoned`: requires a rationale.
+Use `reconcile_work_request` for structured PR/GitHub evidence repair. Do not
+infer delivery from prose decisions or chat. Phase-child PRs remain phase
+controlled; call `merge_child_into_phase` before `pr_merged` closeout when
+required. Revoke stale planned-slice worker grants before final closeout.
 
-Phase-child PR merges remain phase controlled: call `merge_child_into_phase`
-before recording `pr_merged` delivery closeout. If a stale worker grant still
-exists for a closeout-ready planned slice, use `revoke_planned_slice_worker_key`
-with a redacted reason before final closeout.
+## Stop
 
-## Guidance Routing
-
-Workers ask the architect first when ambiguity appears.
-
-- Answer open package guidance through architect guidance tools when the
-  decision is already covered by recorded product intent or architecture.
-- Escalate with `escalate_guidance_request` when the answer requires human
-  product input. That creates `human_info_needed` and an active package blocker.
-- Include a structured `decision_prompt` when escalating a higher-impact human
-  choice. Keep `reason` and `recommended_language` useful as fallbacks, then add:
-  `tl_dr`, `details`, and `options[]` with stable `id`, human `label`,
-  commit-ready `answer`, short `description`, and optional `pros`/`cons`.
-  Use one to four real options. Add `custom_redirect_label` only to customize
-  the visible freeform redirect label; the freeform redirect path remains
-  available even when you omit it.
-- Prefer option wording that lets the operator answer directly. Do not ask
-  vague questions when you can present the bounded choices, tradeoffs, and your
-  recommended default in the option descriptions.
-- The local operator answers `human_info_needed` package guidance in the
-  cockpit. That answer resolves the matching blocker.
-- Ordinary open guidance remains architect-owned until answered or escalated.
-
-## Stop Conditions
-
-Stop and ask the operator or record `human_info_needed` when you hit:
-
-- Unclear product intent, compatibility stance, or acceptance.
-- Scope expansion beyond the WorkRequest, phase, package, or owned paths.
-- Review feedback that implies new product behavior.
-- Branch strategy ambiguity or cross-package coupling.
-- Missing MCP/session binding, stale ledger access, or unavailable resources.
-- Requests to change global Codex config, plugin MCP registration, or generic
-  worker config.
-- Raw secret exposure risk or requests to paste secret-bearing commands.
-
-Do not continue by turning assumptions into implementation work.
+Stop and ask/report when you hit unclear product intent, scope expansion,
+branch ambiguity, missing MCP/scope state, raw secret risk, global Codex/plugin
+config changes, or review feedback that implies new product behavior.
