@@ -3,6 +3,8 @@ Code.require_file("../../support/mcp_harness.exs", __DIR__)
 defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
   use ExUnit.Case, async: false
 
+  import Ecto.Query, only: [from: 2]
+
   alias SymphonyElixir.MCPHarness
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
@@ -122,6 +124,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_human_merge"
   end
 
+  test "MCP reconcile_work_request apply returns fresh post-closeout delivery board", %{repo: repo} do
+    {work_request, _planned_slice, linked_package} =
+      linked_slice!(
+        repo,
+        work_request_id: "WR-RECONCILE-MCP-APPLY",
+        work_package_id: "WP-RECONCILE-MCP-APPLY",
+        status: "ready_for_human_merge"
+      )
+
+    append_merged_pr_evidence!(repo, linked_package, 904, "head-904")
+    session = create_work_request_architect_session(repo, work_request, ["read:work_request", "write:work_request"])
+
+    response = mcp_tool(repo, session, "reconcile_work_request", %{"work_request_id" => work_request.id, "apply" => true})
+    payload = get_in(response, ["result", "structuredContent", "reconciliation"])
+
+    assert payload["applied_count"] == 1
+    counts = get_in(response, ["result", "structuredContent", "delivery_board", "counts"])
+    assert Map.get(counts, "needs_closeout", 0) == 0
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 1
+    assert repo.get!(WorkPackage, linked_package.id).status == "merged"
+  end
+
   test "repository base and head mismatches are skipped with reason codes", %{repo: repo} do
     cases = [
       {"repository_mismatch", [repository: "other/repo"]},
@@ -146,6 +170,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
       assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
       assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_human_merge"
     end
+  end
+
+  test "blank planned-slice base branch is skipped with a clear reason", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(repo,
+        work_request_id: "WR-RECONCILE-BLANK-SLICE-BASE",
+        work_package_id: "WP-RECONCILE-BLANK-SLICE-BASE",
+        status: "ready_for_human_merge"
+      )
+
+    repo.update_all(from(slice in PlannedSlice, where: slice.id == ^planned_slice.id), set: [target_base_branch: ""])
+    append_merged_pr_evidence!(repo, linked_package, 905, "head-905", base_branch: "main")
+
+    assert {:ok, result} = DeliveryReconciler.reconcile(repo, work_request.id, mode: :apply)
+
+    assert result.applied_count == 0
+    assert [%{status: "skipped", reason: "missing_base_branch", actual_base_branch: "main"}] = result.results
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+    assert repo.get!(WorkPackage, linked_package.id).status == "ready_for_human_merge"
+  end
+
+  test "historical sync PR evidence can use merge reconciliation strong fields", %{repo: repo} do
+    {work_request, _planned_slice, linked_package} =
+      linked_slice!(repo,
+        work_request_id: "WR-RECONCILE-HISTORICAL-MERGE",
+        work_package_id: "WP-RECONCILE-HISTORICAL-MERGE",
+        status: "ready_for_human_merge"
+      )
+
+    append_legacy_merged_pr_evidence!(repo, linked_package, 906, "head-906")
+
+    assert {:ok, result} = DeliveryReconciler.reconcile(repo, work_request.id, mode: :apply)
+
+    assert result.applied_count == 1
+    assert [%{status: "applied", reason: "github_pr_merged", action: %{merge_commit_sha: "merge-sha-906"}}] = result.results
+
+    assert [delivery] = repo.all(PlannedSliceDelivery)
+    assert DateTime.compare(delivery.pr_merged_at, ~U[2026-05-24 12:00:00Z]) == :eq
+    assert delivery.merge_commit_sha == "merge-sha-906"
   end
 
   test "decision-log prose and terminal package status do not infer no-PR completion", %{repo: repo} do
@@ -216,7 +279,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
     request_id = Keyword.fetch!(overrides, :work_request_id)
     work_package_id = Keyword.fetch!(overrides, :work_package_id)
     status = Keyword.get(overrides, :status, "reviewing")
-
     work_request = create_work_request!(repo, id: request_id, status: "ready_for_slicing")
     planned_slice = create_planned_slice!(repo, work_request, id: "WRS-#{request_id}")
 
@@ -224,7 +286,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
              WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
 
     work_package =
-      create_matching_work_package!(repo, work_request, approved_slice,
+      create_matching_work_package!(
+        repo,
+        work_request,
+        approved_slice,
         id: work_package_id,
         status: status
       )
@@ -349,6 +414,69 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryReconcilerTest do
                  merged_at: "2026-05-24T12:00:00Z",
                  merge_commit_sha: merge_commit_sha,
                  merge_state: %{merged: true}
+               }
+             })
+  end
+
+  defp append_legacy_merged_pr_evidence!(repo, work_package, number, attached_head_sha) do
+    url = "https://github.com/nextide/repo/pull/#{number}"
+
+    assert {:ok, _branch} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "Branch attached",
+               status: "branch_attached",
+               payload: %{type: "branch", source_tool: "attach_branch", branch: "agent/#{work_package.id}", head_sha: attached_head_sha}
+             })
+
+    assert {:ok, _attached} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR attached",
+               status: "pr_attached",
+               payload: %{
+                 type: "pr",
+                 source_tool: "attach_pr",
+                 url: url,
+                 repository: "nextide/repo",
+                 number: number,
+                 head_sha: attached_head_sha,
+                 base_branch: "main"
+               }
+             })
+
+    assert {:ok, _synced} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "PR merged",
+               status: "pr_synced",
+               payload: %{
+                 type: "pr",
+                 source_tool: "sync_pr",
+                 url: url,
+                 repository: "nextide/repo",
+                 number: number,
+                 head_sha: attached_head_sha,
+                 base_branch: "main",
+                 merge_state: %{merged: true}
+               }
+             })
+
+    assert {:ok, _reconciled} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: work_package.id,
+               summary: "GitHub PR merge reconciled",
+               status: "github_pr_merged",
+               payload: %{
+                 type: "github_pr_merge_reconciliation",
+                 source_tool: "operator_sync_prs",
+                 url: url,
+                 repository: "nextide/repo",
+                 number: number,
+                 head_sha: attached_head_sha,
+                 merged: true,
+                 merged_at: "2026-05-24T12:00:00Z",
+                 merge_commit_sha: "merge-sha-#{number}"
                }
              })
   end

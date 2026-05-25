@@ -8,7 +8,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
   alias SymphonyElixir.GitHubTestSupport
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
-  alias SymphonyElixir.SymphonyPlusPlus.GitHub.{DefaultClient, GhCliClient, HttpClient, MergeReconciler}
+  alias SymphonyElixir.SymphonyPlusPlus.GitHub.{DefaultClient, GhCliClient, HttpClient, MergeReconciler, PullRequestProgress}
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
@@ -40,6 +40,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
     FakeGitHubClient.clear()
     FakeGhCli.clear()
     :ok
+  end
+
+  test "PR progress helpers preserve created_at precedence over legacy sequences" do
+    old_event = %ProgressEvent{
+      id: "old-pr",
+      sequence: 200,
+      created_at: ~U[2026-05-20 12:00:00Z],
+      payload: %{
+        "type" => "pr",
+        "source_tool" => "attach_pr",
+        "url" => "https://github.com/nextide/repo/pull/1",
+        "repository" => "nextide/repo",
+        "number" => 1,
+        "head_sha" => "old-head"
+      }
+    }
+
+    new_event = %ProgressEvent{
+      id: "new-pr",
+      sequence: 1,
+      created_at: ~U[2026-05-21 12:00:00Z],
+      payload: %{
+        "type" => "pr",
+        "source_tool" => "attach_pr",
+        "url" => "https://github.com/nextide/repo/pull/2",
+        "repository" => "nextide/repo",
+        "number" => 2,
+        "head_sha" => "new-head"
+      }
+    }
+
+    assert {:ok, %{ref: %{number: 2}, payload: %{"head_sha" => "new-head"}}} =
+             PullRequestProgress.current_pr_state([new_event, old_event], ["attach_pr"])
   end
 
   test "merged PR fetch transitions ready standalone package to merged", %{repo: repo} do

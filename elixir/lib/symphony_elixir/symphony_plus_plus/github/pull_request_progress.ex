@@ -7,7 +7,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequestProgress do
   @spec chronological_events([ProgressEvent.t()]) :: [ProgressEvent.t()]
   def chronological_events(events) when is_list(events) do
     Enum.sort_by(events, fn %ProgressEvent{sequence: sequence, created_at: created_at, id: id} ->
-      {sequence || 0, created_at || DateTime.from_unix!(0), id || ""}
+      {created_at || DateTime.from_unix!(0), sequence || 0, id || ""}
     end)
   end
 

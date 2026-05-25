@@ -29,7 +29,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
          {:ok, delivery_outcomes} <- delivery_outcomes(repo, planned_slices) do
       results = Enum.map(planned_slices, &reconcile_slice(repo, work_request, &1, delivery_outcomes, mode, opts))
 
-      with {:ok, final_board} <- delivery_board(repo, work_request, planned_slices, opts) do
+      with {:ok, final_board} <- delivery_board(repo, work_request, planned_slices, final_board_opts(mode, opts)) do
         {:ok, summary(work_request.id, mode, results, final_board)}
       end
     end
@@ -41,6 +41,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
   defp mode(:apply), do: {:ok, :apply}
   defp mode("apply"), do: {:ok, :apply}
   defp mode(_mode), do: {:error, :invalid_reconciliation_mode}
+
+  defp final_board_opts(:apply, opts), do: Keyword.delete(opts, :work_package_contexts)
+  defp final_board_opts(:dry_run, opts), do: opts
 
   defp work_request(repo, work_request_id, opts) do
     case Keyword.get(opts, :work_request) do
@@ -194,7 +197,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
 
     case PullRequestProgress.current_pr_state(events, ["attach_pr", "sync_pr"]) do
       {:ok, pr_state} ->
-        merge_reconciliation = latest_merge_reconciliation(events, pr_state.ref, pr_state.sequence)
+        merge_reconciliation = latest_merge_reconciliation(events, pr_state.ref)
 
         if PullRequestProgress.merged?(pr_state.payload) or merge_reconciliation_payload?(merge_reconciliation) do
           {:ok, evidence_from(pr_state.payload, merge_reconciliation, pr_state.ref)}
@@ -210,15 +213,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
     end
   end
 
-  defp latest_merge_reconciliation(events, ref, current_pr_sequence) do
+  defp latest_merge_reconciliation(events, ref) do
     events
     |> Enum.reverse()
     |> Enum.find_value(fn %ProgressEvent{} = event ->
       payload = PullRequestProgress.stringify_keys(event.payload || %{})
 
-      current_or_newer? = (event.sequence || 0) >= current_pr_sequence
-
-      if current_or_newer? and merge_reconciliation_payload?(payload) and PullRequestProgress.same_pr?(payload, ref) do
+      if merge_reconciliation_payload?(payload) and PullRequestProgress.same_pr?(payload, ref) do
         payload
       end
     end)
@@ -231,7 +232,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
       repository: ref.repository,
       number: ref.number,
       base_branch: clean_string(map_value(pr_payload, "base_branch")),
-      head_sha: clean_string(first_present([map_value(pr_payload, "head_sha"), map_value(merge_payload, "head_sha")])),
+      head_sha: clean_string(first_present([map_value(merge_payload, "head_sha"), map_value(pr_payload, "head_sha")])),
       merged_at: first_present([map_value(pr_payload, "merged_at"), map_value(merge_payload, "merged_at")]),
       merge_commit_sha: first_present([map_value(pr_payload, "merge_commit_sha"), map_value(merge_payload, "merge_commit_sha")])
     }
@@ -253,8 +254,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
     end
   end
 
-  defp validate_base_branch(%PlannedSlice{} = planned_slice, %WorkPackage{} = work_package, evidence) do
-    expected = clean_string(planned_slice.target_base_branch || work_package.base_branch)
+  defp validate_base_branch(%PlannedSlice{} = planned_slice, %WorkPackage{}, evidence) do
+    expected = clean_string(planned_slice.target_base_branch)
     actual = clean_string(evidence.base_branch)
 
     cond do
