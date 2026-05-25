@@ -1970,6 +1970,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "owned_file_globs", "type"]) == "array"
 
+    assert get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "owned_file_globs", "description"]) =~
+             "`**` must be a complete path segment"
+
     assert get_in(tools_by_name, ["add_work_request_planned_slice", "inputSchema", "properties", "work_package_kind", "enum"]) ==
              StateMachine.standalone_kinds()
 
@@ -1998,7 +2001,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_handoff", "type"]) == "string"
     assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "secret_store_dir", "type"]) == "string"
-    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "repo_root", "type"]) == "string"
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "symphony_repo_root", "type"]) == "string"
+
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "symphony_repo_root", "description"]) =~
+             "helper/namespace repo root"
+
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "repo_root", "deprecated"]) == true
+
+    assert get_in(tools_by_name, ["dispatch_work_request_planned_slice", "inputSchema", "properties", "repo_root", "description"]) =~
+             "Legacy compatibility alias"
 
     assert get_in(tools_by_name, ["prepare_work_package_worktree", "inputSchema", "required"]) == [
              "work_package_id",
@@ -5745,6 +5756,67 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
            } == counts_before
   end
 
+  test "WorkRequest MCP planned-slice validation rejects unsupported globstar at add and approve", %{repo: repo} do
+    {anchor, session, _grant} =
+      create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-SLICE-GLOBSTAR", [
+        "write:work_request"
+      ])
+
+    work_request =
+      create_work_request!(repo,
+        id: "WR-MCP-WR-SLICE-GLOBSTAR",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing",
+        constraints: %{"allowed_paths" => ["scripts", "elixir/lib"], "requires_secret" => false}
+      )
+
+    add_args = %{
+      "work_request_id" => work_request.id,
+      "title" => "Invalid globstar slice",
+      "goal" => "Reject invalid globstar placement before dispatch.",
+      "work_package_kind" => "mcp",
+      "target_base_branch" => anchor.base_branch,
+      "owned_file_globs" => ["scripts/**deploy**"],
+      "forbidden_file_globs" => [],
+      "acceptance_criteria" => ["Invalid globstar placement is rejected early."],
+      "validation_steps" => ["mix test test/symphony_elixir/symphony_plus_plus/mcp_test.exs"],
+      "review_lanes" => ["normal"],
+      "stop_conditions" => ["Stop before dispatch."]
+    }
+
+    add_response = mcp_tool(repo, session, "add_work_request_planned_slice", add_args)
+
+    assert get_in(add_response, ["error", "code"]) == -32_602
+    assert get_in(add_response, ["error", "data", "reason"]) == "planned_slice_scope_violation"
+
+    assert get_in(add_response, ["error", "data", "validation_errors"]) == [
+             %{"field" => "owned_file_globs", "value" => "scripts/**deploy**", "reason" => "unsupported_globstar"}
+           ]
+
+    assert {:ok, []} = WorkRequestRepository.list_planned_slices(repo, work_request.id)
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(repo, work_request.id, Map.delete(add_args, "work_request_id"))
+
+    approve_response =
+      mcp_tool(repo, session, "approve_work_request_planned_slice", %{
+        "work_request_id" => work_request.id,
+        "planned_slice_id" => planned_slice.id,
+        "current_status" => "planned"
+      })
+
+    assert get_in(approve_response, ["error", "code"]) == -32_602
+    assert get_in(approve_response, ["error", "data", "reason"]) == "planned_slice_scope_violation"
+
+    assert get_in(approve_response, ["error", "data", "validation_errors"]) == [
+             %{"field" => "owned_file_globs", "value" => "scripts/**deploy**", "reason" => "unsupported_globstar"}
+           ]
+
+    assert {:ok, persisted_slice} = WorkRequestRepository.get_planned_slice(repo, work_request.id, planned_slice.id)
+    assert persisted_slice.status == "planned"
+  end
+
   test "architect WorkRequest planned-slice dispatch tool creates safe worker handoff", %{repo: repo} do
     {anchor, session, _grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-WR-SLICE-DISPATCH", [
@@ -5776,6 +5848,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     live_database_path = current_main_database_path(repo)
     configured_database = sqlite_file_uri(live_database_path, "mode=rwc&cache=shared")
+    configured_product_repo_root = Path.join(test_handoff_store_dir(), "configured-product-repo-root")
+    File.mkdir_p!(configured_product_repo_root)
 
     response =
       mcp_tool(
@@ -5787,10 +5861,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "planned_slice_id" => approved_slice.id,
           "claimed_by" => "worker-dispatch-1",
           "secret_handoff" => "local-private-file",
-          "secret_store_dir" => test_dispatch_handoff_store_dir(),
-          "repo_root" => test_repo_root()
+          "secret_store_dir" => test_dispatch_handoff_store_dir()
         },
-        config: Config.default(repo: repo, database: configured_database)
+        config: Config.default(repo: repo, repo_root: configured_product_repo_root, database: configured_database)
       )
 
     payload = get_in(response, ["result", "structuredContent"])
@@ -6037,6 +6110,85 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(planned_response, ["error", "data", "reason"]) == "invalid_planned_slice_status"
     assert repo.aggregate(WorkPackage, :count) == 1
     assert repo.aggregate(AccessGrant, :count) == 1
+
+    assert {:ok, root_check_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               in_scope.id,
+               work_request_planned_slice_attrs(id: "WRS-MCP-WR-DISPATCH-ROOT-CHECK", target_base_branch: anchor.base_branch)
+             )
+
+    assert {:ok, approved_root_check_slice} =
+             WorkRequestRepository.approve_planned_slice(repo, in_scope.id, root_check_slice.id, "planned")
+
+    bad_repo_root = Path.join(test_handoff_store_dir(), "not-a-symphony-helper-root")
+    File.mkdir_p!(bad_repo_root)
+    counts_before_bad_root = {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)}
+
+    bad_root_response =
+      mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
+        "work_request_id" => in_scope.id,
+        "planned_slice_id" => approved_root_check_slice.id,
+        "claimed_by" => "worker-dispatch-bad-root",
+        "secret_handoff" => test_secret_handoff_mode(),
+        "secret_store_dir" => test_dispatch_handoff_store_dir(),
+        "symphony_repo_root" => bad_repo_root
+      })
+
+    assert get_in(bad_root_response, ["error", "code"]) == -32_602
+    assert get_in(bad_root_response, ["error", "data", "reason"]) == "invalid_repo_root"
+    assert get_in(bad_root_response, ["error", "data", "message"]) =~ "symphony_repo_root"
+    assert get_in(bad_root_response, ["error", "data", "message"]) =~ "worker secret helper script"
+    assert {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)} == counts_before_bad_root
+
+    legacy_bad_root_response =
+      mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
+        "work_request_id" => in_scope.id,
+        "planned_slice_id" => approved_root_check_slice.id,
+        "claimed_by" => "worker-dispatch-legacy-bad-root",
+        "secret_handoff" => test_secret_handoff_mode(),
+        "secret_store_dir" => test_dispatch_handoff_store_dir(),
+        "repo_root" => bad_repo_root
+      })
+
+    assert get_in(legacy_bad_root_response, ["error", "code"]) == -32_602
+    assert get_in(legacy_bad_root_response, ["error", "data", "reason"]) == "invalid_repo_root"
+    refute get_in(legacy_bad_root_response, ["error", "data", "reason"]) == "unexpected_argument"
+    assert {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)} == counts_before_bad_root
+
+    assert {:ok, invalid_glob_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               in_scope.id,
+               work_request_planned_slice_attrs(
+                 id: "WRS-MCP-WR-DISPATCH-GLOBSTAR",
+                 target_base_branch: anchor.base_branch,
+                 owned_file_globs: ["scripts/**deploy**"]
+               )
+             )
+
+    assert {:ok, approved_invalid_glob_slice} =
+             WorkRequestRepository.approve_planned_slice(repo, in_scope.id, invalid_glob_slice.id, "planned")
+
+    counts_before_invalid_glob = {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)}
+
+    invalid_glob_response =
+      mcp_tool(repo, session, "dispatch_work_request_planned_slice", %{
+        "work_request_id" => in_scope.id,
+        "planned_slice_id" => approved_invalid_glob_slice.id,
+        "claimed_by" => "worker-dispatch-invalid-glob",
+        "secret_handoff" => test_secret_handoff_mode(),
+        "secret_store_dir" => test_dispatch_handoff_store_dir()
+      })
+
+    assert get_in(invalid_glob_response, ["error", "code"]) == -32_602
+    assert get_in(invalid_glob_response, ["error", "data", "reason"]) == "planned_slice_scope_violation"
+
+    assert get_in(invalid_glob_response, ["error", "data", "validation_errors"]) == [
+             %{"field" => "owned_file_globs", "value" => "scripts/**deploy**", "reason" => "unsupported_globstar"}
+           ]
+
+    assert {repo.aggregate(WorkPackage, :count), repo.aggregate(AccessGrant, :count)} == counts_before_invalid_glob
 
     assert {:ok, live_database_slice} =
              WorkRequestRepository.add_planned_slice(

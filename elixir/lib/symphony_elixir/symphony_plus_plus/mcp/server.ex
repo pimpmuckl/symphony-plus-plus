@@ -46,6 +46,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
@@ -2089,7 +2090,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "goal" => string_schema(),
         "work_package_kind" => string_enum_schema(StateMachine.standalone_kinds()),
         "target_base_branch" => string_schema(),
-        "owned_file_globs" => string_array_schema(),
+        "owned_file_globs" =>
+          described_string_array_schema(
+            "Repo-relative slash-separated owned file globs. `**` must be a complete path segment, for example `scripts/**/deploy*.ps1`; invalid examples include `scripts/**deploy**` and `packages/**kraken_batch**`."
+          ),
         "forbidden_file_globs" => string_array_schema(),
         "acceptance_criteria" => string_array_schema(),
         "validation_steps" => string_array_schema(),
@@ -2142,7 +2146,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "claimed_by" => string_schema(),
         "secret_handoff" => string_schema(),
         "secret_store_dir" => string_schema(),
-        "repo_root" => string_schema()
+        "symphony_repo_root" =>
+          described_string_schema(
+            "Optional Symphony++ helper/namespace repo root containing scripts/sympp-worker-secret.*. This is not the target product repo root and defaults to the configured or local Symphony++ root when discoverable."
+          ),
+        "repo_root" =>
+          described_string_schema("Legacy compatibility alias for stale clients; use symphony_repo_root for new calls.")
+          |> Map.put("deprecated", true)
       },
       ["work_request_id", "planned_slice_id", "claimed_by"]
     )
@@ -2333,6 +2343,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp nonempty_string_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => nonblank_string_schema()}
   defp string_array_schema, do: %{"type" => "array", "items" => nonblank_string_schema()}
+  defp described_string_array_schema(description), do: Map.put(string_array_schema(), "description", description)
   defp nonempty_object_array_schema, do: %{"type" => "array", "minItems" => 1, "items" => object_schema()}
 
   defp metadata_head_schema do
@@ -3646,6 +3657,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
          :ok <- require_planned_slice_authoring_status(work_request.status),
          :ok <- require_planned_slice_target_base_branch_scope(work_request, target_base_branch),
+         :ok <- validate_planned_slice_scope_for_tool(work_request, owned_file_globs),
          {:ok, planned_slice} <-
            WorkRequestService.add_planned_slice(
              config.repo,
@@ -3679,7 +3691,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          }
        })}
     else
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "add_work_request_planned_slice", "reason" => reason}}
+      {:tool_error, reason} -> invalid_params_error("add_work_request_planned_slice", reason)
       {:error, %Ecto.Changeset{}} -> {:error, -32_602, "Invalid params", %{"tool" => "add_work_request_planned_slice", "reason" => "invalid_planned_slice"}}
       {:error, :not_found} -> not_found_error("add_work_request_planned_slice")
       {:error, reason} -> architect_error(reason, "add_work_request_planned_slice")
@@ -3731,7 +3743,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, dispatch} <- PlannedSliceDispatch.dispatch(config.repo, work_request_id, planned_slice_id, handoff_opts) do
       {:ok, tool_result(dispatch_work_request_planned_slice_payload(dispatch, scope))}
     else
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "dispatch_work_request_planned_slice", "reason" => reason}}
+      {:tool_error, reason} -> invalid_params_error("dispatch_work_request_planned_slice", reason)
       {:error, :not_found} -> not_found_error("dispatch_work_request_planned_slice")
       {:error, reason} -> dispatch_work_request_planned_slice_error(reason)
     end
@@ -3908,7 +3920,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, filters, scope} <- scoped_work_request_filters(repo, session),
          {:ok, work_request} <- scoped_work_request(repo, work_request_id, filters),
          :ok <- require_planned_slice_authoring_status(work_request.status),
-         {:ok, _planned_slice} <- scoped_work_request_planned_slice(repo, work_request_id, planned_slice_id),
+         {:ok, planned_slice_for_validation} <-
+           scoped_work_request_planned_slice(repo, work_request_id, planned_slice_id),
+         :ok <-
+           maybe_validate_planned_slice_scope_for_approval(next_status, work_request, planned_slice_for_validation),
          {:ok, planned_slice} <-
            update_work_request_planned_slice_status(
              repo,
@@ -3930,7 +3945,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          }
        })}
     else
-      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason}}
+      {:tool_error, reason} -> invalid_params_error(tool, reason)
       {:error, :not_found} -> not_found_error(tool)
       {:error, reason} -> architect_error(reason, tool)
     end
@@ -3943,6 +3958,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp update_work_request_planned_slice_status(repo, work_request_id, planned_slice_id, current_status, "skipped") do
     WorkRequestService.skip_planned_slice(repo, work_request_id, planned_slice_id, current_status)
   end
+
+  defp validate_planned_slice_scope_for_tool(%WorkRequest{} = work_request, owned_file_globs) do
+    case ScopeConstraints.validate_owned_file_globs(work_request, owned_file_globs) do
+      :ok -> :ok
+      {:error, errors} -> {:tool_error, {:planned_slice_scope_violation, errors}}
+    end
+  end
+
+  defp maybe_validate_planned_slice_scope_for_approval("approved", %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice) do
+    validate_planned_slice_scope_for_tool(work_request, planned_slice.owned_file_globs || [])
+  end
+
+  defp maybe_validate_planned_slice_scope_for_approval(_next_status, %WorkRequest{}, %PlannedSlice{}), do: :ok
 
   defp dispatch_planned_slice_handoff_opts(%Config{} = config, arguments, claimed_by) do
     with {:ok, repo_root} <- dispatch_planned_slice_repo_root(config, arguments),
@@ -3963,11 +3991,58 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp dispatch_planned_slice_repo_root(%Config{} = config, arguments) do
-    case optional_string_argument(arguments, "repo_root") do
-      {:ok, nil} -> config_repo_root(config)
-      {:ok, repo_root} -> {:ok, Path.expand(repo_root)}
+    case optional_string_argument(arguments, "symphony_repo_root") do
+      {:ok, nil} -> legacy_or_default_dispatch_planned_slice_repo_root(config, arguments)
+      {:ok, repo_root} -> explicit_dispatch_planned_slice_repo_root(repo_root)
       {:tool_error, reason} -> {:tool_error, reason}
     end
+  end
+
+  defp legacy_or_default_dispatch_planned_slice_repo_root(%Config{} = config, arguments) do
+    case optional_string_argument(arguments, "repo_root") do
+      {:ok, nil} -> default_dispatch_planned_slice_repo_root(config)
+      {:ok, repo_root} -> explicit_dispatch_planned_slice_repo_root(repo_root)
+      {:tool_error, reason} -> {:tool_error, reason}
+    end
+  end
+
+  defp explicit_dispatch_planned_slice_repo_root(repo_root) do
+    repo_root = Path.expand(repo_root)
+
+    if dispatch_helper_repo_root?(repo_root), do: {:ok, repo_root}, else: {:tool_error, "invalid_repo_root"}
+  end
+
+  defp default_dispatch_planned_slice_repo_root(%Config{} = config) do
+    case config_repo_root(config) do
+      {:ok, repo_root} ->
+        if dispatch_helper_repo_root?(repo_root) do
+          {:ok, repo_root}
+        else
+          local_dispatch_planned_slice_repo_root("invalid_repo_root")
+        end
+
+      {:tool_error, "missing_repo_root"} ->
+        local_dispatch_planned_slice_repo_root("missing_repo_root")
+
+      {:tool_error, reason} ->
+        {:tool_error, reason}
+    end
+  end
+
+  defp local_dispatch_planned_slice_repo_root(fallback_reason) do
+    case SecretHandoff.local_operator_repo_root() do
+      repo_root when is_binary(repo_root) ->
+        if dispatch_helper_repo_root?(repo_root), do: {:ok, repo_root}, else: {:tool_error, fallback_reason}
+
+      _repo_root ->
+        {:tool_error, fallback_reason}
+    end
+  end
+
+  defp dispatch_helper_repo_root?(repo_root) do
+    Enum.any?(["sympp-worker-secret.sh", "sympp-worker-secret.ps1"], fn script ->
+      File.regular?(Path.join([repo_root, "scripts", script]))
+    end)
   end
 
   defp dispatch_handoff_database(nil, repo) do
@@ -4166,8 +4241,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:error, -32_602, "Invalid params", %{"tool" => "dispatch_work_request_planned_slice", "reason" => "invalid_work_request_status"}}
   end
 
-  defp dispatch_work_request_planned_slice_error({:planned_slice_scope_violation, _errors}) do
-    {:error, -32_602, "Invalid params", %{"tool" => "dispatch_work_request_planned_slice", "reason" => "planned_slice_scope_violation"}}
+  defp dispatch_work_request_planned_slice_error({:planned_slice_scope_violation, errors}) do
+    invalid_params_error("dispatch_work_request_planned_slice", {:planned_slice_scope_violation, errors})
   end
 
   defp dispatch_work_request_planned_slice_error({:unsupported_standalone_kind, _kind}) do
@@ -9822,7 +9897,85 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_error(:database_busy, tool), do: service_error(:database_busy, tool)
   defp architect_error({:storage_failed, _reason} = reason, tool), do: service_error(reason, tool)
   defp architect_error({:migration_failed, _reason} = reason, tool), do: service_error(reason, tool)
+
+  defp architect_error({:planned_slice_scope_violation, errors}, tool) do
+    invalid_params_error(tool, {:planned_slice_scope_violation, errors})
+  end
+
+  defp architect_error(reason, tool) when reason in [:invalid_repo_root, :missing_repo_root] do
+    invalid_params_error(tool, reason)
+  end
+
   defp architect_error(reason, tool), do: {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason_text(reason)}}
+
+  defp invalid_params_error(tool, {:planned_slice_scope_violation, errors}) do
+    {:error, -32_602, "Invalid params",
+     %{
+       "tool" => tool,
+       "reason" => "planned_slice_scope_violation",
+       "validation_errors" => scope_validation_details(errors)
+     }}
+  end
+
+  defp invalid_params_error(tool, reason) when reason in [:missing_repo_root, "missing_repo_root"] do
+    {:error, -32_602, "Invalid params",
+     %{
+       "tool" => tool,
+       "reason" => "missing_repo_root",
+       "message" => "No Symphony++ helper root was provided or discoverable; pass symphony_repo_root or configure --repo-root to the Symphony++ repo containing the worker secret helper script."
+     }}
+  end
+
+  defp invalid_params_error(tool, reason) when reason in [:invalid_repo_root, "invalid_repo_root"] do
+    {:error, -32_602, "Invalid params",
+     %{
+       "tool" => tool,
+       "reason" => "invalid_repo_root",
+       "message" =>
+         "symphony_repo_root must point to the Symphony++ helper/namespace repo root containing the worker secret helper script under scripts/; it is not the target product repository root."
+     }}
+  end
+
+  defp invalid_params_error(tool, reason) do
+    {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason_text(reason)}}
+  end
+
+  defp scope_validation_details(errors) when is_list(errors), do: Enum.map(errors, &scope_validation_detail/1)
+  defp scope_validation_details(error), do: scope_validation_details([error])
+
+  defp scope_validation_detail({:invalid_constraints, field}) do
+    %{"field" => Atom.to_string(field), "reason" => "invalid_constraints"}
+  end
+
+  defp scope_validation_detail({:invalid_owned_file_globs, field}) do
+    %{"field" => Atom.to_string(field), "reason" => "invalid_owned_file_globs"}
+  end
+
+  defp scope_validation_detail({:invalid_path, field, value, reason}) do
+    %{
+      "field" => Atom.to_string(field),
+      "value" => value,
+      "reason" => Atom.to_string(reason)
+    }
+  end
+
+  defp scope_validation_detail({:outside_allowed_paths, value, allowed_paths}) do
+    %{
+      "field" => "owned_file_globs",
+      "value" => value,
+      "reason" => "outside_allowed_paths",
+      "allowed_paths" => allowed_paths
+    }
+  end
+
+  defp scope_validation_detail({:forbidden_path_overlap, value, forbidden_path}) do
+    %{
+      "field" => "owned_file_globs",
+      "value" => value,
+      "reason" => "forbidden_path_overlap",
+      "forbidden_path" => forbidden_path
+    }
+  end
 
   defp scoped_session(repo, session, arguments) when is_map(arguments) do
     case Auth.require_session(session, repo) do

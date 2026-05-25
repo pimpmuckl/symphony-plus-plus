@@ -400,7 +400,7 @@ add_work_request_planned_slice(work_request_id, title, goal, work_package_kind, 
 approve_work_request_planned_slice(work_request_id, planned_slice_id, current_status)
 skip_work_request_planned_slice(work_request_id, planned_slice_id, current_status)
 mark_work_request_sliced(work_request_id, current_status)
-dispatch_work_request_planned_slice(work_request_id, planned_slice_id, claimed_by, secret_handoff?, secret_store_dir?, repo_root?)
+dispatch_work_request_planned_slice(work_request_id, planned_slice_id, claimed_by, secret_handoff?, secret_store_dir?, symphony_repo_root?)
 prepare_work_package_worktree(work_package_id, repo_root, base_branch, branch)
 cleanup_work_package_worktree(work_package_id)
 read_child_status(work_package_id)
@@ -583,16 +583,26 @@ These tools do not dispatch planned slices, create WorkPackages, alter
 SecretHandoff, mutate Linear, run automatic slicing/package generation, or
 change dashboard behavior.
 
+`add_work_request_planned_slice` and `approve_work_request_planned_slice`
+validate `owned_file_globs` against the parent WorkRequest path constraints
+before mutating. `**` must be a full path segment: `scripts/**/deploy*.ps1`
+and `.github/workflows/**` are valid; `scripts/**deploy**`,
+`scripts/**server**`, and `packages/**kraken_batch**` are invalid and return
+safe structured details with the field, offending value, and reason such as
+`unsupported_globstar`.
+
 `dispatch_work_request_planned_slice` is an architect dispatch tool gated by
 `dispatch:work_request`, not by generic `write:work_request`. It uses the same
 explicit phase-scoped frozen repo/base-branch scope, requires `work_request_id`,
 `planned_slice_id`, and `claimed_by`, accepts optional `secret_handoff`,
-`secret_store_dir`, and `repo_root`, and calls the existing
+`secret_store_dir`, and `symphony_repo_root`, and calls the existing
 `PlannedSliceDispatch.dispatch`
 orchestration. MCP dispatch has a statically discoverable schema, and direct
-calls fail closed if the supplied `repo_root`, configured `repo_root`, or
-`--repo-root` is missing, invalid, or does not point at a repository that
-contains the worker secret handoff script. MCP
+calls fail closed if the supplied `symphony_repo_root`, legacy hidden
+`repo_root` alias, configured `repo_root`, or discoverable local Symphony++
+repo root is missing, invalid, or does not point at the Symphony++ helper root
+that contains the worker secret helper script under `scripts/`. This is not the
+target product repository root. MCP
 dispatch requires a file-backed live ledger so the returned worker
 bootstrap command reconnects to the same ledger; in-memory database
 configuration fails closed before dispatch side effects. Blank database

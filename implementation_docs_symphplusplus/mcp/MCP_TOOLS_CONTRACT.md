@@ -210,7 +210,12 @@ stores only the operator's replacement guidance note.
 `write:work_request`, the same explicit phase-scoped frozen repo/base-branch
 scope, and `work_request_id` on every mutation. Approve and skip verify that
 `planned_slice_id` belongs to the scoped WorkRequest before mutating and fail
-closed as not found for sibling slices. `mark_work_request_sliced` uses the
+closed as not found for sibling slices. Add and approve validate
+`owned_file_globs` against the parent WorkRequest path constraints before
+mutation. `**` must be a complete path segment: `scripts/**/deploy*.ps1` and
+`.github/workflows/**` are valid; `scripts/**deploy**`,
+`scripts/**server**`, and `packages/**kraken_batch**` are invalid and return
+structured validation details with field, value, and reason. `mark_work_request_sliced` uses the
 existing WorkRequest service behavior, including the approved-or-dispatched
 slice requirement. Responses return JSON-safe redacted planned-slice or
 WorkRequest status projections plus scope/status metadata. These tools do not
@@ -223,13 +228,15 @@ schema.
 requires `dispatch:work_request` because it creates a WorkPackage, worker grant,
 and private SecretHandoff side effects. It requires `work_request_id`,
 `planned_slice_id`, and `claimed_by`, with optional `secret_handoff`,
-`secret_store_dir`, and `repo_root`, uses the same frozen repo/base-branch
+`secret_store_dir`, and `symphony_repo_root`, uses the same frozen repo/base-branch
 WorkRequest scope, and
 calls the existing `PlannedSliceDispatch.dispatch` orchestration. MCP dispatch
 has a statically discoverable schema, and direct calls fail closed if
-the supplied `repo_root`, configured `repo_root`, or `--repo-root` is missing,
-invalid, or does not point at a repository containing the worker secret handoff
-script. It requires a file-backed live ledger so worker
+the supplied `symphony_repo_root`, legacy hidden `repo_root` alias, configured
+`repo_root`, or local Symphony++ repo root is missing, invalid, or does not
+point at a repository containing the worker secret helper script under
+`scripts/`. This root is the Symphony++ helper/namespace repo root, not the
+target product repository root. It requires a file-backed live ledger so worker
 handoff commands reconnect to the same ledger; in-memory database configuration
 fails closed before dispatch side effects. Blank database configuration is
 treated as absent and uses the live ledger. Matching configured SQLite file URI
