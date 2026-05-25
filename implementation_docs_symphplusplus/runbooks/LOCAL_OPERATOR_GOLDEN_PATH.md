@@ -15,7 +15,7 @@ For a first local checkout, do the setup once:
 - Follow `../../elixir/README.md` for Elixir runtime prerequisites before
   running `mix sympp.cockpit`.
 - Follow `../../plugins/symphony-plus-plus/README.md` to install and enable the
-  default `symphony-plus-plus` Codex plugin for Solo Session planning.
+  default `symphony-plus-plus` Codex plugin for MCP-free planning skills.
 - For WorkRequest architect or WorkPackage worker sessions, also make the
   opt-in `symphony-plus-plus-mcp` plugin/config available in that dedicated
   MCP-enabled session before launch. Do not rely on the default plugin alone
@@ -41,18 +41,18 @@ If the default Symphony++ skill is visible but the `symphony_plus_plus` MCP
 tools are missing, run the activation doctor from the repository root:
 
 ```powershell
-.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName jonat-local -Doctor
+.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName symphony-plus-plus -Doctor
 ```
 
 The normal repair for `solo_ready_mcp_companion_not_enabled` is to enable
 the companion only in the dedicated S++ MCP config/Codex home:
 
 ```powershell
-.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName jonat-local -EnableMcpCompanion
+.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName symphony-plus-plus -EnableMcpCompanion
 ```
 
 The enable command validates the installed companion cache and manifest, writes
-only `[plugins."symphony-plus-plus-mcp@jonat-local"] enabled = true`, and keeps
+only `[plugins."symphony-plus-plus-mcp@symphony-plus-plus"] enabled = true`, and keeps
 a timestamped `config.toml.sympp-backup-*` before changing an existing config.
 It refuses the default `~/.codex` home. Then restart or reload that dedicated
 session. Do not add the MCP companion to generic worker, `worker_smart`,
@@ -257,7 +257,8 @@ Give each worker:
 - The non-secret private-store handoff metadata or generated MCP bootstrap
   shape.
 - The stable `claimed_by` identity for that package.
-- The instruction to use `symphony-plus-plus-mcp:symphony-work-package`.
+- The instruction to use `symphony-plus-plus:symphony-worker` plus
+  `symphony-plus-plus-mcp:symphony-work-package`.
 - The explicit requirement to launch the worker in an opt-in Symphony++
   MCP-enabled session before using that skill.
 - The instruction to ask the architect first for product, architecture,
@@ -332,7 +333,7 @@ PRs, create WorkRequests, create WorkPackages, or write Linear state.
 | Situation | Skill |
 | --- | --- |
 | WorkRequest-led planning, clarification, decisions, slicing, dispatch, or package guidance routing | `symphony-plus-plus-mcp:symphony-architect` |
-| One assigned WorkPackage or WorkKey with MCP-backed planning and readiness evidence | `symphony-plus-plus-mcp:symphony-work-package` |
+| One assigned WorkPackage or WorkKey with MCP-backed planning and readiness evidence | `symphony-plus-plus:symphony-worker` plus `symphony-plus-plus-mcp:symphony-work-package` |
 | One normal local agent session that only needs durable planning memory | `symphony-plus-plus:symphony-solo-session` |
 
 ## Handoff Defaults

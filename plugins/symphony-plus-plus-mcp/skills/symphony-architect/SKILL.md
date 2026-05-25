@@ -57,7 +57,7 @@ Dispatch only approved slices with `dispatch_work_request_planned_slice`.
 
 Worker prompts must include:
 
-- `symphony-plus-plus-mcp:symphony-worker`.
+- `symphony-plus-plus:symphony-worker`.
 - For assigned WorkPackages, `symphony-plus-plus-mcp:symphony-work-package`.
 - WorkPackage id, branch/base, scope, acceptance, validation, review profile,
   line/PR-size budget, and stop conditions.
@@ -68,8 +68,8 @@ Worker prompts must include:
 - Requirement to return a green merge-ready PR, or no-PR evidence when the
   slice is investigation/docs/read-only.
 
-Keep prompts short. The worker skill is the baseline playbook; the prompt only
-needs task-specific scope, evidence, constraints, and deviations.
+Keep prompts short. The default worker skill is the baseline playbook; the
+prompt only needs task-specific scope, evidence, constraints, and deviations.
 
 Workers own implementation, tests, Review Suite, GitHub review when required,
 CI/static gates when present, and PR readiness. Do not take over their review
@@ -86,7 +86,7 @@ loop; send important findings back to the worker.
 ## Delivery Closeout
 
 Use `read_work_request_delivery_board` as the WR delivery board after dispatch.
-Decisions are rationale; Delivery closeout records lifecycle truth.
+Decisions are rationale. Delivery closeout records lifecycle truth.
 
 Record terminal outcomes with `record_planned_slice_delivery`:
 
@@ -100,8 +100,8 @@ Use `reconcile_work_request` for structured PR/GitHub evidence repair. Do not
 infer delivery from prose decisions or chat. Phase-child PRs remain phase
 controlled; call `merge_child_into_phase` before `pr_merged` closeout when
 required. Revoke stale planned-slice worker grants before final closeout. If
-package evidence is missing or ambiguous, do not record WorkRequest delivery closeout;
-repair evidence first.
+package evidence is missing or ambiguous, do not record WorkRequest delivery
+closeout; repair evidence first.
 
 ## Stop
 

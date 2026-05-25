@@ -2615,7 +2615,7 @@ function Get-ReadinessSummary($CachePackages, $Config, [string]$MarketplaceName,
     $actions += New-SourceCheckoutAction "refresh_default_plugin_cache" "solo_session" "Refresh the skill-only Symphony++ plugin cache." $SourceCheckout (New-SourceScriptCommand $sourceRoot "scripts/refresh-local-plugin.ps1" "$($refreshCodexHomeArg)$($defaultRefreshMarketplaceArg)-PluginName symphony-plus-plus -ValidateInstalledCache")
   } elseif (-not $defaultMarketplaceAmbiguous -and -not $crossMarketplacePairingAmbiguous -and $configExists -and $defaultEnabled -ne $true -and -not $companionProvidesSoloSkills) {
     $defaultConfigKey = Get-ActivationConfigKey "symphony-plus-plus" $defaultMarketplace
-    $actions += New-ReadinessAction "enable_default_plugin" "solo_session" "Enable the default skill-only plugin for Solo Session planning: [plugins.`"$defaultConfigKey`"] enabled = true."
+    $actions += New-ReadinessAction "enable_default_plugin" "solo_session" "Enable the default skill-only plugin for MCP-free Symphony++ planning: [plugins.`"$defaultConfigKey`"] enabled = true."
   }
 
   $companionStatus = if (-not $configExists) {
@@ -2755,7 +2755,7 @@ function Write-DoctorSummary($Summary) {
   }
   Write-Host "  config: $($Summary.codex_config.path)"
   Write-Host ""
-  Write-Host "Solo Session skill package"
+  Write-Host "MCP-free skill package"
   Write-Host "  status: $($readiness.solo_session.status)"
   Write-Host "  config key: $($readiness.solo_session.plugin_config_key)"
   Write-Host "  enabled: $($readiness.solo_session.plugin_enabled)"

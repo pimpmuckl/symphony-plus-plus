@@ -71,7 +71,7 @@ restart `mix sympp.cockpit` from the current checkout and rerun it.
 The operator-safe diagnostic for that split-brain state is:
 
 ```powershell
-.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName jonat-local -Doctor
+.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName symphony-plus-plus -Doctor
 ```
 
 `solo_ready_mcp_companion_not_enabled` means the default skill-only
@@ -81,7 +81,7 @@ Codex session started. Enable it only through the explicit opt-in command
 against the dedicated S++ MCP config/session:
 
 ```powershell
-.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName jonat-local -EnableMcpCompanion
+.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName symphony-plus-plus -EnableMcpCompanion
 ```
 
 That command validates the installed companion cache and manifest, creates a

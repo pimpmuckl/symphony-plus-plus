@@ -1,7 +1,8 @@
 # Symphony++ Codex Plugin
 
-This plugin exposes the Symphony++ Solo Session planning skill as a local Codex
-plugin. The default plugin package is physically MCP-free: it
+This plugin exposes Symphony++ MCP-free planning skills as a local Codex
+plugin: Solo Session memory, the baseline worker playbook, and the lightweight
+coordinator playbook. The default plugin package is physically MCP-free: it
 must not ship a root `.mcp.json` and its manifest is skill-only. The sibling
 `symphony-plus-plus-mcp` package owns the bundled MCP startup file for
 dedicated S++ workflows. The canonical source for the runtime remains this
@@ -35,7 +36,7 @@ skill-only plugin and also exposes the opt-in MCP companion at
 Then enable the plugin with the active marketplace name:
 
 ```toml
-[plugins."symphony-plus-plus@jonat-local"]
+[plugins."symphony-plus-plus@symphony-plus-plus"]
 enabled = true
 ```
 
@@ -65,7 +66,7 @@ metadata.
 
 The refresh script writes the GitHub-marketplace-shaped manifest-version cache
 directory, for example
-`~/.codex/plugins/cache/<marketplace>/symphony-plus-plus/0.1.2`, and prunes the
+`~/.codex/plugins/cache/<marketplace>/symphony-plus-plus/0.1.3`, and prunes the
 older generated `local` cache root when it carries the script's
 `.sympp-source-root` marker after the versioned cache has been written and, when
 requested, validated. Unmarked `local` directories stop refresh with a manual
@@ -90,11 +91,12 @@ to this default plugin. Current Codex host behavior can eagerly start
 plugin-bundled MCP servers for generic sessions, review-suite lanes, and
 `codex review` calls whenever the plugin is enabled; that creates needless S++
 Elixir process churn when the session does not explicitly need S++ tools.
-The default manifest points at `skills-default/`, which exposes only the
-MCP-free Solo Session skill. The default package intentionally does not ship a
-root `skills/` directory, so Codex hosts that scan package folders directly
-cannot surface the MCP-dependent WorkPackage or architect skills from the
-default plugin. Those skills ship only in the sibling opt-in MCP plugin.
+The default manifest points at `skills-default/`, which exposes only MCP-free
+base skills: Solo Session, worker, and coordinator. The default package
+intentionally does not ship a root `skills/` directory, so Codex hosts that scan
+package folders directly cannot surface the MCP-dependent WorkPackage or
+architect skills from the default plugin. Those skills ship only in the sibling
+opt-in MCP plugin.
 
 The default plugin source and refreshed default cache must not contain root
 `.mcp.json`. WorkPackage workers should use the scoped `run-mcp` command emitted
@@ -167,10 +169,10 @@ plugin root:
 .\scripts\diagnose-mcp-lifecycle.ps1
 .\scripts\diagnose-mcp-lifecycle.ps1 -Doctor
 .\scripts\diagnose-mcp-lifecycle.ps1 -Json
-.\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName jonat-local -Json
+.\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName symphony-plus-plus -Json
 .\scripts\diagnose-mcp-lifecycle.ps1 -RepoRoot C:\Code\symphony-plus-plus -Json
 .\scripts\diagnose-mcp-lifecycle.ps1 -SkipProcessScan -Json
-.\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName jonat-local -EnableMcpCompanion
+.\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName symphony-plus-plus -EnableMcpCompanion
 .\scripts\diagnose-mcp-lifecycle.ps1 -SelfTest
 ```
 
@@ -203,7 +205,7 @@ companion is not enabled for the current Codex config/session. The next action
 is to run the explicit enable command against the dedicated S++ MCP Codex home:
 
 ```powershell
-.\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName jonat-local -EnableMcpCompanion
+.\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName symphony-plus-plus -EnableMcpCompanion
 ```
 
 That command validates the installed companion cache and manifest, writes only
@@ -271,13 +273,14 @@ failure. Do not work around missing explicit MCP tools by adding a global
 ### Default Planning And Opt-In MCP
 
 Symphony++ remains the default durable planning substrate for real agents
-without requiring default MCP startup. Ordinary implementation and architecture
-sessions should use the plugin-installed
-`symphony-plus-plus:symphony-solo-session` skill plus
-`scripts/sympp-solo.ps1` for task plans, findings, progress, blockers,
-decisions, validation notes, and local ledger reads. That path is available
-from the default skill-only plugin and does not require Codex to start or
-register the `symphony_plus_plus` MCP server.
+without requiring default MCP startup. Ordinary implementation workers should
+use `symphony-plus-plus:symphony-worker`, and ordinary parent agents should use
+`symphony-plus-plus:symphony-coordinator`. Both can attach
+`symphony-plus-plus:symphony-solo-session` plus `scripts/sympp-solo.ps1` for
+task plans, findings, progress, blockers, decisions, validation notes, and
+local ledger reads. That path is available from the default skill-only plugin
+and does not require Codex to start or register the `symphony_plus_plus` MCP
+server.
 
 Heavy WorkPackage and architect orchestration still needs explicit MCP tools.
 Start the local cockpit/daemon first:
@@ -319,14 +322,14 @@ current checkout before debugging Codex plugin visibility.
 If this smoke passes but a Codex session still lacks S++ MCP tools, run:
 
 ```powershell
-.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName jonat-local -Doctor
+.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName symphony-plus-plus -Doctor
 ```
 
 The expected repair is config/session activation, not daemon debugging. Enable
 the companion only in the dedicated S++ MCP config:
 
 ```powershell
-.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName jonat-local -EnableMcpCompanion
+.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName symphony-plus-plus -EnableMcpCompanion
 ```
 
 Then start a new/reloaded session so Codex registers the plugin MCP server
@@ -425,21 +428,31 @@ and restores the original current directory after invoking Mix.
 Solo Session planning is explicitly separate from WorkPackage orchestration.
 Use `symphony-plus-plus-mcp:symphony-work-package` for assigned WorkPackages or
 WorkKeys, and `symphony-plus-plus-mcp:symphony-architect` for WorkRequest-led
-orchestration. Solo Session entries must not include raw secrets, tokens,
-worker handoff payloads, WorkKeys, or private grant material.
+orchestration. Use `symphony-plus-plus:symphony-worker` as the baseline worker
+contract in both ordinary and WorkPackage-backed assignments. Solo Session
+entries must not include raw secrets, tokens, worker handoff payloads, WorkKeys,
+or private grant material.
 
-## Worker Use
+## Worker And Coordinator Use
 
-Workers use the opt-in MCP plugin together with the Symphony++ local HTTP daemon. The
-operator creates a WorkPackage, the create-work command stores the one-time
-secret in a private local handoff store, and the worker receives only
-non-secret handoff metadata plus a stable `claimed_by` identity.
+The default plugin owns the MCP-free worker and coordinator playbooks:
 
-The skill then instructs the worker to load the current assignment, read the
-MCP-backed planning resources, update plan/findings/progress through MCP,
-attach branch/PR/review evidence, and mark ready only after package gates pass.
-Do not paste raw worker secrets into prompts, command lines, PR bodies, review
-text, or durable logs.
+- `symphony-plus-plus:symphony-worker` for bounded implementation,
+  investigation, docs, hotfix, validation, review, and PR readiness.
+- `symphony-plus-plus:symphony-coordinator` for ordinary non-MCP parent agents
+  that scout, slice, dispatch, supervise, and integrate one or more workers.
+
+WorkPackage workers also use the opt-in MCP plugin together with the
+Symphony++ local HTTP daemon. The operator creates a WorkPackage, the
+create-work command stores the one-time secret in a private local handoff store,
+and the worker receives only non-secret handoff metadata plus a stable
+`claimed_by` identity.
+
+The MCP WorkPackage skill then instructs the worker to load the current
+assignment, read MCP-backed planning resources, update plan/findings/progress
+through MCP, attach branch/PR/review evidence, and mark ready only after package
+gates pass. Do not paste raw worker secrets into prompts, command lines, PR
+bodies, review text, or durable logs.
 
 Plugin install is not a substitute for a per-worker private handoff. Worker
 package dispatch should still use the `run-mcp` command emitted
@@ -471,8 +484,9 @@ appropriate for simple missing facts.
 
 Use `symphony-plus-plus-mcp:symphony-architect` when assigned a Symphony++
 WorkRequest, an architect WorkPackage, phase or feature orchestration, or v2
-WorkRequest-led planning. Use `symphony-plus-plus-mcp:symphony-work-package` only
-for the implementing worker that owns one bounded WorkPackage after dispatch.
+WorkRequest-led planning. Dispatch worker prompts should name
+`symphony-plus-plus:symphony-worker`; WorkPackage-backed workers should also use
+`symphony-plus-plus-mcp:symphony-work-package`.
 
 The architect skill expects the same secret hygiene as worker flow. It may
 route workers to private-store handoff metadata, but static plugin docs and

@@ -331,12 +331,21 @@ function Assert-CachePluginConfig([string]$TargetRoot, [string]$ExpectedVersion)
       throw "Default installed plugin cache must not contain root .mcp.json; use symphony-plus-plus-mcp for bundled MCP startup: $mcpConfigPath"
     }
 
+    foreach ($requiredDefaultSkill in @("symphony-solo-session", "symphony-worker", "symphony-coordinator")) {
+      $requiredDefaultSkillPath = Join-Path $TargetRoot "skills-default/$requiredDefaultSkill/SKILL.md"
+      if (-not (Test-Path -LiteralPath $requiredDefaultSkillPath)) {
+        throw "Default installed plugin cache is missing MCP-free base skill '$requiredDefaultSkill': $requiredDefaultSkillPath"
+      }
+    }
+
     return
   }
 
-  $mcpSoloSkillPath = Join-Path $TargetRoot "skills/symphony-solo-session"
-  if (Test-Path -LiteralPath $mcpSoloSkillPath) {
-    throw "Opt-in MCP plugin cache must not contain the Solo Session skill; keep that skill in the default symphony-plus-plus package: $mcpSoloSkillPath"
+  foreach ($mcpFreeSkill in @("symphony-solo-session", "symphony-worker", "symphony-coordinator")) {
+    $mcpFreeSkillPath = Join-Path $TargetRoot "skills/$mcpFreeSkill"
+    if (Test-Path -LiteralPath $mcpFreeSkillPath) {
+      throw "Opt-in MCP plugin cache must not contain MCP-free base skill '$mcpFreeSkill'; keep it in the default symphony-plus-plus package: $mcpFreeSkillPath"
+    }
   }
 
   if (-not (Test-Path -LiteralPath $mcpConfigPath)) {

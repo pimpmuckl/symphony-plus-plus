@@ -4,12 +4,13 @@ This package is the explicit MCP-backed companion to the default
 `symphony-plus-plus` Codex plugin.
 
 Use the default plugin for generic sessions, review-suite lanes, `codex review`,
-visible desktop cockpit threads, and Solo Session planning. Use this opt-in
+visible desktop cockpit threads, and MCP-free planning. Use this opt-in
 plugin only in a dedicated Codex config, alternate Codex home, managed
 app-server session, or worker/architect subprocess where starting
 `symphony_plus_plus` MCP before session startup is intentional.
-The default plugin's manifest loads only the Solo Session skill; the
-MCP-dependent WorkPackage and architect skills live in this opt-in package.
+The default plugin's manifest loads the MCP-free Solo Session, worker, and
+coordinator skills; the MCP-dependent WorkPackage and architect skills live in
+this opt-in package.
 
 Do not enable this plugin in the normal global Codex config unless every
 generic Codex session on that config should start Symphony++ MCP. Current Codex
@@ -20,19 +21,20 @@ This plugin intentionally bundles:
 
 - `mcpServers: "./.mcp.json"` for the generic `symphony_plus_plus` HTTP server at `http://127.0.0.1:4057/mcp`.
 - The same `assets/splusplus-logo.png` icon used by the default Symphony++ plugin.
-- The architect, worker-contract, and WorkPackage skills.
+- The MCP-backed architect and WorkPackage skills.
 - The legacy stdio MCP wrapper for explicit fallback/dev bootstrap, plus the Solo wrapper script needed after marketplace/cache packaging.
 
-It intentionally does not bundle the Solo Session skill. The default
-`symphony-plus-plus` plugin owns that MCP-free skill, which prevents duplicate
-`symphony-solo-session` entries when both the default and MCP companion packages
-are enabled in the same Codex home.
+It intentionally does not bundle the Solo Session, worker, or coordinator
+skills. The default `symphony-plus-plus` plugin owns those MCP-free skills,
+which prevents duplicate baseline skill entries when both the default and MCP
+companion packages are enabled in the same Codex home.
 
 The default `symphony-plus-plus` plugin must remain skill-only and should stay
-enabled broadly. This opt-in plugin is the concrete install path for sessions
-that need MCP tools registered before the model starts. If the cockpit/local
-daemon is not already running, MCP tools may be unavailable, but this bundled
-plugin target should not spawn a per-session Elixir process.
+enabled broadly. Dedicated MCP homes should enable both plugins: the default
+plugin for baseline worker/coordinator/Solo skills, and this companion for
+architect/WorkPackage MCP adapters. If the cockpit/local daemon is not already
+running, MCP tools may be unavailable, but this bundled plugin target should not
+spawn a per-session Elixir process.
 
 ## Activation
 
@@ -40,7 +42,7 @@ Enable this package only in the config/Codex home used for dedicated
 Symphony++ WorkRequest or WorkPackage sessions:
 
 ```powershell
-.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName jonat-local -EnableMcpCompanion
+.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -CodexHome <dedicated-codex-home> -MarketplaceName symphony-plus-plus -EnableMcpCompanion
 ```
 
 The command validates that the installed companion package carries the expected
@@ -49,20 +51,20 @@ HTTP MCP manifest, creates a timestamped backup before changing an existing
 companion plugin table:
 
 ```toml
-[plugins."symphony-plus-plus-mcp@jonat-local"]
+[plugins."symphony-plus-plus-mcp@symphony-plus-plus"]
 enabled = true
 ```
 
 Then restart or reload that dedicated Codex session. Plugin MCP tools are
 registered at session startup; an already-open session that only loaded
-`symphony-plus-plus@jonat-local` can show the default Solo skill while still
+`symphony-plus-plus@symphony-plus-plus` can show the default Solo skill while still
 having no `symphony_plus_plus` MCP tool namespace.
 
 From the repository root, the activation doctor explains the current state and
 next action:
 
 ```powershell
-.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName jonat-local -Doctor
+.\plugins\symphony-plus-plus\scripts\diagnose-mcp-lifecycle.ps1 -MarketplaceName symphony-plus-plus -Doctor
 ```
 
 The doctor checks cache, config, and the local HTTP daemon. It cannot inspect

@@ -5,13 +5,14 @@ description: Use when Codex needs lightweight local planning memory for one norm
 
 # Symphony++ Solo Session
 
-Use Solo Sessions for ordinary single-agent work that needs durable local
-planning memory without WorkRequest or WorkPackage orchestration. This is the
-default Symphony++ planning path for real agents.
+Use Solo Sessions for ordinary single-agent work, non-MCP worker tasks, and
+lightweight parent coordination that needs durable local planning memory
+without WorkRequest or WorkPackage orchestration. This is the default MCP-free
+Symphony++ planning path for real agents.
 
-Do not use this for assigned WorkPackages, WorkKeys, WorkRequests, architect
-orchestration, worker dispatch, bound MCP planning resources, or merge gates.
-Use `symphony-plus-plus-mcp:symphony-work-package` for WorkPackages and
+Do not use this as authority for assigned WorkPackages, WorkKeys,
+WorkRequests, architect orchestration, bound MCP planning resources, or merge
+gates. Use `symphony-plus-plus-mcp:symphony-work-package` for WorkPackages and
 `symphony-plus-plus-mcp:symphony-architect` for WorkRequest orchestration.
 
 ## Source Of Truth

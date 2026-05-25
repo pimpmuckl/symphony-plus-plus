@@ -5,8 +5,12 @@ description: Use when assigned a Symphony++ work key or WorkPackage; keeps scope
 
 # Symphony++ Work Package
 
-Use this skill only for an assigned Symphony++ WorkPackage or WorkKey. The MCP
-server is the permission boundary and the WorkPackage is the scope boundary.
+Use this skill only for an assigned Symphony++ WorkPackage or WorkKey. It is
+the MCP-backed WorkPackage state adapter, not the generic worker contract. Pair
+it with `symphony-plus-plus:symphony-worker`.
+
+The MCP server is the permission boundary and the WorkPackage is the scope
+boundary.
 
 ## Start
 
