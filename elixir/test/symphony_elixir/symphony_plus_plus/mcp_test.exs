@@ -1919,7 +1919,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["list_work_requests", "inputSchema", "properties", "status", "type"]) == "string"
     assert get_in(tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
     assert get_in(tools_by_name, ["read_work_request", "inputSchema", "properties", "work_request_id", "type"]) == "string"
+    assert get_in(tools_by_name, ["read_work_request", "inputSchema", "properties", "include_planning_scratch", "type"]) == "boolean"
     assert get_in(tools_by_name, ["read_work_request_delivery_board", "inputSchema", "required"]) == ["work_request_id"]
+    assert get_in(tools_by_name, ["read_work_request_delivery_board", "inputSchema", "properties", "include_planning_scratch", "type"]) == "boolean"
     assert get_in(tools_by_name, ["reconcile_work_request", "inputSchema", "required"]) == ["work_request_id"]
     assert get_in(tools_by_name, ["reconcile_work_request", "inputSchema", "properties", "apply", "type"]) == "boolean"
 
@@ -5112,7 +5114,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert Enum.at(read_payload["clarification_questions"], 1)["answer"] == "[REDACTED]"
     assert Enum.map(read_payload["decision_log_entries"], & &1["id"]) == ["WRD-MCP-WR-1"]
     assert Enum.at(read_payload["decision_log_entries"], 0)["decision"] =~ "[REDACTED]"
-    assert Enum.map(read_payload["planned_slices"], & &1["id"]) == ["WRS-MCP-WR-PLANNED", "WRS-MCP-WR-APPROVED", "WRS-MCP-WR-SKIPPED"]
+    assert Enum.map(read_payload["planned_slices"], & &1["id"]) == ["WRS-MCP-WR-PLANNED", "WRS-MCP-WR-APPROVED"]
     assert Enum.at(read_payload["planned_slices"], 0)["review_lanes"] == ["brief", "[REDACTED]", "normal"]
 
     assert read_payload["summary"] == %{
@@ -5123,8 +5125,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              "planned_slice_count" => 1,
              "approved_slice_count" => 1,
              "dispatched_slice_count" => 0,
-             "skipped_slice_count" => 1
+             "skipped_slice_count" => 0
            }
+
+    include_scratch_response =
+      mcp_tool(repo, session, "read_work_request", %{
+        "work_request_id" => in_scope.id,
+        "include_planning_scratch" => true
+      })
+
+    include_scratch_payload = get_in(include_scratch_response, ["result", "structuredContent"])
+
+    assert Enum.map(include_scratch_payload["planned_slices"], & &1["id"]) == [
+             "WRS-MCP-WR-PLANNED",
+             "WRS-MCP-WR-APPROVED",
+             "WRS-MCP-WR-SKIPPED"
+           ]
+
+    included_slices_by_id = Map.new(include_scratch_payload["planned_slices"], &{&1["id"], &1})
+    assert get_in(included_slices_by_id, ["WRS-MCP-WR-SKIPPED", "planning_classification"]) == "planning_scratch"
+    assert include_scratch_payload["summary"]["skipped_slice_count"] == 1
 
     refute inspect(list_response) =~ "WR-MCP-WR-OTHER-REPO"
     refute inspect(read_response) =~ "raw-secret-value"

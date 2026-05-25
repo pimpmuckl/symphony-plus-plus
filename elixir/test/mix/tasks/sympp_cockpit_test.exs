@@ -303,6 +303,14 @@ defmodule Mix.Tasks.Sympp.CockpitTest do
 
     assert {:ok, _skipped} = WorkRequestRepository.skip_planned_slice(Repo, request.id, slice.id, "planned")
 
+    assert {:ok, _delivery} =
+             WorkRequestRepository.record_planned_slice_delivery(Repo, request.id, slice.id, %{
+               outcome: "abandoned",
+               idempotency_key: "cockpit-retention-skipped-delivery",
+               recorded_by: "cockpit-test",
+               abandoned_rationale: "Skipped retention fixture has a terminal delivery record."
+             })
+
     request
     |> Ecto.Changeset.change(completed_at: utc_usec(completed_at))
     |> Repo.update!()

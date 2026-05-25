@@ -145,11 +145,21 @@
     },
     {
       "name": "read_work_request",
-      "purpose": "Read one scoped WorkRequest with clarification questions, decision log entries, planned slices, and count/status summaries.",
+      "purpose": "Read one scoped WorkRequest with clarification questions, decision log entries, visible planned slices, and count/status summaries.",
       "required_capabilities": ["read:work_request"],
-      "arguments_policy": "Requires work_request_id and accepts no repo/base-branch override.",
+      "arguments_policy": "Requires work_request_id, accepts optional include_planning_scratch, and accepts no repo/base-branch override.",
       "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope and a matching claimed phase anchor. Legacy null phase_id architect grants are not supported for WorkRequest MCP reads and fail closed instead of deriving scope from a mutable anchor package. The target WorkRequest must match that frozen repo and base branch. Missing or out-of-scope WorkRequests fail closed as not_found without leaking sibling content.",
-      "response_policy": "Returns safe JSON with redacted WorkRequest detail, clarification questions, decision log entries, planned slices, and summary counts. The payload excludes work-key secrets, API tokens, private handoff payloads, and worker secret material."
+      "response_policy": "Returns safe JSON with redacted WorkRequest detail, clarification questions, decision log entries, visible planned slices, and summary counts. Skipped never-dispatched planned slices with no WorkPackage and no planned-slice delivery record are hidden by default as planning scratch; include_planning_scratch exposes them for audit. The payload excludes work-key secrets, API tokens, private handoff payloads, and worker secret material.",
+      "cleanup_policy": "Planning scratch rows must not be removed with direct SQLite deletion. A future persisted archive path requires an explicit schema-backed design."
+    },
+    {
+      "name": "read_work_request_delivery_board",
+      "purpose": "Read the scoped WorkRequest delivery-board projection for visible planned-slice closeout without broad package visibility.",
+      "required_capabilities": ["read:work_request"],
+      "arguments_policy": "Requires work_request_id, accepts optional include_planning_scratch, and accepts no repo/base-branch override.",
+      "scope_policy": "Requires an explicit phase-scoped architect grant with frozen repo/base_branch scope and a matching claimed phase anchor. The target WorkRequest must match that frozen repo and base branch. Missing or out-of-scope WorkRequests fail closed as not_found without leaking sibling content.",
+      "response_policy": "Returns safe JSON with the scoped WorkRequest status projection and delivery_board. Skipped never-dispatched planned slices with no WorkPackage and no planned-slice delivery record are hidden by default as planning scratch; include_planning_scratch exposes them with planning_classification=planning_scratch. The payload excludes work-key secrets, API tokens, private handoff payloads, and worker secret material.",
+      "cleanup_policy": "Planning scratch rows must not be removed with direct SQLite deletion. A future persisted archive path requires an explicit schema-backed design."
     },
     {
       "name": "set_work_request_status",

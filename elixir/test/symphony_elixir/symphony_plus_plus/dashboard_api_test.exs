@@ -997,6 +997,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     repo.update!(Ecto.Changeset.change(approved, status: "approved"))
     repo.update!(Ecto.Changeset.change(dispatched, status: "dispatched"))
     repo.update!(Ecto.Changeset.change(skipped, status: "skipped"))
+    mark_non_scratch_skipped_slice!(repo, skipped.id)
 
     secret = create_architect_grant_secret(repo, anchor.id)
     payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-requests"), 200)
@@ -1178,6 +1179,100 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              "dispatched_slice_count" => 0,
              "skipped_slice_count" => 0
            }
+  end
+
+  test "dashboard WorkRequest detail hides skipped scratch slices unless explicitly included", %{repo: repo} do
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-SCRATCH-ANCHOR",
+                 kind: "phase_child",
+                 status: "planning",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "symphony-plus-plus/beta"
+               )
+             )
+
+    work_request =
+      create_work_request!(
+        repo,
+        id: "WR-DASH-SKIPPED-SCRATCH",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch,
+        status: "ready_for_slicing"
+      )
+
+    assert {:ok, visible_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-DASH-SCRATCH-VISIBLE")
+             )
+
+    assert {:ok, scratch_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-DASH-SCRATCH-HIDDEN")
+             )
+
+    assert {:ok, scratch_slice} = WorkRequestRepository.skip_planned_slice(repo, work_request.id, scratch_slice.id, "planned")
+
+    assert {:ok, scratch_comment} =
+             CommentService.create(repo, %{
+               target_kind: "planned_slice",
+               target_id: scratch_slice.id,
+               body: "Scratch planning note",
+               source_type: "architect",
+               author_name: "architect"
+             })
+
+    assert {:ok, delivered_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-DASH-SCRATCH-DELIVERY")
+             )
+
+    assert {:ok, delivered_slice} = WorkRequestRepository.skip_planned_slice(repo, work_request.id, delivered_slice.id, "planned")
+
+    assert {:ok, _delivery} =
+             WorkRequestRepository.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               delivered_slice.id,
+               delivery_attrs(%{
+                 outcome: "abandoned",
+                 idempotency_key: "dashboard-skipped-scratch-delivery",
+                 abandoned_rationale: "Operator recorded a terminal delivery outcome."
+               })
+             )
+
+    secret = create_architect_grant_secret(repo, anchor.id)
+    default_payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-requests/#{work_request.id}"), 200)
+
+    assert Enum.map(default_payload["planned_slices"], & &1["id"]) == [visible_slice.id, delivered_slice.id]
+    assert default_payload["summary"]["planned_slice_count"] == 1
+    assert default_payload["summary"]["skipped_slice_count"] == 1
+    assert default_payload["work_request"]["comment_count"] == 1
+    assert default_payload["summary"]["comment_count"] == 1
+
+    include_payload =
+      json_response(
+        get(auth_conn(secret), "/api/v1/sympp/work-requests/#{work_request.id}?include_planning_scratch=true"),
+        200
+      )
+
+    assert Enum.map(include_payload["planned_slices"], & &1["id"]) == [visible_slice.id, scratch_slice.id, delivered_slice.id]
+
+    included_by_id = Map.new(include_payload["planned_slices"], &{&1["id"], &1})
+    assert get_in(included_by_id, [scratch_slice.id, "planning_classification"]) == "planning_scratch"
+    assert get_in(included_by_id, [scratch_slice.id, "comment_count"]) == 1
+    assert [%{"id" => scratch_comment_id}] = get_in(included_by_id, [scratch_slice.id, "comments"])
+    assert scratch_comment_id == scratch_comment.id
+    refute Map.has_key?(Map.fetch!(included_by_id, delivered_slice.id), "planning_classification")
+    assert include_payload["summary"]["skipped_slice_count"] == 2
   end
 
   test "dashboard WorkRequest detail includes redacted comments and aggregate counts", %{repo: repo} do
@@ -1561,6 +1656,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-DERIVED-COMPLETED-GATED"))
 
     assert {:ok, _skipped_slice} = WorkRequestRepository.skip_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+    mark_non_scratch_skipped_slice!(repo, planned_slice.id)
 
     work_request
     |> Ecto.Changeset.change(status: "clarifying")
@@ -4020,6 +4116,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
       assert {:ok, slice} = WorkRequestRepository.add_planned_slice(repo, archived_request.id, planned_slice_attrs(id: "WRS-OPERATOR-ARCHIVE"))
       assert {:ok, _skipped} = WorkRequestRepository.skip_planned_slice(repo, archived_request.id, slice.id, "planned")
+      mark_non_scratch_skipped_slice!(repo, slice.id)
 
       archived_request
       |> Ecto.Changeset.change(completed_at: %{~U[2026-05-01 00:00:00Z] | microsecond: {0, 6}})
@@ -5699,10 +5796,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
              WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-#{id}"))
 
     assert {:ok, _skipped} = WorkRequestRepository.skip_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+    mark_non_scratch_skipped_slice!(repo, planned_slice.id)
     assert {:ok, completed} = WorkRequestService.refresh_completion(repo, work_request.id)
 
     completed
     |> Ecto.Changeset.change(completed_at: completed_at, archived_at: nil)
+    |> repo.update!()
+  end
+
+  defp mark_non_scratch_skipped_slice!(repo, planned_slice_id) do
+    planned_slice = repo.get!(PlannedSlice, planned_slice_id)
+
+    planned_slice
+    |> Ecto.Changeset.change(dispatched_at: DateTime.utc_now(:microsecond))
     |> repo.update!()
   end
 

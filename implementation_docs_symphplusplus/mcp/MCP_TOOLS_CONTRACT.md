@@ -66,7 +66,8 @@ ledger identity for operator diagnosis:
 | mint_child_worker_key | Mint a child-scoped worker grant for a same-phase `phase_child` package; worker capabilities are limited to the child worker set, and explicit expiry cannot exceed an explicitly expiring architect grant. |
 | revoke_child_worker_key | Revoke one live child-delegated worker grant for a same-phase child package inside the architect grant's frozen scope, reset active/interrupted children to `ready_for_worker`, and make immediate remint available. |
 | list_work_requests | List WorkRequests scoped to the architect assignment repo/base branch. Accepts only optional `status`. |
-| read_work_request | Read one scoped WorkRequest with clarification questions, decision log entries, planned slices, and count/status summaries. |
+| read_work_request | Read one scoped WorkRequest with clarification questions, decision log entries, visible planned slices, and count/status summaries. |
+| read_work_request_delivery_board | Read the scoped WorkRequest delivery-board projection for visible planned-slice closeout without broad package visibility. |
 | set_work_request_status | Move a scoped WorkRequest between valid statuses with optimistic `current_status` checking. |
 | ask_work_request_question | Add a clarification question to a scoped WorkRequest, optionally with a structured human decision prompt. |
 | answer_work_request_question | Answer an open clarification question that belongs to a scoped WorkRequest. |
@@ -174,10 +175,16 @@ repo/base-branch scope. They do not accept caller-supplied repo or base-branch
 arguments. Legacy null `phase_id` architect grants are not supported for
 WorkRequest MCP reads and fail closed rather than deriving scope from a mutable
 anchor package. `list_work_requests` accepts only optional `status`;
-`read_work_request` requires `work_request_id`. Missing or out-of-scope
-WorkRequests fail closed as not found without leaking sibling content. Payloads
-are JSON-safe and redacted: they exclude work-key secrets, tokens, private
-handoff payloads, and worker secret material.
+`read_work_request` requires `work_request_id` and accepts optional
+`include_planning_scratch`; `read_work_request_delivery_board` accepts the same
+visibility flag. Skipped never-dispatched planned slices with no WorkPackage and
+no planned-slice delivery record are hidden by default as planning scratch, not
+delivery work. When included, delivery-board slices are classified as
+`planning_scratch`. Missing or out-of-scope WorkRequests fail closed as not found
+without leaking sibling content. Payloads are JSON-safe and redacted: they
+exclude work-key secrets, tokens, private handoff payloads, and worker secret
+material. MCP tools must not be bypassed with direct SQLite deletion for
+planning scratch cleanup.
 `set_work_request_status`, `ask_work_request_question`,
 `answer_work_request_question`, `close_work_request_question`, and
 `record_work_request_decision` require `write:work_request`, the same explicit

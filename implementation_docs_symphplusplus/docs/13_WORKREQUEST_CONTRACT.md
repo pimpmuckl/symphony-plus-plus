@@ -319,6 +319,16 @@ Dispatched slices are read-only in this UI. Approved slices become WorkPackages
 only through explicit planned-slice dispatch: the operator CLI, architect MCP
 dispatch tool, or local-operator dashboard dispatch control.
 
+Skipped planned slices with no `work_package_id`, no `dispatched_at`, and no
+planned-slice delivery record are planning scratch. They usually represent an
+architect correcting an invalid draft slice before dispatch, not operational
+delivery work. Human-facing WorkRequest delivery boards and main planned-slice
+lists hide this scratch by default. Operator/API/MCP inspection paths may expose
+them with `include_planning_scratch=true`; included scratch slices are
+classified as `planning_scratch`. Operators must not use direct SQLite deletion
+to clean these rows. If a future product path needs durable archive state for
+planned slices, it requires an explicit schema-backed design.
+
 Before planned-slice dispatch can mint a WorkPackage from an approved planned
 slice, it must call the WorkRequest path-scope validator contract as a final
 guard. MCP add and approve call the same validator earlier so malformed planned
