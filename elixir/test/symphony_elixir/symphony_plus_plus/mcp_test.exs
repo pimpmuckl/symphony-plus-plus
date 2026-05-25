@@ -52,6 +52,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     "revoke_child_worker_key",
     "list_work_requests",
     "read_work_request",
+    "read_work_request_delivery_board",
+    "record_planned_slice_delivery",
+    "revoke_planned_slice_worker_key",
     "list_guidance_requests",
     "read_guidance_request",
     "answer_guidance_request",
@@ -1915,6 +1918,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["list_work_requests", "inputSchema", "properties", "status", "type"]) == "string"
     assert get_in(tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
     assert get_in(tools_by_name, ["read_work_request", "inputSchema", "properties", "work_request_id", "type"]) == "string"
+    assert get_in(tools_by_name, ["read_work_request_delivery_board", "inputSchema", "required"]) == ["work_request_id"]
+
+    delivery_schema = get_in(tools_by_name, ["record_planned_slice_delivery", "inputSchema"])
+    revoke_schema = get_in(tools_by_name, ["revoke_planned_slice_worker_key", "inputSchema"])
+
+    assert delivery_schema["required"] == ["work_request_id", "planned_slice_id", "outcome", "idempotency_key"]
+    assert get_in(delivery_schema, ["properties", "outcome", "enum"]) == ["pr_merged", "completed_no_pr", "superseded", "abandoned"]
+    assert get_in(delivery_schema, ["properties", "idempotency_key", "description"]) =~ "Reusing the same key"
+    assert get_in(delivery_schema, ["properties", "merge_commit_sha", "description"]) =~ "strong evidence"
+
+    assert revoke_schema["required"] == ["work_request_id", "planned_slice_id", "grant_id", "reason"]
+    assert get_in(revoke_schema, ["properties", "grant_id", "description"]) =~ "Raw worker secrets are never accepted or returned"
+
     assert get_in(tools_by_name, ["set_work_request_status", "inputSchema", "required"]) == ["work_request_id", "current_status", "next_status"]
     assert get_in(tools_by_name, ["ask_work_request_question", "inputSchema", "required"]) == ["work_request_id", "category", "question", "why_needed"]
     assert get_in(tools_by_name, ["ask_work_request_question", "inputSchema", "properties", "decision_prompt", "required"]) == ["tl_dr", "details", "options"]
@@ -4902,6 +4918,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       {"create_child_work_package", %{"package" => %{"id" => "SYMPP-ARCHITECT-DENIED-CHILD", "title" => "Denied", "acceptance_criteria" => ["Denied"]}}},
       {"mint_child_worker_key", %{"work_package_id" => package.id, "template" => child_worker_template()}},
       {"revoke_child_worker_key", %{"grant_id" => "grant-denied", "reason" => "Denied"}},
+      {"revoke_planned_slice_worker_key", %{"work_request_id" => "wr-denied", "planned_slice_id" => "slice-denied", "grant_id" => "grant-denied", "reason" => "Denied"}},
       {"approve_scope_expansion", %{"work_package_id" => package.id, "allowed_file_globs" => ["docs/**"], "rationale" => "Denied"}},
       {"request_child_replan", %{"work_package_id" => package.id, "rationale" => "Denied"}},
       {"approve_child_ready_state", %{"work_package_id" => package.id, "rationale" => "Denied"}},
