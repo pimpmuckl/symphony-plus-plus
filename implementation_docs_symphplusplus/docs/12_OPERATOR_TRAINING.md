@@ -99,6 +99,13 @@ the detail view can also dispatch approved, undispatched planned slices into
 WorkPackages. Board-grant WorkRequest detail remains scoped to planning
 controls and does not expose planned-slice dispatch.
 
+Skipped planned slices that were never dispatched, have no linked WorkPackage,
+and have no planned-slice delivery record are planning scratch. The WorkRequest
+detail and delivery-board projections hide them from the main slice list by
+default so corrected draft slices do not look like delivery work. Use the
+supported `include_planning_scratch=true` inspection path when you need to audit
+them. Do not clean this state with direct SQLite deletion.
+
 For WorkRequests in `ready_for_clarification`, `clarifying`,
 `human_info_needed`, `ready_for_slicing`, or `sliced`, local operator detail can
 prepare an architect handoff before slicing or dispatch. Repeating the action

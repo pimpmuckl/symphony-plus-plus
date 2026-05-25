@@ -7,6 +7,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice do
 
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.StringList
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
 
   @primary_key {:id, :string, autogenerate: false}
   @foreign_key_type :string
@@ -67,6 +68,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice do
 
   @spec statuses() :: [String.t()]
   def statuses, do: @statuses
+
+  @spec skipped_scratch?(t(), PlannedSliceDelivery.t() | nil) :: boolean()
+  def skipped_scratch?(%__MODULE__{status: "skipped", work_package_id: nil, dispatched_at: nil}, nil), do: true
+  def skipped_scratch?(%__MODULE__{}, _delivery), do: false
 
   @spec create_changeset(map()) :: Ecto.Changeset.t()
   def create_changeset(attrs) do
