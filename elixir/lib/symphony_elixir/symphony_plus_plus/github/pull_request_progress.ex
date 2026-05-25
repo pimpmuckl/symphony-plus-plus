@@ -46,6 +46,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequestProgress do
 
   @spec merged?(map() | nil) :: boolean()
   def merged?(%{} = payload) do
+    payload = stringify_keys(payload)
+
     not merged_value?(map_value(payload, "stale")) and
       (merged_value?(map_value(payload, "merged")) or
          merged_value?(map_value(payload, "state")) or

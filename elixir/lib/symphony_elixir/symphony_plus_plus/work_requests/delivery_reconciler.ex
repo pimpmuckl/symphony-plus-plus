@@ -231,6 +231,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
       url: ref.url,
       repository: ref.repository,
       number: ref.number,
+      ref: ref,
       base_branch: clean_string(map_value(pr_payload, "base_branch")),
       head_sha: clean_string(first_present([map_value(merge_payload, "head_sha"), map_value(pr_payload, "head_sha")])),
       merged_at: first_present([map_value(pr_payload, "merged_at"), map_value(merge_payload, "merged_at")]),
@@ -270,19 +271,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
     end
   end
 
-  defp validate_head(events, evidence) do
-    with {:ok, ref} <- PullRequest.parse(%{"url" => evidence.url}, nil),
-         expected when is_binary(expected) <- PullRequestProgress.expected_head_sha(events, ref) do
-      if PullRequest.head_sha_matches?(evidence.head_sha, expected) do
-        :ok
-      else
-        {:skip, "head_mismatch", %{expected_head_sha: expected, actual_head_sha: evidence.head_sha}}
-      end
-    else
-      {:error, reason} -> {:skip, Atom.to_string(reason), %{}}
-      _missing -> {:skip, "missing_head_evidence", %{actual_head_sha: evidence.head_sha}}
+  defp validate_head(events, %{ref: ref} = evidence) when is_map(ref) do
+    case PullRequestProgress.expected_head_sha(events, ref) do
+      expected when is_binary(expected) ->
+        if PullRequest.head_sha_matches?(evidence.head_sha, expected) do
+          :ok
+        else
+          {:skip, "head_mismatch", %{expected_head_sha: expected, actual_head_sha: evidence.head_sha}}
+        end
+
+      _missing ->
+        {:skip, "missing_head_evidence", %{actual_head_sha: evidence.head_sha}}
     end
   end
+
+  defp validate_head(_events, evidence), do: {:skip, "missing_head_evidence", %{actual_head_sha: evidence.head_sha}}
 
   defp required_merged_at(evidence) do
     case parse_datetime(evidence.merged_at) do
