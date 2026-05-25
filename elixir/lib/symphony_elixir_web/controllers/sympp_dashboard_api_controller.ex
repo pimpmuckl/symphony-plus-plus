@@ -24,11 +24,15 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.TrackerAdapter
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
   alias SymphonyElixirWeb.Endpoint
+
+  import Ecto.Query, only: [from: 2]
 
   @type auth_context :: {:grant, AccessGrant.t()}
   @board_session_key "sympp_board_grant_id"
@@ -40,6 +44,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @local_operator_actor "local-operator"
   @local_operator_worker "local-operator-worker"
   @local_operator_nonmergeable_terminal_package_statuses ["merged_into_phase", "closed", "abandoned"]
+  @local_operator_noncloseable_terminal_package_statuses ["merged", "merged_into_phase", "abandoned"]
+  @local_operator_hideable_package_statuses ["merged", "merged_into_phase", "closed"]
 
   @spec authorize_board_browser(Conn.t(), term()) :: Conn.t()
   def authorize_board_browser(conn, _opts) do
@@ -608,9 +614,21 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   @spec operator_update_work_package_state(Conn.t(), map()) :: Conn.t()
   def operator_update_work_package_state(conn, %{"work_package_id" => work_package_id} = params) do
     send_local_operator_response(conn, fn repo ->
-      with {:ok, "merged"} <- local_operator_work_package_status(params),
+      with {:ok, action} <- local_operator_work_package_status(params),
            {:ok, work_package} <-
-             mark_work_package_merged_and_refresh_for_local_operator(repo, normalize_package_route_id(work_package_id)),
+             change_work_package_for_local_operator(repo, normalize_package_route_id(work_package_id), action, params),
+           {:ok, dashboard} <- operator_dashboard_payload(repo) do
+        json(conn, %{work_package_id: work_package.id, dashboard: dashboard})
+      end
+    end)
+  end
+
+  @spec operator_archive_work_package(Conn.t(), map()) :: Conn.t()
+  def operator_archive_work_package(conn, %{"work_package_id" => work_package_id}) do
+    send_local_operator_response(conn, fn repo ->
+      work_package_id = normalize_package_route_id(work_package_id)
+
+      with {:ok, work_package} <- hide_work_package_for_local_operator(repo, work_package_id),
            {:ok, dashboard} <- operator_dashboard_payload(repo) do
         json(conn, %{work_package_id: work_package.id, dashboard: dashboard})
       end
@@ -778,9 +796,13 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
          {:ok, guidance_requests} <- Dashboard.human_guidance_requests(repo, opts),
          {:ok, solo_sessions} <- Dashboard.solo_sessions(repo, %{}, opts),
          {:ok, work_request_details} <-
-           operator_work_request_details(repo, Map.get(work_requests, :work_requests, []), repo_identity_catalog) do
+           operator_work_request_details(repo, Map.get(work_requests, :work_requests, []), repo_identity_catalog),
+         {:ok, linked_work_package_ids} <- persisted_linked_work_package_ids(repo) do
       active_blocking_edges = Map.get(board, :active_blocking_edges, [])
       board = Map.delete(board, :active_blocking_edges)
+      hidden_work_package_ids = effective_hidden_work_package_ids(settings, linked_work_package_ids)
+      board = hide_local_operator_work_packages(board, hidden_work_package_ids)
+      active_blocking_edges = hide_local_operator_blocking_edges(active_blocking_edges, hidden_work_package_ids)
 
       {:ok,
        %{
@@ -789,6 +811,7 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
          active_blocking_edges: active_blocking_edges,
          board: board,
          settings: operator_settings_payload(settings),
+         linked_work_package_ids: linked_work_package_ids |> MapSet.to_list() |> Enum.sort(),
          work_requests: work_requests,
          archived_work_requests: archived_work_requests,
          work_request_details: work_request_details,
@@ -805,6 +828,41 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
       nil -> {:error, :not_found}
       detail -> {:ok, detail}
     end
+  end
+
+  defp hide_local_operator_work_packages(board, hidden_ids) do
+    groups = Map.get(board, :groups, %{})
+
+    groups =
+      Map.new(groups, fn {status, cards} ->
+        {status, Enum.reject(cards, &MapSet.member?(hidden_ids, Map.get(&1, :id)))}
+      end)
+
+    board
+    |> Map.put(:groups, groups)
+    |> Map.put(:total_count, groups |> Map.values() |> Enum.map(&length/1) |> Enum.sum())
+  end
+
+  defp hide_local_operator_blocking_edges(active_blocking_edges, hidden_ids) do
+    Enum.reject(active_blocking_edges, &MapSet.member?(hidden_ids, Map.get(&1, :work_package_id)))
+  end
+
+  defp effective_hidden_work_package_ids(%OperatorSettings{} = settings, linked_work_package_ids) do
+    settings.hidden_work_package_ids
+    |> MapSet.new()
+    |> MapSet.difference(linked_work_package_ids)
+  end
+
+  defp persisted_linked_work_package_ids(repo) do
+    linked_ids =
+      repo.all(
+        from(planned_slice in PlannedSlice,
+          where: not is_nil(planned_slice.work_package_id),
+          select: planned_slice.work_package_id
+        )
+      )
+
+    {:ok, MapSet.new(linked_ids)}
   end
 
   defp operator_work_request_details(repo, work_request_cards, repo_identity_catalog) when is_list(work_request_cards) do
@@ -852,7 +910,8 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp operator_settings_payload(%OperatorSettings{} = settings) do
     %{
-      work_request_archive_after_days: settings.work_request_archive_after_days
+      work_request_archive_after_days: settings.work_request_archive_after_days,
+      hidden_work_package_ids: settings.hidden_work_package_ids
     }
   end
 
@@ -874,21 +933,60 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
 
   defp local_operator_work_package_status(params) do
     case text_param(params, "status") do
-      "merged" -> {:ok, "merged"}
+      "merged" -> {:ok, :merged}
+      "merged_and_archive" -> {:ok, :merged_and_archive}
+      "closed_and_archive" -> {:ok, :closed_and_archive}
+      "completed_no_pr" -> {:ok, :completed_no_pr}
       _status -> {:error, :invalid_status}
     end
   end
 
-  defp mark_work_package_merged_and_refresh_for_local_operator(repo, work_package_id) do
-    repo.transaction(fn ->
+  defp change_work_package_for_local_operator(repo, work_package_id, :merged, _params) do
+    mark_work_package_merged_and_refresh_for_local_operator(repo, work_package_id)
+  end
+
+  defp change_work_package_for_local_operator(repo, work_package_id, :merged_and_archive, _params) do
+    local_operator_transaction(repo, fn ->
       with {:ok, work_package} <- mark_work_package_merged_for_local_operator(repo, work_package_id),
-           :ok <- refresh_work_requests_for_work_package(repo, work_package.id) do
-        work_package
-      else
-        {:error, reason} -> repo.rollback(reason)
+           :ok <- refresh_work_requests_for_work_package(repo, work_package.id),
+           {:ok, _hidden_package} <- hide_work_package_for_local_operator_in_transaction(repo, work_package) do
+        {:ok, work_package}
       end
     end)
-    |> normalize_local_operator_transaction_result()
+  end
+
+  defp change_work_package_for_local_operator(repo, work_package_id, :closed_and_archive, _params) do
+    local_operator_transaction(repo, fn ->
+      with {:ok, work_package} <- close_work_package_for_local_operator(repo, work_package_id),
+           {:ok, _hidden_package} <- hide_work_package_for_local_operator_in_transaction(repo, work_package) do
+        {:ok, work_package}
+      end
+    end)
+  end
+
+  defp change_work_package_for_local_operator(repo, work_package_id, :completed_no_pr, params) do
+    with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
+         :ok <- require_closeable_work_package(work_package),
+         {:ok, no_pr_evidence} <- required_no_pr_evidence(params),
+         {:ok, planned_slice} <- linked_planned_slice_for_work_package(repo, work_package_id),
+         {:ok, _delivery} <-
+           WorkRequestService.record_planned_slice_delivery(repo, planned_slice.work_request_id, planned_slice.id, %{
+             outcome: "completed_no_pr",
+             idempotency_key: completed_no_pr_idempotency_key(planned_slice.id),
+             no_pr_evidence: no_pr_evidence,
+             recorded_by: @local_operator_actor
+           }) do
+      WorkPackageRepository.get(repo, work_package_id)
+    end
+  end
+
+  defp mark_work_package_merged_and_refresh_for_local_operator(repo, work_package_id) do
+    local_operator_transaction(repo, fn ->
+      with {:ok, work_package} <- mark_work_package_merged_for_local_operator(repo, work_package_id),
+           :ok <- refresh_work_requests_for_work_package(repo, work_package.id) do
+        {:ok, work_package}
+      end
+    end)
   end
 
   defp mark_work_package_merged_for_local_operator(repo, work_package_id) do
@@ -907,6 +1005,167 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
           {:error, :invalid_status}
       end
     end
+  end
+
+  defp close_work_package_for_local_operator(repo, work_package_id) do
+    with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id) do
+      case work_package.status do
+        "closed" ->
+          {:ok, work_package}
+
+        status when status in @local_operator_noncloseable_terminal_package_statuses ->
+          {:error, :invalid_status}
+
+        status when is_binary(status) ->
+          WorkPackageRepository.update_status(repo, work_package.id, status, "closed")
+
+        _status ->
+          {:error, :invalid_status}
+      end
+    end
+  end
+
+  defp require_closeable_work_package(%WorkPackage{status: status})
+       when status in @local_operator_noncloseable_terminal_package_statuses do
+    {:error, :invalid_status}
+  end
+
+  defp require_closeable_work_package(%WorkPackage{status: status}) when is_binary(status), do: :ok
+  defp require_closeable_work_package(%WorkPackage{}), do: {:error, :invalid_status}
+
+  defp hide_work_package_for_local_operator(repo, work_package_id) do
+    local_operator_transaction(repo, fn ->
+      with {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id) do
+        hide_work_package_for_local_operator_in_transaction(repo, work_package)
+      end
+    end)
+  end
+
+  defp hide_work_package_for_local_operator_in_transaction(repo, %WorkPackage{} = work_package) do
+    with :ok <- require_hideable_work_package(work_package),
+         :ok <- require_unlinked_work_package(repo, work_package.id),
+         {:ok, _settings} <- append_hidden_work_package_id_for_local_operator(repo, work_package.id) do
+      {:ok, work_package}
+    end
+  end
+
+  defp require_hideable_work_package(%WorkPackage{status: status}) do
+    if status in @local_operator_hideable_package_statuses, do: :ok, else: {:error, :not_delivered}
+  end
+
+  defp require_unlinked_work_package(repo, work_package_id) do
+    linked? =
+      repo.exists?(
+        from(planned_slice in PlannedSlice,
+          where: planned_slice.work_package_id == ^work_package_id
+        )
+      )
+
+    if linked?, do: {:error, :linked_work_package}, else: :ok
+  end
+
+  defp linked_planned_slice_for_work_package(repo, work_package_id) do
+    repo.one(
+      from(planned_slice in PlannedSlice,
+        where: planned_slice.work_package_id == ^work_package_id
+      )
+    )
+    |> case do
+      %PlannedSlice{} = planned_slice -> {:ok, planned_slice}
+      nil -> {:error, :linked_work_package_required}
+    end
+  end
+
+  defp required_no_pr_evidence(params) do
+    case text_param(params, "no_pr_evidence") do
+      nil -> {:error, :missing_no_pr_evidence}
+      evidence -> {:ok, evidence}
+    end
+  end
+
+  defp completed_no_pr_idempotency_key(planned_slice_id), do: "local-operator-completed-no-pr:#{planned_slice_id}"
+
+  defp append_hidden_work_package_id_for_local_operator(_repo, work_package_id)
+       when not is_binary(work_package_id) or byte_size(work_package_id) == 0 do
+    {:error, :not_found}
+  end
+
+  defp append_hidden_work_package_id_for_local_operator(repo, work_package_id) do
+    now = DateTime.utc_now(:microsecond)
+
+    with {:ok, _settings} <- ensure_operator_settings_for_local_operator(repo),
+         {1, _rows} <-
+           repo.update_all(append_hidden_work_package_id_query(work_package_id, now), []),
+         %OperatorSettings{} = settings <- repo.get(OperatorSettings, OperatorSettings.settings_id()) do
+      {:ok, settings}
+    else
+      {0, _rows} -> {:error, :not_found}
+      nil -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp ensure_operator_settings_for_local_operator(repo) do
+    repo.insert(OperatorSettings.default(), on_conflict: :nothing, conflict_target: :id)
+  end
+
+  defp append_hidden_work_package_id_query(work_package_id, now) do
+    from(settings in OperatorSettings,
+      where: settings.id == ^OperatorSettings.settings_id(),
+      update: [
+        set: [
+          hidden_work_package_ids:
+            fragment(
+              """
+              CASE
+                WHEN EXISTS (
+                  SELECT 1
+                  FROM json_each(COALESCE(?, '[]'))
+                  WHERE value IS NOT NULL
+                    AND value = ?
+                )
+                THEN COALESCE((
+                  SELECT json_group_array(value)
+                  FROM (
+                    SELECT DISTINCT value
+                    FROM json_each(COALESCE(?, '[]'))
+                    WHERE value IS NOT NULL
+                  )
+                ), '[]')
+                ELSE json_insert(
+                  COALESCE((
+                    SELECT json_group_array(value)
+                    FROM (
+                      SELECT DISTINCT value
+                      FROM json_each(COALESCE(?, '[]'))
+                      WHERE value IS NOT NULL
+                    )
+                  ), '[]'),
+                  '$[#]',
+                  ?
+                )
+              END
+              """,
+              settings.hidden_work_package_ids,
+              ^work_package_id,
+              settings.hidden_work_package_ids,
+              settings.hidden_work_package_ids,
+              ^work_package_id
+            ),
+          updated_at: ^now
+        ]
+      ]
+    )
+  end
+
+  defp local_operator_transaction(repo, fun) when is_function(fun, 0) do
+    repo.transaction(fn ->
+      case fun.() do
+        {:ok, value} -> value
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+    |> normalize_local_operator_transaction_result()
   end
 
   defp normalize_local_operator_transaction_result({:ok, value}), do: {:ok, value}
@@ -1902,6 +2161,10 @@ defmodule SymphonyElixirWeb.SymppDashboardApiController do
   defp error_response(conn, :missing_answer), do: error_response(conn, 422, "missing_answer", "Answer is required")
   defp error_response(conn, :invalid_target), do: error_response(conn, 422, "invalid_target", "Comment target is invalid")
   defp error_response(conn, :not_completed), do: error_response(conn, 422, "not_completed", "WorkRequest is not complete")
+  defp error_response(conn, :not_delivered), do: error_response(conn, 422, "not_delivered", "WorkPackage is not delivered")
+  defp error_response(conn, :linked_work_package), do: error_response(conn, 422, "linked_work_package", "WorkPackage is linked to a WorkRequest")
+  defp error_response(conn, :linked_work_package_required), do: error_response(conn, 422, "linked_work_package_required", "WorkPackage is not linked to a WorkRequest")
+  defp error_response(conn, :missing_no_pr_evidence), do: error_response(conn, 422, "missing_no_pr_evidence", "No-PR evidence is required")
 
   defp error_response(conn, :missing_custom_redirect_note) do
     error_response(conn, 422, "missing_custom_redirect_note", "A note is required for the custom answer")

@@ -4825,6 +4825,239 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
+  test "local operator can close linked WorkPackages with no-PR evidence", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      work_request = create_work_request!(repo, id: "WR-LOCAL-NO-PR", status: "ready_for_slicing")
+
+      assert {:ok, slice} =
+               WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-LOCAL-NO-PR"))
+
+      assert {:ok, approved} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, slice.id, "planned")
+
+      work_package =
+        create_matching_work_package!(repo, work_request, approved,
+          id: "WP-LOCAL-NO-PR",
+          status: "reviewing"
+        )
+
+      assert {:ok, _dispatched} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved.id, "approved", work_package.id)
+
+      payload =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/work-packages/#{work_package.id}/state", %{
+          "status" => "completed_no_pr",
+          "no_pr_evidence" => "Operator confirmed the exploratory work landed without a PR."
+        })
+        |> json_response(200)
+
+      assert [%PlannedSliceDelivery{} = delivery] = repo.all(PlannedSliceDelivery)
+      assert delivery.outcome == "completed_no_pr"
+      assert delivery.idempotency_key == "local-operator-completed-no-pr:#{approved.id}"
+      assert delivery.no_pr_evidence == "Operator confirmed the exploratory work landed without a PR."
+
+      assert {:ok, persisted_package} = WorkPackageRepository.get(repo, work_package.id)
+      assert persisted_package.status == "closed"
+
+      detail = work_request_detail(payload["dashboard"], work_request.id)
+      assert get_in(detail, ["planned_slices", Access.at(0), "delivery", "outcome"]) == "completed_no_pr"
+    end)
+  end
+
+  test "local operator cannot close terminal linked WorkPackages with no-PR evidence", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      work_request = create_work_request!(repo, id: "WR-LOCAL-NO-PR-TERMINAL", status: "ready_for_slicing")
+
+      assert {:ok, slice} =
+               WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-LOCAL-NO-PR-TERMINAL"))
+
+      assert {:ok, approved} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, slice.id, "planned")
+
+      work_package =
+        create_matching_work_package!(repo, work_request, approved,
+          id: "WP-LOCAL-NO-PR-TERMINAL",
+          status: "merged"
+        )
+
+      assert {:ok, _dispatched} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved.id, "approved", work_package.id)
+
+      error =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/work-packages/#{work_package.id}/state", %{
+          "status" => "completed_no_pr",
+          "no_pr_evidence" => "Operator tried to close an already merged package without PR."
+        })
+        |> json_response(422)
+
+      assert error["error"]["code"] == "invalid_status"
+      assert [] = repo.all(PlannedSliceDelivery)
+    end)
+  end
+
+  test "local operator can change and archive unlinked WorkPackages in one action", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      merge_package =
+        create_work_package!(repo,
+          id: "WP-LOCAL-MERGE-ARCHIVE",
+          status: "implementing",
+          repo: "nextide/symphony-plus-plus",
+          base_branch: "main"
+        )
+
+      close_package =
+        create_work_package!(repo,
+          id: "WP-LOCAL-CLOSE-ARCHIVE",
+          status: "planning",
+          repo: merge_package.repo,
+          base_branch: merge_package.base_branch
+        )
+
+      merge_payload =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/work-packages/#{merge_package.id}/state", %{"status" => "merged_and_archive"})
+        |> json_response(200)
+
+      close_payload =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/work-packages/#{close_package.id}/state", %{"status" => "closed_and_archive"})
+        |> json_response(200)
+
+      assert get_in(close_payload, ["dashboard", "settings", "hidden_work_package_ids"]) == [merge_package.id, close_package.id]
+      refute merge_package.id in board_work_package_ids(merge_payload["dashboard"])
+      refute merge_package.id in board_work_package_ids(close_payload["dashboard"])
+      refute close_package.id in board_work_package_ids(close_payload["dashboard"])
+
+      assert {:ok, persisted_merge_package} = WorkPackageRepository.get(repo, merge_package.id)
+      assert persisted_merge_package.status == "merged"
+
+      assert {:ok, persisted_close_package} = WorkPackageRepository.get(repo, close_package.id)
+      assert persisted_close_package.status == "closed"
+    end)
+  end
+
+  test "local operator can archive delivered unlinked WorkPackages without deleting them", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      delivered_package =
+        create_work_package!(repo,
+          id: "WP-LOCAL-ARCHIVE-UNLINKED",
+          status: "merged",
+          repo: "nextide/symphony-plus-plus",
+          base_branch: "main"
+        )
+
+      active_package =
+        create_work_package!(repo,
+          id: "WP-LOCAL-ARCHIVE-ACTIVE",
+          status: "implementing",
+          repo: delivered_package.repo,
+          base_branch: delivered_package.base_branch
+        )
+
+      archive_payload =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/work-packages/#{delivered_package.id}/archive", %{})
+        |> json_response(200)
+
+      assert get_in(archive_payload, ["dashboard", "settings", "hidden_work_package_ids"]) == [delivered_package.id]
+      assert active_package.id in board_work_package_ids(archive_payload["dashboard"])
+      refute delivered_package.id in board_work_package_ids(archive_payload["dashboard"])
+
+      assert {:ok, persisted_package} = WorkPackageRepository.get(repo, delivered_package.id)
+      assert persisted_package.status == "merged"
+    end)
+  end
+
+  test "local operator dashboard does not hide packages linked from archived WorkRequests", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      work_request =
+        create_work_request!(repo,
+          id: "WR-LOCAL-HIDDEN-LINKED-ARCHIVED",
+          status: "ready_for_slicing",
+          repo: "nextide/symphony-plus-plus",
+          base_branch: "main"
+        )
+
+      assert {:ok, slice} =
+               WorkRequestRepository.add_planned_slice(
+                 repo,
+                 work_request.id,
+                 planned_slice_attrs(
+                   id: "WRS-LOCAL-HIDDEN-LINKED-ARCHIVED",
+                   target_base_branch: "main"
+                 )
+               )
+
+      assert {:ok, approved} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, slice.id, "planned")
+
+      hidden_package =
+        create_matching_work_package!(repo, work_request, approved,
+          id: "WP-LOCAL-HIDDEN-LINKED-ARCHIVED",
+          status: "merged"
+        )
+
+      assert {:ok, _settings} =
+               OperatorSettingsService.update(repo, %{"hidden_work_package_ids" => [hidden_package.id]})
+
+      assert {:ok, _dispatched} =
+               WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved.id, "approved", hidden_package.id)
+
+      archived_at = ~U[2026-05-25 10:00:00.000000Z]
+
+      work_request
+      |> Ecto.Changeset.change(completed_at: archived_at, completion_source: "operator", archived_at: archived_at)
+      |> repo.update!()
+
+      payload =
+        local_operator_conn()
+        |> get("/api/v1/sympp/operator/dashboard")
+        |> json_response(200)
+
+      assert hidden_package.id in payload["linked_work_package_ids"]
+      assert hidden_package.id in board_work_package_ids(payload)
+      assert payload["work_request_details"] == []
+    end)
+  end
+
+  test "local operator cannot archive active or linked WorkPackages", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      active_package =
+        create_work_package!(repo,
+          id: "WP-LOCAL-ARCHIVE-ACTIVE-REJECTED",
+          status: "implementing",
+          repo: "nextide/symphony-plus-plus",
+          base_branch: "main"
+        )
+
+      active_error =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/work-packages/#{active_package.id}/archive", %{})
+        |> json_response(422)
+
+      assert active_error["error"]["code"] == "not_delivered"
+
+      work_request = create_work_request!(repo, id: "WR-LOCAL-ARCHIVE-LINKED", status: "ready_for_slicing")
+
+      assert {:ok, slice} =
+               WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-LOCAL-ARCHIVE-LINKED"))
+
+      assert {:ok, approved} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, slice.id, "planned")
+
+      linked_package =
+        create_matching_work_package!(repo, work_request, approved,
+          id: "WP-LOCAL-ARCHIVE-LINKED",
+          status: "merged"
+        )
+
+      assert {:ok, _dispatched} = WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved.id, "approved", linked_package.id)
+
+      linked_error =
+        local_operator_csrf_conn()
+        |> post("/api/v1/sympp/operator/work-packages/#{linked_package.id}/archive", %{})
+        |> json_response(422)
+
+      assert linked_error["error"]["code"] == "linked_work_package"
+    end)
+  end
+
   test "local operator cannot mark non-merged terminal WorkPackages merged", %{repo: repo} do
     with_local_operator_endpoint(fn ->
       assert {:ok, work_package} =
@@ -6011,6 +6244,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     |> get_in(["work_request_details"])
     |> Kernel.||([])
     |> Enum.find(&(get_in(&1, ["work_request", "id"]) == work_request_id))
+  end
+
+  defp board_work_package_ids(dashboard) do
+    dashboard
+    |> get_in(["board", "groups"])
+    |> Kernel.||(%{})
+    |> Map.values()
+    |> List.flatten()
+    |> Enum.map(& &1["id"])
   end
 
   defp auth_conn(secret) do

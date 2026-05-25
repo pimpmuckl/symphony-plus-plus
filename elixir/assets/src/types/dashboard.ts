@@ -235,6 +235,7 @@ export type CreateWorkRequestPayload = {
 
 export type DashboardSettings = {
   work_request_archive_after_days?: number;
+  hidden_work_package_ids?: string[];
 };
 
 export type DecisionOption = {
@@ -602,6 +603,7 @@ export type DashboardPayload = {
     groups?: Record<string, WorkPackageCard[]>;
     total_count?: number;
   };
+  linked_work_package_ids?: string[];
   work_requests?: {
     work_requests?: WorkRequestCard[];
     total_count?: number;
