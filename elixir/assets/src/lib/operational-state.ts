@@ -14,7 +14,9 @@ const CARD_TONES: Record<string, StateCardTone> = {
   claimed: "queued",
   closed: "finished",
   completed: "finished",
+  completed_no_pr: "muted",
   created: "queued",
+  delivered: "finished",
   dispatched: "slice",
   implementing: "implementing",
   in_progress: "implementing",
@@ -24,6 +26,7 @@ const CARD_TONES: Record<string, StateCardTone> = {
   merging: "merge",
   merging_into_phase: "merge",
   needs_attention: "queued",
+  needs_closeout: "merge",
   planned: "slice",
   planning: "queued",
   ready_for_architect_merge: "merge",
@@ -32,6 +35,7 @@ const CARD_TONES: Record<string, StateCardTone> = {
   reviewing: "review",
   skipped: "muted",
   started_paused: "queued",
+  superseded: "muted",
 };
 
 const BADGE_TONES: Record<string, BadgeTone> = {
@@ -44,7 +48,9 @@ const BADGE_TONES: Record<string, BadgeTone> = {
   claimed: "info",
   closed: "success",
   completed: "success",
+  completed_no_pr: "secondary",
   created: "info",
+  delivered: "success",
   human_info_needed: "danger",
   implementing: "info",
   in_progress: "info",
@@ -54,6 +60,7 @@ const BADGE_TONES: Record<string, BadgeTone> = {
   merging: "ready",
   merging_into_phase: "ready",
   needs_attention: "danger",
+  needs_closeout: "warning",
   planning: "info",
   ready_for_architect_merge: "ready",
   ready_for_human_merge: "ready",
@@ -62,6 +69,7 @@ const BADGE_TONES: Record<string, BadgeTone> = {
   reviewing: "info",
   skipped: "secondary",
   started_paused: "info",
+  superseded: "secondary",
 };
 
 const BOARD_LANES: Record<string, BoardLane> = {
@@ -72,7 +80,9 @@ const BOARD_LANES: Record<string, BoardLane> = {
   claimed: "implementing",
   closed: "finished",
   completed: "finished",
+  completed_no_pr: "finished",
   created: "implementing",
+  delivered: "finished",
   implementing: "implementing",
   in_progress: "implementing",
   merge_ready: "implementing",
@@ -81,6 +91,7 @@ const BOARD_LANES: Record<string, BoardLane> = {
   merging: "implementing",
   merging_into_phase: "implementing",
   needs_attention: "implementing",
+  needs_closeout: "implementing",
   planning: "implementing",
   ready_for_architect_merge: "implementing",
   ready_for_human_merge: "implementing",
@@ -88,6 +99,7 @@ const BOARD_LANES: Record<string, BoardLane> = {
   reviewing: "implementing",
   skipped: "finished",
   started_paused: "implementing",
+  superseded: "finished",
 };
 
 const REQUEST_LANES: Record<string, RequestLane> = {
@@ -98,6 +110,8 @@ const REQUEST_LANES: Record<string, RequestLane> = {
   claimed: "slices",
   closed: "finished",
   completed: "finished",
+  completed_no_pr: "finished",
+  delivered: "finished",
   implementing: "slices",
   in_progress: "slices",
   merge_ready: "slices",
@@ -106,6 +120,7 @@ const REQUEST_LANES: Record<string, RequestLane> = {
   merging: "slices",
   merging_into_phase: "slices",
   needs_attention: "slices",
+  needs_closeout: "slices",
   planned: "slices",
   planning: "slices",
   ready_for_architect_merge: "slices",
@@ -116,6 +131,7 @@ const REQUEST_LANES: Record<string, RequestLane> = {
   skipped: "finished",
   sliced: "slices",
   started_paused: "slices",
+  superseded: "finished",
 };
 
 function requestStatusFallbackCardTone(status: string): StateCardTone {
@@ -215,6 +231,8 @@ export function operationalBadgeVariant(operational?: WorkPackageCard["operation
   const key = operational.key || "";
 
   if (operational.tone === "critical") return "danger";
+  if (key === "completed_no_pr" || key === "superseded") return "secondary";
+  if (key === "needs_closeout") return "warning";
   if (key === "merge_ready") return operational.tone === "warning" ? "warning" : "ready";
   if (key === "blocked") return "danger";
   if (["merged", "merged_into_phase", "closed", "completed"].includes(key) || operational.tone === "success") return "success";

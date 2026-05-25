@@ -63,6 +63,9 @@ export type PackageOperationalState = {
   tone?: string | null;
   reason?: string | null;
   raw_status?: string | null;
+  delivery_outcome?: string | null;
+  work_package_status?: string | null;
+  attention_reason_codes?: string[];
   has_started?: boolean;
   has_active_worker?: boolean;
   last_activity_at?: string | null;
@@ -289,9 +292,66 @@ export type PlannedSlice = {
   inserted_at?: string | null;
   updated_at?: string | null;
   operational_state?: PackageOperationalState | null;
+  delivery?: PlannedSliceDelivery | null;
+  successor?: PlannedSliceSuccessor | null;
+  attention_reason_codes?: string[];
   comments?: ContextComment[];
   comment_count?: number;
   open_comment_count?: number;
+};
+
+export type PlannedSliceDelivery = {
+  id?: string | null;
+  outcome?: string | null;
+  recorded_by?: string | null;
+  recorded_at?: string | null;
+  pr_url?: string | null;
+  pr_number?: number | null;
+  pr_repository?: string | null;
+  pr_merged_at?: string | null;
+  merge_commit_sha?: string | null;
+  no_pr_evidence?: string | null;
+  successor_planned_slice_id?: string | null;
+  successor_work_package_id?: string | null;
+  superseded_reason?: string | null;
+  abandoned_rationale?: string | null;
+};
+
+export type PlannedSliceSuccessor = {
+  planned_slice_id?: string | null;
+  work_package_id?: string | null;
+  planned_slice?: {
+    id?: string | null;
+    sequence?: number;
+    title?: string | null;
+    raw_status?: string | null;
+    work_package_id?: string | null;
+  } | null;
+  work_package?: {
+    id?: string | null;
+    title?: string | null;
+    kind?: string | null;
+    repo?: string | null;
+    base_branch?: string | null;
+    branch_pattern?: string | null;
+    raw_status?: string | null;
+    status?: string | null;
+  } | null;
+};
+
+export type WorkRequestDeliveryBoard = {
+  work_request_id?: string | null;
+  slice_count?: number;
+  counts?: Record<string, number>;
+  slices?: Array<{
+    id: string;
+    raw_status?: string | null;
+    delivery_outcome?: string | null;
+    delivery?: PlannedSliceDelivery | null;
+    successor?: PlannedSliceSuccessor | null;
+    operational_state?: PackageOperationalState | null;
+    attention_reason_codes?: string[];
+  }>;
 };
 
 export type DecisionLogEntry = {
@@ -317,6 +377,7 @@ export type WorkRequestDetail = {
   clarification_questions?: ClarificationQuestion[];
   decision_logs?: DecisionLogEntry[];
   planned_slices?: PlannedSlice[];
+  delivery_board?: WorkRequestDeliveryBoard;
   comments?: ContextComment[];
   summary?: {
     open_question_count?: number;
