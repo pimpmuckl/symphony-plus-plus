@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Workspace do
   alias SymphonyElixir.{Config, PathSafety, Shell, SSH}
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
+  @after_create_marker_prefix ".symphony-after-create"
 
   @type worker_host :: String.t() | nil
 
@@ -33,6 +34,9 @@ defmodule SymphonyElixir.Workspace do
 
   defp ensure_workspace(workspace, nil) do
     cond do
+      File.dir?(workspace) and after_create_failed?(workspace, nil) ->
+        {:ok, workspace, true}
+
       File.dir?(workspace) ->
         {:ok, workspace, false}
 
@@ -212,17 +216,81 @@ defmodule SymphonyElixir.Workspace do
 
     case created? do
       true ->
-        case hooks.after_create do
-          nil ->
-            :ok
-
-          command ->
-            run_hook(command, workspace, issue_context, "after_create", worker_host)
-        end
+        run_after_create_hook(hooks.after_create, workspace, issue_context, worker_host)
 
       false ->
         :ok
     end
+  end
+
+  defp run_after_create_hook(nil, workspace, _issue_context, nil) do
+    remove_after_create_marker(workspace)
+    :ok
+  end
+
+  defp run_after_create_hook(command, workspace, issue_context, nil) do
+    write_after_create_marker!(workspace, "running")
+
+    case run_hook(command, workspace, issue_context, "after_create", nil) do
+      :ok ->
+        remove_after_create_marker(workspace)
+        :ok
+
+      {:error, _reason} = error ->
+        write_after_create_marker!(workspace, "failed")
+        error
+    end
+  end
+
+  defp run_after_create_hook(nil, _workspace, _issue_context, _worker_host), do: :ok
+
+  defp run_after_create_hook(command, workspace, issue_context, worker_host) do
+    run_hook(command, workspace, issue_context, "after_create", worker_host)
+  end
+
+  defp after_create_failed?(workspace, nil) do
+    recover_stale_after_create_marker(workspace)
+    claim_failed_after_create_marker(workspace)
+  end
+
+  defp claim_failed_after_create_marker(workspace) do
+    case File.rename(after_create_marker_path(workspace, "failed"), after_create_marker_path(workspace, "running")) do
+      :ok -> true
+      {:error, _reason} -> false
+    end
+  end
+
+  defp recover_stale_after_create_marker(workspace) do
+    running_marker = after_create_marker_path(workspace, "running")
+    timeout_ms = Config.settings!().hooks.timeout_ms
+
+    with {:ok, stat} <- File.stat(running_marker, time: :posix),
+         true <- stale_after_create_marker?(stat.mtime, timeout_ms) do
+      _ = File.rm(running_marker)
+      File.write(after_create_marker_path(workspace, "failed"), "")
+    end
+
+    :ok
+  end
+
+  defp stale_after_create_marker?(mtime, timeout_ms) do
+    stale_after_seconds = max(1, div(timeout_ms + 999, 1_000))
+    System.os_time(:second) - mtime >= stale_after_seconds
+  end
+
+  defp write_after_create_marker!(workspace, status) when status in ["running", "failed"] do
+    remove_after_create_marker(workspace)
+    File.write!(after_create_marker_path(workspace, status), "")
+  end
+
+  defp remove_after_create_marker(workspace) do
+    _ = File.rm(after_create_marker_path(workspace, "failed"))
+    _ = File.rm(after_create_marker_path(workspace, "running"))
+    :ok
+  end
+
+  defp after_create_marker_path(workspace, status) do
+    Path.join(Path.dirname(workspace), "#{@after_create_marker_prefix}-#{status}-#{Path.basename(workspace)}")
   end
 
   defp maybe_run_before_remove_hook(workspace, nil) do
