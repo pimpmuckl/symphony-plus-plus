@@ -118,6 +118,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       "sympp_work_request_clarification_questions",
       "sympp_work_request_decision_logs",
       "sympp_work_request_planned_slices",
+      "sympp_work_request_planned_slice_deliveries",
       "sympp_comments"
     ]
 
@@ -1052,6 +1053,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                "sympp_work_request_clarification_questions" => 1,
                "sympp_work_request_decision_logs" => 1,
                "sympp_work_request_planned_slices" => 1,
+               "sympp_work_request_planned_slice_deliveries" => 1,
                "sympp_comments" => 1
              }
     after
@@ -1391,7 +1393,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     terminal_slice = Map.fetch!(slices_by_id, "WRS-OP-TERMINAL")
     assert terminal_slice.work_package_status == "abandoned"
-    assert terminal_slice.operational_state.key == "abandoned"
+    assert terminal_slice.operational_state.key == "needs_closeout"
+    assert terminal_slice.attention_reason_codes == ["terminal_package_without_delivery_outcome"]
   end
 
   test "WorkRequest cards promote linked package operational state over raw ready-for-slicing", %{repo: repo} do
@@ -1445,7 +1448,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert request_card.operational_state.has_active_worker == true
   end
 
-  test "WorkRequest completion shows completed while dispatched slice preserves merged package truth", %{repo: repo} do
+  test "WorkRequest completion shows needs closeout while dispatched slice preserves merged package truth", %{repo: repo} do
     work_request = create_work_request!(repo, id: "WR-DASH-OP-MERGED", status: "ready_for_slicing")
 
     assert {:ok, planned_slice} =
@@ -1468,8 +1471,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert payload.work_request.status == "ready_for_slicing"
     assert payload.work_request.completed_at != nil
     assert payload.work_request.archived_at == nil
-    assert payload.work_request.operational_state.key == "completed"
-    assert payload.work_request.operational_state.label == "Completed"
+    assert payload.work_request.operational_state.key == "needs_closeout"
+    assert payload.work_request.operational_state.label == "Needs Closeout"
     assert payload.work_request.operational_state.raw_status == "ready_for_slicing"
 
     assert {:ok, read_request} = WorkRequestRepository.get(repo, work_request.id)
@@ -1478,8 +1481,144 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     [slice] = payload.planned_slices
     assert slice.status == "dispatched"
     assert slice.work_package_status == "merged"
-    assert slice.operational_state.key == "merged"
+    assert slice.operational_state.key == "needs_closeout"
     assert slice.operational_state.raw_status == "dispatched"
+    assert slice.attention_reason_codes == ["terminal_package_without_delivery_outcome"]
+  end
+
+  test "WorkRequest delivery truth stays primary over lifecycle gates", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-DASH-OP-GATED-DELIVERY", status: "ready_for_slicing")
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-OP-GATED-DELIVERY"))
+
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+    work_package =
+      create_matching_work_package!(repo, work_request, approved_slice,
+        id: "SYMPP-OP-GATED-DELIVERY",
+        status: "ready_for_worker"
+      )
+
+    assert {:ok, _dispatched_slice} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", work_package.id)
+
+    assert {:ok, _delivery} =
+             WorkRequestRepository.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               approved_slice.id,
+               delivery_attrs(%{
+                 outcome: "pr_merged",
+                 idempotency_key: "dashboard-gated-delivery",
+                 pr_url: "https://github.com/nextide/symphony-plus-plus/pull/904",
+                 pr_merged_at: ~U[2026-05-24 11:30:00.000000Z],
+                 merge_commit_sha: "merge-904"
+               })
+             )
+
+    work_request
+    |> Ecto.Changeset.change(status: "human_info_needed")
+    |> repo.update!()
+
+    assert {:ok, payload} = Dashboard.work_requests(repo)
+    card = Enum.find(payload.work_requests, &(&1.id == work_request.id))
+
+    assert card.operational_state.key == "delivered"
+    assert card.operational_state.raw_status == "human_info_needed"
+
+    assert {:ok, detail} = Dashboard.work_request_detail(repo, work_request.id)
+    assert detail.work_request.operational_state.key == "delivered"
+    assert detail.work_request.operational_state.raw_status == "human_info_needed"
+
+    [slice] = detail.planned_slices
+    assert slice.operational_state.key == "delivered"
+  end
+
+  test "operator-completed WorkRequest stays completed over lifecycle gates", %{repo: repo} do
+    completed_at = ~U[2026-05-25 10:00:00.000000Z]
+
+    work_request =
+      create_work_request!(repo, id: "WR-DASH-OPERATOR-COMPLETED-GATED", status: "human_info_needed")
+      |> Ecto.Changeset.change(completed_at: completed_at, completion_source: "operator")
+      |> repo.update!()
+
+    assert {:ok, payload} = Dashboard.work_requests(repo)
+    card = Enum.find(payload.work_requests, &(&1.id == work_request.id))
+
+    assert card.operational_state.key == "completed"
+    assert card.operational_state.raw_status == "human_info_needed"
+
+    assert {:ok, detail} = Dashboard.work_request_detail(repo, work_request.id)
+    assert detail.work_request.operational_state.key == "completed"
+    assert detail.work_request.operational_state.raw_status == "human_info_needed"
+  end
+
+  test "derived completed WorkRequest stays completed over clarification gates", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-DASH-DERIVED-COMPLETED-GATED", status: "ready_for_slicing")
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-DERIVED-COMPLETED-GATED"))
+
+    assert {:ok, _skipped_slice} = WorkRequestRepository.skip_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+    work_request
+    |> Ecto.Changeset.change(status: "clarifying")
+    |> repo.update!()
+
+    assert {:ok, payload} = Dashboard.work_requests(repo)
+    card = Enum.find(payload.work_requests, &(&1.id == work_request.id))
+
+    assert card.operational_state.key == "completed"
+    assert card.operational_state.raw_status == "clarifying"
+
+    assert {:ok, detail} = Dashboard.work_request_detail(repo, work_request.id)
+    assert detail.work_request.operational_state.key == "completed"
+    assert detail.work_request.operational_state.raw_status == "clarifying"
+  end
+
+  test "archived WorkRequest lifecycle stays primary over delivery promotion", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-DASH-OP-ARCHIVED-DELIVERY", status: "ready_for_slicing")
+
+    assert {:ok, planned_slice} =
+             WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-OP-ARCHIVED-DELIVERY"))
+
+    assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+    work_package =
+      create_matching_work_package!(repo, work_request, approved_slice,
+        id: "SYMPP-OP-ARCHIVED-DELIVERY",
+        status: "ready_for_worker"
+      )
+
+    assert {:ok, _dispatched_slice} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", work_package.id)
+
+    assert {:ok, _delivery} =
+             WorkRequestRepository.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               approved_slice.id,
+               delivery_attrs(%{
+                 outcome: "pr_merged",
+                 idempotency_key: "dashboard-archived-delivery",
+                 pr_url: "https://github.com/nextide/symphony-plus-plus/pull/906",
+                 pr_merged_at: ~U[2026-05-24 12:00:00.000000Z],
+                 merge_commit_sha: "merge-906"
+               })
+             )
+
+    archived_at = ~U[2026-05-25 09:00:00.000000Z]
+
+    work_request
+    |> Ecto.Changeset.change(completed_at: archived_at, completion_source: "operator", archived_at: archived_at)
+    |> repo.update!()
+
+    assert {:ok, detail} = Dashboard.work_request_detail(repo, work_request.id)
+    assert detail.work_request.operational_state.key == "completed"
+
+    [slice] = detail.planned_slices
+    assert slice.operational_state.key == "delivered"
   end
 
   test "grant WorkRequest list and detail promote scoped linked packages consistently", %{repo: repo} do
@@ -1522,6 +1661,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert {:ok, _dispatched_slice} =
              WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", merged_package.id)
 
+    assert {:ok, _delivery} =
+             WorkRequestRepository.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               approved_slice.id,
+               delivery_attrs(%{
+                 outcome: "pr_merged",
+                 idempotency_key: "grant-dashboard-delivery-merged",
+                 pr_url: "https://github.com/nextide/symphony-plus-plus/pull/903",
+                 pr_merged_at: ~U[2026-05-24 11:00:00.000000Z],
+                 merge_commit_sha: "merge-903"
+               })
+             )
+
+    assert {:ok, terminal_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-OP-GRANT-TERMINAL", target_base_branch: anchor.base_branch)
+             )
+
+    assert {:ok, terminal_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, terminal_slice.id, "planned")
+
+    terminal_package =
+      create_matching_work_package!(repo, work_request, terminal_slice,
+        id: "SYMPP-OP-GRANT-TERMINAL",
+        status: "merged"
+      )
+
+    assert {:ok, _terminal_dispatched_slice} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, terminal_slice.id, "approved", terminal_package.id)
+
     secret = create_architect_grant_secret(repo, anchor.id)
     list_payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-requests"), 200)
     detail_payload = json_response(get(auth_conn(secret), "/api/v1/sympp/work-requests/#{work_request.id}"), 200)
@@ -1531,15 +1702,47 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert card["status"] == "ready_for_slicing"
     assert card["completed_at"] != nil
     assert card["archived_at"] == nil
-    assert card["operational_state"]["key"] == "completed"
-    assert card["operational_state"]["label"] == "Completed"
+    assert card["operational_state"]["key"] == "needs_closeout"
+    assert card["operational_state"]["label"] == "Needs Closeout"
     assert card["operational_state"]["raw_status"] == "ready_for_slicing"
+    refute Map.has_key?(card["operational_state"], "reason")
+    refute Map.has_key?(card["operational_state"], "work_package_status")
+    refute Enum.any?(card["operational_state"]["attention_items"] || [], &Map.has_key?(&1, "reason"))
+    refute Map.has_key?(card["operational_state"], "has_started")
+    refute Map.has_key?(card["operational_state"], "has_active_worker")
+    refute Map.has_key?(card["operational_state"], "last_activity_at")
+    refute Map.has_key?(card["operational_state"], "is_stale")
 
     assert detail_payload["work_request"]["operational_state"]["key"] == card["operational_state"]["key"]
     assert detail_payload["work_request"]["completed_at"] == card["completed_at"]
-    assert [%{"status" => "dispatched"} = grant_slice] = detail_payload["planned_slices"]
+    refute Map.has_key?(detail_payload["work_request"]["operational_state"], "reason")
+    refute Map.has_key?(detail_payload["work_request"]["operational_state"], "work_package_status")
+    refute Enum.any?(detail_payload["work_request"]["operational_state"]["attention_items"] || [], &Map.has_key?(&1, "reason"))
+    refute Map.has_key?(detail_payload["work_request"]["operational_state"], "has_started")
+    refute Map.has_key?(detail_payload["work_request"]["operational_state"], "has_active_worker")
+    refute Map.has_key?(detail_payload["work_request"]["operational_state"], "last_activity_at")
+    refute Map.has_key?(detail_payload["work_request"]["operational_state"], "is_stale")
+
+    grant_slices = Map.new(detail_payload["planned_slices"], &{&1["id"], &1})
+
+    assert %{"status" => "dispatched"} = grant_slice = Map.fetch!(grant_slices, approved_slice.id)
+    assert get_in(grant_slice, ["operational_state", "key"]) == "delivered"
+    refute Map.has_key?(grant_slice, "delivery")
+    refute Map.has_key?(grant_slice, "successor")
     refute Map.has_key?(grant_slice, "work_package_status")
-    refute Map.has_key?(grant_slice, "operational_state")
+    refute Map.has_key?(grant_slice["operational_state"], "reason")
+    refute Map.has_key?(grant_slice["operational_state"], "work_package_status")
+    refute Enum.any?(grant_slice["operational_state"]["attention_items"] || [], &Map.has_key?(&1, "reason"))
+
+    assert %{"status" => "dispatched"} = terminal_grant_slice = Map.fetch!(grant_slices, terminal_slice.id)
+    assert get_in(terminal_grant_slice, ["operational_state", "key"]) == "needs_closeout"
+    assert terminal_grant_slice["attention_reason_codes"] == ["terminal_package_without_delivery_outcome"]
+    refute Map.has_key?(terminal_grant_slice, "delivery")
+    refute Map.has_key?(terminal_grant_slice, "successor")
+    refute Map.has_key?(terminal_grant_slice, "work_package_status")
+    refute Map.has_key?(terminal_grant_slice["operational_state"], "reason")
+    refute Map.has_key?(terminal_grant_slice["operational_state"], "work_package_status")
+    refute Enum.any?(terminal_grant_slice["operational_state"]["attention_items"] || [], &Map.has_key?(&1, "reason"))
     refute Map.has_key?(detail_payload, "delivery_board")
   end
 
@@ -1683,6 +1886,53 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
                })
              )
 
+    assert {:ok, merged_delivery_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-DASH-RECORDED-MERGED", target_base_branch: anchor.base_branch)
+             )
+
+    assert {:ok, merged_delivery_slice} =
+             WorkRequestRepository.approve_planned_slice(repo, work_request.id, merged_delivery_slice.id, "planned")
+
+    merged_delivery_package =
+      create_matching_work_package!(repo, work_request, merged_delivery_slice,
+        id: "SYMPP-DASH-RECORDED-MERGED",
+        status: "ready_for_worker"
+      )
+
+    assert {:ok, _merged_delivery_progress} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: merged_delivery_package.id,
+               summary: "Worker progress exists",
+               status: "progress",
+               payload: %{type: "progress"}
+             })
+
+    assert {:ok, _dispatched_merged_delivery} =
+             WorkRequestRepository.dispatch_planned_slice(
+               repo,
+               work_request.id,
+               merged_delivery_slice.id,
+               "approved",
+               merged_delivery_package.id
+             )
+
+    assert {:ok, _merged_delivery} =
+             WorkRequestRepository.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               merged_delivery_slice.id,
+               delivery_attrs(%{
+                 outcome: "pr_merged",
+                 idempotency_key: "dashboard-delivery-board-pr-merged",
+                 pr_url: "https://github.com/nextide/symphony-plus-plus/pull/904",
+                 pr_merged_at: ~U[2026-05-24 12:00:00.000000Z],
+                 merge_commit_sha: "merge-904"
+               })
+             )
+
     assert {:ok, filtered_successor_slice} =
              WorkRequestRepository.add_planned_slice(
                repo,
@@ -1732,17 +1982,48 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
     assert {:ok, payload} = Dashboard.work_request_detail(repo, work_request.id)
 
-    assert payload.delivery_board["slice_count"] == 5
+    assert payload.delivery_board["slice_count"] == 6
     slices_by_id = Map.new(payload.delivery_board["slices"], &{&1["id"], &1})
 
     assert get_in(slices_by_id, ["WRS-DASH-NEEDS-CLOSEOUT", "operational_state", "key"]) == "needs_closeout"
     assert get_in(slices_by_id, ["WRS-DASH-NEEDS-CLOSEOUT", "attention_reason_codes"]) == ["pr_merged_without_delivery_outcome"]
     assert get_in(slices_by_id, ["WRS-DASH-NO-PR", "delivery", "outcome"]) == "completed_no_pr"
     assert get_in(slices_by_id, ["WRS-DASH-NO-PR", "operational_state", "key"]) == "completed_no_pr"
+    assert get_in(slices_by_id, ["WRS-DASH-RECORDED-MERGED", "delivery", "outcome"]) == "pr_merged"
+    assert get_in(slices_by_id, ["WRS-DASH-RECORDED-MERGED", "operational_state", "key"]) == "delivered"
     assert get_in(slices_by_id, ["WRS-DASH-SUPERSEDED", "successor", "work_package", "id"]) == successor_package.id
     assert get_in(slices_by_id, ["WRS-DASH-SUPERSEDED", "successor", "work_package_id"]) == successor_package.id
     assert get_in(slices_by_id, ["WRS-DASH-FILTERED-SUCCESSOR", "successor", "work_package"]) == nil
     assert get_in(slices_by_id, ["WRS-DASH-FILTERED-SUCCESSOR", "successor", "work_package_id"]) == nil
+
+    planned_slices_by_id = Map.new(payload.planned_slices, &{&1.id, &1})
+
+    needs_closeout_slice = Map.fetch!(planned_slices_by_id, "WRS-DASH-NEEDS-CLOSEOUT")
+    assert needs_closeout_slice.operational_state.key == "needs_closeout"
+    assert needs_closeout_slice.attention_reason_codes == ["pr_merged_without_delivery_outcome"]
+    assert needs_closeout_slice.operational_state.raw_status == "dispatched"
+
+    no_pr_slice = Map.fetch!(planned_slices_by_id, "WRS-DASH-NO-PR")
+    assert get_in(no_pr_slice, [:delivery, "outcome"]) == "completed_no_pr"
+    assert no_pr_slice.operational_state.key == "completed_no_pr"
+    assert no_pr_slice.operational_state.label == "Completed Without PR"
+    assert no_pr_slice.operational_state.raw_status == "dispatched"
+
+    merged_slice = Map.fetch!(planned_slices_by_id, "WRS-DASH-RECORDED-MERGED")
+    assert get_in(merged_slice, [:delivery, "outcome"]) == "pr_merged"
+    assert merged_slice.operational_state.key == "delivered"
+    assert merged_slice.operational_state.label == "Delivered"
+    assert merged_slice.operational_state.raw_status == "dispatched"
+    assert merged_slice.operational_state.work_package_status == "ready_for_worker"
+    assert merged_slice.operational_state.has_started == true
+    assert merged_slice.operational_state.is_stale == true
+    assert Enum.any?(merged_slice.operational_state.attention_items, &(&1.key == "ready_for_worker_with_activity"))
+    assert "linked_package_status_stale_after_delivery" in merged_slice.attention_reason_codes
+
+    superseded_payload = Map.fetch!(planned_slices_by_id, "WRS-DASH-SUPERSEDED")
+    assert get_in(superseded_payload, [:delivery, "outcome"]) == "superseded"
+    assert superseded_payload.operational_state.key == "superseded"
+    assert get_in(superseded_payload, [:successor, "work_package", "id"]) == successor_package.id
     assert payload.work_request.completed_at == nil
   end
 
@@ -3757,6 +4038,69 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     end)
   end
 
+  test "local operator dashboard projects delivery closeout states into slice cards", %{repo: repo} do
+    with_local_operator_endpoint(fn ->
+      work_request = create_work_request!(repo, id: "WR-LOCAL-DELIVERY", status: "ready_for_slicing")
+
+      assert {:ok, planned_slice} =
+               WorkRequestRepository.add_planned_slice(repo, work_request.id, planned_slice_attrs(id: "WRS-LOCAL-DELIVERY-MERGED"))
+
+      assert {:ok, approved_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+      work_package =
+        create_matching_work_package!(repo, work_request, approved_slice,
+          id: "SYMPP-LOCAL-DELIVERY-MERGED",
+          status: "ready_for_worker"
+        )
+
+      assert {:ok, _progress} =
+               PlanningRepository.append_progress_event(repo, %{
+                 work_package_id: work_package.id,
+                 summary: "Worker progress exists",
+                 status: "progress",
+                 payload: %{type: "progress"}
+               })
+
+      assert {:ok, _dispatched_slice} =
+               WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, approved_slice.id, "approved", work_package.id)
+
+      assert {:ok, _delivery} =
+               WorkRequestRepository.record_planned_slice_delivery(
+                 repo,
+                 work_request.id,
+                 approved_slice.id,
+                 delivery_attrs(%{
+                   outcome: "pr_merged",
+                   idempotency_key: "local-operator-dashboard-delivery-merged",
+                   pr_url: "https://github.com/Pimpmuckl/symphony-plus-plus/pull/905",
+                   pr_merged_at: ~U[2026-05-24 12:30:00.000000Z],
+                   merge_commit_sha: "merge-905"
+                 })
+               )
+
+      payload = json_response(get(local_operator_conn(), "/api/v1/sympp/operator/dashboard"), 200)
+      detail = work_request_detail(payload, work_request.id)
+      [slice] = detail["planned_slices"]
+      [card] = Enum.filter(payload["work_requests"]["work_requests"], &(&1["id"] == work_request.id))
+
+      assert card["operational_state"]["key"] == "delivered"
+      assert card["operational_state"]["has_started"] == true
+      assert card["operational_state"]["has_active_worker"] == false
+      assert card["operational_state"]["is_stale"] == true
+      assert get_in(detail, ["work_request", "operational_state", "key"]) == "delivered"
+      assert get_in(detail, ["work_request", "operational_state", "has_started"]) == true
+      assert get_in(detail, ["work_request", "operational_state", "has_active_worker"]) == false
+      assert get_in(detail, ["work_request", "operational_state", "is_stale"]) == true
+      assert get_in(slice, ["operational_state", "key"]) == "delivered"
+      assert get_in(slice, ["operational_state", "label"]) == "Delivered"
+      assert get_in(slice, ["operational_state", "raw_status"]) == "dispatched"
+      assert get_in(slice, ["operational_state", "work_package_status"]) == "ready_for_worker"
+      assert get_in(slice, ["delivery", "outcome"]) == "pr_merged"
+      assert "linked_package_status_stale_after_delivery" in slice["attention_reason_codes"]
+      assert get_in(detail, ["delivery_board", "slices", Access.at(0), "operational_state", "key"]) == "delivered"
+    end)
+  end
+
   test "local operator dashboard infers canonical repo identity from local origin", %{repo: repo} do
     with_local_repo_origin("https://github.com/Pimpmuckl/symphony-plus-plus.git", fn ->
       with_local_operator_endpoint(fn ->
@@ -4475,7 +4819,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
 
       assert {:ok, persisted_package} = WorkPackageRepository.get(repo, work_package.id)
       assert persisted_package.status == "merged"
-      assert get_in(work_request_detail(payload["dashboard"], work_request.id), ["work_request", "operational_state", "key"]) == "completed"
+
+      assert get_in(work_request_detail(payload["dashboard"], work_request.id), ["work_request", "operational_state", "key"]) ==
+               "needs_closeout"
     end)
   end
 

@@ -13,6 +13,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
 
   @ready_statuses ["ready_for_human_merge", "ready_for_architect_merge"]
   @terminal_package_statuses ["merged", "merged_into_phase", "closed", "abandoned"]
+  @delivery_lookup_chunk_size 400
+  @context_lookup_chunk_size 400
   @review_package_artifact_limit 20
   @review_package_review_limit 20
   @review_package_string_limit 240
@@ -45,11 +47,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
          {:ok, planned_slices} <- planned_slices(repo, work_request_id, opts),
          {:ok, deliveries_by_slice_id} <- planned_slice_deliveries_by_id(repo, work_request_id, planned_slices),
          {:ok, context} <- projection_context(repo, planned_slices, deliveries_by_slice_id, opts) do
-      slices_by_id = Map.new(planned_slices, &{&1.id, &1})
+      slices_by_scope = planned_slices_by_scope(planned_slices)
 
       slices =
         Enum.map(planned_slices, fn %PlannedSlice{} = planned_slice ->
-          project_slice(planned_slice, deliveries_by_slice_id, slices_by_id, context)
+          project_slice(planned_slice, deliveries_by_slice_id, slices_by_scope, context, opts)
         end)
 
       {:ok,
@@ -62,6 +64,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
     end
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  @spec project_many(repo(), [WorkRequest.t()], %{optional(String.t()) => [PlannedSlice.t()]}) ::
+          {:ok, %{optional(String.t()) => map()}} | {:error, error()}
+  @spec project_many(repo(), [WorkRequest.t()], %{optional(String.t()) => [PlannedSlice.t()]}, keyword()) ::
+          {:ok, %{optional(String.t()) => map()}} | {:error, error()}
+  def project_many(repo, work_requests, planned_slices_by_request, opts \\ [])
+      when is_atom(repo) and is_list(work_requests) and is_map(planned_slices_by_request) and is_list(opts) do
+    with :ok <- validate_planned_slices_by_request(work_requests, planned_slices_by_request),
+         planned_slices = all_planned_slices(work_requests, planned_slices_by_request),
+         {:ok, deliveries_by_slice_id} <- planned_slice_deliveries_by_id(repo, planned_slices),
+         {:ok, context} <- projection_context(repo, planned_slices, deliveries_by_slice_id, opts) do
+      {:ok, Map.new(work_requests, &project_request_board(&1, planned_slices_by_request, deliveries_by_slice_id, context, opts))}
+    end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp project_request_board(%WorkRequest{} = work_request, planned_slices_by_request, deliveries_by_slice_id, context, opts) do
+    request_planned_slices = Map.get(planned_slices_by_request, work_request.id, [])
+    slices_by_scope = planned_slices_by_scope(request_planned_slices)
+    slices = Enum.map(request_planned_slices, &project_slice(&1, deliveries_by_slice_id, slices_by_scope, context, opts))
+
+    {work_request.id,
+     %{
+       work_request_id: work_request.id,
+       slice_count: length(slices),
+       counts: state_counts(slices),
+       slices: slices
+     }}
   end
 
   defp work_request(repo, work_request_id, opts) do
@@ -99,26 +131,78 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   defp planned_slice_deliveries_by_id(_repo, _work_request_id, []), do: {:ok, %{}}
 
   defp planned_slice_deliveries_by_id(repo, work_request_id, planned_slices) do
-    planned_slice_ids = Enum.map(planned_slices, & &1.id)
-
     deliveries =
-      repo.all(
-        from(delivery in PlannedSliceDelivery,
-          where: delivery.work_request_id == ^work_request_id,
-          where: delivery.planned_slice_id in ^planned_slice_ids
-        )
-      )
+      Enum.flat_map(planned_slice_chunks(planned_slices), fn planned_slice_chunk ->
+        planned_slice_ids = Enum.map(planned_slice_chunk, & &1.id)
 
-    {:ok, Map.new(deliveries, &{&1.planned_slice_id, &1})}
+        repo.all(
+          from(delivery in PlannedSliceDelivery,
+            where: delivery.work_request_id == ^work_request_id,
+            where: delivery.planned_slice_id in ^planned_slice_ids
+          )
+        )
+      end)
+
+    {:ok, Map.new(deliveries, &{{&1.work_request_id, &1.planned_slice_id}, &1})}
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp planned_slice_deliveries_by_id(_repo, []), do: {:ok, %{}}
+
+  defp planned_slice_deliveries_by_id(repo, planned_slices) do
+    deliveries =
+      Enum.flat_map(planned_slice_chunks(planned_slices), fn planned_slice_chunk ->
+        planned_slice_ids = Enum.map(planned_slice_chunk, & &1.id)
+        work_request_ids = planned_slice_chunk |> Enum.map(& &1.work_request_id) |> Enum.uniq()
+
+        repo.all(
+          from(delivery in PlannedSliceDelivery,
+            where: delivery.work_request_id in ^work_request_ids,
+            where: delivery.planned_slice_id in ^planned_slice_ids
+          )
+        )
+      end)
+
+    {:ok, Map.new(deliveries, &{{&1.work_request_id, &1.planned_slice_id}, &1})}
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  defp planned_slice_chunks(planned_slices), do: Enum.chunk_every(planned_slices, @delivery_lookup_chunk_size)
+  defp context_lookup_chunks(work_package_ids), do: Enum.chunk_every(work_package_ids, @context_lookup_chunk_size)
+
+  defp validate_planned_slices_by_request(work_requests, planned_slices_by_request) do
+    if Enum.all?(work_requests, &planned_slices_match_work_request?(&1, planned_slices_by_request)) do
+      :ok
+    else
+      {:error, :not_found}
+    end
+  end
+
+  defp planned_slices_match_work_request?(%WorkRequest{} = work_request, planned_slices_by_request) do
+    planned_slices_by_request
+    |> Map.get(work_request.id, [])
+    |> Enum.all?(&planned_slice_for_work_request?(&1, work_request.id))
+  end
+
+  defp all_planned_slices(work_requests, planned_slices_by_request) do
+    Enum.flat_map(work_requests, &Map.get(planned_slices_by_request, &1.id, []))
+  end
+
+  defp delivery_for_slice(deliveries_by_slice_id, %PlannedSlice{} = planned_slice) do
+    Map.get(deliveries_by_slice_id, {planned_slice.work_request_id, planned_slice.id})
+  end
+
+  defp planned_slices_by_scope(planned_slices) do
+    Map.new(planned_slices, &{{&1.work_request_id, &1.id}, &1})
   end
 
   defp projection_context(repo, planned_slices, deliveries_by_slice_id, opts) do
     all_work_package_ids =
       planned_slices
       |> Enum.flat_map(fn %PlannedSlice{} = planned_slice ->
-        delivery = Map.get(deliveries_by_slice_id, planned_slice.id)
+        delivery = delivery_for_slice(deliveries_by_slice_id, planned_slice)
         [planned_slice.work_package_id, delivery && delivery.successor_work_package_id]
       end)
       |> Enum.filter(&filled_string?/1)
@@ -142,7 +226,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
 
     activity_contexts =
       repo
-      |> WorkPackageActivity.contexts(missing_ids(work_package_ids, preloaded_activity_contexts))
+      |> activity_contexts_by_id(missing_ids(work_package_ids, preloaded_activity_contexts))
       |> Map.merge(preloaded_activity_contexts)
 
     {:ok,
@@ -168,7 +252,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   defp work_packages_by_id(_repo, []), do: %{}
 
   defp work_packages_by_id(repo, work_package_ids) do
-    repo.all(from(work_package in WorkPackage, where: work_package.id in ^work_package_ids))
+    work_package_ids
+    |> context_lookup_chunks()
+    |> Enum.flat_map(fn work_package_id_chunk ->
+      repo.all(from(work_package in WorkPackage, where: work_package.id in ^work_package_id_chunk))
+    end)
     |> Map.new(&{&1.id, &1})
   end
 
@@ -263,22 +351,55 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   defp progress_events_by_work_package_id(_repo, []), do: %{}
 
   defp progress_events_by_work_package_id(repo, work_package_ids) do
-    repo.all(
-      from(progress_event in ProgressEvent,
-        where: progress_event.work_package_id in ^work_package_ids,
-        order_by: [asc: progress_event.work_package_id, asc: progress_event.sequence, asc: progress_event.created_at, asc: progress_event.id]
+    work_package_ids
+    |> context_lookup_chunks()
+    |> Enum.flat_map(fn work_package_id_chunk ->
+      repo.all(
+        from(progress_event in ProgressEvent,
+          where: progress_event.work_package_id in ^work_package_id_chunk,
+          order_by: [asc: progress_event.work_package_id, asc: progress_event.sequence, asc: progress_event.created_at, asc: progress_event.id]
+        )
       )
-    )
+    end)
     |> Enum.group_by(& &1.work_package_id)
   end
 
-  defp project_slice(%PlannedSlice{} = planned_slice, deliveries_by_slice_id, slices_by_id, context) do
-    delivery = Map.get(deliveries_by_slice_id, planned_slice.id)
-    work_package = work_package_summary(planned_slice.work_package_id, context)
-    successor = successor_context(delivery, slices_by_id, context)
+  defp activity_contexts_by_id(_repo, []), do: %{}
+
+  defp activity_contexts_by_id(repo, work_package_ids) do
+    work_package_ids
+    |> context_lookup_chunks()
+    |> Enum.map(&WorkPackageActivity.contexts(repo, &1))
+    |> Enum.reduce(%{}, &Map.merge/2)
+  end
+
+  defp project_slice(%PlannedSlice{} = planned_slice, deliveries_by_slice_id, slices_by_scope, context, opts) do
+    delivery = delivery_for_slice(deliveries_by_slice_id, planned_slice)
+    work_package = slice_work_package_summary(planned_slice.work_package_id, context, opts)
     operational_work_package = work_package || hidden_work_package_marker(planned_slice, delivery, context)
     operational_state = operational_state(planned_slice, delivery, operational_work_package)
 
+    if Keyword.get(opts, :slice_projection) == :operational_state do
+      operational_slice(planned_slice, delivery, operational_state)
+    else
+      successor = successor_context(delivery, slices_by_scope, context)
+
+      full_slice(planned_slice, delivery, context, work_package, successor, operational_state)
+    end
+  end
+
+  defp operational_slice(%PlannedSlice{} = planned_slice, delivery, operational_state) do
+    %{
+      id: planned_slice.id,
+      work_request_id: planned_slice.work_request_id,
+      raw_status: planned_slice.status,
+      delivery_outcome: delivery && delivery.outcome,
+      operational_state: operational_state,
+      attention_reason_codes: Map.fetch!(operational_state, :attention_reason_codes)
+    }
+  end
+
+  defp full_slice(%PlannedSlice{} = planned_slice, delivery, context, work_package, successor, operational_state) do
     %{
       id: planned_slice.id,
       work_request_id: planned_slice.work_request_id,
@@ -293,6 +414,36 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
       operational_state: operational_state,
       attention_reason_codes: Map.fetch!(operational_state, :attention_reason_codes)
     }
+  end
+
+  defp slice_work_package_summary(work_package_id, context, opts) do
+    if Keyword.get(opts, :slice_projection) == :operational_state do
+      operational_work_package_summary(work_package_id, context)
+    else
+      work_package_summary(work_package_id, context)
+    end
+  end
+
+  defp operational_work_package_summary(nil, _context), do: nil
+  defp operational_work_package_summary("", _context), do: nil
+
+  defp operational_work_package_summary(work_package_id, context) do
+    case get_in(context, [:work_packages, work_package_id]) do
+      %WorkPackage{} = work_package ->
+        events = Map.get(context.progress_events, work_package_id, [])
+        activity = Map.get(context.activity_contexts, work_package_id, WorkPackageActivity.empty_context())
+        metadata = Map.get(context.metadata_contexts, work_package_id) || metadata_from_progress_events(events)
+
+        %{
+          raw_status: work_package.status,
+          pr: pr_summary(map_value(metadata, "pr")),
+          blocker_state: Map.fetch!(activity, :blocker_state),
+          runtime_state: Map.fetch!(activity, :runtime_state)
+        }
+
+      _missing ->
+        nil
+    end
   end
 
   defp delivery_summary(nil, _context), do: nil
@@ -497,10 +648,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
 
   defp review_package_review_summary(_review), do: []
 
-  defp successor_context(nil, _slices_by_id, _context), do: nil
+  defp successor_context(nil, _slices_by_scope, _context), do: nil
 
-  defp successor_context(%PlannedSliceDelivery{outcome: "superseded"} = delivery, slices_by_id, context) do
-    successor_slice = Map.get(slices_by_id, delivery.successor_planned_slice_id)
+  defp successor_context(%PlannedSliceDelivery{outcome: "superseded"} = delivery, slices_by_scope, context) do
+    successor_slice = Map.get(slices_by_scope, {delivery.work_request_id, delivery.successor_planned_slice_id})
 
     successor_work_package_id =
       delivery.successor_work_package_id || (successor_slice && successor_slice.work_package_id)
@@ -513,7 +664,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
     }
   end
 
-  defp successor_context(%PlannedSliceDelivery{}, _slices_by_id, _context), do: nil
+  defp successor_context(%PlannedSliceDelivery{}, _slices_by_scope, _context), do: nil
 
   defp successor_slice_summary(nil, _context), do: nil
 

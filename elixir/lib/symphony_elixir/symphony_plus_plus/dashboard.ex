@@ -57,12 +57,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     "ci_waiting",
     "merge_ready",
     "merging",
+    "needs_closeout",
     "ready_for_worker",
     "planned",
     "merged",
+    "delivered",
+    "completed_no_pr",
     "closed",
+    "superseded",
     "abandoned",
     "skipped"
+  ]
+  @delivery_promotion_blocking_work_request_statuses ["human_info_needed", "ready_for_clarification", "clarifying"]
+  @delivery_package_activity_fields [
+    :has_started,
+    :has_active_worker,
+    :last_activity_at,
+    :is_stale,
+    :latest_progress_at,
+    :latest_review_at,
+    :latest_pr_at,
+    :latest_merge_at
   ]
   @merged_package_statuses ["merged", "merged_into_phase"]
   @closed_package_statuses ["closed", "abandoned"]
@@ -378,6 +393,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            {:ok, decisions} <- WorkRequestRepository.list_decisions(repo, work_request_id),
            {:ok, planned_slices} <- WorkRequestRepository.list_planned_slices(repo, work_request_id),
            {:ok, work_package_contexts} <- planned_slice_work_package_contexts_for_grant(repo, planned_slices, grant),
+           delivery_board_opts = delivery_board_opts(work_request, planned_slices, work_package_contexts),
+           {:ok, delivery_board} <- DeliveryBoard.project(repo, work_request_id, delivery_board_opts),
            {:ok, comment_context} <- work_request_comment_context(repo, work_request, planned_slices),
            {:ok, repo_identity_catalog} <-
              work_request_detail_repo_identity_catalog_for_grant(repo, grant, [work_request.repo]) do
@@ -392,10 +409,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
             planned_slices,
             work_package_contexts,
             repo_identity_catalog,
-            comment_context
+            comment_context,
+            delivery_board: delivery_board,
+            delivery_state_opts: [include_package_fields?: false]
           )
 
-        planned_slice_payloads = planned_slice_payloads(planned_slices, %{}, false, comment_context)
+        planned_slice_payloads =
+          planned_slice_payloads(planned_slices, %{}, false, comment_context, delivery_board: delivery_board)
 
         {:ok,
          %{
@@ -440,10 +460,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
             planned_slices,
             work_package_contexts,
             repo_identity_catalog,
-            comment_context
+            comment_context,
+            delivery_board: delivery_board
           )
 
-        planned_slice_payloads = planned_slice_payloads(planned_slices, work_package_contexts, true, comment_context)
+        planned_slice_payloads =
+          planned_slice_payloads(
+            planned_slices,
+            work_package_contexts,
+            true,
+            comment_context,
+            delivery_board: delivery_board
+          )
 
         {:ok,
          %{
@@ -1312,53 +1340,115 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
          {:ok, comment_context} <- work_request_card_comment_context(repo, work_requests, planned_slices),
          {:ok, work_package_contexts} <- work_request_card_work_package_contexts(repo, planned_slices, opts) do
       question_counts = question_context.counts
-
-      planned_slice_counts =
-        planned_slices
-        |> Enum.map(&{&1.work_request_id, &1.status})
-        |> status_counts()
-
       planned_slices_by_request = Enum.group_by(planned_slices, & &1.work_request_id)
 
-      summaries =
-        Map.new(work_requests, fn %WorkRequest{} = work_request ->
-          planned_slices = Map.get(planned_slices_by_request, work_request.id, [])
-          comment_counts = work_request_comment_counts(comment_context, work_request, planned_slices)
-          open_question_count = status_count(question_counts, work_request.id, "open")
+      with {:ok, delivery_boards} <-
+             work_request_card_delivery_boards(repo, work_requests, planned_slices_by_request, work_package_contexts) do
+        delivery_state_opts = work_request_delivery_state_opts(opts)
 
-          question_state =
-            Map.get(question_context.states, work_request.id, %{
-              open_count: open_question_count,
-              latest_gate_at: nil
-            })
+        work_request_card_summaries(
+          work_requests,
+          question_counts,
+          question_context.states,
+          decision_counts,
+          planned_slices_by_request,
+          comment_context,
+          work_package_contexts,
+          %{boards: delivery_boards, state_opts: delivery_state_opts}
+        )
+      end
+    end
+  end
 
-          completion_state =
-            work_request
-            |> WorkRequestCompletion.visible_state(question_state, planned_slices, work_package_contexts)
+  defp work_request_card_summaries(
+         work_requests,
+         question_counts,
+         question_states,
+         decision_counts,
+         planned_slices_by_request,
+         comment_context,
+         work_package_contexts,
+         delivery_context
+       ) do
+    delivery_boards = Map.fetch!(delivery_context, :boards)
+    delivery_state_opts = Map.fetch!(delivery_context, :state_opts)
 
-          operational_state =
-            work_request_operational_state(work_request, planned_slices, work_package_contexts, completion_state)
+    planned_slice_counts =
+      planned_slices_by_request
+      |> Map.values()
+      |> Enum.flat_map(& &1)
+      |> Enum.map(&{&1.work_request_id, &1.status})
+      |> status_counts()
 
-          {work_request.id,
-           %{
-             open_question_count: open_question_count,
-             answered_question_count: status_count(question_counts, work_request.id, "answered"),
-             closed_question_count: status_count(question_counts, work_request.id, "closed"),
-             decision_count: Map.get(decision_counts, work_request.id, 0),
-             comment_count: comment_counts.comment_count,
-             open_comment_count: comment_counts.open_comment_count,
-             planned_slice_count: status_count(planned_slice_counts, work_request.id, "planned"),
-             approved_slice_count: status_count(planned_slice_counts, work_request.id, "approved"),
-             dispatched_slice_count: status_count(planned_slice_counts, work_request.id, "dispatched"),
-             skipped_slice_count: status_count(planned_slice_counts, work_request.id, "skipped"),
-             completed_at: timestamp(completion_state.completed_at),
-             completion_source: work_request.completion_source,
-             archived_at: timestamp(completion_state.archived_at),
-             operational_state: operational_state
-           }}
-        end)
+    summaries =
+      Map.new(work_requests, fn %WorkRequest{} = work_request ->
+        planned_slices = Map.get(planned_slices_by_request, work_request.id, [])
+        comment_counts = work_request_comment_counts(comment_context, work_request, planned_slices)
+        open_question_count = status_count(question_counts, work_request.id, "open")
 
-      {:ok, summaries}
+        question_state =
+          Map.get(question_states, work_request.id, %{
+            open_count: open_question_count,
+            latest_gate_at: nil
+          })
+
+        completion_state =
+          work_request
+          |> WorkRequestCompletion.visible_state(question_state, planned_slices, work_package_contexts)
+
+        operational_state =
+          work_request_operational_state(
+            work_request,
+            planned_slices,
+            work_package_contexts,
+            completion_state,
+            Map.get(delivery_boards, work_request.id),
+            delivery_state_opts
+          )
+
+        {work_request.id,
+         %{
+           open_question_count: open_question_count,
+           answered_question_count: status_count(question_counts, work_request.id, "answered"),
+           closed_question_count: status_count(question_counts, work_request.id, "closed"),
+           decision_count: Map.get(decision_counts, work_request.id, 0),
+           comment_count: comment_counts.comment_count,
+           open_comment_count: comment_counts.open_comment_count,
+           planned_slice_count: status_count(planned_slice_counts, work_request.id, "planned"),
+           approved_slice_count: status_count(planned_slice_counts, work_request.id, "approved"),
+           dispatched_slice_count: status_count(planned_slice_counts, work_request.id, "dispatched"),
+           skipped_slice_count: status_count(planned_slice_counts, work_request.id, "skipped"),
+           completed_at: timestamp(completion_state.completed_at),
+           completion_source: work_request.completion_source,
+           archived_at: timestamp(completion_state.archived_at),
+           operational_state: operational_state
+         }}
+      end)
+
+    {:ok, summaries}
+  end
+
+  defp work_request_card_delivery_boards(repo, work_requests, planned_slices_by_request, work_package_contexts) do
+    DeliveryBoard.project_many(
+      repo,
+      work_requests,
+      planned_slices_by_request,
+      delivery_board_card_opts(work_package_contexts)
+    )
+  end
+
+  defp delivery_board_card_opts(work_package_contexts) do
+    [
+      slice_projection: :operational_state,
+      visible_work_package_ids: Map.keys(work_package_contexts),
+      work_package_contexts: work_package_contexts
+    ]
+  end
+
+  defp work_request_delivery_state_opts(opts) do
+    case Keyword.get(opts, :grant) do
+      %AccessGrant{} -> [include_package_fields?: false]
+      _other -> []
     end
   end
 
@@ -1766,7 +1856,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     }
   end
 
-  defp work_request_payload(%WorkRequest{} = work_request, questions, planned_slices, work_package_contexts, repo_identity_catalog, comment_context) do
+  defp work_request_payload(
+         %WorkRequest{} = work_request,
+         questions,
+         planned_slices,
+         work_package_contexts,
+         repo_identity_catalog,
+         comment_context,
+         opts
+       ) do
     question_state = %{
       open_count: Enum.count(questions, &(&1.status == "open")),
       latest_gate_at: latest_datetime(Enum.map(questions, & &1.updated_at))
@@ -1782,31 +1880,61 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     |> Map.put(:completion_source, work_request.completion_source)
     |> Map.put(:archived_at, timestamp(completion_state.archived_at))
     |> Map.put(:archive_reason, work_request.archive_reason)
-    |> Map.put(:operational_state, work_request_operational_state(work_request, planned_slices, work_package_contexts, completion_state))
+    |> Map.put(
+      :operational_state,
+      work_request_operational_state(
+        work_request,
+        planned_slices,
+        work_package_contexts,
+        completion_state,
+        Keyword.get(opts, :delivery_board),
+        Keyword.get(opts, :delivery_state_opts, [])
+      )
+    )
     |> put_comment_counts(work_request_comment_counts(comment_context, work_request, planned_slices))
   end
 
-  defp work_request_operational_state(%WorkRequest{} = work_request, planned_slices, work_package_contexts, completion_state) do
-    slice_states = planned_slice_operational_states(planned_slices, work_package_contexts)
+  defp work_request_operational_state(
+         %WorkRequest{} = work_request,
+         planned_slices,
+         work_package_contexts,
+         completion_state,
+         delivery_board,
+         delivery_state_opts
+       ) do
+    slice_states =
+      planned_slice_operational_states(planned_slices, work_package_contexts, delivery_board, delivery_state_opts)
+
     attention_items = aggregate_operational_attention(slice_states)
+    promoted_state = primary_work_request_slice_state(slice_states)
 
     cond do
+      completion_state.archived_at ->
+        completed_work_request_operational_state(work_request, attention_items)
+
+      operator_completed_work_request?(work_request, completion_state) ->
+        completed_work_request_operational_state(work_request, attention_items)
+
+      delivery_truth_operational_state?(promoted_state) ->
+        promoted_work_request_operational_state(work_request, promoted_state, planned_slices, attention_items)
+        |> maybe_redact_delivery_reasons(delivery_state_opts)
+
       completion_state.completed? ->
         completed_work_request_operational_state(work_request, attention_items)
 
-      work_request.status == "human_info_needed" ->
-        base_work_request_operational_state("human_info_needed", attention_items)
-
-      work_request.status in ["ready_for_clarification", "clarifying"] ->
+      work_request.status in @delivery_promotion_blocking_work_request_statuses ->
         base_work_request_operational_state(work_request.status, attention_items)
 
-      promoted_state = primary_work_request_slice_state(slice_states) ->
+      promoted_state ->
         promoted_work_request_operational_state(work_request, promoted_state, planned_slices, attention_items)
 
       true ->
         base_work_request_operational_state(work_request.status, attention_items)
     end
   end
+
+  defp operator_completed_work_request?(%WorkRequest{completion_source: "operator"}, %{completed?: true}), do: true
+  defp operator_completed_work_request?(%WorkRequest{}, _completion_state), do: false
 
   defp completed_work_request_operational_state(%WorkRequest{completion_source: "operator"} = work_request, attention_items) do
     operational_state(
@@ -1873,9 +2001,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     operational_state(key, status_label(key), "neutral", "Raw WorkRequest lifecycle status is #{key}.", status, attention_items)
   end
 
-  defp planned_slice_operational_states(planned_slices, work_package_contexts) do
+  defp planned_slice_operational_states(planned_slices, work_package_contexts, delivery_board, delivery_state_opts) do
+    delivery_slices_by_id = delivery_board_slices_by_id(delivery_board)
+
     Enum.map(planned_slices, fn %PlannedSlice{} = planned_slice ->
-      planned_slice_operational_state(planned_slice, Map.get(work_package_contexts, planned_slice.work_package_id))
+      planned_slice_operational_state(
+        planned_slice,
+        Map.get(work_package_contexts, planned_slice.work_package_id),
+        Map.get(delivery_slices_by_id, planned_slice.id),
+        delivery_state_opts
+      )
     end)
   end
 
@@ -1886,6 +2021,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
       Enum.find(slice_states, &(Map.get(&1, :key) == key))
     end)
   end
+
+  defp delivery_truth_operational_state?(%{key: "needs_closeout"}), do: true
+  defp delivery_truth_operational_state?(%{delivery_outcome: outcome}) when is_binary(outcome), do: true
+  defp delivery_truth_operational_state?(_state), do: false
 
   defp promoted_work_request_operational_state(%WorkRequest{} = work_request, promoted_state, planned_slices, attention_items) do
     promoted_state
@@ -1983,14 +2122,157 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     }
   end
 
-  defp planned_slice_payloads(planned_slices, work_package_contexts, include_dispatch_linkage?, comment_context) do
+  defp planned_slice_payloads(planned_slices, work_package_contexts, include_dispatch_linkage?, comment_context, opts) do
+    delivery_slices_by_id = opts |> Keyword.get(:delivery_board) |> delivery_board_slices_by_id()
+
     Enum.map(planned_slices, fn slice ->
       planned_slice(slice, work_package_contexts,
         include_dispatch_linkage?: include_dispatch_linkage?,
-        comment_context: comment_context
+        comment_context: comment_context,
+        delivery_slice: Map.get(delivery_slices_by_id, slice.id)
       )
     end)
   end
+
+  defp delivery_board_slices_by_id(nil), do: %{}
+
+  defp delivery_board_slices_by_id(%{} = delivery_board) do
+    delivery_board
+    |> map_value("slices")
+    |> List.wrap()
+    |> Enum.flat_map(fn
+      %{} = delivery_slice ->
+        case map_value(delivery_slice, "id") do
+          id when is_binary(id) and id != "" -> [{id, delivery_slice}]
+          _id -> []
+        end
+
+      _delivery_slice ->
+        []
+    end)
+    |> Map.new()
+  end
+
+  defp delivery_board_slices_by_id(_delivery_board), do: %{}
+
+  defp delivery_primary_operational_state(delivery_slice, opts)
+
+  defp delivery_primary_operational_state(%{} = delivery_slice, opts) do
+    operational_state = map_value(delivery_slice, "operational_state")
+
+    if delivery_primary_state?(delivery_slice, operational_state) do
+      delivery_operational_state_payload(operational_state, opts)
+    end
+  end
+
+  defp delivery_primary_operational_state(_delivery_slice, _opts), do: nil
+
+  defp delivery_primary_state?(%{} = delivery_slice, %{} = operational_state) do
+    delivery_outcome = map_value(delivery_slice, "delivery_outcome") || map_value(operational_state, "delivery_outcome")
+    key = map_value(operational_state, "key")
+    attention_reason_codes = map_value(operational_state, "attention_reason_codes") || []
+
+    is_binary(delivery_outcome) or
+      (key == "needs_closeout" and "pr_merged_without_delivery_outcome" in attention_reason_codes) or
+      terminal_without_delivery_state?(key, attention_reason_codes)
+  end
+
+  defp delivery_primary_state?(_delivery_slice, _operational_state), do: false
+
+  defp terminal_without_delivery_state?(key, attention_reason_codes) do
+    "terminal_package_without_delivery_outcome" in attention_reason_codes and key in ["needs_closeout", "merged", "closed", "abandoned"]
+  end
+
+  defp maybe_put_delivery_slice(payload, delivery_slice, opts)
+
+  defp maybe_put_delivery_slice(payload, nil, _opts), do: payload
+
+  defp maybe_put_delivery_slice(payload, %{} = delivery_slice, opts) do
+    payload = Map.put(payload, :attention_reason_codes, map_value(delivery_slice, "attention_reason_codes") || [])
+
+    if Keyword.get(opts, :include_delivery_data?, true) do
+      payload
+      |> Map.put(:delivery, redacted_json(map_value(delivery_slice, "delivery")))
+      |> Map.put(:successor, redacted_json(map_value(delivery_slice, "successor")))
+    else
+      payload
+    end
+  end
+
+  defp delivery_operational_state_payload(nil, _opts), do: nil
+
+  defp delivery_operational_state_payload(%{} = operational_state, opts) do
+    %{
+      key: map_value(operational_state, "key"),
+      label: map_value(operational_state, "label"),
+      tone: map_value(operational_state, "tone"),
+      reason: map_value(operational_state, "reason"),
+      raw_status: map_value(operational_state, "raw_status"),
+      delivery_outcome: map_value(operational_state, "delivery_outcome"),
+      attention_reason_codes: map_value(operational_state, "attention_reason_codes") || [],
+      attention_items:
+        operational_state
+        |> map_value("attention_items")
+        |> List.wrap()
+        |> Enum.flat_map(&delivery_attention_item_payload(&1, opts))
+    }
+    |> Map.merge(delivery_activity_fields(operational_state))
+    |> maybe_put_delivery_work_package_status(operational_state, opts)
+    |> maybe_redact_delivery_reasons(opts)
+  end
+
+  defp delivery_operational_state_payload(_operational_state, _opts), do: nil
+
+  defp delivery_activity_fields(%{} = operational_state) do
+    @delivery_package_activity_fields
+    |> Enum.flat_map(fn field ->
+      value = map_value(operational_state, Atom.to_string(field))
+      if is_nil(value), do: [], else: [{field, value}]
+    end)
+    |> Map.new()
+  end
+
+  defp maybe_put_delivery_work_package_status(payload, operational_state, opts) do
+    if Keyword.get(opts, :include_package_fields?, true) do
+      Map.put(payload, :work_package_status, map_value(operational_state, "work_package_status"))
+    else
+      payload
+    end
+  end
+
+  defp maybe_redact_delivery_reasons(payload, opts) do
+    if Keyword.get(opts, :include_package_fields?, true) do
+      payload
+    else
+      attention_items = Enum.map(payload.attention_items, &Map.delete(&1, :reason))
+
+      payload
+      |> Map.delete(:reason)
+      |> Map.drop(@delivery_package_activity_fields)
+      |> Map.put(:attention_items, attention_items)
+    end
+  end
+
+  defp delivery_attention_item_payload(%{} = item, opts) do
+    payload = %{
+      key: map_value(item, "key"),
+      label: map_value(item, "label"),
+      tone: map_value(item, "tone")
+    }
+
+    payload =
+      if Keyword.get(opts, :include_package_fields?, true) do
+        Map.put(payload, :reason, map_value(item, "reason"))
+      else
+        payload
+      end
+
+    [
+      payload
+    ]
+  end
+
+  defp delivery_attention_item_payload(_item, _opts), do: []
 
   defp planned_slice(%PlannedSlice{} = planned_slice, work_package_statuses, opts) do
     %{
@@ -2018,16 +2300,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   end
 
   defp maybe_put_dispatch_linkage(payload, %PlannedSlice{} = planned_slice, work_package_contexts, opts) do
-    if Keyword.get(opts, :include_dispatch_linkage?, false) do
+    delivery_slice = Keyword.get(opts, :delivery_slice)
+    include_dispatch_linkage? = Keyword.get(opts, :include_dispatch_linkage?, false)
+    payload = maybe_put_delivery_slice(payload, delivery_slice, include_delivery_data?: include_dispatch_linkage?)
+
+    if include_dispatch_linkage? do
       work_package_context = Map.get(work_package_contexts, planned_slice.work_package_id)
 
       payload
       |> Map.put(:work_package_id, planned_slice.work_package_id)
       |> Map.put(:work_package_status, linked_work_package_status(work_package_context))
       |> Map.put(:dispatched_at, timestamp(planned_slice.dispatched_at))
-      |> Map.put(:operational_state, planned_slice_operational_state(planned_slice, work_package_context))
+      |> Map.put(:operational_state, planned_slice_operational_state(planned_slice, work_package_context, delivery_slice))
     else
-      payload
+      maybe_put_delivery_operational_state(payload, delivery_slice)
+    end
+  end
+
+  defp maybe_put_delivery_operational_state(payload, delivery_slice) do
+    case delivery_primary_operational_state(delivery_slice,
+           include_package_fields?: false
+         ) do
+      nil -> payload
+      operational_state -> Map.put(payload, :operational_state, operational_state)
     end
   end
 
@@ -2498,13 +2793,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
     operational_state(key, status_label(key), "neutral", "Raw lifecycle status is #{key}.", status)
   end
 
-  defp planned_slice_operational_state(%PlannedSlice{} = planned_slice, nil) do
+  defp planned_slice_operational_state(%PlannedSlice{} = planned_slice, work_package_context, delivery_slice, delivery_state_opts \\ []) do
+    base_state = base_planned_slice_operational_state(planned_slice, work_package_context)
+
+    case delivery_primary_operational_state(delivery_slice, delivery_state_opts) do
+      nil -> base_state
+      operational_state -> delivery_operational_state_overlay(base_state, operational_state)
+    end
+  end
+
+  defp delivery_operational_state_overlay(base_state, delivery_state) do
+    base_state
+    |> Map.merge(delivery_state)
+    |> Map.put(:attention_items, merged_attention_items(base_state, delivery_state))
+  end
+
+  defp merged_attention_items(base_state, delivery_state) do
+    (Map.get(base_state, :attention_items, []) ++ Map.get(delivery_state, :attention_items, []))
+    |> Enum.uniq_by(&Map.get(&1, :key))
+  end
+
+  defp base_planned_slice_operational_state(%PlannedSlice{} = planned_slice, nil) do
     planned_slice
     |> base_unlinked_planned_slice_operational_state()
     |> Map.put(:attention_items, planned_slice_attention_items(planned_slice, nil))
   end
 
-  defp planned_slice_operational_state(%PlannedSlice{} = planned_slice, %{card: card, work_package: %WorkPackage{} = work_package}) do
+  defp base_planned_slice_operational_state(%PlannedSlice{} = planned_slice, %{card: card, work_package: %WorkPackage{} = work_package}) do
     linked_state = Map.fetch!(card, :operational_state)
     attention_items = planned_slice_attention_items(planned_slice, work_package, linked_state)
 

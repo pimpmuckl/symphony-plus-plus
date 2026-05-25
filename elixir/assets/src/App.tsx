@@ -3354,7 +3354,7 @@ function SliceCard({
   const operational = sliceOperationalState(slice, pkg);
   const rawStatus = lane === "slices" ? slice.status : slice.work_package_status || slice.status;
   const tone = sliceCardTone(slice, pkg, lane);
-  const detail = slice.status === "skipped" ? null : sliceCardSubtitle(slice, pkg, operational, rawStatus);
+  const detail = sliceCardSubtitle(slice, pkg, operational, rawStatus);
   const blockerSignal = lane === "slices" ? null : packageBlockerSignal(pkg, operational);
   const commentSignal = cardCommentSignal(slice.open_comment_count, slice.comment_count);
   const bodyMotionKey = stateCardBodyMotionKey(
@@ -3424,10 +3424,41 @@ function sliceCardSubtitle(
   operational: WorkPackageCard["operational_state"],
   status?: string | null,
 ) {
+  const deliveryDetail = sliceDeliverySubtitle(slice, operational);
+  if (deliveryDetail) return deliveryDetail;
+
   const terminal = [operational?.key, status, pkg?.status].some((key) => key === "blocked" || isFinishedBoardStatus(key));
+  if (slice.status === "skipped") return null;
   if (terminal) return null;
   if (pkg) return `Linked package: ${operationalLabel(pkg.operational_state, pkg.status)}.`;
   return slice.goal || slice.work_package_kind;
+}
+
+function sliceDeliverySubtitle(slice: PlannedSlice, operational: WorkPackageCard["operational_state"]) {
+  const key = operational?.key;
+
+  if (key === "needs_closeout") return "Delivery closeout needed.";
+  if (key === "completed_no_pr") return "Completed without PR.";
+  if (key === "delivered") return "Merged PR recorded.";
+
+  if (key === "superseded") {
+    const successor = sliceSuccessorLabel(slice);
+    return successor ? `Successor: ${successor}.` : null;
+  }
+
+  return null;
+}
+
+function sliceSuccessorLabel(slice: PlannedSlice) {
+  return (
+    slice.successor?.planned_slice?.title ||
+    slice.successor?.planned_slice_id ||
+    slice.successor?.work_package?.title ||
+    slice.successor?.work_package_id ||
+    slice.delivery?.successor_planned_slice_id ||
+    slice.delivery?.successor_work_package_id ||
+    null
+  );
 }
 
 function cardCommentSignal(openCount?: number | null, totalCount?: number | null): CommentCardSignal | null {
@@ -4515,6 +4546,8 @@ function SliceDetailContent({
   const reviewLanes = slice.review_lanes || [];
   const attentionItems = operational?.attention_items || [];
   const currentCommentStats = targetCommentStats(slice, slice.comments || [], sliceComments);
+  const deliveryFacts = sliceDeliveryFacts(slice);
+  const deliverySummary = sliceDeliverySummary(slice, operational);
 
   return (
     <>
@@ -4543,6 +4576,12 @@ function SliceDetailContent({
             {attentionItems.length > 0 ? <DetailAttentionList items={attentionItems} /> : null}
           </div>
         </DetailSection>
+        {deliverySummary || deliveryFacts.length > 0 ? (
+          <DetailDisclosure title="Delivery" meta={slice.delivery?.outcome ? statusLabel(slice.delivery.outcome) : operationalLabel(operational, status)}>
+            {deliverySummary ? <p className="mb-3 text-sm text-muted-foreground">{deliverySummary}</p> : null}
+            <DetailFacts facts={deliveryFacts} />
+          </DetailDisclosure>
+        ) : null}
         <DetailSection title="Blocked By">
           {blockerCount > 0 ? (
             <p>{blockerCount} active blocker{blockerCount === 1 ? "" : "s"} on the linked work package.</p>
@@ -5256,6 +5295,53 @@ function sliceProgressText(slice: PlannedSlice, pkg?: WorkPackageCard) {
   }
 
   return `Current slice state: ${formatStatus(slice.status)}.`;
+}
+
+function sliceDeliverySummary(slice: PlannedSlice, operational: WorkPackageCard["operational_state"]) {
+  if (operational?.key === "needs_closeout") {
+    const reason = operational.attention_items?.[0]?.reason || operational.reason;
+    return reason || "Delivery closeout is not recorded.";
+  }
+
+  if (slice.delivery?.outcome === "completed_no_pr") {
+    return slice.delivery.no_pr_evidence || "Completed without PR.";
+  }
+
+  if (slice.delivery?.outcome === "superseded") {
+    const successor = sliceSuccessorLabel(slice);
+    if (slice.delivery.superseded_reason) return slice.delivery.superseded_reason;
+    return successor ? `Successor: ${successor}.` : "Superseded.";
+  }
+
+  if (slice.delivery?.outcome === "abandoned") {
+    return slice.delivery.abandoned_rationale || "Abandoned.";
+  }
+
+  if (slice.delivery?.outcome === "pr_merged") {
+    return slice.delivery.pr_url || slice.delivery.pr_repository ? "Merged PR delivery is recorded." : "Merged delivery is recorded.";
+  }
+
+  return null;
+}
+
+function sliceDeliveryFacts(slice: PlannedSlice): Array<[string, string | null | undefined]> {
+  const facts: Array<[string, string | null | undefined]> = [];
+
+  if (slice.delivery?.outcome) facts.push(["Outcome", statusLabel(slice.delivery.outcome)]);
+  if (slice.delivery?.pr_url) facts.push(["PR", slice.delivery.pr_url]);
+  if (slice.delivery?.merge_commit_sha) facts.push(["Merge Commit", slice.delivery.merge_commit_sha]);
+  if (slice.delivery?.recorded_by) facts.push(["Recorded By", slice.delivery.recorded_by]);
+  if (slice.delivery?.recorded_at) facts.push(["Recorded", detailDate(slice.delivery.recorded_at)]);
+  if (slice.delivery?.abandoned_rationale) facts.push(["Rationale", slice.delivery.abandoned_rationale]);
+  if (slice.successor?.planned_slice_id || slice.delivery?.successor_planned_slice_id) {
+    facts.push(["Successor Slice", slice.successor?.planned_slice_id || slice.delivery?.successor_planned_slice_id]);
+  }
+  if (slice.successor?.work_package_id || slice.delivery?.successor_work_package_id) {
+    facts.push(["Successor Package", slice.successor?.work_package_id || slice.delivery?.successor_work_package_id]);
+  }
+  if (slice.attention_reason_codes?.length) facts.push(["Reason Codes", slice.attention_reason_codes.map(statusLabel).join(", ")]);
+
+  return facts;
 }
 
 function latestPackageProgress(payload: WorkPackageDetailPayload | null) {
