@@ -29,7 +29,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
          {:ok, delivery_outcomes} <- delivery_outcomes(repo, planned_slices) do
       results = Enum.map(planned_slices, &reconcile_slice(repo, work_request, &1, delivery_outcomes, mode, opts))
 
-      with {:ok, final_board} <- delivery_board(repo, work_request, planned_slices, final_board_opts(mode, opts)) do
+      with {:ok, final_planned_slices} <- final_board_planned_slices(repo, work_request_id, planned_slices, mode),
+           {:ok, final_board} <- delivery_board(repo, work_request, final_planned_slices, final_board_opts(mode, opts)) do
         {:ok, summary(work_request.id, mode, results, final_board)}
       end
     end
@@ -44,6 +45,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
 
   defp final_board_opts(:apply, opts), do: Keyword.delete(opts, :work_package_contexts)
   defp final_board_opts(:dry_run, opts), do: opts
+
+  defp final_board_planned_slices(repo, work_request_id, _planned_slices, :apply), do: WorkRequestService.list_planned_slices(repo, work_request_id)
+  defp final_board_planned_slices(_repo, _work_request_id, planned_slices, :dry_run), do: {:ok, planned_slices}
 
   defp work_request(repo, work_request_id, opts) do
     case Keyword.get(opts, :work_request) do
@@ -195,12 +199,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
   defp merged_pr_evidence(events) do
     events = PullRequestProgress.chronological_events(events)
 
-    case PullRequestProgress.current_pr_state(events, ["attach_pr", "sync_pr"]) do
+    case PullRequestProgress.current_pr_state(events, ["attach_pr"]) do
       {:ok, pr_state} ->
+        pr_sync = latest_pr_snapshot(events, pr_state.ref, ["sync_pr"])
         merge_reconciliation = latest_merge_reconciliation(events, pr_state.ref)
 
-        if PullRequestProgress.merged?(pr_state.payload) or merge_reconciliation_payload?(merge_reconciliation) do
-          {:ok, evidence_from(pr_state.payload, merge_reconciliation, pr_state.ref)}
+        if PullRequestProgress.merged?(pr_state.payload) or PullRequestProgress.merged?(pr_sync) or
+             merge_reconciliation_payload?(merge_reconciliation) do
+          {:ok, evidence_from(pr_state.payload, pr_sync, merge_reconciliation, pr_state.ref)}
         else
           {:skip, @terminal_without_pr_reason, %{}}
         end
@@ -211,6 +217,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
       {:error, reason} ->
         {:skip, Atom.to_string(reason), %{}}
     end
+  end
+
+  defp latest_pr_snapshot(events, ref, source_tools) do
+    events
+    |> Enum.reverse()
+    |> Enum.find_value(fn %ProgressEvent{} = event ->
+      payload = PullRequestProgress.stringify_keys(event.payload || %{})
+
+      if pr_snapshot_payload?(payload, source_tools) and PullRequestProgress.same_pr?(payload, ref) do
+        payload
+      end
+    end)
   end
 
   defp latest_merge_reconciliation(events, ref) do
@@ -225,17 +243,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
     end)
   end
 
-  defp evidence_from(pr_payload, merge_payload, ref) do
+  defp pr_snapshot_payload?(%{"type" => "pr", "source_tool" => source_tool}, source_tools), do: source_tool in source_tools
+  defp pr_snapshot_payload?(_payload, _source_tools), do: false
+
+  defp evidence_from(pr_payload, pr_sync, merge_payload, ref) do
     %{
-      source_tool: first_present([map_value(merge_payload, "source_tool"), map_value(pr_payload, "source_tool")]),
+      source_tool: first_present([map_value(merge_payload, "source_tool"), map_value(pr_sync, "source_tool"), map_value(pr_payload, "source_tool")]),
       url: ref.url,
       repository: ref.repository,
       number: ref.number,
       ref: ref,
-      base_branch: clean_string(map_value(pr_payload, "base_branch")),
-      head_sha: clean_string(first_present([map_value(merge_payload, "head_sha"), map_value(pr_payload, "head_sha")])),
-      merged_at: first_present([map_value(pr_payload, "merged_at"), map_value(merge_payload, "merged_at")]),
-      merge_commit_sha: first_present([map_value(pr_payload, "merge_commit_sha"), map_value(merge_payload, "merge_commit_sha")])
+      base_branch: clean_string(first_present([map_value(pr_sync, "base_branch"), map_value(pr_payload, "base_branch")])),
+      head_sha: clean_string(first_present([map_value(merge_payload, "head_sha"), map_value(pr_sync, "head_sha"), map_value(pr_payload, "head_sha")])),
+      merged_at: first_present([map_value(pr_sync, "merged_at"), map_value(merge_payload, "merged_at"), map_value(pr_payload, "merged_at")]),
+      merge_commit_sha: first_present([map_value(pr_sync, "merge_commit_sha"), map_value(merge_payload, "merge_commit_sha"), map_value(pr_payload, "merge_commit_sha")])
     }
   end
 
