@@ -40,6 +40,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
@@ -207,6 +208,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     repo.delete_all(GuidanceRequest)
     repo.delete_all(Comment)
     repo.delete_all(AccessGrant)
+    repo.delete_all(PlannedSliceDelivery)
     repo.delete_all(PlannedSlice)
     repo.delete_all(WorkPackage)
     repo.delete_all(Phase)
@@ -1538,6 +1540,210 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
     assert [%{"status" => "dispatched"} = grant_slice] = detail_payload["planned_slices"]
     refute Map.has_key?(grant_slice, "work_package_status")
     refute Map.has_key?(grant_slice, "operational_state")
+    refute Map.has_key?(detail_payload, "delivery_board")
+  end
+
+  test "dashboard WorkRequest detail exposes delivery-board closeout truth", %{repo: repo} do
+    assert {:ok, anchor} =
+             WorkPackageRepository.create(
+               repo,
+               WorkPackageFactory.attrs(
+                 id: "SYMPP-DASH-DELIVERY-ANCHOR",
+                 kind: "phase_child",
+                 status: "planning",
+                 repo: "nextide/symphony-plus-plus",
+                 base_branch: "main"
+               )
+             )
+
+    work_request =
+      create_work_request!(
+        repo,
+        id: "WR-DASH-DELIVERY-BOARD",
+        status: "ready_for_slicing",
+        repo: anchor.repo,
+        base_branch: anchor.base_branch
+      )
+
+    assert {:ok, closeout_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-DASH-NEEDS-CLOSEOUT", target_base_branch: anchor.base_branch)
+             )
+
+    assert {:ok, closeout_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, closeout_slice.id, "planned")
+
+    closeout_package =
+      create_matching_work_package!(repo, work_request, closeout_slice,
+        id: "SYMPP-DASH-NEEDS-CLOSEOUT",
+        status: "ready_for_human_merge"
+      )
+
+    assert {:ok, _dispatched_closeout} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, closeout_slice.id, "approved", closeout_package.id)
+
+    assert {:ok, _attached_pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: closeout_package.id,
+               summary: "PR attached",
+               status: "pr_attached",
+               payload: %{type: "pr", source_tool: "attach_pr", url: "https://github.com/nextide/symphony-plus-plus/pull/903", head_sha: "head-903"}
+             })
+
+    assert {:ok, _merged_pr} =
+             PlanningRepository.append_progress_event(repo, %{
+               work_package_id: closeout_package.id,
+               summary: "PR merged",
+               status: "pr_synced",
+               payload: %{
+                 type: "pr",
+                 source_tool: "sync_pr",
+                 url: "https://github.com/nextide/symphony-plus-plus/pull/903",
+                 head_sha: "head-903",
+                 merge_state: %{merged: true}
+               }
+             })
+
+    assert {:ok, no_pr_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-DASH-NO-PR", target_base_branch: anchor.base_branch)
+             )
+
+    assert {:ok, no_pr_slice} = WorkRequestRepository.approve_planned_slice(repo, work_request.id, no_pr_slice.id, "planned")
+
+    no_pr_package =
+      create_matching_work_package!(repo, work_request, no_pr_slice,
+        id: "SYMPP-DASH-NO-PR",
+        status: "closed"
+      )
+
+    assert {:ok, _dispatched_no_pr} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, no_pr_slice.id, "approved", no_pr_package.id)
+
+    assert {:ok, _no_pr_delivery} =
+             WorkRequestRepository.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               no_pr_slice.id,
+               delivery_attrs(%{
+                 outcome: "completed_no_pr",
+                 idempotency_key: "dashboard-delivery-board-no-pr",
+                 no_pr_evidence: "Operator confirmed direct completion."
+               })
+             )
+
+    assert {:ok, superseded_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-DASH-SUPERSEDED", target_base_branch: anchor.base_branch)
+             )
+
+    assert {:ok, superseded_slice} =
+             WorkRequestRepository.approve_planned_slice(repo, work_request.id, superseded_slice.id, "planned")
+
+    superseded_package =
+      create_matching_work_package!(repo, work_request, superseded_slice,
+        id: "SYMPP-DASH-SUPERSEDED",
+        status: "closed"
+      )
+
+    assert {:ok, _dispatched_superseded} =
+             WorkRequestRepository.dispatch_planned_slice(repo, work_request.id, superseded_slice.id, "approved", superseded_package.id)
+
+    assert {:ok, successor_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-DASH-SUCCESSOR", target_base_branch: anchor.base_branch)
+             )
+
+    successor_package =
+      create_work_package!(repo,
+        id: "SYMPP-DASH-SUCCESSOR",
+        status: "ready_for_worker",
+        repo: work_request.repo,
+        base_branch: anchor.base_branch
+      )
+
+    assert {:ok, _superseded_delivery} =
+             WorkRequestRepository.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               superseded_slice.id,
+               delivery_attrs(%{
+                 outcome: "superseded",
+                 idempotency_key: "dashboard-delivery-board-superseded",
+                 successor_planned_slice_id: successor_slice.id,
+                 successor_work_package_id: successor_package.id,
+                 superseded_reason: "Replaced by successor package."
+               })
+             )
+
+    assert {:ok, filtered_successor_slice} =
+             WorkRequestRepository.add_planned_slice(
+               repo,
+               work_request.id,
+               planned_slice_attrs(id: "WRS-DASH-FILTERED-SUCCESSOR", target_base_branch: anchor.base_branch)
+             )
+
+    assert {:ok, filtered_successor_slice} =
+             WorkRequestRepository.approve_planned_slice(repo, work_request.id, filtered_successor_slice.id, "planned")
+
+    filtered_successor_package =
+      create_matching_work_package!(repo, work_request, filtered_successor_slice,
+        id: "SYMPP-DASH-FILTERED-SUCCESSOR",
+        status: "closed"
+      )
+
+    assert {:ok, _filtered_successor_dispatch} =
+             WorkRequestRepository.dispatch_planned_slice(
+               repo,
+               work_request.id,
+               filtered_successor_slice.id,
+               "approved",
+               filtered_successor_package.id
+             )
+
+    out_of_scope_successor_package =
+      create_work_package!(repo,
+        id: "SYMPP-DASH-OUT-OF-SCOPE-SUCCESSOR",
+        status: "ready_for_worker",
+        repo: work_request.repo,
+        base_branch: "other-base"
+      )
+
+    assert {:ok, _filtered_successor_delivery} =
+             WorkRequestRepository.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               filtered_successor_slice.id,
+               delivery_attrs(%{
+                 outcome: "superseded",
+                 idempotency_key: "dashboard-delivery-board-filtered-successor",
+                 successor_planned_slice_id: successor_slice.id,
+                 successor_work_package_id: out_of_scope_successor_package.id,
+                 superseded_reason: "Out-of-scope successor should remain hidden."
+               })
+             )
+
+    assert {:ok, payload} = Dashboard.work_request_detail(repo, work_request.id)
+
+    assert payload.delivery_board["slice_count"] == 5
+    slices_by_id = Map.new(payload.delivery_board["slices"], &{&1["id"], &1})
+
+    assert get_in(slices_by_id, ["WRS-DASH-NEEDS-CLOSEOUT", "operational_state", "key"]) == "needs_closeout"
+    assert get_in(slices_by_id, ["WRS-DASH-NEEDS-CLOSEOUT", "attention_reason_codes"]) == ["pr_merged_without_delivery_outcome"]
+    assert get_in(slices_by_id, ["WRS-DASH-NO-PR", "delivery", "outcome"]) == "completed_no_pr"
+    assert get_in(slices_by_id, ["WRS-DASH-NO-PR", "operational_state", "key"]) == "completed_no_pr"
+    assert get_in(slices_by_id, ["WRS-DASH-SUPERSEDED", "successor", "work_package", "id"]) == successor_package.id
+    assert get_in(slices_by_id, ["WRS-DASH-SUPERSEDED", "successor", "work_package_id"]) == successor_package.id
+    assert get_in(slices_by_id, ["WRS-DASH-FILTERED-SUCCESSOR", "successor", "work_package"]) == nil
+    assert get_in(slices_by_id, ["WRS-DASH-FILTERED-SUCCESSOR", "successor", "work_package_id"]) == nil
+    assert payload.work_request.completed_at == nil
   end
 
   test "dashboard API WorkRequest endpoints enforce board reader authorization and scope", %{repo: repo} do
@@ -5027,6 +5233,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.DashboardApiTest do
       validation_steps: ["mix test test/symphony_elixir/symphony_plus_plus/dashboard_api_test.exs"],
       review_lanes: ["brief", "normal"],
       stop_conditions: ["Stop before UI or dispatch wiring."]
+    }
+
+    Enum.into(overrides, defaults)
+  end
+
+  defp delivery_attrs(overrides) do
+    defaults = %{
+      idempotency_key: "dashboard-delivery-#{System.unique_integer([:positive])}",
+      recorded_by: "dashboard-api-test"
     }
 
     Enum.into(overrides, defaults)

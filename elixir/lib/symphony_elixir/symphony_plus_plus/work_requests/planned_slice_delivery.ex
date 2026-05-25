@@ -56,6 +56,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery do
   @spec outcomes() :: [String.t()]
   def outcomes, do: @outcomes
 
+  @spec terminal_status_for_outcome(String.t()) :: String.t() | nil
+  def terminal_status_for_outcome("pr_merged"), do: "merged"
+  def terminal_status_for_outcome("completed_no_pr"), do: "closed"
+  def terminal_status_for_outcome("superseded"), do: "closed"
+  def terminal_status_for_outcome("abandoned"), do: "abandoned"
+  def terminal_status_for_outcome(_outcome), do: nil
+
+  @spec terminal_status_matches_outcome?(String.t() | nil, String.t() | nil) :: boolean()
+  def terminal_status_matches_outcome?("merged", "pr_merged"), do: true
+  def terminal_status_matches_outcome?("merged_into_phase", "pr_merged"), do: true
+  def terminal_status_matches_outcome?("closed", "completed_no_pr"), do: true
+  def terminal_status_matches_outcome?("closed", "superseded"), do: true
+  def terminal_status_matches_outcome?("abandoned", "abandoned"), do: true
+  def terminal_status_matches_outcome?(_status, _outcome), do: false
+
   @spec create_changeset(map()) :: Ecto.Changeset.t()
   def create_changeset(attrs) do
     attrs =

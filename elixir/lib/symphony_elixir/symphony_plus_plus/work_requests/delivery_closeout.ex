@@ -126,10 +126,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
     end
   end
 
-  defp terminal_status_for_outcome("pr_merged"), do: "merged"
-  defp terminal_status_for_outcome("completed_no_pr"), do: "closed"
-  defp terminal_status_for_outcome("superseded"), do: "closed"
-  defp terminal_status_for_outcome("abandoned"), do: "abandoned"
+  defp terminal_status_for_outcome(outcome), do: PlannedSliceDelivery.terminal_status_for_outcome(outcome)
 
   defp closeout_progress_replay?(repo, %PlannedSlice{work_package_id: work_package_id}, %PlannedSliceDelivery{} = delivery) do
     with true <- filled_string?(work_package_id),
@@ -140,7 +137,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
              closeout_idempotency_key(delivery)
            ),
          {:ok, work_package} <- WorkPackageRepository.get(repo, work_package_id),
-         true <- terminal_status_matches_outcome?(work_package.status, delivery.outcome),
+         true <- PlannedSliceDelivery.terminal_status_matches_outcome?(work_package.status, delivery.outcome),
          true <- closeout_progress_event_matches?(event, delivery, work_package.status) do
       true
     else
@@ -170,13 +167,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
       map_value(payload, :delivery_id) == delivery.id and
       map_value(payload, :outcome) == delivery.outcome
   end
-
-  defp terminal_status_matches_outcome?("merged", "pr_merged"), do: true
-  defp terminal_status_matches_outcome?("merged_into_phase", "pr_merged"), do: true
-  defp terminal_status_matches_outcome?("closed", "completed_no_pr"), do: true
-  defp terminal_status_matches_outcome?("closed", "superseded"), do: true
-  defp terminal_status_matches_outcome?("abandoned", "abandoned"), do: true
-  defp terminal_status_matches_outcome?(_status, _outcome), do: false
 
   defp strong_pr_evidence?(%PlannedSliceDelivery{} = delivery) do
     filled_string?(delivery.pr_url) and

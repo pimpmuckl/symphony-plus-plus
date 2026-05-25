@@ -34,7 +34,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion, as: WorkRequestCompletion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
@@ -421,6 +423,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            {:ok, decisions} <- WorkRequestRepository.list_decisions(repo, work_request_id),
            {:ok, planned_slices} <- WorkRequestRepository.list_planned_slices(repo, work_request_id),
            {:ok, work_package_contexts} <- planned_slice_work_package_contexts(repo, planned_slices),
+           {:ok, delivery_board_contexts} <-
+             delivery_board_work_package_contexts(repo, work_request, work_package_contexts),
+           delivery_board_opts = delivery_board_opts(work_request, planned_slices, delivery_board_contexts),
+           {:ok, delivery_board} <- DeliveryBoard.project(repo, work_request_id, delivery_board_opts),
            {:ok, comment_context} <- work_request_comment_context(repo, work_request, planned_slices) do
         repo_identity_catalog = repo_identity_catalog_from_opts(opts, [work_request.repo])
         questions = ordered_sequence_records(questions)
@@ -445,11 +451,59 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
            clarification_questions: Enum.map(questions, &clarification_question/1),
            decision_logs: Enum.map(decisions, &decision_log_entry/1),
            planned_slices: planned_slice_payloads,
+           delivery_board: redacted_json(delivery_board),
            comments: comments_for(comment_context, "work_request", work_request.id),
            summary: work_request_summary(questions, decisions, planned_slices, comment_context)
          }}
       end
     end)
+  end
+
+  defp delivery_board_opts(%WorkRequest{} = work_request, planned_slices, work_package_contexts) do
+    [
+      work_request: work_request,
+      planned_slices: planned_slices,
+      visible_work_package_ids: Map.keys(work_package_contexts),
+      work_package_contexts: work_package_contexts
+    ]
+  end
+
+  defp delivery_board_work_package_contexts(repo, %WorkRequest{} = work_request, work_package_contexts) do
+    loaded_ids = Map.keys(work_package_contexts)
+    successor_ids = delivery_board_successor_work_package_ids(repo, work_request.id)
+    missing_successor_ids = Enum.reject(successor_ids, &(&1 in loaded_ids))
+
+    successor_contexts =
+      repo
+      |> work_packages_by_ids(missing_successor_ids)
+      |> Enum.filter(&delivery_board_successor_visible?(&1, work_request))
+      |> then(&linked_work_package_contexts(repo, &1))
+
+    {:ok, Map.merge(work_package_contexts, successor_contexts)}
+  end
+
+  defp delivery_board_successor_visible?(%WorkPackage{} = work_package, %WorkRequest{} = work_request) do
+    phase_work_package_matches_filters?(work_package, repo: work_request.repo, base_branch: work_request.base_branch)
+  end
+
+  defp work_packages_by_ids(_repo, []), do: []
+
+  defp work_packages_by_ids(repo, work_package_ids) do
+    repo.all(
+      from(work_package in WorkPackage,
+        where: work_package.id in ^work_package_ids
+      )
+    )
+  end
+
+  defp delivery_board_successor_work_package_ids(repo, work_request_id) do
+    repo.all(
+      from(delivery in PlannedSliceDelivery,
+        where: delivery.work_request_id == ^work_request_id,
+        select: delivery.successor_work_package_id
+      )
+    )
+    |> Enum.filter(&filled_string?/1)
   end
 
   @spec work_request_filters_for_grant(repo(), AccessGrant.t()) :: {:ok, keyword()} | {:error, dashboard_error()}
@@ -2049,7 +2103,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Dashboard do
           lineage: lineage
         })
 
-      {work_package.id, %{work_package: work_package, card: %{operational_state: operational_state}}}
+      {work_package.id, %{work_package: work_package, card: %{operational_state: operational_state, metadata: metadata}}}
     end)
   end
 
