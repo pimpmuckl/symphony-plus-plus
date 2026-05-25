@@ -7,6 +7,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
 
   @type error ::
@@ -73,7 +74,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
   end
 
   defp perform_closeout(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, %PlannedSliceDelivery{} = delivery) do
-    with {:ok, closeout} <- close_linked_work_package(repo, work_request, planned_slice, delivery),
+    with :ok <- reject_active_linked_closeout_context(repo, planned_slice),
+         {:ok, closeout} <- close_linked_work_package(repo, work_request, planned_slice, delivery),
          {:ok, _event} <- append_closeout_progress(repo, work_request, planned_slice, delivery, closeout),
          {:ok, _refreshed} <- Completion.refresh_in_transaction(repo, work_request.id) do
       {:ok, delivery}
@@ -127,6 +129,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
   end
 
   defp terminal_status_for_outcome(outcome), do: PlannedSliceDelivery.terminal_status_for_outcome(outcome)
+
+  defp reject_active_linked_closeout_context(_repo, %PlannedSlice{work_package_id: work_package_id}) when work_package_id in [nil, ""], do: :ok
+
+  defp reject_active_linked_closeout_context(repo, %PlannedSlice{work_package_id: work_package_id}) do
+    context = WorkPackageActivity.context(repo, work_package_id)
+
+    cond do
+      get_in(context, [:blocker_state, :active?]) == true -> {:error, :active_blocker}
+      get_in(context, [:runtime_state, :active?]) == true -> {:error, :active_runtime}
+      true -> :ok
+    end
+  end
 
   defp closeout_progress_replay?(repo, %PlannedSlice{work_package_id: work_package_id}, %PlannedSliceDelivery{} = delivery) do
     with true <- filled_string?(work_package_id),
