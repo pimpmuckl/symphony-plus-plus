@@ -85,6 +85,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestScopeConstraintsTest do
 
     assert {:error, [{:invalid_path, :owned_file_globs, "elixir/lib/**.ex", :unsupported_globstar}]} =
              ScopeConstraints.validate_owned_file_globs(constraints, ["elixir/lib/**.ex"])
+
+    assert {:error, [{:invalid_path, :owned_file_globs, "scripts/**deploy**", :unsupported_globstar}]} =
+             ScopeConstraints.validate_owned_file_globs(constraints, ["scripts/**deploy**"])
   end
 
   test "rejects owned globs that are not provably contained by allowed paths" do

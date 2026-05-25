@@ -206,7 +206,8 @@ dispatch one approved planned slice through
 `write:work_request` because it creates WorkPackage, AccessGrant, and
 SecretHandoff side effects. It requires `work_request_id`, `planned_slice_id`,
 and `claimed_by`, supports the existing dispatch handoff options
-`secret_handoff` and `secret_store_dir` plus optional `repo_root`, verifies the
+`secret_handoff` and `secret_store_dir` plus optional `symphony_repo_root`,
+verifies the
 WorkRequest and slice are inside the frozen repo/base-branch scope before
 mutation, and fails closed for
 out-of-scope, missing, non-approved, invalid, unsupported-kind, or slice-scope
@@ -319,8 +320,10 @@ only through explicit planned-slice dispatch: the operator CLI, architect MCP
 dispatch tool, or local-operator dashboard dispatch control.
 
 Before planned-slice dispatch can mint a WorkPackage from an approved planned
-slice, it must call the WorkRequest path-scope validator contract. The validator
-checks the slice `owned_file_globs` against the parent WorkRequest
+slice, it must call the WorkRequest path-scope validator contract as a final
+guard. MCP add and approve call the same validator earlier so malformed planned
+slices fail before approval. The validator checks the slice `owned_file_globs`
+against the parent WorkRequest
 `constraints.allowed_paths` and `constraints.forbidden_paths` without reading
 the host filesystem. Missing or empty `allowed_paths` means there is no
 allow-list restriction, but `forbidden_paths` are still enforced.
@@ -332,6 +335,11 @@ only a full segment and may match zero or more path segments. Allowed-path
 checks must prove every possible owned-glob match is equal to or beneath an
 allowed path; forbidden-path checks reject any owned glob that can match a
 forbidden path or any path below it.
+Valid examples include `scripts/**/deploy*.ps1`, `scripts/**/server*.ps1`, and
+`.github/workflows/**`; invalid examples include `scripts/**deploy**`,
+`scripts/**server**`, and `packages/**kraken_batch**`. Invalid syntax returns
+safe structured validation details with the field, offending value, and reason
+such as `unsupported_globstar`.
 
 Allowed-path validation is least-privilege. Missing or empty `allowed_paths`
 is the explicit no-allow-list-restriction mode. A wildcard allow entry without
@@ -377,9 +385,11 @@ options for material choices, record decisions, dispatch only approved slices,
 and stop/report a blocker instead of asking for raw secrets or inventing state
 when MCP/session/handoff or required references are missing.
 MCP dispatch has a statically discoverable schema, and direct calls fail closed
-unless the supplied `repo_root`, configured `repo_root`, or `--repo-root`
-points to a repository containing the worker secret handoff script. It
-additionally requires a
+unless the supplied `symphony_repo_root`, legacy hidden `repo_root` alias,
+configured `repo_root`, `--repo-root`, or discoverable local Symphony++ repo
+root points to the Symphony++ helper/namespace repository containing the worker
+secret helper script under `scripts/`. This helper root is not the target
+product repository root. It additionally requires a
 file-backed live ledger database so the worker handoff command
 reconnects to the same ledger; in-memory database configuration fails closed
 before WorkPackage or grant side effects. Blank database configuration is

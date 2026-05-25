@@ -145,14 +145,18 @@ mutate Linear.
 
 Explicit phase-scoped architect MCP sessions with `dispatch:work_request` can
 call `dispatch_work_request_planned_slice(work_request_id, planned_slice_id,
-claimed_by, secret_handoff?, secret_store_dir?)`. This is intentionally
+claimed_by, secret_handoff?, secret_store_dir?, symphony_repo_root?)`. This is intentionally
 separate from `write:work_request` because dispatch creates a WorkPackage,
 worker grant, and private worker-secret handoff. The tool uses the existing
 planned-slice dispatch orchestration and returns only WorkRequest id,
 planned-slice linkage/status, WorkPackage id metadata, and redacted worker
-handoff metadata. Start MCP dispatch sessions with `repo_root`/`--repo-root`
-pointing at the repository that contains the worker secret handoff script;
-otherwise the tool is not advertised and direct calls fail closed. Use a
+handoff metadata. The optional `symphony_repo_root` is the Symphony++
+helper/namespace repo root containing the worker secret helper script under
+`scripts/`; it is not the target product repository root. Dispatch also accepts
+the configured `--repo-root`, a discoverable local Symphony++ root, or the
+hidden legacy `repo_root` alias for stale sessions. Invalid helper roots fail
+with an actionable error instead of requiring operators to infer which root was
+expected. Use a
 file-backed live ledger; in-memory database configuration is rejected so the
 worker handoff cannot point at an unclaimable ledger. Blank database
 configuration is treated as absent and uses the live local ledger. Matching
@@ -179,6 +183,12 @@ least-privilege rule, `allowed_paths: ["*"]` is not an implicit whole-repo
 grant; wildcard allow entries without an explicit `**` only authorize their own
 segment shape and do not authorize recursive owned globs such as `**/foo` or
 bare `**`.
+When authoring `owned_file_globs`, `**` must be a complete path segment. Valid
+examples include `scripts/**/deploy*.ps1` and `.github/workflows/**`; invalid
+examples include `scripts/**deploy**`, `scripts/**server**`, and
+`packages/**kraken_batch**`. Add and approve reject invalid planned-slice globs
+early with structured field/value/reason details, and dispatch keeps the same
+validation as a final guard.
 
 After a planned slice is dispatched, the same `dispatch:work_request` architect
 session can call
