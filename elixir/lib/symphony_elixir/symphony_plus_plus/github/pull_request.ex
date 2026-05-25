@@ -91,7 +91,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
          "changed_files_count_available" => changed_file_metadata.count_available,
          "check_summary" => Redactor.redact(check_summary),
          "review_state" => Redactor.redact(review_state),
-         "merge_state" => Redactor.redact(merge_state)
+         "merge_state" => Redactor.redact(merge_state),
+         "merged_at" => metadata_merged_at(metadata),
+         "merge_commit_sha" => metadata_merge_commit_sha(metadata)
        }}
     end
   end
@@ -317,6 +319,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
     end
   end
 
+  defp metadata_merged_at(metadata) do
+    metadata
+    |> Map.get("merged_at")
+    |> clean_string()
+  end
+
+  defp metadata_merge_commit_sha(metadata) do
+    metadata
+    |> Map.get("merge_commit_sha")
+    |> clean_string()
+  end
+
   defp metadata_changed_files(metadata) do
     with {:ok, reported_count} <- metadata_changed_files_count(metadata) do
       case Map.get(metadata, "changed_files", :missing) do
@@ -418,6 +432,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest do
   end
 
   defp filled_string?(value), do: is_binary(value) and String.trim(value) != ""
+
+  defp clean_string(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
+
+  defp clean_string(_value), do: nil
 
   defp sha_prefix_match?(left, right) do
     sha_abbreviation?(left) and sha_abbreviation?(right) and

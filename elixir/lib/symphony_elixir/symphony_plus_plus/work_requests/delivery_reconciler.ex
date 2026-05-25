@@ -1,0 +1,419 @@
+defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler do
+  @moduledoc false
+
+  alias SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequest
+  alias SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequestProgress
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
+  alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
+
+  import Ecto.Query
+
+  @default_recorded_by "work_request_delivery_reconciler"
+  @terminal_without_pr_reason "no_structured_pr_merge_evidence"
+
+  @type mode :: :dry_run | :apply
+  @type result :: map()
+
+  @spec reconcile(module(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def reconcile(repo, work_request_id, opts \\ []) when is_atom(repo) and is_binary(work_request_id) and is_list(opts) do
+    with {:ok, mode} <- mode(Keyword.get(opts, :mode, :dry_run)),
+         {:ok, work_request} <- work_request(repo, work_request_id, opts),
+         {:ok, planned_slices} <- planned_slices(repo, work_request_id, opts),
+         {:ok, delivery_outcomes} <- delivery_outcomes(repo, planned_slices) do
+      results = Enum.map(planned_slices, &reconcile_slice(repo, work_request, &1, delivery_outcomes, mode, opts))
+
+      with {:ok, final_board} <- delivery_board(repo, work_request, planned_slices, opts) do
+        {:ok, summary(work_request.id, mode, results, final_board)}
+      end
+    end
+  end
+
+  defp mode(:dry_run), do: {:ok, :dry_run}
+  defp mode("dry_run"), do: {:ok, :dry_run}
+  defp mode("dry-run"), do: {:ok, :dry_run}
+  defp mode(:apply), do: {:ok, :apply}
+  defp mode("apply"), do: {:ok, :apply}
+  defp mode(_mode), do: {:error, :invalid_reconciliation_mode}
+
+  defp work_request(repo, work_request_id, opts) do
+    case Keyword.get(opts, :work_request) do
+      %WorkRequest{id: ^work_request_id} = work_request -> {:ok, work_request}
+      nil -> WorkRequestService.get(repo, work_request_id)
+      _work_request -> {:error, :not_found}
+    end
+  end
+
+  defp planned_slices(repo, work_request_id, opts) do
+    case Keyword.get(opts, :planned_slices) do
+      planned_slices when is_list(planned_slices) ->
+        if Enum.all?(planned_slices, &(&1.work_request_id == work_request_id)) do
+          {:ok, planned_slices}
+        else
+          {:error, :not_found}
+        end
+
+      nil ->
+        WorkRequestService.list_planned_slices(repo, work_request_id)
+
+      _planned_slices ->
+        {:error, :not_found}
+    end
+  end
+
+  defp delivery_board(repo, %WorkRequest{} = work_request, planned_slices, opts) do
+    DeliveryBoard.project(repo, work_request.id,
+      work_request: work_request,
+      planned_slices: planned_slices,
+      visible_work_package_ids: Keyword.get(opts, :visible_work_package_ids, :all),
+      work_package_contexts: Keyword.get(opts, :work_package_contexts, %{})
+    )
+  end
+
+  defp delivery_outcomes(_repo, []), do: {:ok, %{}}
+
+  defp delivery_outcomes(repo, planned_slices) do
+    planned_slice_ids = Enum.map(planned_slices, & &1.id)
+
+    outcomes =
+      repo.all(
+        from(delivery in PlannedSliceDelivery,
+          where: delivery.planned_slice_id in ^planned_slice_ids,
+          select: {delivery.planned_slice_id, delivery.outcome}
+        )
+      )
+      |> Map.new()
+
+    {:ok, outcomes}
+  end
+
+  defp reconcile_slice(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, delivery_outcomes, mode, opts) do
+    cond do
+      Map.has_key?(delivery_outcomes, planned_slice.id) ->
+        skipped_result(planned_slice, nil, "already_closeout", delivery_outcome: Map.fetch!(delivery_outcomes, planned_slice.id))
+
+      planned_slice.status != "dispatched" ->
+        skipped_result(planned_slice, nil, "not_dispatched")
+
+      not filled_string?(planned_slice.work_package_id) ->
+        skipped_result(planned_slice, nil, "missing_linked_work_package")
+
+      not visible_work_package?(planned_slice.work_package_id, Keyword.get(opts, :visible_work_package_ids, :all)) ->
+        skipped_result(planned_slice, nil, "work_package_out_of_scope")
+
+      true ->
+        reconcile_dispatched_slice(repo, work_request, planned_slice, mode, opts)
+    end
+  end
+
+  defp reconcile_dispatched_slice(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, mode, opts) do
+    with {:ok, work_package} <- WorkPackageRepository.get(repo, planned_slice.work_package_id),
+         {:ok, action} <- closeout_action(repo, work_request, planned_slice, work_package, opts) do
+      maybe_apply_action(repo, work_request, planned_slice, work_package, action, mode)
+    else
+      {:skip, reason, extras} -> skipped_result(planned_slice, nil, reason, extras)
+      {:error, :not_found} -> skipped_result(planned_slice, nil, "missing_linked_work_package")
+      {:error, reason} -> error_result(planned_slice, nil, reason)
+    end
+  end
+
+  defp closeout_action(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, %WorkPackage{} = work_package, opts) do
+    with {:ok, events} <- PlanningRepository.list_progress_events(repo, work_package.id),
+         {:ok, evidence} <- merged_pr_evidence(events),
+         :ok <- validate_repository(work_package, evidence),
+         :ok <- validate_base_branch(planned_slice, work_package, evidence),
+         :ok <- validate_head(events, evidence),
+         {:ok, merged_at} <- required_merged_at(evidence),
+         {:ok, merge_commit_sha} <- required_merge_commit_sha(evidence) do
+      {:ok,
+       %{
+         outcome: "pr_merged",
+         reason: "github_pr_merged",
+         attrs: %{
+           outcome: "pr_merged",
+           idempotency_key: idempotency_key(work_request, planned_slice, evidence, merge_commit_sha),
+           recorded_by: Keyword.get(opts, :recorded_by, @default_recorded_by),
+           pr_url: evidence.url,
+           pr_number: evidence.number,
+           pr_repository: evidence.repository,
+           pr_merged_at: merged_at,
+           merge_commit_sha: merge_commit_sha
+         },
+         evidence: %{
+           source_tool: evidence.source_tool,
+           pr_url: evidence.url,
+           pr_repository: evidence.repository,
+           pr_number: evidence.number,
+           head_sha: evidence.head_sha,
+           base_branch: evidence.base_branch
+         }
+       }}
+    else
+      {:skip, _reason, _extras} = skip -> skip
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_apply_action(_repo, _work_request, %PlannedSlice{} = planned_slice, %WorkPackage{} = work_package, action, :dry_run) do
+    planned_slice
+    |> base_result(work_package)
+    |> Map.merge(%{
+      status: "proposed",
+      reason: action.reason,
+      action: action_payload(action),
+      evidence: action.evidence
+    })
+  end
+
+  defp maybe_apply_action(repo, %WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, %WorkPackage{} = work_package, action, :apply) do
+    case WorkRequestService.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, action.attrs) do
+      {:ok, delivery} ->
+        planned_slice
+        |> base_result(work_package)
+        |> Map.merge(%{
+          status: "applied",
+          reason: action.reason,
+          action: action_payload(action),
+          evidence: action.evidence,
+          delivery_id: delivery.id
+        })
+
+      {:error, reason} ->
+        error_result(planned_slice, work_package, reason, action_payload(action))
+    end
+  end
+
+  defp merged_pr_evidence(events) do
+    events = PullRequestProgress.chronological_events(events)
+
+    case PullRequestProgress.current_pr_state(events, ["attach_pr", "sync_pr"]) do
+      {:ok, pr_state} ->
+        merge_reconciliation = latest_merge_reconciliation(events, pr_state.ref, pr_state.sequence)
+
+        if PullRequestProgress.merged?(pr_state.payload) or merge_reconciliation_payload?(merge_reconciliation) do
+          {:ok, evidence_from(pr_state.payload, merge_reconciliation, pr_state.ref)}
+        else
+          {:skip, @terminal_without_pr_reason, %{}}
+        end
+
+      {:error, :missing_attached_pr} ->
+        {:skip, @terminal_without_pr_reason, %{}}
+
+      {:error, reason} ->
+        {:skip, Atom.to_string(reason), %{}}
+    end
+  end
+
+  defp latest_merge_reconciliation(events, ref, current_pr_sequence) do
+    events
+    |> Enum.reverse()
+    |> Enum.find_value(fn %ProgressEvent{} = event ->
+      payload = PullRequestProgress.stringify_keys(event.payload || %{})
+
+      current_or_newer? = (event.sequence || 0) >= current_pr_sequence
+
+      if current_or_newer? and merge_reconciliation_payload?(payload) and PullRequestProgress.same_pr?(payload, ref) do
+        payload
+      end
+    end)
+  end
+
+  defp evidence_from(pr_payload, merge_payload, ref) do
+    %{
+      source_tool: first_present([map_value(merge_payload, "source_tool"), map_value(pr_payload, "source_tool")]),
+      url: ref.url,
+      repository: ref.repository,
+      number: ref.number,
+      base_branch: clean_string(map_value(pr_payload, "base_branch")),
+      head_sha: clean_string(first_present([map_value(pr_payload, "head_sha"), map_value(merge_payload, "head_sha")])),
+      merged_at: first_present([map_value(pr_payload, "merged_at"), map_value(merge_payload, "merged_at")]),
+      merge_commit_sha: first_present([map_value(pr_payload, "merge_commit_sha"), map_value(merge_payload, "merge_commit_sha")])
+    }
+  end
+
+  defp validate_repository(%WorkPackage{} = work_package, evidence) do
+    expected = normalize_repository(work_package.repo)
+    actual = normalize_repository(evidence.repository)
+
+    cond do
+      is_nil(expected) or is_nil(actual) ->
+        {:skip, "missing_repository", %{expected_repository: work_package.repo, actual_repository: evidence.repository}}
+
+      expected != actual ->
+        {:skip, "repository_mismatch", %{expected_repository: work_package.repo, actual_repository: evidence.repository}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_base_branch(%PlannedSlice{} = planned_slice, %WorkPackage{} = work_package, evidence) do
+    expected = clean_string(planned_slice.target_base_branch || work_package.base_branch)
+    actual = clean_string(evidence.base_branch)
+
+    cond do
+      is_nil(expected) or is_nil(actual) ->
+        {:skip, "missing_base_branch", %{expected_base_branch: expected, actual_base_branch: actual}}
+
+      expected != actual ->
+        {:skip, "base_branch_mismatch", %{expected_base_branch: expected, actual_base_branch: actual}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_head(events, evidence) do
+    with {:ok, ref} <- PullRequest.parse(%{"url" => evidence.url}, nil),
+         expected when is_binary(expected) <- PullRequestProgress.expected_head_sha(events, ref) do
+      if PullRequest.head_sha_matches?(evidence.head_sha, expected) do
+        :ok
+      else
+        {:skip, "head_mismatch", %{expected_head_sha: expected, actual_head_sha: evidence.head_sha}}
+      end
+    else
+      {:error, reason} -> {:skip, Atom.to_string(reason), %{}}
+      _missing -> {:skip, "missing_head_evidence", %{actual_head_sha: evidence.head_sha}}
+    end
+  end
+
+  defp required_merged_at(evidence) do
+    case parse_datetime(evidence.merged_at) do
+      {:ok, datetime} -> {:ok, datetime}
+      :error -> {:skip, "missing_strong_pr_evidence", %{missing: "pr_merged_at"}}
+    end
+  end
+
+  defp required_merge_commit_sha(evidence) do
+    case clean_string(evidence.merge_commit_sha) do
+      nil -> {:skip, "missing_strong_pr_evidence", %{missing: "merge_commit_sha"}}
+      merge_commit_sha -> {:ok, merge_commit_sha}
+    end
+  end
+
+  defp parse_datetime(%DateTime{} = datetime), do: {:ok, DateTime.truncate(datetime, :microsecond)}
+
+  defp parse_datetime(value) when is_binary(value) do
+    case DateTime.from_iso8601(String.trim(value)) do
+      {:ok, datetime, _offset} -> {:ok, DateTime.truncate(datetime, :microsecond)}
+      _error -> :error
+    end
+  end
+
+  defp parse_datetime(_value), do: :error
+
+  defp merge_reconciliation_payload?(%{"type" => "github_pr_merge_reconciliation", "source_tool" => "operator_sync_prs"} = payload) do
+    PullRequestProgress.merged?(payload)
+  end
+
+  defp merge_reconciliation_payload?(_payload), do: false
+
+  defp action_payload(action) do
+    %{
+      outcome: action.attrs.outcome,
+      idempotency_key: action.attrs.idempotency_key,
+      pr_url: action.attrs.pr_url,
+      pr_number: action.attrs.pr_number,
+      pr_repository: action.attrs.pr_repository,
+      pr_merged_at: action.attrs.pr_merged_at,
+      merge_commit_sha: action.attrs.merge_commit_sha
+    }
+  end
+
+  defp idempotency_key(%WorkRequest{} = work_request, %PlannedSlice{} = planned_slice, evidence, merge_commit_sha) do
+    material = [work_request.id, planned_slice.id, evidence.url, evidence.head_sha, merge_commit_sha] |> Enum.join(":")
+    "delivery_reconciler:" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
+  end
+
+  defp base_result(%PlannedSlice{} = planned_slice, %WorkPackage{} = work_package) do
+    %{
+      work_request_id: planned_slice.work_request_id,
+      planned_slice_id: planned_slice.id,
+      work_package_id: planned_slice.work_package_id,
+      work_package_status: work_package.status
+    }
+  end
+
+  defp base_result(%PlannedSlice{} = planned_slice, _work_package) do
+    %{
+      work_request_id: planned_slice.work_request_id,
+      planned_slice_id: planned_slice.id,
+      work_package_id: planned_slice.work_package_id
+    }
+  end
+
+  defp skipped_result(%PlannedSlice{} = planned_slice, work_package, reason, extras \\ %{}) do
+    planned_slice
+    |> base_result(work_package)
+    |> Map.merge(%{status: "skipped", reason: reason})
+    |> Map.merge(Map.new(extras))
+  end
+
+  defp error_result(%PlannedSlice{} = planned_slice, work_package, reason, action \\ nil) do
+    planned_slice
+    |> base_result(work_package)
+    |> Map.merge(%{status: "error", reason: reason_text(reason), action: action})
+  end
+
+  defp visible_work_package?(_work_package_id, :all), do: true
+  defp visible_work_package?(_work_package_id, nil), do: true
+  defp visible_work_package?(work_package_id, visible_ids) when is_list(visible_ids), do: work_package_id in visible_ids
+
+  defp visible_work_package?(_work_package_id, _visible_ids), do: false
+
+  defp summary(work_request_id, mode, results, delivery_board) do
+    %{
+      work_request_id: work_request_id,
+      mode: Atom.to_string(mode),
+      total_count: length(results),
+      proposed_count: Enum.count(results, &(&1.status == "proposed")),
+      applied_count: Enum.count(results, &(&1.status == "applied")),
+      skipped_count: Enum.count(results, &(&1.status == "skipped")),
+      error_count: Enum.count(results, &(&1.status == "error")),
+      results: results,
+      delivery_board: delivery_board
+    }
+  end
+
+  defp map_value(nil, _key), do: nil
+  defp map_value(%{} = map, key), do: Map.get(map, key) || Map.get(map, to_string(key))
+
+  defp first_present(values) do
+    Enum.find(values, fn
+      value when is_binary(value) -> String.trim(value) != ""
+      nil -> false
+      _value -> true
+    end)
+  end
+
+  defp normalize_repository(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+    |> case do
+      "" -> nil
+      repository -> repository
+    end
+  end
+
+  defp normalize_repository(_value), do: nil
+
+  defp clean_string(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
+
+  defp clean_string(_value), do: nil
+
+  defp filled_string?(value), do: is_binary(value) and String.trim(value) != ""
+
+  defp reason_text(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp reason_text({reason, _detail}) when is_atom(reason), do: Atom.to_string(reason)
+  defp reason_text(reason), do: inspect(reason)
+end

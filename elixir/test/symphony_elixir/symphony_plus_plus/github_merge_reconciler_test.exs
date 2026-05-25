@@ -55,7 +55,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
     assert updated.status == "merged"
 
     assert {:ok, events} = PlanningRepository.list_progress_events(repo, package.id)
-    assert Enum.any?(events, &match?(%ProgressEvent{status: "pr_synced", payload: %{"source_tool" => "sync_pr"}}, &1))
+
+    assert Enum.any?(
+             events,
+             &match?(
+               %ProgressEvent{status: "pr_synced", payload: %{"source_tool" => "sync_pr", "merged_at" => "2026-05-20T12:00:00Z", "merge_commit_sha" => "merge-sha-1"}},
+               &1
+             )
+           )
 
     assert Enum.any?(
              events,
@@ -155,6 +162,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
              }
            ] = result.results
 
+    assert {:ok, updated} = WorkPackageRepository.get(repo, package.id)
+    assert updated.status == "ready_for_human_merge"
+  end
+
+  test "merged PR from a different repository is rejected before transition", %{repo: repo} do
+    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-WRONG-REPO", status: "ready_for_human_merge")
+    append_pr_evidence(repo, package, 10, "head-a")
+
+    metadata =
+      10
+      |> GitHubPullRequestFixtures.metadata("head-a", merged?: true)
+      |> Map.put("html_url", "https://github.com/other/repo/pull/10")
+
+    FakeGitHubClient.put_response("nextide/repo", 10, metadata)
+
+    assert {:ok, result} = MergeReconciler.reconcile(repo, client: FakeGitHubClient)
+
+    assert result.merged_count == 0
+    assert [%{status: "error", reason: "pr_reference_mismatch"}] = result.results
     assert {:ok, updated} = WorkPackageRepository.get(repo, package.id)
     assert updated.status == "ready_for_human_merge"
   end
