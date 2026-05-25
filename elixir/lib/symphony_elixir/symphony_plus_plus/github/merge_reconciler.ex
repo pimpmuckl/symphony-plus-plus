@@ -1,7 +1,8 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.MergeReconciler do
   @moduledoc false
 
-  alias SymphonyElixir.SymphonyPlusPlus.GitHub.{Client, HttpClient, PullRequest, PullRequestArtifact}
+  alias SymphonyElixir.SymphonyPlusPlus.GitHub.{Client, HttpClient, PullRequest}
+  alias SymphonyElixir.SymphonyPlusPlus.GitHub.{PullRequestArtifact, PullRequestProgress}
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.StateMachine
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
@@ -74,7 +75,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.MergeReconciler do
 
   defp maybe_transition_merged(repo, %WorkPackage{} = work_package, pr_context, payload, metadata) do
     cond do
-      not merged_pull_request?(payload) ->
+      not PullRequestProgress.merged?(payload) ->
         synced_result(work_package, payload, "pr_not_merged")
 
       missing_base_branch?(work_package, payload) ->
@@ -197,81 +198,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHub.MergeReconciler do
   defp validate_merge_evidence(%ProgressEvent{}, %WorkPackage{}, _payload), do: {:error, :merge_evidence_conflict}
 
   defp current_pr_context(progress_events) do
-    events = chronological_progress_events(progress_events)
-
-    with {:ok, payload} <- latest_attached_pr_payload(events),
-         {:ok, ref} <- PullRequest.parse(payload, nil) do
+    with {:ok, %{ref: ref}} <- PullRequestProgress.current_pr_state(progress_events, ["attach_pr"]) do
       {:ok,
        %{
          ref: ref,
-         expected_head_sha: latest_head_sha(events, ref)
+         expected_head_sha: PullRequestProgress.expected_head_sha(progress_events, ref)
        }}
-    end
-  end
-
-  defp latest_attached_pr_payload(events) do
-    events
-    |> Enum.reverse()
-    |> Enum.find_value(fn
-      %ProgressEvent{payload: payload} when is_map(payload) ->
-        payload = stringify_keys(payload)
-        if attached_pr_payload?(payload), do: {:ok, payload}
-
-      %ProgressEvent{} ->
-        nil
-    end)
-    |> case do
-      nil -> {:error, :missing_attached_pr}
-      result -> result
-    end
-  end
-
-  defp latest_head_sha(events, ref) do
-    events
-    |> Enum.reverse()
-    |> Enum.find_value(fn
-      %ProgressEvent{payload: payload} when is_map(payload) ->
-        payload
-        |> stringify_keys()
-        |> head_evidence_sha(ref)
-
-      %ProgressEvent{} ->
-        nil
-    end)
-  end
-
-  defp attached_pr_payload?(%{"type" => "pr", "source_tool" => "attach_pr"}), do: true
-  defp attached_pr_payload?(_payload), do: false
-
-  defp head_evidence_sha(%{"type" => "branch", "source_tool" => "attach_branch"} = payload, _ref), do: clean_head_sha(payload["head_sha"])
-
-  defp head_evidence_sha(%{"type" => "pr", "source_tool" => "attach_pr"} = payload, ref) do
-    if same_pr_payload?(payload, ref), do: clean_head_sha(payload["head_sha"])
-  end
-
-  defp head_evidence_sha(_payload, _ref), do: nil
-
-  defp same_pr_payload?(payload, ref) do
-    case PullRequest.parse(payload, nil) do
-      {:ok, payload_ref} -> same_pr_ref?(payload_ref, ref)
-      {:error, _reason} -> false
-    end
-  end
-
-  defp same_pr_ref?(left, right) do
-    left.repository == right.repository and left.number == right.number
-  end
-
-  defp chronological_progress_events(progress_events) do
-    Enum.sort_by(progress_events, fn %ProgressEvent{created_at: created_at, sequence: sequence, id: id} ->
-      {created_at || DateTime.from_unix!(0), sequence || 0, id || ""}
-    end)
-  end
-
-  defp merged_pull_request?(payload) do
-    case Map.get(payload, "merge_state", %{}) do
-      %{} = merge_state -> Map.get(merge_state, "merged") == true
-      _merge_state -> false
     end
   end
 

@@ -42,6 +42,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ClarificationQuestion
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DecisionLogEntry
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryReconciler
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch
@@ -95,6 +96,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "list_work_requests",
     "read_work_request",
     "read_work_request_delivery_board",
+    "reconcile_work_request",
     "record_planned_slice_delivery",
     "revoke_planned_slice_worker_key",
     "list_guidance_requests",
@@ -1521,6 +1523,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     "Read the scoped WorkRequest delivery-board projection for planned-slice closeout without broad package visibility."
   end
 
+  defp architect_tool_description("reconcile_work_request") do
+    "Dry-run or apply deterministic WorkRequest delivery closeout repairs from structured PR/GitHub evidence."
+  end
+
   defp architect_tool_description("record_planned_slice_delivery") do
     "Record an idempotent planned-slice delivery closeout. Required evidence depends on outcome: pr_merged needs PR evidence, completed_no_pr needs direct evidence, superseded needs successor and reason, and abandoned needs rationale."
   end
@@ -1924,6 +1930,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp architect_tool_input_schema("read_work_request_delivery_board") do
     schema(%{"work_request_id" => described_string_schema("Scoped WorkRequest id to project.")}, ["work_request_id"])
+  end
+
+  defp architect_tool_input_schema("reconcile_work_request") do
+    schema(
+      %{
+        "work_request_id" => described_string_schema("Scoped WorkRequest id to reconcile."),
+        "apply" =>
+          boolean_schema()
+          |> Map.put("description", "When false or omitted, only report proposed closeout repairs. When true, apply through record_planned_slice_delivery."),
+        "recorded_by" => described_string_schema("Optional closeout actor for applied repairs. Defaults to the claimed architect identity.")
+      },
+      ["work_request_id"]
+    )
   end
 
   defp architect_tool_input_schema("record_planned_slice_delivery") do
@@ -3271,6 +3290,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp architect_tool("reconcile_work_request", arguments, %__MODULE__{config: config, session: session}) do
+    with {:ok, apply?} <- optional_boolean(arguments, "apply", false),
+         {:ok, session} <- architect_session(config.repo, session, reconcile_work_request_capability(apply?)),
+         {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, recorded_by} <- optional_string_argument(arguments, "recorded_by", session_claimed_by(session)),
+         {:ok, filters, scope} <- scoped_work_request_filters(config.repo, session),
+         {:ok, work_request} <- scoped_work_request(config.repo, work_request_id, filters),
+         {:ok, planned_slices} <- WorkRequestService.list_planned_slices(config.repo, work_request_id),
+         {visible_work_package_ids, work_package_contexts} <-
+           visible_delivery_board_work_package_contexts(config.repo, work_request_id, planned_slices, filters),
+         {:ok, reconciliation} <-
+           DeliveryReconciler.reconcile(config.repo, work_request_id,
+             mode: reconcile_work_request_mode(apply?),
+             recorded_by: recorded_by,
+             work_request: work_request,
+             planned_slices: planned_slices,
+             visible_work_package_ids: visible_work_package_ids,
+             work_package_contexts: work_package_contexts
+           ) do
+      {:ok,
+       tool_result(%{
+         "work_request" => work_request_mutation_payload(work_request),
+         "reconciliation" => reconciliation_payload(reconciliation),
+         "delivery_board" => delivery_board_payload(Map.fetch!(reconciliation, :delivery_board)),
+         "scope" => scope
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "reconcile_work_request", "reason" => reason}}
+      {:error, :not_found} -> not_found_error("reconcile_work_request")
+      {:error, reason} -> architect_error(reason, "reconcile_work_request")
+    end
+  end
+
   defp architect_tool("record_planned_slice_delivery", arguments, %__MODULE__{config: config, session: session}) do
     with {:ok, session} <- architect_session(config.repo, session, "write:work_request"),
          {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
@@ -4451,6 +4503,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       work_package_contexts: work_package_contexts
     )
   end
+
+  defp reconcile_work_request_capability(true), do: "write:work_request"
+  defp reconcile_work_request_capability(false), do: "read:work_request"
+
+  defp reconcile_work_request_mode(true), do: :apply
+  defp reconcile_work_request_mode(false), do: :dry_run
 
   defp visible_delivery_board_work_package_contexts(repo, work_request_id, planned_slices, filters) do
     planned_slice_ids = Enum.map(planned_slices, & &1.id)
@@ -7783,6 +7841,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_tool_capability("list_work_requests"), do: "read:work_request"
   defp architect_tool_capability("read_work_request"), do: "read:work_request"
   defp architect_tool_capability("read_work_request_delivery_board"), do: "read:work_request"
+  defp architect_tool_capability("reconcile_work_request"), do: "read:work_request"
   defp architect_tool_capability("record_planned_slice_delivery"), do: "write:work_request"
   defp architect_tool_capability("revoke_planned_slice_worker_key"), do: "write:work_request"
   defp architect_tool_capability("list_guidance_requests"), do: "read:guidance_request"
@@ -10480,6 +10539,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp delivery_board_payload(delivery_board) do
     delivery_board
+    |> json_safe_payload()
+    |> Redactor.redact_output()
+  end
+
+  defp reconciliation_payload(reconciliation) when is_map(reconciliation) do
+    reconciliation
+    |> Map.drop([:delivery_board, "delivery_board"])
     |> json_safe_payload()
     |> Redactor.redact_output()
   end

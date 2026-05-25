@@ -8,7 +8,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
   alias SymphonyElixir.GitHubTestSupport
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
-  alias SymphonyElixir.SymphonyPlusPlus.GitHub.{DefaultClient, GhCliClient, HttpClient, MergeReconciler}
+
+  alias SymphonyElixir.SymphonyPlusPlus.GitHub.{
+    DefaultClient,
+    GhCliClient,
+    HttpClient,
+    MergeReconciler,
+    PullRequestProgress
+  }
+
   alias SymphonyElixir.SymphonyPlusPlus.Lifecycle.Service, as: LifecycleService
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Phase
   alias SymphonyElixir.SymphonyPlusPlus.Phases.Repository, as: PhaseRepository
@@ -42,6 +50,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
     :ok
   end
 
+  test "PR progress helpers preserve created_at precedence over legacy sequences" do
+    old_event = %ProgressEvent{
+      id: "old-pr",
+      sequence: 200,
+      created_at: ~U[2026-05-20 12:00:00Z],
+      payload: %{
+        "type" => "pr",
+        "source_tool" => "attach_pr",
+        "url" => "https://github.com/nextide/repo/pull/1",
+        "repository" => "nextide/repo",
+        "number" => 1,
+        "head_sha" => "old-head"
+      }
+    }
+
+    new_event = %ProgressEvent{
+      id: "new-pr",
+      sequence: 1,
+      created_at: ~U[2026-05-21 12:00:00Z],
+      payload: %{
+        "type" => "pr",
+        "source_tool" => "attach_pr",
+        "url" => "https://github.com/nextide/repo/pull/2",
+        "repository" => "nextide/repo",
+        "number" => 2,
+        "head_sha" => "new-head"
+      }
+    }
+
+    assert {:ok, %{ref: %{number: 2}, payload: %{"head_sha" => "new-head"}}} =
+             PullRequestProgress.current_pr_state([new_event, old_event], ["attach_pr"])
+  end
+
   test "merged PR fetch transitions ready standalone package to merged", %{repo: repo} do
     assert {:ok, package} = create_package(repo, id: "SYMPP-GH-MERGED", status: "ready_for_human_merge")
     append_pr_evidence(repo, package, 1, "head-a")
@@ -55,7 +96,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
     assert updated.status == "merged"
 
     assert {:ok, events} = PlanningRepository.list_progress_events(repo, package.id)
-    assert Enum.any?(events, &match?(%ProgressEvent{status: "pr_synced", payload: %{"source_tool" => "sync_pr"}}, &1))
+
+    assert Enum.any?(
+             events,
+             &match?(
+               %ProgressEvent{status: "pr_synced", payload: %{"source_tool" => "sync_pr", "merged_at" => "2026-05-20T12:00:00Z", "merge_commit_sha" => "merge-sha-1"}},
+               &1
+             )
+           )
 
     assert Enum.any?(
              events,
@@ -155,6 +203,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.GitHubMergeReconcilerTest do
              }
            ] = result.results
 
+    assert {:ok, updated} = WorkPackageRepository.get(repo, package.id)
+    assert updated.status == "ready_for_human_merge"
+  end
+
+  test "merged PR from a different repository is rejected before transition", %{repo: repo} do
+    assert {:ok, package} = create_package(repo, id: "SYMPP-GH-WRONG-REPO", status: "ready_for_human_merge")
+    append_pr_evidence(repo, package, 10, "head-a")
+
+    metadata =
+      10
+      |> GitHubPullRequestFixtures.metadata("head-a", merged?: true)
+      |> Map.put("html_url", "https://github.com/other/repo/pull/10")
+
+    FakeGitHubClient.put_response("nextide/repo", 10, metadata)
+
+    assert {:ok, result} = MergeReconciler.reconcile(repo, client: FakeGitHubClient)
+
+    assert result.merged_count == 0
+    assert [%{status: "error", reason: "pr_reference_mismatch"}] = result.results
     assert {:ok, updated} = WorkPackageRepository.get(repo, package.id)
     assert updated.status == "ready_for_human_merge"
   end

@@ -53,6 +53,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     "list_work_requests",
     "read_work_request",
     "read_work_request_delivery_board",
+    "reconcile_work_request",
     "record_planned_slice_delivery",
     "revoke_planned_slice_worker_key",
     "list_guidance_requests",
@@ -1919,6 +1920,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(tools_by_name, ["read_work_request", "inputSchema", "required"]) == ["work_request_id"]
     assert get_in(tools_by_name, ["read_work_request", "inputSchema", "properties", "work_request_id", "type"]) == "string"
     assert get_in(tools_by_name, ["read_work_request_delivery_board", "inputSchema", "required"]) == ["work_request_id"]
+    assert get_in(tools_by_name, ["reconcile_work_request", "inputSchema", "required"]) == ["work_request_id"]
+    assert get_in(tools_by_name, ["reconcile_work_request", "inputSchema", "properties", "apply", "type"]) == "boolean"
 
     delivery_schema = get_in(tools_by_name, ["record_planned_slice_delivery", "inputSchema"])
     revoke_schema = get_in(tools_by_name, ["revoke_planned_slice_worker_key", "inputSchema"])

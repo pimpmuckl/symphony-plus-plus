@@ -3,6 +3,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
 
   import Ecto.Query, only: [from: 2]
 
+  alias SymphonyElixir.SymphonyPlusPlus.GitHub.PullRequestProgress
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
@@ -871,31 +872,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryBoard do
   defp source_tool_matches?(value, expected) when is_list(expected), do: value in expected
   defp source_tool_matches?(value, expected), do: value == expected
 
-  defp pr_merged?(%{} = pr) do
-    not stale_pr?(pr) and
-      (merged_value?(map_value(pr, "merged")) or
-         merged_value?(map_value(pr, "state")) or
-         merged_value?(map_value(pr, "status")) or
-         merged_value?(map_value(pr, "conclusion")) or
-         merge_state_merged?(map_value(pr, "merge_state")))
-  end
-
+  defp pr_merged?(%{} = pr), do: PullRequestProgress.merged?(pr)
   defp pr_merged?(_pr), do: false
-
-  defp stale_pr?(pr), do: merged_value?(map_value(pr, "stale"))
-
-  defp merge_state_merged?(%{} = merge_state) do
-    merged_value?(map_value(merge_state, "merged")) or
-      merged_value?(map_value(merge_state, "state")) or
-      merged_value?(map_value(merge_state, "status")) or
-      merged_value?(map_value(merge_state, "mergeable_state"))
-  end
-
-  defp merge_state_merged?(_merge_state), do: false
-
-  defp merged_value?(true), do: true
-  defp merged_value?(value) when is_binary(value), do: value |> String.trim() |> String.downcase() |> then(&(&1 in ["merged", "true"]))
-  defp merged_value?(_value), do: false
 
   defp state_counts(slices) do
     Enum.frequencies_by(slices, &get_in(&1, [:operational_state, :key]))
