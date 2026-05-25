@@ -6,7 +6,8 @@ description: Use when Codex needs lightweight local planning memory for one norm
 # Symphony++ Solo Session
 
 Use Solo Sessions for ordinary single-agent work that needs durable local
-planning memory without WorkRequest or WorkPackage orchestration.
+planning memory without WorkRequest or WorkPackage orchestration. This is the
+default Symphony++ planning path for real agents.
 
 Do not use this for assigned WorkPackages, WorkKeys, WorkRequests, architect
 orchestration, worker dispatch, bound MCP planning resources, or merge gates.
@@ -17,6 +18,8 @@ Use `symphony-plus-plus-mcp:symphony-work-package` for WorkPackages and
 
 The Solo Session ledger replaces local `task_plan.md`, `findings.md`, and
 `progress.md` for this task. Keep entries small and non-secret.
+Do not create local `task_plan.md`, `findings.md`, or `progress.md` files for
+Solo Session state.
 
 Never store raw API keys, bearer/GitHub/Linear/MCP tokens, worker secrets, raw
 WorkKeys, access grants, secret hashes, private handoff payloads, or

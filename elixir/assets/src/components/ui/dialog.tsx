@@ -8,7 +8,7 @@ const Dialog = DialogPrimitive.Root;
 const DialogTrigger = DialogPrimitive.Trigger;
 const DialogPortal = DialogPrimitive.Portal;
 const DialogClose = DialogPrimitive.Close;
-const DIALOG_SIZE_MOTION_MS = 240;
+const DIALOG_SIZE_MOTION_MS = 560;
 
 function DialogOverlay({ className, ref, ...props }: React.ComponentProps<typeof DialogPrimitive.Overlay>) {
   return (
@@ -26,6 +26,10 @@ function DialogContent({ className, children, ref, style, ...props }: React.Comp
   const innerRef = React.useRef<HTMLDivElement | null>(null);
   const frameRef = React.useRef<number | null>(null);
   const settleTimerRef = React.useRef<number | null>(null);
+  const resizingRef = React.useRef(false);
+  const queuedResizeRef = React.useRef(false);
+  const measuredHeightRef = React.useRef<number | null>(null);
+  const animateResizeRef = React.useRef<() => void>(() => undefined);
   const [height, setHeight] = React.useState<number | null>(null);
 
   const setContentRef = React.useCallback(
@@ -41,14 +45,58 @@ function DialogContent({ className, children, ref, style, ...props }: React.Comp
     [ref],
   );
 
-  const measure = React.useCallback(() => {
+  const measureNaturalHeight = React.useCallback(() => {
     const content = contentRef.current;
-    const inner = innerRef.current;
-    if (!content || !inner || prefersReducedDialogMotion()) return;
+    if (!content) return 0;
 
-    const currentHeight = Math.ceil(content.getBoundingClientRect().height);
-    const nextHeight = Math.ceil(content.scrollHeight);
-    if (currentHeight <= 0 || nextHeight <= 0 || Math.abs(nextHeight - currentHeight) <= 1) return;
+    const maxHeight = Number.parseFloat(window.getComputedStyle(content).maxHeight);
+    const naturalHeight = Math.ceil(content.scrollHeight);
+    return Math.min(naturalHeight, Number.isFinite(maxHeight) && maxHeight > 0 ? maxHeight : naturalHeight);
+  }, []);
+
+  const finishResize = React.useCallback(() => {
+    const content = contentRef.current;
+    const queuedResize = queuedResizeRef.current;
+
+    resizingRef.current = false;
+
+    if (queuedResize) {
+      queuedResizeRef.current = false;
+      measuredHeightRef.current = content ? Math.ceil(content.getBoundingClientRect().height) : measuredHeightRef.current;
+      frameRef.current = window.requestAnimationFrame(() => {
+        frameRef.current = null;
+        animateResizeRef.current();
+      });
+      return;
+    }
+
+    measuredHeightRef.current = measureNaturalHeight();
+    setHeight(null);
+  }, [measureNaturalHeight]);
+
+  const animateResize = React.useCallback(() => {
+    const content = contentRef.current;
+    if (!content || prefersReducedDialogMotion()) {
+      measuredHeightRef.current = null;
+      setHeight(null);
+      return;
+    }
+
+    if (resizingRef.current) {
+      queuedResizeRef.current = true;
+      return;
+    }
+
+    const currentHeight = measuredHeightRef.current ?? Math.ceil(content.getBoundingClientRect().height);
+    const nextHeight = measureNaturalHeight();
+    measuredHeightRef.current = nextHeight;
+
+    if (currentHeight <= 0 || nextHeight <= 0 || Math.abs(nextHeight - currentHeight) <= 1) {
+      setHeight(null);
+      return;
+    }
+
+    resizingRef.current = true;
 
     if (frameRef.current !== null) {
       window.cancelAnimationFrame(frameRef.current);
@@ -65,17 +113,20 @@ function DialogContent({ className, children, ref, style, ...props }: React.Comp
     });
 
     settleTimerRef.current = window.setTimeout(() => {
-      setHeight(null);
       settleTimerRef.current = null;
-    }, DIALOG_SIZE_MOTION_MS + 80);
-  }, []);
+      finishResize();
+    }, DIALOG_SIZE_MOTION_MS + 60);
+  }, [finishResize, measureNaturalHeight]);
+
+  React.useEffect(() => {
+    animateResizeRef.current = animateResize;
+  }, [animateResize]);
 
   React.useLayoutEffect(() => {
     if (prefersReducedDialogMotion()) return;
 
-    const frame = window.requestAnimationFrame(measure);
-    return () => window.cancelAnimationFrame(frame);
-  }, [children, measure]);
+    animateResize();
+  }, [animateResize, children]);
 
   React.useEffect(() => {
     const inner = innerRef.current;
@@ -87,7 +138,7 @@ function DialogContent({ className, children, ref, style, ...props }: React.Comp
       }
 
       frameRef.current = window.requestAnimationFrame(() => {
-        measure();
+        animateResize();
         frameRef.current = null;
       });
     });
@@ -106,8 +157,12 @@ function DialogContent({ className, children, ref, style, ...props }: React.Comp
         window.clearTimeout(settleTimerRef.current);
         settleTimerRef.current = null;
       }
+
+      resizingRef.current = false;
+      queuedResizeRef.current = false;
+      measuredHeightRef.current = null;
     };
-  }, [measure]);
+  }, [animateResize]);
 
   return (
     <DialogPortal>

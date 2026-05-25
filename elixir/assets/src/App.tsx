@@ -159,6 +159,10 @@ const DASHBOARD_THEME_KEY = "symphony-plus-plus.dashboard.theme.v1";
 const DASHBOARD_DEBUG_ANIMATIONS_KEY = "symphony-plus-plus.dashboard.debug-animations";
 const REPO_WORKSTREAM_MOTION_MS = 360;
 const DASHBOARD_POLL_INTERVAL_MS = 7000;
+const DASHBOARD_RECONNECT_GRACE_MS = 5 * 60 * 1000;
+const CARD_DETAIL_LOADING_HOLD_MS = 220;
+const CARD_DETAIL_WIDTH_MS = 340;
+const CARD_DETAIL_HEIGHT_MS = 620;
 const LOCAL_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 const TOP_PANEL_ORDER: TopPanelKey[] = ["guidance", "blockers", "finished"];
 const DEFAULT_DASHBOARD_API_BASE = "/api/v1/sympp/operator";
@@ -185,6 +189,7 @@ type TopPanelPhase = "idle" | "opening" | "closing" | "pre-resize" | "swapping" 
 type PackageLineageProjection = NonNullable<WorkPackageCard["lineage"]>;
 type WorkspaceTab = "workstreams" | "solo";
 type WorkspaceTabPhase = "idle" | "swapping";
+type CardDetailStage = "loading" | "width" | "height" | "ready";
 type DashboardTheme = "light" | "dark";
 type CommentCardSignal = { open: number; total: number };
 type UpdateMotionsAction =
@@ -202,6 +207,11 @@ type DashboardUpdateAnimations = {
   countPulseFor: (panel: TopPanelKey) => number;
   motionFor: (key?: string | null) => UpdateMotion | undefined;
   simulate: (kind: UpdateMotionKind) => void;
+};
+type DashboardConnectionIssue = {
+  firstFailedAt: number;
+  lastFailedAt: number;
+  message: string;
 };
 type CardDetailSelection =
   | { kind: "request"; detail: WorkRequestDetail }
@@ -478,8 +488,11 @@ export default function App() {
   const [appState, dispatchApp] = useReducer(appStateReducer, null, createInitialAppState);
   const { dashboard, error, hideEmptyWorkstreams, loading, refreshing, theme, workspaceTab, workstreamLayout } = appState;
   const [dialogState, dispatchDialog] = useReducer(appDialogReducer, initialAppDialogState);
+  const [connectionIssue, setConnectionIssue] = useState<DashboardConnectionIssue | null>(null);
   const showUpdateSimulationControls = useMemo(() => shouldShowUpdateSimulationControls(), []);
   const [runtimeConfig, setRuntimeConfig] = useState<DashboardRuntimeConfig | undefined>(() => dashboardRuntimeConfig);
+  const dashboardRef = useRef<DashboardPayload | null>(dashboard);
+  const connectionIssueRef = useRef<DashboardConnectionIssue | null>(null);
   const loadInFlightRef = useRef(false);
   const prSyncInFlightRef = useRef(false);
   const lastPrSyncAtRef = useRef(0);
@@ -515,6 +528,40 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    dashboardRef.current = dashboard;
+  }, [dashboard]);
+
+  useEffect(() => {
+    connectionIssueRef.current = connectionIssue;
+  }, [connectionIssue]);
+
+  const recordConnectionFailure = useCallback(
+    (message: string, immediate = false) => {
+      const now = Date.now();
+      const canGrace = !immediate && Boolean(dashboardRef.current);
+
+      if (!canGrace) {
+        setConnectionIssue(null);
+        setError(message);
+        return;
+      }
+
+      const currentIssue = connectionIssueRef.current;
+      const firstFailedAt = currentIssue?.firstFailedAt ?? now;
+      const nextIssue = { firstFailedAt, lastFailedAt: now, message };
+
+      setConnectionIssue(nextIssue);
+
+      if (now - firstFailedAt >= DASHBOARD_RECONNECT_GRACE_MS) {
+        setError(message);
+      } else {
+        setError(null);
+      }
+    },
+    [setError],
+  );
+
+  useEffect(() => {
     let cancelled = false;
 
     void ensureDashboardRuntimeConfig().then((config) => {
@@ -540,6 +587,7 @@ export default function App() {
       }
 
       setDashboard(nextDashboard);
+      setConnectionIssue(null);
       setError(null);
       return nextDashboard;
     },
@@ -572,6 +620,7 @@ export default function App() {
     }
 
     setDashboard(payload.dashboard);
+    setConnectionIssue(null);
     setError(null);
     return payload.work_request;
   }, [setDashboard, setError]);
@@ -596,6 +645,7 @@ export default function App() {
     }
 
     setDashboard(payload.dashboard);
+    setConnectionIssue(null);
     setError(null);
     return payload.comment;
   }, [setDashboard, setError]);
@@ -618,6 +668,7 @@ export default function App() {
     }
 
     setDashboard(payload.dashboard);
+    setConnectionIssue(null);
     setError(null);
     return payload.comment;
   }, [setDashboard, setError]);
@@ -636,13 +687,13 @@ export default function App() {
       const response = await fetch(operatorApiUrl("/dashboard"), { headers: jsonHeaders() });
       await applyDashboardResponse(response, "Dashboard API unavailable");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Dashboard API unavailable");
+      recordConnectionFailure(caught instanceof Error ? caught.message : "Dashboard API unavailable", mode === "initial");
     } finally {
       loadInFlightRef.current = false;
       setLoading(false);
       if (mode === "refresh") setRefreshing(false);
     }
-  }, [applyDashboardResponse, setError, setLoading, setRefreshing]);
+  }, [applyDashboardResponse, recordConnectionFailure, setLoading, setRefreshing]);
 
   const syncPullRequests = useCallback(async () => {
     if (prSyncInFlightRef.current) return;
@@ -657,11 +708,11 @@ export default function App() {
       });
       await applyDashboardResponse(response, "GitHub PR sync unavailable", dashboardFromEnvelope);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "GitHub PR sync unavailable");
+      recordConnectionFailure(caught instanceof Error ? caught.message : "GitHub PR sync unavailable");
     } finally {
       prSyncInFlightRef.current = false;
     }
-  }, [applyDashboardResponse, setError]);
+  }, [applyDashboardResponse, recordConnectionFailure]);
 
   const copyArchitectHandoff = useCallback<CopyArchitectHandoff>(async (workRequestId, cachedHandoff) => {
     let handoff = cachedHandoff || null;
@@ -898,7 +949,7 @@ export default function App() {
 
             <div className="flex flex-wrap items-center gap-2">
               {showUpdateSimulationControls ? <UpdateSimulationControls updateAnimations={updateAnimations} /> : null}
-              <LiveLedgerBadge error={error} databasePath={dashboard?.ledger?.database} />
+              <LiveLedgerBadge error={error} connectionIssue={connectionIssue} databasePath={dashboard?.ledger?.database} />
               <ThemeToggle theme={theme} onToggle={toggleTheme} />
               <DashboardSettingsDialog
                 archiveAfterDays={archiveAfterDays}
@@ -2037,20 +2088,35 @@ function UpdateSimulationControls({ updateAnimations }: { updateAnimations: Dash
   );
 }
 
-function LiveLedgerBadge({ error, databasePath }: { error: string | null; databasePath?: string | null }) {
-  const label = error ? "API unavailable" : "Live ledger";
-  const tooltip = error ? "Dashboard API unavailable." : databasePath || "Database path unavailable.";
+function LiveLedgerBadge({
+  error,
+  connectionIssue,
+  databasePath,
+}: {
+  error: string | null;
+  connectionIssue: DashboardConnectionIssue | null;
+  databasePath?: string | null;
+}) {
+  const reconnecting = Boolean(connectionIssue && !error);
+  const label = error ? "API unavailable" : reconnecting ? "Reconnecting..." : "Live ledger";
+  const variant = error ? "danger" : reconnecting ? "warning" : "success";
+  const heading = error || reconnecting ? "Status" : "Database";
+  const tooltip = error
+    ? error
+    : reconnecting
+      ? `Last update failed. Retrying for up to 5 minutes before surfacing an error. ${connectionIssue?.message || ""}`.trim()
+      : databasePath || "Database path unavailable.";
 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Badge variant={error ? "danger" : "success"} className="cursor-help">
+        <Badge variant={variant} className="cursor-help">
           {label}
         </Badge>
       </TooltipTrigger>
       <TooltipContent className="max-w-[min(34rem,calc(100vw-2rem))]">
         <div className="grid gap-1">
-          <span className="text-xs font-medium">{error ? "Status" : "Database"}</span>
+          <span className="text-xs font-medium">{heading}</span>
           <span className="break-all font-mono text-[11px] leading-relaxed text-muted-foreground">{tooltip}</span>
         </div>
       </TooltipContent>
@@ -3995,6 +4061,18 @@ function soloPlanningMeta(groups: Array<{ entries: SoloSessionEntry[] }>, loadin
   return count === 1 ? "1 entry" : `${count} entries`;
 }
 
+function soloProgressMeta(entries: SoloSessionEntry[], loading: boolean, error: string | null) {
+  if (loading) return "Loading";
+  if (error) return "Unavailable";
+  return entries.length === 1 ? "1 latest entry" : `${entries.length} latest entries`;
+}
+
+function soloBlockerMeta(blockers: SoloSessionEntry[], attention: { guidanceCount: number; blockerCount: number }) {
+  if (blockers.length > 0) return blockers.length === 1 ? "1 blocker" : `${blockers.length} blockers`;
+  if (attention.guidanceCount > 0) return `${attention.guidanceCount} guidance`;
+  return "Clear";
+}
+
 function soloSessionAttentionText(attention: { guidanceCount: number; blockerCount: number }) {
   const parts = [];
   if (attention.blockerCount > 0) parts.push(`${attention.blockerCount} blocker${attention.blockerCount === 1 ? "" : "s"}`);
@@ -4143,6 +4221,9 @@ function CardDetailDialog({
   const [state, dispatch] = useReducer(cardDetailDialogReducer, initialCardDetailDialogState);
   const packageId = selection?.kind === "package" ? selection.pkg.id : null;
   const soloSessionId = selection?.kind === "solo" ? selection.session.id : null;
+  const selectionIdentity = cardDetailSelectionIdentity(selection);
+  const prefersReducedDetailMotion = useDashboardReducedMotionPreference();
+  const [detailStage, setDetailStage] = useState<{ key: string; stage: CardDetailStage }>({ key: "closed", stage: "ready" });
 
   useEffect(() => {
     if (!packageId) {
@@ -4186,11 +4267,62 @@ function CardDetailDialog({
     return () => controller.abort();
   }, [soloSessionId]);
 
+  useEffect(() => {
+    if (!selection) {
+      setDetailStage({ key: "closed", stage: "ready" });
+      return;
+    }
+
+    setDetailStage((current) =>
+      current.key === selectionIdentity ? current : { key: selectionIdentity, stage: prefersReducedDetailMotion ? "ready" : "loading" },
+    );
+  }, [prefersReducedDetailMotion, selection, selectionIdentity]);
+
+  const detailReady = cardDetailContentReady(selection, state);
+
+  useEffect(() => {
+    if (!selection || !prefersReducedDetailMotion || detailStage.key !== selectionIdentity || detailStage.stage === "ready") return;
+
+    setDetailStage((current) => (current.key === selectionIdentity ? { ...current, stage: "ready" } : current));
+  }, [detailStage, prefersReducedDetailMotion, selection, selectionIdentity]);
+
+  useEffect(() => {
+    if (prefersReducedDetailMotion || !selection || !detailReady || detailStage.key !== selectionIdentity || detailStage.stage !== "loading") return;
+
+    const timer = window.setTimeout(() => {
+      setDetailStage((current) => (current.key === selectionIdentity && current.stage === "loading" ? { ...current, stage: "width" } : current));
+    }, CARD_DETAIL_LOADING_HOLD_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [detailReady, detailStage, prefersReducedDetailMotion, selection, selectionIdentity]);
+
+  useEffect(() => {
+    if (prefersReducedDetailMotion || !selection || detailStage.key !== selectionIdentity) return;
+
+    if (detailStage.stage === "width") {
+      const timer = window.setTimeout(() => {
+        setDetailStage((current) => (current.key === selectionIdentity && current.stage === "width" ? { ...current, stage: "height" } : current));
+      }, CARD_DETAIL_WIDTH_MS);
+
+      return () => window.clearTimeout(timer);
+    }
+
+    if (detailStage.stage === "height") {
+      const timer = window.setTimeout(() => {
+        setDetailStage((current) => (current.key === selectionIdentity && current.stage === "height" ? { ...current, stage: "ready" } : current));
+      }, CARD_DETAIL_HEIGHT_MS);
+
+      return () => window.clearTimeout(timer);
+    }
+  }, [detailStage, prefersReducedDetailMotion, selection, selectionIdentity]);
+
   const effectiveLoadingPackage = selection?.kind === "package" && !state.package.payload && !state.package.error ? true : state.package.loading;
   const effectiveLoadingSolo = selection?.kind === "solo" && !state.solo.payload && !state.solo.error ? true : state.solo.loading;
+  const activeDetailStage = prefersReducedDetailMotion ? "ready" : detailStage.key === selectionIdentity ? detailStage.stage : "loading";
+  const showStagedLoadingHeader = Boolean(selection && (activeDetailStage === "loading" || activeDetailStage === "width"));
   const detailMotionKey = cardDetailMotionKey(selection, {
-    loadingPackage: effectiveLoadingPackage,
-    loadingSolo: effectiveLoadingSolo,
+    loadingPackage: selection?.kind === "package" && showStagedLoadingHeader,
+    loadingSolo: selection?.kind === "solo" && showStagedLoadingHeader,
     packageDetail: state.package.payload,
     packageError: state.package.error,
     soloDetail: state.solo.payload,
@@ -4199,9 +4331,10 @@ function CardDetailDialog({
 
   return (
     <Dialog open={Boolean(selection)} onOpenChange={onOpenChange}>
-      <DialogContent className="dashboard-dialog-content card-detail-dialog">
+      <DialogContent className="dashboard-dialog-content card-detail-dialog" data-detail-stage={activeDetailStage}>
         <NaturalDetailBody motionKey={detailMotionKey}>
-          {selection?.kind === "request" ? (
+          {selection && showStagedLoadingHeader ? <CardDetailLoadingContent selection={selection} stage={activeDetailStage} /> : null}
+          {selection?.kind === "request" && !showStagedLoadingHeader ? (
             <RequestDetailContent
               detail={selection.detail}
               onSelectGuidance={onSelectGuidance}
@@ -4213,7 +4346,7 @@ function CardDetailDialog({
               canMutateComments={canMutateComments}
             />
           ) : null}
-          {selection?.kind === "slice" ? (
+          {selection?.kind === "slice" && !showStagedLoadingHeader ? (
             <SliceDetailContent
               detail={selection.detail}
               slice={selection.slice}
@@ -4223,7 +4356,7 @@ function CardDetailDialog({
               canMutateComments={canMutateComments}
             />
           ) : null}
-          {selection?.kind === "package" ? (
+          {selection?.kind === "package" && !showStagedLoadingHeader ? (
             <PackageDetailContent
               selection={selection}
               detailPayload={state.package.payload}
@@ -4237,13 +4370,69 @@ function CardDetailDialog({
               canMutateComments={canMutateComments}
             />
           ) : null}
-          {selection?.kind === "solo" ? (
+          {selection?.kind === "solo" && !showStagedLoadingHeader ? (
             <SoloSessionDetailContent session={selection.session} detailPayload={state.solo.payload} loading={effectiveLoadingSolo} error={state.solo.error} />
           ) : null}
         </NaturalDetailBody>
       </DialogContent>
     </Dialog>
   );
+}
+
+function useDashboardReducedMotionPreference() {
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(() => dashboardPrefersReducedMotion());
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const updatePreference = () => setPrefersReducedMotion(query.matches);
+
+    updatePreference();
+    query.addEventListener("change", updatePreference);
+    return () => query.removeEventListener("change", updatePreference);
+  }, []);
+
+  return prefersReducedMotion;
+}
+
+function cardDetailSelectionIdentity(selection: CardDetailSelection | null) {
+  if (!selection) return "closed";
+
+  switch (selection.kind) {
+    case "request":
+      return `request:${selection.detail.work_request.id}`;
+    case "slice":
+      return `slice:${selection.slice.id}:${selection.pkg?.id || "undispatched"}`;
+    case "package":
+      return `package:${selection.pkg.id}`;
+    case "solo":
+      return `solo:${selection.session.id}`;
+  }
+}
+
+function cardDetailContentReady(selection: CardDetailSelection | null, state: CardDetailDialogState) {
+  if (!selection) return false;
+
+  switch (selection.kind) {
+    case "request":
+    case "slice":
+      return true;
+    case "package": {
+      if (state.package.error) return true;
+      const payload = state.package.payload;
+      if (!payload) return false;
+      const payloadId = payload.work_package?.id;
+      return !payloadId || payloadId === selection.pkg.id;
+    }
+    case "solo": {
+      if (state.solo.error) return true;
+      const payload = state.solo.payload;
+      if (!payload) return false;
+      const payloadId = payload.solo_session?.id;
+      return !payloadId || payloadId === selection.session.id;
+    }
+  }
 }
 
 function NaturalDetailBody({ motionKey, children }: { motionKey: string; children: React.ReactNode }) {
@@ -4283,6 +4472,99 @@ function detailLoadState(loading: boolean, payload: unknown, error: string | nul
   if (error) return "error";
   if (payload) return "loaded";
   return loading ? "loading" : "summary";
+}
+
+function CardDetailLoadingContent({ selection, stage }: { selection: CardDetailSelection; stage: CardDetailStage }) {
+  switch (selection.kind) {
+    case "request":
+      return <RequestDetailLoadingContent detail={selection.detail} stage={stage} />;
+    case "slice":
+      return <SliceDetailLoadingContent detail={selection.detail} slice={selection.slice} pkg={selection.pkg} stage={stage} />;
+    case "package":
+      return <PackageDetailLoadingContent selection={selection} stage={stage} />;
+    case "solo":
+      return <SoloSessionDetailLoadingContent session={selection.session} stage={stage} />;
+  }
+}
+
+function DetailLoadingHeader({ title, eyebrow, badge, stage }: { title: string; eyebrow: string; badge: React.ReactNode; stage: CardDetailStage }) {
+  return (
+    <DialogHeader className="detail-loading-header" data-guidance-section style={{ animationDelay: "35ms" }}>
+      <div className="min-w-0">
+        <DialogTitle className="detail-loading-title">{title}</DialogTitle>
+        <DialogDescription className="detail-loading-eyebrow">{eyebrow}</DialogDescription>
+      </div>
+      <div className="detail-loading-actions">
+        <span className="detail-loading-progress" data-progress-state={stage === "width" ? "exiting" : "active"} aria-label="Loading detail" role="status">
+          <Loader2 className="size-3.5" aria-hidden="true" />
+        </span>
+        <div className="shrink-0">{badge}</div>
+      </div>
+    </DialogHeader>
+  );
+}
+
+function RequestDetailLoadingContent({ detail, stage }: { detail: WorkRequestDetail; stage: CardDetailStage }) {
+  const request = detail.work_request;
+  const operational = request.operational_state || null;
+
+  return (
+    <DetailLoadingHeader
+      title={request.title || request.id}
+      eyebrow={`${repoDisplayName(request)} / ${request.base_branch || "main"} / ${request.work_type || "feature"}`}
+      badge={<Badge variant={operationalBadgeVariant(operational, request.status)}>{operationalLabel(operational, request.status)}</Badge>}
+      stage={stage}
+    />
+  );
+}
+
+function SliceDetailLoadingContent({
+  detail,
+  slice,
+  pkg,
+  stage,
+}: {
+  detail: WorkRequestDetail;
+  slice: PlannedSlice;
+  pkg?: WorkPackageCard;
+  stage: CardDetailStage;
+}) {
+  const request = detail.work_request;
+  const operational = sliceOperationalState(slice, pkg);
+
+  return (
+    <DetailLoadingHeader
+      title={slice.title || slice.id}
+      eyebrow={`${repoDisplayName(request)} / ${request.base_branch || "main"} / planned slice`}
+      badge={<Badge variant={operationalBadgeVariant(operational, slice.status)}>{operationalLabel(operational, slice.status)}</Badge>}
+      stage={stage}
+    />
+  );
+}
+
+function PackageDetailLoadingContent({ selection, stage }: { selection: Extract<CardDetailSelection, { kind: "package" }>; stage: CardDetailStage }) {
+  const pkg = selection.pkg;
+  const operational = pkg.operational_state || null;
+
+  return (
+    <DetailLoadingHeader
+      title={pkg.title || pkg.id}
+      eyebrow={`${repoDisplayName(pkg)} / ${pkg.base_branch || "main"} / ${pkg.kind || "work package"}`}
+      badge={<Badge variant={operationalBadgeVariant(operational, pkg.status)}>{operationalLabel(operational, pkg.status)}</Badge>}
+      stage={stage}
+    />
+  );
+}
+
+function SoloSessionDetailLoadingContent({ session, stage }: { session: SoloSession; stage: CardDetailStage }) {
+  return (
+    <DetailLoadingHeader
+      title={session.title || session.id}
+      eyebrow={`${repoDisplayName(session)} / ${session.base_branch || "main"} / ${session.caller_id || "solo"}`}
+      badge={<Badge variant={soloSessionStatusVariant(session.status)}>{formatStatus(session.status)}</Badge>}
+      stage={stage}
+    />
+  );
 }
 
 function RequestDetailContent({
@@ -4524,7 +4806,7 @@ function DangerousStateConfirmationDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => (!pending ? onOpenChange(nextOpen) : undefined)}>
-      <DialogContent className="sm:max-w-[420px]">
+      <DialogContent className="dashboard-dialog-content sm:max-w-[420px]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <AlertTriangle className="size-4 text-destructive" />
@@ -4891,7 +5173,7 @@ function PackageDetailContent({
         }}
       />
       <Dialog open={evidenceDialogOpen} onOpenChange={setEvidenceDialogOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="dashboard-dialog-content sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Close With Evidence</DialogTitle>
             <DialogDescription>Record a completed-without-PR delivery for the linked planned slice.</DialogDescription>
@@ -5126,10 +5408,10 @@ function SoloSessionDetailContent({
             { label: "Attention", value: soloSessionAttentionText(attention) },
           ]}
         />
-        <DetailSection title="What It Does">
+        <DetailDisclosure title="What It Does" meta="Summary">
           <p>{soloSessionPurpose(detailSession, entries)}</p>
-        </DetailSection>
-        <DetailSection title="Progress">
+        </DetailDisclosure>
+        <DetailDisclosure title="Progress" meta={soloProgressMeta(latestEntries, loading, error)}>
           {loading ? (
             <p>Loading the Solo Session ledger&hellip;</p>
           ) : error ? (
@@ -5145,8 +5427,8 @@ function SoloSessionDetailContent({
           ) : (
             <p>No Solo Session activity has been recorded yet.</p>
           )}
-        </DetailSection>
-        <DetailSection title="Blocked By">
+        </DetailDisclosure>
+        <DetailDisclosure title="Blocked By" meta={soloBlockerMeta(activeBlockers, attention)}>
           {activeBlockers.length > 0 ? (
             <DetailActivityList
               items={activeBlockers.map((entry) => ({
@@ -5160,16 +5442,16 @@ function SoloSessionDetailContent({
           ) : (
             <p>No active blocker surfaced.</p>
           )}
-        </DetailSection>
-        <DetailDisclosure title="Planning Files" meta={soloPlanningMeta(planningGroups, loading, error)} defaultOpen>
+        </DetailDisclosure>
+        <DetailDisclosure title="Planning Files" meta={soloPlanningMeta(planningGroups, loading, error)}>
           {loading ? (
             <p className="text-sm text-muted-foreground">Loading planning entries&hellip;</p>
           ) : error ? (
             <p className="text-sm text-muted-foreground">{error}</p>
           ) : planningGroups.length > 0 ? (
             <div className="grid gap-2">
-              {planningGroups.map((group, index) => (
-                <SoloPlanningGroup key={group.kind} group={group} defaultOpen={index === 0} />
+              {planningGroups.map((group) => (
+                <SoloPlanningGroup key={group.kind} group={group} defaultOpen={false} />
               ))}
             </div>
           ) : (

@@ -43,7 +43,8 @@ shape. Each slice needs:
 - Acceptance criteria the worker can prove.
 - Validation commands or blocked-validation owner.
 - Review profile/provider requirements.
-- PR-size or line-budget guidance.
+- PR-size or line-budget guidance; add slice-specific PR-size or line-budget
+  constraints when the default boundary is not enough.
 - Stop conditions and guidance routing.
 - Dependencies and recorded decisions needed to avoid scope drift.
 
@@ -82,10 +83,10 @@ loop; send important findings back to the worker.
   concrete options with labels, exact answer text, descriptions, and useful
   pros/cons.
 
-## Delivery
+## Delivery Closeout
 
-Use `read_work_request_delivery_board` as the delivery surface after dispatch.
-Decisions are rationale; delivery closeout is lifecycle truth.
+Use `read_work_request_delivery_board` as the WR delivery board after dispatch.
+Decisions are rationale; Delivery closeout records lifecycle truth.
 
 Record terminal outcomes with `record_planned_slice_delivery`:
 
@@ -98,7 +99,9 @@ Record terminal outcomes with `record_planned_slice_delivery`:
 Use `reconcile_work_request` for structured PR/GitHub evidence repair. Do not
 infer delivery from prose decisions or chat. Phase-child PRs remain phase
 controlled; call `merge_child_into_phase` before `pr_merged` closeout when
-required. Revoke stale planned-slice worker grants before final closeout.
+required. Revoke stale planned-slice worker grants before final closeout. If
+package evidence is missing or ambiguous, do not record WorkRequest delivery closeout;
+repair evidence first.
 
 ## Stop
 

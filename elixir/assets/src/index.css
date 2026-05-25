@@ -28,6 +28,8 @@
     --input: 214 16% 86%;
     --ring: 191 100% 24%;
     --radius: 0.5rem;
+    --dashboard-modal-ease: cubic-bezier(0.42, 0, 0.58, 1);
+    --dashboard-modal-size-ms: 560ms;
   }
 
   html {
@@ -839,6 +841,11 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
+    :root {
+      --dashboard-modal-size-ms: 0ms;
+      --dashboard-modal-ease: linear;
+    }
+
     .workstream-board,
     .workstream-board .jira-lane,
     .workstream-board .stagger-item,
@@ -852,6 +859,20 @@
       animation: none !important;
       filter: none !important;
       transform: none !important;
+      transition: none !important;
+      will-change: auto;
+    }
+
+    .dialog-overlay,
+    .dialog-content,
+    .dashboard-dialog-content,
+    .dashboard-dialog-content [data-guidance-section],
+    .detail-modal-size-frame,
+    .card-detail-dialog,
+    .detail-loading-progress,
+    .detail-loading-progress svg {
+      animation: none !important;
+      filter: none !important;
       transition: none !important;
       will-change: auto;
     }
@@ -1126,7 +1147,7 @@
   }
 
   .dialog-content {
-    transition: height 240ms cubic-bezier(0.16, 1, 0.3, 1);
+    transition: height var(--dashboard-modal-size-ms) var(--dashboard-modal-ease);
   }
 
   .dialog-content-sizing {
@@ -1141,15 +1162,19 @@
   }
 
   .dashboard-dialog-content[data-state="open"] {
-    animation: guidance-modal-open 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation: guidance-modal-open 220ms var(--dashboard-modal-ease) both;
   }
 
   .dashboard-dialog-content[data-state="closed"] {
-    animation: guidance-modal-close 150ms cubic-bezier(0.4, 0, 0.2, 1) both;
+    animation: guidance-modal-close 150ms var(--dashboard-modal-ease) both;
   }
 
   .dashboard-dialog-content [data-guidance-section] {
     animation: guidance-section-enter 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+
+  .card-detail-dialog [data-guidance-section] {
+    animation: none;
   }
 
   .guidance-option {
@@ -1347,13 +1372,44 @@
   }
 
   .card-detail-dialog {
-    max-width: min(44rem, calc(100vw - 2rem));
+    --detail-compact-width: min(28rem, calc(100vw - 2rem));
+    --detail-final-width: min(44rem, calc(100vw - 2rem));
+    left: auto;
+    right: max(1rem, calc(50vw - 22rem));
+    width: var(--detail-final-width);
+    max-width: none;
+    translate: 0 -50%;
+    transition:
+      width 340ms var(--dashboard-modal-ease),
+      height var(--dashboard-modal-size-ms) var(--dashboard-modal-ease),
+      translate 340ms var(--dashboard-modal-ease);
+  }
+
+  .card-detail-dialog[data-detail-stage="loading"],
+  .card-detail-dialog[data-detail-stage="width"] {
+    overflow: hidden;
+  }
+
+  .card-detail-dialog[data-detail-stage="loading"] {
+    width: var(--detail-compact-width);
+  }
+
+  .card-detail-dialog[data-detail-stage="width"],
+  .card-detail-dialog[data-detail-stage="height"],
+  .card-detail-dialog[data-detail-stage="ready"] {
+    width: var(--detail-final-width);
+  }
+
+  @media (max-width: 46rem) {
+    .card-detail-dialog {
+      right: 1rem;
+    }
   }
 
   .detail-modal-size-frame {
     min-width: 0;
     overflow: hidden;
-    transition: height 240ms cubic-bezier(0.16, 1, 0.3, 1);
+    transition: height var(--dashboard-modal-size-ms) var(--dashboard-modal-ease);
     will-change: height;
   }
 
@@ -1548,6 +1604,65 @@
     color: hsl(var(--muted-foreground));
     font-size: 0.875rem;
     line-height: 1.5;
+  }
+
+  .detail-loading-header {
+    display: grid;
+    min-height: 3.125rem;
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .detail-loading-title {
+    overflow: hidden;
+    padding-right: 0.5rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .detail-loading-eyebrow {
+    margin-top: 0.25rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .detail-loading-actions {
+    display: flex;
+    min-width: 0;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 0.5rem;
+    padding-right: 1.5rem;
+  }
+
+  .detail-loading-progress {
+    display: inline-flex;
+    width: 1.625rem;
+    height: 1.625rem;
+    flex: 0 0 1.625rem;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid hsl(var(--border) / 0.86);
+    border-radius: 999px;
+    background: hsl(var(--muted) / 0.34);
+    color: hsl(var(--muted-foreground));
+    opacity: 1;
+    transform: scale(1);
+    transition:
+      opacity 260ms var(--dashboard-modal-ease),
+      transform 260ms var(--dashboard-modal-ease);
+  }
+
+  .detail-loading-progress svg {
+    animation: detail-progress-spin 900ms linear infinite;
+  }
+
+  .detail-loading-progress[data-progress-state="exiting"] {
+    opacity: 0;
+    transform: scale(0.72);
   }
 
   .detail-disclosure {
@@ -2179,13 +2294,13 @@
   @keyframes guidance-modal-open {
     from {
       opacity: 0;
-      transform: translateY(14px) scale(0.975);
-      filter: blur(2px);
+      transform: translateY(10px);
+      filter: blur(1px);
     }
 
     to {
       opacity: 1;
-      transform: translateY(0) scale(1);
+      transform: translateY(0);
       filter: blur(0);
     }
   }
@@ -2193,13 +2308,13 @@
   @keyframes guidance-modal-close {
     from {
       opacity: 1;
-      transform: translateY(0) scale(1);
+      transform: translateY(0);
       filter: blur(0);
     }
 
     to {
       opacity: 0;
-      transform: translateY(8px) scale(0.985);
+      transform: translateY(6px);
       filter: blur(1px);
     }
   }
@@ -2213,6 +2328,12 @@
     to {
       opacity: 1;
       transform: translateY(0);
+    }
+  }
+
+  @keyframes detail-progress-spin {
+    to {
+      transform: rotate(360deg);
     }
   }
 

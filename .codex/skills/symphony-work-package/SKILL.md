@@ -12,11 +12,16 @@ server is the permission boundary and the WorkPackage is the scope boundary.
 
 1. Bind through the configured private-store MCP bootstrap. Never ask for or
    paste the raw secret.
-2. Call `get_current_assignment()` and treat that WorkPackage as authoritative.
-3. Read current context before coding: `read_context()`, `read_task_plan()`,
+2. If given a claimable WorkKey, call `claim_work_key` through the bootstrap
+   using `--work-key-secret-env <env-var> --claimed-by <stable-worker-id>`.
+   Do not ask for, paste, print, or log the raw secret.
+3. Call `get_current_assignment()` and treat that WorkPackage as authoritative.
+4. Read `sympp://work-packages/{id}/acceptance.md` with the other MCP-backed
+   package resources.
+5. Read current context before coding: `read_context()`, `read_task_plan()`,
    acceptance/review/handoff resources, findings, and progress.
-4. Do not create local `task_plan.md`, `findings.md`, or `progress.md` as the
-   source of truth.
+6. Do not create local `task_plan.md`, `findings.md`, or `progress.md` files as
+   the source of truth.
 
 ## Work Loop
 
@@ -26,7 +31,8 @@ Keep S++ current as the work changes:
 - `append_finding(finding, idempotency_key)`.
 - `append_progress(event, idempotency_key)`.
 - `report_blocker` / `resolve_blocker`.
-- `add_comment`, `list_comments`, `resolve_comment` for scoped notes.
+- `add_comment(target_kind, target_id, body)`, `list_comments`, and
+  `resolve_comment(comment_id, resolution_note?)` for scoped notes.
 - `set_status` for allowed lifecycle transitions.
 - `request_scope_expansion` when the assignment must grow.
 - `create_guidance_request` when product, architecture, dependency, or
@@ -36,8 +42,8 @@ Make guidance human-answerable: state the blocked decision, checked evidence,
 package impact, candidate answers if known, and the smallest answer that
 unblocks you. Treat architect escalation to `human_info_needed` as a blocker.
 
-Stay inside the assigned package. Do not inspect or mutate siblings unless S++
-explicitly gives scoped context.
+Stay inside the assigned WorkPackage. Do not inspect or mutate siblings unless
+S++ explicitly gives scoped context.
 
 ## Branch, PR, Review
 
@@ -66,8 +72,9 @@ already-recorded writes.
 
 ## Safety
 
-Worker grants are scoped to one WorkPackage. Workers cannot mint keys, approve
-scope, merge PRs, advance phase state, or use architect tools.
+Worker grants are scoped to exactly one WorkPackage. Workers cannot mint keys,
+approve scope, merge PRs, advance phase state, or use architect tools.
+`state_key` preserves initialized MCP handshake continuity only.
 
 Never print, store, commit, or paste raw grant secrets, bearer/API/GitHub/Linear
 tokens, MCP auth tokens, WorkKeys, private handoff payloads, full
