@@ -199,15 +199,19 @@ validation as a final guard.
 
 After a planned slice is dispatched, the same `dispatch:work_request` architect
 session can call
-`prepare_work_package_worktree(work_package_id, repo_root, base_branch, branch)`
-for the linked WorkPackage. The tool creates the branch worktree under
+`prepare_work_package_worktree(work_package_id, target_repo_root, base_branch, branch, worktree_parent?)`
+for the linked WorkPackage. `target_repo_root` is the target product repository
+used for git validation, fetch, and worktree operations. The tool creates the
+branch worktree under
 `CODEX_HOME/worktrees/spp_worktrees/<repo-name>-<repo-hash>/<package-id>-<sanitized-branch>-<branch-hash>`,
 records only `worktree_path` on the WorkPackage, and returns workspace path plus
-branch/base launch guidance for the worker. After merge, skip, supersede, close,
-or intentional parking, call `cleanup_work_package_worktree(work_package_id)`.
+branch/base launch guidance for the worker. Git failures include sanitized
+status, stderr, target repo root, worktree destination, branch, and base
+branch diagnostics. After merge, skip, supersede, close, or intentional parking,
+call `cleanup_work_package_worktree(work_package_id, target_repo_root)`.
 Cleanup verifies the recorded path is still under the managed S++ worktree root,
 refuses dirty worktrees by default, proves the recorded worktree belongs to the
-configured/scoped repository, removes the git worktree, prunes git worktree
+target product repository, removes the git worktree, prunes git worktree
 metadata, clears `worktree_path`, and records redacted audit/progress evidence.
 Do not use these tools to force-delete dirty worktrees, clean paths outside the
 managed S++ worktree root, or clean worktrees from a different repository.

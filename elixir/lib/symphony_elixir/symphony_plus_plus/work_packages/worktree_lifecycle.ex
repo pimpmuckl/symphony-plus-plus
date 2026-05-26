@@ -2,17 +2,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   @moduledoc false
 
   alias SymphonyElixir.PathSafety
+  alias SymphonyElixir.SymphonyPlusPlus.Planning.Redactor
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
 
   @type repo :: module()
+  @type git_failure :: %{
+          status: non_neg_integer(),
+          stderr: String.t(),
+          target_repo_root: String.t(),
+          worktree_path: String.t() | nil,
+          branch: String.t() | nil,
+          base_branch: String.t() | nil,
+          git_args: [String.t()]
+        }
   @type lifecycle_result :: %{
           work_package: WorkPackage.t(),
           status: String.t(),
           worktree_path: String.t() | nil,
           branch: String.t() | nil,
           base_branch: String.t() | nil,
-          repo_root: String.t() | nil
+          repo_root: String.t() | nil,
+          target_repo_root: String.t() | nil
         }
   @type error ::
           Repository.error()
@@ -20,15 +31,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
           | :git_not_found
           | :invalid_base_branch
           | :invalid_branch
-          | :invalid_repo_root
+          | :invalid_target_repo_root
           | :invalid_worktree_path
           | :recorded_worktree_missing
           | :stale_existing_branch
           | :unsafe_worktree_path
           | :worktree_path_exists
           | :worktree_path_missing_on_disk
-          | {:git_failed, non_neg_integer()}
+          | {:git_failed, non_neg_integer(), git_failure()}
           | {:path_canonicalize_failed, Path.t(), term()}
+          | {:target_repo_root_conflict, Path.t(), Path.t()}
           | {:worktree_path_already_recorded, Path.t()}
           | {:worktree_record_failed, term()}
 
@@ -37,13 +49,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   def prepare(repo, work_package_id, attrs, opts \\ [])
       when is_atom(repo) and is_binary(work_package_id) and is_map(attrs) and is_list(opts) do
     with {:ok, %WorkPackage{} = work_package} <- Repository.get(repo, work_package_id),
-         {:ok, repo_root} <- repo_root(attrs),
-         {:ok, base_branch} <- ref_name(attrs, "base_branch", :invalid_base_branch, repo_root, opts),
+         {:ok, target_repo_root} <- target_repo_root(attrs),
+         {:ok, base_branch} <- ref_name(attrs, "base_branch", :invalid_base_branch, target_repo_root, opts),
          :ok <- require_base_branch(work_package, base_branch),
-         {:ok, branch} <- ref_name(attrs, "branch", :invalid_branch, repo_root, opts),
-         {:ok, worktree_path} <- worktree_path(work_package, repo_root, branch, opts),
+         {:ok, branch} <- ref_name(attrs, "branch", :invalid_branch, target_repo_root, opts),
+         {:ok, worktree_parent} <- worktree_parent(attrs, opts),
+         {:ok, worktree_path} <- worktree_path(work_package, target_repo_root, branch, worktree_parent),
          :ok <- validate_recorded_prepare_path(work_package, worktree_path) do
-      maybe_replay_prepared(repo, work_package, repo_root, base_branch, branch, worktree_path, opts)
+      maybe_replay_prepared(repo, work_package, target_repo_root, base_branch, branch, worktree_path, opts)
     end
   end
 
@@ -64,15 +77,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     |> canonicalize()
   end
 
-  defp repo_root(attrs) do
-    with {:ok, repo_root} <- required_string(attrs, "repo_root"),
+  defp target_repo_root(attrs) do
+    with {:ok, repo_root} <- target_repo_root_value(attrs),
          {:ok, repo_root} <- canonicalize(repo_root),
          true <- File.dir?(repo_root) do
       {:ok, repo_root}
     else
-      false -> {:error, :invalid_repo_root}
+      false -> {:error, :invalid_target_repo_root}
       {:error, _reason} = error -> error
-      :error -> {:error, :invalid_repo_root}
+      :error -> {:error, :invalid_target_repo_root}
+    end
+  end
+
+  defp target_repo_root_value(attrs) do
+    with {:ok, target_repo_root} <- optional_string(attrs, "target_repo_root"),
+         {:ok, repo_root} <- optional_string(attrs, "repo_root") do
+      target_repo_root_value(target_repo_root, repo_root)
+    else
+      :error -> :error
+    end
+  end
+
+  defp target_repo_root_value(target_repo_root, nil) when is_binary(target_repo_root), do: {:ok, target_repo_root}
+  defp target_repo_root_value(nil, repo_root) when is_binary(repo_root), do: {:ok, repo_root}
+  defp target_repo_root_value(nil, nil), do: :error
+
+  defp target_repo_root_value(target_repo_root, repo_root) do
+    with {:ok, target_repo_root} <- canonicalize(target_repo_root),
+         {:ok, repo_root} <- canonicalize(repo_root) do
+      target_repo_root_conflict(target_repo_root, repo_root)
+    end
+  end
+
+  defp target_repo_root_conflict(target_repo_root, repo_root) do
+    if same_path?(target_repo_root, repo_root) do
+      {:ok, target_repo_root}
+    else
+      {:error, {:target_repo_root_conflict, target_repo_root, repo_root}}
     end
   end
 
@@ -82,7 +123,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
       {:ok, ref_name}
     else
       :error -> {:error, error}
-      {:error, {:git_failed, _status}} -> {:error, error}
+      {:error, {:git_failed, _status, _details}} -> {:error, error}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -90,14 +131,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   defp require_base_branch(%WorkPackage{base_branch: base_branch}, base_branch), do: :ok
   defp require_base_branch(%WorkPackage{}, _base_branch), do: {:error, :invalid_base_branch}
 
-  defp worktree_path(%WorkPackage{} = work_package, repo_root, branch, opts) do
+  defp worktree_parent(attrs, opts) do
     with {:ok, root} <- worktree_root(opts),
-         {:ok, branch_segment} <- unique_segment(branch, branch),
+         {:ok, parent} <- optional_string(attrs, "worktree_parent") do
+      resolve_worktree_parent(root, parent)
+    else
+      :error -> {:error, :unsafe_worktree_path}
+    end
+  end
+
+  defp resolve_worktree_parent(root, nil), do: {:ok, root}
+
+  defp resolve_worktree_parent(root, parent) do
+    with {:ok, parent} <- canonicalize(parent),
+         :ok <- require_inside_root(parent, root) do
+      {:ok, parent}
+    end
+  end
+
+  defp worktree_path(%WorkPackage{} = work_package, repo_root, branch, worktree_parent) do
+    with {:ok, branch_segment} <- unique_segment(branch, branch),
          {:ok, package_segment} <- safe_segment(work_package.id),
          {:ok, repo_segment} <- unique_segment(Path.basename(repo_root), repo_root),
-         candidate <- Path.join([root, repo_segment, "#{package_segment}-#{branch_segment}"]),
+         candidate <- Path.join([worktree_parent, repo_segment, "#{package_segment}-#{branch_segment}"]),
          {:ok, candidate} <- canonicalize(candidate),
-         :ok <- require_inside_root(candidate, root) do
+         :ok <- require_inside_root(candidate, worktree_parent) do
       {:ok, candidate}
     end
   end
@@ -134,12 +192,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   end
 
   defp create_worktree(repo, %WorkPackage{} = work_package, repo_root, base_branch, branch, worktree_path, opts) do
+    git_opts = git_context_opts(opts, repo_root, worktree_path, branch, base_branch)
+
     with :ok <- File.mkdir_p(Path.dirname(worktree_path)),
-         :ok <- fetch_remote_base(repo_root, base_branch, opts),
-         :ok <- git(repo_root, ["worktree", "prune"], opts),
-         {:ok, branch_exists?} <- local_branch_exists?(repo_root, branch, opts),
-         :ok <- add_worktree(repo_root, worktree_path, base_branch, branch, branch_exists?, opts) do
-      record_prepared_worktree(repo, work_package, repo_root, base_branch, branch, worktree_path, !branch_exists?, opts)
+         :ok <- fetch_remote_base(repo_root, base_branch, git_opts),
+         :ok <- git(repo_root, ["worktree", "prune"], git_opts),
+         {:ok, branch_exists?} <- local_branch_exists?(repo_root, branch, git_opts),
+         :ok <- add_worktree(repo_root, worktree_path, base_branch, branch, branch_exists?, git_opts) do
+      record_prepared_worktree(
+        repo,
+        work_package,
+        repo_root,
+        base_branch,
+        branch,
+        worktree_path,
+        !branch_exists?,
+        git_opts
+      )
     else
       {:error, reason} -> {:error, reason}
     end
@@ -161,7 +230,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   defp local_branch_exists?(repo_root, branch, opts) do
     case git(repo_root, ["show-ref", "--verify", "--quiet", "refs/heads/#{branch}"], opts) do
       :ok -> {:ok, true}
-      {:error, {:git_failed, 1}} -> {:ok, false}
+      {:error, {:git_failed, 1, _details}} -> {:ok, false}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -200,7 +269,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   defp cleanup_recorded_worktree(repo, %WorkPackage{} = work_package, opts) do
     with {:ok, root} <- worktree_root(opts),
          {:ok, worktree_path} <- canonicalize(work_package.worktree_path),
-         :ok <- require_inside_root(worktree_path, root) do
+         :ok <- require_inside_root(worktree_path, root),
+         opts <- cleanup_context_opts(opts, worktree_path) do
       cleanup_existing_or_missing_worktree(repo, work_package, worktree_path, opts)
     end
   end
@@ -209,14 +279,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     cond do
       File.dir?(worktree_path) -> cleanup_existing_worktree(repo, work_package, worktree_path, opts)
       File.exists?(worktree_path) -> {:error, :invalid_worktree_path}
-      true -> clear_missing_recorded_worktree(repo, work_package, opts)
+      true -> clear_missing_recorded_worktree(repo, work_package, worktree_path, opts)
     end
   end
 
   defp cleanup_existing_worktree(repo, %WorkPackage{} = work_package, worktree_path, opts) do
+    opts = cleanup_status_context_opts(opts, worktree_path)
+
     with {:ok, status_output} <- git_output(worktree_path, ["status", "--porcelain"], opts),
          :ok <- require_clean(status_output),
          {:ok, repo_root} <- cleanup_repo_root(opts),
+         opts <- cleanup_context_opts(opts, repo_root, worktree_path),
+         :ok <- require_recorded_worktree_owner(repo_root, worktree_path, opts),
          :ok <- require_git_worktree(worktree_path, repo_root, opts),
          :ok <- git(repo_root, ["worktree", "remove", worktree_path], opts),
          :ok <- git(repo_root, ["worktree", "prune"], opts),
@@ -227,8 +301,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
     end
   end
 
-  defp clear_missing_recorded_worktree(repo, %WorkPackage{} = work_package, opts) do
+  defp clear_missing_recorded_worktree(repo, %WorkPackage{} = work_package, worktree_path, opts) do
     with {:ok, repo_root} <- cleanup_repo_root(opts),
+         opts <- cleanup_context_opts(opts, repo_root, worktree_path),
+         :ok <- require_missing_recorded_worktree_owner(repo_root, worktree_path, opts),
          :ok <- git(repo_root, ["worktree", "prune"], opts),
          {:ok, updated_work_package} <- Repository.update(repo, work_package.id, %{worktree_path: nil}) do
       {:ok, result(updated_work_package, "stale_record_cleared", nil, nil, nil, repo_root)}
@@ -258,23 +334,71 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   defp require_clean(""), do: :ok
   defp require_clean(_status_output), do: {:error, :dirty_worktree}
 
+  defp require_recorded_worktree_owner(repo_root, worktree_path, opts) do
+    with {:ok, output} <- git_output(repo_root, ["worktree", "list", "--porcelain"], opts) do
+      if worktree_list_includes?(output, worktree_path) do
+        :ok
+      else
+        {:error, :invalid_worktree_path}
+      end
+    end
+  end
+
+  defp require_missing_recorded_worktree_owner(repo_root, worktree_path, opts) do
+    with {:ok, output} <- git_output(repo_root, ["worktree", "list", "--porcelain"], opts) do
+      if worktree_list_includes?(output, worktree_path) or managed_path_matches_repo_hash?(repo_root, worktree_path) do
+        :ok
+      else
+        {:error, :invalid_worktree_path}
+      end
+    end
+  end
+
+  defp worktree_list_includes?(output, expected_path) do
+    output
+    |> String.split(~r/\R/)
+    |> Enum.filter(&String.starts_with?(&1, "worktree "))
+    |> Enum.any?(fn "worktree " <> path -> same_existing_path?(path, expected_path) end)
+  end
+
+  defp same_existing_path?(left, right) do
+    with {:ok, left} <- canonicalize(String.trim(left)),
+         {:ok, right} <- canonicalize(String.trim(right)) do
+      same_path?(left, right)
+    else
+      _result -> false
+    end
+  end
+
+  defp managed_path_matches_repo_hash?(repo_root, worktree_path) do
+    with {:ok, repo_segment} <- unique_segment(Path.basename(repo_root), repo_root),
+         {:ok, worktree_path} <- canonicalize(worktree_path) do
+      worktree_path
+      |> Path.dirname()
+      |> Path.basename()
+      |> Kernel.==(repo_segment)
+    else
+      _result -> false
+    end
+  end
+
   defp fetch_remote_base(repo_root, base_branch, opts) do
     git(repo_root, ["fetch", "origin", "+refs/heads/#{base_branch}:refs/remotes/origin/#{base_branch}"], opts)
   end
 
   defp cleanup_repo_root(opts) do
-    case Keyword.get(opts, :repo_root) do
+    case Keyword.get(opts, :target_repo_root) || Keyword.get(opts, :repo_root) do
       repo_root when is_binary(repo_root) ->
         with {:ok, repo_root} <- canonicalize(repo_root),
              true <- File.dir?(repo_root) do
           {:ok, repo_root}
         else
-          false -> {:error, :invalid_repo_root}
+          false -> {:error, :invalid_target_repo_root}
           {:error, _reason} = error -> error
         end
 
       _repo_root ->
-        {:error, :invalid_repo_root}
+        {:error, :invalid_target_repo_root}
     end
   end
 
@@ -283,6 +407,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
       {:ok, value} when is_binary(value) ->
         value = String.trim(value)
         if value == "", do: :error, else: {:ok, value}
+
+      _other ->
+        :error
+    end
+  end
+
+  defp optional_string(attrs, key) do
+    case Map.fetch(attrs, key) do
+      {:ok, value} when is_binary(value) ->
+        value = String.trim(value)
+        {:ok, if(value == "", do: nil, else: value)}
+
+      {:ok, nil} ->
+        {:ok, nil}
+
+      :error ->
+        {:ok, nil}
 
       _other ->
         :error
@@ -360,8 +501,86 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
   defp git_output(repo_root, args, opts) do
     with {:ok, git} <- git_executable(opts) do
       {output, status} = System.cmd(git, ["-C", repo_root | args], stderr_to_stdout: true)
-      if status == 0, do: {:ok, output}, else: {:error, {:git_failed, status}}
+
+      if status == 0 do
+        {:ok, output}
+      else
+        {:error, {:git_failed, status, git_failure(status, repo_root, args, output, opts)}}
+      end
     end
+  end
+
+  defp git_context_opts(opts, target_repo_root, worktree_path, branch, base_branch) do
+    Keyword.put(opts, :git_context, %{
+      target_repo_root: target_repo_root,
+      worktree_path: worktree_path,
+      branch: branch,
+      base_branch: base_branch
+    })
+  end
+
+  defp cleanup_context_opts(opts, worktree_path) do
+    Keyword.put(opts, :git_context, %{
+      worktree_path: worktree_path
+    })
+  end
+
+  defp cleanup_status_context_opts(opts, worktree_path) do
+    case cleanup_repo_root(opts) do
+      {:ok, target_repo_root} -> cleanup_context_opts(opts, target_repo_root, worktree_path)
+      _result -> cleanup_context_opts(opts, worktree_path)
+    end
+  end
+
+  defp cleanup_context_opts(opts, target_repo_root, worktree_path) do
+    Keyword.put(opts, :git_context, %{
+      target_repo_root: target_repo_root,
+      worktree_path: worktree_path
+    })
+  end
+
+  defp git_failure(status, repo_root, args, output, opts) do
+    context = Keyword.get(opts, :git_context, %{})
+    target_repo_root = Map.get(context, :target_repo_root, repo_root)
+    worktree_path = Map.get(context, :worktree_path)
+    paths = [repo_root, target_repo_root, worktree_path] |> Enum.filter(&is_binary/1) |> Enum.uniq()
+
+    %{
+      status: status,
+      stderr: sanitize_git_text(output, paths),
+      target_repo_root: sanitize_path(target_repo_root),
+      worktree_path: sanitize_optional_path(worktree_path),
+      branch: sanitize_optional_git_text(Map.get(context, :branch), paths),
+      base_branch: sanitize_optional_git_text(Map.get(context, :base_branch), paths),
+      git_args: Enum.map(args, &sanitize_git_text(&1, paths))
+    }
+  end
+
+  defp sanitize_optional_git_text(nil, _paths), do: nil
+  defp sanitize_optional_git_text(value, paths), do: sanitize_git_text(value, paths)
+
+  defp sanitize_git_text(value, paths) when is_binary(value) do
+    paths
+    |> Enum.reduce(value, fn path, output -> String.replace(output, path, sanitize_path(path)) end)
+    |> Redactor.redact_text()
+    |> String.slice(0, 4_000)
+  end
+
+  defp sanitize_optional_path(nil), do: nil
+  defp sanitize_optional_path(path), do: sanitize_path(path)
+
+  defp sanitize_path(path) when is_binary(path) do
+    redacted_path = Redactor.redact_text(path)
+
+    if Enum.any?(Path.split(redacted_path), &sensitive_path_segment?/1) do
+      "[REDACTED]"
+    else
+      redacted_path
+    end
+  end
+
+  defp sensitive_path_segment?(segment) do
+    Regex.match?(~r/(secret|token|password|credential|bearer|api[-_]?key)/i, segment)
   end
 
   defp git_executable(opts) do
@@ -385,7 +604,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorktreeLifecycle do
       worktree_path: worktree_path,
       branch: branch,
       base_branch: base_branch,
-      repo_root: repo_root
+      repo_root: repo_root,
+      target_repo_root: repo_root
     }
   end
 end
