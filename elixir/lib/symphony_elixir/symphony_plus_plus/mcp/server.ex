@@ -2236,24 +2236,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp tool_specs_for_session(%Config{repo: repo}, session) do
     with :ok <- prepare_mcp_repository(repo) do
-      case Auth.require_session(session, repo) do
-        {:ok, %Session{assignment: %{grant_role: "architect"}}} ->
-          {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_tool_specs()]}
-
-        {:ok, %Session{assignment: %{grant_role: "worker"}}} ->
-          {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
-
-        {:ok, %Session{}} ->
-          {:error, {:unauthorized, :unsupported_grant_role}}
-
-        {:error, {:service_unavailable, _reason} = reason} ->
-          {:error, reason}
-
-        {:error, _reason} ->
-          {:ok, claimable_tool_specs()}
-      end
+      session
+      |> Auth.require_session(repo)
+      |> tool_specs_for_session_result(repo)
     end
   end
+
+  defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "architect"}} = session}, repo) do
+    with {:ok, architect_specs} <- architect_tool_specs(repo, session) do
+      {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_specs]}
+    end
+  end
+
+  defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "worker"}}}, _repo),
+    do: {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
+
+  defp tool_specs_for_session_result({:ok, %Session{}}, _repo), do: {:error, {:unauthorized, :unsupported_grant_role}}
+
+  defp tool_specs_for_session_result({:error, {:service_unavailable, _reason} = reason}, _repo), do: {:error, reason}
+
+  defp tool_specs_for_session_result({:error, _reason}, _repo), do: {:ok, claimable_tool_specs()}
 
   defp claimable_tool_specs, do: [health_tool_spec(), worker_tool_spec("claim_work_key"), bootstrap_tool_spec("claim_private_handoff")]
 
@@ -2265,6 +2267,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool_specs, do: Enum.map(@architect_tools, &architect_tool_spec/1)
+
+  defp architect_tool_specs(repo, %Session{} = session) do
+    Enum.reduce_while(@architect_tools, {:ok, []}, fn name, {:ok, specs} ->
+      case require_architect_capabilities(repo, session.assignment, architect_tool_required_capabilities(name)) do
+        :ok -> {:cont, {:ok, [architect_tool_spec(name) | specs]}}
+        {:error, :insufficient_capability} -> {:cont, {:ok, specs}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, specs} -> {:ok, Enum.reverse(specs)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp tool_specs_for_server(%__MODULE__{session_refresh_required: true}), do: {:ok, claimable_tool_specs()}
 
@@ -3089,10 +3105,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     authorize_architect_tool_call(server, name)
   end
 
-  defp preauthorize_architect_tool_call(%__MODULE__{session: session}, name) do
-    with {:ok, session} <- Auth.require_session(session),
-         :ok <- require_architect_assignment(session.assignment) do
-      require_architect_capabilities(session.assignment, architect_tool_required_capabilities(name))
+  defp preauthorize_architect_tool_call(%__MODULE__{config: config, session: session}, name) do
+    with {:ok, _session} <- architect_session(config.repo, session, architect_tool_required_capabilities(name)) do
+      :ok
     end
   end
 
@@ -4843,10 +4858,30 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       require_architect_anchor_status_scope(repo, session)
     else
       case require_architect_child_work_package_scope(repo, session, work_package_id) do
-        {:ok, _child} -> :ok
-        {:error, reason} -> {:error, reason}
-        {:tool_error, _reason} -> {:error, :phase_scope_not_available}
+        {:ok, _child} ->
+          :ok
+
+        {:error, :phase_scope_not_available} ->
+          require_architect_dispatched_work_package_status_scope(repo, session, work_package_id)
+
+        {:error, reason} ->
+          {:error, reason}
+
+        {:tool_error, _reason} ->
+          {:error, :phase_scope_not_available}
       end
+    end
+  end
+
+  defp require_architect_dispatched_work_package_status_scope(repo, %Session{} = session, work_package_id) do
+    with {:ok, grant} <- require_live_architect_grant(repo, session),
+         {:ok, true} <- ArchitectHandoff.handoff_phase_grant?(repo, grant),
+         {:ok, _work_package, _scope} <- scoped_worktree_work_package(repo, session, work_package_id) do
+      :ok
+    else
+      {:ok, false} -> {:error, :phase_scope_not_available}
+      {:error, :not_found} -> {:error, :phase_scope_not_available}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -7766,7 +7801,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_session(repo, session, capability) when is_binary(capability) do
     with {:ok, session} <- Auth.require_session(session, repo),
          :ok <- require_architect_assignment(session.assignment),
-         :ok <- require_architect_capability(session.assignment, capability) do
+         :ok <- require_architect_capabilities(repo, session.assignment, [capability]) do
       {:ok, session}
     end
   end
@@ -7774,7 +7809,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp architect_session(repo, session, capabilities) when is_list(capabilities) do
     with {:ok, session} <- Auth.require_session(session, repo),
          :ok <- require_architect_assignment(session.assignment),
-         :ok <- require_architect_capabilities(session.assignment, capabilities) do
+         :ok <- require_architect_capabilities(repo, session.assignment, capabilities) do
       {:ok, session}
     end
   end
@@ -7797,19 +7832,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp require_session_grant_match(assignment, %AccessGrant{} = grant) do
-    if assignment.grant_id == grant.id and
-         assignment.work_package_id == grant.work_package_id and
-         assignment.phase_id == grant.phase_id and
-         assignment.display_key == grant.display_key and
-         assignment.grant_role == grant.grant_role and
-         assignment.capabilities == grant.capabilities and
-         assignment.claimed_at == grant.claimed_at and
-         assignment.claimed_by == grant.claimed_by do
+    with {:ok, assignment_capabilities} <- comparable_capabilities(assignment.capabilities),
+         {:ok, grant_capabilities} <- comparable_capabilities(grant.capabilities),
+         true <- assignment.grant_id == grant.id,
+         true <- assignment.work_package_id == grant.work_package_id,
+         true <- assignment.phase_id == grant.phase_id,
+         true <- assignment.display_key == grant.display_key,
+         true <- assignment.grant_role == grant.grant_role,
+         true <- assignment_capabilities == grant_capabilities,
+         true <- assignment.claimed_at == grant.claimed_at,
+         true <- assignment.claimed_by == grant.claimed_by do
       :ok
     else
-      {:error, :phase_scope_not_available}
+      _mismatch -> {:error, :phase_scope_not_available}
     end
   end
+
+  defp comparable_capabilities(capabilities) when is_list(capabilities), do: {:ok, capabilities}
+  defp comparable_capabilities(nil), do: {:ok, []}
+  defp comparable_capabilities(_capabilities), do: {:error, :invalid_capabilities}
 
   defp require_live_grant(%AccessGrant{revoked_at: %DateTime{}}, _now), do: {:error, :assignment_revoked}
 
@@ -7823,6 +7864,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp require_live_grant(%AccessGrant{expires_at: nil}, %DateTime{}), do: :ok
 
+  defp require_architect_capabilities(repo, assignment, capabilities) do
+    with {:ok, effective_assignment} <- effective_architect_assignment(repo, assignment) do
+      require_architect_capabilities(effective_assignment, capabilities)
+    end
+  end
+
   defp require_architect_capabilities(assignment, capabilities) do
     Enum.reduce_while(capabilities, :ok, fn capability, :ok ->
       case require_architect_capability(assignment, capability) do
@@ -7830,6 +7877,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
+  end
+
+  defp effective_architect_assignment(repo, %{grant_role: "architect", grant_id: grant_id} = assignment) do
+    with {:ok, %AccessGrant{} = grant} <- AccessGrantRepository.get(repo, grant_id) do
+      case ArchitectHandoff.handoff_phase_grant?(repo, grant) do
+        {:ok, true} ->
+          {:ok, %{assignment | capabilities: ArchitectHandoff.effective_capabilities(grant.capabilities)}}
+
+        {:ok, false} ->
+          {:ok, %{assignment | capabilities: grant.capabilities || []}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
   end
 
   defp require_architect_work_package_scope(%Session{} = session, work_package_id) do
