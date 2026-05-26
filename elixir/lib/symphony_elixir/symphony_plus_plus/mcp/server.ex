@@ -9,6 +9,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository, as: AccessGrantRepository
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.WorkKey
+  alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
+  alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Service, as: ClaimLeaseService
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Comment
   alias SymphonyElixir.SymphonyPlusPlus.Comments.Service, as: CommentService
   alias SymphonyElixir.SymphonyPlusPlus.Dashboard
@@ -46,6 +48,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDelivery
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch
+  alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository, as: WorkRequestRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.ScopeConstraints
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Service, as: WorkRequestService
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
@@ -54,7 +57,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @health_tool "sympp.health"
   @solo_tools ["solo_attach", "solo_append", "solo_show", "solo_list", "solo_update_status"]
   @bootstrap_tools ["claim_private_handoff", "create_work_request"]
-  @session_claim_tools ["claim_work_key", "claim_private_handoff"]
+  @local_assignment_claim_tool "claim_local_assignment"
+  @session_claim_tools ["claim_work_key", "claim_private_handoff", @local_assignment_claim_tool]
   @private_handoff_claim_keys [
     "mode",
     "path",
@@ -175,6 +179,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @finding_replay_retry_attempts 50
   @handle_state_ttl_ms 86_400_000
   @explicit_handle_state_ttl_ms 604_800_000
+  @local_assignment_claim_stale_after_ms 86_400_000
   @handle_state_agent Module.concat(__MODULE__, HandleState)
   @scope_guard_gate "scope_guard"
   @plan_append_argument_keys ["body", "expected_version", "id", "status", "title", "work_package_id"]
@@ -187,6 +192,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     :session,
     :state_key,
     :state_key_version,
+    local_daemon_trusted: false,
     state_key_explicit: false,
     session_refresh_required: false,
     initialized: false
@@ -197,6 +203,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
           session: Session.t() | nil,
           state_key: term(),
           state_key_version: integer() | nil,
+          local_daemon_trusted: boolean(),
           state_key_explicit: boolean(),
           session_refresh_required: boolean(),
           initialized: boolean()
@@ -214,6 +221,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       session: Keyword.get(opts, :session),
       state_key: state_key,
       state_key_version: nil,
+      local_daemon_trusted: Keyword.get(opts, :local_daemon_trusted, false),
       state_key_explicit: state_key_explicit?,
       session_refresh_required: false,
       initialized: Keyword.get(opts, :initialized, false)
@@ -866,6 +874,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, tool_result(result), %{server | session: session, session_refresh_required: false}}
     else
       {:error, code, message, data} -> {:error, code, message, data}
+    end
+  end
+
+  defp dispatch("tools/call", %{"name" => @local_assignment_claim_tool} = params, %__MODULE__{} = server) do
+    case claim_local_assignment(params, server) do
+      {:ok, result, session} ->
+        {:ok, tool_result(result), %{server | session: session, session_refresh_required: false}}
+
+      {:error, code, message, data} ->
+        {:error, code, message, data}
     end
   end
 
@@ -1741,6 +1759,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(%{"secret" => string_schema(), "claimed_by" => string_schema()}, ["secret", "claimed_by"])
   end
 
+  defp worker_tool_input_schema(@local_assignment_claim_tool) do
+    schema(
+      %{
+        "repo" => string_schema(),
+        "base_branch" => string_schema(),
+        "work_package_id" => string_schema(),
+        "work_request_id" => string_schema(),
+        "branch" => string_schema(),
+        "worktree_path" => string_schema(),
+        "caller_id" => string_schema(),
+        "claimed_by" => string_schema()
+      },
+      ["repo", "base_branch", "work_package_id", "branch", "worktree_path", "caller_id", "claimed_by"]
+    )
+  end
+
   defp worker_tool_input_schema(name) when name in ["get_current_assignment", "read_context", "read_task_plan", "mark_ready"] do
     schema(%{}, [])
   end
@@ -2230,41 +2264,51 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     schema(%{"phase_id" => string_schema(), "update" => object_schema()}, ["phase_id", "update"])
   end
 
-  defp tool_specs_for_session(_config, nil) do
-    {:ok, unbound_tool_specs()}
+  defp tool_specs_for_session(config, nil) do
+    {:ok, unbound_tool_specs(config)}
   end
 
-  defp tool_specs_for_session(%Config{repo: repo}, session) do
+  defp tool_specs_for_session(%Config{repo: repo} = config, session) do
     with :ok <- prepare_mcp_repository(repo) do
       session
       |> Auth.require_session(repo)
-      |> tool_specs_for_session_result(repo)
+      |> tool_specs_for_session_result(config)
     end
   end
 
-  defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "architect"}} = session}, repo) do
+  defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "architect"}} = session}, %Config{repo: repo}) do
     with {:ok, architect_specs} <- architect_tool_specs(repo, session) do
       {:ok, [health_tool_spec(), worker_tool_spec("get_current_assignment") | architect_specs]}
     end
   end
 
-  defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "worker"}}}, _repo),
+  defp tool_specs_for_session_result({:ok, %Session{assignment: %{grant_role: "worker"}}}, %Config{}),
     do: {:ok, [health_tool_spec() | Enum.map(@worker_tools, &worker_tool_spec/1)]}
 
-  defp tool_specs_for_session_result({:ok, %Session{}}, _repo), do: {:error, {:unauthorized, :unsupported_grant_role}}
+  defp tool_specs_for_session_result({:ok, %Session{}}, %Config{}), do: {:error, {:unauthorized, :unsupported_grant_role}}
 
-  defp tool_specs_for_session_result({:error, {:service_unavailable, _reason} = reason}, _repo), do: {:error, reason}
+  defp tool_specs_for_session_result({:error, {:service_unavailable, _reason} = reason}, %Config{}), do: {:error, reason}
 
-  defp tool_specs_for_session_result({:error, _reason}, _repo), do: {:ok, claimable_tool_specs()}
+  defp tool_specs_for_session_result({:error, _reason}, %Config{} = config) do
+    {:ok, claimable_tool_specs(config)}
+  end
 
-  defp claimable_tool_specs, do: [health_tool_spec(), worker_tool_spec("claim_work_key"), bootstrap_tool_spec("claim_private_handoff")]
+  defp claimable_tool_specs(%Config{} = config) do
+    [health_tool_spec(), worker_tool_spec("claim_work_key")] ++
+      local_assignment_claim_tool_specs(config) ++
+      [bootstrap_tool_spec("claim_private_handoff")]
+  end
 
-  defp unbound_tool_specs do
+  defp unbound_tool_specs(%Config{} = config) do
     [health_tool_spec()] ++
       Enum.map(@solo_tools, &solo_tool_spec/1) ++
       [worker_tool_spec("claim_work_key")] ++
+      local_assignment_claim_tool_specs(config) ++
       Enum.map(@bootstrap_tools, &bootstrap_tool_spec/1) ++ architect_tool_specs()
   end
+
+  defp local_assignment_claim_tool_specs(%Config{mode: :http}), do: [worker_tool_spec(@local_assignment_claim_tool)]
+  defp local_assignment_claim_tool_specs(%Config{}), do: []
 
   defp architect_tool_specs, do: Enum.map(@architect_tools, &architect_tool_spec/1)
 
@@ -2283,7 +2327,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:ok, specs}
   end
 
-  defp tool_specs_for_server(%__MODULE__{session_refresh_required: true}), do: {:ok, claimable_tool_specs()}
+  defp tool_specs_for_server(%__MODULE__{session_refresh_required: true, config: config}), do: {:ok, claimable_tool_specs(config)}
 
   defp tool_specs_for_server(%__MODULE__{config: config, session: session}), do: tool_specs_for_session(config, session)
 
@@ -2568,12 +2612,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp handle_session_claim_tool(@local_assignment_claim_tool, params, id, %__MODULE__{} = server) do
+    case claim_local_assignment(params, server) do
+      {:ok, result, session} ->
+        {response(id, tool_result(result)), %{server | session: session, session_refresh_required: false}}
+
+      {:error, code, message, data} ->
+        {error_response(id, code, message, data), server}
+    end
+  end
+
   defp handle_session_claim_tool_notification("claim_work_key", params, %__MODULE__{} = server) do
     handle_claim_work_key_notification(params, server)
   end
 
   defp handle_session_claim_tool_notification("claim_private_handoff", params, %__MODULE__{} = server) do
     case claim_private_handoff(params, server) do
+      {:ok, _result, session} -> {nil, %{server | session: session, session_refresh_required: false}}
+      {:error, _code, _message, _data} -> {nil, server}
+    end
+  end
+
+  defp handle_session_claim_tool_notification(@local_assignment_claim_tool, params, %__MODULE__{} = server) do
+    case claim_local_assignment(params, server) do
       {:ok, _result, session} -> {nil, %{server | session: session, session_refresh_required: false}}
       {:error, _code, _message, _data} -> {nil, server}
     end
@@ -2636,6 +2697,329 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   rescue
     _error -> {:error, -32_000, "Server error", %{"tool" => "claim_work_key", "reason" => "ledger_unavailable"}}
+  end
+
+  defp claim_local_assignment(params, %__MODULE__{config: config, session: session} = server) do
+    with {:ok, arguments} <- worker_tool_arguments(params, @local_assignment_claim_tool),
+         {:ok, claim} <- local_assignment_claim_arguments(arguments),
+         :ok <- require_local_assignment_claim_mode(server),
+         :ok <- require_local_assignment_rebind_allowed(config.repo, session, claim),
+         :ok <- prepare_mcp_repository(config.repo),
+         {:ok, work_package} <- WorkPackageRepository.get(config.repo, claim.work_package_id),
+         :ok <- validate_local_assignment_scope(config.repo, work_package, claim),
+         {:ok, lease, lease_action} <- ensure_local_assignment_claim_lease(config.repo, work_package, claim) do
+      case claim_local_assignment_session(config.repo, work_package, claim) do
+        {:ok, result, session} ->
+          {:ok, Map.put(result, "local_claim", local_assignment_claim_payload(claim, lease, lease_action)), session}
+
+        {:error, reason} ->
+          release_failed_local_assignment_lease(config.repo, lease, lease_action, reason)
+          local_assignment_claim_error(reason)
+      end
+    else
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => @local_assignment_claim_tool, "reason" => reason}}
+      {:error, reason} -> local_assignment_claim_error(reason)
+    end
+  rescue
+    _error -> {:error, -32_000, "Server error", %{"tool" => @local_assignment_claim_tool, "reason" => "ledger_unavailable"}}
+  end
+
+  defp local_assignment_claim_arguments(arguments) do
+    with {:ok, repo} <- required_argument(arguments, "repo"),
+         {:ok, base_branch} <- required_argument(arguments, "base_branch"),
+         {:ok, work_package_id} <- required_argument(arguments, "work_package_id"),
+         {:ok, work_request_id} <- optional_string_argument(arguments, "work_request_id"),
+         {:ok, branch} <- required_argument(arguments, "branch"),
+         {:ok, worktree_path} <- required_argument(arguments, "worktree_path"),
+         {:ok, caller_id} <- required_argument(arguments, "caller_id"),
+         {:ok, claimed_by} <- required_argument(arguments, "claimed_by") do
+      {:ok,
+       %{
+         repo: repo,
+         base_branch: base_branch,
+         work_package_id: work_package_id,
+         work_request_id: work_request_id,
+         branch: branch,
+         worktree_path: normalize_local_assignment_path(worktree_path),
+         caller_id: caller_id,
+         claimed_by: claimed_by
+       }}
+    end
+  end
+
+  defp require_local_assignment_claim_mode(%__MODULE__{
+         config: %Config{mode: :http},
+         initialized: true,
+         local_daemon_trusted: true,
+         state_key_explicit: true
+       }),
+       do: :ok
+
+  defp require_local_assignment_claim_mode(%__MODULE__{config: %Config{mode: :http}, state_key_explicit: true}),
+    do: {:error, :local_daemon_trust_required}
+
+  defp require_local_assignment_claim_mode(%__MODULE__{config: %Config{mode: :http}}), do: {:error, :local_mcp_session_required}
+  defp require_local_assignment_claim_mode(%__MODULE__{}), do: {:error, :local_mcp_required}
+
+  defp require_local_assignment_rebind_allowed(_repo, nil, _claim), do: :ok
+
+  defp require_local_assignment_rebind_allowed(repo, %Session{} = session, claim) do
+    if session.assignment.work_package_id == claim.work_package_id and
+         session.assignment.claimed_by == claim.claimed_by do
+      :ok
+    else
+      case Auth.require_session(session, repo) do
+        {:ok, %Session{}} -> {:error, :session_already_bound}
+        {:error, {:service_unavailable, _reason} = reason} -> {:error, reason}
+        {:error, _reason} -> :ok
+      end
+    end
+  end
+
+  defp validate_local_assignment_scope(repo, %WorkPackage{} = work_package, claim) do
+    with :ok <- require_local_value_match(work_package.repo, claim.repo, :repo_scope_mismatch),
+         :ok <- require_local_value_match(work_package.base_branch, claim.base_branch, :base_branch_scope_mismatch),
+         :ok <- require_local_branch_scope(work_package, claim.branch),
+         :ok <- require_local_worktree_scope(work_package, claim.worktree_path),
+         :ok <- require_live_local_work_package(work_package) do
+      validate_local_work_request_scope(repo, work_package, claim.work_request_id)
+    end
+  end
+
+  defp require_local_value_match(value, value, _reason) when is_binary(value), do: :ok
+  defp require_local_value_match(_expected, _actual, reason), do: {:error, reason}
+
+  defp require_local_branch_scope(%WorkPackage{branch_pattern: branch_pattern}, branch) do
+    case normalize_optional_value(branch_pattern) do
+      nil -> :ok
+      ^branch -> :ok
+      _branch_pattern -> {:error, :branch_scope_mismatch}
+    end
+  end
+
+  defp require_local_worktree_scope(%WorkPackage{worktree_path: worktree_path}, claim_worktree_path) do
+    case normalize_optional_value(worktree_path) do
+      nil ->
+        {:error, :worktree_scope_required}
+
+      expected_worktree_path ->
+        if normalize_local_assignment_path(expected_worktree_path) == claim_worktree_path do
+          :ok
+        else
+          {:error, :worktree_scope_mismatch}
+        end
+    end
+  end
+
+  defp require_live_local_work_package(%WorkPackage{status: status})
+       when status in ["merged", "merged_into_phase", "closed", "abandoned"] do
+    {:error, :work_package_terminal}
+  end
+
+  defp require_live_local_work_package(%WorkPackage{}), do: :ok
+
+  defp validate_local_work_request_scope(_repo, %WorkPackage{}, nil), do: :ok
+
+  defp validate_local_work_request_scope(repo, %WorkPackage{} = work_package, work_request_id) do
+    with {:ok, work_request} <- WorkRequestRepository.get(repo, work_request_id),
+         :ok <- require_local_value_match(work_request.repo, work_package.repo, :work_request_scope_mismatch),
+         :ok <-
+           require_local_value_match(
+             work_request.base_branch,
+             work_package.base_branch,
+             :work_request_scope_mismatch
+           ),
+         true <- local_work_request_package_linked?(repo, work_request_id, work_package.id) do
+      :ok
+    else
+      false -> {:error, :work_request_scope_mismatch}
+      {:error, :not_found} -> {:error, :work_request_scope_mismatch}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp local_work_request_package_linked?(repo, work_request_id, work_package_id) do
+    query =
+      from(planned_slice in PlannedSlice,
+        where: planned_slice.work_request_id == ^work_request_id,
+        where: planned_slice.work_package_id == ^work_package_id,
+        select: 1,
+        limit: 1
+      )
+
+    repo.one(query) == 1
+  end
+
+  defp ensure_local_assignment_claim_lease(repo, %WorkPackage{} = work_package, claim) do
+    actor = local_assignment_actor(claim)
+
+    case ClaimLeaseService.current_for_work_package(repo, work_package.id) do
+      {:ok, %ClaimLease{} = lease} ->
+        renew_local_assignment_claim_lease(repo, work_package.id, lease, actor)
+
+      {:error, :not_found} ->
+        repo
+        |> ClaimLeaseService.claim(work_package.id, actor, stale_after_ms: @local_assignment_claim_stale_after_ms)
+        |> case do
+          {:ok, %ClaimLease{} = lease} -> {:ok, lease, :created}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp renew_local_assignment_claim_lease(repo, work_package_id, %ClaimLease{} = lease, actor) do
+    now = DateTime.utc_now(:microsecond)
+
+    cond do
+      ClaimLeaseService.stale?(lease, now) ->
+        reclaim_local_assignment_claim_lease(repo, work_package_id, actor, "local_assignment_claim_stale")
+
+      lease.actor_id == actor["actor_id"] and lease.status == "active" ->
+        case ClaimLeaseService.heartbeat(repo, lease.id, stale_after_ms: @local_assignment_claim_stale_after_ms) do
+          {:ok, %ClaimLease{} = renewed} -> {:ok, renewed, :heartbeat}
+          {:error, :claim_stale} -> reclaim_local_assignment_claim_lease(repo, work_package_id, actor, "local_assignment_claim_stale")
+          {:error, reason} -> {:error, reason}
+        end
+
+      lease.actor_id == actor["actor_id"] ->
+        {:error, :claim_lease_not_active}
+
+      true ->
+        replace_authority_lost_local_assignment_claim_lease(repo, work_package_id, lease, actor, now)
+    end
+  end
+
+  defp replace_authority_lost_local_assignment_claim_lease(repo, work_package_id, %ClaimLease{} = lease, actor, %DateTime{} = now) do
+    case local_assignment_lease_has_live_grant?(repo, work_package_id, lease, now) do
+      true -> {:error, :claim_lease_active_for_other_actor}
+      false -> release_authority_lost_local_assignment_claim_lease(repo, work_package_id, lease, actor)
+    end
+  end
+
+  defp release_authority_lost_local_assignment_claim_lease(repo, work_package_id, %ClaimLease{} = lease, actor) do
+    case ClaimLeaseService.release(repo, lease.id, reason: "local_assignment_claim_authority_lost") do
+      {:ok, %ClaimLease{}} ->
+        claim_replacement_local_assignment_lease(repo, work_package_id, actor)
+
+      {:error, :claim_stale} ->
+        reclaim_local_assignment_claim_lease(repo, work_package_id, actor, "local_assignment_claim_stale")
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp claim_replacement_local_assignment_lease(repo, work_package_id, actor) do
+    case ClaimLeaseService.claim(repo, work_package_id, actor, stale_after_ms: @local_assignment_claim_stale_after_ms) do
+      {:ok, %ClaimLease{} = replacement} -> {:ok, replacement, :reclaimed}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp local_assignment_lease_has_live_grant?(repo, work_package_id, %ClaimLease{actor_display_name: claimed_by}, %DateTime{} = now)
+       when is_binary(claimed_by) do
+    query =
+      from(grant in AccessGrant,
+        where: grant.work_package_id == ^work_package_id,
+        where: grant.grant_role == "worker",
+        where: grant.claimed_by == ^claimed_by,
+        where: not is_nil(grant.claimed_at),
+        where: is_nil(grant.revoked_at),
+        where: is_nil(grant.expires_at) or grant.expires_at > ^now,
+        select: 1,
+        limit: 1
+      )
+
+    repo.one(query) == 1
+  end
+
+  defp local_assignment_lease_has_live_grant?(_repo, _work_package_id, %ClaimLease{}, %DateTime{}), do: true
+
+  defp reclaim_local_assignment_claim_lease(repo, work_package_id, actor, reason) do
+    case ClaimLeaseService.reclaim_stale(repo, work_package_id, actor,
+           reason: reason,
+           stale_after_ms: @local_assignment_claim_stale_after_ms
+         ) do
+      {:ok, %ClaimLease{} = lease} -> {:ok, lease, :reclaimed}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp claim_local_assignment_session(repo, %WorkPackage{} = work_package, claim) do
+    with {:ok, grant} <- AccessGrantService.claim_local_worker_grant(repo, work_package.id, claimed_by: claim.claimed_by),
+         {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: grant.secret_hash),
+         :ok <- require_worker_assignment(session.assignment) do
+      {:ok, %{"assignment" => Session.public_assignment(session)}, session}
+    end
+  end
+
+  defp local_assignment_actor(claim) do
+    material =
+      [
+        claim.repo,
+        claim.base_branch,
+        claim.work_package_id,
+        claim.branch,
+        claim.worktree_path,
+        claim.claimed_by
+      ]
+      |> Enum.join("\0")
+
+    %{
+      "actor_kind" => "agent",
+      "actor_id" => "local:" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false),
+      "actor_display_name" => claim.claimed_by
+    }
+  end
+
+  defp local_assignment_claim_payload(claim, %ClaimLease{} = lease, lease_action) do
+    %{
+      "tool" => @local_assignment_claim_tool,
+      "mode" => "local-http",
+      "repo" => claim.repo,
+      "base_branch" => claim.base_branch,
+      "work_package_id" => claim.work_package_id,
+      "work_request_id" => claim.work_request_id,
+      "branch" => claim.branch,
+      "worktree_path" => claim.worktree_path,
+      "caller_id" => claim.caller_id,
+      "claimed_by" => claim.claimed_by,
+      "claim_lease_id" => lease.id,
+      "claim_lease_status" => lease.status,
+      "claim_lease_action" => Atom.to_string(lease_action)
+    }
+  end
+
+  defp release_failed_local_assignment_lease(repo, %ClaimLease{} = lease, lease_action, _reason)
+       when lease_action in [:created, :reclaimed] do
+    _result = ClaimLeaseService.release(repo, lease.id, reason: "local_assignment_claim_failed")
+    :ok
+  end
+
+  defp release_failed_local_assignment_lease(repo, %ClaimLease{} = lease, :heartbeat, reason)
+       when reason in [:expired, :revoked, :worker_grant_required] do
+    _result = ClaimLeaseService.release(repo, lease.id, reason: "local_assignment_claim_failed")
+    :ok
+  end
+
+  defp release_failed_local_assignment_lease(_repo, %ClaimLease{}, _lease_action, _reason), do: :ok
+
+  defp normalize_local_assignment_path(path) when is_binary(path) do
+    path
+    |> String.trim()
+    |> Path.expand()
+    |> normalize_local_assignment_path_case()
+  end
+
+  defp normalize_local_assignment_path_case(path) do
+    case :os.type() do
+      {:win32, _name} -> String.downcase(path)
+      _type -> path
+    end
   end
 
   defp claim_private_handoff(params, %__MODULE__{config: config, session: %Session{} = session}) do
@@ -3048,6 +3432,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp claim_error({:storage_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
   defp claim_error({:migration_failed, _reason} = reason), do: service_error(reason, "claim_work_key")
   defp claim_error(reason), do: {:error, -32_001, "Unauthorized", %{"tool" => "claim_work_key", "reason" => reason_text(reason)}}
+
+  defp local_assignment_claim_error(:database_busy), do: service_error(:database_busy, @local_assignment_claim_tool)
+  defp local_assignment_claim_error({:storage_failed, _reason} = reason), do: service_error(reason, @local_assignment_claim_tool)
+  defp local_assignment_claim_error({:migration_failed, _reason} = reason), do: service_error(reason, @local_assignment_claim_tool)
+
+  defp local_assignment_claim_error(reason) do
+    {:error, -32_001, "Unauthorized", %{"tool" => @local_assignment_claim_tool, "reason" => reason_text(reason)}}
+  end
 
   defp private_handoff_claim_error(:database_busy), do: service_error(:database_busy, "claim_private_handoff")
   defp private_handoff_claim_error({:storage_failed, _reason} = reason), do: service_error(reason, "claim_private_handoff")

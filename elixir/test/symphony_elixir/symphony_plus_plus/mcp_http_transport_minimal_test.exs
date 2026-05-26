@@ -49,6 +49,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPTransportMinimalTest do
     assert %Server{initialized: true, session: nil} = HTTPStateStore.get(config, "client-a", result.state_key)
   end
 
+  test "initialize only marks state trusted when the internal daemon config opts in", %{config: config} do
+    assert {:ok, ordinary} = HTTPTransport.handle(config, initialize_request("ordinary-init"), client_key: "ordinary-client")
+    assert %Server{local_daemon_trusted: false} = HTTPStateStore.get(config, "ordinary-client", ordinary.state_key)
+
+    trusted_config = Config.default(mode: :http, repo: Repo, local_daemon_trusted: true)
+
+    assert {:ok, trusted} = HTTPTransport.handle(trusted_config, initialize_request("trusted-init"), client_key: "trusted-client")
+    assert %Server{local_daemon_trusted: true} = HTTPStateStore.get(trusted_config, "trusted-client", trusted.state_key)
+  end
+
   test "tools/list after initialize uses the unbound tool boundary", %{config: config} do
     {:ok, init} = HTTPTransport.handle(config, initialize_request("init"), client_key: "client-a")
 

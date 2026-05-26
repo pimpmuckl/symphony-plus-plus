@@ -125,6 +125,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPHTTPEndpointTest do
 
     for tool <- [
           "claim_work_key",
+          "claim_local_assignment",
           "solo_append",
           "solo_attach",
           "solo_list",
