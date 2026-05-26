@@ -36,12 +36,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     :ok
   end
 
-  test "WR architect reads delivery board and records idempotent closeout without child-status capability", %{repo: repo} do
+  test "WR architect stale capabilities still read scoped package status and record closeout", %{repo: repo} do
     {work_request, planned_slice, linked_package} = linked_slice!(repo, work_request_id: "WR-MCP-DELIVERY-READ-CLOSE")
-    session = create_work_request_architect_session(repo, work_request, ["read:work_request", "write:work_request"])
+
+    session =
+      repo
+      |> create_work_request_architect_session(work_request, ArchitectHandoff.capabilities())
+      |> stale_session_capabilities(legacy_work_request_architect_capabilities())
 
     read_child_response = mcp_tool(repo, session, "read_child_status", %{"work_package_id" => linked_package.id})
-    assert get_in(read_child_response, ["error", "data", "reason"]) == "insufficient_capability"
+    assert get_in(read_child_response, ["result", "structuredContent", "work_package", "id"]) == linked_package.id
+    assert get_in(read_child_response, ["result", "structuredContent", "work_package", "status"]) == linked_package.status
+
+    {_sibling_request, _sibling_slice, sibling_package} = linked_slice!(repo, work_request_id: "WR-MCP-DELIVERY-READ-CLOSE-SIBLING")
+    sibling_response = mcp_tool(repo, session, "read_child_status", %{"work_package_id" => sibling_package.id})
+    assert get_in(sibling_response, ["error", "code"]) == -32_003
+    assert get_in(sibling_response, ["error", "data", "reason"]) == "outside_session_scope"
 
     board_response = mcp_tool(repo, session, "read_work_request_delivery_board", %{"work_request_id" => work_request.id})
     board_payload = get_in(board_response, ["result", "structuredContent"])
@@ -74,6 +84,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     refute get_in(read_after_closeout, ["result", "structuredContent" | delivery_evidence_path]) =~ evidence_query_value
 
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 1
+  end
+
+  test "WR architect read_child_status falls back for dispatched package scope tool errors", %{repo: repo} do
+    {work_request, _planned_slice, linked_package} = linked_slice!(repo, work_request_id: "WR-MCP-DELIVERY-STATUS-FALLBACK")
+    session = create_work_request_architect_session(repo, work_request, ArchitectHandoff.capabilities())
+
+    assert {:ok, _updated_package} =
+             WorkPackageRepository.update(repo, linked_package.id, %{
+               kind: "phase_child",
+               phase_id: ArchitectHandoff.phase_id_for_work_request(work_request),
+               parent_id: ArchitectHandoff.anchor_id_for_work_request(work_request),
+               allowed_file_globs: ["outside/**"]
+             })
+
+    response = mcp_tool(repo, session, "read_child_status", %{"work_package_id" => linked_package.id})
+
+    assert get_in(response, ["result", "structuredContent", "work_package", "id"]) == linked_package.id
+    assert get_in(response, ["result", "structuredContent", "work_package", "status"]) == linked_package.status
+  end
+
+  test "WR architect narrowed capabilities do not regain child status reads", %{repo: repo} do
+    {work_request, _planned_slice, linked_package} = linked_slice!(repo, work_request_id: "WR-MCP-DELIVERY-NARROWED")
+    narrowed_capabilities = legacy_work_request_architect_capabilities()
+
+    session =
+      repo
+      |> create_work_request_architect_session(work_request, ArchitectHandoff.capabilities())
+      |> stale_session_capabilities(ArchitectHandoff.capabilities())
+
+    assert :ok = update_grant_capabilities(repo, session.assignment.grant_id, narrowed_capabilities)
+
+    tools_response =
+      MCPHarness.request(%{"jsonrpc" => "2.0", "id" => "tools", "method" => "tools/list", "params" => %{}},
+        repo: repo,
+        session: session
+      )
+
+    tools_by_name = tools_response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
+
+    refute Map.has_key?(tools_by_name, "read_child_status")
+
+    read_child_response = mcp_tool(repo, session, "read_child_status", %{"work_package_id" => linked_package.id})
+    assert get_in(read_child_response, ["error", "code"]) == -32_001
+    assert get_in(read_child_response, ["error", "data", "reason"]) == "insufficient_capability"
   end
 
   test "WR architect can revoke a completed planned-slice worker grant before closeout", %{repo: repo} do
@@ -292,6 +346,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
     MCPHarness.session(assignment, proof_hash: minted.grant.secret_hash)
   end
 
+  defp update_grant_capabilities(repo, grant_id, capabilities) do
+    grant = repo.get!(AccessGrant, grant_id)
+
+    case repo.update(AccessGrant.changeset(grant, %{capabilities: capabilities})) do
+      {:ok, _grant} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp stale_session_capabilities(%Session{} = session, capabilities) do
+    %{session | assignment: %{session.assignment | capabilities: capabilities}}
+  end
+
   defp create_worker_session(repo, %WorkPackage{} = work_package) do
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, work_package.id)
     assert {:ok, assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
@@ -315,6 +382,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
       "grant_id" => grant_id,
       "reason" => reason
     }
+  end
+
+  defp legacy_work_request_architect_capabilities do
+    ArchitectHandoff.capabilities() -- ["read:child_progress", "read:child_findings"]
   end
 
   defp superseded_args(work_request, planned_slice, idempotency_key, successor_planned_slice_id, reason, successor_work_package_id \\ nil) do

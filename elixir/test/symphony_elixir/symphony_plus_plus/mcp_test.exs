@@ -1886,10 +1886,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
   test "tools list advertises static architect schemas for architect sessions", %{repo: repo} do
     {_anchor, session, _grant} =
       create_phase_architect_session(repo, "SYMPP-ARCHITECT-TOOLS-LIST", [
+        "create:child_work_package",
         "read:child_progress",
         "read:child_findings",
         "read:work_request",
         "write:work_request",
+        "read:guidance_request",
         "write:guidance_request",
         "mint:child_worker_key",
         "revoke:child_worker_key",
@@ -1897,8 +1899,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         "dispatch:work_request",
         "approve:child_ready_state",
         "approve:scope_expansion",
+        "request:child_replan",
         "merge:child_into_phase",
-        "split:child_work_package"
+        "split:child_work_package",
+        "publish:phase_update"
       ])
 
     server = Server.new(test_mcp_config(repo), initialized: true, session: session)
@@ -2122,11 +2126,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "add_work_request_planned_slice",
           "approve_work_request_planned_slice",
           "skip_work_request_planned_slice",
-          "mark_work_request_sliced",
-          "dispatch_work_request_planned_slice"
+          "mark_work_request_sliced"
         ] do
       assert Map.has_key?(tools_by_name, tool)
     end
+
+    refute Map.has_key?(tools_by_name, "dispatch_work_request_planned_slice")
   end
 
   test "tools list advertises WorkRequest schemas when phase anchor no longer matches frozen scope", %{repo: repo} do
@@ -2157,11 +2162,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
           "add_work_request_planned_slice",
           "approve_work_request_planned_slice",
           "skip_work_request_planned_slice",
-          "mark_work_request_sliced",
-          "dispatch_work_request_planned_slice"
+          "mark_work_request_sliced"
         ] do
       assert Map.has_key?(tools_by_name, tool)
     end
+
+    refute Map.has_key?(tools_by_name, "dispatch_work_request_planned_slice")
   end
 
   test "tools list exposes only claim refresh for stale architect sessions after grant revocation", %{repo: repo} do
@@ -2205,25 +2211,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(response, ["error", "data", "reason"]) == "ledger_unavailable"
   end
 
-  test "tools list advertises architect schemas even when lifecycle capability is not an MCP tool grant", %{repo: repo} do
-    assert {:ok, package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-LIFECYCLE-ONLY", kind: "mcp"))
-    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["architect:lifecycle.transition"])
+  test "tools list filters architect tools from live capabilities when stored capabilities are stale", %{repo: repo} do
+    assert {:ok, package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-LIVE-CAPABILITY-LIST", kind: "mcp"))
+
+    assert {:ok, architect_work_key} = create_architect_work_key(repo, package.id, ["read:phase"])
 
     assert {:ok, architect_assignment} =
              AccessGrantRepository.claim(repo, architect_work_key.secret, %{claimed_by: "architect-1"}, DateTime.utc_now(:microsecond))
 
-    session = MCPHarness.session(architect_assignment, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
+    session = MCPHarness.session(%{architect_assignment | capabilities: []}, proof_hash: WorkKey.secret_hash(architect_work_key.secret))
     server = Server.new(Config.default(repo: repo), initialized: true, session: session)
 
-    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "lifecycle-only-architect-tools", "method" => "tools/list", "params" => %{}}, server)
+    response = Server.handle(%{"jsonrpc" => "2.0", "id" => "live-capability-architect-tools", "method" => "tools/list", "params" => %{}}, server)
     tools_by_name = response |> get_in(["result", "tools"]) |> Map.new(&{&1["name"], &1})
 
     assert Map.has_key?(tools_by_name, "get_current_assignment")
     assert Map.has_key?(tools_by_name, "sympp.health")
-
-    for tool <- @architect_tool_names do
-      assert Map.has_key?(tools_by_name, tool)
-    end
+    assert Map.has_key?(tools_by_name, "read_phase_board")
+    refute Map.has_key?(tools_by_name, "read_child_status")
+    refute Map.has_key?(tools_by_name, "create_child_work_package")
 
     denied_response =
       Server.handle(
@@ -4931,7 +4938,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     }
 
     denied_calls = [
-      {"create_child_work_package", %{"package" => %{"id" => "SYMPP-ARCHITECT-DENIED-CHILD", "title" => "Denied", "acceptance_criteria" => ["Denied"]}}},
+      {"create_child_work_package",
+       %{
+         "package" => %{
+           "id" => "SYMPP-ARCHITECT-DENIED-CHILD",
+           "title" => "Denied",
+           "acceptance_criteria" => ["Denied"]
+         }
+       }},
       {"mint_child_worker_key", %{"work_package_id" => package.id, "template" => child_worker_template()}},
       {"revoke_child_worker_key", %{"grant_id" => "grant-denied", "reason" => "Denied"}},
       {"revoke_planned_slice_worker_key", %{"work_request_id" => "wr-denied", "planned_slice_id" => "slice-denied", "grant_id" => "grant-denied", "reason" => "Denied"}},
@@ -6738,14 +6752,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       |> get_in(["result", "tools"])
       |> Map.new(&{&1["name"], &1})
 
-    assert Map.has_key?(read_only_tools, "ask_work_request_question")
-    assert Map.has_key?(read_only_tools, "add_work_request_planned_slice")
-    assert Map.has_key?(read_only_tools, "approve_work_request_planned_slice")
-    assert Map.has_key?(read_only_tools, "skip_work_request_planned_slice")
-    assert Map.has_key?(read_only_tools, "mark_work_request_sliced")
-    assert Map.has_key?(read_only_tools, "dispatch_work_request_planned_slice")
-    assert Map.has_key?(read_only_tools, "prepare_work_package_worktree")
-    assert Map.has_key?(read_only_tools, "cleanup_work_package_worktree")
+    assert Map.has_key?(read_only_tools, "list_work_requests")
+    assert Map.has_key?(read_only_tools, "read_work_request")
+    refute Map.has_key?(read_only_tools, "ask_work_request_question")
+    refute Map.has_key?(read_only_tools, "add_work_request_planned_slice")
+    refute Map.has_key?(read_only_tools, "approve_work_request_planned_slice")
+    refute Map.has_key?(read_only_tools, "skip_work_request_planned_slice")
+    refute Map.has_key?(read_only_tools, "mark_work_request_sliced")
+    refute Map.has_key?(read_only_tools, "dispatch_work_request_planned_slice")
+    refute Map.has_key?(read_only_tools, "prepare_work_package_worktree")
+    refute Map.has_key?(read_only_tools, "cleanup_work_package_worktree")
 
     assert {:ok, legacy_package} =
              WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-ARCHITECT-WR-MUTATE-LEGACY", kind: "mcp"))
