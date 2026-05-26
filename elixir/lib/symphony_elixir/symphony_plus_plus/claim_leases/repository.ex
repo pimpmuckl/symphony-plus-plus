@@ -25,12 +25,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
 
   @spec claim(repo(), map(), keyword()) :: {:ok, ClaimLease.t()} | {:error, error()}
   def claim(repo, attrs, opts \\ []) when is_atom(repo) and is_map(attrs) and is_list(opts) do
-    changeset = ClaimLease.create_changeset(attrs, now: now(opts), lineage: Keyword.get(opts, :lineage))
-
-    with {:ok, changeset} <- validate_access_grant_scope(repo, changeset) do
-      changeset
-      |> repo.insert()
-      |> normalize_insert_result()
+    with {:ok, changeset} <- claim_changeset(repo, attrs, opts) do
+      insert_claim(repo, changeset)
     end
   rescue
     error in Ecto.ConstraintError -> normalize_constraint_error(error)
@@ -144,11 +140,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
 
   defp reclaim_stale_transaction(repo, work_package_id, attrs, opts) do
     now = now(opts)
+    replacement_opts = opts |> Keyword.put(:now, now) |> Keyword.put(:lineage, :replacement)
 
     with {:ok, current} <- current_for_work_package(repo, work_package_id),
          :ok <- require_stale(current, now),
+         replacement_attrs = replacement_attrs(current, attrs, now),
+         {:ok, replacement_changeset} <- claim_changeset(repo, replacement_attrs, replacement_opts),
          {:ok, _reclaimed} <- reclaim_current(repo, current, attrs, now) do
-      claim(repo, replacement_attrs(current, attrs, now), opts |> Keyword.put(:now, now) |> Keyword.put(:lineage, :replacement))
+      insert_claim(repo, replacement_changeset)
     end
   end
 
@@ -288,6 +287,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
   end
 
   defp blank?(value), do: value in [nil, ""]
+
+  defp claim_changeset(repo, attrs, opts) do
+    changeset = ClaimLease.create_changeset(attrs, now: now(opts), lineage: Keyword.get(opts, :lineage))
+
+    validate_access_grant_scope(repo, changeset)
+  end
+
+  defp insert_claim(repo, %Changeset{} = changeset) do
+    changeset
+    |> repo.insert()
+    |> normalize_insert_result()
+  end
 
   defp normalize_insert_result({:ok, claim_lease}), do: {:ok, claim_lease}
 

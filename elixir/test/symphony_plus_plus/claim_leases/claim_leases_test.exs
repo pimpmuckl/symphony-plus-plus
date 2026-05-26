@@ -211,6 +211,34 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
              )
 
     assert Keyword.has_key?(changeset.errors, :access_grant_id)
+
+    assert {:ok, %{grant: grant}} = AccessGrantService.mint_worker_grant(repo, work_package.id)
+
+    assert {:ok, claim} =
+             Service.claim(
+               repo,
+               work_package.id,
+               %{actor_kind: "agent", actor_id: "agent-1"},
+               access_grant_id: grant.id,
+               stale_after_ms: 1_000,
+               now: now
+             )
+
+    reclaim_at = DateTime.add(now, 1_001, :millisecond)
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Service.reclaim_stale(
+               repo,
+               work_package.id,
+               %{actor_kind: "agent", actor_id: "agent-2"},
+               access_grant_id: other_grant.id,
+               now: reclaim_at
+             )
+
+    assert Keyword.has_key?(changeset.errors, :access_grant_id)
+    assert {:ok, still_current} = Repository.get(repo, claim.id)
+    assert still_current.status == "active"
+    assert still_current.reclaimed_at == nil
   end
 
   test "stale reclaim preserves expiry duration when replacement omits expiry", %{repo: repo} do
