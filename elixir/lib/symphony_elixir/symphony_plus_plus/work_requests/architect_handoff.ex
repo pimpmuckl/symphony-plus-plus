@@ -31,16 +31,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
     "read:guidance_request",
     "write:guidance_request"
   ]
-  @legacy_architect_capability_sets [
-    [
-      "read:phase",
-      "read:work_request",
-      "write:work_request",
-      "dispatch:work_request",
-      "read:guidance_request",
-      "write:guidance_request"
-    ]
-  ]
   @phase_id_prefix "phase-wr-architect-"
   @anchor_id_prefix "SYMPP-WR-ARCH-"
   @anchor_kind "delegation"
@@ -73,13 +63,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
 
   @spec effective_capabilities([String.t()] | nil) :: [String.t()]
   def effective_capabilities(capabilities) do
-    normalized_capabilities = normalized_strings(capabilities)
-
-    if legacy_capabilities?(normalized_capabilities) do
-      @architect_capabilities
-    else
-      normalized_capabilities
-    end
+    normalized_strings(capabilities)
   end
 
   @spec phase_id_for_work_request(WorkRequest.t()) :: String.t()
@@ -721,13 +705,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.ArchitectHandoff do
   end
 
   defp normalized_strings(_values), do: []
-
-  defp legacy_capabilities?(capabilities) do
-    capability_set?(capabilities, @architect_capabilities) or
-      Enum.any?(@legacy_architect_capability_sets, &capability_set?(capabilities, &1))
-  end
-
-  defp capability_set?(left, right), do: normalized_strings(left) == normalized_strings(right)
 
   defp work_request_value(%WorkRequest{} = work_request, key), do: Map.get(work_request, key)
 

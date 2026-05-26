@@ -106,8 +106,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPDeliveryToolsTest do
 
   test "WR architect narrowed capabilities do not regain child status reads", %{repo: repo} do
     {work_request, _planned_slice, linked_package} = linked_slice!(repo, work_request_id: "WR-MCP-DELIVERY-NARROWED")
-    narrowed_capabilities = ArchitectHandoff.capabilities() -- ["read:child_findings"]
-    session = create_work_request_architect_session(repo, work_request, ArchitectHandoff.capabilities())
+    narrowed_capabilities = legacy_work_request_architect_capabilities()
+
+    session =
+      repo
+      |> create_work_request_architect_session(work_request, ArchitectHandoff.capabilities())
+      |> stale_session_capabilities(ArchitectHandoff.capabilities())
 
     assert :ok = update_grant_capabilities(repo, session.assignment.grant_id, narrowed_capabilities)
 
