@@ -50,7 +50,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
 
     indexes = index_names(repo, "sympp_claim_leases")
     assert "sympp_claim_leases_one_current_per_work_package_index" in indexes
-    assert "sympp_claim_leases_status_last_seen_index" in indexes
+    assert "sympp_claim_leases_status_last_seen_index" not in indexes
+    assert "sympp_claim_leases_actor_index" not in indexes
   end
 
   test "claim lease transitions preserve actor identity and continuity through stale reclaim", %{repo: repo} do
@@ -125,6 +126,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
     assert replacement.previous_claim_id == claim.id
     assert replacement.access_grant_id == grant.id
     assert replacement.stale_after_ms == 1_000
+    assert replacement.stale_reason == nil
+    assert replacement.reclaim_reason == nil
+    assert replacement.reclaimed_at == nil
+    assert replacement.released_at == nil
     assert DateTime.compare(replacement.lease_started_at, reclaim_at) == :eq
     assert Service.stale?(replacement, DateTime.add(reclaim_at, 1_001, :millisecond))
 

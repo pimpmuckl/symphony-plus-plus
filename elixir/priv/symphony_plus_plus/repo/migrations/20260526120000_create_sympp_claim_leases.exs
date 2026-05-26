@@ -32,12 +32,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.Repo.Migrations.CreateSymppClaimLeases
     end
 
     create(unique_index(:sympp_claim_leases, [:id], name: :sympp_claim_leases_id_unique_index))
-    create(index(:sympp_claim_leases, [:work_package_id], name: :sympp_claim_leases_work_package_lookup_index))
-    create(index(:sympp_claim_leases, [:access_grant_id], name: :sympp_claim_leases_access_grant_id_index))
-    create(index(:sympp_claim_leases, [:claim_group_id], name: :sympp_claim_leases_claim_group_id_index))
-    create(index(:sympp_claim_leases, [:actor_kind, :actor_id], name: :sympp_claim_leases_actor_index))
-    create(index(:sympp_claim_leases, [:status, :last_seen_at], name: :sympp_claim_leases_status_last_seen_index))
-    create(index(:sympp_claim_leases, [:lease_expires_at], name: :sympp_claim_leases_lease_expires_at_index))
 
     create(
       unique_index(:sympp_claim_leases, [:work_package_id],

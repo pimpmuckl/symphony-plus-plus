@@ -12,6 +12,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease do
   @statuses @active_statuses ++ ["released", "reclaimed"]
   @actor_kinds ["agent", "human", "operator", "system"]
   @immutable_fields ~w(id work_package_id access_grant_id claim_group_id previous_claim_id actor_kind actor_id actor_display_name lease_started_at)a
+  @create_fields ~w(id work_package_id access_grant_id claim_group_id previous_claim_id actor_kind actor_id actor_display_name status lease_started_at lease_expires_at last_seen_at stale_after_ms)a
 
   @type t :: %__MODULE__{}
 
@@ -56,13 +57,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease do
       attrs
       |> Map.put("id", id)
       |> put_new_value("claim_group_id", id)
-      |> put_new_value("status", "active")
+      |> Map.put("status", "active")
       |> put_new_value("actor_kind", "agent")
       |> put_new_value("lease_started_at", now)
       |> put_new_value("last_seen_at", now)
 
     %__MODULE__{}
-    |> cast(attrs, fields())
+    |> cast(attrs, @create_fields)
     |> validate_required([
       :id,
       :work_package_id,
@@ -77,8 +78,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease do
     |> validate_inclusion(:actor_kind, @actor_kinds)
     |> validate_number(:stale_after_ms, greater_than: 0)
     |> validate_nonblank_optional(:actor_display_name)
-    |> validate_nonblank_optional(:paused_by_actor_id)
-    |> validate_nonblank_optional(:reclaimed_by_actor_id)
     |> unique_constraint(:id, name: :sympp_claim_leases_id_unique_index)
     |> unique_constraint(:work_package_id, name: :sympp_claim_leases_one_current_per_work_package_index)
     |> foreign_key_constraint(:work_package_id)
@@ -91,9 +90,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease do
     claim_lease
     |> cast(normalize_keys(attrs), fields() -- @immutable_fields)
     |> validate_inclusion(:status, @statuses)
-    |> validate_inclusion(:actor_kind, @actor_kinds)
     |> validate_number(:stale_after_ms, greater_than: 0)
-    |> validate_nonblank_optional(:actor_display_name)
     |> validate_nonblank_optional(:paused_by_actor_id)
     |> validate_nonblank_optional(:reclaimed_by_actor_id)
   end
