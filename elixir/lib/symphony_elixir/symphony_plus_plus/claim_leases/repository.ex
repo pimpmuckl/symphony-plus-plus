@@ -155,10 +155,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
     actor_id = Map.get(attrs, :actor_id) || Map.get(attrs, "actor_id")
     reason = Map.get(attrs, :reclaim_reason) || Map.get(attrs, "reclaim_reason")
 
-    update_claim_lease(
-      repo,
-      current,
-      %{
+    changeset =
+      ClaimLease.update_changeset(current, %{
         status: "reclaimed",
         stale_checked_at: now,
         stale_at: now,
@@ -167,9 +165,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
         reclaimed_by_actor_id: actor_id,
         reclaim_reason: reason,
         last_seen_at: now
-      },
-      ClaimLease.active_statuses()
-    )
+      })
+
+    if changeset.valid? do
+      query = observed_current_query(current, ClaimLease.active_statuses())
+
+      case repo.update_all(query, set: update_changes(changeset)) do
+        {1, _rows} -> get(repo, current.id)
+        {0, _rows} -> reclaim_conflict_error(repo, current.work_package_id, now)
+      end
+    else
+      {:error, changeset}
+    end
   end
 
   defp replacement_attrs(%ClaimLease{} = current, attrs, now) do
@@ -206,18 +213,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
     changeset = ClaimLease.update_changeset(claim_lease, attrs)
 
     if changeset.valid? do
-      changes =
-        changeset.changes
-        |> Map.put(:updated_at, Map.get(changeset.changes, :last_seen_at, now([])))
-        |> Map.to_list()
-
       query =
         from(stored in ClaimLease,
           where: stored.id == ^claim_lease.id,
           where: stored.status in ^allowed_statuses
         )
 
-      case repo.update_all(query, set: changes) do
+      case repo.update_all(query, set: update_changes(changeset)) do
         {1, _rows} -> get(repo, claim_lease.id)
         {0, _rows} -> status_error(allowed_statuses)
       end
@@ -243,6 +245,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
   defp heartbeat_stale?(%ClaimLease{}, %DateTime{}), do: false
 
   defp normalize_keys(attrs), do: Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
+
+  defp update_changes(%Changeset{} = changeset) do
+    changeset.changes
+    |> Map.put(:updated_at, Map.get(changeset.changes, :last_seen_at, now([])))
+    |> Map.to_list()
+  end
+
+  defp observed_current_query(%ClaimLease{} = current, allowed_statuses) do
+    query =
+      from(stored in ClaimLease,
+        where: stored.id == ^current.id,
+        where: stored.status in ^allowed_statuses
+      )
+
+    Enum.reduce([:last_seen_at, :lease_expires_at, :stale_after_ms], query, fn field_name, query ->
+      where_observed(query, field_name, Map.get(current, field_name))
+    end)
+  end
+
+  defp where_observed(query, field_name, nil), do: from(stored in query, where: is_nil(field(stored, ^field_name)))
+  defp where_observed(query, field_name, value), do: from(stored in query, where: field(stored, ^field_name) == ^value)
+
+  defp reclaim_conflict_error(repo, work_package_id, now) do
+    case current_for_work_package(repo, work_package_id) do
+      {:ok, %ClaimLease{} = current} ->
+        if stale?(current, now), do: {:error, :claim_not_current}, else: {:error, :claim_not_stale}
+
+      {:error, :not_found} ->
+        {:error, :claim_not_current}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
   defp renewal_attrs(attrs) do
     attrs

@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
   use ExUnit.Case, async: false
 
+  import Ecto.Query, only: [from: 2]
+
   alias Ecto.Adapters.SQL
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
@@ -11,6 +13,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.WorkPackageFactory
+
+  defmodule ReclaimRefreshRaceRepo do
+    alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    @race_key :sympp_claim_reclaim_refresh_race
+
+    def arm(claim_id, last_seen_at), do: Process.put(@race_key, {claim_id, last_seen_at})
+    def disarm, do: Process.delete(@race_key)
+
+    def get(schema, id), do: Repo.get(schema, id)
+    def insert(changeset), do: Repo.insert(changeset)
+    def one(query), do: Repo.one(query)
+
+    def transaction(fun) do
+      {:ok, fun.()}
+    catch
+      {:rollback, reason} -> {:error, reason}
+    end
+
+    def rollback(reason), do: throw({:rollback, reason})
+
+    def update_all(query, updates) do
+      case Process.get(@race_key) do
+        {claim_id, last_seen_at} ->
+          Process.delete(@race_key)
+
+          Repo.update_all(
+            from(claim in ClaimLease, where: claim.id == ^claim_id),
+            set: [last_seen_at: last_seen_at, updated_at: last_seen_at]
+          )
+
+        _race ->
+          :ok
+      end
+
+      Repo.update_all(query, updates)
+    end
+  end
 
   setup_all do
     database_path = WorkPackageFactory.database_path()
@@ -274,6 +315,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
     assert DateTime.compare(replacement.lease_expires_at, replacement_expires_at) == :eq
     refute Service.stale?(replacement, reclaim_at)
     assert Service.stale?(replacement, DateTime.add(replacement_expires_at, 1, :millisecond))
+  end
+
+  test "stale reclaim aborts when the observed lease refreshes before the terminal update", %{repo: repo} do
+    now = ~U[2026-05-26 13:30:00Z]
+    reclaim_at = DateTime.add(now, 1_500, :millisecond)
+    refreshed_at = DateTime.add(reclaim_at, -100, :millisecond)
+
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-CLAIM-RACE"))
+
+    assert {:ok, claim} =
+             Service.claim(repo, work_package.id, %{actor_kind: "agent", actor_id: "agent-1"}, stale_after_ms: 1_000, now: now)
+
+    assert Service.stale?(claim, reclaim_at)
+
+    try do
+      ReclaimRefreshRaceRepo.arm(claim.id, refreshed_at)
+
+      assert {:error, :claim_not_stale} =
+               Service.reclaim_stale(
+                 ReclaimRefreshRaceRepo,
+                 work_package.id,
+                 %{actor_kind: "agent", actor_id: "agent-2"},
+                 now: reclaim_at,
+                 reason: "stale lease"
+               )
+    after
+      ReclaimRefreshRaceRepo.disarm()
+    end
+
+    assert {:ok, current} = Service.current_for_work_package(repo, work_package.id)
+    assert current.id == claim.id
+    assert current.status == "active"
+    assert DateTime.compare(current.last_seen_at, refreshed_at) == :eq
+    refute Service.stale?(current, reclaim_at)
+    assert repo.aggregate(ClaimLease, :count) == 1
   end
 
   test "service defaults and repository error paths return stable errors", %{repo: repo} do
