@@ -90,7 +90,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
                  access_grant_id: "grant_wrong",
                  status: "released",
                  released_at: heartbeat_at,
-                 lease_expires_at: DateTime.add(now, 5, :second)
+                 lease_expires_at: DateTime.add(now, 5, :second),
+                 stale_after_ms: nil
                },
                now: heartbeat_at
              )
@@ -101,6 +102,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
     assert claim.actor_display_name == "Agent One"
     assert claim.access_grant_id == grant.id
     assert claim.status == "active"
+    assert claim.stale_after_ms == 1_000
     assert claim.released_at == nil
     refute Service.stale?(claim, DateTime.add(now, 1_400, :millisecond))
     assert Service.stale?(claim, reclaim_at)

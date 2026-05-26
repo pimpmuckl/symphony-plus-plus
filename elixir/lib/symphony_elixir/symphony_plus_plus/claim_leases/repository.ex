@@ -72,7 +72,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
         repo,
         claim_lease,
         attrs
-        |> Map.take([:lease_expires_at, "lease_expires_at", :stale_after_ms, "stale_after_ms"])
+        |> renewal_attrs()
         |> Map.put(:last_seen_at, now),
         ["active"]
       )
@@ -243,6 +243,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
   defp heartbeat_stale?(%ClaimLease{}, %DateTime{}), do: false
 
   defp normalize_keys(attrs), do: Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
+
+  defp renewal_attrs(attrs) do
+    attrs
+    |> Map.take([:lease_expires_at, "lease_expires_at", :stale_after_ms, "stale_after_ms"])
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
 
   defp put_inherited_value(attrs, key, value) do
     if blank?(Map.get(attrs, key)) and not is_nil(value) do
