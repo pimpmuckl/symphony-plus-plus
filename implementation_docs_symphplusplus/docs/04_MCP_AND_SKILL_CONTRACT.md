@@ -401,8 +401,8 @@ approve_work_request_planned_slice(work_request_id, planned_slice_id, current_st
 skip_work_request_planned_slice(work_request_id, planned_slice_id, current_status)
 mark_work_request_sliced(work_request_id, current_status)
 dispatch_work_request_planned_slice(work_request_id, planned_slice_id, claimed_by, secret_handoff?, secret_store_dir?, symphony_repo_root?)
-prepare_work_package_worktree(work_package_id, repo_root, base_branch, branch)
-cleanup_work_package_worktree(work_package_id)
+prepare_work_package_worktree(work_package_id, target_repo_root, base_branch, branch, worktree_parent?)
+cleanup_work_package_worktree(work_package_id, target_repo_root)
 read_child_status(work_package_id)
 read_phase_board(phase_id)
 request_child_replan(work_package_id, reason)
@@ -623,15 +623,20 @@ secret payloads, or secret-bearing claim URLs.
 architect dispatch tools gated by `dispatch:work_request`. They act only on
 WorkPackages linked from planned slices on WorkRequests in the current
 architect grant's frozen repo/base-branch/phase scope. `prepare` takes a
-WorkPackage id, repo root, base branch, and concrete branch name; resolves
-`CODEX_HOME` with fallback to `~/.codex`; creates a path below
+WorkPackage id, target product repo root, base branch, concrete branch name,
+and optional safe worktree parent; resolves `CODEX_HOME` with fallback to
+`~/.codex`; verifies the target repo root belongs to the scoped WorkPackage
+repository; creates a path below
 `CODEX_HOME/worktrees/spp_worktrees/<repo-name>-<repo-hash>/<package-id>-<sanitized-branch>-<branch-hash>`;
 fetches `origin/<base_branch>` into the local remote-tracking ref; runs the
 equivalent of `git worktree add -b <branch> <path> origin/<base_branch>`;
 records only `worktree_path`; and returns workspace path, branch, base branch,
-and use-this-worktree-only launch guidance. `cleanup` reads the recorded path,
+target repo root, and use-this-worktree-only launch guidance. Git failures
+return sanitized status, stderr, target repo root, worktree destination,
+branch, and base branch diagnostics. `cleanup` takes the WorkPackage id and
+target product repo root, reads the recorded path,
 proves it remains below the managed S++ worktree root, refuses dirty worktrees,
-proves the recorded worktree belongs to the configured/scoped repository,
+proves the recorded worktree belongs to the supplied target product repository,
 removes the git worktree, prunes stale worktree metadata, clears
 `worktree_path`, and records redacted audit/progress evidence. These tools do
 not add frontend UI, mutate secrets, clean worktrees from a different
