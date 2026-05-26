@@ -117,7 +117,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
                work_package.id,
                %{actor_kind: "agent", actor_id: "agent-2", actor_display_name: "Agent Two"},
                now: reclaim_at,
-               reason: "stale lease"
+               reason: "stale lease",
+               stale_after_ms: nil
              )
 
     assert replacement.status == "active"
@@ -140,6 +141,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
     assert reclaimed.reclaim_reason == "stale lease"
     assert DateTime.compare(reclaimed.stale_at, reclaim_at) == :eq
     assert reclaimed.stale_reason == "stale lease"
+
+    late_heartbeat_at = DateTime.add(reclaim_at, 1_001, :millisecond)
+    assert {:error, :claim_stale} = Service.heartbeat(repo, replacement.id, now: late_heartbeat_at)
+
+    assert {:ok, still_stale} = Repository.get(repo, replacement.id)
+    assert DateTime.compare(still_stale.last_seen_at, reclaim_at) == :eq
   end
 
   test "only one current claim exists per package and release frees the package", %{repo: repo} do
@@ -155,24 +162,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
     assert {:ok, current} = Service.current_for_work_package(repo, work_package.id)
     assert current.id == first.id
 
-    released_at = DateTime.add(now, 1, :second)
+    released_at = DateTime.add(now, 500, :millisecond)
     assert {:ok, released} = Service.release(repo, first.id, now: released_at, reason: "worker finished")
     assert released.status == "released"
     assert released.release_reason == "worker finished"
     assert DateTime.compare(released.released_at, released_at) == :eq
 
     assert {:ok, second} =
-             Service.claim(
+             Repository.claim(
                repo,
-               work_package.id,
                %{
-                 "work_package_id" => "SYMPP-WRONG",
+                 "work_package_id" => work_package.id,
                  "claim_group_id" => "claim_group_wrong",
                  "previous_claim_id" => "claim_wrong",
                  "actor_kind" => "agent",
-                 "actor_id" => "agent-2"
+                 "actor_id" => "agent-2",
+                 "stale_after_ms" => 1_000
                },
-               stale_after_ms: 1_000,
                now: released_at
              )
 
@@ -181,6 +187,63 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
     assert second.work_package_id == work_package.id
     assert second.claim_group_id == second.id
     assert second.previous_claim_id == nil
+  end
+
+  test "claims require a stale policy and package-scoped grant", %{repo: repo} do
+    now = ~U[2026-05-26 12:00:00Z]
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-CLAIM-SCOPE-A"))
+    assert {:ok, other_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-CLAIM-SCOPE-B"))
+    assert {:ok, %{grant: other_grant}} = AccessGrantService.mint_worker_grant(repo, other_package.id)
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Service.claim(repo, work_package.id, %{actor_kind: "agent", actor_id: "agent-1"}, now: now)
+
+    assert Keyword.has_key?(changeset.errors, :lease_expires_at)
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Service.claim(
+               repo,
+               work_package.id,
+               %{actor_kind: "agent", actor_id: "agent-1"},
+               access_grant_id: other_grant.id,
+               stale_after_ms: 1_000,
+               now: now
+             )
+
+    assert Keyword.has_key?(changeset.errors, :access_grant_id)
+  end
+
+  test "stale reclaim preserves expiry duration when replacement omits expiry", %{repo: repo} do
+    now = ~U[2026-05-26 13:00:00Z]
+    expires_at = DateTime.add(now, 1_000, :millisecond)
+    reclaim_at = DateTime.add(now, 1_500, :millisecond)
+    replacement_expires_at = DateTime.add(reclaim_at, 1_000, :millisecond)
+
+    assert {:ok, work_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-CLAIM-EXPIRY"))
+
+    assert {:ok, claim} =
+             Service.claim(
+               repo,
+               work_package.id,
+               %{actor_kind: "agent", actor_id: "agent-1"},
+               lease_expires_at: expires_at,
+               now: now
+             )
+
+    assert Service.stale?(claim, reclaim_at)
+
+    assert {:ok, replacement} =
+             Service.reclaim_stale(
+               repo,
+               work_package.id,
+               %{actor_kind: "agent", actor_id: "agent-2"},
+               now: reclaim_at,
+               reason: "expired lease"
+             )
+
+    assert DateTime.compare(replacement.lease_expires_at, replacement_expires_at) == :eq
+    refute Service.stale?(replacement, reclaim_at)
+    assert Service.stale?(replacement, DateTime.add(replacement_expires_at, 1, :millisecond))
   end
 
   defp column_names(repo, table) do

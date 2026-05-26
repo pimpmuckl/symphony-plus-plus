@@ -4,6 +4,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
   import Ecto.Query, only: [from: 2]
 
   alias Ecto.Changeset
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
 
   @type repo :: module()
@@ -24,10 +25,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
 
   @spec claim(repo(), map(), keyword()) :: {:ok, ClaimLease.t()} | {:error, error()}
   def claim(repo, attrs, opts \\ []) when is_atom(repo) and is_map(attrs) and is_list(opts) do
-    attrs
-    |> ClaimLease.create_changeset(now: now(opts))
-    |> repo.insert()
-    |> normalize_insert_result()
+    changeset = ClaimLease.create_changeset(attrs, now: now(opts), lineage: Keyword.get(opts, :lineage))
+
+    with {:ok, changeset} <- validate_access_grant_scope(repo, changeset) do
+      changeset
+      |> repo.insert()
+      |> normalize_insert_result()
+    end
   rescue
     error in Ecto.ConstraintError -> normalize_constraint_error(error)
     error in Exqlite.Error -> normalize_exqlite_error(error)
@@ -63,14 +67,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
 
   @spec heartbeat(repo(), String.t(), map(), keyword()) :: {:ok, ClaimLease.t()} | {:error, error()}
   def heartbeat(repo, id, attrs \\ %{}, opts \\ []) when is_atom(repo) and is_binary(id) and is_map(attrs) and is_list(opts) do
+    now = now(opts)
+
     with {:ok, %ClaimLease{} = claim_lease} <- get(repo, id),
-         :ok <- require_status(claim_lease, ["active"]) do
+         :ok <- require_status(claim_lease, ["active"]),
+         :ok <- require_not_stale(claim_lease, now) do
       update_claim_lease(
         repo,
         claim_lease,
         attrs
         |> Map.take([:lease_expires_at, "lease_expires_at", :stale_after_ms, "stale_after_ms"])
-        |> Map.put(:last_seen_at, now(opts)),
+        |> Map.put(:last_seen_at, now),
         ["active"]
       )
     end
@@ -78,10 +85,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
 
   @spec pause(repo(), String.t(), map(), keyword()) :: {:ok, ClaimLease.t()} | {:error, error()}
   def pause(repo, id, attrs, opts \\ []) when is_atom(repo) and is_binary(id) and is_map(attrs) and is_list(opts) do
-    with {:ok, %ClaimLease{} = claim_lease} <- get(repo, id),
-         :ok <- require_status(claim_lease, ["active"]) do
-      now = now(opts)
+    now = now(opts)
 
+    with {:ok, %ClaimLease{} = claim_lease} <- get(repo, id),
+         :ok <- require_status(claim_lease, ["active"]),
+         :ok <- require_not_stale(claim_lease, now) do
       update_claim_lease(
         repo,
         claim_lease,
@@ -95,10 +103,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
 
   @spec release(repo(), String.t(), map(), keyword()) :: {:ok, ClaimLease.t()} | {:error, error()}
   def release(repo, id, attrs \\ %{}, opts \\ []) when is_atom(repo) and is_binary(id) and is_map(attrs) and is_list(opts) do
-    with {:ok, %ClaimLease{} = claim_lease} <- get(repo, id),
-         :ok <- require_status(claim_lease, ClaimLease.active_statuses()) do
-      now = now(opts)
+    now = now(opts)
 
+    with {:ok, %ClaimLease{} = claim_lease} <- get(repo, id),
+         :ok <- require_status(claim_lease, ClaimLease.active_statuses()),
+         :ok <- require_not_stale(claim_lease, now) do
       update_claim_lease(
         repo,
         claim_lease,
@@ -139,7 +148,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
     with {:ok, current} <- current_for_work_package(repo, work_package_id),
          :ok <- require_stale(current, now),
          {:ok, _reclaimed} <- reclaim_current(repo, current, attrs, now) do
-      claim(repo, replacement_attrs(current, attrs), Keyword.put(opts, :now, now))
+      claim(repo, replacement_attrs(current, attrs, now), opts |> Keyword.put(:now, now) |> Keyword.put(:lineage, :replacement))
     end
   end
 
@@ -164,11 +173,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
     )
   end
 
-  defp replacement_attrs(%ClaimLease{} = current, attrs) do
+  defp replacement_attrs(%ClaimLease{} = current, attrs, now) do
     attrs
     |> normalize_keys()
-    |> Map.put_new("access_grant_id", current.access_grant_id)
-    |> Map.put_new("stale_after_ms", current.stale_after_ms)
+    |> put_inherited_value("access_grant_id", current.access_grant_id)
+    |> put_inherited_value("stale_after_ms", current.stale_after_ms)
+    |> put_inherited_value("lease_expires_at", replacement_lease_expires_at(current, now))
     |> Map.put("work_package_id", current.work_package_id)
     |> Map.put("claim_group_id", current.claim_group_id || current.id)
     |> Map.put("previous_claim_id", current.id)
@@ -187,6 +197,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
 
   defp require_stale(%ClaimLease{} = claim_lease, now) do
     if stale?(claim_lease, now), do: :ok, else: {:error, :claim_not_stale}
+  end
+
+  defp require_not_stale(%ClaimLease{} = claim_lease, now) do
+    if stale?(claim_lease, now), do: {:error, :claim_stale}, else: :ok
   end
 
   defp update_claim_lease(repo, %ClaimLease{} = claim_lease, attrs, allowed_statuses) do
@@ -230,6 +244,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
   defp heartbeat_stale?(%ClaimLease{}, %DateTime{}), do: false
 
   defp normalize_keys(attrs), do: Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
+
+  defp put_inherited_value(attrs, key, value) do
+    if blank?(Map.get(attrs, key)) and not is_nil(value) do
+      Map.put(attrs, key, value)
+    else
+      attrs
+    end
+  end
+
+  defp replacement_lease_expires_at(
+         %ClaimLease{lease_started_at: %DateTime{} = started_at, lease_expires_at: %DateTime{} = expires_at},
+         %DateTime{} = now
+       ) do
+    case DateTime.diff(expires_at, started_at, :microsecond) do
+      duration when duration > 0 -> DateTime.add(now, duration, :microsecond)
+      _duration -> expires_at
+    end
+  end
+
+  defp replacement_lease_expires_at(%ClaimLease{}, %DateTime{}), do: nil
+
+  defp validate_access_grant_scope(_repo, %Changeset{valid?: false} = changeset), do: {:error, changeset}
+
+  defp validate_access_grant_scope(repo, %Changeset{} = changeset) do
+    access_grant_id = Changeset.get_field(changeset, :access_grant_id)
+    work_package_id = Changeset.get_field(changeset, :work_package_id)
+
+    if blank?(access_grant_id) or blank?(work_package_id) do
+      {:ok, changeset}
+    else
+      case repo.get(AccessGrant, access_grant_id) do
+        nil ->
+          {:error, Changeset.add_error(changeset, :access_grant_id, "does not exist")}
+
+        %AccessGrant{work_package_id: ^work_package_id} ->
+          {:ok, changeset}
+
+        %AccessGrant{} ->
+          {:error, Changeset.add_error(changeset, :access_grant_id, "must belong to work package")}
+      end
+    end
+  end
+
+  defp blank?(value), do: value in [nil, ""]
 
   defp normalize_insert_result({:ok, claim_lease}), do: {:ok, claim_lease}
 

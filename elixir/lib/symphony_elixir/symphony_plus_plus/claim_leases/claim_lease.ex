@@ -52,15 +52,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease do
     now = opts |> Keyword.get(:now, DateTime.utc_now(:microsecond)) |> utc_datetime_usec()
     attrs = normalize_keys(attrs)
     id = normalized_string(Map.get(attrs, "id")) || stable_id()
+    lineage = create_lineage(opts)
 
     attrs =
       attrs
       |> Map.put("id", id)
-      |> put_new_value("claim_group_id", id)
       |> Map.put("status", "active")
       |> put_new_value("actor_kind", "agent")
       |> put_new_value("lease_started_at", now)
       |> put_new_value("last_seen_at", now)
+      |> canonicalize_lineage(lineage, id)
 
     %__MODULE__{}
     |> cast(attrs, @create_fields)
@@ -78,6 +79,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease do
     |> validate_inclusion(:actor_kind, @actor_kinds)
     |> validate_number(:stale_after_ms, greater_than: 0)
     |> validate_nonblank_optional(:actor_display_name)
+    |> validate_replacement_lineage(lineage)
+    |> validate_stale_policy()
     |> unique_constraint(:id, name: :sympp_claim_leases_id_unique_index)
     |> unique_constraint(:work_package_id, name: :sympp_claim_leases_one_current_per_work_package_index)
     |> foreign_key_constraint(:work_package_id)
@@ -136,6 +139,29 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease do
       Map.put(attrs, key, value)
     else
       attrs
+    end
+  end
+
+  defp create_lineage(opts) do
+    if Keyword.get(opts, :lineage) == :replacement, do: :replacement, else: :root
+  end
+
+  defp canonicalize_lineage(attrs, :root, id) do
+    attrs
+    |> Map.put("claim_group_id", id)
+    |> Map.put("previous_claim_id", nil)
+  end
+
+  defp canonicalize_lineage(attrs, :replacement, _id), do: attrs
+
+  defp validate_replacement_lineage(changeset, :replacement), do: validate_required(changeset, [:previous_claim_id])
+  defp validate_replacement_lineage(changeset, :root), do: changeset
+
+  defp validate_stale_policy(changeset) do
+    if is_nil(get_field(changeset, :lease_expires_at)) and is_nil(get_field(changeset, :stale_after_ms)) do
+      add_error(changeset, :lease_expires_at, "or stale_after_ms must be set")
+    else
+      changeset
     end
   end
 
