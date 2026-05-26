@@ -1608,7 +1608,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp architect_tool_description("dispatch_work_request_planned_slice") do
-    "Dispatch one approved planned slice into a WorkPackage and private worker handoff."
+    "Dispatch one approved planned slice into a WorkPackage and redacted ledger-backed worker claim bootstrap."
   end
 
   defp architect_tool_description("prepare_work_package_worktree") do
@@ -2197,8 +2197,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "work_request_id" => string_schema(),
         "planned_slice_id" => string_schema(),
         "claimed_by" => string_schema(),
-        "secret_handoff" => string_schema(),
-        "secret_store_dir" => string_schema(),
+        "legacy_private_handoff" => Map.put(boolean_schema(), "description", "Temporary recovery-only path for private-store handoff replay during V2.1 cutover."),
+        "secret_handoff" => described_string_schema("Legacy recovery-only handoff mode. Rejected unless legacy_private_handoff is true."),
+        "secret_store_dir" => described_string_schema("Legacy recovery-only private handoff store directory. Rejected unless legacy_private_handoff is true."),
         "symphony_repo_root" =>
           described_string_schema(
             "Optional Symphony++ helper/namespace repo root containing scripts/sympp-worker-secret.*. This is not the target product repo root and defaults to the configured or local Symphony++ root when discoverable."
@@ -4176,8 +4177,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          {:ok, planned_slice} <- scoped_work_request_planned_slice(config.repo, work_request_id, planned_slice_id),
          :ok <- require_planned_slice_target_base_branch_scope(work_request, planned_slice.target_base_branch),
          :ok <- require_approved_dispatch_planned_slice(planned_slice),
-         {:ok, handoff_opts} <- dispatch_planned_slice_handoff_opts(config, arguments, claimed_by),
-         {:ok, dispatch} <- PlannedSliceDispatch.dispatch(config.repo, work_request_id, planned_slice_id, handoff_opts) do
+         {:ok, handoff_opts, dispatch_opts} <- dispatch_planned_slice_bootstrap_opts(config, arguments, claimed_by),
+         {:ok, dispatch} <- PlannedSliceDispatch.dispatch(config.repo, work_request_id, planned_slice_id, handoff_opts, dispatch_opts) do
       {:ok, tool_result(dispatch_work_request_planned_slice_payload(dispatch, scope))}
     else
       {:tool_error, reason} -> invalid_params_error("dispatch_work_request_planned_slice", reason)
@@ -4437,6 +4438,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
        |> put_optional_handoff_opt(:database, database)
        |> put_optional_handoff_opt(:mode, normalize_child_secret_handoff_mode(secret_handoff))
        |> put_optional_handoff_opt(:store_dir, secret_store_dir)}
+    end
+  end
+
+  defp dispatch_planned_slice_bootstrap_opts(%Config{} = config, arguments, claimed_by) do
+    with {:ok, legacy_private_handoff?} <- optional_boolean(arguments, "legacy_private_handoff", false) do
+      dispatch_planned_slice_bootstrap_opts(config, arguments, claimed_by, legacy_private_handoff?)
+    end
+  end
+
+  defp dispatch_planned_slice_bootstrap_opts(%Config{} = config, arguments, claimed_by, false) do
+    with :ok <- reject_legacy_private_handoff_arguments(arguments),
+         {:ok, database} <- dispatch_handoff_database(config.database, config.repo) do
+      {:ok, [claimed_by: claimed_by, database: database], []}
+    end
+  end
+
+  defp dispatch_planned_slice_bootstrap_opts(%Config{} = config, arguments, claimed_by, true) do
+    with {:ok, handoff_opts} <- dispatch_planned_slice_handoff_opts(config, arguments, claimed_by) do
+      {:ok, handoff_opts, [legacy_private_handoff?: true]}
+    end
+  end
+
+  defp reject_legacy_private_handoff_arguments(arguments) do
+    case Enum.find(["secret_handoff", "secret_store_dir", "repo_root", "symphony_repo_root"], &Map.has_key?(arguments, &1)) do
+      nil -> :ok
+      _argument -> {:tool_error, "legacy_private_handoff_required"}
     end
   end
 
@@ -11314,6 +11341,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       |> PlannedSliceDispatch.response_payload()
       |> Map.fetch!(:create_work)
 
+    worker_secret_handoff = Map.get(create_work, :worker_secret_handoff)
+    legacy_private_handoff? = Map.get(dispatch, :legacy_private_handoff?, false)
+
     %{
       "work_request" => %{"id" => work_request.id},
       "planned_slice" => %{
@@ -11323,9 +11353,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "dispatched_at" => timestamp(planned_slice.dispatched_at)
       },
       "work_package" => dispatch_work_package_payload(Map.fetch!(create_work, :work_package)),
+      "worker_bootstrap" => dispatch_worker_bootstrap_payload(Map.get(create_work, :worker_bootstrap)),
       "worker_handoff" => %{
         "worker_grant" => dispatch_worker_grant_payload(Map.fetch!(create_work, :worker_grant)),
-        "secret_handoff" => dispatch_secret_handoff_payload(Map.get(create_work, :worker_secret_handoff))
+        "secret_handoff" => dispatch_secret_handoff_payload(worker_secret_handoff, legacy_private_handoff?: legacy_private_handoff?)
       },
       "scope" => scope,
       "status" => %{"planned_slice_status" => planned_slice.status}
@@ -11345,21 +11376,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     |> Map.put("secret_in_response", false)
   end
 
-  defp dispatch_secret_handoff_payload(nil), do: nil
+  defp dispatch_worker_bootstrap_payload(nil), do: nil
 
-  defp dispatch_secret_handoff_payload(handoff) when is_map(handoff) do
+  defp dispatch_worker_bootstrap_payload(bootstrap) when is_map(bootstrap) do
+    bootstrap
+    |> json_safe_payload()
+    |> Redactor.redact_output()
+  end
+
+  defp dispatch_secret_handoff_payload(nil, _opts), do: nil
+
+  defp dispatch_secret_handoff_payload(handoff, opts) when is_map(handoff) do
+    drop_fields =
+      if Keyword.get(opts, :legacy_private_handoff?, false) do
+        ["display_key", "payload", "secret"]
+      else
+        ["display_key", "path", "payload", "run_mcp_command", "secret"]
+      end
+
     handoff
     |> json_safe_payload()
-    |> Map.drop(["display_key", "secret", "payload"])
+    |> Map.drop(drop_fields)
   end
 
   defp dispatch_link_recovery_payload(recovery) when is_map(recovery) do
+    worker_secret_handoff = recovery_value(recovery, :worker_secret_handoff)
+
     %{}
     |> put_optional_recovery_value("work_package_id", recovery_value(recovery, :work_package_id))
     |> put_optional_recovery_value("worker_grant_id", recovery_value(recovery, :worker_grant_id))
     |> put_optional_recovery_value(
       "worker_secret_handoff",
-      dispatch_secret_handoff_payload(recovery_value(recovery, :worker_secret_handoff))
+      dispatch_secret_handoff_payload(worker_secret_handoff, legacy_private_handoff?: not is_nil(worker_secret_handoff))
     )
     |> put_optional_recovery_value("cleanup", safe_recovery_value(recovery_value(recovery, :cleanup)))
   end

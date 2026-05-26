@@ -3,7 +3,6 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSliceTest do
 
   alias Mix.Tasks.Sympp.DispatchPlannedSlice, as: DispatchTask
   alias SymphonyElixir.SymphonyPlusPlus.Repo
-  alias SymphonyElixir.SymphonyPlusPlus.SecretHandoff
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.WorkPackage
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSlice
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository
@@ -25,11 +24,11 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSliceTest do
     DispatchTask.run(["--help"])
     assert_received {:mix_shell, :info, [message]}
     assert message =~ "mix sympp.dispatch_planned_slice"
+    assert message =~ "--legacy-private-handoff"
   end
 
   test "dispatches an approved planned slice and prints redacted JSON" do
     database_path = WorkPackageFactory.database_path()
-    secret_store_dir = Path.join(System.tmp_dir!(), "sympp-dispatch-planned-slice-secrets-#{System.unique_integer([:positive])}")
 
     try do
       %{work_request: work_request, planned_slice: planned_slice} = seed_slice(database_path, status: "approved")
@@ -41,10 +40,6 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSliceTest do
         work_request.id,
         "--planned-slice-id",
         planned_slice.id,
-        "--secret-handoff",
-        "auto",
-        "--secret-store-dir",
-        secret_store_dir,
         "--claimed-by",
         "worker-dispatch-planned-slice"
       ])
@@ -53,8 +48,6 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSliceTest do
       payload = Jason.decode!(json)
       create_work = payload["create_work"]
 
-      Process.put(:dispatch_cli_handoff, create_work["worker_secret_handoff"])
-
       assert create_work["work_package"]["title"] == planned_slice.title
       assert create_work["work_package"]["repo"] == work_request.repo
       assert create_work["work_package"]["base_branch"] == planned_slice.target_base_branch
@@ -62,15 +55,29 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSliceTest do
       assert create_work["work_package"]["allowed_file_globs"] == planned_slice.owned_file_globs
       assert create_work["work_package"]["engineering_scope"] =~ planned_slice.goal
       refute create_work["worker_grant"]["secret"]
+      refute create_work["worker_grant"]["display_key"]
+      refute create_work["worker_grant"]["secret_handoff"]
+      assert create_work["worker_grant"]["secret_in_response"] == false
       assert create_work["secret_returned_once"] == false
-      assert create_work["secret_not_persisted"] == false
+      assert create_work["secret_not_persisted"] == true
       assert create_work["secret_in_stdout"] == false
+      refute create_work["worker_secret_handoff"]
 
-      handoff = create_work["worker_secret_handoff"]
-      assert handoff["status"] == "stored"
-      assert handoff["claimed_by"] == "worker-dispatch-planned-slice"
-      assert handoff["secret_in_stdout"] == false
-      assert create_work["worker_grant"]["secret_handoff"]["target"] == handoff["target"]
+      bootstrap = create_work["worker_bootstrap"]
+      assert bootstrap["type"] == "ledger_claim"
+      assert_same_database_path(bootstrap["ledger"]["database"], database_path)
+      assert bootstrap["claim"]["tool"] == "claim_local_assignment"
+      assert bootstrap["claim"]["arguments"]["claimed_by"] == "worker-dispatch-planned-slice"
+      assert bootstrap["claim"]["arguments"]["work_request_id"] == work_request.id
+      assert bootstrap["claim"]["arguments"]["work_package_id"] == create_work["work_package"]["id"]
+      refute Map.has_key?(bootstrap["claim"]["arguments"], "branch")
+      assert bootstrap["claim"]["required_runtime_arguments"] == ["branch", "worktree_path", "caller_id"]
+      assert "symphony-plus-plus:symphony-worker" in bootstrap["required_skills"]
+      assert "symphony-plus-plus-mcp:symphony-work-package" in bootstrap["required_skills"]
+
+      refute json =~ "local-private-file"
+      refute json =~ "run_mcp_command"
+      refute json =~ ".secret"
 
       linkage = payload["planned_slice_linkage"]
       assert linkage["work_request_id"] == work_request.id
@@ -78,11 +85,6 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSliceTest do
       assert linkage["status"] == "dispatched"
       assert linkage["work_package_id"] == create_work["work_package"]["id"]
       assert is_binary(linkage["dispatched_at"])
-
-      if handoff["mode"] == "local-private-file" do
-        secret = File.read!(handoff["path"])
-        refute json =~ secret
-      end
 
       with_repo(database_path, fn repo ->
         persisted_slice = repo.get!(PlannedSlice, planned_slice.id)
@@ -93,10 +95,7 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSliceTest do
         assert persisted_package.status == "ready_for_worker"
       end)
     after
-      cleanup_handoff(Process.get(:dispatch_cli_handoff))
       File.rm(database_path)
-      File.rm_rf(secret_store_dir)
-      Process.delete(:dispatch_cli_handoff)
     end
   end
 
@@ -129,6 +128,27 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSliceTest do
     refute File.exists?(database_path)
   end
 
+  test "rejects legacy handoff flags without recovery opt before opening the ledger" do
+    database_path = WorkPackageFactory.database_path()
+
+    assert_raise Mix.Error, ~r/Legacy private handoff options require --legacy-private-handoff/, fn ->
+      DispatchTask.run([
+        "--database",
+        database_path,
+        "--work-request-id",
+        "WR-1",
+        "--planned-slice-id",
+        "WRS-1",
+        "--claimed-by",
+        "worker",
+        "--secret-handoff",
+        "local-private-file"
+      ])
+    end
+
+    refute File.exists?(database_path)
+  end
+
   defp seed_slice(database_path, opts) do
     with_repo(database_path, fn repo ->
       assert :ok = Repository.migrate(repo)
@@ -143,6 +163,11 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSliceTest do
           %{work_request: work_request, planned_slice: approved}
       end
     end)
+  end
+
+  defp assert_same_database_path(actual_path, expected_path) do
+    assert is_binary(actual_path)
+    assert Repo.same_database_path?(actual_path, expected_path)
   end
 
   defp with_repo(database_path, fun) do
@@ -190,18 +215,5 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSliceTest do
       review_lanes: ["normal"],
       stop_conditions: ["Stop before dashboard buttons."]
     }
-  end
-
-  defp cleanup_handoff(nil), do: :ok
-
-  defp cleanup_handoff(handoff) when is_map(handoff) do
-    SecretHandoff.delete_worker_secret(handoff, repo_root: repo_root())
-  end
-
-  defp repo_root do
-    Mix.Project.project_file()
-    |> Path.dirname()
-    |> Path.join("..")
-    |> Path.expand()
   end
 end

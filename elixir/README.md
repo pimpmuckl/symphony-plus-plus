@@ -111,6 +111,21 @@ may create the ledger database; other commands require the resolved local
 database file to already exist. Pass `--database <sqlite-path>` only for
 intentional isolation in tests, development, or manual experiments.
 
+## WorkRequest Planned-Slice Dispatch
+
+Normal Symphony++ WorkRequest planned-slice dispatch returns a ledger-backed
+worker bootstrap instead of a private worker secret handoff. MCP responses expose
+`worker_bootstrap`, and the Mix task includes the same data under
+`create_work.worker_bootstrap`. The bootstrap uses `type: "ledger_claim"` and
+`mode: "local_assignment"`, names the `claim_local_assignment` MCP claim path,
+lists the required worker skills, and includes the resolved local ledger
+database when dispatch can identify one.
+
+Normal dispatch responses do not include a private handoff path or helper
+command. The `legacy_private_handoff` MCP argument is a temporary recovery-only
+path during the V2.1 cutover; legacy handoff options are honored only when that
+flag is set.
+
 ## Configuration
 
 Pass a custom workflow file path to `./bin/symphony` when starting the service:

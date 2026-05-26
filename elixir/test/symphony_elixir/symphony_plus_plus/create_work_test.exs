@@ -463,6 +463,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     end
   end
 
+  test "create-work bootstrap response redacts prompt and grant display key", %{repo: repo} do
+    assert {:ok, creation} =
+             CreateWork.create(repo, %{
+               repo: "kraken",
+               base_branch: "main",
+               title: "Create bootstrap response",
+               acceptance_criteria: ["Return bootstrap metadata without raw worker secrets."]
+             })
+
+    bootstrap = %{
+      type: "ledger_claim",
+      launch_prompt: "Use raw_secret_bootstrap_response only inside the ledger.",
+      claim: %{tool: "claim_local_assignment", arguments: %{}}
+    }
+
+    payload = CreateWork.response_payload(creation, worker_bootstrap: bootstrap)
+    json = Jason.encode!(payload)
+
+    assert payload.worker_bootstrap.launch_prompt =~ "[REDACTED]"
+    refute payload.worker_bootstrap.launch_prompt =~ "raw_secret_bootstrap_response"
+    refute Map.has_key?(payload.worker_grant, :display_key)
+    refute Map.has_key?(payload.worker_grant, :secret)
+    refute json =~ "raw_secret_bootstrap_response"
+    refute json =~ creation.worker_grant.display_key
+    refute json =~ creation.worker_grant.secret
+  end
+
   test "removes stored worker secret when managed metadata persistence fails", %{repo: repo} do
     store_dir = Path.join(System.tmp_dir!(), "sympp-metadata-failure-handoff-#{System.unique_integer([:positive])}")
 
