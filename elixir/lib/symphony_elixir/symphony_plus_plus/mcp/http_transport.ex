@@ -79,11 +79,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.HTTPTransport do
 
   defp process_new_initialize(%Config{} = config, payload, client_key) do
     state_key = new_state_key()
-    process_state(config, payload, client_key, state_key, true, fn -> Server.new(config, state_key: state_key) end)
+
+    process_state(config, payload, client_key, state_key, true, fn ->
+      Server.new(config, state_key: state_key, local_daemon_trusted: config.local_daemon_trusted)
+    end)
   end
 
   defp process_existing_state(%Config{} = config, payload, client_key, state_key) do
-    process_state(config, payload, client_key, state_key, false, fn -> Server.new(config, state_key: state_key) end)
+    process_state(config, payload, client_key, state_key, false, fn ->
+      Server.new(config, state_key: state_key, local_daemon_trusted: config.local_daemon_trusted)
+    end)
   end
 
   defp process_state(%Config{} = config, payload, client_key, state_key, allow_new_state?, default_fun) do
