@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
   @moduledoc false
 
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkPackages.Repository, as: WorkPackageRepository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Completion
@@ -9,6 +10,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.Repository
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity
   alias SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkRequest
+
+  import Ecto.Query, only: [from: 2]
 
   @type error ::
           Repository.error()
@@ -130,16 +133,35 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
 
   defp terminal_status_for_outcome(outcome), do: PlannedSliceDelivery.terminal_status_for_outcome(outcome)
 
-  defp reject_active_linked_closeout_context(_repo, %PlannedSlice{work_package_id: work_package_id}) when work_package_id in [nil, ""], do: :ok
-
   defp reject_active_linked_closeout_context(repo, %PlannedSlice{work_package_id: work_package_id}) do
-    context = WorkPackageActivity.context(repo, work_package_id)
+    if filled_string?(work_package_id) do
+      context = WorkPackageActivity.context(repo, work_package_id)
 
-    cond do
-      get_in(context, [:blocker_state, :active?]) == true -> {:error, :active_blocker}
-      get_in(context, [:runtime_state, :active?]) == true -> {:error, :active_runtime}
-      true -> :ok
+      cond do
+        get_in(context, [:blocker_state, :active?]) == true -> {:error, :active_blocker}
+        get_in(context, [:runtime_state, :active?]) == true -> {:error, :active_runtime}
+        active_linked_worker_grant?(repo, work_package_id) -> {:error, :active_runtime}
+        true -> :ok
+      end
+    else
+      :ok
     end
+  end
+
+  defp active_linked_worker_grant?(repo, work_package_id) do
+    now = DateTime.utc_now(:microsecond)
+
+    repo.one(
+      from(grant in AccessGrant,
+        where: grant.work_package_id == ^work_package_id,
+        where: grant.grant_role == "worker",
+        where: is_nil(grant.revoked_at),
+        where: is_nil(grant.expires_at) or grant.expires_at > ^now,
+        select: grant.id,
+        limit: 1
+      )
+    )
+    |> is_binary()
   end
 
   defp closeout_progress_replay?(repo, %PlannedSlice{work_package_id: work_package_id}, %PlannedSliceDelivery{} = delivery) do

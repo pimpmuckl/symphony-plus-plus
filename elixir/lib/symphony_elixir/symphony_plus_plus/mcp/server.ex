@@ -58,6 +58,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   @health_tool "sympp.health"
   @solo_tools ["solo_attach", "solo_append", "solo_show", "solo_list", "solo_update_status"]
   @bootstrap_tools ["claim_private_handoff", "create_work_request"]
+  @local_operator_tools ["add_work_request_comment", "record_work_request_operator_decision"]
+  @local_operator_text_max_length Comment.max_body_length()
+  @local_operator_provenance_max_length 512
   @local_assignment_claim_tool "claim_local_assignment"
   @session_claim_tools ["claim_work_key", "claim_private_handoff", @local_assignment_claim_tool]
   @private_handoff_claim_keys [
@@ -895,6 +898,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp dispatch("tools/call", %{"name" => name} = params, %__MODULE__{} = server) when name in @local_operator_tools do
+    case prepare_local_operator_tool_call(server, params, name) do
+      {:ok, arguments} -> local_operator_tool(name, arguments, server)
+      {:error, code, message, data} -> {:error, code, message, data}
+      {:error, reason} -> local_operator_error(reason, name)
+    end
+  end
+
   defp dispatch(
          "tools/call",
          %{"name" => "read_guidance_request"} = params,
@@ -1478,6 +1489,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
+  defp local_operator_tool_spec(name) do
+    %{
+      "name" => name,
+      "title" => name,
+      "description" => local_operator_tool_description(name),
+      "inputSchema" => local_operator_tool_input_schema(name)
+    }
+  end
+
   defp solo_tool_description("solo_attach") do
     "Create or attach a local Solo Session for a repo, base branch, absolute workspace path, and caller id."
   end
@@ -1504,6 +1524,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp bootstrap_tool_description("create_work_request") do
     "Create a local Symphony++ WorkRequest with creator provenance and return a redacted architect handoff."
+  end
+
+  defp local_operator_tool_description("add_work_request_comment") do
+    "Append a redacted local-operator comment to a WorkRequest by id. Requires an unbound trusted local HTTP MCP session with an explicit state key and a file-backed local ledger; grants no dispatch or lifecycle authority."
+  end
+
+  defp local_operator_tool_description("record_work_request_operator_decision") do
+    "Record a redacted local-operator decision on a WorkRequest by id. Requires an unbound trusted local HTTP MCP session with an explicit state key and a file-backed local ledger; does not require ownership of that WorkRequest."
   end
 
   defp architect_tool_spec(name) do
@@ -1754,6 +1782,45 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       ["repo", "base_branch", "title", "request_kind"]
     )
     |> always_validate(%{"anyOf" => [%{"required" => ["description"]}, %{"required" => ["human_description"]}]})
+  end
+
+  defp local_operator_tool_input_schema("add_work_request_comment") do
+    schema(
+      %{
+        "work_request_id" => described_string_schema("Target WorkRequest id."),
+        "body" =>
+          described_string_schema("Non-secret comment body. Redacted before storage and response.")
+          |> Map.put("maxLength", @local_operator_text_max_length),
+        "created_by" =>
+          described_string_schema("Local operator or agent provenance for audit display.")
+          |> Map.put("maxLength", @local_operator_provenance_max_length)
+      },
+      ["work_request_id", "body", "created_by"]
+    )
+  end
+
+  defp local_operator_tool_input_schema("record_work_request_operator_decision") do
+    schema(
+      %{
+        "work_request_id" => described_string_schema("Target WorkRequest id."),
+        "decision" =>
+          described_string_schema("Non-secret decision text. Redacted before storage and response.")
+          |> Map.put("maxLength", @local_operator_text_max_length),
+        "rationale" =>
+          described_string_schema("Non-secret rationale for the decision.")
+          |> Map.put("maxLength", @local_operator_text_max_length),
+        "scope_impact" =>
+          described_string_schema("Non-secret note on scope or delivery impact.")
+          |> Map.put("maxLength", @local_operator_text_max_length),
+        "created_by" =>
+          described_string_schema("Local operator or agent provenance for audit display.")
+          |> Map.put("maxLength", @local_operator_provenance_max_length),
+        "source_id" =>
+          described_string_schema("Optional local source id, such as a PR review or operator note id.")
+          |> Map.put("maxLength", @local_operator_provenance_max_length)
+      },
+      ["work_request_id", "decision", "rationale", "scope_impact", "created_by"]
+    )
   end
 
   defp worker_tool_input_schema("claim_work_key") do
@@ -2336,9 +2403,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     {:ok, specs}
   end
 
-  defp tool_specs_for_server(%__MODULE__{session_refresh_required: true, config: config}), do: {:ok, claimable_tool_specs(config)}
+  defp tool_specs_for_server(%__MODULE__{session_refresh_required: true, config: config} = server) do
+    {:ok, claimable_tool_specs(config) ++ local_operator_tool_specs(server)}
+  end
 
-  defp tool_specs_for_server(%__MODULE__{config: config, session: session}), do: tool_specs_for_session(config, session)
+  defp tool_specs_for_server(%__MODULE__{config: config, session: session} = server) do
+    with {:ok, specs} <- tool_specs_for_session(config, session) do
+      {:ok, specs ++ local_operator_tool_specs(server)}
+    end
+  end
+
+  defp local_operator_tool_specs(%__MODULE__{} = server) do
+    if local_operator_tools_enabled?(server), do: Enum.map(@local_operator_tools, &local_operator_tool_spec/1), else: []
+  end
+
+  defp local_operator_tools_enabled?(%__MODULE__{
+         config: %Config{mode: :http, local_daemon_trusted: true} = config,
+         local_daemon_trusted: true,
+         initialized: true,
+         session_refresh_required: false,
+         state_key_explicit: true,
+         session: nil
+       }) do
+    require_local_operator_database(config) == :ok
+  end
+
+  defp local_operator_tools_enabled?(%__MODULE__{}), do: false
 
   defp schema(properties, required) do
     %{"type" => "object", "additionalProperties" => false, "properties" => properties, "required" => required}
@@ -2978,11 +3068,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            AccessGrantService.claim_local_worker_grant(repo, work_package.id,
              claimed_by: claim.claimed_by,
              now: claim_now
-         ),
+           ),
          {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: grant.secret_hash),
          :ok <- require_worker_assignment(session.assignment) do
-      {:ok, %{"assignment" => Session.public_assignment(session)}, session,
-       local_assignment_grant_action(grant, existing_grant_ids)}
+      {:ok, %{"assignment" => Session.public_assignment(session)}, session, local_assignment_grant_action(grant, existing_grant_ids)}
     end
   end
 
@@ -3602,6 +3691,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp prepare_local_operator_tool_call(%__MODULE__{} = server, params, name) do
+    with :ok <- require_tool_arguments_object(params, name),
+         :ok <- authorize_local_operator_tool_call(server, name),
+         :ok <- prepare_mcp_repository_for_tool(server.config.repo, name) do
+      local_operator_tool_arguments(params, name)
+    end
+  end
+
   defp require_tool_arguments_object(params, name) do
     case Map.get(params, "arguments", %{}) do
       arguments when is_map(arguments) -> :ok
@@ -3639,6 +3736,70 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp authorize_bootstrap_tool_call(%__MODULE__{}, tool) do
     {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "bootstrap_tools_require_unbound_session"}}
+  end
+
+  defp authorize_local_operator_tool_call(
+         %__MODULE__{
+           initialized: true,
+           session_refresh_required: false,
+           config: %Config{mode: :http, local_daemon_trusted: true} = config,
+           local_daemon_trusted: true,
+           state_key_explicit: true,
+           session: nil
+         },
+         tool
+       ) do
+    case require_local_operator_database(config) do
+      :ok -> :ok
+      {:error, reason} -> {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => reason_text(reason)}}
+    end
+  end
+
+  defp authorize_local_operator_tool_call(%__MODULE__{initialized: false}, tool) do
+    {:error, -32_000, "Server error", %{"tool" => tool, "reason" => "server_not_initialized"}}
+  end
+
+  defp authorize_local_operator_tool_call(%__MODULE__{session_refresh_required: true}, tool) do
+    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "claim_required", "action" => "claim_private_handoff"}}
+  end
+
+  defp authorize_local_operator_tool_call(%__MODULE__{config: %Config{mode: :http}, session: %Session{}}, tool) do
+    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "local_operator_unbound_session_required"}}
+  end
+
+  defp authorize_local_operator_tool_call(%__MODULE__{config: %Config{mode: :http}, state_key_explicit: false}, tool) do
+    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "local_mcp_session_required"}}
+  end
+
+  defp authorize_local_operator_tool_call(%__MODULE__{config: %Config{mode: :http}}, tool) do
+    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "local_daemon_trust_required"}}
+  end
+
+  defp authorize_local_operator_tool_call(%__MODULE__{}, tool) do
+    {:error, -32_001, "Unauthorized", %{"tool" => tool, "reason" => "local_mcp_required"}}
+  end
+
+  defp require_local_operator_database(%Config{repo: repo, database: database}) do
+    case normalized_database(database) do
+      nil -> require_local_operator_live_database(repo)
+      database -> require_local_operator_configured_database(database)
+    end
+  end
+
+  defp require_local_operator_configured_database(database) do
+    cond do
+      Repo.memory_database?(database) -> {:error, :file_backed_database_required}
+      remote_database_identity?(database) -> {:error, :local_database_required}
+      true -> :ok
+    end
+  end
+
+  defp require_local_operator_live_database(repo) do
+    case live_main_database_path(repo) do
+      {:ok, _path} -> :ok
+      :memory -> {:error, :file_backed_database_required}
+      :error -> {:error, :database_required}
+    end
   end
 
   defp prepare_mcp_repository(repo), do: Repository.ensure_migrated(repo)
@@ -3796,6 +3957,81 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       {:ok, database} -> database
       _result -> nil
     end
+  end
+
+  defp local_operator_tool("add_work_request_comment", arguments, %__MODULE__{config: config}) do
+    with {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, body} <- required_argument(arguments, "body"),
+         {:ok, created_by} <- required_argument(arguments, "created_by"),
+         {:ok, work_request} <- WorkRequestService.get(config.repo, work_request_id),
+         {:ok, comment} <-
+           CommentService.create(config.repo, %{
+             "target_kind" => "work_request",
+             "target_id" => work_request.id,
+             "body" => Redactor.redact_text(body),
+             "source_type" => "operator",
+             "author_name" => Redactor.redact_text(created_by)
+           }) do
+      {:ok,
+       tool_result(%{
+         "comment" => comment_payload(comment),
+         "work_request" => work_request_mutation_payload(work_request),
+         "provenance" => local_operator_note_provenance(created_by)
+       })}
+    else
+      {:tool_error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => "add_work_request_comment", "reason" => reason}}
+      {:error, :not_found} -> not_found_error("add_work_request_comment")
+      {:error, reason} -> local_operator_error(reason, "add_work_request_comment")
+    end
+  end
+
+  defp local_operator_tool("record_work_request_operator_decision", arguments, %__MODULE__{config: config}) do
+    with {:ok, work_request_id} <- required_argument(arguments, "work_request_id"),
+         {:ok, decision} <- required_argument(arguments, "decision"),
+         {:ok, rationale} <- required_argument(arguments, "rationale"),
+         {:ok, scope_impact} <- required_argument(arguments, "scope_impact"),
+         {:ok, created_by} <- required_argument(arguments, "created_by"),
+         {:ok, source_id} <- optional_string_argument(arguments, "source_id"),
+         {:ok, work_request} <- WorkRequestService.get(config.repo, work_request_id),
+         {:ok, decision_record} <-
+           WorkRequestService.record_decision(
+             config.repo,
+             work_request.id,
+             local_operator_decision_attrs(decision, rationale, scope_impact, created_by, source_id)
+           ) do
+      {:ok,
+       tool_result(%{
+         "work_request" => work_request_mutation_payload(work_request),
+         "decision_log_entry" => decision_log_entry_payload(decision_record),
+         "provenance" => local_operator_note_provenance(created_by, source_id),
+         "status" => %{"work_request_status" => work_request.status}
+       })}
+    else
+      {:tool_error, reason} ->
+        {:error, -32_602, "Invalid params", %{"tool" => "record_work_request_operator_decision", "reason" => reason}}
+
+      {:error, :not_found} ->
+        not_found_error("record_work_request_operator_decision")
+
+      {:error, reason} ->
+        local_operator_error(reason, "record_work_request_operator_decision")
+    end
+  end
+
+  defp local_operator_decision_attrs(decision, rationale, scope_impact, created_by, source_id) do
+    %{
+      "source_type" => "operator",
+      "decision" => Redactor.redact_text(decision),
+      "rationale" => Redactor.redact_text(rationale),
+      "scope_impact" => Redactor.redact_text(scope_impact),
+      "created_by" => Redactor.redact_text(created_by)
+    }
+    |> optional_put("source_id", Redactor.redact_text(source_id))
+  end
+
+  defp local_operator_note_provenance(created_by, source_id \\ nil) do
+    %{"source_type" => "operator", "created_by" => Redactor.redact_text(created_by)}
+    |> optional_put("source_id", Redactor.redact_text(source_id))
   end
 
   defp architect_tool("list_work_requests", arguments, %__MODULE__{config: config, session: session}) do
@@ -10600,6 +10836,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp worker_error({:migration_failed, _reason} = reason, tool), do: service_error(reason, tool)
   defp worker_error(reason, tool), do: {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason_text(reason)}}
 
+  defp local_operator_error(:database_busy, tool), do: service_error(:database_busy, tool)
+  defp local_operator_error({:storage_failed, _reason} = reason, tool), do: service_error(reason, tool)
+  defp local_operator_error({:migration_failed, _reason} = reason, tool), do: service_error(reason, tool)
+  defp local_operator_error(reason, tool), do: {:error, -32_602, "Invalid params", %{"tool" => tool, "reason" => reason_text(reason)}}
+
   defp architect_error(:unauthorized, resource), do: auth_error(:unauthorized, resource)
   defp architect_error({:unauthorized, _reason} = reason, resource), do: auth_error(reason, resource)
   defp architect_error(:expired, resource), do: auth_error({:unauthorized, :expired}, resource)
@@ -10838,6 +11079,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp local_operator_tool_arguments(params, name) do
+    case Map.get(params, "arguments", %{}) do
+      arguments when is_map(arguments) ->
+        validate_local_operator_arguments(name, arguments)
+
+      _arguments ->
+        {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "invalid_tool_arguments"}}
+    end
+  end
+
   defp architect_tool_arguments(params, name) do
     case Map.get(params, "arguments", %{}) do
       arguments when is_map(arguments) ->
@@ -10880,6 +11131,56 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     end
   end
 
+  defp validate_local_operator_arguments(name, arguments) do
+    allowed = MapSet.new(allowed_local_operator_argument_keys(name))
+    unexpected = arguments |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1))
+
+    if unexpected != [] do
+      {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => "unexpected_argument", "arguments" => unexpected}}
+    else
+      schema = local_operator_tool_input_schema(name)
+
+      case validate_tool_required_arguments(schema, arguments) do
+        :ok -> validate_local_operator_argument_values(name, schema, arguments)
+        {:error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => reason}}
+      end
+    end
+  end
+
+  defp validate_local_operator_argument_values(name, schema, arguments) do
+    properties = Map.get(schema, "properties", %{})
+
+    arguments
+    |> Enum.find_value(:ok, fn {key, value} ->
+      case validate_local_operator_argument_value(properties, key, value) do
+        :ok -> nil
+        {:error, reason} -> {:error, -32_602, "Invalid params", %{"tool" => name, "reason" => reason}}
+      end
+    end)
+    |> case do
+      :ok -> {:ok, arguments}
+      error -> error
+    end
+  end
+
+  defp validate_local_operator_argument_value(properties, key, value) do
+    case Map.get(properties, key, %{}) do
+      %{"type" => "string"} = property -> validate_local_operator_string_argument(key, value, property)
+      _property -> :ok
+    end
+  end
+
+  defp validate_local_operator_string_argument(key, value, property) when is_binary(value) do
+    max_length = Map.get(property, "maxLength")
+
+    cond do
+      is_integer(max_length) and String.length(value) > max_length -> {:error, "#{key}_too_long"}
+      true -> :ok
+    end
+  end
+
+  defp validate_local_operator_string_argument(key, _value, _property), do: {:error, "invalid_#{key}"}
+
   defp validate_architect_arguments(name, arguments) do
     allowed = MapSet.new(allowed_architect_argument_keys(name))
     unexpected = arguments |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1))
@@ -10920,6 +11221,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp allowed_worker_argument_keys(name) do
     name
     |> worker_tool_input_schema()
+    |> Map.get("properties", %{})
+    |> Map.keys()
+  end
+
+  defp allowed_local_operator_argument_keys(name) do
+    name
+    |> local_operator_tool_input_schema()
     |> Map.get("properties", %{})
     |> Map.keys()
   end

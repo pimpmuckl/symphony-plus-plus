@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
   use ExUnit.Case, async: false
 
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
+  alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
@@ -25,6 +27,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
   end
 
   setup %{repo: repo} do
+    repo.delete_all(AccessGrant)
     repo.delete_all(ProgressEvent)
     repo.delete_all(PlannedSliceDelivery)
     repo.delete_all(PlannedSlice)
@@ -285,6 +288,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert %WorkRequest{completed_at: nil} = repo.get!(WorkRequest, work_request.id)
   end
 
+  test "delivery on an approved unlinked planned slice skips linked worker grant checks", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-DELIVERY-APPROVED-UNLINKED", status: "ready_for_slicing")
+    planned_slice = create_planned_slice!(repo, work_request, id: "WRS-DELIVERY-APPROVED-UNLINKED")
+    assert {:ok, approved_slice} = Repository.approve_planned_slice(repo, work_request.id, planned_slice.id, "planned")
+
+    assert {:ok, delivery} =
+             Service.record_planned_slice_delivery(
+               repo,
+               work_request.id,
+               approved_slice.id,
+               delivery_attrs(%{
+                 outcome: "completed_no_pr",
+                 idempotency_key: "delivery-approved-unlinked",
+                 no_pr_evidence: "Operator noted the slice was approved but never dispatched."
+               })
+             )
+
+    assert delivery.outcome == "completed_no_pr"
+    assert %WorkRequest{completed_at: nil} = repo.get!(WorkRequest, work_request.id)
+  end
+
   test "terminal linked package does not complete an approved slice before dispatch", %{repo: repo} do
     work_request = create_work_request!(repo, id: "WR-DELIVERY-APPROVED", status: "ready_for_slicing")
     planned_slice = create_planned_slice!(repo, work_request, id: "WRS-DELIVERY-APPROVED")
@@ -363,6 +387,55 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
 
     assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
     assert repo.get!(WorkPackage, linked_package.id).status == "reviewing"
+  end
+
+  test "active worker grants prevent closeout until explicitly revoked", %{repo: repo} do
+    {work_request, planned_slice, linked_package} = linked_slice!(repo, status: "ready_for_human_merge")
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+    assert {:ok, _assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+    assert {:ok, _closed} = WorkPackageRepository.update_status(repo, linked_package.id, "ready_for_human_merge", "closed")
+
+    attrs =
+      delivery_attrs(%{
+        outcome: "completed_no_pr",
+        idempotency_key: "delivery-active-worker-grant",
+        no_pr_evidence: "Worker is complete, but the runtime grant still needs explicit closeout."
+      })
+
+    assert {:error, :active_runtime} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+
+    assert {:ok, _revoked_grant} = AccessGrantService.revoke(repo, minted.grant.id)
+    assert {:ok, delivery} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert delivery.outcome == "completed_no_pr"
+    assert repo.get!(WorkPackage, linked_package.id).status == "closed"
+  end
+
+  test "unclaimed worker grants prevent closeout until explicitly revoked", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(repo,
+        work_request_id: "WR-DELIVERY-UNCLAIMED-WORKER-GRANT",
+        status: "ready_for_human_merge"
+      )
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, linked_package.id)
+    assert {:ok, _closed} = WorkPackageRepository.update_status(repo, linked_package.id, "ready_for_human_merge", "closed")
+
+    attrs =
+      delivery_attrs(%{
+        outcome: "completed_no_pr",
+        idempotency_key: "delivery-unclaimed-worker-grant",
+        no_pr_evidence: "A live worker grant still needs explicit revocation."
+      })
+
+    assert {:error, :active_runtime} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+
+    assert {:ok, _revoked_grant} = AccessGrantService.revoke(repo, minted.grant.id)
+    assert {:ok, delivery} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert delivery.outcome == "completed_no_pr"
+    assert repo.get!(WorkPackage, linked_package.id).status == "closed"
   end
 
   defp linked_slice!(repo, overrides) do

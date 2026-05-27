@@ -126,6 +126,30 @@ command. The `legacy_private_handoff` MCP argument is a temporary recovery-only
 path during the V2.1 cutover; legacy handoff options are honored only when that
 flag is set.
 
+## Local Operator WorkRequest Notes
+
+Trusted local HTTP MCP sessions may append non-secret WorkRequest notes without
+claiming each WorkRequest as the owning architect. The unbound local-operator
+tools are:
+
+- `add_work_request_comment`
+- `record_work_request_operator_decision`
+
+Both tools require an explicit local MCP state key, a trusted local daemon, and
+a local filesystem ledger database. They are not advertised to bound worker or
+architect sessions and are rejected for remote/company database URLs. The tools
+reuse the WorkRequest comment and decision services, store `source_type: "operator"`,
+include caller provenance such as `created_by`, and apply the
+standard redaction pass before persisting or returning note content.
+
+Tool contracts are intentionally small: comments require `work_request_id`,
+`body`, and `created_by`; decisions require `work_request_id`, `decision`,
+`rationale`, `scope_impact`, and `created_by`, with optional `source_id`.
+Unexpected, non-string, or overlong fields are rejected.
+
+This path is note capture only. It does not grant dispatch, child-package
+mutation, worker claim, status mutation, or lifecycle closeout authority.
+
 ## Configuration
 
 Pass a custom workflow file path to `./bin/symphony` when starting the service:

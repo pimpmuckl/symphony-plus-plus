@@ -162,14 +162,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     def insert(changeset), do: Repo.insert(changeset)
 
-    defp truncate_claim_timestamps([set: fields]) do
+    defp truncate_claim_timestamps(set: fields) do
       [
         set:
           Enum.map(fields, fn
             {field, %DateTime{} = timestamp} when field in [:claimed_at, :updated_at] ->
               {field, DateTime.truncate(timestamp, :second)}
 
-            field -> field
+            field ->
+              field
           end)
       ]
     end
@@ -1518,6 +1519,365 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       })
 
     assert get_in(missing_resolve_response, ["error", "data", "reason"]) == "comment_target_out_of_scope"
+  end
+
+  test "local operator WorkRequest note tools append comments and decisions with redacted provenance", %{repo: repo} do
+    work_request =
+      create_work_request!(
+        repo,
+        id: "WR-MCP-LOCAL-OPERATOR-NOTES",
+        repo: "nextide/symphony-plus-plus",
+        base_branch: "feature/sympp-v21-ledger-claims"
+      )
+
+    local_server = local_mcp_server(local_mcp_config(repo), "local-operator-notes-state")
+    tools_by_name = tools_for_server(local_server) |> Map.new(&{&1["name"], &1})
+
+    assert get_in(tools_by_name, ["add_work_request_comment", "inputSchema", "required"]) == ["work_request_id", "body", "created_by"]
+
+    assert get_in(tools_by_name, ["record_work_request_operator_decision", "inputSchema", "required"]) == [
+             "work_request_id",
+             "decision",
+             "rationale",
+             "scope_impact",
+             "created_by"
+           ]
+
+    {comment_response, note_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-comment",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "add_work_request_comment",
+            "arguments" => %{
+              "work_request_id" => work_request.id,
+              "body" => "Coordinate with ghp_localoperatorcomment before slicing",
+              "created_by" => "operator sk-localoperatorauthor"
+            }
+          }
+        },
+        local_server
+      )
+
+    assert note_server.session == nil
+    assert comment_id = get_in(comment_response, ["result", "structuredContent", "comment", "id"])
+    assert get_in(comment_response, ["result", "structuredContent", "comment", "body"]) == "Coordinate with [REDACTED] before slicing"
+    assert get_in(comment_response, ["result", "structuredContent", "comment", "source_type"]) == "operator"
+    assert get_in(comment_response, ["result", "structuredContent", "comment", "author_name"]) == "operator [REDACTED]"
+    assert get_in(comment_response, ["result", "structuredContent", "provenance", "created_by"]) == "operator [REDACTED]"
+
+    assert {:ok, %Comment{body: "Coordinate with [REDACTED] before slicing", source_type: "operator", author_name: "operator [REDACTED]"}} =
+             CommentService.get(repo, comment_id)
+
+    decision_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-decision",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "record_work_request_operator_decision",
+            "arguments" => %{
+              "work_request_id" => work_request.id,
+              "decision" => "Mirror result from ghp_localoperatordecision",
+              "rationale" => "Related WR needs context from sk-localoperatorrationale",
+              "scope_impact" => "Comment-only, no dispatch using bearer localoperatorbearer",
+              "created_by" => "operator sk-localoperatordecisionauthor",
+              "source_id" => "ghp_localoperatorsource"
+            }
+          }
+        },
+        note_server
+      )
+
+    assert get_in(decision_response, ["result", "structuredContent", "decision_log_entry", "source_type"]) == "operator"
+    assert get_in(decision_response, ["result", "structuredContent", "decision_log_entry", "source_id"]) == "[REDACTED]"
+    assert get_in(decision_response, ["result", "structuredContent", "decision_log_entry", "decision"]) == "Mirror result from [REDACTED]"
+    assert get_in(decision_response, ["result", "structuredContent", "decision_log_entry", "rationale"]) == "Related WR needs context from [REDACTED]"
+    assert get_in(decision_response, ["result", "structuredContent", "decision_log_entry", "scope_impact"]) == "Comment-only, no dispatch using [REDACTED]"
+    assert get_in(decision_response, ["result", "structuredContent", "decision_log_entry", "created_by"]) == "operator [REDACTED]"
+
+    assert {:ok, [decision]} = WorkRequestRepository.list_decisions(repo, work_request.id)
+    assert decision.source_type == "operator"
+    assert decision.source_id == "[REDACTED]"
+    assert decision.decision == "Mirror result from [REDACTED]"
+    assert decision.created_by == "operator [REDACTED]"
+
+    dispatch_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-dispatch-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "dispatch_work_request_planned_slice", "arguments" => %{}}
+        },
+        note_server
+      )
+
+    assert get_in(dispatch_response, ["error", "data", "reason"]) == "claim_required"
+
+    status_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-status-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "set_status", "arguments" => %{}}
+        },
+        note_server
+      )
+
+    assert get_in(status_response, ["error", "data", "reason"]) == "missing_session"
+  end
+
+  test "local operator WorkRequest note tools reject nonlocal and remote database modes", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-MCP-LOCAL-OPERATOR-NOTES-DENIED")
+    arguments = %{"work_request_id" => work_request.id, "body" => "safe note", "created_by" => "operator"}
+
+    stdio_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "stdio-local-operator-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "add_work_request_comment", "arguments" => arguments}
+        },
+        Server.new(Config.default(repo: repo), initialized: true)
+      )
+
+    assert get_in(stdio_response, ["error", "code"]) == -32_001
+    assert get_in(stdio_response, ["error", "data", "reason"]) == "local_mcp_required"
+
+    remote_config = %{local_mcp_config(repo) | database: "https://ledger.example.test/mcp?token=ghp_remoteoperatorsecret"}
+
+    implicit_state_tools =
+      local_mcp_config(repo)
+      |> Server.new(initialized: true, local_daemon_trusted: true)
+      |> tools_for_server()
+      |> Map.new(&{&1["name"], &1})
+
+    remote_tools =
+      remote_config
+      |> local_mcp_server("remote-local-operator-list-state")
+      |> tools_for_server()
+      |> Map.new(&{&1["name"], &1})
+
+    refute Map.has_key?(implicit_state_tools, "add_work_request_comment")
+    refute Map.has_key?(implicit_state_tools, "record_work_request_operator_decision")
+    refute Map.has_key?(remote_tools, "add_work_request_comment")
+    refute Map.has_key?(remote_tools, "record_work_request_operator_decision")
+
+    remote_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "remote-local-operator-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "add_work_request_comment", "arguments" => arguments}
+        },
+        local_mcp_server(remote_config, "remote-local-operator-denied-state")
+      )
+
+    assert get_in(remote_response, ["error", "code"]) == -32_001
+    assert get_in(remote_response, ["error", "data", "reason"]) == "local_database_required"
+    refute inspect(remote_response) =~ "ghp_remoteoperatorsecret"
+
+    memory_configs = [
+      %{local_mcp_config(repo) | database: ":memory:"},
+      %{local_mcp_config(repo) | database: "file:sympp_local_operator_notes?mode=memory&cache=shared"}
+    ]
+
+    Enum.with_index(memory_configs, fn memory_config, index ->
+      memory_tools =
+        memory_config
+        |> local_mcp_server("memory-local-operator-list-state-#{index}")
+        |> tools_for_server()
+        |> Map.new(&{&1["name"], &1})
+
+      refute Map.has_key?(memory_tools, "add_work_request_comment")
+      refute Map.has_key?(memory_tools, "record_work_request_operator_decision")
+
+      memory_response =
+        Server.handle(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "memory-local-operator-denied-#{index}",
+            "method" => "tools/call",
+            "params" => %{"name" => "add_work_request_comment", "arguments" => arguments}
+          },
+          local_mcp_server(memory_config, "memory-local-operator-denied-state-#{index}")
+        )
+
+      assert get_in(memory_response, ["error", "code"]) == -32_001
+      assert get_in(memory_response, ["error", "data", "reason"]) == "file_backed_database_required"
+    end)
+  end
+
+  test "local operator WorkRequest note tools reject bound worker sessions", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-MCP-LOCAL-OPERATOR-BOUND-DENIED")
+
+    assert {:ok, package} =
+             WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-LOCAL-OPERATOR-BOUND", kind: "mcp"))
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    assert {:ok, worker_assignment} = AccessGrantService.claim(repo, minted.work_key.secret, claimed_by: "worker-1")
+
+    worker_server = %{
+      local_mcp_server(local_mcp_config(repo), "local-operator-worker-bound-state")
+      | session: MCPHarness.session(worker_assignment, proof_hash: minted.grant.secret_hash)
+    }
+
+    worker_tools =
+      worker_server
+      |> tools_for_server()
+      |> Map.new(&{&1["name"], &1})
+
+    refute Map.has_key?(worker_tools, "add_work_request_comment")
+    refute Map.has_key?(worker_tools, "record_work_request_operator_decision")
+
+    response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-bound-denied",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "add_work_request_comment",
+            "arguments" => %{"work_request_id" => work_request.id, "body" => "safe note", "created_by" => "operator"}
+          }
+        },
+        worker_server
+      )
+
+    assert get_in(response, ["error", "code"]) == -32_001
+    assert get_in(response, ["error", "data", "reason"]) == "local_operator_unbound_session_required"
+  end
+
+  test "local operator WorkRequest note tools require initialized current sessions", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-MCP-LOCAL-OPERATOR-SESSION-DENIED")
+
+    arguments = %{
+      "work_request_id" => work_request.id,
+      "body" => "safe note",
+      "created_by" => "operator"
+    }
+
+    pre_initialize_server =
+      Server.new(local_mcp_config(repo), local_daemon_trusted: true, state_key: "local-operator-pre-init-state")
+
+    pre_initialize_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-pre-init-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "add_work_request_comment", "arguments" => arguments}
+        },
+        pre_initialize_server
+      )
+
+    assert get_in(pre_initialize_response, ["error", "code"]) == -32_000
+    assert get_in(pre_initialize_response, ["error", "data", "reason"]) == "server_not_initialized"
+
+    refresh_required_server = %{local_mcp_server(local_mcp_config(repo), "local-operator-refresh-state") | session_refresh_required: true}
+
+    refresh_required_tools =
+      refresh_required_server
+      |> tools_for_server()
+      |> Map.new(&{&1["name"], &1})
+
+    refute Map.has_key?(refresh_required_tools, "add_work_request_comment")
+    refute Map.has_key?(refresh_required_tools, "record_work_request_operator_decision")
+
+    refresh_required_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-refresh-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "add_work_request_comment", "arguments" => arguments}
+        },
+        refresh_required_server
+      )
+
+    assert get_in(refresh_required_response, ["error", "code"]) == -32_001
+    assert get_in(refresh_required_response, ["error", "data", "reason"]) == "claim_required"
+    assert get_in(refresh_required_response, ["error", "data", "action"]) == "claim_private_handoff"
+  end
+
+  test "local operator WorkRequest note tools reject invalid local payload fields", %{repo: repo} do
+    work_request = create_work_request!(repo, id: "WR-MCP-LOCAL-OPERATOR-PAYLOAD-DENIED")
+    local_server = local_mcp_server(local_mcp_config(repo), "local-operator-invalid-payload-state")
+
+    invalid_creator_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-invalid-creator",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "add_work_request_comment",
+            "arguments" => %{
+              "work_request_id" => work_request.id,
+              "body" => "safe note",
+              "created_by" => %{"name" => "operator"}
+            }
+          }
+        },
+        local_server
+      )
+
+    assert get_in(invalid_creator_response, ["error", "code"]) == -32_602
+    assert get_in(invalid_creator_response, ["error", "data", "reason"]) == "invalid_created_by"
+
+    long_decision_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-long-decision",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "record_work_request_operator_decision",
+            "arguments" => %{
+              "work_request_id" => work_request.id,
+              "decision" => String.duplicate("x", Comment.max_body_length() + 1),
+              "rationale" => "safe rationale",
+              "scope_impact" => "safe scope",
+              "created_by" => "operator"
+            }
+          }
+        },
+        local_server
+      )
+
+    assert get_in(long_decision_response, ["error", "code"]) == -32_602
+    assert get_in(long_decision_response, ["error", "data", "reason"]) == "decision_too_long"
+
+    null_source_response =
+      Server.handle(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-operator-null-source",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "record_work_request_operator_decision",
+            "arguments" => %{
+              "work_request_id" => work_request.id,
+              "decision" => "safe decision",
+              "rationale" => "safe rationale",
+              "scope_impact" => "safe scope",
+              "created_by" => "operator",
+              "source_id" => nil
+            }
+          }
+        },
+        local_server
+      )
+
+    assert get_in(null_source_response, ["error", "code"]) == -32_602
+    assert get_in(null_source_response, ["error", "data", "reason"]) == "invalid_source_id"
   end
 
   test "tools list advertises Solo tools only for unbound sessions", %{repo: repo} do
