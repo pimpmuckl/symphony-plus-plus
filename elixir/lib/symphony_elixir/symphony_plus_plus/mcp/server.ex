@@ -3120,9 +3120,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp replace_authority_lost_local_assignment_claim_lease(repo, work_package_id, %ClaimLease{} = lease, actor, %DateTime{} = now) do
-    case local_assignment_lease_has_live_grant?(repo, work_package_id, lease, now) do
-      true -> {:error, :claim_lease_active_for_other_actor}
-      false -> release_authority_lost_local_assignment_claim_lease(repo, work_package_id, lease, actor)
+    cond do
+      lease.actor_display_name == actor["actor_display_name"] ->
+        {:error, :claim_lease_active_for_other_actor}
+
+      local_assignment_lease_has_live_grant?(repo, work_package_id, lease, now) ->
+        {:error, :claim_lease_active_for_other_actor}
+
+      true ->
+        release_authority_lost_local_assignment_claim_lease(repo, work_package_id, lease, actor)
     end
   end
 

@@ -3560,6 +3560,48 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
            ) == 0
   end
 
+  test "claim_local_assignment rejects duplicate caller before grant binding", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-CALLER-IN-FLIGHT")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    arguments = local_assignment_claim_args(package)
+
+    assert {:ok, %ClaimLease{id: lease_id}} =
+             ClaimLeaseService.claim(
+               repo,
+               package.id,
+               %{
+                 "actor_kind" => "agent",
+                 "actor_id" => "agent:local-worker-1:in-flight",
+                 "actor_display_name" => "local-worker-1"
+               },
+               stale_after_ms: :timer.minutes(5)
+             )
+
+    {other_caller_response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-caller-in-flight-other",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_assignment",
+            "arguments" => Map.put(arguments, "caller_id", "codex-local-test-overlap")
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "local-caller-in-flight-other-state")
+      )
+
+    assert get_in(other_caller_response, ["error", "data", "reason"]) == "claim_lease_active_for_other_actor"
+
+    assert {:ok, %ClaimLease{id: ^lease_id, status: "active", actor_display_name: "local-worker-1"}} =
+             ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    assert repo.aggregate(
+             from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id and claim_lease.status != "active"),
+             :count
+           ) == 0
+  end
+
   test "claim_local_assignment claims the newest live worker grant", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-LOCAL-NEWEST-GRANT")
     assert {:ok, older} = AccessGrantService.mint_worker_grant(repo, package.id)
