@@ -67,8 +67,8 @@ WorkRequest, dispatch approved undispatched planned slices, and prepare an
 architect handoff for ready/active WorkRequest planning states. That handoff
 creates or reuses the WorkRequest-scoped phase and architect anchor package,
 mints an unclaimed architect grant for WorkRequest/guidance MCP capabilities,
-stores the secret through private handoff, and shows only non-secret/redacted
-bootstrap metadata plus a prompt for the
+stores the architect secret through private handoff until final cutover, and
+shows only non-secret/redacted bootstrap metadata plus a prompt for the
 `symphony-plus-plus-mcp:symphony-architect` skill. The prompt is intended to be the
 first message for a fresh owning architect session: it includes WorkRequest,
 repo/base, phase, anchor WorkPackage, and ledger references as inert data
@@ -152,20 +152,24 @@ mutate Linear.
 
 Explicit phase-scoped architect MCP sessions with `dispatch:work_request` can
 call `dispatch_work_request_planned_slice(work_request_id, planned_slice_id,
-claimed_by, secret_handoff?, secret_store_dir?, symphony_repo_root?)`. This is intentionally
-separate from `write:work_request` because dispatch creates a WorkPackage,
-worker grant, and private worker-secret handoff. The tool uses the existing
+claimed_by, symphony_repo_root?, legacy_private_handoff?, secret_handoff?,
+secret_store_dir?)`. This is intentionally separate from `write:work_request`
+because dispatch creates a WorkPackage, worker grant, and ledger-backed worker
+claim metadata. The tool uses the existing
 planned-slice dispatch orchestration and returns only WorkRequest id,
-planned-slice linkage/status, WorkPackage id metadata, and redacted worker
-handoff metadata. The optional `symphony_repo_root` is the Symphony++
-helper/namespace repo root containing the worker secret helper script under
-`scripts/`; it is not the target product repository root. Dispatch also accepts
-the configured `--repo-root`, a discoverable local Symphony++ root, or the
-hidden legacy `repo_root` alias for stale sessions. Invalid helper roots fail
-with an actionable error instead of requiring operators to infer which root was
-expected. Use a
-file-backed live ledger; in-memory database configuration is rejected so the
-worker handoff cannot point at an unclaimable ledger. Blank database
+planned-slice linkage/status, WorkPackage id metadata, and non-secret worker
+bootstrap metadata. The optional `symphony_repo_root` is needed only for
+explicit legacy/recovery private handoff replay; when used, it is the
+Symphony++ helper/namespace repo root containing the worker secret helper
+script under `scripts/`, not the target product repository root. Dispatch also
+accepts the configured `--repo-root`, a discoverable local Symphony++ root, or
+the hidden legacy `repo_root` alias for stale sessions. Invalid helper roots
+fail with an actionable error only in that legacy/recovery path.
+`legacy_private_handoff` is the exposed MCP boolean and
+`--legacy-private-handoff` CLI flag for that recovery path; `secret_handoff`
+and `secret_store_dir` are accepted only when it is true. Use a file-backed
+live ledger; in-memory database configuration is rejected so the worker claim
+cannot point at an unclaimable ledger. Blank database
 configuration is treated as absent and uses the live local ledger. Matching
 configured SQLite file URI options are preserved for the worker command when
 they resolve to the same live ledger, including the default local ledger;
@@ -178,11 +182,11 @@ Planned-slice dispatch is available as an operator CLI, architect MCP tool, and
 local-operator dashboard action. Each path dispatches one `approved` planned
 slice by WorkRequest id and planned-slice id, validates the slice's owned file
 globs against the parent WorkRequest path constraints before minting a
-WorkPackage, creates the worker-ready package through private worker-secret
-handoff, and then records the planned-slice linkage. The dashboard action
+WorkPackage, creates ledger-backed worker claim metadata, and then records the
+planned-slice linkage. The dashboard action
 reuses the existing `PlannedSliceDispatch` orchestration, records the stable
 worker identity `local-operator-worker`, and shows only non-secret
-WorkPackage/linkage and handoff metadata. It does not spawn Codex agents and
+WorkPackage/linkage and bootstrap metadata. It does not spawn Codex agents and
 does not call Linear. The validator is pure and does not inspect the host
 filesystem. Missing or empty `allowed_paths` leaves the slice unrestricted by
 allow-list, but `forbidden_paths` still block overlapping owned globs. As a
@@ -233,22 +237,23 @@ Run planned-slice dispatch from `elixir/` after a slice is approved:
 mix sympp.dispatch_planned_slice `
   --work-request-id <work-request-id> `
   --planned-slice-id <planned-slice-id> `
-  --claimed-by <stable-worker-id> `
-  --secret-handoff auto
+  --claimed-by <stable-worker-id>
 ```
 
-The task also accepts `--secret-store-dir <path>` for local private-file
-handoff storage and `--database <sqlite-path>` only for an intentionally
-isolated ledger. It validates required identifiers and `claimed_by` before
-opening or creating the ledger database, migrates the Symphony++ repo, and
-prints pretty JSON on success. Normal output is redacted: it includes the
-created WorkPackage, redacted worker grant, non-secret handoff coordinates, and
-planned-slice linkage metadata, but never the raw worker secret.
+The task also accepts `--database <sqlite-path>` only for an intentionally
+isolated ledger. Use `--legacy-private-handoff` plus `--secret-handoff` or
+`--secret-store-dir` only for explicit legacy/recovery replay. It validates
+required identifiers and `claimed_by` before opening or creating the ledger
+database, migrates the Symphony++ repo, and prints pretty JSON on success.
+Normal output is redacted: it includes the created WorkPackage, redacted worker
+grant, non-secret ledger `worker_bootstrap` metadata, and planned-slice linkage
+metadata, but never the raw worker secret.
 
 If WorkPackage creation succeeds but linkage fails, the dispatcher attempts to
-delete the created WorkPackage ledger state and worker-secret handoff. When
-cleanup is incomplete, the returned recovery payload contains non-secret
-identifiers and handoff coordinates for operator recovery.
+delete the created WorkPackage ledger state and any explicitly requested legacy
+worker-secret handoff. When cleanup is incomplete, the returned recovery payload
+contains non-secret identifiers and, for legacy/recovery dispatch only, handoff
+coordinates for operator recovery.
 
 ## Standalone Flow
 
@@ -257,18 +262,18 @@ identifiers and handoff coordinates for operator recovery.
    scratch space and edit the package-specific fields.
 3. Run the create-work command from `elixir/` with the edited file, ledger
    database, and stable `--claimed-by <worker-id>`.
-4. Confirm the returned handoff data is non-secret. Normal output should show
-   the private-store handoff target and MCP bootstrap shape, not the raw worker
-   secret.
-5. Ensure the worker has the local plugin or skill and MCP stdio dependency
-   configured through the private-store bootstrap. The installable Symphony++
-   Codex plugin also exposes a generic MCP entry for plugin UI discovery, but
-   that static entry is not a per-worker handoff and must not contain raw worker
+4. Confirm the returned bootstrap data is non-secret. Standalone create-work
+   currently returns legacy/recovery private-store handoff metadata, not
+   `claim_local_assignment` metadata.
+5. Ensure the worker has the local plugin or skill and a dedicated local HTTP
+   MCP session connected to the same ledger. The installable Symphony++ Codex
+   plugin entry is not a per-worker claim and must not contain raw worker
    secrets, private-store handoff targets, bearer tokens, or operator-local
    secret material.
-6. Dispatch the worker with package id, base/target branch guidance, owned
-   paths, acceptance criteria, test plan, review profiles, handoff target, stable
-   `claimed_by`, and stop conditions.
+6. Launch the standalone worker with package id, base/target branch guidance,
+   owned paths, acceptance criteria, test plan, review profiles, the emitted
+   legacy/recovery private-store bootstrap metadata, stable `claimed_by`, and
+   stop conditions.
 7. Monitor claim, plan, findings, progress, blockers, branch/PR attachment,
    validation, and review evidence through Symphony++ state.
 8. For PR-required packages, review the PR against
@@ -299,7 +304,7 @@ identifiers and handoff coordinates for operator recovery.
 Worker handoffs may include:
 
 - WorkPackage id, branch guidance, owned files, acceptance criteria, and tests.
-- Handoff target and stable `claimed_by` identity.
+- Ledger claim metadata and stable `claimed_by` identity.
 - Required review profiles and stop conditions.
 - Links to non-secret docs, templates, and MCP wiring instructions.
 
@@ -307,10 +312,12 @@ Worker handoffs must not include raw grant secrets, bearer tokens, GitHub
 tokens, Linear tokens, MCP auth tokens, full secret-bearing claim URLs, private
 keys, or signed URLs.
 
-For worker dispatch, use the private-store `run-mcp` command emitted by
-`mix sympp.create_work` or planned-slice dispatch. Do not copy those
-worker-specific handoff targets into static plugin files; the plugin's generic
-MCP entry is only an installable capability entry and runtime launcher.
+For normal planned-slice worker dispatch, use the `claim_local_assignment`
+metadata emitted by planned-slice dispatch. For standalone `mix sympp.create_work`,
+use only the explicitly legacy/recovery private-store bootstrap emitted by that
+command until final cutover. Do not copy worker-specific legacy handoff targets
+into static plugin files; the plugin's generic MCP entry is only an installable
+capability entry and runtime launcher.
 
 ## Closeout Record
 

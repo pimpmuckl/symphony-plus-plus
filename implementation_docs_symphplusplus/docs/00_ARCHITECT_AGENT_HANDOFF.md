@@ -46,7 +46,9 @@ For each worker, send:
    or an equivalent installed copy in the worker repo.
 4. MCP setup for the Symphony++ local HTTP server; see
    `.codex/skills/symphony-work-package/references/mcp_wiring.md`.
-5. Any dependency summaries or operator decisions needed to avoid scope drift.
+5. The `claim_local_assignment` metadata plus prepared branch, worktree path,
+   caller id, and stable `claimed_by`.
+6. Any dependency summaries or operator decisions needed to avoid scope drift.
 
 Worker PR title format:
 

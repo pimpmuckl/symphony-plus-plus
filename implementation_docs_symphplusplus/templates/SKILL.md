@@ -1,24 +1,31 @@
 ---
 name: symphony-work-package
-description: Use when assigned a Symphony++ work key or WorkPackage; keeps scoped planning, findings, progress, branch/PR metadata, review evidence, and readiness synchronized through the Symphony++ MCP server.
+description: Use when assigned a Symphony++ WorkPackage or an explicitly labeled legacy/recovery WorkKey/private-handoff assignment; claims the ledger-backed local assignment or recovery bootstrap and keeps scoped planning, progress, branch/PR metadata, review evidence, and readiness synchronized through the Symphony++ MCP server.
 ---
 
 # Symphony++ Work Package
 
-Use this skill when a Symphony++ assignment provides a work key, WorkPackage id,
-or Symphony++ MCP server context.
+Use this skill when a Symphony++ assignment provides a WorkPackage id and
+ledger-backed claim metadata, or explicitly labels a legacy/recovery
+WorkKey/private-handoff bootstrap.
 
 ## Start
 
-1. Prefer a configured private-store MCP bootstrap. The MCP server should start
-   with `--work-key-secret-env <env-var> --claimed-by <stable-worker-id>` so
-   the raw work-key secret stays out of prompts, tool-call logs, PRs, and
-   normal command output.
-2. Call `get_current_assignment()` and treat the returned WorkPackage as the
+1. Use a dedicated S++ MCP-enabled session connected to the same ledger as
+   dispatch.
+2. For planned-slice/ledger-dispatched V2.1 assignments, claim with
+   `claim_local_assignment` using the dispatch fields plus runtime `branch`,
+   `worktree_path`, `caller_id`, and `claimed_by`.
+3. Replay the same local claim after reconnects. The server heartbeats the
+   current lease, reclaims stale leases with audit evidence, and rejects paused
+   leases or another active owner.
+4. For standalone packages or explicitly labeled legacy/recovery WorkKey or
+   private-handoff assignments, use `claim_work_key` or
+   `claim_private_handoff` instead of `claim_local_assignment`. Do not ask for,
+   paste, print, or log raw secrets.
+5. Call `get_current_assignment()` and treat the returned WorkPackage as the
    only authority for scope.
-3. If the MCP session is not already bound, stop and ask the operator to fix the
-   private-store handoff. Do not ask for, paste, print, or log the raw secret.
-4. Read the virtual planning resources before implementation:
+6. Read the virtual planning resources before implementation:
    - `read_context()`
    - `read_task_plan()`
    - `sympp://work-packages/{id}/findings.md`
@@ -101,11 +108,10 @@ unless replaying a previously recorded idempotent write.
 ## Reconnect Notes
 
 `state_key` preserves initialized MCP handshake continuity only. It is not a
-bearer capability and does not restore claimed worker authorization. After
-reconnect initialize, the private-store MCP bootstrap must present the same
-secret proof and `claimed_by` identity again. `claim_work_key` remains a server
-tool for controlled recovery, but first-use workers should not paste raw
-secrets into prompts or ordinary tool calls.
+bearer capability and does not restore worker authority. Replay
+`claim_local_assignment` after reconnect initialize. `claim_work_key` and
+`claim_private_handoff` remain controlled legacy/recovery bootstrap tools; they
+are not the normal worker path after ledger-claim dispatch.
 
 ## References
 

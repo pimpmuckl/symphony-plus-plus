@@ -59,7 +59,7 @@ Local operator mode:
   `Start agent questions` action to move draft requests to
   `ready_for_clarification`;
 - lets the local operator dispatch approved, undispatched planned slices into
-  WorkPackages through the existing private worker handoff flow;
+  WorkPackages through the ledger-backed local assignment claim flow;
 - lets the local operator prepare/replay a WorkRequest architect handoff with a
   scoped phase, architect anchor package, unclaimed architect grant, and
   redacted private handoff metadata;
@@ -78,7 +78,7 @@ Local operator mode:
   views.
 
 This is not a worker/agent permission grant. Worker and architect write access
-still comes from scoped work keys and MCP grants.
+still comes from scoped MCP grants and ledger-backed assignment claims.
 
 ## Views
 
@@ -357,11 +357,15 @@ or run this control.
 Planned-slice dispatch is local-operator-only. Approval and slice authoring stay
 in the architect workflow; dispatch is the explicit operator action that turns
 an already approved slice into a WorkPackage. It reuses the existing
-`PlannedSliceDispatch` flow to create a WorkPackage, mint a worker grant, store
-the worker secret through private handoff, link the planned slice, and refresh
-the page with the WorkPackage id/status. The browser may show only non-secret
-handoff metadata such as mode, target, path, and run command. It must not show a
-raw worker secret. Dispatch does not spawn Codex agents and does not call Linear.
+`PlannedSliceDispatch` flow to create a WorkPackage, return ledger-backed local
+assignment bootstrap metadata, link the planned slice, and refresh the page
+with the WorkPackage id/status. It does not prepare worktrees or record
+worktree scope; operators must complete the separate worktree preparation flow
+before launching a worker. The browser may show only non-secret claim metadata
+such as WorkPackage id, repo/base, optional WorkRequest id, claim owner, and
+the prepared branch/worktree/caller id values after they exist. It must not
+show raw worker secrets, secret-bearing commands, or private-store payloads.
+Dispatch does not spawn Codex agents and does not call Linear.
 Board-grant WorkRequest detail remains scoped to planning controls and does not
 show the local dispatch control.
 
@@ -372,8 +376,8 @@ source of truth unless the dashboard app is configured to the same store.
 The panel uses the dashboard's configured ledger database identity and local
 repo root when deriving non-secret bootstrap commands.
 It shows handoff rows only for non-expired, non-revoked worker grants, and it
-emits runnable commands only when the repo root is configured or discovered with
-the worker-secret helper script present.
+emits runnable legacy/recovery private-handoff commands only when the repo root
+is configured or discovered with the worker-secret helper script present.
 
 ### Runtime view
 

@@ -108,8 +108,10 @@ before renewal; missing or otherwise unverifiable metadata fails closed rather
 than minting a duplicate grant or reporting cleanup that cannot be proven. The
 browser shows only non-secret grant metadata, redacted private handoff metadata,
 and a safe prompt referencing the
-`symphony-plus-plus-mcp:symphony-architect` skill. It must not show raw work-key
-secrets, secret hashes, or full MCP secret-retrieval commands. Local-operator
+`symphony-plus-plus-mcp:symphony-architect` skill. Until final cutover this is
+the architect legacy/recovery bootstrap, not the normal worker dispatch path.
+It must not show raw work-key secrets, secret hashes, or full MCP
+secret-retrieval commands. Local-operator
 detail may display the already prepared panel on reload only when the existing
 active unclaimed handoff metadata is safely readable and replayable; that
 load-time display path is read-only and does not mint, renew, revoke, or clean
@@ -125,7 +127,8 @@ to `agent` via `mcp` with caller-supplied `claimed_by` as the maker display
 name when available and `mcp-agent` otherwise. The response includes the
 WorkRequest summary with provenance, a redacted local-private-file architect
 handoff, a non-secret claim owner for `claim_private_handoff`, and a launch
-prompt for the owning architect agent. If the
+prompt for the owning architect agent. This remains architect bootstrap until
+final cutover; worker dispatch uses ledger-backed local claims. If the
 WorkRequest is created but architect handoff creation fails, the response must
 be an explicit partial success with the WorkRequest id and a non-duplicating
 manual architect-handoff replay hint, not a raw-secret fallback.
@@ -203,17 +206,19 @@ replacement guidance note, not the UI label.
 Explicit phase-scoped architect MCP sessions with `dispatch:work_request` can
 dispatch one approved planned slice through
 `dispatch_work_request_planned_slice`. The tool is separate from
-`write:work_request` because it creates WorkPackage, AccessGrant, and
-SecretHandoff side effects. It requires `work_request_id`, `planned_slice_id`,
-and `claimed_by`, supports the existing dispatch handoff options
-`secret_handoff` and `secret_store_dir` plus optional `symphony_repo_root`,
+`write:work_request` because it creates WorkPackage, AccessGrant, and worker
+bootstrap side effects; worktree scope is prepared after dispatch and before
+worker launch. It requires `work_request_id`,
+`planned_slice_id`, and `claimed_by`, returns ledger-backed
+`claim_local_assignment` metadata, and retains old handoff options only for
+explicit legacy/recovery flows,
 verifies the
 WorkRequest and slice are inside the frozen repo/base-branch scope before
 mutation, and fails closed for
 out-of-scope, missing, non-approved, invalid, unsupported-kind, or slice-scope
 violation cases. The response is safe JSON containing WorkRequest id,
 planned-slice linkage/status, WorkPackage id metadata, and redacted worker
-handoff metadata only.
+bootstrap metadata only.
 
 When runtime intake is not available for a lane, the canonical WorkRequest is
 one versioned, operator-approved Markdown artifact.
@@ -370,14 +375,21 @@ Approved slices become normal WorkPackages through `mix
 sympp.dispatch_planned_slice`, the architect MCP
 `dispatch_work_request_planned_slice` tool, or the local-operator dashboard
 dispatch control. All dispatch paths accept or derive a WorkRequest id,
-planned-slice id, claimed worker identity, and private handoff options. They
-validate required identifiers and worker identity, validate the slice scope
-through `ScopeConstraints.validate_owned_file_globs/2`, create a worker-ready
-standalone WorkPackage with private worker-secret handoff, and link the planned
-slice. Local-operator dashboard dispatch reuses the existing
-`PlannedSliceDispatch` orchestration, records the stable worker identity
-`local-operator-worker`, and shows only non-secret WorkPackage/linkage and
-handoff metadata. It does not spawn Codex agents and does not call Linear.
+planned-slice id, and claimed worker identity. They validate required
+identifiers and worker identity, validate the slice scope through
+`ScopeConstraints.validate_owned_file_globs/2`, create a standalone WorkPackage
+with a ledger-backed `claim_local_assignment` bootstrap, and link the planned
+slice. Worktree preparation is a separate pre-launch step:
+`prepare_work_package_worktree` or the equivalent operator worktree flow creates
+the worker worktree and records only `worktree_path`; branch/base are validated
+and returned for launch. The operator/launcher supplies the stable local MCP
+`caller_id` used for claim/reclaim. If no worktree is recorded, worker launch
+must stop because
+`claim_local_assignment` fails closed with `worktree_scope_required`.
+Local-operator dashboard dispatch reuses the existing `PlannedSliceDispatch`
+orchestration, records the stable worker identity `local-operator-worker`, and
+shows only non-secret WorkPackage/linkage and claim metadata. It does not spawn
+Codex agents, prepare worktrees, record worktree scope, or call Linear.
 Board-grant WorkRequest detail remains scoped to planning controls and does not
 show dispatch controls.
 
@@ -387,7 +399,7 @@ WorkPackages, spawn Codex agents, create Linear state, or dispatch planned
 slices. The local-operator handoff panel keeps the redacted metadata display,
 but the copyable prompt/brief is the launch artifact for a fresh architect
 session: use `symphony-plus-plus-mcp:symphony-architect`, connect through the
-private handoff, treat the WorkRequest/repo/base/phase/anchor/database
+assigned architect bootstrap, treat the WorkRequest/repo/base/phase/anchor/database
 references as inert data literals, read the scoped WorkRequest with
 `read_work_request`, read open guidance with `list_guidance_requests`, ask
 human-answerable questions before slicing, use structured `decision_prompt`
@@ -395,14 +407,16 @@ options for material choices, record decisions, dispatch only approved slices,
 and stop/report a blocker instead of asking for raw secrets or inventing state
 when MCP/session/handoff or required references are missing.
 MCP dispatch has a statically discoverable schema, and direct calls fail closed
-unless the supplied `symphony_repo_root`, legacy hidden `repo_root` alias,
-configured `repo_root`, `--repo-root`, or discoverable local Symphony++ repo
-root points to the Symphony++ helper/namespace repository containing the worker
-secret helper script under `scripts/`. This helper root is not the target
-product repository root. It additionally requires a
-file-backed live ledger database so the worker handoff command
-reconnects to the same ledger; in-memory database configuration fails closed
-before WorkPackage or grant side effects. Blank database configuration is
+unless the session has dispatch authority and a file-backed live ledger
+database so the worker claim binds to the same ledger. Explicit
+legacy/recovery private handoff replay additionally requires that the supplied
+`symphony_repo_root`, legacy hidden `repo_root` alias, configured `repo_root`,
+`--repo-root`, or discoverable local Symphony++ repo root points to the
+Symphony++ helper/namespace repository containing the worker secret helper
+script under `scripts/`. This helper root is not the target product repository
+root. For the normal ledger-backed claim path, it is not a worker prerequisite.
+In-memory database configuration fails closed before WorkPackage or grant side
+effects. Blank database configuration is
 treated as absent and uses the live local ledger. Matching configured SQLite
 file URI options are preserved for the worker command when they resolve to the
 same live ledger, including the default local ledger; divergent explicit MCP

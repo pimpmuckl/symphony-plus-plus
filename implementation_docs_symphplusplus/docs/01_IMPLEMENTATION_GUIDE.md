@@ -44,6 +44,9 @@ available freeform redirect path.
 
 Use a standalone package for one bounded quick fix, hotfix, investigation, or
 review-only task. Standalone packages do not need a phase branch or architect.
+On this feature branch, standalone `mix sympp.create_work` remains a
+legacy/recovery private-store bootstrap path; use planned-slice dispatch for
+normal ledger-backed local claims.
 
 Use an architect-led package when the work must be split across multiple child
 packages, dependency order matters, or one operator wants an architect agent to
@@ -72,17 +75,18 @@ Target the base branch recorded on the package. Do not assume a historical beta
 branch. Human merge remains controlled by branch protection, required reviews,
 and package readiness evidence.
 
-## Worker Lifecycle
+## Planned-Slice Worker Lifecycle
 
 1. Operator creates the package request with repo, base branch, owned paths,
    acceptance criteria, test plan, and review-suite requirements.
-2. Operator runs the create-work command. Normal output stores the one-time
-   secret in the configured private local handoff store and returns only
-   non-secret handoff metadata.
-3. Worker starts with the `symphony-plus-plus` Codex plugin or repo-local skill
-   plus an MCP dependency configured through the private-store bootstrap.
-4. Worker claims or reconnects with the same stable `claimed_by` identity,
-   reads the current assignment, and reads all package virtual resources.
+2. Operator dispatches the approved planned-slice package and prepares a scoped
+   worker worktree. Normal output returns only non-secret ledger claim metadata for
+   `claim_local_assignment`.
+3. Worker starts in a dedicated S++ MCP-enabled session connected to the same
+   local ledger.
+4. Worker claims or reconnects with `claim_local_assignment`, using the stable
+   `claimed_by`, branch, worktree path, and caller id, then reads the current
+   assignment and all package virtual resources.
 5. Worker updates the package task plan before implementation and records
    findings/progress through MCP as the work changes.
 6. Worker implements only the assigned package, requests scope expansion for

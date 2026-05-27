@@ -12,7 +12,9 @@ delivery closeout. Do not implement worker packages yourself.
 
 1. Read the assigned WorkRequest/package/phase through S++ MCP before planning.
    Tool visibility is not authorization; if a tool returns `claim_required` or
-   another binding denial, bind through the redacted private handoff first.
+   another binding denial, use the assignment's configured bootstrap. Redacted
+   private handoff remains the current architect bootstrap until final cutover;
+   for normal worker dispatch it is legacy/recovery only.
 2. For WorkRequest lanes, read `read_work_request(work_request_id)` and
    `list_guidance_requests` before slicing.
 3. If MCP/session/scope state is unavailable, record/report the blocker. Do not
@@ -54,6 +56,12 @@ slices. Mark the WorkRequest sliced once approved slices cover the request.
 ## Dispatch
 
 Dispatch only approved slices with `dispatch_work_request_planned_slice`.
+For local V2.1 dispatch, normal worker bootstrap is ledger-backed:
+`worker_bootstrap.type=ledger_claim`, `mode=local_assignment`, and
+`claim.tool=claim_local_assignment`. Dispatch first to create the WorkPackage,
+then prepare or provide worker worktree scope before launch so the worker can
+pass `branch`, `worktree_path`, `caller_id`, and `claimed_by` without asking
+for secrets.
 
 Worker prompts must include:
 
@@ -61,7 +69,8 @@ Worker prompts must include:
 - For assigned WorkPackages, `symphony-plus-plus-mcp:symphony-work-package`.
 - WorkPackage id, branch/base, scope, acceptance, validation, review profile,
   line/PR-size budget, and stop conditions.
-- Redacted handoff/bootstrap only; never raw secrets.
+- The ledger claim payload or clear recovery/legacy bootstrap label; never raw
+  secrets.
 - Relevant decisions/dependencies.
 - Instruction to ask the architect about product, architecture, dependency,
   slice-boundary, or reviewer-driven scope ambiguity.
@@ -70,6 +79,8 @@ Worker prompts must include:
 
 Keep prompts short. The default worker skill is the baseline playbook; the
 prompt only needs task-specific scope, evidence, constraints, and deviations.
+Do not reprint the full implementation/review/PR checklist unless the package
+deviates from the baseline worker contract.
 
 Workers own implementation, tests, Review Suite, GitHub review when required,
 CI/static gates when present, and PR readiness. Do not take over their review
@@ -99,9 +110,9 @@ Record terminal outcomes with `record_planned_slice_delivery`:
 Use `reconcile_work_request` for structured PR/GitHub evidence repair. Do not
 infer delivery from prose decisions or chat. Phase-child PRs remain phase
 controlled; call `merge_child_into_phase` before `pr_merged` closeout when
-required. Revoke stale planned-slice worker grants before final closeout. If
-package evidence is missing or ambiguous, do not record WorkRequest delivery
-closeout; repair evidence first.
+required. Reclaim or revoke stale planned-slice worker runtime through the
+ledger-backed tools before final closeout. If package evidence is missing or
+ambiguous, do not record WorkRequest delivery closeout; repair evidence first.
 
 ## Stop
 
