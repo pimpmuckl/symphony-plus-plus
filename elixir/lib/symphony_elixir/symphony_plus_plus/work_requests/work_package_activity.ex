@@ -10,7 +10,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
   import Ecto.Query, only: [from: 2]
 
   @active_grant_roles ["worker", "architect"]
-  @current_claim_lease_statuses ["active", "paused"]
   @terminal_package_statuses ["merged", "merged_into_phase", "closed", "abandoned"]
   @recycle_source_tools ["claim_local_assignment", "revoke_child_worker_key", "revoke_planned_slice_worker_key"]
   @stale_heartbeat_after_seconds 300
@@ -170,7 +169,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
     active_claim_leases = Enum.filter(current_claim_leases, &active_claim_lease?(&1, now))
     stale_agent_runs = if paused?, do: [], else: Enum.filter(agent_runs, &stale_agent_run?(&1, now))
     active_agent_runs = if paused?, do: [], else: Enum.filter(agent_runs, &active_agent_run?(&1, now))
-    active_grants = active_grants(grants, current_claim_leases, paused?, now)
+    active_grants = active_grants(grants, current_claim_leases, now)
     recycled? = recycled_runtime?(claim_leases, progress_events)
     terminal? = terminal_package?(work_package)
     active_runtime_evidence? = active_claim_leases != [] or active_agent_runs != [] or active_grants != []
@@ -219,7 +218,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
 
   defp stale_agent_run?(%AgentRun{}, %DateTime{}), do: false
 
-  defp current_claim_lease?(%ClaimLease{status: status}), do: status in @current_claim_lease_statuses
+  defp current_claim_lease?(%ClaimLease{status: status}), do: status in ClaimLease.active_statuses()
 
   defp paused_claim_lease?(%ClaimLease{status: "paused"}), do: true
   defp paused_claim_lease?(%ClaimLease{}), do: false
@@ -233,9 +232,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
     claim_lease_expired?(claim_lease, now) or claim_lease_heartbeat_stale?(claim_lease, now)
   end
 
-  defp active_grants(_grants, _current_claim_leases, true = _paused?, _now), do: []
-  defp active_grants(_grants, current_claim_leases, _paused?, _now) when current_claim_leases != [], do: []
-  defp active_grants(grants, [], false, %DateTime{} = now), do: Enum.filter(grants, &active_grant?(&1, now))
+  defp active_grants(grants, [], %DateTime{} = now), do: Enum.filter(grants, &active_grant?(&1, now))
+  defp active_grants(_grants, _current_claim_leases, %DateTime{}), do: []
 
   defp recycled_runtime?(claim_leases, progress_events) do
     Enum.any?(claim_leases, &reclaimed_claim_lease?/1) or Enum.any?(progress_events, &recycle_event?/1)
@@ -347,7 +345,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
   end
 
   defp claim_lease_gate_at(%ClaimLease{status: "active"} = claim_lease),
-    do: latest_timestamp([claim_lease.lease_expires_at, claim_lease_stale_at(claim_lease)])
+    do: earliest_timestamp([claim_lease.lease_expires_at, claim_lease_stale_at(claim_lease)])
 
   defp claim_lease_gate_at(%ClaimLease{status: "reclaimed"} = claim_lease),
     do: latest_timestamp([claim_lease.reclaimed_at, claim_lease.updated_at])
@@ -382,6 +380,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
     timestamps
     |> Enum.reject(&is_nil/1)
     |> Enum.max_by(&DateTime.to_unix(&1, :microsecond), fn -> nil end)
+  end
+
+  defp earliest_timestamp(timestamps) do
+    timestamps
+    |> Enum.reject(&is_nil/1)
+    |> Enum.min_by(&DateTime.to_unix(&1, :microsecond), fn -> nil end)
   end
 
   defp timestamp_sort_value(%DateTime{} = datetime), do: DateTime.to_unix(datetime, :microsecond)
