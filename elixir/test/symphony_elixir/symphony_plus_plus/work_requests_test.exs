@@ -617,6 +617,42 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert %DateTime{} = without_grant.completed_at
   end
 
+  test "completion and archive wait for a paused current claim lease", %{repo: repo} do
+    assert {:ok, request} = Repository.create(repo, attrs(id: "WR-COMPLETE-PAUSED-LEASE", status: "ready_for_slicing"))
+    assert {:ok, planned_slice} = Repository.add_planned_slice(repo, request.id, planned_slice_attrs(id: "WRS-COMPLETE-PAUSED-LEASE"))
+    assert {:ok, approved_slice} = Repository.approve_planned_slice(repo, request.id, planned_slice.id, "planned")
+    linked_package = create_matching_work_package!(repo, request, approved_slice, id: "WP-COMPLETE-PAUSED-LEASE", status: "merged")
+
+    assert {:ok, _dispatched} = Repository.dispatch_planned_slice(repo, request.id, approved_slice.id, "approved", linked_package.id)
+
+    assert {:ok, claim_lease} =
+             ClaimLeaseService.claim(repo, linked_package.id, activity_actor("paused-completion-worker"), stale_after_ms: 60_000)
+
+    assert {:ok, paused_lease} = ClaimLeaseService.pause(repo, claim_lease.id, activity_actor("operator"), reason: "operator pause")
+
+    paused_context = WorkPackageActivity.context(repo, linked_package.id)
+    assert get_in(paused_context, [:runtime_state, :active?]) == true
+    assert get_in(paused_context, [:runtime_state, :paused?]) == true
+    assert get_in(paused_context, [:runtime_state, :lifecycle_state]) == "paused"
+    assert "claim_lease_paused" in get_in(paused_context, [:runtime_state, :reason_codes])
+
+    assert {:ok, with_paused_lease} = Service.refresh_completion(repo, request.id)
+    assert with_paused_lease.completed_at == nil
+    assert {:error, :not_completed} = Service.archive(repo, request.id)
+
+    assert {:ok, _released_lease} = ClaimLeaseService.release(repo, paused_lease.id, reason: "operator resolved pause")
+
+    released_context = WorkPackageActivity.context(repo, linked_package.id)
+    assert get_in(released_context, [:runtime_state, :active?]) == false
+    assert get_in(released_context, [:runtime_state, :paused?]) == false
+    assert get_in(released_context, [:runtime_state, :lifecycle_state]) == "terminal"
+
+    assert {:ok, completed} = Service.refresh_completion(repo, request.id)
+    assert %DateTime{} = completed.completed_at
+    assert {:ok, archived} = Service.archive(repo, request.id)
+    assert %DateTime{} = archived.archived_at
+  end
+
   test "completion waits for questions blockers linked packages and honors terminal runtime", %{repo: repo} do
     assert {:ok, human_request} = Repository.create(repo, attrs(id: "WR-COMPLETE-HUMAN", status: "ready_for_slicing"))
     assert {:ok, human_slice} = Repository.add_planned_slice(repo, human_request.id, planned_slice_attrs(id: "WRS-COMPLETE-HUMAN"))
@@ -850,7 +886,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert "architect_grant_active" in mixed_runtime.reason_codes
 
     paused_runtime = get_in(contexts, [paused_package.id, :runtime_state])
-    assert paused_runtime.active? == false
+    assert paused_runtime.active? == true
     assert paused_runtime.paused? == true
     assert paused_runtime.stale? == false
     assert paused_runtime.lifecycle_state == "paused"
