@@ -167,7 +167,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     template_prompt = File.read!(@template_prompt_path)
     template_reference_prompt = File.read!(Path.join(@template_references_dir, "worker_prompt.md"))
 
-    for content <- [prompt, plugin_prompt, template_prompt, template_reference_prompt] do
+    assert plugin_prompt == prompt
+
+    for content <- [prompt, template_prompt, template_reference_prompt] do
       assert String.starts_with?(content, "You are assigned Symphony++ work package")
       assert content =~ "<WORK_PACKAGE_ID>"
       assert content =~ "Ledger claim: call `claim_local_assignment`"
