@@ -171,6 +171,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
     active_grants = active_grants(grants, current_claim_leases, now)
     recycled? = recycled_runtime?(claim_leases, progress_events)
     terminal? = terminal_package?(work_package)
+
     active? =
       active_runtime?(
         terminal?,
@@ -180,6 +181,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
         active_agent_runs,
         active_grants
       )
+
     stale? = stale_runtime?(terminal?, paused?, stale_claim_leases, stale_agent_runs)
 
     reason_codes =

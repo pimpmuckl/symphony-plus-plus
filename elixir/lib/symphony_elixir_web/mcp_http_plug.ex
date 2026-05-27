@@ -20,10 +20,10 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
 
   @spec call(Conn.t(), keyword()) :: Conn.t()
   def call(%Conn{path_info: ["mcp"]} = conn, _opts) do
-    with :ok <- validate_local_request(conn),
+    with {:ok, local_daemon_trusted?} <- validate_local_request(conn),
          :ok <- validate_origin(conn),
          :ok <- ensure_state_store_started() do
-      dispatch(conn)
+      dispatch(conn, local_daemon_trusted?)
     else
       {:error, :state_store_unavailable} -> send_json_rpc_error(conn, 503, :ledger_unavailable)
       {:error, reason} -> send_json_rpc_error(conn, 403, reason)
@@ -79,12 +79,12 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
     end
   end
 
-  defp dispatch(%Conn{method: "POST"} = conn) do
+  defp dispatch(%Conn{method: "POST"} = conn, local_daemon_trusted?) do
     with {:ok, payload, conn} <- read_json_body(conn),
          :ok <- reject_batch_payload(payload),
          {:ok, state_key} <- request_state_key(conn, payload),
          :ok <- require_session_for_followup(payload, state_key),
-         {:ok, result} <- handle_payload(payload, state_key) do
+         {:ok, result} <- handle_payload(payload, state_key, local_daemon_trusted?) do
       send_transport_result(conn, result, state_key)
     else
       {:error, :invalid_json, conn} -> send_json_rpc_error(conn, 400, :invalid_json)
@@ -97,8 +97,8 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
     end
   end
 
-  defp dispatch(%Conn{method: "GET"} = conn), do: send_method_not_allowed(conn)
-  defp dispatch(%Conn{} = conn), do: send_method_not_allowed(conn)
+  defp dispatch(%Conn{method: "GET"} = conn, _local_daemon_trusted?), do: send_method_not_allowed(conn)
+  defp dispatch(%Conn{} = conn, _local_daemon_trusted?), do: send_method_not_allowed(conn)
 
   defp read_json_body(conn) do
     case Conn.read_body(conn, length: @max_body_bytes, read_length: @max_body_bytes) do
@@ -148,24 +148,26 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
 
   defp require_session_for_followup(_payload, state_key) when is_binary(state_key), do: :ok
 
-  defp handle_payload(payload, nil) do
-    with_live_repo(payload, fn repo -> HTTPTransport.handle(mcp_config(repo), payload, client_key: @client_key) end)
+  defp handle_payload(payload, nil, local_daemon_trusted?) do
+    with_live_repo(payload, fn repo ->
+      HTTPTransport.handle(mcp_config(repo, local_daemon_trusted?), payload, client_key: @client_key)
+    end)
   end
 
-  defp handle_payload(payload, state_key) when is_binary(state_key) do
-    config = mcp_config(configured_repo())
+  defp handle_payload(payload, state_key, local_daemon_trusted?) when is_binary(state_key) do
+    config = mcp_config(configured_repo(), local_daemon_trusted?)
 
     case stored_server(config, state_key) do
       nil ->
-        handle_with_live_repo_or_config(config, payload, state_key)
+        handle_with_live_repo_or_config(config, payload, state_key, local_daemon_trusted?)
 
       %Server{} = server ->
-        handle_stored_server_payload(config, payload, state_key, server)
+        handle_stored_server_payload(config, payload, state_key, server, local_daemon_trusted?)
     end
   end
 
-  defp handle_with_live_repo_or_config(config, payload, state_key) do
-    case handle_with_live_repo(payload, state_key) do
+  defp handle_with_live_repo_or_config(config, payload, state_key, local_daemon_trusted?) do
+    case handle_with_live_repo(payload, state_key, local_daemon_trusted?) do
       {:error, :ledger_unavailable, ^payload} ->
         HTTPTransport.handle(config, payload, client_key: @client_key, state_key: state_key)
 
@@ -174,22 +176,22 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
     end
   end
 
-  defp handle_stored_server_payload(config, payload, state_key, %Server{} = server) do
+  defp handle_stored_server_payload(config, payload, state_key, %Server{} = server, local_daemon_trusted?) do
     cond do
       health_followup?(payload) ->
-        handle_with_live_repo_or_config(config, payload, state_key)
+        handle_with_live_repo_or_config(config, payload, state_key, local_daemon_trusted?)
 
       repo_backed_followup?(payload, server) ->
-        handle_with_live_repo(payload, state_key)
+        handle_with_live_repo(payload, state_key, local_daemon_trusted?)
 
       true ->
         HTTPTransport.handle(config, payload, client_key: @client_key, state_key: state_key)
     end
   end
 
-  defp handle_with_live_repo(payload, state_key) do
+  defp handle_with_live_repo(payload, state_key, local_daemon_trusted?) do
     with_live_repo(payload, fn repo ->
-      HTTPTransport.handle(mcp_config(repo), payload, client_key: @client_key, state_key: state_key)
+      HTTPTransport.handle(mcp_config(repo, local_daemon_trusted?), payload, client_key: @client_key, state_key: state_key)
     end)
   end
 
@@ -299,7 +301,9 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
       not loopback_address?(conn.remote_ip) -> {:error, :local_only}
       not loopback_host?(conn.host) -> {:error, :local_only}
       forwarded_request?(conn) -> {:error, :local_only}
-      true -> :ok
+      # This is the trust signal consumed by local-operator tools; rejected
+      # requests never build an MCP server/config.
+      true -> {:ok, true}
     end
   end
 
@@ -386,7 +390,7 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
 
   defp configured_repo, do: endpoint_config(:sympp_repo) || Repo
 
-  defp mcp_config(repo) do
+  defp mcp_config(repo, local_daemon_trusted?) do
     Config.default(
       mode: :http,
       repo: repo,
@@ -394,7 +398,8 @@ defmodule SymphonyElixirWeb.MCPHTTPPlug do
       repo_root:
         endpoint_config(:sympp_repo_root) ||
           Application.get_env(:symphony_elixir, :sympp_repo_root) ||
-          SecretHandoff.local_operator_repo_root()
+          SecretHandoff.local_operator_repo_root(),
+      local_daemon_trusted: local_daemon_trusted?
     )
   end
 
