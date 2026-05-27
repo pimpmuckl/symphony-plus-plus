@@ -67,8 +67,8 @@ WorkRequest, dispatch approved undispatched planned slices, and prepare an
 architect handoff for ready/active WorkRequest planning states. That handoff
 creates or reuses the WorkRequest-scoped phase and architect anchor package,
 mints an unclaimed architect grant for WorkRequest/guidance MCP capabilities,
-stores the architect secret through private handoff until final cutover, and
-shows only non-secret/redacted bootstrap metadata plus a prompt for the
+stores the architect secret through the explicit private-handoff recovery
+surface, and shows only non-secret/redacted bootstrap metadata plus a prompt for the
 `symphony-plus-plus-mcp:symphony-architect` skill. The prompt is intended to be the
 first message for a fresh owning architect session: it includes WorkRequest,
 repo/base, phase, anchor WorkPackage, and ledger references as inert data
@@ -315,9 +315,9 @@ keys, or signed URLs.
 For normal planned-slice worker dispatch, use the `claim_local_assignment`
 metadata emitted by planned-slice dispatch. For standalone `mix sympp.create_work`,
 use only the explicitly legacy/recovery private-store bootstrap emitted by that
-command until final cutover. Do not copy worker-specific legacy handoff targets
-into static plugin files; the plugin's generic MCP entry is only an installable
-capability entry and runtime launcher.
+command. Do not copy worker-specific legacy handoff targets into static plugin
+files; the plugin's generic MCP entry is only an installable capability entry
+and runtime launcher.
 
 ## Closeout Record
 

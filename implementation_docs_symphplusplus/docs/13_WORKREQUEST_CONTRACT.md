@@ -108,8 +108,8 @@ before renewal; missing or otherwise unverifiable metadata fails closed rather
 than minting a duplicate grant or reporting cleanup that cannot be proven. The
 browser shows only non-secret grant metadata, redacted private handoff metadata,
 and a safe prompt referencing the
-`symphony-plus-plus-mcp:symphony-architect` skill. Until final cutover this is
-the architect legacy/recovery bootstrap, not the normal worker dispatch path.
+`symphony-plus-plus-mcp:symphony-architect` skill. This is the architect
+bootstrap/recovery surface, not the normal worker dispatch path.
 It must not show raw work-key secrets, secret hashes, or full MCP
 secret-retrieval commands. Local-operator
 detail may display the already prepared panel on reload only when the existing
@@ -127,8 +127,8 @@ to `agent` via `mcp` with caller-supplied `claimed_by` as the maker display
 name when available and `mcp-agent` otherwise. The response includes the
 WorkRequest summary with provenance, a redacted local-private-file architect
 handoff, a non-secret claim owner for `claim_private_handoff`, and a launch
-prompt for the owning architect agent. This remains architect bootstrap until
-final cutover; worker dispatch uses ledger-backed local claims. If the
+prompt for the owning architect agent. This remains explicit architect
+bootstrap/recovery; worker dispatch uses ledger-backed local claims. If the
 WorkRequest is created but architect handoff creation fails, the response must
 be an explicit partial success with the WorkRequest id and a non-duplicating
 manual architect-handoff replay hint, not a raw-secret fallback.

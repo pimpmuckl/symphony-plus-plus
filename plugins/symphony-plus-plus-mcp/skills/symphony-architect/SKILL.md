@@ -13,8 +13,8 @@ delivery closeout. Do not implement worker packages yourself.
 1. Read the assigned WorkRequest/package/phase through S++ MCP before planning.
    Tool visibility is not authorization; if a tool returns `claim_required` or
    another binding denial, use the assignment's configured bootstrap. Redacted
-   private handoff remains the current architect bootstrap until final cutover;
-   for normal worker dispatch it is legacy/recovery only.
+   private handoff is explicit architect bootstrap/recovery; for normal worker
+   dispatch it is legacy/recovery only.
 2. For WorkRequest lanes, read `read_work_request(work_request_id)` and
    `list_guidance_requests` before slicing.
 3. If MCP/session/scope state is unavailable, record/report the blocker. Do not

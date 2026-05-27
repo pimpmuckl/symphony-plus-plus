@@ -333,9 +333,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
 
       {:error, :not_found} ->
         claim_unclaimed_local_worker_grant(repo, work_package_id, claimed_by, now, terminal_statuses)
-
-      {:error, _reason} = error ->
-        error
     end
   end
 

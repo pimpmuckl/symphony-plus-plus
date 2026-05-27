@@ -334,7 +334,8 @@ local claim. Dispatch returns non-secret `worker_bootstrap` metadata with
 `worktree_path`, and `caller_id`, then call `get_current_assignment()`.
 `caller_id` is the stable local MCP session/launcher identity, not a field
 returned by worktree preparation; reuse it for reconnects.
-Private-store MCP bootstrap is a legacy/recovery path until final cutover.
+Private-store MCP bootstrap is a legacy/recovery path after ledger-claim
+cutover, not a normal worker-claim or reconnect path.
 
 For the local HTTP transport, `Mcp-Session-Id` is connection continuity
 metadata for both initialized and claimed sessions. After claim, it is

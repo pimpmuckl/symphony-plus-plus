@@ -2264,7 +2264,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "work_request_id" => string_schema(),
         "planned_slice_id" => string_schema(),
         "claimed_by" => string_schema(),
-        "legacy_private_handoff" => Map.put(boolean_schema(), "description", "Temporary recovery-only path for private-store handoff replay during V2.1 cutover."),
+        "legacy_private_handoff" => Map.put(boolean_schema(), "description", "recovery-only path for private-store handoff replay; normal dispatch returns ledger-backed worker bootstrap."),
         "secret_handoff" => described_string_schema("Legacy recovery-only handoff mode. Rejected unless legacy_private_handoff is true."),
         "secret_store_dir" => described_string_schema("Legacy recovery-only private handoff store directory. Rejected unless legacy_private_handoff is true."),
         "symphony_repo_root" =>
@@ -3071,10 +3071,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            ),
          {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: grant.secret_hash),
          :ok <- require_worker_assignment(session.assignment) do
-      {:ok, %{"assignment" => Session.public_assignment(session)}, session, local_assignment_grant_action(grant, existing_grant_ids)}
+      result = %{"assignment" => Session.public_assignment(session)}
+      grant_action = local_assignment_grant_action(grant, existing_grant_ids)
+      {:ok, result, session, grant_action}
     end
   end
 
+  @spec local_assignment_active_worker_grant_ids(module(), String.t(), String.t(), DateTime.t()) :: [String.t()]
   defp local_assignment_active_worker_grant_ids(repo, work_package_id, claimed_by, %DateTime{} = now)
        when is_atom(repo) and is_binary(work_package_id) and is_binary(claimed_by) do
     query =
@@ -3088,15 +3091,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         select: grant.id
       )
 
-    query
-    |> repo.all()
-    |> MapSet.new()
+    repo.all(query)
   end
 
-  defp local_assignment_active_worker_grant_ids(_repo, _work_package_id, _claimed_by, %DateTime{}), do: MapSet.new()
+  defp local_assignment_active_worker_grant_ids(_repo, _work_package_id, _claimed_by, %DateTime{}), do: []
 
-  defp local_assignment_grant_action(%AccessGrant{id: id}, %MapSet{} = existing_grant_ids) when is_binary(id) do
-    if MapSet.member?(existing_grant_ids, id), do: :reconnected, else: :claimed
+  @spec local_assignment_grant_action(AccessGrant.t(), [String.t()]) :: :reconnected | :claimed
+  defp local_assignment_grant_action(%AccessGrant{id: id}, existing_grant_ids) when is_binary(id) do
+    if id in existing_grant_ids, do: :reconnected, else: :claimed
   end
 
   defp local_assignment_actor(claim) do
@@ -11173,10 +11175,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   defp validate_local_operator_string_argument(key, value, property) when is_binary(value) do
     max_length = Map.get(property, "maxLength")
 
-    cond do
-      is_integer(max_length) and String.length(value) > max_length -> {:error, "#{key}_too_long"}
-      true -> :ok
-    end
+    if is_integer(max_length) and String.length(value) > max_length,
+      do: {:error, "#{key}_too_long"},
+      else: :ok
   end
 
   defp validate_local_operator_string_argument(key, _value, _property), do: {:error, "invalid_#{key}"}

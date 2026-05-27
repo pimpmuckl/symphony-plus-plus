@@ -79,8 +79,8 @@ rules.
   package; `plugins/symphony-plus-plus-mcp/` contains the opt-in MCP skill
   package for dedicated S++ sessions.
 - V2.1 worker dispatch uses ledger-backed `claim_local_assignment`. The
-  worker-secret helper scripts remain legacy/recovery bootstrap support until
-  final cutover.
+  worker-secret helper scripts remain explicit legacy/recovery bootstrap
+  support after the ledger-claim cutover; they are not the normal worker path.
 - Do not sync or refresh user-local plugin/cache installs during feature-branch
   work; local cache adoption happens at final feature-branch cutover.
 - `implementation_docs_symphplusplus/docs/` contains the product, permission,
