@@ -15,6 +15,7 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSlice do
     work_request_id: :string,
     planned_slice_id: :string,
     claimed_by: :string,
+    legacy_private_handoff: :boolean,
     secret_handoff: :string,
     secret_store_dir: :string,
     help: :boolean
@@ -47,8 +48,7 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSlice do
     [
       "Usage: mix sympp.dispatch_planned_slice --work-request-id <id> --planned-slice-id <id> --claimed-by <worker-id>",
       "[--database <sqlite-path>]",
-      "[--secret-handoff auto|windows-credential-manager|local-private-file]",
-      "[--secret-store-dir <path>]",
+      "[--legacy-private-handoff --secret-handoff auto|windows-credential-manager|local-private-file --secret-store-dir <path>]",
       Repo.default_database_help_text()
     ]
     |> Enum.join(" ")
@@ -78,6 +78,9 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSlice do
       has_blank_option?(opts, @blank_checked_options) ->
         {:error, usage()}
 
+      legacy_handoff_option_present?(opts) and not Keyword.get(opts, :legacy_private_handoff, false) ->
+        {:error, "Legacy private handoff options require --legacy-private-handoff. #{usage()}"}
+
       true ->
         {:ok, opts}
     end
@@ -95,7 +98,8 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSlice do
                    Repo,
                    Keyword.fetch!(opts, :work_request_id),
                    Keyword.fetch!(opts, :planned_slice_id),
-                   secret_handoff_opts(opts)
+                   secret_handoff_opts(opts),
+                   dispatch_opts(opts)
                  ) do
             dispatch
             |> PlannedSliceDispatch.response_payload()
@@ -145,6 +149,18 @@ defmodule Mix.Tasks.Sympp.DispatchPlannedSlice do
       database: resolved_database(Keyword.get(opts, :database)),
       repo_root: repo_root()
     ]
+  end
+
+  defp dispatch_opts(opts) do
+    if Keyword.get(opts, :legacy_private_handoff, false) do
+      [legacy_private_handoff?: true]
+    else
+      []
+    end
+  end
+
+  defp legacy_handoff_option_present?(opts) do
+    Keyword.has_key?(opts, :secret_handoff) or Keyword.has_key?(opts, :secret_store_dir)
   end
 
   defp repo_root do
