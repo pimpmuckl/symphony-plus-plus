@@ -3499,7 +3499,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
             "arguments" =>
               arguments
               |> Map.put("work_request_id", work_request.id)
-              |> Map.put("caller_id", "codex-local-test-restarted")
           }
         },
         local_mcp_server(config, "local-reconnect-state")
@@ -3515,6 +3514,50 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       )
 
     assert get_in(assignment_response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+  end
+
+  test "claim_local_assignment rejects heartbeat from a different caller_id", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-CALLER-ISOLATION")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    arguments = local_assignment_claim_args(package)
+
+    {claim_response, _claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-caller-isolation-initial",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-caller-isolation-initial-state")
+      )
+
+    assert get_in(claim_response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "created"
+    assert {:ok, %ClaimLease{id: lease_id, last_seen_at: last_seen_at}} = ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    {other_caller_response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-caller-isolation-other",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_assignment",
+            "arguments" => Map.put(arguments, "caller_id", "codex-local-test-other")
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "local-caller-isolation-other-state")
+      )
+
+    assert get_in(other_caller_response, ["error", "data", "reason"]) == "claim_lease_active_for_other_actor"
+
+    assert {:ok, %ClaimLease{id: ^lease_id, status: "active", last_seen_at: ^last_seen_at}} =
+             ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    assert repo.aggregate(
+             from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id and claim_lease.status != "active"),
+             :count
+           ) == 0
   end
 
   test "claim_local_assignment claims the newest live worker grant", %{repo: repo} do

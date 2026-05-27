@@ -3246,6 +3246,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         claim.work_package_id,
         claim.branch,
         claim.worktree_path,
+        claim.caller_id,
         claim.claimed_by
       ]
       |> Enum.join("\0")
