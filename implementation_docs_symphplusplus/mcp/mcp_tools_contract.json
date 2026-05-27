@@ -108,7 +108,7 @@
     },
     {
       "name": "claim_private_handoff",
-      "purpose": "Claim an existing worker or architect grant from redacted local-private-file handoff metadata and bind it to the current MCP session without exposing the raw secret. This is legacy/recovery bootstrap until final cutover.",
+      "purpose": "Claim an existing worker or architect grant from redacted local-private-file handoff metadata and bind it to the current MCP session without exposing the raw secret. This is legacy/recovery bootstrap after ledger-claim cutover.",
       "required_arguments": ["claimed_by"],
       "metadata_arguments": ["private_handoff", "mode", "path", "target", "grant_id", "display_key", "work_package_id", "database"],
       "scope_policy": "Supports only mode=local-private-file. The server reads the secret from the known Symphony++ private handoff store, requires the supplied path to match the managed metadata path, rejects arbitrary paths, traversal, missing files, directories, oversized files, and mismatched grant/display/work_package metadata, verifies the stored hash, then binds the session like claim_work_key.",

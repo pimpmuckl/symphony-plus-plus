@@ -34,6 +34,7 @@ resources, and the docs below.
 - Role-oriented walkthrough: `docs/12_OPERATOR_TRAINING.md`
 - Short command-flow runbook: `docs/09_OPERATIONAL_RUNBOOK.md`
 - Release gate: `docs/11_RELEASE_VALIDATION.md`
+- V2.1 final local cutover: `runbooks/V21_FINAL_CUTOVER.md`
 - Security and guardrails: `docs/06_SECURITY_AND_GUARDRAILS.md`
 - MCP and skill contract: `docs/04_MCP_AND_SKILL_CONTRACT.md`
 - Local plugin package notes: `../plugins/symphony-plus-plus/README.md`

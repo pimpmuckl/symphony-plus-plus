@@ -31,10 +31,10 @@ the preferred front door for this flow.
 7. Architect marks the request ready for slicing, adds planned slices, and
    approves or skips slices.
 8. Human dispatches approved slices that should become WorkPackages.
-9. Browser dispatch creates the WorkPackage, worker grant, and private worker
-   secret handoff through the existing `PlannedSliceDispatch` flow. Use the
-   visible WorkPackage id/status and non-secret handoff metadata to continue the
-   normal worker setup.
+9. Browser dispatch creates the WorkPackage, worker grant, and ledger-backed
+   worker bootstrap through the existing `PlannedSliceDispatch` flow. Use the
+   visible WorkPackage id/status and non-secret `claim_local_assignment`
+   metadata to continue the normal worker setup.
 10. Mark the request sliced when at least one slice is approved or dispatched.
 11. Dispatched slices become normal WorkPackages with existing readiness,
     review-suite, PR, and human merge machinery.
@@ -67,9 +67,10 @@ planning controls and does not expose planned-slice dispatch. Use
 ## Standalone Package
 
 Standalone `mix sympp.create_work` still emits private-store
-`worker_secret_handoff` bootstrap metadata on this feature branch. Use planned
-slice dispatch for the normal ledger-backed `claim_local_assignment` path;
-treat standalone create-work as legacy/recovery until runtime cutover.
+`worker_secret_handoff` bootstrap metadata for explicitly requested recovery
+lanes. Use planned-slice dispatch for the normal ledger-backed
+`claim_local_assignment` path; treat standalone create-work as legacy/recovery
+unless a later WorkRequest explicitly changes that product contract.
 
 To inspect local Symphony++ package state and manage pre-package WorkRequests,
 start the local operator cockpit from `elixir/`:

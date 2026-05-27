@@ -349,8 +349,8 @@ PRs, create WorkRequests, create WorkPackages, or write Linear state.
 ## Legacy Handoff Defaults
 
 Private-file or Credential Manager handoff remains available for
-legacy/recovery until final cutover. It is not the normal V2.1 worker dispatch
-path after ledger-backed `claim_local_assignment`.
+explicit legacy/recovery. It is not the normal V2.1 worker dispatch path after
+ledger-backed `claim_local_assignment`.
 
 Explicit `windows-credential-manager` mode remains available when the operator
 selects it and the host Credential Manager can write credentials. It is not the

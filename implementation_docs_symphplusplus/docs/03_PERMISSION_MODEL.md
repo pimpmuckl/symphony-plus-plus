@@ -57,8 +57,9 @@ ledger-backed local assignment with explicit owner identity rather than relying
 on ambiguous anonymous ownership or prompting for raw secrets.
 
 `claim_work_key(secret, claimed_by)` and `claim_private_handoff` remain
-server-side legacy/recovery primitives until final cutover. First-use Codex
-workers should not paste raw secrets into prompts or normal tool calls.
+server-side legacy/recovery primitives after the ledger-claim cutover.
+First-use Codex workers should not paste raw secrets into prompts or normal
+tool calls.
 
 Private handoff metadata has its own legacy/recovery naming contract. Local
 private-file paths and Windows Credential Manager targets use the stable,

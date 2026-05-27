@@ -122,9 +122,9 @@ lists the required worker skills, and includes the resolved local ledger
 database when dispatch can identify one.
 
 Normal dispatch responses do not include a private handoff path or helper
-command. The `legacy_private_handoff` MCP argument is a temporary recovery-only
-path during the V2.1 cutover; legacy handoff options are honored only when that
-flag is set.
+command. The `legacy_private_handoff` MCP argument is recovery-only; legacy
+handoff options are honored only when that flag is set and are not part of the
+normal planned-slice worker path.
 
 ## Local Operator WorkRequest Notes
 

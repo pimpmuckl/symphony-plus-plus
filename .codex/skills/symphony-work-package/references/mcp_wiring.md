@@ -116,9 +116,9 @@ must not be expected to advertise or authorize `claim_local_assignment`.
 For explicit stdio fallback/dev recovery, prefer a private-store wrapper that
 reads the one-time secret from the local OS/user store, injects it only into
 the MCP child process environment, and starts `sympp.mcp` with both the
-environment variable name and the stable worker identity. This path exists for
-legacy recovery until final cutover; it is not the normal ledger-backed worker
-claim path.
+environment variable name and the stable worker identity. This path exists only
+for explicit legacy recovery; it is not the normal ledger-backed worker claim
+path.
 
 Windows local private-file example:
 
