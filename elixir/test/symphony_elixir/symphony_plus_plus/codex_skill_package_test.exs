@@ -75,7 +75,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert skill =~ "description:"
 
     for marker <- [
-          "MCP-backed WorkPackage state adapter",
+          "WorkPackage state adapter",
           "symphony-plus-plus:symphony-worker",
           "get_current_assignment()",
           "read_context()",
@@ -92,9 +92,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       assert skill =~ marker
     end
 
-    assert skill =~ "Never ask for or\n   paste the raw secret."
+    assert skill =~ "Never ask for or paste raw secrets."
     assert skill =~ "Do not create local `task_plan.md`, `findings.md`, or `progress.md` files as"
-    assert skill =~ "Worker grants are scoped to exactly one WorkPackage."
+    assert skill =~ "Worker grants and local claim leases are scoped to exactly one WorkPackage."
     refute skill =~ "add_comment(target_kind, target_id, body, idempotency_key)"
     refute skill =~ "resolve_comment(comment_id, resolution, idempotency_key)"
     refute skill =~ "request_context"
@@ -116,14 +116,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
           "record_planned_slice_delivery",
           "reconcile_work_request",
           "PR-size or line-budget",
-          "Revoke stale planned-slice worker grants before final closeout"
+          "Reclaim or revoke stale planned-slice worker runtime"
         ] do
       assert architect_skill =~ marker
     end
 
     for marker <- [
           "Stay inside the assigned WorkPackage",
-          "Worker grants are scoped to exactly one WorkPackage."
+          "Worker grants and local claim leases are scoped to exactly one WorkPackage."
         ] do
       assert worker_skill =~ marker
     end
@@ -164,8 +164,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     for content <- [prompt, template_prompt] do
       assert String.starts_with?(content, "You are assigned Symphony++ work package")
       assert content =~ "<WORK_PACKAGE_ID>"
-      assert content =~ "Work key handoff: configured in the local MCP private-store bootstrap"
-      assert content =~ "Handoff target: <HANDOFF_TARGET>"
+      assert content =~ "Ledger claim: call `claim_local_assignment`"
+      assert content =~ "Worktree path: <PREPARED_WORKTREE_PATH>"
+      assert content =~ "Caller id: <CALLER_ID>"
       assert content =~ "update_task_plan(patch, expected_version)"
       assert content =~ "resolve_blocker(blocker_id, resolution, summary, idempotency_key)"
       assert content =~ "request_scope_expansion(summary, idempotency_key, payload)"
@@ -173,6 +174,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       assert content =~ "Do not create local planning files as the WorkPackage source of truth."
       assert content =~ "Do not use broad Linear/GitHub state as permission authority."
       refute content =~ "attach_pr(pr_url"
+      refute content =~ "Work key handoff:"
+      refute content =~ "Handoff target:"
       refute content =~ "```"
       refute content =~ "request_context"
     end
@@ -194,11 +197,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert wiring =~ "run-mcp-local-file-once"
     assert wiring =~ "waits for exit before draining stdout"
     assert wiring =~ "--work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by <stable-worker-id>"
-    assert wiring =~ "should not embed raw work-key secrets or bearer tokens"
+    assert wiring =~ "should not embed\nraw work-key secrets or bearer tokens"
     assert wiring =~ "generic Codex sessions, review-suite lanes, and `codex review`"
-    assert wiring =~ "open a new session before treating stale skill metadata"
-    assert wiring =~ "ValidateInstalledCache checks the packaged HTTP URL"
-    assert wiring =~ "scripts/refresh-local-plugin.ps1 -ValidateInstalledCache"
+    assert wiring =~ "open a new session before treating stale\nskill metadata"
+    assert wiring =~ "cache/plugin adoption happens only at final feature-branch cutover"
+    assert wiring =~ "Do not refresh user-local plugin caches as part of normal feature-branch"
     assert wiring =~ "Skill visibility, explicit MCP configuration, global MCP settings"
     assert wiring =~ "must not declare\n`mcpServers`"
     assert wiring =~ "That server may not appear"

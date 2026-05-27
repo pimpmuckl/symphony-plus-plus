@@ -10,23 +10,28 @@ expands scope.
 
 Assignment:
 - WorkPackage: <WORK_PACKAGE_ID>
+- Repo: <REPO>
 - Base branch: <BASE_BRANCH>
 - Worker branch: agent/<WORK_PACKAGE_ID>/<short-slug>
-- Work key handoff: configured in the local MCP private-store bootstrap; never
-  ask for, print, paste, or commit the raw secret
-- Handoff target: <HANDOFF_TARGET>
+- Worktree path: <PREPARED_WORKTREE_PATH>
+- Caller id: <CALLER_ID>
+- Ledger claim: call `claim_local_assignment` with the dispatch-provided
+  `repo`, `base_branch`, `work_package_id`, optional `work_request_id`, plus
+  `branch`, `worktree_path`, `caller_id`, and `claimed_by`
 - claimed_by: <stable-worker-identity>
 
 Before coding:
-1. Call `get_current_assignment()` and treat that assignment as the scope.
-2. If the MCP session is not bound, stop and ask the operator to repair the
-   private-store bootstrap. Do not request the raw secret in chat or tool calls.
-3. Read `read_context()`, `read_task_plan()`, findings, progress,
+1. Claim the assignment through `claim_local_assignment`.
+2. Call `get_current_assignment()` and treat that assignment as the scope.
+3. If claim fails because the lease is paused, another active owner exists, or
+   the local ledger/worktree scope mismatches, stop and ask the architect or
+   operator to repair that state. Do not request raw secrets.
+4. Read `read_context()`, `read_task_plan()`, findings, progress,
    acceptance, review-suite, and handoff virtual resources.
-4. Update the virtual task plan with `update_task_plan(patch, expected_version)`.
-5. Stop and ask the architecture agent if dependency evidence, permission
+5. Update the virtual task plan with `update_task_plan(patch, expected_version)`.
+6. Stop and ask the architecture agent if dependency evidence, permission
    grants, or source context are missing.
-6. If you need guidance, make the request human-answerable: state the blocked
+7. If you need guidance, make the request human-answerable: state the blocked
    decision, evidence checked, impact, and candidate options with pros/cons when
    you can supply them.
 
@@ -37,8 +42,9 @@ During coding:
    `append_progress(event, idempotency_key)`.
 4. Use `report_blocker(summary, idempotency_key, blocker_id?)` and
    `resolve_blocker(blocker_id, resolution, summary, idempotency_key)` for blockers.
-5. Use `add_comment`, `list_comments`, and `resolve_comment` when package-scoped
-   implementation comments should stay visible in the cockpit.
+5. Use the worker-scoped MCP comment tools `add_comment`, `list_comments`, and
+   `resolve_comment` when package-scoped implementation comments should stay
+   visible in the cockpit.
 6. Use `request_scope_expansion(summary, idempotency_key, payload)` instead of
    silently expanding scope.
 7. Do not create local planning files as the WorkPackage source of truth.

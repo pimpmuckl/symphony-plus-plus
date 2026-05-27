@@ -1,30 +1,39 @@
 ---
 name: symphony-work-package
-description: Use when assigned a Symphony++ work key or WorkPackage; keeps scoped planning, findings, progress, branch/PR metadata, review evidence, and readiness synchronized through the Symphony++ MCP server.
+description: Use when assigned a Symphony++ WorkPackage or an explicitly labeled legacy/recovery WorkKey/private-handoff assignment; claims the ledger-backed local assignment or recovery bootstrap and keeps scoped planning, progress, branch/PR metadata, review evidence, and readiness synchronized through the Symphony++ MCP server.
 ---
 
 # Symphony++ Work Package
 
-Use this skill only for an assigned Symphony++ WorkPackage or WorkKey. It is
-the MCP-backed WorkPackage state adapter, not the generic worker contract. Pair
-it with `symphony-plus-plus:symphony-worker`.
+Use this skill for an assigned Symphony++ WorkPackage, including explicitly
+labeled legacy/recovery WorkKey/private-handoff bootstrap. It is the MCP-backed
+WorkPackage state adapter, not the generic worker contract. Pair it with
+`symphony-plus-plus:symphony-worker`.
 
 The MCP server is the permission boundary and the WorkPackage is the scope
 boundary.
 
 ## Start
 
-1. Bind through the configured private-store MCP bootstrap. Never ask for or
-   paste the raw secret.
-2. If given a claimable WorkKey, call `claim_work_key` through the bootstrap
-   using `--work-key-secret-env <env-var> --claimed-by <stable-worker-id>`.
-   Do not ask for, paste, print, or log the raw secret.
-3. Call `get_current_assignment()` and treat that WorkPackage as authoritative.
-4. Read `sympp://work-packages/{id}/acceptance.md` with the other MCP-backed
+1. Use a dedicated S++ MCP-enabled session connected to the same ledger as
+   dispatch.
+2. For normal V2.1 assignments, claim the package with
+   `claim_local_assignment` using the dispatch-provided ledger claim fields plus
+   local runtime fields: `branch`, `worktree_path`, `caller_id`, and
+   `claimed_by`.
+3. Replay the same local claim after reconnects. The server heartbeats the
+   current lease, reclaims stale leases with audit evidence, and rejects paused
+   leases or another active owner. Stop and report those blockers instead of
+   minting your own replacement.
+4. For explicitly labeled legacy/recovery WorkKey or private-handoff
+   assignments, use `claim_work_key` or `claim_private_handoff` instead of
+   `claim_local_assignment`. Never ask for or paste raw secrets.
+5. Call `get_current_assignment()` and treat that WorkPackage as authoritative.
+6. Read `sympp://work-packages/{id}/acceptance.md` with the other MCP-backed
    package resources.
-5. Read current context before coding: `read_context()`, `read_task_plan()`,
+7. Read current context before coding: `read_context()`, `read_task_plan()`,
    acceptance/review/handoff resources, findings, and progress.
-6. Do not create local `task_plan.md`, `findings.md`, or `progress.md` files as
+8. Do not create local `task_plan.md`, `findings.md`, or `progress.md` files as
    the source of truth.
 
 ## Work Loop
@@ -76,13 +85,14 @@ already-recorded writes.
 
 ## Safety
 
-Worker grants are scoped to exactly one WorkPackage. Workers cannot mint keys,
-approve scope, merge PRs, advance phase state, or use architect tools.
-`state_key` preserves initialized MCP handshake continuity only.
+Worker grants and local claim leases are scoped to exactly one WorkPackage.
+Workers cannot mint keys, approve scope, merge PRs, advance phase state, or use
+architect tools. `state_key` preserves initialized MCP handshake continuity
+only; the ledger-backed claim is the worker authority.
 
 Never print, store, commit, or paste raw grant secrets, bearer/API/GitHub/Linear
 tokens, MCP auth tokens, WorkKeys, private handoff payloads, full
-secret-bearing commands, or grant verifiers.
+secret-bearing commands, grant verifiers, or claim lease internals.
 
 ## References
 

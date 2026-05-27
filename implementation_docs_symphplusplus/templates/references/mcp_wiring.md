@@ -17,19 +17,11 @@ Dedicated S++ workflows can copy or reference that package's generic
 `symphony_plus_plus` HTTP server when they explicitly need it.
 
 MCP discovery is loaded by the Codex host, not by the skill text in an
-already-running thread. After refreshing the local plugin cache, restart or
-reload Codex and open a new session before treating stale skill metadata as a
-repo packaging failure. ValidateInstalledCache checks the packaged HTTP URL and
-wrapper files only; it does not prove that the current session has hot-loaded new MCP tools. Use
-`scripts/refresh-local-plugin.ps1 -ValidateInstalledCache` to prove the
-installed default cache copies keep the manifest skill-only and physically omit
-root `.mcp.json`, while the opt-in MCP package contains the
-`symphony_plus_plus` server entry for `http://127.0.0.1:4057/mcp`.
-The repo refresh script updates both the `local` cache and the manifest-version
-cache so a refreshed default install has a skill-only manifest and no root
-`.mcp.json`. It also repairs generated stale default cache entries in place by
-removing root `.mcp.json` and stale manifest `mcpServers` startup artifacts;
-reload Codex and open a new session after refresh.
+already-running thread. During feature-branch development, do not refresh or
+sync user-local plugin caches just to test repo skill edits; local
+cache/plugin adoption happens only at final feature-branch cutover. After that
+cutover, restart or reload Codex and open a new session before treating stale
+skill metadata as a repo packaging failure.
 
 Skill visibility, explicit MCP configuration, global MCP settings visibility,
 and current-session tool availability are distinct. A visible skill proves
@@ -75,15 +67,22 @@ to one already-open thread. Do not invoke this MCP-dependent skill from a
 generic visible app thread that does not already show S++ MCP tools; use the
 Solo/cockpit handoff path instead.
 
-The opt-in MCP package reference is intentionally generic. It should not embed raw work-key secrets or bearer tokens, private-store handoff targets, or operator-local secret material. The repo-local refresh script writes a
-non-secret source-root hint into installed caches for the Solo wrapper and
-legacy stdio fallback scripts, but the bundled MCP target itself is the local
-HTTP daemon URL.
+The opt-in MCP package reference is intentionally generic. It should not embed
+raw work-key secrets or bearer tokens, private-store handoff targets, or
+operator-local secret material. Repo-local refresh scripts update installed
+caches only during final cutover or explicit manual cache maintenance; they
+write a non-secret source-root hint for the Solo wrapper and legacy stdio
+fallback scripts. The bundled MCP target itself is the local HTTP daemon URL.
+Do not refresh user-local plugin caches as part of normal feature-branch
+worker dispatch.
 
-Plugin installation is not worker package dispatch. First-use worker sessions
-should use the create-work-generated `run-mcp` private-store handoff command so
-the MCP child process receives the secret only through its environment and
-claims exactly one WorkPackage with the configured `claimed_by` identity.
+Plugin installation is not worker package dispatch. Normal V2.1 worker dispatch
+emits a `worker_bootstrap` payload with `type: ledger_claim`, `mode:
+local_assignment`, and `claim.tool: claim_local_assignment`. The worker uses
+that ledger-backed claim plus local runtime `branch`, `worktree_path`, and
+`caller_id` values to bind exactly one WorkPackage. Do not ask for private
+handoff metadata or a raw work key unless the assignment is explicitly marked
+legacy/recovery.
 
 ## Local HTTP Server
 
@@ -106,12 +105,20 @@ dependency for the worker session. The bundled opt-in plugin uses this shape:
 url = "http://127.0.0.1:4057/mcp"
 ```
 
-## Private Store Bootstrap
+This URL-only shape is enough only when the Codex host owns a persistent MCP
+session and preserves the returned `Mcp-Session-Id`/state key across
+`initialize`, `tools/list`, claim, and follow-up calls. Stateless one-shot URL
+probes may prove health, but they are not normal worker-claim sessions and
+must not be expected to advertise or authorize `claim_local_assignment`.
 
-For explicit stdio fallback/dev bootstrap, prefer a private-store wrapper that reads the
-one-time secret from the local OS/user store, injects it only into the MCP child
-process environment, and starts `sympp.mcp` with both the environment variable
-name and the stable worker identity.
+## Legacy/Recovery Bootstrap
+
+For explicit stdio fallback/dev recovery, prefer a private-store wrapper that
+reads the one-time secret from the local OS/user store, injects it only into
+the MCP child process environment, and starts `sympp.mcp` with both the
+environment variable name and the stable worker identity. This path exists for
+legacy recovery until final cutover; it is not the normal ledger-backed worker
+claim path.
 
 Windows local private-file example:
 
@@ -155,7 +162,15 @@ wrapper prints only a small JSON summary.
 
 ## Worker Claim
 
-Workers should start from `get_current_assignment()` after MCP initialize. If
-the session is not bound, stop and ask the operator to repair the private-store
-handoff. A configured `state_key` only preserves initialized handshake
-continuity for stateless transports; it does not restore worker authorization.
+Workers start by calling `claim_local_assignment` in the dedicated local HTTP
+MCP session that preserves `Mcp-Session-Id`/state-key continuity. Pass the
+dispatch-provided claim fields and local runtime `branch`, `worktree_path`,
+`caller_id`, and `claimed_by` when needed. Then call
+`get_current_assignment()` and read package context.
+
+Replaying the same claim heartbeats the current claim lease. If the prior lease
+is stale, the server may reclaim it and records audit evidence. If the lease is
+paused, the worktree scope mismatches, or another active owner still has
+authority, stop and ask the architect/operator to repair that state. A
+configured `state_key` only preserves initialized handshake continuity for
+stateless transports; it does not restore worker authorization by itself.

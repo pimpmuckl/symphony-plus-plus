@@ -18,6 +18,11 @@ machine. Codex clients then connect to the daemon by URL, for example:
 url = "http://127.0.0.1:4057/mcp"
 ```
 
+That URL-only config is the transport endpoint. Normal worker claim still
+requires a dedicated MCP session that preserves the returned
+`Mcp-Session-Id`/state key across initialize, discovery, claim, and follow-up
+calls; a stateless one-shot URL probe is not a worker-claim session.
+
 The current minimal HTTP slice exposes only the local Streamable HTTP MCP
 endpoint contract:
 
@@ -27,9 +32,9 @@ endpoint contract:
 - A successful initialize response includes `Mcp-Session-Id`; subsequent
   requests must send that same header. Missing follow-up sessions fail with
   HTTP 400, and unknown sessions fail with HTTP 404.
-- After `claim_work_key` or `claim_private_handoff` succeeds, the same local
-  HTTP `Mcp-Session-Id` retains the bound WorkPackage worker or WorkRequest
-  architect session for
+- After `claim_local_assignment`, `claim_work_key`, or `claim_private_handoff`
+  succeeds, the same local HTTP `Mcp-Session-Id` retains the bound WorkPackage
+  worker or WorkRequest architect session for
   later `tools/list`, resource reads, and tool calls. Protected follow-ups use
   the live dashboard repo path and revalidate the stored session proof against
   the current grant before returning scoped data. For claimed sessions, treat
@@ -94,22 +99,24 @@ keep generic worker, review-suite, and
 The doctor checks source/cache/config and the local HTTP daemon; it does not
 inspect the tool list already registered inside an open Codex model session.
 After enablement or cache changes, the operator must restart or reload the
-dedicated MCP-enabled session before expecting tools to appear.
-For source-only repair commands such as cache refresh, cockpit startup, and
-HTTP smoke verification, the doctor uses `-RepoRoot`, the current source
-checkout, or a single usable `.sympp-source-root` hint from the selected
-activation package caches to print absolute commands. If it cannot infer a
-source checkout from those selected caches, it says so and asks the operator to
-rerun with `-RepoRoot <path-to-symphony-plus-plus-checkout>` instead of printing
-a relative command that only works from the repo root.
+dedicated MCP-enabled session before expecting tools to appear. During V2.1
+feature-branch work, local plugin/cache sync is not part of the normal loop;
+perform cache adoption only at final feature-branch cutover.
+For source-only repair commands such as cockpit startup and HTTP smoke
+verification, the doctor uses `-RepoRoot`, the current source checkout, or a
+single usable `.sympp-source-root` hint from the selected activation package
+caches to print absolute commands. If it cannot infer a source checkout from
+those selected caches, it says so and asks the operator to rerun with
+`-RepoRoot <path-to-symphony-plus-plus-checkout>` instead of printing a relative
+command that only works from the repo root.
 When multiple Symphony++ marketplaces are installed, pass the intended
 `-MarketplaceName`; the doctor avoids package-specific repair commands until
 that selection is explicit. `global_footgun_present` means a top-level
 `[mcp_servers.symphony_plus_plus]` entry is present and should be removed from
 generic configs or relocated into a dedicated S++ MCP config/session.
 
-To prove the claimed WorkPackage worker path, pass the work key through an
-environment variable name and provide the stable owner identity:
+To prove the legacy/recovery secret-proof worker path, pass the work key
+through an environment variable name and provide the stable owner identity:
 
 ```powershell
 $env:SYMPP_WORK_KEY_SECRET = Get-Content -LiteralPath "<private-secret-file>" -Raw
@@ -126,7 +133,8 @@ uses the claimed `Mcp-Session-Id` for `tools/list`, `get_current_assignment`,
 `resources/read sympp://assignment/current`, and `resources/list`. Text and
 JSON output redact claimed session ids and the raw work key. Do not use pasted
 logs from a custom debug path that prints the environment value or claimed
-`Mcp-Session-Id`.
+`Mcp-Session-Id`. Normal V2.1 worker dispatch validates through
+`claim_local_assignment` instead.
 
 This slice intentionally does not add browser CORS/preflight support, cookies,
 Phoenix-session client binding, reconnect semantics, SSE streaming,
@@ -154,7 +162,7 @@ planning, permission, and observability layer. Remote mode must enforce
 repository, branch, project, WorkRequest, WorkPackage, and grant scope on the
 server side before returning any board, planning, or orchestration data.
 
-The current stdio MCP wrapper remains a development and private-store bootstrap
+The current stdio MCP wrapper remains a development and private-store recovery
 fallback. It should not be the long-term default for ordinary plugin install
 because Codex hosts may eagerly start configured stdio MCP servers for generic
 or review sessions. Heavy WorkPackage and architect orchestration may still
@@ -174,11 +182,17 @@ sympp://work-packages/{id}/review_suite.md
 sympp://work-packages/{id}/handoff.md
 ```
 
-## Worker MCP tools
+## Bootstrap Claim Tools
 
 ```text
 claim_work_key(secret, claimed_by)
 claim_private_handoff(claimed_by, private_handoff | mode, path, target, grant_id, display_key, work_package_id, database?)
+claim_local_assignment(repo, base_branch, work_package_id, branch, worktree_path, caller_id, claimed_by, work_request_id?)
+```
+
+## Bound Worker MCP Tools
+
+```text
 get_current_assignment()
 read_context()
 read_task_plan()
@@ -239,28 +253,59 @@ WorkPackage sessions. Direct calls from a bound session fail with
 `solo_tools_require_unbound_session` before mutation so Solo planning cannot be
 confused with WorkPackage orchestration.
 
+## Local Operator MCP tools
+
+Trusted unbound local HTTP sessions with explicit state-key continuity and a
+file-backed local ledger may also advertise:
+
+```text
+add_work_request_comment(work_request_id, body, created_by)
+record_work_request_operator_decision(work_request_id, decision, rationale, scope_impact, created_by, source_id?)
+```
+
+These tools append redacted local-operator comments and decisions to a
+WorkRequest by id. They do not grant WorkRequest ownership, dispatch authority,
+lifecycle authority, or sibling package visibility. Text/provenance fields are
+bounded and redacted before storage and response.
+
 Unbound/generic MCP sessions also advertise `sympp.health`, the recovery
 `claim_work_key` tool, `claim_private_handoff`, `create_work_request`, Solo
-Session tools, and static architect schemas. They do not advertise any other
-worker mutation tools until a valid grant is bound.
+Session tools, and static architect schemas. They do not advertise other worker
+mutation tools until a valid grant is bound. Trusted local HTTP sessions with
+explicit state-key continuity may additionally advertise
+`claim_local_assignment` and the local operator note tools described above.
 
 `sympp.health` is safe to run before or after claim. It reports only server
 version/source, mode, ledger reachability, and a redacted ledger identity; it
 does not expose WorkPackage data, raw worker secrets, bearer tokens, database
 passwords, or private-store handoff contents.
 
+`claim_local_assignment` is the normal V2.1 WorkPackage worker claim. It
+requires `repo`, `base_branch`, `work_package_id`, `branch`, `worktree_path`,
+`caller_id`, and `claimed_by`; `work_request_id` is accepted when dispatch
+linked the package to a planned slice. It is available only on trusted local
+HTTP MCP sessions with explicit state-key continuity. The server validates
+repo/base/branch/worktree scope against the ledger, rejects terminal packages,
+and binds the newest live worker grant for that package.
+
+`claim_local_assignment` also owns reclaim behavior. Replaying the same local
+claim heartbeats the active claim lease. A stale lease may be reclaimed and
+records `claim_lease_reclaimed` audit evidence. A paused lease, scope mismatch,
+terminal package, missing recorded worktree, or another active owner with live
+authority fails closed.
+
 `claim_work_key` intentionally requires both the one-time secret and a stable
 `claimed_by` owner identity. Symphony++ uses that identity as part of the MCP
 ownership contract. The call binds the session to an existing worker or
 architect grant and does not mint new grants. It remains available to unbound
-sessions only as a bootstrap/recovery bridge, not as a generic planning
+sessions only as a legacy/recovery bridge, not as the normal worker planning
 surface. Reconnects are accepted only when the same secret proof is presented
 by the same `claimed_by` owner.
 
-`claim_private_handoff` is the preferred local-private-file bootstrap path for
-agents. It accepts `claimed_by` and either a redacted `private_handoff` object
-or explicit redacted fields: `mode`, `path`, `target`, `grant_id`,
-`display_key`, `work_package_id`, and optional `database`. v1 supports only
+`claim_private_handoff` is a legacy/recovery local-private-file bootstrap path.
+It accepts `claimed_by` and either a redacted `private_handoff` object or
+explicit redacted fields: `mode`, `path`, `target`, `grant_id`, `display_key`,
+`work_package_id`, and optional `database`. v1 supports only
 `mode: "local-private-file"`. The MCP server reads the secret server-side from
 the known Symphony++ private handoff store, requires the supplied path to match
 the managed metadata path, rejects arbitrary paths, traversal, directories,
@@ -283,11 +328,13 @@ mint/replay fails after creation, the tool
 returns partial success with the WorkRequest id and a non-duplicating manual
 architect-handoff replay hint and still does not expose raw secret material.
 
-For Codex first-use worker dispatch, the preferred path is private-store MCP
-bootstrap rather than an explicit worker tool call containing the raw secret.
-`sympp.mcp --work-key-secret-env <env-var> --claimed-by <worker-id>` reads the
-secret from the MCP process environment, claims or reconnects the grant, and
-binds the session before the worker calls `get_current_assignment()`.
+For Codex first-use worker dispatch, the preferred path is the ledger-backed
+local claim. Dispatch returns non-secret `worker_bootstrap` metadata with
+`claim.tool: claim_local_assignment`; workers add local runtime `branch`,
+`worktree_path`, and `caller_id`, then call `get_current_assignment()`.
+`caller_id` is the stable local MCP session/launcher identity, not a field
+returned by worktree preparation; reuse it for reconnects.
+Private-store MCP bootstrap is a legacy/recovery path until final cutover.
 
 For the local HTTP transport, `Mcp-Session-Id` is connection continuity
 metadata for both initialized and claimed sessions. After claim, it is
@@ -299,9 +346,11 @@ grant is revoked, explicitly expired, missing, or scope-drifted, bound worker an
 architect operations fail closed and discovery falls back to refresh/bootstrap
 tools where applicable.
 
-For other explicit state-key transports, the state namespace follows the active
-ledger rather than a transient dynamic repo process, so handshake continuity
-survives reconnects to the same SQLite ledger.
+For reconnects, the state namespace follows the active ledger rather than a
+transient dynamic repo process, so handshake continuity survives reconnects to
+the same SQLite ledger. Worker authority is restored by replaying
+`claim_local_assignment`; legacy/recovery workers must present the same secret
+proof and `claimed_by` identity again.
 Explicit state-key handshakes use a bounded retention window for transport
 continuity. They remain continuity metadata until overwritten,
 cleared by a failed explicit reconnect initialize, or expired by the explicit
@@ -322,10 +371,11 @@ success; changed content or a changed
 caller-supplied finding id returns `idempotency_conflict`.
 
 JSON-RPC batch items are not an ordered session transaction. Each item is
-evaluated against the batch's initial server/session state, so a claim call
-inside one batch item does not authorize later items in that same batch.
-Workers should claim in a prior request, or run dependent worker tools outside
-the batch. A successful claim inside a batch still binds the returned
+evaluated against the batch's initial server/session state, so
+`claim_local_assignment`, `claim_work_key`, `claim_private_handoff`, or another
+stateful call inside one batch item does not authorize later items in that same
+batch. Workers should claim in a prior request, or run dependent worker tools
+outside the batch. A successful claim inside a batch still binds the returned
 server/session for later standalone requests. After one claim succeeds in a
 batch, later claim entries in that same batch are rejected as rebinding attempts
 so a connection cannot claim multiple assignments.
@@ -400,7 +450,7 @@ add_work_request_planned_slice(work_request_id, title, goal, work_package_kind, 
 approve_work_request_planned_slice(work_request_id, planned_slice_id, current_status)
 skip_work_request_planned_slice(work_request_id, planned_slice_id, current_status)
 mark_work_request_sliced(work_request_id, current_status)
-dispatch_work_request_planned_slice(work_request_id, planned_slice_id, claimed_by, secret_handoff?, secret_store_dir?, symphony_repo_root?)
+dispatch_work_request_planned_slice(work_request_id, planned_slice_id, claimed_by, symphony_repo_root?, legacy_private_handoff?, secret_handoff?, secret_store_dir?)
 prepare_work_package_worktree(work_package_id, target_repo_root, base_branch, branch, worktree_parent?)
 cleanup_work_package_worktree(work_package_id, target_repo_root)
 read_child_status(work_package_id)
@@ -420,11 +470,14 @@ unprefixed P3/P7 capability strings such as `read:phase` or
 healthy unbound generic sessions advertise health, Solo Session tools,
 `claim_work_key`, `claim_private_handoff`, `create_work_request`, and architect
 tool schemas so fresh Codex sessions can discover WorkRequest and architect
-flows before claim. Schema visibility is not
-authorization; calls still require a live claimed architect grant with the
-required capability and scope, and unclaimed architect calls return a
-claim-required denial. Stale bound sessions expose only health,
-`claim_work_key`, and `claim_private_handoff` for refresh; duplicate
+flows before claim. Unbound HTTP sessions also advertise
+`claim_local_assignment` for first-claim/reclaim schema discovery, but schema
+visibility is not authorization; claim calls still require trusted local HTTP
+state-key continuity and scope validation. Architect calls still require a live
+claimed architect grant with the required capability and scope, and unclaimed
+architect calls return a claim-required denial. Stale bound sessions expose only
+health, `claim_work_key`, `claim_private_handoff`, and, on HTTP sessions,
+`claim_local_assignment` for refresh; duplicate
 `initialize` on that same stale explicit MCP session does not downgrade it into
 generic unbound discovery.
 Worker sessions keep the bound worker-facing discovery surface without Solo
@@ -594,28 +647,31 @@ safe structured details with the field, offending value, and reason such as
 `dispatch_work_request_planned_slice` is an architect dispatch tool gated by
 `dispatch:work_request`, not by generic `write:work_request`. It uses the same
 explicit phase-scoped frozen repo/base-branch scope, requires `work_request_id`,
-`planned_slice_id`, and `claimed_by`, accepts optional `secret_handoff`,
-`secret_store_dir`, and `symphony_repo_root`, and calls the existing
+`planned_slice_id`, and `claimed_by`, returns `worker_bootstrap` metadata for
+`claim_local_assignment`, and keeps `secret_handoff`/`secret_store_dir` only as
+legacy/recovery options gated by `legacy_private_handoff: true`. It calls the existing
 `PlannedSliceDispatch.dispatch`
 orchestration. MCP dispatch has a statically discoverable schema, and direct
 calls fail closed if the supplied `symphony_repo_root`, legacy hidden
 `repo_root` alias, configured `repo_root`, or discoverable local Symphony++
 repo root is missing, invalid, or does not point at the Symphony++ helper root
-that contains the worker secret helper script under `scripts/`. This is not the
-target product repository root. MCP
+that contains the worker secret helper script under `scripts/` when legacy
+private handoff recovery is requested. This is not the target product
+repository root. MCP
 dispatch requires a file-backed live ledger so the returned worker
-bootstrap command reconnects to the same ledger; in-memory database
+bootstrap metadata reconnects to the same ledger; in-memory database
 configuration fails closed before dispatch side effects. Blank database
 configuration is treated as absent and uses the live local ledger. Matching
-configured SQLite file URI options are preserved in the worker bootstrap command
+configured SQLite file URI options are preserved in the worker bootstrap metadata
 when they resolve to the same live ledger, including the default local ledger;
 divergent explicit MCP database configuration fails closed, and matching
 read-only SQLite URI options such as `mode=ro` or `immutable=1` are rejected
 before dispatch. The tool verifies the WorkRequest and planned slice are in scope before
 mutation and fails closed for missing, out-of-scope, non-approved,
 invalid-status, unsupported-kind, and slice-scope-violation cases. Responses
-include only WorkRequest id, planned-slice status/linkage, WorkPackage id
-metadata, and redacted worker handoff metadata. They must not include raw worker
+include WorkRequest id, planned-slice status/linkage, WorkPackage id metadata,
+non-secret worker bootstrap metadata, and any redacted worker handoff or grant
+metadata the current runtime still emits. They must not include raw worker
 secrets, work keys, bearer tokens, API tokens, MCP auth tokens, private-store
 secret payloads, or secret-bearing claim URLs.
 
@@ -732,7 +788,7 @@ authorization and must not publish phase state.
 
 The Codex Skill must instruct workers to:
 
-1. Load the current assignment first through private-store MCP bootstrap.
+1. Claim the assignment first through `claim_local_assignment`.
 2. Read context, task plan, findings, progress, acceptance criteria, and review-suite requirements.
 3. Update the task plan before implementation.
 4. Append findings after meaningful discovery.
@@ -754,8 +810,9 @@ The repo-local skill package lives at:
 Install or copy that directory into the worker repository's `.codex/skills/`
 directory when Symphony++ runs against a downstream codebase, or install the
 Codex-local plugin from `plugins/symphony-plus-plus/`. The skill expects a
-configured Symphony++ MCP stdio server. From this repository's Elixir
-implementation, the MCP server command is:
+dedicated Symphony++ local HTTP MCP session connected to the same ledger as
+dispatch. The stdio server remains a legacy/recovery fallback. From this
+repository's Elixir implementation, the fallback command is:
 
 ```bash
 cd elixir
@@ -767,16 +824,16 @@ as a stdio MCP dependency. Omit `--database` for the normal local ledger,
 preferring `$HOME/.agents/splusplus/symphony_plus_plus.sqlite3` and falling
 back under a temp/relative `.agents/splusplus` root if home is unavailable; add
 it only for isolated tests or manual experiments. Do not embed raw work-key secrets or bearer tokens
-in that configuration. For first-use worker dispatch, use the private-store
-wrapper documented in `mcp_wiring.md`; it injects `SYMPP_WORK_KEY_SECRET` only
-into the MCP child process and passes `--claimed-by <worker-id>`. For stateless
-transports, `state_key` is only handshake continuity and does not replace the
-same secret proof plus owner identity.
+in that configuration. For first-use worker dispatch, use the
+`claim_local_assignment` metadata documented in `mcp_wiring.md`. The
+private-store wrapper is a legacy/recovery fallback. For stateless transports,
+`state_key` is only handshake continuity and does not replace the ledger claim
+or legacy secret proof plus owner identity.
 
 ## Hook role
 
 Hooks may remind agents to keep state updated, inject assignment context, and
-detect missing handoff, but hooks must not be treated as the permission
+detect missing claim context, but hooks must not be treated as the permission
 boundary. Optional examples live under
 `implementation_docs_symphplusplus/templates/codex_hooks/`; they are
 operator-controlled templates, not runtime defaults. Keep hook behavior
