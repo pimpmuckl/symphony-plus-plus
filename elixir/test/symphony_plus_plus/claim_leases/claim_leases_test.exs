@@ -53,6 +53,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
     end
   end
 
+  defmodule PrimaryKeyCollisionRepo do
+    alias Ecto.Changeset
+
+    def insert(%Changeset{}) do
+      raise %Ecto.ConstraintError{
+        type: :unique,
+        constraint: Process.get(:claim_lease_primary_key_collision_constraint),
+        message: "primary key collision"
+      }
+    end
+  end
+
   setup_all do
     database_path = WorkPackageFactory.database_path()
 
@@ -89,7 +101,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
       assert column in columns
     end
 
+    %{rows: table_rows} = SQL.query!(repo, "PRAGMA table_info(sympp_claim_leases)")
+    assert [_cid, "id", _type, _not_null, _default, 1] = Enum.find(table_rows, &(Enum.at(&1, 1) == "id"))
+
     indexes = index_names(repo, "sympp_claim_leases")
+    refute "sympp_claim_leases_id_unique_index" in indexes
     assert "sympp_claim_leases_one_current_per_work_package_index" in indexes
     assert "sympp_claim_leases_status_last_seen_index" not in indexes
     assert "sympp_claim_leases_actor_index" not in indexes
@@ -145,8 +161,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
     assert claim.status == "active"
     assert claim.stale_after_ms == 1_000
     assert claim.released_at == nil
-    refute Service.stale?(claim, DateTime.add(now, 1_400, :millisecond))
-    assert Service.stale?(claim, reclaim_at)
+    refute ClaimLease.stale?(claim, DateTime.add(now, 1_400, :millisecond))
+    assert ClaimLease.stale?(claim, reclaim_at)
 
     assert {:ok, paused} = Service.pause(repo, claim.id, %{actor_id: "agent-1"}, now: pause_at, reason: "operator pause")
     assert paused.status == "paused"
@@ -175,7 +191,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
     assert replacement.reclaimed_at == nil
     assert replacement.released_at == nil
     assert DateTime.compare(replacement.lease_started_at, reclaim_at) == :eq
-    assert Service.stale?(replacement, DateTime.add(reclaim_at, 1_001, :millisecond))
+    assert ClaimLease.stale?(replacement, DateTime.add(reclaim_at, 1_001, :millisecond))
 
     assert {:ok, reclaimed} = Repository.get(repo, claim.id)
     assert reclaimed.status == "reclaimed"
@@ -230,6 +246,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
     assert second.work_package_id == work_package.id
     assert second.claim_group_id == second.id
     assert second.previous_claim_id == nil
+  end
+
+  test "duplicate caller-provided ids return stable primary key errors", %{repo: repo} do
+    now = ~U[2026-05-26 11:30:00Z]
+    assert {:ok, first_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-CLAIM-DUPLICATE-ID-A"))
+    assert {:ok, second_package} = WorkPackageRepository.create(repo, WorkPackageFactory.attrs(id: "SYMPP-CLAIM-DUPLICATE-ID-B"))
+
+    attrs = %{
+      id: "claim_duplicate_primary_key",
+      actor_kind: "agent",
+      actor_id: "agent-duplicate",
+      stale_after_ms: 1_000
+    }
+
+    assert {:ok, claim} = Repository.claim(repo, Map.put(attrs, :work_package_id, first_package.id), now: now)
+    assert claim.id == "claim_duplicate_primary_key"
+
+    assert {:error, :id_already_exists} =
+             Repository.claim(repo, Map.put(attrs, :work_package_id, second_package.id), now: now)
+  end
+
+  test "native primary key constraint names return stable duplicate-id errors" do
+    now = ~U[2026-05-26 11:45:00Z]
+
+    attrs = %{
+      id: "claim_duplicate_native_primary_key",
+      work_package_id: "SYMPP-CLAIM-DUPLICATE-NATIVE",
+      actor_kind: "agent",
+      actor_id: "agent-duplicate",
+      stale_after_ms: 1_000
+    }
+
+    try do
+      Process.put(:claim_lease_primary_key_collision_constraint, "sympp_claim_leases_pkey")
+      assert {:error, :id_already_exists} = Repository.claim(PrimaryKeyCollisionRepo, attrs, now: now)
+
+      Process.put(:claim_lease_primary_key_collision_constraint, "sympp_claim_leases_id_unique_index")
+      assert {:error, :id_already_exists} = Repository.claim(PrimaryKeyCollisionRepo, attrs, now: now)
+
+      Process.put(:claim_lease_primary_key_collision_constraint, "other_table_pkey")
+
+      assert {:error, {:constraint_failed, "other_table_pkey"}} =
+               Repository.claim(PrimaryKeyCollisionRepo, attrs, now: now)
+    after
+      Process.delete(:claim_lease_primary_key_collision_constraint)
+    end
   end
 
   test "claims require a stale policy and package-scoped grant", %{repo: repo} do
@@ -301,7 +363,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
                now: now
              )
 
-    assert Service.stale?(claim, reclaim_at)
+    assert ClaimLease.stale?(claim, reclaim_at)
 
     assert {:ok, replacement} =
              Service.reclaim_stale(
@@ -313,8 +375,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
              )
 
     assert DateTime.compare(replacement.lease_expires_at, replacement_expires_at) == :eq
-    refute Service.stale?(replacement, reclaim_at)
-    assert Service.stale?(replacement, DateTime.add(replacement_expires_at, 1, :millisecond))
+    refute ClaimLease.stale?(replacement, reclaim_at)
+    assert ClaimLease.stale?(replacement, DateTime.add(replacement_expires_at, 1, :millisecond))
   end
 
   test "stale reclaim aborts when the observed lease refreshes before the terminal update", %{repo: repo} do
@@ -327,7 +389,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
     assert {:ok, claim} =
              Service.claim(repo, work_package.id, %{actor_kind: "agent", actor_id: "agent-1"}, stale_after_ms: 1_000, now: now)
 
-    assert Service.stale?(claim, reclaim_at)
+    assert ClaimLease.stale?(claim, reclaim_at)
 
     try do
       ReclaimRefreshRaceRepo.arm(claim.id, refreshed_at)
@@ -348,7 +410,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
     assert current.id == claim.id
     assert current.status == "active"
     assert DateTime.compare(current.last_seen_at, refreshed_at) == :eq
-    refute Service.stale?(current, reclaim_at)
+    refute ClaimLease.stale?(current, reclaim_at)
     assert repo.aggregate(ClaimLease, :count) == 1
   end
 
@@ -407,7 +469,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeasesTest do
                now: stale_started_at
              )
 
-    assert Service.stale?(stale_claim, DateTime.utc_now(:microsecond))
+    assert ClaimLease.stale?(stale_claim, DateTime.utc_now(:microsecond))
 
     assert {:ok, replacement} =
              Service.reclaim_stale(repo, stale_package.id, %{"actor_kind" => "agent", "actor_id" => "agent-reclaim"})

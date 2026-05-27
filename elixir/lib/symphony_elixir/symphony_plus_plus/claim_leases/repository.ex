@@ -15,6 +15,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
           | {:storage_failed, String.t()}
           | Changeset.t()
 
+  @id_collision_constraints [
+    "sympp_claim_leases_id_index",
+    "sympp_claim_leases_pkey",
+    "sympp_claim_leases_id_unique_index"
+  ]
+  @sqlite_primary_key_message "unique constraint failed: sympp_claim_leases.id"
+
   @spec migrate(repo()) :: :ok | {:error, error()}
   def migrate(repo) when is_atom(repo) do
     Ecto.Migrator.run(repo, migrations_path(), :up, all: true, log: false)
@@ -133,11 +140,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
 
-  @spec stale?(ClaimLease.t(), DateTime.t()) :: boolean()
-  def stale?(%ClaimLease{} = claim_lease, %DateTime{} = now) do
-    expired?(claim_lease, now) or heartbeat_stale?(claim_lease, now)
-  end
-
   defp reclaim_stale_transaction(repo, work_package_id, attrs, opts) do
     now = now(opts)
     replacement_opts = opts |> Keyword.put(:now, now) |> Keyword.put(:lineage, :replacement)
@@ -202,11 +204,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
   defp status_error(_statuses), do: {:error, :claim_not_current}
 
   defp require_stale(%ClaimLease{} = claim_lease, now) do
-    if stale?(claim_lease, now), do: :ok, else: {:error, :claim_not_stale}
+    if ClaimLease.stale?(claim_lease, now), do: :ok, else: {:error, :claim_not_stale}
   end
 
   defp require_not_stale(%ClaimLease{} = claim_lease, now) do
-    if stale?(claim_lease, now), do: {:error, :claim_stale}, else: :ok
+    if ClaimLease.stale?(claim_lease, now), do: {:error, :claim_stale}, else: :ok
   end
 
   defp update_claim_lease(repo, %ClaimLease{} = claim_lease, attrs, allowed_statuses) do
@@ -230,19 +232,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
     error in Ecto.ConstraintError -> normalize_constraint_error(error)
     error in Exqlite.Error -> normalize_exqlite_error(error)
   end
-
-  defp expired?(%ClaimLease{lease_expires_at: %DateTime{} = expires_at}, now), do: DateTime.compare(expires_at, now) != :gt
-  defp expired?(%ClaimLease{}, %DateTime{}), do: false
-
-  defp heartbeat_stale?(%ClaimLease{last_seen_at: %DateTime{} = last_seen_at, stale_after_ms: stale_after_ms}, now)
-       when is_integer(stale_after_ms) and stale_after_ms > 0 do
-    last_seen_at
-    |> DateTime.add(stale_after_ms, :millisecond)
-    |> DateTime.compare(now)
-    |> Kernel.!==(:gt)
-  end
-
-  defp heartbeat_stale?(%ClaimLease{}, %DateTime{}), do: false
 
   defp normalize_keys(attrs), do: Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
 
@@ -270,7 +259,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
   defp reclaim_conflict_error(repo, work_package_id, now) do
     case current_for_work_package(repo, work_package_id) do
       {:ok, %ClaimLease{} = current} ->
-        if stale?(current, now), do: {:error, :claim_not_current}, else: {:error, :claim_not_stale}
+        if ClaimLease.stale?(current, now), do: {:error, :claim_not_current}, else: {:error, :claim_not_stale}
 
       {:error, :not_found} ->
         {:error, :claim_not_current}
@@ -346,18 +335,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
   defp normalize_insert_result({:ok, claim_lease}), do: {:ok, claim_lease}
 
   defp normalize_insert_result({:error, %Changeset{} = changeset}) do
-    cond do
-      duplicate_id?(changeset) -> {:error, :id_already_exists}
-      active_claim_conflict?(changeset) -> {:error, :active_claim_exists}
-      true -> {:error, changeset}
+    if active_claim_conflict?(changeset) do
+      {:error, :active_claim_exists}
+    else
+      {:error, changeset}
     end
-  end
-
-  defp duplicate_id?(changeset) do
-    Enum.any?(changeset.errors, fn
-      {:id, {_message, options}} -> Keyword.get(options, :constraint) == :unique
-      _error -> false
-    end)
   end
 
   defp active_claim_conflict?(changeset) do
@@ -374,10 +356,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
     end)
   end
 
-  defp normalize_constraint_error(%Ecto.ConstraintError{constraint: "sympp_claim_leases_id_unique_index"}) do
-    {:error, :id_already_exists}
-  end
-
   defp normalize_constraint_error(%Ecto.ConstraintError{constraint: "sympp_claim_leases_one_current_per_work_package_index"}) do
     {:error, :active_claim_exists}
   end
@@ -385,6 +363,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
   # SQLite reports the partial unique index by Ecto's generated column index name.
   defp normalize_constraint_error(%Ecto.ConstraintError{constraint: "sympp_claim_leases_work_package_id_index"}) do
     {:error, :active_claim_exists}
+  end
+
+  defp normalize_constraint_error(%Ecto.ConstraintError{constraint: constraint}) when constraint in @id_collision_constraints do
+    {:error, :id_already_exists}
   end
 
   defp normalize_constraint_error(%Ecto.ConstraintError{constraint: constraint}) when is_binary(constraint) do
@@ -399,10 +381,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Repository do
     message = Exception.message(error)
     normalized_message = String.downcase(message)
 
-    if String.contains?(normalized_message, "busy") or String.contains?(normalized_message, "locked") do
-      {:error, :database_busy}
-    else
-      {:error, {:storage_failed, message}}
+    cond do
+      String.contains?(normalized_message, @sqlite_primary_key_message) ->
+        {:error, :id_already_exists}
+
+      String.contains?(normalized_message, "busy") or String.contains?(normalized_message, "locked") ->
+        {:error, :database_busy}
+
+      true ->
+        {:error, {:storage_failed, message}}
     end
   end
 
