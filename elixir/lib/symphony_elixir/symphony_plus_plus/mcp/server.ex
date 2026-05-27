@@ -3121,7 +3121,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp replace_authority_lost_local_assignment_claim_lease(repo, work_package_id, %ClaimLease{} = lease, actor, %DateTime{} = now) do
     cond do
-      lease.actor_display_name == actor["actor_display_name"] ->
+      local_assignment_same_claim_owner?(lease, actor) ->
         {:error, :claim_lease_active_for_other_actor}
 
       local_assignment_lease_has_live_grant?(repo, work_package_id, lease, now) ->
@@ -3131,6 +3131,22 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         release_authority_lost_local_assignment_claim_lease(repo, work_package_id, lease, actor)
     end
   end
+
+  defp local_assignment_same_claim_owner?(%ClaimLease{} = lease, actor) when is_map(actor) do
+    case {local_assignment_claim_owner_id(lease.actor_id), local_assignment_claim_owner_id(actor["actor_id"])} do
+      {owner_id, owner_id} when is_binary(owner_id) -> true
+      _ -> false
+    end
+  end
+
+  defp local_assignment_claim_owner_id("local:" <> material) do
+    case String.split(material, ":", parts: 2) do
+      [owner_id, _actor_id] when owner_id != "" -> owner_id
+      _ -> nil
+    end
+  end
+
+  defp local_assignment_claim_owner_id(_actor_id), do: nil
 
   defp release_authority_lost_local_assignment_claim_lease(repo, work_package_id, %ClaimLease{} = lease, actor) do
     case ClaimLeaseService.release(repo, lease.id, reason: "local_assignment_claim_authority_lost") do
@@ -3245,6 +3261,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp local_assignment_actor(claim) do
+    owner_material =
+      [
+        claim.repo,
+        claim.base_branch,
+        claim.work_package_id,
+        claim.branch,
+        claim.worktree_path,
+        claim.claimed_by
+      ]
+      |> Enum.join("\0")
+
     material =
       [
         claim.repo,
@@ -3257,11 +3284,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       ]
       |> Enum.join("\0")
 
+    owner_id = local_assignment_actor_hash(owner_material)
+    actor_id = local_assignment_actor_hash(material)
+
     %{
       "actor_kind" => "agent",
-      "actor_id" => "local:" <> Base.url_encode64(:crypto.hash(:sha256, material), padding: false),
+      "actor_id" => "local:" <> owner_id <> ":" <> actor_id,
       "actor_display_name" => claim.claimed_by
     }
+  end
+
+  defp local_assignment_actor_hash(material) when is_binary(material) do
+    Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
   defp finalize_local_assignment_claim(repo, result, %Session{} = session, claim, %ClaimLease{} = lease, lease_action, grant_action) do

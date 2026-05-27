@@ -3569,11 +3569,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              ClaimLeaseService.claim(
                repo,
                package.id,
-               %{
-                 "actor_kind" => "agent",
-                 "actor_id" => "agent:local-worker-1:in-flight",
-                 "actor_display_name" => "local-worker-1"
-               },
+               local_assignment_claim_actor(arguments),
                stale_after_ms: :timer.minutes(5)
              )
 
@@ -16969,6 +16965,52 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
       "claimed_by" => "local-worker-1"
     }
     |> Map.merge(overrides)
+  end
+
+  defp local_assignment_claim_actor(arguments) do
+    worktree_path = local_assignment_actor_worktree_path(arguments["worktree_path"])
+
+    owner_material =
+      [
+        arguments["repo"],
+        arguments["base_branch"],
+        arguments["work_package_id"],
+        arguments["branch"],
+        worktree_path,
+        arguments["claimed_by"]
+      ]
+      |> Enum.join("\0")
+
+    material =
+      [
+        arguments["repo"],
+        arguments["base_branch"],
+        arguments["work_package_id"],
+        arguments["branch"],
+        worktree_path,
+        arguments["caller_id"],
+        arguments["claimed_by"]
+      ]
+      |> Enum.join("\0")
+
+    %{
+      "actor_kind" => "agent",
+      "actor_id" => "local:" <> local_assignment_actor_hash(owner_material) <> ":" <> local_assignment_actor_hash(material),
+      "actor_display_name" => arguments["claimed_by"]
+    }
+  end
+
+  defp local_assignment_actor_worktree_path(path) do
+    path = path |> String.trim() |> Path.expand()
+
+    case :os.type() do
+      {:win32, _name} -> String.downcase(path)
+      _type -> path
+    end
+  end
+
+  defp local_assignment_actor_hash(material) do
+    Base.url_encode64(:crypto.hash(:sha256, material), padding: false)
   end
 
   defp local_claim_worktree_path(work_package_id) do
