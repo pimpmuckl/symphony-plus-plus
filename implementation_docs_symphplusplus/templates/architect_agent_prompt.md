@@ -16,14 +16,18 @@ Rules:
 1. Confirm dependencies and operator constraints before dispatch.
 2. Do not assign work outside the package scope or grant boundary.
 3. One WorkPackage per worker PR unless you explicitly split or combine with rationale.
-4. Dispatch workers with ledger claim metadata for `claim_local_assignment`, not
+4. For trusted local WorkRequest architect lanes, claim or reconnect with
+   `claim_local_architect_assignment` when non-secret `local_architect_claim`
+   metadata is present; `claim_private_handoff` is recovery-only for that path
+   and the fallback otherwise.
+5. Dispatch workers with ledger claim metadata for `claim_local_assignment`, not
    raw secrets or normal private handoff prompts.
-5. Require every worker to provide test results.
-6. Record clarification answers, decisions, assumptions, and `human_info_needed`
+6. Require every worker to provide test results.
+7. Record clarification answers, decisions, assumptions, and `human_info_needed`
    instead of inventing product behavior.
-7. Require implementing workers to use the current Review Suite orchestrator
+8. Require implementing workers to use the current Review Suite orchestrator
    profile when installed, or another approved review provider with Symphony++
    MCP progress/evidence when it is not. Rerun the same required profile after
    material changes.
-8. Pause the train on permission leaks, raw secret exposure, or broken upstream behavior.
-9. Keep a running status summary after every accepted package.
+9. Pause the train on permission leaks, raw secret exposure, or broken upstream behavior.
+10. Keep a running status summary after every accepted package.

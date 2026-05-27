@@ -125,10 +125,12 @@ requires repo, base branch, title, request kind, and either `description` or
 status, `claimed_by`, and creator provenance, and defaults omitted provenance
 to `agent` via `mcp` with caller-supplied `claimed_by` as the maker display
 name when available and `mcp-agent` otherwise. The response includes the
-WorkRequest summary with provenance, a redacted local-private-file architect
-handoff, a non-secret claim owner for `claim_private_handoff`, and a launch
-prompt for the owning architect agent. This remains explicit architect
-bootstrap/recovery; worker dispatch uses ledger-backed local claims. If the
+WorkRequest summary with provenance, non-secret `local_architect_claim`
+metadata for `claim_local_architect_assignment` when the creator session is
+trusted local HTTP with a file-backed ledger, a redacted recovery handoff, a
+non-secret claim owner for `claim_private_handoff`, and a launch prompt for
+the owning architect agent. `claim_private_handoff` remains explicit
+architect recovery; worker dispatch uses ledger-backed local claims. If the
 WorkRequest is created but architect handoff creation fails, the response must
 be an explicit partial success with the WorkRequest id and a non-duplicating
 manual architect-handoff replay hint, not a raw-secret fallback.

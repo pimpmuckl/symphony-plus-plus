@@ -16,10 +16,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
 
   @type error ::
           :already_claimed
+          | :architect_grant_required
           | :database_busy
           | :display_key_only
           | :expired
           | :id_already_exists
+          | :invalid_scope
           | :invalid_secret
           | :missing_claim_identity
           | :not_found
@@ -144,6 +146,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     with {:ok, claimed_by} <- claimed_by(attrs),
          :ok <- reject_other_local_claim_owner(repo, work_package_id, claimed_by, normalized_now, terminal_statuses) do
       reconnect_or_claim_local_worker_grant(repo, work_package_id, claimed_by, normalized_now, terminal_statuses)
+    end
+  rescue
+    error in Exqlite.Error -> normalize_exqlite_error(error)
+  end
+
+  @spec claim_local_architect_grant(repo(), String.t(), String.t(), map(), DateTime.t(), keyword()) ::
+          {:ok, AccessGrant.t()} | {:error, error()}
+  def claim_local_architect_grant(repo, work_package_id, phase_id, attrs, now, opts)
+      when is_atom(repo) and is_binary(work_package_id) and is_binary(phase_id) and is_map(attrs) and
+             is_struct(now, DateTime) and is_list(opts) do
+    normalized_now = DateTime.truncate(now, :microsecond)
+    terminal_statuses = Keyword.get(opts, :terminal_work_package_statuses, [])
+
+    with {:ok, claimed_by} <- claimed_by(attrs),
+         {:ok, scope_repo} <- claim_scope(attrs, :scope_repo),
+         {:ok, scope_base_branch} <- claim_scope(attrs, :scope_base_branch),
+         :ok <-
+           reject_other_local_architect_claim_owner(
+             repo,
+             work_package_id,
+             phase_id,
+             scope_repo,
+             scope_base_branch,
+             claimed_by,
+             normalized_now,
+             terminal_statuses
+           ) do
+      reconnect_or_claim_local_architect_grant(
+        repo,
+        work_package_id,
+        phase_id,
+        scope_repo,
+        scope_base_branch,
+        claimed_by,
+        normalized_now,
+        terminal_statuses
+      )
     end
   rescue
     error in Exqlite.Error -> normalize_exqlite_error(error)
@@ -306,6 +345,38 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     end
   end
 
+  defp reject_other_local_architect_claim_owner(
+         repo,
+         work_package_id,
+         phase_id,
+         scope_repo,
+         scope_base_branch,
+         claimed_by,
+         now,
+         terminal_statuses
+       ) do
+    query =
+      from(grant in AccessGrant,
+        where: grant.work_package_id == ^work_package_id,
+        where: grant.phase_id == ^phase_id,
+        where: grant.grant_role == "architect",
+        where: grant.scope_repo == ^scope_repo,
+        where: grant.scope_base_branch == ^scope_base_branch,
+        where: not is_nil(grant.claimed_at),
+        where: grant.claimed_by != ^claimed_by,
+        where: is_nil(grant.revoked_at),
+        where: is_nil(grant.expires_at) or grant.expires_at > ^now,
+        select: 1,
+        limit: 1
+      )
+      |> scope_live_package_authority(terminal_statuses)
+
+    case repo.one(query) do
+      nil -> :ok
+      1 -> {:error, :already_claimed}
+    end
+  end
+
   defp local_reconnect_grant(repo, work_package_id, claimed_by, now, terminal_statuses) do
     query =
       from(grant in AccessGrant,
@@ -340,8 +411,60 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     end
   end
 
+  defp reconnect_or_claim_local_architect_grant(
+         repo,
+         work_package_id,
+         phase_id,
+         scope_repo,
+         scope_base_branch,
+         claimed_by,
+         now,
+         terminal_statuses
+       ) do
+    case local_reconnect_architect_grant(repo, work_package_id, phase_id, scope_repo, scope_base_branch, claimed_by, now, terminal_statuses) do
+      {:ok, grant} ->
+        {:ok, grant}
+
+      {:error, :not_found} ->
+        claim_unclaimed_local_architect_grant(repo, work_package_id, phase_id, scope_repo, scope_base_branch, claimed_by, now, terminal_statuses)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp local_reconnect_architect_grant(repo, work_package_id, phase_id, scope_repo, scope_base_branch, claimed_by, now, terminal_statuses) do
+    query =
+      from(grant in AccessGrant,
+        where: grant.work_package_id == ^work_package_id,
+        where: grant.phase_id == ^phase_id,
+        where: grant.grant_role == "architect",
+        where: grant.scope_repo == ^scope_repo,
+        where: grant.scope_base_branch == ^scope_base_branch,
+        where: grant.claimed_by == ^claimed_by,
+        where: not is_nil(grant.claimed_at),
+        where: is_nil(grant.revoked_at),
+        where: is_nil(grant.expires_at) or grant.expires_at > ^now,
+        order_by: [desc: grant.claimed_at, desc: grant.updated_at, asc: grant.id],
+        limit: 1
+      )
+      |> scope_live_package_authority(terminal_statuses)
+
+    case repo.one(query) do
+      %AccessGrant{} = grant -> {:ok, grant}
+      nil -> {:error, :not_found}
+      {:error, _reason} = error -> error
+    end
+  end
+
   defp claim_unclaimed_local_worker_grant(repo, work_package_id, claimed_by, now, terminal_statuses) do
     with {:ok, grant} <- local_unclaimed_worker_grant(repo, work_package_id, now, terminal_statuses) do
+      persist_claim(repo, grant, claimed_by, now, terminal_statuses)
+    end
+  end
+
+  defp claim_unclaimed_local_architect_grant(repo, work_package_id, phase_id, scope_repo, scope_base_branch, claimed_by, now, terminal_statuses) do
+    with {:ok, grant} <- local_unclaimed_architect_grant(repo, work_package_id, phase_id, scope_repo, scope_base_branch, now, terminal_statuses) do
       persist_claim(repo, grant, claimed_by, now, terminal_statuses)
     end
   end
@@ -362,6 +485,54 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
     case repo.one(query) do
       %AccessGrant{} = grant -> {:ok, grant}
       nil -> local_worker_grant_missing_reason(repo, work_package_id, terminal_statuses)
+    end
+  end
+
+  defp local_unclaimed_architect_grant(repo, work_package_id, phase_id, scope_repo, scope_base_branch, now, terminal_statuses) do
+    query =
+      from(grant in AccessGrant,
+        where: grant.work_package_id == ^work_package_id,
+        where: grant.phase_id == ^phase_id,
+        where: grant.grant_role == "architect",
+        where: grant.scope_repo == ^scope_repo,
+        where: grant.scope_base_branch == ^scope_base_branch,
+        where: is_nil(grant.claimed_at),
+        where: is_nil(grant.revoked_at),
+        where: is_nil(grant.expires_at) or grant.expires_at > ^now,
+        order_by: [desc: grant.inserted_at, desc: grant.id],
+        limit: 1
+      )
+      |> scope_live_package_authority(terminal_statuses)
+
+    case repo.one(query) do
+      %AccessGrant{} = grant -> {:ok, grant}
+      nil -> local_architect_grant_missing_reason(repo, work_package_id, phase_id, scope_repo, scope_base_branch, terminal_statuses)
+    end
+  end
+
+  defp local_architect_grant_missing_reason(repo, work_package_id, phase_id, scope_repo, scope_base_branch, terminal_statuses) do
+    if terminal_work_package?(repo, work_package_id, terminal_statuses) do
+      {:error, :work_package_terminal}
+    else
+      {:error, inactive_architect_grant_reason(repo, work_package_id, phase_id, scope_repo, scope_base_branch)}
+    end
+  end
+
+  defp inactive_architect_grant_reason(repo, work_package_id, phase_id, scope_repo, scope_base_branch) do
+    query =
+      from(grant in AccessGrant,
+        where: grant.work_package_id == ^work_package_id,
+        where: grant.phase_id == ^phase_id,
+        where: grant.grant_role == "architect",
+        where: grant.scope_repo == ^scope_repo,
+        where: grant.scope_base_branch == ^scope_base_branch,
+        select: {count(grant.id), count(grant.revoked_at)}
+      )
+
+    case repo.one(query) do
+      {0, _revoked_count} -> :architect_grant_required
+      {grant_count, grant_count} -> :revoked
+      {_grant_count, _revoked_count} -> :expired
     end
   end
 
@@ -404,6 +575,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Repository do
 
       _claimed_by ->
         {:error, :missing_claim_identity}
+    end
+  end
+
+  defp claim_scope(attrs, key) when is_atom(key) do
+    case Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key)) do
+      value when is_binary(value) ->
+        value = String.trim(value)
+        if value == "", do: {:error, :invalid_scope}, else: {:ok, value}
+
+      _value ->
+        {:error, :invalid_scope}
     end
   end
 

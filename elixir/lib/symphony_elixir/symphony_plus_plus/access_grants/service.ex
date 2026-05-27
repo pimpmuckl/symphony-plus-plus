@@ -140,6 +140,41 @@ defmodule SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service do
     end
   end
 
+  @spec claim_local_architect_grant(Repository.repo(), String.t(), String.t(), keyword() | map()) ::
+          {:ok, AccessGrant.t()} | {:error, error()}
+  def claim_local_architect_grant(repo, work_package_id, phase_id, opts \\ [])
+      when is_atom(repo) and is_binary(work_package_id) and is_binary(phase_id) and (is_list(opts) or is_map(opts)) do
+    opts = normalize_options(opts)
+    claim_local_architect_grant(repo, work_package_id, phase_id, opts, @claim_database_busy_retries)
+  end
+
+  defp claim_local_architect_grant(repo, work_package_id, phase_id, opts, retries_remaining) do
+    now = option(opts, :now, DateTime.utc_now(:microsecond))
+
+    result =
+      Repository.claim_local_architect_grant(
+        repo,
+        work_package_id,
+        phase_id,
+        %{
+          claimed_by: option(opts, :claimed_by, nil),
+          scope_repo: option(opts, :scope_repo, nil),
+          scope_base_branch: option(opts, :scope_base_branch, nil)
+        },
+        now,
+        terminal_work_package_statuses: @terminal_work_package_statuses
+      )
+
+    case result do
+      {:error, :database_busy} when retries_remaining > 0 ->
+        Process.sleep(@claim_database_busy_retry_delay_ms)
+        claim_local_architect_grant(repo, work_package_id, phase_id, opts, retries_remaining - 1)
+
+      result ->
+        result
+    end
+  end
+
   @spec revoke(Repository.repo(), String.t(), keyword() | map()) :: {:ok, AccessGrant.t()} | {:error, error()}
   def revoke(repo, id, opts \\ []) when is_atom(repo) and is_binary(id) and (is_list(opts) or is_map(opts)) do
     opts = normalize_options(opts)

@@ -132,8 +132,9 @@ single header value, follows with `tools/list`, and verifies the script's
 current generic unbound expectations: `sympp.health`, the `solo_*` tools,
 `claim_work_key`, and statically discoverable architect schemas such as
 `read_work_request` and `list_guidance_requests`. `claim_private_handoff` is
-part of the generic unbound refresh surface, and `claim_local_assignment` is
-part of the trusted local HTTP refresh surface, but the current smoke script
+part of the generic recovery surface, and `claim_local_assignment` plus
+`claim_local_architect_assignment` are part of the trusted local HTTP refresh
+surface, but the current smoke script
 does not yet assert them directly. Worker-only mutation tools remain absent
 until claim. The health smoke also verifies that
 `ledger.identity` is present and complete enough to identify default or
