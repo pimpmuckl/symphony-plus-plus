@@ -2903,17 +2903,25 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       nil ->
         :ok
 
-      ^branch ->
-        :ok
-
       pattern ->
-        if Keyword.get(opts, :prepared_worktree?, false) and local_branch_template_matches?(work_package, pattern, branch) do
-          :ok
-        else
-          {:error, :branch_scope_mismatch}
+        cond do
+          pattern == branch and not local_branch_template_pattern?(pattern) ->
+            :ok
+
+          Keyword.get(opts, :prepared_worktree?, false) and local_branch_template_matches?(work_package, pattern, branch) ->
+            :ok
+
+          true ->
+            {:error, :branch_scope_mismatch}
         end
     end
   end
+
+  defp local_branch_template_pattern?(pattern) when is_binary(pattern) do
+    Regex.match?(~r/\{\{\s*[a-zA-Z0-9_]+\s*\}\}/, pattern)
+  end
+
+  defp local_branch_template_pattern?(_pattern), do: false
 
   defp local_branch_template_matches?(%WorkPackage{} = work_package, pattern, branch)
        when is_binary(pattern) and is_binary(branch) do

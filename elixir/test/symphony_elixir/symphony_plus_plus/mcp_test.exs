@@ -3616,6 +3616,32 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     end
   end
 
+  test "claim_local_assignment rejects literal templated branch without prepared git metadata", %{repo: repo} do
+    package =
+      create_local_claim_package!(repo, "SYMPP-LOCAL-TEMPLATE-UNPREPARED", branch_pattern: "agent/{{work_package_id}}/{{slug}}")
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    {response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-template-unprepared",
+          "method" => "tools/call",
+          "params" => %{
+            "name" => "claim_local_assignment",
+            "arguments" => local_assignment_claim_args(package, %{"branch" => package.branch_pattern})
+          }
+        },
+        local_mcp_server(local_mcp_config(repo), "local-template-unprepared-state")
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "branch_scope_mismatch"
+    assert {:ok, unclaimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert unclaimed_grant.claimed_at == nil
+    refute repo.one(from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id))
+  end
+
   test "claim_local_assignment rejects retargeted branch for concrete package branch", %{repo: repo} do
     package = create_local_claim_package!(repo, "SYMPP-LOCAL-RETARGETED-BRANCH")
     assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
