@@ -496,6 +496,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWorkTest do
     refute json =~ "hash-should-not-leak"
   end
 
+  test "response payload preserves nil worker grant", %{repo: repo} do
+    assert {:ok, creation} =
+             CreateWork.create(repo, %{
+               repo: "kraken",
+               base_branch: "main",
+               title: "Create no-grant response",
+               acceptance_criteria: ["Serialize response without worker grant."]
+             })
+
+    payload = CreateWork.response_payload(%{creation | worker_grant: nil})
+
+    assert payload.worker_grant == nil
+    assert Jason.encode!(payload) =~ ~s("worker_grant":null)
+  end
+
   test "removes stored worker secret when managed metadata persistence fails", %{repo: repo} do
     store_dir = Path.join(System.tmp_dir!(), "sympp-metadata-failure-handoff-#{System.unique_integer([:positive])}")
 
