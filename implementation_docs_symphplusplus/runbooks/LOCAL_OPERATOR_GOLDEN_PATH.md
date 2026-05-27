@@ -148,7 +148,11 @@ non-default or dynamic cockpit port, pass the printed MCP URL:
 A passing smoke proves the cockpit/MCP daemon is serving the HTTP MCP contract.
 It does not prove that an already-open Codex app session loaded or enabled the
 opt-in `symphony-plus-plus-mcp` plugin; reload/start that dedicated session
-after fixing plugin config or cache state.
+after fixing plugin config or cache state. Focused `claim_local_assignment`
+contract coverage currently lives in
+`elixir/test/symphony_elixir/symphony_plus_plus/codex_skill_package_test.exs`;
+the generic daemon smoke is not first-claim validation until a dedicated
+trusted local HTTP claim smoke lands.
 
 For legacy/recovery validation of a package whose private handoff has already
 placed a work key in a local secret store, read that secret into a short-lived

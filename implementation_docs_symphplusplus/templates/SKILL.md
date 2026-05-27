@@ -13,15 +13,16 @@ WorkKey/private-handoff bootstrap.
 
 1. Use a dedicated S++ MCP-enabled session connected to the same ledger as
    dispatch.
-2. For normal V2.1 assignments, claim with `claim_local_assignment` using the
-   dispatch fields plus runtime `branch`, `worktree_path`, `caller_id`, and
-   `claimed_by`.
+2. For planned-slice/ledger-dispatched V2.1 assignments, claim with
+   `claim_local_assignment` using the dispatch fields plus runtime `branch`,
+   `worktree_path`, `caller_id`, and `claimed_by`.
 3. Replay the same local claim after reconnects. The server heartbeats the
    current lease, reclaims stale leases with audit evidence, and rejects paused
    leases or another active owner.
-4. For explicitly labeled legacy/recovery WorkKey or private-handoff
-   assignments, use `claim_work_key` or `claim_private_handoff` instead of
-   `claim_local_assignment`. Do not ask for, paste, print, or log raw secrets.
+4. For standalone packages or explicitly labeled legacy/recovery WorkKey or
+   private-handoff assignments, use `claim_work_key` or
+   `claim_private_handoff` instead of `claim_local_assignment`. Do not ask for,
+   paste, print, or log raw secrets.
 5. Call `get_current_assignment()` and treat the returned WorkPackage as the
    only authority for scope.
 6. Read the virtual planning resources before implementation:

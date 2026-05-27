@@ -96,7 +96,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       assert skill =~ marker
     end
 
-    assert skill =~ "Never ask for or paste raw secrets."
+    assert normalize_prose(skill) =~ "Never ask for or paste raw secrets."
     assert skill =~ "Do not create local `task_plan.md`, `findings.md`, or `progress.md` files as"
     assert skill =~ "Worker grants and local claim leases are scoped to exactly one WorkPackage."
     refute skill =~ "add_comment(target_kind, target_id, body, idempotency_key)"
@@ -173,6 +173,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       assert String.starts_with?(content, "You are assigned Symphony++ work package")
       assert content =~ "<WORK_PACKAGE_ID>"
       assert content =~ "Ledger claim: call `claim_local_assignment`"
+      assert content =~ "Worker branch: <PREPARED_BRANCH>"
       assert content =~ "Worktree path: <PREPARED_WORKTREE_PATH>"
       assert content =~ "Caller id: <CALLER_ID>"
       assert content =~ "update_task_plan(patch, expected_version)"
@@ -184,6 +185,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
       refute content =~ "attach_pr(pr_url"
       refute content =~ "Work key handoff:"
       refute content =~ "Handoff target:"
+      refute content =~ "Worker branch: agent/<WORK_PACKAGE_ID>/<short-slug>"
       refute content =~ "```"
       refute content =~ "request_context"
     end
@@ -205,13 +207,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     assert wiring =~ "run-mcp-local-file-once"
     assert wiring =~ "waits for exit before draining stdout"
     assert wiring =~ "--work-key-secret-env SYMPP_WORK_KEY_SECRET --claimed-by <stable-worker-id>"
-    assert wiring =~ "should not embed\nraw work-key secrets or bearer tokens"
+    prose_wiring = normalize_prose(wiring)
+
+    assert prose_wiring =~ "should not embed raw work-key secrets or bearer tokens"
     assert wiring =~ "generic Codex sessions, review-suite lanes, and `codex review`"
-    assert wiring =~ "open a new session before treating stale\nskill metadata"
+    assert prose_wiring =~ "open a new session before treating stale skill metadata"
     assert wiring =~ "cache/plugin adoption happens only at final feature-branch cutover"
     assert wiring =~ "Do not refresh user-local plugin caches as part of normal feature-branch"
     assert wiring =~ "Skill visibility, explicit MCP configuration, global MCP settings"
-    assert wiring =~ "must not declare\n`mcpServers`"
+    assert prose_wiring =~ "must not declare `mcpServers`"
     assert wiring =~ "That server may not appear"
     assert plugin_wiring == wiring
     assert template_wiring == wiring
@@ -3810,6 +3814,44 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
     refute "request_context" in actual_tools
   end
 
+  test "MCP contract and worker prompts align on ledger local claim inputs" do
+    contract =
+      @contract_path
+      |> File.read!()
+      |> Jason.decode!()
+
+    bootstrap_tools = Map.new(contract["bootstrap_tools"], &{&1["name"], &1})
+    claim_tool = Map.fetch!(bootstrap_tools, "claim_local_assignment")
+
+    assert claim_tool["required_arguments"] == [
+             "repo",
+             "base_branch",
+             "work_package_id",
+             "branch",
+             "worktree_path",
+             "caller_id",
+             "claimed_by"
+           ]
+
+    assert claim_tool["optional_arguments"] == ["work_request_id"]
+    assert claim_tool["scope_policy"] =~ "recorded worktree path"
+    assert claim_tool["reclaim_policy"] =~ "Stale leases may be reclaimed"
+
+    prompt = File.read!(@template_prompt_path)
+
+    for marker <- [
+          "Repo: <REPO>",
+          "Base branch: <BASE_BRANCH>",
+          "WorkPackage: <WORK_PACKAGE_ID>",
+          "Worker branch: <PREPARED_BRANCH>",
+          "Worktree path: <PREPARED_WORKTREE_PATH>",
+          "Caller id: <CALLER_ID>",
+          "claimed_by: <stable-worker-identity>"
+        ] do
+      assert prompt =~ marker
+    end
+  end
+
   test "MCP contract enum constraints mirror runtime values" do
     contract =
       @contract_path
@@ -3842,6 +3884,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
   defp normalize_newlines(value) do
     String.replace(value, "\r\n", "\n")
+  end
+
+  defp normalize_prose(value) do
+    value
+    |> normalize_newlines()
+    |> String.replace(~r/\s+/, " ")
   end
 
   defp fake_mix_executable(temp_root) do

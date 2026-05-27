@@ -100,9 +100,11 @@ intentionally need a dynamic local URL; public bind hosts are rejected.
    prompts, PR text, or logs.
 5. Make sure the worker has the opt-in `symphony-plus-plus-mcp` Codex plugin from
    `plugins/symphony-plus-plus-mcp/` or the repo-local
-   `.codex/skills/symphony-work-package/` copy, plus a dedicated local HTTP MCP
-   session documented in
-   `../../.codex/skills/symphony-work-package/references/mcp_wiring.md`.
+   `.codex/skills/symphony-work-package/` copy. For this standalone
+   legacy/recovery bootstrap, use the private-store wrapper flow documented in
+   the `Legacy/Recovery Bootstrap` section of
+   `../../.codex/skills/symphony-work-package/references/mcp_wiring.md`, not the
+   planned-slice `claim_local_assignment` worker-claim flow.
 6. Prepare the worker git worktree through the normal repo worktree flow when
    needed. Standalone create-work does not record ledger worktree scope or emit
    `claim_local_assignment` metadata.

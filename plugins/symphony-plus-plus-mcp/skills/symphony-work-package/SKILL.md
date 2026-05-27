@@ -17,7 +17,7 @@ boundary.
 
 1. Use a dedicated S++ MCP-enabled session connected to the same ledger as
    dispatch.
-2. For normal V2.1 assignments, claim the package with
+2. For planned-slice/ledger-dispatched V2.1 assignments, claim the package with
    `claim_local_assignment` using the dispatch-provided ledger claim fields plus
    local runtime fields: `branch`, `worktree_path`, `caller_id`, and
    `claimed_by`.
@@ -25,9 +25,10 @@ boundary.
    current lease, reclaims stale leases with audit evidence, and rejects paused
    leases or another active owner. Stop and report those blockers instead of
    minting your own replacement.
-4. For explicitly labeled legacy/recovery WorkKey or private-handoff
-   assignments, use `claim_work_key` or `claim_private_handoff` instead of
-   `claim_local_assignment`. Never ask for or paste raw secrets.
+4. For standalone packages or explicitly labeled legacy/recovery WorkKey or
+   private-handoff assignments, use `claim_work_key` or
+   `claim_private_handoff` instead of `claim_local_assignment`. Never ask for or
+   paste raw secrets.
 5. Call `get_current_assignment()` and treat that WorkPackage as authoritative.
 6. Read `sympp://work-packages/{id}/acceptance.md` with the other MCP-backed
    package resources.

@@ -10,7 +10,7 @@ Assignment:
 - WorkPackage: <WORK_PACKAGE_ID>
 - Repo: <REPO>
 - Base branch: <BASE_BRANCH>
-- Worker branch: agent/<WORK_PACKAGE_ID>/<short-slug>
+- Worker branch: <PREPARED_BRANCH>
 - Worktree path: <PREPARED_WORKTREE_PATH>
 - Caller id: <CALLER_ID>
 - Ledger claim: call `claim_local_assignment` with the dispatch-provided

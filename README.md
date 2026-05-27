@@ -24,8 +24,10 @@ readiness surfaces without replacing the base Linear-oriented runtime docs.
 - Operator flow: `implementation_docs_symphplusplus/docs/12_OPERATOR_TRAINING.md`
 - Short operational runbook:
   `implementation_docs_symphplusplus/docs/09_OPERATIONAL_RUNBOOK.md`
-- Codex plugin package reference:
+- Default Codex skill-only plugin reference:
   `plugins/symphony-plus-plus/README.md`
+- Opt-in MCP plugin for WorkPackage/architect sessions:
+  `plugins/symphony-plus-plus-mcp/README.md`
 - V2.1 ledger-claim and local cache cutover notes:
   `implementation_docs_symphplusplus/README.md`
 - Release validation:
