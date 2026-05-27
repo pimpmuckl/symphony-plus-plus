@@ -594,7 +594,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert still_archived.archived_at == archived.archived_at
   end
 
-  test "completion lets terminal package status override lingering unnamed grants", %{repo: repo} do
+  test "completion waits for terminal package active grants even without claimed_by", %{repo: repo} do
     assert {:ok, request} = Repository.create(repo, attrs(id: "WR-COMPLETE-UNNAMED-GRANT", status: "ready_for_slicing"))
     assert {:ok, planned_slice} = Repository.add_planned_slice(repo, request.id, planned_slice_attrs(id: "WRS-COMPLETE-UNNAMED-GRANT"))
     assert {:ok, approved_slice} = Repository.approve_planned_slice(repo, request.id, planned_slice.id, "planned")
@@ -610,7 +610,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     |> repo.update!()
 
     assert {:ok, with_grant} = Service.refresh_completion(repo, request.id)
-    assert %DateTime{} = with_grant.completed_at
+    assert with_grant.completed_at == nil
+
+    assert {:ok, _revoked_grant} = AccessGrantRepository.revoke(repo, minted.grant.id, DateTime.utc_now(:microsecond))
+    assert {:ok, without_grant} = Service.refresh_completion(repo, request.id)
+    assert %DateTime{} = without_grant.completed_at
   end
 
   test "completion waits for questions blockers linked packages and honors terminal runtime", %{repo: repo} do
@@ -679,16 +683,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
              })
 
     assert {:ok, with_runtime} = Service.refresh_completion(repo, runtime_request.id)
-    assert %DateTime{} = with_runtime.completed_at
-
-    assert {:ok, archived_runtime} = Service.archive(repo, runtime_request.id)
-    assert %DateTime{} = archived_runtime.archived_at
+    assert with_runtime.completed_at == nil
+    assert {:error, :not_completed} = Service.archive(repo, runtime_request.id)
 
     assert {:ok, _completed_run} = AgentRunRepository.mark_completed(repo, run.id, "done")
-    assert {:ok, still_archived_runtime} = Repository.get(repo, runtime_request.id)
-    assert still_archived_runtime.completed_at == archived_runtime.completed_at
-    assert still_archived_runtime.archived_at == archived_runtime.archived_at
-
     assert {:ok, without_runtime} = Service.refresh_completion(repo, runtime_request.id)
     assert %DateTime{} = without_runtime.completed_at
   end
@@ -839,7 +837,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert get_in(contexts, [active_package.id, :runtime_state, :reason_codes]) == ["claim_lease_active", "architect_grant_active"]
 
     stale_runtime = get_in(contexts, [stale_package.id, :runtime_state])
-    assert stale_runtime.active? == false
+    assert stale_runtime.active? == true
     assert stale_runtime.stale? == true
     assert "claim_lease_stale" in stale_runtime.reason_codes
     assert DateTime.compare(stale_runtime.latest_gate_at, DateTime.add(stale_seen_at, 1, :millisecond)) == :eq
@@ -866,14 +864,17 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert DateTime.compare(recycled_runtime.latest_gate_at, DateTime.add(stale_seen_at, 1, :millisecond)) == :gt
 
     terminal_runtime = get_in(contexts, [terminal_package.id, :runtime_state])
-    assert terminal_runtime.active? == false
-    assert terminal_runtime.stale? == false
+    assert terminal_runtime.active? == true
+    assert terminal_runtime.stale? == true
     assert terminal_runtime.terminal? == true
-    assert terminal_runtime.lifecycle_state == "terminal"
-    assert terminal_runtime.reason_codes == ["package_terminal"]
+    assert terminal_runtime.lifecycle_state == "stale"
+    assert "claim_lease_stale" in terminal_runtime.reason_codes
+    assert "agent_run_stale" in terminal_runtime.reason_codes
+    assert "architect_grant_active" in terminal_runtime.reason_codes
+    assert "package_terminal" in terminal_runtime.reason_codes
 
     agent_runtime = get_in(contexts, [agent_package.id, :runtime_state])
-    assert agent_runtime.active? == false
+    assert agent_runtime.active? == true
     assert agent_runtime.stale? == true
     assert "agent_run_stale" in agent_runtime.reason_codes
   end

@@ -178,6 +178,39 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     defp truncate_claim_timestamps(updates), do: updates
   end
 
+  defmodule LocalClaimInsertRaceRepo do
+    alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    @race_key :sympp_local_claim_insert_race
+
+    def arm, do: Process.put(@race_key, true)
+    def disarm, do: Process.delete(@race_key)
+
+    def transaction(fun), do: Repo.transaction(fun)
+    def rollback(value), do: Repo.rollback(value)
+    def get(schema, id), do: Repo.get(schema, id)
+    def one(query), do: Repo.one(query)
+    def all(query), do: Repo.all(query)
+    def update(changeset), do: Repo.update(changeset)
+    def update_all(query, updates), do: Repo.update_all(query, updates)
+
+    def insert(%Ecto.Changeset{data: %ClaimLease{}} = changeset) do
+      if Process.get(@race_key) do
+        Process.delete(@race_key)
+
+        changeset.changes
+        |> Map.take([:work_package_id, :actor_kind, :actor_id, :actor_display_name, :stale_after_ms])
+        |> ClaimLease.create_changeset(now: DateTime.utc_now(:microsecond))
+        |> Repo.insert()
+      end
+
+      Repo.insert(changeset)
+    end
+
+    def insert(changeset), do: Repo.insert(changeset)
+  end
+
   defmodule MintReadyRaceRepo do
     import Ecto.Query, only: [from: 2]
 
@@ -3516,6 +3549,70 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert get_in(response, ["result", "structuredContent", "assignment", "grant_id"]) == newer.grant.id
     assert {:ok, unclaimed_older} = AccessGrantRepository.get(repo, older.grant.id)
     assert unclaimed_older.claimed_at == nil
+  end
+
+  test "claim_local_assignment accepts prepared concrete branch for templated package branch", %{repo: repo} do
+    package =
+      create_local_claim_package!(repo, "SYMPP-LOCAL-PREPARED-BRANCH", branch_pattern: "agent/{{work_package_id}}/{{slug}}")
+
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    prepared_branch = "agent/SYMPP-LOCAL-PREPARED-BRANCH/final-review-corrections"
+    File.mkdir_p!(Path.join(package.worktree_path, ".git"))
+    File.write!(Path.join([package.worktree_path, ".git", "HEAD"]), "ref: refs/heads/#{prepared_branch}\n")
+
+    try do
+      {response, claimed_server} =
+        Server.handle_state(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "local-prepared-branch",
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "claim_local_assignment",
+              "arguments" => local_assignment_claim_args(package, %{"branch" => prepared_branch})
+            }
+          },
+          local_mcp_server(local_mcp_config(repo), "local-prepared-branch-state")
+        )
+
+      assert get_in(response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+      assert claimed_server.session.assignment.work_package_id == package.id
+      refute inspect(response) =~ minted.work_key.secret
+    after
+      File.rm_rf!(package.worktree_path)
+    end
+  end
+
+  test "claim_local_assignment rereads same-worker lease after concurrent local insert race", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-CLAIM-RACE")
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    LocalClaimInsertRaceRepo.arm()
+
+    try do
+      {response, _server} =
+        Server.handle_state(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => "local-claim-race",
+            "method" => "tools/call",
+            "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+          },
+          local_mcp_server(local_mcp_config(LocalClaimInsertRaceRepo), "local-claim-race-state")
+        )
+
+      assert get_in(response, ["result", "structuredContent", "assignment", "work_package_id"]) == package.id
+      assert get_in(response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "heartbeat"
+      refute inspect(response) =~ minted.work_key.secret
+    after
+      LocalClaimInsertRaceRepo.disarm()
+    end
+
+    assert %ClaimLease{actor_display_name: "local-worker-1"} =
+             repo.one(from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id))
+
+    assert {:ok, claimed_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert claimed_grant.claimed_by == "local-worker-1"
   end
 
   test "claim_local_assignment rejects wrong local scope without claiming the grant", %{repo: repo} do
@@ -6994,6 +7091,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "display_key")
     refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "secret_handoff")
     refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "secret")
+    refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "secret_hash")
     assert payload["worker_handoff"]["secret_handoff"] == nil
     refute Map.has_key?(payload["worker_handoff"], "claim_bootstrap")
     assert payload["worker_bootstrap"]["type"] == "ledger_claim"
@@ -7012,13 +7110,20 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
              "symphony-plus-plus-mcp:symphony-work-package"
            ]
 
+    assert payload["worker_bootstrap"]["supported_skill_sets"] == [
+             ["symphony-plus-plus:symphony-worker", "symphony-plus-plus-mcp:symphony-work-package"],
+             ["symphony-plus-plus:symphony-worker", "symphony-work-package"]
+           ]
+
     assert payload["worker_bootstrap"]["launch_prompt"] =~ "symphony-plus-plus:symphony-worker"
     assert payload["worker_bootstrap"]["launch_prompt"] =~ "symphony-plus-plus-mcp:symphony-work-package"
+    assert payload["worker_bootstrap"]["launch_prompt"] =~ "symphony-work-package"
     assert payload["worker_bootstrap"]["launch_prompt"] =~ "claim_local_assignment"
     assert payload["worker_bootstrap"]["launch_prompt"] =~ "[REDACTED]"
     assert payload["worker_bootstrap"]["legacy_private_handoff"] == %{"normal_path" => false, "recovery_only" => true}
     refute payload["worker_bootstrap"]["launch_prompt"] =~ secret_title_token
     refute serialized_response =~ "raw_secret_value"
+    refute serialized_response =~ "secret_hash"
     refute serialized_response =~ secret_title_token
     refute serialized_response =~ "run_mcp_command"
     refute serialized_response =~ "local-private-file"
@@ -7030,7 +7135,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert persisted_slice.work_package_id == payload["work_package"]["id"]
 
     assert {:ok, worker_grants} = AccessGrantRepository.list_for_work_package(repo, payload["work_package"]["id"])
-    assert [%AccessGrant{grant_role: "worker"}] = worker_grants
+    assert [%AccessGrant{grant_role: "worker", secret_hash: secret_hash}] = worker_grants
+    refute serialized_response =~ secret_hash
   end
 
   test "architect WorkRequest planned-slice dispatch rejects ignored legacy handoff args", %{repo: repo} do

@@ -3,6 +3,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
 
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.AccessGrant
   alias SymphonyElixir.SymphonyPlusPlus.AccessGrants.Service, as: AccessGrantService
+  alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.AgentRun
+  alias SymphonyElixir.SymphonyPlusPlus.AgentRuns.Repository, as: AgentRunRepository
+  alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease
+  alias SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Service, as: ClaimLeaseService
   alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
   alias SymphonyElixir.SymphonyPlusPlus.Planning.Repository, as: PlanningRepository
   alias SymphonyElixir.SymphonyPlusPlus.Repo
@@ -27,6 +31,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
   end
 
   setup %{repo: repo} do
+    repo.delete_all(AgentRun)
+    repo.delete_all(ClaimLease)
     repo.delete_all(AccessGrant)
     repo.delete_all(ProgressEvent)
     repo.delete_all(PlannedSliceDelivery)
@@ -436,6 +442,69 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestDeliveryCloseoutTest do
     assert {:ok, delivery} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
     assert delivery.outcome == "completed_no_pr"
     assert repo.get!(WorkPackage, linked_package.id).status == "closed"
+  end
+
+  test "active claim leases prevent closeout until explicitly released", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(repo,
+        work_request_id: "WR-DELIVERY-ACTIVE-CLAIM-LEASE",
+        status: "ready_for_human_merge"
+      )
+
+    assert {:ok, claim_lease} =
+             ClaimLeaseService.claim(
+               repo,
+               linked_package.id,
+               %{"actor_kind" => "agent", "actor_id" => "local:closeout-claim", "actor_display_name" => "worker-claim"},
+               stale_after_ms: 60_000
+             )
+
+    assert {:ok, _closed} = WorkPackageRepository.update_status(repo, linked_package.id, "ready_for_human_merge", "closed")
+
+    attrs =
+      delivery_attrs(%{
+        outcome: "completed_no_pr",
+        idempotency_key: "delivery-active-claim-lease",
+        no_pr_evidence: "The package status is terminal, but the live claim lease still needs release."
+      })
+
+    assert {:error, :active_runtime} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+
+    assert {:ok, _released_lease} = ClaimLeaseService.release(repo, claim_lease.id, reason: "worker finished")
+    assert {:ok, delivery} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert delivery.outcome == "completed_no_pr"
+  end
+
+  test "stale agent runs prevent closeout until explicitly stopped", %{repo: repo} do
+    {work_request, planned_slice, linked_package} =
+      linked_slice!(repo,
+        work_request_id: "WR-DELIVERY-STALE-AGENT-RUN",
+        status: "ready_for_human_merge"
+      )
+
+    assert {:ok, agent_run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: linked_package.id,
+               status: "running",
+               last_seen_at: DateTime.add(DateTime.utc_now(:microsecond), -301, :second)
+             })
+
+    assert {:ok, _closed} = WorkPackageRepository.update_status(repo, linked_package.id, "ready_for_human_merge", "closed")
+
+    attrs =
+      delivery_attrs(%{
+        outcome: "completed_no_pr",
+        idempotency_key: "delivery-stale-agent-run",
+        no_pr_evidence: "The package status is terminal, but the stale AgentRun still needs explicit closeout."
+      })
+
+    assert {:error, :active_runtime} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert repo.aggregate(PlannedSliceDelivery, :count, :id) == 0
+
+    assert {:ok, _stopped_run} = AgentRunRepository.mark_stopped(repo, agent_run.id, "worker stopped")
+    assert {:ok, delivery} = Service.record_planned_slice_delivery(repo, work_request.id, planned_slice.id, attrs)
+    assert delivery.outcome == "completed_no_pr"
   end
 
   defp linked_slice!(repo, overrides) do

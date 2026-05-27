@@ -506,11 +506,12 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
   defp timestamp(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
   defp timestamp(nil), do: nil
 
-  defp worker_grant_payload_for_response(worker_grant, nil, nil), do: worker_grant
+  defp worker_grant_payload_for_response(worker_grant, nil, nil), do: redact_worker_grant_verifier_material(worker_grant)
 
   defp worker_grant_payload_for_response(worker_grant, worker_secret_handoff, _worker_bootstrap)
        when is_map(worker_secret_handoff) do
     SecretHandoff.redacted_worker_grant(worker_grant, worker_secret_handoff)
+    |> redact_worker_grant_verifier_material()
     |> Map.put(:secret_in_response, false)
   end
 
@@ -520,7 +521,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CreateWork do
     |> Map.delete("display_key")
     |> Map.delete(:secret)
     |> Map.delete("secret")
+    |> redact_worker_grant_verifier_material()
     |> Map.put(:secret_in_response, false)
+  end
+
+  defp redact_worker_grant_verifier_material(worker_grant) when is_map(worker_grant) do
+    worker_grant
+    |> Map.delete(:secret_hash)
+    |> Map.delete("secret_hash")
   end
 
   defp maybe_put_worker_secret_handoff(payload, nil), do: payload

@@ -474,6 +474,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
 
       refute Map.has_key?(create_work.worker_grant, :secret)
       refute Map.has_key?(create_work.worker_grant, :display_key)
+      refute Map.has_key?(create_work.worker_grant, :secret_hash)
       refute Map.has_key?(create_work.worker_grant, :secret_handoff)
       assert create_work.worker_grant.secret_in_response == false
       assert create_work.secret_in_stdout == false
@@ -491,8 +492,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
       assert create_work.worker_bootstrap.claim.required_runtime_arguments == ["branch", "worktree_path", "caller_id"]
       assert "symphony-plus-plus:symphony-worker" in create_work.worker_bootstrap.required_skills
       assert "symphony-plus-plus-mcp:symphony-work-package" in create_work.worker_bootstrap.required_skills
+
+      assert [
+               ["symphony-plus-plus:symphony-worker", "symphony-plus-plus-mcp:symphony-work-package"],
+               ["symphony-plus-plus:symphony-worker", "symphony-work-package"]
+             ] = create_work.worker_bootstrap.supported_skill_sets
+
       assert create_work.worker_bootstrap.launch_prompt =~ "symphony-plus-plus:symphony-worker"
       assert create_work.worker_bootstrap.launch_prompt =~ "symphony-plus-plus-mcp:symphony-work-package"
+      assert create_work.worker_bootstrap.launch_prompt =~ "symphony-work-package"
       assert create_work.worker_bootstrap.launch_prompt =~ "claim_local_assignment"
       assert create_work.worker_bootstrap.launch_prompt =~ "WorkPackage JSON id #{Jason.encode!(create_work.work_package.id)}"
       assert create_work.worker_bootstrap.launch_prompt =~ "WorkRequest JSON id #{Jason.encode!(prompt_boundary_work_request_id)}"
@@ -502,6 +510,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestPlannedSlicesTest do
       refute create_work.worker_bootstrap.launch_prompt =~ prompt_boundary_planned_slice_id
       refute create_work.worker_bootstrap.launch_prompt =~ prompt_boundary_title
       assert create_work.worker_bootstrap.legacy_private_handoff == %{normal_path: false, recovery_only: true}
+      refute serialized_payload =~ "secret_hash"
       refute serialized_payload =~ "local-private-file"
       refute serialized_payload =~ "run_mcp_command"
       refute serialized_payload =~ secret_store_dir
