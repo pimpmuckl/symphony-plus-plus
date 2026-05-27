@@ -154,13 +154,27 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     def one(query), do: Repo.one(query)
     def all(query), do: Repo.all(query)
     def update(changeset), do: Repo.update(changeset)
-    def update_all(query, updates), do: Repo.update_all(query, updates)
+    def update_all(query, updates), do: Repo.update_all(query, truncate_claim_timestamps(updates))
 
     def insert(%Ecto.Changeset{data: %ProgressEvent{}, changes: %{status: "claim_lease_reclaimed"}}) do
       {:error, Changeset.add_error(Changeset.change(%ProgressEvent{}), :id, "forced_reclaim_audit_failure")}
     end
 
     def insert(changeset), do: Repo.insert(changeset)
+
+    defp truncate_claim_timestamps([set: fields]) do
+      [
+        set:
+          Enum.map(fields, fn
+            {field, %DateTime{} = timestamp} when field in [:claimed_at, :updated_at] ->
+              {field, DateTime.truncate(timestamp, :second)}
+
+            field -> field
+          end)
+      ]
+    end
+
+    defp truncate_claim_timestamps(updates), do: updates
   end
 
   defmodule MintReadyRaceRepo do
@@ -6613,6 +6627,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert payload["work_package"]["kind"] == "mcp"
     assert payload["work_package"]["repo"] == anchor.repo
     assert payload["work_package"]["base_branch"] == anchor.base_branch
+    assert payload["work_package"]["title"] == "Dispatch [REDACTED]"
+    assert is_binary(payload["work_package"]["inserted_at"])
+    assert is_binary(payload["work_package"]["updated_at"])
     assert payload["worker_handoff"]["worker_grant"]["secret_in_response"] == false
     refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "display_key")
     refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "secret_handoff")

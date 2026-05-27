@@ -594,7 +594,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert still_archived.archived_at == archived.archived_at
   end
 
-  test "completion treats unnamed claimed grants as active runtime", %{repo: repo} do
+  test "completion lets terminal package status override lingering unnamed grants", %{repo: repo} do
     assert {:ok, request} = Repository.create(repo, attrs(id: "WR-COMPLETE-UNNAMED-GRANT", status: "ready_for_slicing"))
     assert {:ok, planned_slice} = Repository.add_planned_slice(repo, request.id, planned_slice_attrs(id: "WRS-COMPLETE-UNNAMED-GRANT"))
     assert {:ok, approved_slice} = Repository.approve_planned_slice(repo, request.id, planned_slice.id, "planned")
@@ -610,10 +610,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     |> repo.update!()
 
     assert {:ok, with_grant} = Service.refresh_completion(repo, request.id)
-    assert with_grant.completed_at == nil
+    assert %DateTime{} = with_grant.completed_at
   end
 
-  test "completion waits for questions blockers linked packages and active runtime", %{repo: repo} do
+  test "completion waits for questions blockers linked packages and honors terminal runtime", %{repo: repo} do
     assert {:ok, human_request} = Repository.create(repo, attrs(id: "WR-COMPLETE-HUMAN", status: "ready_for_slicing"))
     assert {:ok, human_slice} = Repository.add_planned_slice(repo, human_request.id, planned_slice_attrs(id: "WRS-COMPLETE-HUMAN"))
     assert {:ok, _human_skipped} = Repository.skip_planned_slice(repo, human_request.id, human_slice.id, "planned")
@@ -679,16 +679,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
              })
 
     assert {:ok, with_runtime} = Service.refresh_completion(repo, runtime_request.id)
-    assert with_runtime.completed_at == nil
-
-    stale_seen_at = utc_usec(~U[2026-05-23 11:00:00Z])
-
-    run
-    |> Ecto.Changeset.change(last_seen_at: stale_seen_at, updated_at: DateTime.add(stale_seen_at, -60, :second))
-    |> repo.update!()
-
-    assert {:ok, stale_runtime} = Service.refresh_completion(repo, runtime_request.id)
-    assert DateTime.compare(stale_runtime.completed_at, DateTime.add(stale_seen_at, 300, :second)) in [:eq, :gt]
+    assert %DateTime{} = with_runtime.completed_at
 
     assert {:ok, archived_runtime} = Service.archive(repo, runtime_request.id)
     assert %DateTime{} = archived_runtime.archived_at
@@ -783,6 +774,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert {:ok, _active_lease} =
              ClaimLeaseService.claim(repo, active_package.id, activity_actor("active-worker"), stale_after_ms: 60_000)
 
+    insert_claimed_activity_grant!(repo, active_package, "architect", "active-architect")
+
     assert {:ok, _stale_lease} =
              ClaimLeaseService.claim(repo, stale_package.id, activity_actor("stale-worker"), now: stale_seen_at, stale_after_ms: 1)
 
@@ -794,6 +787,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     paused_lease
     |> ClaimLease.update_changeset(%{last_seen_at: stale_seen_at, stale_after_ms: 1})
     |> repo.update!()
+
+    insert_claimed_activity_grant!(repo, paused_package, "architect", "paused-architect")
 
     assert {:ok, _reclaimed_lease} =
              ClaimLeaseService.claim(repo, recycled_package.id, activity_actor("old-worker"), now: stale_seen_at, stale_after_ms: 1)
@@ -811,6 +806,18 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
                last_seen_at: DateTime.add(now, -301, :second)
              })
 
+    assert {:ok, _terminal_lease} =
+             ClaimLeaseService.claim(repo, terminal_package.id, activity_actor("terminal-worker"), now: stale_seen_at, stale_after_ms: 1)
+
+    insert_claimed_activity_grant!(repo, terminal_package, "architect", "terminal-architect")
+
+    assert {:ok, _terminal_run} =
+             AgentRunRepository.start_run(repo, %{
+               work_package_id: terminal_package.id,
+               status: "running",
+               last_seen_at: DateTime.add(now, -301, :second)
+             })
+
     contexts =
       WorkPackageActivity.contexts(repo, [
         active_package.id,
@@ -822,7 +829,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
       ])
 
     assert get_in(contexts, [active_package.id, :runtime_state, :lifecycle_state]) == "active"
-    assert get_in(contexts, [active_package.id, :runtime_state, :reason_codes]) == ["claim_lease_active"]
+    assert get_in(contexts, [active_package.id, :runtime_state, :reason_codes]) == ["claim_lease_active", "architect_grant_active"]
 
     stale_runtime = get_in(contexts, [stale_package.id, :runtime_state])
     assert stale_runtime.active? == false
@@ -835,7 +842,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert paused_runtime.paused? == true
     assert paused_runtime.stale? == false
     assert paused_runtime.lifecycle_state == "paused"
-    assert paused_runtime.reason_codes == ["claim_lease_paused"]
+    assert paused_runtime.reason_codes == ["claim_lease_paused", "architect_grant_active"]
 
     recycled_runtime = get_in(contexts, [recycled_package.id, :runtime_state])
     assert recycled_runtime.active? == true
@@ -845,6 +852,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert DateTime.compare(recycled_runtime.latest_gate_at, DateTime.add(stale_seen_at, 1, :millisecond)) == :gt
 
     terminal_runtime = get_in(contexts, [terminal_package.id, :runtime_state])
+    assert terminal_runtime.active? == false
+    assert terminal_runtime.stale? == false
     assert terminal_runtime.terminal? == true
     assert terminal_runtime.lifecycle_state == "terminal"
     assert terminal_runtime.reason_codes == ["package_terminal"]
@@ -962,6 +971,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
       "actor_id" => "agent:#{name}",
       "actor_display_name" => name
     }
+  end
+
+  defp insert_claimed_activity_grant!(repo, work_package, role, claimed_by) do
+    suffix = System.unique_integer([:positive]) |> Integer.to_string(36)
+
+    assert {:ok, grant} =
+             AccessGrantRepository.create(repo, %{
+               id: "grant-#{work_package.id}-#{suffix}",
+               work_package_id: work_package.id,
+               display_key: suffix |> String.pad_leading(4, "0") |> String.slice(-4, 4),
+               secret_hash: :crypto.hash(:sha256, "activity-#{work_package.id}-#{suffix}") |> Base.encode16(case: :lower),
+               grant_role: role,
+               capabilities: []
+             })
+
+    now = DateTime.utc_now(:microsecond)
+
+    grant
+    |> Ecto.Changeset.change(claimed_at: now, claimed_by: claimed_by, updated_at: now)
+    |> repo.update!()
   end
 
   defp utc_usec(%DateTime{} = datetime), do: %{datetime | microsecond: {elem(datetime.microsecond, 0), 6}}

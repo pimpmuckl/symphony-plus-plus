@@ -2972,6 +2972,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp claim_local_assignment_session(repo, %WorkPackage{} = work_package, claim) do
     claim_now = DateTime.utc_now(:microsecond)
+    grant_action = local_assignment_grant_action(repo, work_package.id, claim.claimed_by, claim_now)
 
     with {:ok, grant} <-
            AccessGrantService.claim_local_worker_grant(repo, work_package.id,
@@ -2980,17 +2981,28 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            ),
          {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: grant.secret_hash),
          :ok <- require_worker_assignment(session.assignment) do
-      {:ok, %{"assignment" => Session.public_assignment(session)}, session, local_assignment_grant_action(grant, claim_now)}
+      {:ok, %{"assignment" => Session.public_assignment(session)}, session, grant_action}
     end
   end
 
-  defp local_assignment_grant_action(%AccessGrant{claimed_at: %DateTime{} = claimed_at, updated_at: %DateTime{} = updated_at}, %DateTime{} = claim_now) do
-    if DateTime.compare(claimed_at, claim_now) == :eq and DateTime.compare(updated_at, claim_now) == :eq do
-      :claimed
-    else
-      :reconnected
-    end
+  defp local_assignment_grant_action(repo, work_package_id, claimed_by, %DateTime{} = now)
+       when is_atom(repo) and is_binary(work_package_id) and is_binary(claimed_by) do
+    query =
+      from(grant in AccessGrant,
+        where: grant.work_package_id == ^work_package_id,
+        where: grant.grant_role == "worker",
+        where: grant.claimed_by == ^claimed_by,
+        where: not is_nil(grant.claimed_at),
+        where: is_nil(grant.revoked_at),
+        where: is_nil(grant.expires_at) or grant.expires_at > ^now,
+        select: 1,
+        limit: 1
+      )
+
+    if repo.one(query) == 1, do: :reconnected, else: :claimed
   end
+
+  defp local_assignment_grant_action(_repo, _work_package_id, _claimed_by, %DateTime{}), do: :claimed
 
   defp local_assignment_actor(claim) do
     material =
@@ -11462,7 +11474,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          } = dispatch,
          scope
        ) do
-    worker_secret_handoff = Map.get(dispatch, :worker_secret_handoff)
+    worker_secret_handoff = dispatch_or_creation_value(dispatch, creation, :worker_secret_handoff)
+    worker_bootstrap = dispatch_or_creation_value(dispatch, creation, :worker_bootstrap)
     legacy_private_handoff? = Map.get(dispatch, :legacy_private_handoff?, false)
 
     %{
@@ -11474,7 +11487,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "dispatched_at" => timestamp(planned_slice.dispatched_at)
       },
       "work_package" => dispatch_work_package_payload(Map.fetch!(creation, :work_package)),
-      "worker_bootstrap" => dispatch_worker_bootstrap_payload(Map.get(dispatch, :worker_bootstrap)),
+      "worker_bootstrap" => dispatch_worker_bootstrap_payload(worker_bootstrap),
       "worker_handoff" => %{
         "worker_grant" => dispatch_worker_grant_payload(Map.fetch!(creation, :worker_grant)),
         "secret_handoff" => dispatch_secret_handoff_payload(worker_secret_handoff, legacy_private_handoff?: legacy_private_handoff?)
@@ -11484,21 +11497,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
+  defp dispatch_or_creation_value(dispatch, creation, key) when is_atom(key) do
+    Map.get(dispatch, key) || map_get(creation, key)
+  end
+
   defp dispatch_work_package_payload(%WorkPackage{} = work_package) do
-    %{
-      "id" => work_package.id,
-      "kind" => work_package.kind,
-      "status" => work_package.status,
-      "repo" => work_package.repo,
-      "base_branch" => work_package.base_branch
-    }
+    work_package
+    |> Map.from_struct()
+    |> Map.drop([:__meta__])
+    |> json_safe_payload()
+    |> Redactor.redact_output()
   end
 
   defp dispatch_work_package_payload(work_package) when is_map(work_package) do
     work_package
     |> json_safe_payload()
-    |> Map.take(["id", "kind", "status", "repo", "base_branch"])
+    |> Redactor.redact_output()
   end
+
+  defp map_get(map, key) when is_map(map) and is_atom(key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp map_get(_value, _key), do: nil
 
   defp dispatch_worker_grant_payload(worker_grant) when is_map(worker_grant) do
     worker_grant
