@@ -2972,20 +2972,21 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
 
   defp claim_local_assignment_session(repo, %WorkPackage{} = work_package, claim) do
     claim_now = DateTime.utc_now(:microsecond)
-    grant_action = local_assignment_grant_action(repo, work_package.id, claim.claimed_by, claim_now)
+    existing_grant_ids = local_assignment_active_worker_grant_ids(repo, work_package.id, claim.claimed_by, claim_now)
 
     with {:ok, grant} <-
            AccessGrantService.claim_local_worker_grant(repo, work_package.id,
              claimed_by: claim.claimed_by,
              now: claim_now
-           ),
+         ),
          {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: grant.secret_hash),
          :ok <- require_worker_assignment(session.assignment) do
-      {:ok, %{"assignment" => Session.public_assignment(session)}, session, grant_action}
+      {:ok, %{"assignment" => Session.public_assignment(session)}, session,
+       local_assignment_grant_action(grant, existing_grant_ids)}
     end
   end
 
-  defp local_assignment_grant_action(repo, work_package_id, claimed_by, %DateTime{} = now)
+  defp local_assignment_active_worker_grant_ids(repo, work_package_id, claimed_by, %DateTime{} = now)
        when is_atom(repo) and is_binary(work_package_id) and is_binary(claimed_by) do
     query =
       from(grant in AccessGrant,
@@ -2995,14 +2996,19 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         where: not is_nil(grant.claimed_at),
         where: is_nil(grant.revoked_at),
         where: is_nil(grant.expires_at) or grant.expires_at > ^now,
-        select: 1,
-        limit: 1
+        select: grant.id
       )
 
-    if repo.one(query) == 1, do: :reconnected, else: :claimed
+    query
+    |> repo.all()
+    |> MapSet.new()
   end
 
-  defp local_assignment_grant_action(_repo, _work_package_id, _claimed_by, %DateTime{}), do: :claimed
+  defp local_assignment_active_worker_grant_ids(_repo, _work_package_id, _claimed_by, %DateTime{}), do: MapSet.new()
+
+  defp local_assignment_grant_action(%AccessGrant{id: id}, %MapSet{} = existing_grant_ids) when is_binary(id) do
+    if MapSet.member?(existing_grant_ids, id), do: :reconnected, else: :claimed
+  end
 
   defp local_assignment_actor(claim) do
     material =
