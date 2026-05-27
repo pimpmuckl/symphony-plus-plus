@@ -2202,7 +2202,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "secret_store_dir" => described_string_schema("Legacy recovery-only private handoff store directory. Rejected unless legacy_private_handoff is true."),
         "symphony_repo_root" =>
           described_string_schema(
-            "Optional Symphony++ helper/namespace repo root containing scripts/sympp-worker-secret.*. This is not the target product repo root and defaults to the configured or local Symphony++ root when discoverable."
+            "Optional Symphony++ helper/namespace repo root containing scripts/sympp-worker-secret.* for legacy private handoff. Default ledger-claim dispatch accepts but ignores it."
           ),
         "repo_root" =>
           described_string_schema("Legacy compatibility alias for stale clients; use symphony_repo_root for new calls.")
@@ -2718,8 +2718,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          :ok <- validate_local_assignment_scope(config.repo, work_package, claim),
          {:ok, lease, lease_action} <- ensure_local_assignment_claim_lease(config.repo, work_package, claim) do
       case claim_local_assignment_session(config.repo, work_package, claim) do
-        {:ok, result, session} ->
-          {:ok, Map.put(result, "local_claim", local_assignment_claim_payload(claim, lease, lease_action)), session}
+        {:ok, result, session, grant_action} ->
+          finalize_local_assignment_claim(config.repo, result, session, claim, lease, lease_action, grant_action)
 
         {:error, reason} ->
           release_failed_local_assignment_lease(config.repo, lease, lease_action, reason)
@@ -2884,21 +2884,33 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     now = DateTime.utc_now(:microsecond)
 
     cond do
+      lease.status == "paused" ->
+        {:error, :claim_lease_paused}
+
       ClaimLeaseService.stale?(lease, now) ->
         reclaim_local_assignment_claim_lease(repo, work_package_id, actor, "local_assignment_claim_stale")
 
       lease.actor_id == actor["actor_id"] and lease.status == "active" ->
-        case ClaimLeaseService.heartbeat(repo, lease.id, stale_after_ms: @local_assignment_claim_stale_after_ms) do
-          {:ok, %ClaimLease{} = renewed} -> {:ok, renewed, :heartbeat}
-          {:error, :claim_stale} -> reclaim_local_assignment_claim_lease(repo, work_package_id, actor, "local_assignment_claim_stale")
-          {:error, reason} -> {:error, reason}
-        end
+        heartbeat_local_assignment_claim_lease(repo, work_package_id, lease, actor)
 
       lease.actor_id == actor["actor_id"] ->
         {:error, :claim_lease_not_active}
 
       true ->
         replace_authority_lost_local_assignment_claim_lease(repo, work_package_id, lease, actor, now)
+    end
+  end
+
+  defp heartbeat_local_assignment_claim_lease(repo, work_package_id, %ClaimLease{} = lease, actor) do
+    case ClaimLeaseService.heartbeat(repo, lease.id, stale_after_ms: @local_assignment_claim_stale_after_ms) do
+      {:ok, %ClaimLease{} = renewed} ->
+        {:ok, renewed, :heartbeat}
+
+      {:error, :claim_stale} ->
+        reclaim_local_assignment_claim_lease(repo, work_package_id, actor, "local_assignment_claim_stale")
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -2959,11 +2971,43 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp claim_local_assignment_session(repo, %WorkPackage{} = work_package, claim) do
-    with {:ok, grant} <- AccessGrantService.claim_local_worker_grant(repo, work_package.id, claimed_by: claim.claimed_by),
+    claim_now = DateTime.utc_now(:microsecond)
+    existing_grant_ids = local_assignment_active_worker_grant_ids(repo, work_package.id, claim.claimed_by, claim_now)
+
+    with {:ok, grant} <-
+           AccessGrantService.claim_local_worker_grant(repo, work_package.id,
+             claimed_by: claim.claimed_by,
+             now: claim_now
+         ),
          {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: grant.secret_hash),
          :ok <- require_worker_assignment(session.assignment) do
-      {:ok, %{"assignment" => Session.public_assignment(session)}, session}
+      {:ok, %{"assignment" => Session.public_assignment(session)}, session,
+       local_assignment_grant_action(grant, existing_grant_ids)}
     end
+  end
+
+  defp local_assignment_active_worker_grant_ids(repo, work_package_id, claimed_by, %DateTime{} = now)
+       when is_atom(repo) and is_binary(work_package_id) and is_binary(claimed_by) do
+    query =
+      from(grant in AccessGrant,
+        where: grant.work_package_id == ^work_package_id,
+        where: grant.grant_role == "worker",
+        where: grant.claimed_by == ^claimed_by,
+        where: not is_nil(grant.claimed_at),
+        where: is_nil(grant.revoked_at),
+        where: is_nil(grant.expires_at) or grant.expires_at > ^now,
+        select: grant.id
+      )
+
+    query
+    |> repo.all()
+    |> MapSet.new()
+  end
+
+  defp local_assignment_active_worker_grant_ids(_repo, _work_package_id, _claimed_by, %DateTime{}), do: MapSet.new()
+
+  defp local_assignment_grant_action(%AccessGrant{id: id}, %MapSet{} = existing_grant_ids) when is_binary(id) do
+    if MapSet.member?(existing_grant_ids, id), do: :reconnected, else: :claimed
   end
 
   defp local_assignment_actor(claim) do
@@ -2985,7 +3029,31 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
-  defp local_assignment_claim_payload(claim, %ClaimLease{} = lease, lease_action) do
+  defp finalize_local_assignment_claim(repo, result, %Session{} = session, claim, %ClaimLease{} = lease, lease_action, grant_action) do
+    case append_local_assignment_claim_event(repo, session, claim, lease, lease_action) do
+      {:ok, claim_event} ->
+        {:ok, Map.put(result, "local_claim", local_assignment_claim_payload(claim, lease, lease_action, claim_event)), session}
+
+      {:error, reason} ->
+        rollback_failed_local_assignment_claim(repo, session, lease, lease_action, grant_action, reason)
+        local_assignment_claim_error(reason)
+    end
+  end
+
+  defp rollback_failed_local_assignment_claim(repo, %Session{} = session, %ClaimLease{} = lease, lease_action, grant_action, reason) do
+    release_failed_local_assignment_lease(repo, lease, lease_action, reason)
+    revoke_failed_local_assignment_grant(repo, session, lease_action, grant_action)
+  end
+
+  defp revoke_failed_local_assignment_grant(repo, %Session{assignment: %{grant_id: grant_id}}, :reclaimed, :claimed)
+       when is_binary(grant_id) do
+    _result = AccessGrantService.revoke(repo, grant_id)
+    :ok
+  end
+
+  defp revoke_failed_local_assignment_grant(_repo, %Session{}, _lease_action, _grant_action), do: :ok
+
+  defp local_assignment_claim_payload(claim, %ClaimLease{} = lease, lease_action, claim_event) do
     %{
       "tool" => @local_assignment_claim_tool,
       "mode" => "local-http",
@@ -2999,8 +3067,58 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "claimed_by" => claim.claimed_by,
       "claim_lease_id" => lease.id,
       "claim_lease_status" => lease.status,
-      "claim_lease_action" => Atom.to_string(lease_action)
+      "claim_lease_action" => Atom.to_string(lease_action),
+      "lifecycle_state" => "active",
+      "reason_codes" => local_assignment_claim_reason_codes(lease_action, lease)
     }
+    |> maybe_put_claim_event(claim_event)
+  end
+
+  defp append_local_assignment_claim_event(_repo, %Session{}, _claim, %ClaimLease{}, lease_action) when lease_action != :reclaimed, do: {:ok, nil}
+
+  defp append_local_assignment_claim_event(repo, %Session{} = session, claim, %ClaimLease{} = lease, :reclaimed) do
+    payload = local_assignment_claim_reclaim_payload(claim, lease)
+
+    PlanningRepository.append_audit_progress_event_for_work_package(repo, session.assignment, claim.work_package_id, %{
+      "summary" => "Local assignment claim lease reclaimed",
+      "body" => "Local assignment claim lease was reclaimed for #{claim.claimed_by}.",
+      "status" => "claim_lease_reclaimed",
+      "idempotency_key" => metadata_idempotency_key(payload),
+      "payload" => payload
+    })
+  end
+
+  defp local_assignment_claim_reclaim_payload(claim, %ClaimLease{} = lease) do
+    %{
+      "type" => "claim_lease_reclaim",
+      "source_tool" => @local_assignment_claim_tool,
+      "work_package_id" => claim.work_package_id,
+      "work_request_id" => claim.work_request_id,
+      "claim_lease_id" => lease.id,
+      "claim_group_id" => lease.claim_group_id,
+      "previous_claim_id" => lease.previous_claim_id,
+      "claim_lease_status" => lease.status,
+      "claim_lease_action" => "reclaimed",
+      "claimed_by" => claim.claimed_by,
+      "caller_id" => claim.caller_id,
+      "lifecycle_state" => "active",
+      "reason_codes" => local_assignment_claim_reason_codes(:reclaimed, lease)
+    }
+  end
+
+  defp maybe_put_claim_event(payload, nil), do: payload
+
+  defp maybe_put_claim_event(payload, %ProgressEvent{} = event) do
+    Map.put(payload, "claim_event", progress_event_payload(event))
+  end
+
+  defp local_assignment_claim_reason_codes(lease_action, %ClaimLease{} = lease) do
+    [
+      "claim_lease_#{lease_action}",
+      if(lease.previous_claim_id, do: "worker_recycled")
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
   end
 
   defp release_failed_local_assignment_lease(repo, %ClaimLease{} = lease, lease_action, _reason)
@@ -4461,7 +4579,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp reject_legacy_private_handoff_arguments(arguments) do
-    case Enum.find(["secret_handoff", "secret_store_dir", "repo_root", "symphony_repo_root"], &Map.has_key?(arguments, &1)) do
+    case Enum.find(["secret_handoff", "secret_store_dir", "repo_root"], &Map.has_key?(arguments, &1)) do
       nil -> :ok
       _argument -> {:tool_error, "legacy_private_handoff_required"}
     end
@@ -5835,6 +5953,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp child_worker_revoke_payload(work_package_id, %AccessGrant{} = grant, reason, previous_status, new_status) do
+    reason_codes = child_worker_recycle_reason_codes(previous_status, new_status)
+
     %{
       "type" => "child_worker_key_revoke",
       "source_tool" => "revoke_child_worker_key",
@@ -5845,6 +5965,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "previous_status" => previous_status,
       "new_status" => new_status,
       "status_reset" => previous_status != new_status,
+      "lifecycle_state" => "recycled",
+      "reason_codes" => reason_codes,
       "private_handoff_cleanup" => "not_attempted"
     }
   end
@@ -5861,6 +5983,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "status_reset" => previous_status != child.status,
         "remint_available" => true,
         "remint_precondition" => "child_status_ready_for_worker",
+        "lifecycle_state" => "recycled",
+        "reason_codes" => child_worker_recycle_reason_codes(previous_status, child.status),
         "private_handoff_cleanup" => "not_attempted"
       },
       "revocation_event" => progress_event_payload(event)
@@ -5894,6 +6018,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
          %AccessGrant{} = grant,
          reason
        ) do
+    reason_codes = planned_slice_worker_revoke_reason_codes()
+
     %{
       "type" => "planned_slice_worker_key_revoke",
       "source_tool" => "revoke_planned_slice_worker_key",
@@ -5904,6 +6030,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       "reason" => redacted_child_worker_revoke_reason(reason),
       "revoked_at" => timestamp(grant.revoked_at),
       "work_package_status" => work_package.status,
+      "lifecycle_state" => "recycled",
+      "reason_codes" => reason_codes,
       "private_handoff_cleanup" => "not_attempted"
     }
   end
@@ -5925,11 +6053,23 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "status" => "revoked",
         "reason" => redacted_child_worker_revoke_reason(reason),
         "active_runtime_guard_bypassed" => false,
+        "lifecycle_state" => "recycled",
+        "reason_codes" => planned_slice_worker_revoke_reason_codes(),
         "private_handoff_cleanup" => "not_attempted"
       },
       "revocation_event" => progress_event_payload(event)
     }
   end
+
+  defp child_worker_recycle_reason_codes(previous_status, new_status) do
+    [
+      "worker_recycled",
+      if(previous_status != new_status, do: "work_package_reset_for_recycle")
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp planned_slice_worker_revoke_reason_codes, do: ["worker_recycled", "planned_slice_worker_key_revoked"]
 
   defp revoked_child_worker_grant_payload(%AccessGrant{} = grant) do
     %{
@@ -11333,15 +11473,15 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
   end
 
   defp dispatch_work_request_planned_slice_payload(
-         %{work_request: %WorkRequest{} = work_request, planned_slice: %PlannedSlice{} = planned_slice} = dispatch,
+         %{
+           work_request: %WorkRequest{} = work_request,
+           planned_slice: %PlannedSlice{} = planned_slice,
+           creation: creation
+         } = dispatch,
          scope
        ) do
-    create_work =
-      dispatch
-      |> PlannedSliceDispatch.response_payload()
-      |> Map.fetch!(:create_work)
-
-    worker_secret_handoff = Map.get(create_work, :worker_secret_handoff)
+    worker_secret_handoff = dispatch_or_creation_value(dispatch, creation, :worker_secret_handoff)
+    worker_bootstrap = dispatch_or_creation_value(dispatch, creation, :worker_bootstrap)
     legacy_private_handoff? = Map.get(dispatch, :legacy_private_handoff?, false)
 
     %{
@@ -11352,10 +11492,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
         "work_package_id" => planned_slice.work_package_id,
         "dispatched_at" => timestamp(planned_slice.dispatched_at)
       },
-      "work_package" => dispatch_work_package_payload(Map.fetch!(create_work, :work_package)),
-      "worker_bootstrap" => dispatch_worker_bootstrap_payload(Map.get(create_work, :worker_bootstrap)),
+      "work_package" => dispatch_work_package_payload(Map.fetch!(creation, :work_package)),
+      "worker_bootstrap" => dispatch_worker_bootstrap_payload(worker_bootstrap),
       "worker_handoff" => %{
-        "worker_grant" => dispatch_worker_grant_payload(Map.fetch!(create_work, :worker_grant)),
+        "worker_grant" => dispatch_worker_grant_payload(Map.fetch!(creation, :worker_grant)),
         "secret_handoff" => dispatch_secret_handoff_payload(worker_secret_handoff, legacy_private_handoff?: legacy_private_handoff?)
       },
       "scope" => scope,
@@ -11363,11 +11503,26 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
     }
   end
 
+  defp dispatch_or_creation_value(dispatch, creation, key) when is_atom(key) do
+    Map.get(dispatch, key) || map_get(creation, key)
+  end
+
+  defp dispatch_work_package_payload(%WorkPackage{} = work_package) do
+    work_package
+    |> Map.from_struct()
+    |> Map.drop([:__meta__])
+    |> json_safe_payload()
+    |> Redactor.redact_output()
+  end
+
   defp dispatch_work_package_payload(work_package) when is_map(work_package) do
     work_package
     |> json_safe_payload()
-    |> Map.take(["id", "kind", "status", "repo", "base_branch"])
+    |> Redactor.redact_output()
   end
+
+  defp map_get(map, key) when is_map(map) and is_atom(key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp map_get(_value, _key), do: nil
 
   defp dispatch_worker_grant_payload(worker_grant) when is_map(worker_grant) do
     worker_grant

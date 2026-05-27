@@ -143,6 +143,40 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     def all(_query), do: raise(%Exqlite.Error{message: "database is locked"})
   end
 
+  defmodule LocalClaimAuditFailureRepo do
+    alias Ecto.Changeset
+    alias SymphonyElixir.SymphonyPlusPlus.Planning.ProgressEvent
+    alias SymphonyElixir.SymphonyPlusPlus.Repo
+
+    def transaction(fun), do: Repo.transaction(fun)
+    def rollback(value), do: Repo.rollback(value)
+    def get(schema, id), do: Repo.get(schema, id)
+    def one(query), do: Repo.one(query)
+    def all(query), do: Repo.all(query)
+    def update(changeset), do: Repo.update(changeset)
+    def update_all(query, updates), do: Repo.update_all(query, truncate_claim_timestamps(updates))
+
+    def insert(%Ecto.Changeset{data: %ProgressEvent{}, changes: %{status: "claim_lease_reclaimed"}}) do
+      {:error, Changeset.add_error(Changeset.change(%ProgressEvent{}), :id, "forced_reclaim_audit_failure")}
+    end
+
+    def insert(changeset), do: Repo.insert(changeset)
+
+    defp truncate_claim_timestamps([set: fields]) do
+      [
+        set:
+          Enum.map(fields, fn
+            {field, %DateTime{} = timestamp} when field in [:claimed_at, :updated_at] ->
+              {field, DateTime.truncate(timestamp, :second)}
+
+            field -> field
+          end)
+      ]
+    end
+
+    defp truncate_claim_timestamps(updates), do: updates
+  end
+
   defmodule MintReadyRaceRepo do
     import Ecto.Query, only: [from: 2]
 
@@ -3248,6 +3282,128 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
 
     assert get_in(response, ["error", "code"]) == -32_602
     assert get_in(response, ["error", "data", "reason"]) == "invalid_tool_arguments"
+  end
+
+  test "claim_local_assignment treats paused leases as pause exempt instead of stale", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-PAUSED-LEASE")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+    arguments = local_assignment_claim_args(package)
+
+    {_claim_response, _claimed_server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-paused-initial",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-paused-initial-state")
+      )
+
+    assert {:ok, %ClaimLease{id: lease_id} = lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    assert {:ok, paused_lease} = ClaimLeaseService.pause(repo, lease.id, %{"actor_id" => "operator"}, reason: "operator pause")
+
+    stale_seen_at = DateTime.add(DateTime.utc_now(:microsecond), -10, :second)
+
+    paused_lease
+    |> ClaimLease.update_changeset(%{last_seen_at: stale_seen_at, stale_after_ms: 1})
+    |> repo.update!()
+
+    {response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-paused-reclaim-denied",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => arguments}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-paused-reclaim-denied-state")
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) == "claim_lease_paused"
+    assert {:ok, %ClaimLease{id: ^lease_id, status: "paused"}} = ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    assert repo.aggregate(
+             from(claim_lease in ClaimLease, where: claim_lease.work_package_id == ^package.id and claim_lease.status == "reclaimed"),
+             :count
+           ) == 0
+  end
+
+  test "claim_local_assignment records audit evidence when reclaiming a stale lease", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-STALE-RECLAIM")
+    assert {:ok, _minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    assert {:ok, stale_lease} =
+             ClaimLeaseService.claim(
+               repo,
+               package.id,
+               %{"actor_kind" => "agent", "actor_id" => "local:stale-worker", "actor_display_name" => "stale-worker"},
+               now: DateTime.add(DateTime.utc_now(:microsecond), -10, :second),
+               stale_after_ms: 1
+             )
+
+    {response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-stale-reclaim",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+        },
+        local_mcp_server(local_mcp_config(repo), "local-stale-reclaim-state")
+      )
+
+    assert get_in(response, ["result", "structuredContent", "local_claim", "claim_lease_action"]) == "reclaimed"
+    assert get_in(response, ["result", "structuredContent", "local_claim", "reason_codes"]) == ["claim_lease_reclaimed", "worker_recycled"]
+    assert get_in(response, ["result", "structuredContent", "local_claim", "claim_event", "status"]) == "claim_lease_reclaimed"
+
+    assert {:ok, reclaimed_lease} = ClaimLeaseService.current_for_work_package(repo, package.id)
+    assert reclaimed_lease.previous_claim_id == stale_lease.id
+
+    assert {:ok, progress_events} = PlanningRepository.list_progress_events(repo, package.id)
+    assert Enum.any?(progress_events, &(&1.status == "claim_lease_reclaimed" and &1.payload["previous_claim_id"] == stale_lease.id))
+  end
+
+  test "claim_local_assignment rolls back reclaimed leases when audit append fails", %{repo: repo} do
+    package = create_local_claim_package!(repo, "SYMPP-LOCAL-RECLAIM-AUDIT-FAILS")
+    assert {:ok, minted} = AccessGrantService.mint_worker_grant(repo, package.id)
+
+    assert {:ok, stale_lease} =
+             ClaimLeaseService.claim(
+               repo,
+               package.id,
+               %{"actor_kind" => "agent", "actor_id" => "local:stale-worker", "actor_display_name" => "stale-worker"},
+               now: DateTime.add(DateTime.utc_now(:microsecond), -2, :second),
+               stale_after_ms: 1
+             )
+
+    {response, _server} =
+      Server.handle_state(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => "local-reclaim-audit-fails",
+          "method" => "tools/call",
+          "params" => %{"name" => "claim_local_assignment", "arguments" => local_assignment_claim_args(package)}
+        },
+        local_mcp_server(local_mcp_config(LocalClaimAuditFailureRepo), "local-reclaim-audit-fails-state")
+      )
+
+    assert get_in(response, ["error", "data", "reason"]) =~ "forced_reclaim_audit_failure"
+    assert {:error, :not_found} = ClaimLeaseService.current_for_work_package(repo, package.id)
+
+    assert {:ok, revoked_grant} = AccessGrantRepository.get(repo, minted.grant.id)
+    assert revoked_grant.revoked_at != nil
+
+    statuses =
+      repo.all(
+        from(claim_lease in ClaimLease,
+          where: claim_lease.work_package_id == ^package.id,
+          select: {claim_lease.id, claim_lease.status, claim_lease.release_reason}
+        )
+      )
+
+    assert {stale_lease.id, "reclaimed", nil} in statuses
+    assert Enum.any?(statuses, fn {_id, status, reason} -> status == "released" and reason == "local_assignment_claim_failed" end)
   end
 
   test "claim_local_assignment releases reclaimed leases when grant binding fails", %{repo: repo} do
@@ -6454,7 +6610,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
         %{
           "work_request_id" => work_request.id,
           "planned_slice_id" => approved_slice.id,
-          "claimed_by" => "worker-dispatch-1"
+          "claimed_by" => "worker-dispatch-1",
+          "symphony_repo_root" => test_repo_root()
         },
         config: Config.default(repo: repo, repo_root: configured_product_repo_root, database: configured_database)
       )
@@ -6470,6 +6627,9 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert payload["work_package"]["kind"] == "mcp"
     assert payload["work_package"]["repo"] == anchor.repo
     assert payload["work_package"]["base_branch"] == anchor.base_branch
+    assert payload["work_package"]["title"] == "Dispatch [REDACTED]"
+    assert is_binary(payload["work_package"]["inserted_at"])
+    assert is_binary(payload["work_package"]["updated_at"])
     assert payload["worker_handoff"]["worker_grant"]["secret_in_response"] == false
     refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "display_key")
     refute Map.has_key?(payload["worker_handoff"]["worker_grant"], "secret_handoff")
@@ -8790,6 +8950,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert recycle["status_reset"] == false
     assert recycle["remint_available"] == true
     assert recycle["private_handoff_cleanup"] == "not_attempted"
+    assert recycle["lifecycle_state"] == "recycled"
+    assert recycle["reason_codes"] == ["worker_recycled"]
 
     event = get_in(revoke_response, ["result", "structuredContent", "revocation_event"])
     assert event["status"] == "child_worker_key_revoked"
@@ -8802,6 +8964,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert event["payload"]["new_status"] == "ready_for_worker"
     assert event["payload"]["status_reset"] == false
     assert event["payload"]["private_handoff_cleanup"] == "not_attempted"
+    assert event["payload"]["lifecycle_state"] == "recycled"
+    assert event["payload"]["reason_codes"] == ["worker_recycled"]
 
     content_text = get_in(revoke_response, ["result", "content", Access.at(0), "text"])
     refute content_text =~ "display_key"
@@ -8866,12 +9030,14 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     assert recycle["new_child_status"] == "ready_for_worker"
     assert recycle["status_reset"] == true
     assert recycle["remint_available"] == true
+    assert recycle["reason_codes"] == ["worker_recycled", "work_package_reset_for_recycle"]
 
     event = get_in(revoke_response, ["result", "structuredContent", "revocation_event"])
     assert event["payload"]["grant_id"] == first_grant_id
     assert event["payload"]["previous_status"] == "ci_waiting"
     assert event["payload"]["new_status"] == "ready_for_worker"
     assert event["payload"]["status_reset"] == true
+    assert event["payload"]["reason_codes"] == ["worker_recycled", "work_package_reset_for_recycle"]
 
     assert {:ok, reset_child} = WorkPackageRepository.get(repo, child_id)
     assert reset_child.status == "ready_for_worker"
