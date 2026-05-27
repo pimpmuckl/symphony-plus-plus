@@ -2977,7 +2977,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
       lease.status == "paused" ->
         {:error, :claim_lease_paused}
 
-      ClaimLeaseService.stale?(lease, now) ->
+      ClaimLease.stale?(lease, now) ->
         reclaim_local_assignment_claim_lease(repo, work_package_id, actor, "local_assignment_claim_stale")
 
       lease.actor_id == actor["actor_id"] and lease.status == "active" ->

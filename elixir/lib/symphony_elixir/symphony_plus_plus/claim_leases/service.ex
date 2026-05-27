@@ -58,9 +58,6 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.Service do
     Repository.reclaim_stale(repo, work_package_id, attrs, opts)
   end
 
-  @spec stale?(ClaimLease.t(), DateTime.t()) :: boolean()
-  def stale?(%ClaimLease{} = claim_lease, %DateTime{} = now), do: Repository.stale?(claim_lease, now)
-
   defp lease_attrs(opts) do
     Enum.reduce([:access_grant_id, :actor_display_name, :lease_expires_at, :stale_after_ms], %{}, fn key, attrs ->
       case Keyword.fetch(opts, key) do

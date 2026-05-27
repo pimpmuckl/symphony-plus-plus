@@ -81,12 +81,24 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease do
     |> validate_nonblank_optional(:actor_display_name)
     |> validate_replacement_lineage(lineage)
     |> validate_stale_policy()
-    |> unique_constraint(:id, name: :sympp_claim_leases_id_unique_index)
     |> unique_constraint(:work_package_id, name: :sympp_claim_leases_one_current_per_work_package_index)
     |> foreign_key_constraint(:work_package_id)
     |> foreign_key_constraint(:access_grant_id)
     |> foreign_key_constraint(:previous_claim_id)
   end
+
+  @spec stale?(t(), DateTime.t()) :: boolean()
+  def stale?(%__MODULE__{} = claim_lease, %DateTime{} = now) do
+    expired?(claim_lease, now) or heartbeat_stale?(claim_lease, now)
+  end
+
+  @spec heartbeat_stale_at(t()) :: DateTime.t() | nil
+  def heartbeat_stale_at(%__MODULE__{last_seen_at: %DateTime{} = last_seen_at, stale_after_ms: stale_after_ms})
+      when is_integer(stale_after_ms) and stale_after_ms > 0 do
+    DateTime.add(last_seen_at, stale_after_ms, :millisecond)
+  end
+
+  def heartbeat_stale_at(%__MODULE__{}), do: nil
 
   @spec update_changeset(t(), map()) :: Ecto.Changeset.t()
   def update_changeset(%__MODULE__{} = claim_lease, attrs) do
@@ -162,6 +174,16 @@ defmodule SymphonyElixir.SymphonyPlusPlus.ClaimLeases.ClaimLease do
       add_error(changeset, :lease_expires_at, "or stale_after_ms must be set")
     else
       changeset
+    end
+  end
+
+  defp expired?(%__MODULE__{lease_expires_at: %DateTime{} = expires_at}, %DateTime{} = now), do: DateTime.compare(expires_at, now) != :gt
+  defp expired?(%__MODULE__{}, %DateTime{}), do: false
+
+  defp heartbeat_stale?(%__MODULE__{} = claim_lease, %DateTime{} = now) do
+    case heartbeat_stale_at(claim_lease) do
+      %DateTime{} = stale_at -> DateTime.compare(stale_at, now) != :gt
+      nil -> false
     end
   end
 
