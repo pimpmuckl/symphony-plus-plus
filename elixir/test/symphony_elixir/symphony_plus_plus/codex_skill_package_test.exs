@@ -34,6 +34,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
   @worker_secret_script_path Path.join(@repo_root, "scripts/sympp-worker-secret.ps1")
   @worker_secret_shell_path Path.join(@repo_root, "scripts/sympp-worker-secret.sh")
   @prompt_path Path.join(@repo_root, ".codex/skills/symphony-work-package/references/worker_prompt.md")
+  @mcp_plugin_prompt_path Path.join(
+                            @repo_root,
+                            "plugins/symphony-plus-plus-mcp/skills/symphony-work-package/references/worker_prompt.md"
+                          )
   @wiring_path Path.join(@repo_root, ".codex/skills/symphony-work-package/references/mcp_wiring.md")
   @mcp_plugin_wiring_path Path.join(@repo_root, "plugins/symphony-plus-plus-mcp/skills/symphony-work-package/references/mcp_wiring.md")
   @handoff_path Path.join(@repo_root, "implementation_docs_symphplusplus/docs/00_ARCHITECT_AGENT_HANDOFF.md")
@@ -159,9 +163,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.CodexSkillPackageTest do
 
   test "worker prompt is paste-ready and MCP-backed" do
     prompt = File.read!(@prompt_path)
+    plugin_prompt = File.read!(@mcp_plugin_prompt_path)
     template_prompt = File.read!(@template_prompt_path)
+    template_reference_prompt = File.read!(Path.join(@template_references_dir, "worker_prompt.md"))
 
-    for content <- [prompt, template_prompt] do
+    for content <- [prompt, plugin_prompt, template_prompt, template_reference_prompt] do
       assert String.starts_with?(content, "You are assigned Symphony++ work package")
       assert content =~ "<WORK_PACKAGE_ID>"
       assert content =~ "Ledger claim: call `claim_local_assignment`"
