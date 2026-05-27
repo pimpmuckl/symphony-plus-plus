@@ -207,7 +207,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.PlannedSliceDispatch do
         arguments: claim_arguments,
         required_runtime_arguments: runtime_arguments
       },
-      required_skills: [@worker_skill],
+      required_skills: [@worker_skill, @mcp_work_package_skill],
       supported_skill_sets: supported_worker_skill_sets(),
       launch_prompt:
         worker_launch_prompt(

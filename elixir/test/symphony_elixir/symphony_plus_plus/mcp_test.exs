@@ -7229,7 +7229,10 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCPTest do
     refute Map.has_key?(payload["worker_bootstrap"]["claim"]["arguments"], "branch")
     assert payload["worker_bootstrap"]["claim"]["required_runtime_arguments"] == ["branch", "worktree_path", "caller_id"]
 
-    assert payload["worker_bootstrap"]["required_skills"] == ["symphony-plus-plus:symphony-worker"]
+    assert payload["worker_bootstrap"]["required_skills"] == [
+             "symphony-plus-plus:symphony-worker",
+             "symphony-plus-plus-mcp:symphony-work-package"
+           ]
 
     assert payload["worker_bootstrap"]["supported_skill_sets"] == [
              ["symphony-plus-plus:symphony-worker", "symphony-plus-plus-mcp:symphony-work-package"],
