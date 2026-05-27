@@ -215,10 +215,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.WorkPackageActivity do
   end
 
   defp active_runtime?(true = _paused?, _stale_claim_leases, _active_claim_leases, _active_agent_runs, _stale_agent_runs, _active_grants),
-    do: false
+    do: true
 
   defp active_runtime?(_paused?, stale_claim_leases, active_claim_leases, active_agent_runs, stale_agent_runs, active_grants) do
-    stale_claim_leases != [] or active_claim_leases != [] or active_agent_runs != [] or stale_agent_runs != [] or active_grants != []
+    stale_claim_leases != [] or active_claim_leases != [] or active_agent_runs != [] or stale_agent_runs != [] or
+      active_grants != []
   end
 
   defp stale_runtime?(true = _paused?, _stale_claim_leases, _stale_agent_runs), do: false
