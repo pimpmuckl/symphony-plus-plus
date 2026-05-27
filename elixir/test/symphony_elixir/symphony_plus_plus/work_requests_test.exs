@@ -766,6 +766,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
 
     active_package = create_activity_work_package!(repo, "WP-ACTIVITY-ACTIVE", status: "implementing")
     stale_package = create_activity_work_package!(repo, "WP-ACTIVITY-STALE", status: "implementing")
+    mixed_package = create_activity_work_package!(repo, "WP-ACTIVITY-MIXED", status: "implementing")
     paused_package = create_activity_work_package!(repo, "WP-ACTIVITY-PAUSED", status: "implementing")
     recycled_package = create_activity_work_package!(repo, "WP-ACTIVITY-RECYCLED", status: "ready_for_worker")
     terminal_package = create_activity_work_package!(repo, "WP-ACTIVITY-TERMINAL", status: "closed")
@@ -778,6 +779,11 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
 
     assert {:ok, _stale_lease} =
              ClaimLeaseService.claim(repo, stale_package.id, activity_actor("stale-worker"), now: stale_seen_at, stale_after_ms: 1)
+
+    assert {:ok, _mixed_stale_lease} =
+             ClaimLeaseService.claim(repo, mixed_package.id, activity_actor("mixed-worker"), now: stale_seen_at, stale_after_ms: 1)
+
+    insert_claimed_activity_grant!(repo, mixed_package, "architect", "mixed-architect")
 
     assert {:ok, paused_lease} =
              ClaimLeaseService.claim(repo, paused_package.id, activity_actor("paused-worker"), stale_after_ms: 60_000)
@@ -822,6 +828,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
       WorkPackageActivity.contexts(repo, [
         active_package.id,
         stale_package.id,
+        mixed_package.id,
         paused_package.id,
         recycled_package.id,
         terminal_package.id,
@@ -836,6 +843,13 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequestsTest do
     assert stale_runtime.stale? == true
     assert "claim_lease_stale" in stale_runtime.reason_codes
     assert DateTime.compare(stale_runtime.latest_gate_at, DateTime.add(stale_seen_at, 1, :millisecond)) == :eq
+
+    mixed_runtime = get_in(contexts, [mixed_package.id, :runtime_state])
+    assert mixed_runtime.active? == true
+    assert mixed_runtime.stale? == true
+    assert mixed_runtime.lifecycle_state == "stale"
+    assert "claim_lease_stale" in mixed_runtime.reason_codes
+    assert "architect_grant_active" in mixed_runtime.reason_codes
 
     paused_runtime = get_in(contexts, [paused_package.id, :runtime_state])
     assert paused_runtime.active? == false
