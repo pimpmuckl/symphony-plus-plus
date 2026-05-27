@@ -140,6 +140,7 @@ defmodule SymphonyElixir.SymphonyPlusPlus.WorkRequests.DeliveryCloseout do
       cond do
         get_in(context, [:blocker_state, :active?]) == true -> {:error, :active_blocker}
         get_in(context, [:runtime_state, :active?]) == true -> {:error, :active_runtime}
+        get_in(context, [:runtime_state, :paused?]) == true -> {:error, :active_runtime}
         active_linked_worker_grant?(repo, work_package_id) -> {:error, :active_runtime}
         true -> :ok
       end
