@@ -47,7 +47,8 @@ Never log:
 6. Server validates ledger scope, terminal status, explicit local daemon
    session, and claim lease state.
 7. Server creates or heartbeats the claim lease; stale leases may be reclaimed
-   with audit evidence, while paused leases or active other owners fail closed.
+   with audit evidence, while paused leases, same local owner claims that change
+   caller id, or active other owners fail closed.
 8. Server binds the worker grant to the session with the claimed owner identity.
 9. Subsequent calls use bound session/grant identity.
 ```

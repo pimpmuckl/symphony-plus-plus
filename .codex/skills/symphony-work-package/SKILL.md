@@ -23,8 +23,8 @@ boundary.
    `claimed_by`.
 3. Replay the same local claim after reconnects. The server heartbeats the
    current lease, reclaims stale leases with audit evidence, and rejects paused
-   leases or another active owner. Stop and report those blockers instead of
-   minting your own replacement.
+   leases, same-owner claims that change `caller_id`, or another active owner.
+   Stop and report those blockers instead of minting your own replacement.
 4. For standalone packages or explicitly labeled legacy/recovery WorkKey or
    private-handoff assignments, use `claim_work_key` or
    `claim_private_handoff` instead of `claim_local_assignment`. Never ask for or

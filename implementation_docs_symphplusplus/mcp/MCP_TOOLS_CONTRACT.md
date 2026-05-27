@@ -372,8 +372,9 @@ sympp://work-packages/{id}/handoff.md
 accepted for planned-slice dispatch. It is the normal V2.1 local worker claim.
 The tool validates package repo/base/branch/worktree scope, requires a trusted
 local HTTP MCP session, creates or heartbeats a claim lease, reclaims stale
-leases with audit evidence, rejects paused leases or active other owners, and
-binds the current MCP session to the package worker grant.
+leases with audit evidence, rejects paused leases, same local owner claims that
+change `caller_id` before the live-grant authority check, or active other
+owners, and binds the current MCP session to the package worker grant.
 
 `claim_work_key` requires `secret` and `claimed_by`. It can bind an existing
 worker or architect grant during explicit legacy bootstrap/recovery; it does

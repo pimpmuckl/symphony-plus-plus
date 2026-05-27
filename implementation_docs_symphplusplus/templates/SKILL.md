@@ -18,7 +18,7 @@ WorkKey/private-handoff bootstrap.
    `worktree_path`, `caller_id`, and `claimed_by`.
 3. Replay the same local claim after reconnects. The server heartbeats the
    current lease, reclaims stale leases with audit evidence, and rejects paused
-   leases or another active owner.
+   leases, same-owner claims that change `caller_id`, or another active owner.
 4. For standalone packages or explicitly labeled legacy/recovery WorkKey or
    private-handoff assignments, use `claim_work_key` or
    `claim_private_handoff` instead of `claim_local_assignment`. Do not ask for,

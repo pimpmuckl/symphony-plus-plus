@@ -170,7 +170,8 @@ dispatch-provided claim fields and local runtime `branch`, `worktree_path`,
 
 Replaying the same claim heartbeats the current claim lease. If the prior lease
 is stale, the server may reclaim it and records audit evidence. If the lease is
-paused, the worktree scope mismatches, or another active owner still has
-authority, stop and ask the architect/operator to repair that state. A
-configured `state_key` only preserves initialized handshake continuity for
-stateless transports; it does not restore worker authorization by itself.
+paused, the same local owner changes `caller_id`, the worktree scope mismatches,
+or another active owner still has authority, stop and ask the architect/operator
+to repair that state. A configured `state_key` only preserves initialized
+handshake continuity for stateless transports; it does not restore worker
+authorization by itself.

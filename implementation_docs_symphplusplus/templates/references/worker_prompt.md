@@ -21,9 +21,10 @@ Assignment:
 Before coding:
 1. Claim the assignment through `claim_local_assignment`.
 2. Call `get_current_assignment()` and treat that assignment as the scope.
-3. If claim fails because the lease is paused, another active owner exists, or
-   the local ledger/worktree scope mismatches, stop and ask the architect or
-   operator to repair that state. Do not request raw secrets.
+3. If claim fails because the lease is paused, the same local owner changed
+   `caller_id`, another active owner exists, or the local ledger/worktree scope
+   mismatches, stop and ask the architect or operator to repair that state. Do
+   not request raw secrets.
 4. Read `read_context()`, `read_task_plan()`, findings, progress,
    acceptance, review-suite, and handoff virtual resources.
 5. Update the virtual task plan with `update_task_plan(patch, expected_version)`.

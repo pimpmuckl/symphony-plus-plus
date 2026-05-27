@@ -291,8 +291,10 @@ and binds the newest live worker grant for that package.
 `claim_local_assignment` also owns reclaim behavior. Replaying the same local
 claim heartbeats the active claim lease. A stale lease may be reclaimed and
 records `claim_lease_reclaimed` audit evidence. A paused lease, scope mismatch,
-terminal package, missing recorded worktree, or another active owner with live
-authority fails closed.
+terminal package, missing recorded worktree, same local owner with a different
+`caller_id`, or another active owner with live authority fails closed. The
+same-owner `caller_id` mismatch is rejected before the live-grant authority
+check; reuse the same stable `caller_id` for reconnects.
 
 `claim_work_key` intentionally requires both the one-time secret and a stable
 `claimed_by` owner identity. Symphony++ uses that identity as part of the MCP
@@ -333,7 +335,8 @@ local claim. Dispatch returns non-secret `worker_bootstrap` metadata with
 `claim.tool: claim_local_assignment`; workers add local runtime `branch`,
 `worktree_path`, and `caller_id`, then call `get_current_assignment()`.
 `caller_id` is the stable local MCP session/launcher identity, not a field
-returned by worktree preparation; reuse it for reconnects.
+returned by worktree preparation; reuse it for reconnects because changing it
+within the same local owner is a hard claim rejection.
 Private-store MCP bootstrap is a legacy/recovery path after ledger-claim
 cutover, not a normal worker-claim or reconnect path.
 
