@@ -3071,9 +3071,8 @@ defmodule SymphonyElixir.SymphonyPlusPlus.MCP.Server do
            ),
          {:ok, session} <- Session.from_grant(grant, DateTime.utc_now(:microsecond), proof_hash: grant.secret_hash),
          :ok <- require_worker_assignment(session.assignment) do
-      result = %{"assignment" => Session.public_assignment(session)}
-      grant_action = local_assignment_grant_action(grant, existing_grant_ids)
-      {:ok, result, session, grant_action}
+      assignment = %{"assignment" => Session.public_assignment(session)}
+      {:ok, assignment, session, local_assignment_grant_action(grant, existing_grant_ids)}
     end
   end
 
